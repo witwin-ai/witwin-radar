@@ -289,7 +289,7 @@ class Timeline:
             velocities: (num_doppler_bins,) float64 array — velocity axis in m/s
         """
         frames = self.generate(radar, progress=progress)
-        from ..sigproc import process_rd
+        from .sigproc import process_rd
 
         rd_mags = []
         for f in frames:

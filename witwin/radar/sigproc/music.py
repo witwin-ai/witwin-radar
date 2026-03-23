@@ -88,6 +88,7 @@ class MUSICImager:
         """
         B, M, N, T = angle_data.shape
         L = self.spatial_smooth
+        steering_vec = self.steering_vec.to(device=angle_data.device)
 
         # Forward-backward spatial smoothing
         shift_indices = [(jj, kk) for jj in range(L + 1) for kk in range(L + 1)]
@@ -111,8 +112,8 @@ class MUSICImager:
         # MUSIC pseudo-spectrum: 1 / (a^H * Un * Un^H * a)
         UU_H = torch.matmul(Un, Un.transpose(-1, -2).conj())
         A_UU_H_A_H = torch.matmul(
-            torch.einsum('ijk,akl->aijl', self.steering_vec, UU_H),
-            self.steering_vec.transpose(-1, -2).conj()
+            torch.einsum('ijk,akl->aijl', steering_vec, UU_H),
+            steering_vec.transpose(-1, -2).conj()
         )
 
         S = torch.reciprocal(
@@ -137,7 +138,11 @@ class MUSICImager:
         if range_bins is None:
             # Auto-detect peak range bin
             _, range_index = torch.max(torch.abs(range_fft[0, 0, 0, :]), dim=0)
-            range_bins = torch.arange(range_index - 4, range_index + 1)
+            range_bins = torch.arange(range_index - 4, range_index + 1, device=sig.device)
+        elif not isinstance(range_bins, torch.Tensor):
+            range_bins = torch.as_tensor(range_bins, device=sig.device)
+        else:
+            range_bins = range_bins.to(device=sig.device)
 
         # Extract angle data for selected range bins: (num_bins, TX, RX, chirps)
         angle_data = range_fft[:, :, :self.num_chirps, range_bins].permute(3, 0, 1, 2)

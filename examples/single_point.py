@@ -2,11 +2,20 @@
 Smoke test: single-point radar simulation.
 
 Usage:
-    python -m witwin.radar.examples.single_point
+    python -m examples.single_point
+    python examples/single_point.py
 """
+
+import pathlib
+import sys
 
 import numpy as np
 import torch
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from witwin.radar import Radar
 from witwin.radar.sigproc import process_pc, process_rd
 
@@ -30,28 +39,32 @@ config = {
 }
 device = "cuda" if torch.cuda.is_available() else "cpu"
 backend = "dirichlet" if device == "cuda" else "pytorch"
-radar = Radar(config, backend=backend, device=device)
 
 point = np.array([[0, 0, -3]], dtype=np.float32)
-velocity = np.array([0, 0, 0.01])
+velocity = np.array([[0, 0, 0.01]], dtype=np.float32)
+
+def main():
+    radar = Radar(config, backend=backend, device=device)
+
+    def location_function(t):
+        pos = torch.tensor(point + velocity * t, dtype=torch.float32, device=radar.device)
+        intensity = torch.ones(pos.shape[0], dtype=torch.float32, device=radar.device)
+        return intensity, pos
+
+    print(f"Using backend={backend} device={device}")
+    print("Generating MIMO frame...")
+    frame = radar.mimo(location_function, t0=0)
+    assert frame.shape == (3, 4, 128, 256), f"Unexpected frame shape: {frame.shape}"
+    print(f"  Frame shape: {frame.shape}  OK")
+
+    pc = process_pc(radar, frame)
+    print(f"  Point cloud: {pc.shape[0]} points")
+
+    rd_mag, _, _, _ = process_rd(radar, frame, tx=0, rx=0)
+    assert rd_mag.shape == (128, 256), f"Unexpected RD shape: {rd_mag.shape}"
+    print(f"  RD map shape: {rd_mag.shape}  OK")
+    print("PASSED")
 
 
-def location_function(t):
-    pos = torch.tensor(point + velocity * t, dtype=torch.float32, device=radar.device)
-    intensity = torch.ones(pos.shape[0], dtype=torch.float32, device=radar.device)
-    return intensity, pos
-
-
-print("Generating MIMO frame...")
-frame = radar.mimo(location_function, t0=0)
-assert frame.shape == (3, 4, 128, 256), f"Unexpected frame shape: {frame.shape}"
-print(f"  Frame shape: {frame.shape}  OK")
-
-pc = process_pc(radar, frame)
-print(f"  Point cloud: {pc.shape[0]} points")
-
-rd_mag, rd_map, ranges, velocities = process_rd(radar, frame, tx=0, rx=0)
-assert rd_mag.shape == (128, 256), f"Unexpected RD shape: {rd_mag.shape}"
-print(f"  RD map shape: {rd_mag.shape}  OK")
-
-print("PASSED")
+if __name__ == "__main__":
+    main()

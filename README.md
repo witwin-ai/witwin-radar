@@ -22,6 +22,7 @@ import torch
 from witwin.radar import Radar
 from witwin.radar.sigproc import process_pc, process_rd
 
+# FMCW radar configuration.
 config = {
     "num_tx": 3,
     "num_rx": 4,
@@ -42,6 +43,7 @@ config = {
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
 
+# Use the recommended GPU backend.
 radar = Radar(config, backend="dirichlet", device="cuda")
 
 point = np.array([[0.0, 0.0, -3.0]], dtype=np.float32)
@@ -49,11 +51,13 @@ velocity = np.array([[0.0, 0.0, 0.01]], dtype=np.float32)
 
 
 def interp(t):
+    # Return target intensity and position at time t.
     positions = torch.tensor(point + velocity * t, dtype=torch.float32, device=radar.device)
     intensities = torch.ones((positions.shape[0],), dtype=torch.float32, device=radar.device)
     return intensities, positions
 
 
+# Simulate one frame, then extract point cloud and RD map.
 frame = radar.mimo(interp, t0=0)
 pc = process_pc(radar, frame)
 rd, _, ranges, vels = process_rd(radar, frame)
@@ -130,6 +134,21 @@ cd radar
 pytest tests/
 pytest tests/ --gpu
 ```
+
+## Examples
+
+Run the maintained Python examples from the `radar/` root:
+
+```bash
+python -m examples.single_point
+python -m examples.mesh_scene
+python -m examples.humanbody
+python -m examples.music_imaging
+python -m examples.amass_pointcloud
+python -m examples.gen_amass_video
+```
+
+`amass_pointcloud` and `gen_amass_video` additionally require AMASS BMLmovi data under `data/BMLmovi_full/BMLmovi/`. The rendering examples require `mitsuba` and CUDA; the SMPL examples also require `models/smpl_models/`.
 
 ## Installation
 
