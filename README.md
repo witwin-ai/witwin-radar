@@ -2,6 +2,8 @@
 
 A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines Mitsuba ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
 
+This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
+
 ## Get Started
 
 Python 3.10+ and an NVIDIA GPU are required.
@@ -137,3 +139,25 @@ pip install witwin[radar]
 ```
 
 Core dependencies include `torch`, `numpy`, `slangtorch`, `tqdm`, `matplotlib`, and `scipy`. Optional rendering dependencies are `mitsuba` and `drjit`.
+
+## Citation
+
+If this module or its original RF-Genesis work is relevant to your research, please cite:
+
+```bibtex
+@inproceedings{chen2023rfgenesis,
+  author = {Chen, Xingyu and Zhang, Xinyu},
+  title = {RF Genesis: Zero-Shot Generalization of mmWave Sensing through Simulation-Based Data Synthesis and Generative Diffusion Models},
+  booktitle = {ACM Conference on Embedded Networked Sensor Systems (SenSys '23)},
+  year = {2023},
+  pages = {1-14},
+  address = {Istanbul, Turkiye},
+  publisher = {ACM, New York, NY, USA},
+  url = {https://doi.org/10.1145/3625687.3625798},
+  doi = {10.1145/3625687.3625798}
+}
+```
+
+## License
+
+MIT
