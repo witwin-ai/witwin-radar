@@ -1,4 +1,4 @@
-# WiTwin Radar
+# WiTwin Radar - Differentiable Radar Simulator
 
 A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines Mitsuba ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
 
@@ -7,6 +7,7 @@ This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
 ## Get Started
 
 Python 3.10+ and an NVIDIA GPU are required.
+This package depends on the base `witwin` package.
 
 ```bash
 pip install witwin[radar]
@@ -41,7 +42,7 @@ config = {
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
 
-radar = Radar(config, backend="pytorch", device="cpu")
+radar = Radar(config, backend="dirichlet", device="cuda")
 
 point = np.array([[0.0, 0.0, -3.0]], dtype=np.float32)
 velocity = np.array([[0.0, 0.0, 0.01]], dtype=np.float32)
@@ -93,7 +94,7 @@ scene.add_structure_motion(
 result = Simulation.mimo(
     scene,
     config=config,
-    backend="pytorch",
+    backend="dirichlet",
     sampling="triangle",
     motion_sampling="chirp",
     device="cpu",
@@ -113,7 +114,7 @@ Available mutating scene methods:
 
 ## Features
 
-- Three solver backends: `pytorch`, `slang`, `dirichlet`
+- Recommended backend: `dirichlet`
 - Ray tracing through Mitsuba with differentiable scene support
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
@@ -161,3 +162,9 @@ If this module or its original RF-Genesis work is relevant to your research, ple
 ## License
 
 MIT
+
+## Developer
+
+[![Asixa](https://github.com/Asixa.png)](https://github.com/Asixa)
+
+[Asixa](https://github.com/Asixa)
