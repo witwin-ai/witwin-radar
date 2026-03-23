@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "witwin-radar"
-version = "0.1.0"
+version = "0.0.1"
 description = "Witwin Radar - Radar signal simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 
 dependencies = [
-    "witwin>=0.1.0",
+    "witwin>=0.0.1",
     "numpy>=1.24",
     "torch>=2.0",
     "scipy>=1.10",

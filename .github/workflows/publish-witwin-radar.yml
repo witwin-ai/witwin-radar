@@ -1,0 +1,92 @@
+name: Publish witwin-radar
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: startsWith(github.event.release.tag_name, 'witwin-radar-v') && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/witwin-radar/
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "path=." >> "$GITHUB_OUTPUT"
+          elif [ -f radar/pyproject.toml ]; then
+            echo "path=radar" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unable to find pyproject.toml for the witwin-radar package." >&2
+            exit 1
+          fi
+
+      - name: Validate release tag and package version
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ steps.package_dir.outputs.path }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(r"witwin-radar-v(?P<version>[0-9A-Za-z.+_-]+)", tag)
+          if match is None:
+              print(f"Release tag '{tag}' must match 'witwin-radar-v<version>'.", file=sys.stderr)
+              raise SystemExit(1)
+
+          expected_version = match.group("version")
+          pyproject_path = Path(os.environ["PACKAGE_DIR"]) / "pyproject.toml"
+          data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+
+          project = data["project"]
+          package_name = project["name"]
+          package_version = project["version"]
+
+          if package_name != "witwin-radar":
+              print(f"Expected package name 'witwin-radar', found '{package_name}'.", file=sys.stderr)
+              raise SystemExit(1)
+
+          if package_version != expected_version:
+              print(
+                  f"Release tag version '{expected_version}' does not match pyproject version '{package_version}'.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+
+          print(f"Validated {package_name} {package_version} from {pyproject_path}.")
+          PY
+
+      - name: Build distributions
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ steps.package_dir.outputs.path }}
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build "$PACKAGE_DIR"
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ steps.package_dir.outputs.path }}/dist
