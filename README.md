@@ -1,8 +1,14 @@
 # WiTwin Radar
 
-A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines Mitsuba ray tracing with custom CUDA kernels and exposes a single public workflow:
+A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines Mitsuba ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
 
-`Scene -> Simulation -> Result`
+## Get Started
+
+Python 3.10+ and an NVIDIA GPU are required.
+
+```bash
+pip install witwin[radar]
+```
 
 ## Quick Start
 
@@ -124,10 +130,10 @@ pytest tests/ --gpu
 
 ## Installation
 
-Requires Python 3.10+ and a CUDA-capable environment for the CUDA backends.
+Python 3.10+ and an NVIDIA GPU are required.
 
 ```bash
-pip install -r requirements.txt
+pip install witwin[radar]
 ```
 
 Core dependencies include `torch`, `numpy`, `slangtorch`, `tqdm`, `matplotlib`, and `scipy`. Optional rendering dependencies are `mitsuba` and `drjit`.
