@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "witwin-radar"
+version = "0.1.0"
+description = "Witwin Radar - Radar signal simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+
+dependencies = [
+    "witwin>=0.1.0",
+    "numpy>=1.24",
+    "torch>=2.0",
+    "scipy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["witwin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: test requires CUDA GPU (use --gpu flag)",
+]

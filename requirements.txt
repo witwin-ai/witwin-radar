@@ -1,0 +1,9 @@
+torch
+numpy
+slangtorch
+tqdm
+matplotlib
+scipy
+mitsuba
+drjit
+smplpytorch
