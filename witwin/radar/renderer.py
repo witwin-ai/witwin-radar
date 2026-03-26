@@ -9,6 +9,14 @@ import numpy as np
 import torch
 from witwin.core import build_mitsuba_scene, update_mitsuba_scene_vertices
 
+# drjit type aliases (avoid mitsuba wrappers for pure array types)
+Float = dr.cuda.ad.Float
+UInt32 = dr.cuda.ad.UInt
+Bool = dr.cuda.ad.Bool
+Point3f = dr.cuda.ad.Array3f
+Vector2f = dr.cuda.ad.Array2f
+TensorXf = dr.cuda.ad.TensorXf
+
 from .material import fresnel
 from .sensor import Sensor
 from .types import SamplingMode, normalize_sampling_mode
@@ -176,12 +184,12 @@ class Renderer:
         if sampler.wavefront_size() != total_sample_count:
             sampler.seed(0, total_sample_count)
 
-        pos = dr.arange(mi.UInt32, total_sample_count)
+        pos = dr.arange(UInt32, total_sample_count)
         pos //= spp
-        scale = mi.Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
-        pos = mi.Vector2f(
-            mi.Float(pos % int(film_size[0])) + 0.5,
-            mi.Float(pos // int(film_size[0])) + 0.5,
+        scale = Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
+        pos = Vector2f(
+            Float(pos % int(film_size[0])) + 0.5,
+            Float(pos // int(film_size[0])) + 0.5,
         )
         rays, _ = sensor.sample_ray_differential(
             time=0,
@@ -195,13 +203,13 @@ class Renderer:
         sensor = self._mi_scene.sensors()[0]
         film = sensor.film()
         film_size = film.crop_size()
-        pos = dr.arange(mi.UInt32, count) + start
-        scale = mi.Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
-        pos = mi.Vector2f(
-            mi.Float(pos % int(film_size[0])) + 0.5,
-            mi.Float(pos // int(film_size[0])) + 0.5,
+        pos = dr.arange(UInt32, count) + start
+        scale = Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
+        pos = Vector2f(
+            Float(pos % int(film_size[0])) + 0.5,
+            Float(pos // int(film_size[0])) + 0.5,
         )
-        zeros = dr.zeros(mi.Float, count)
+        zeros = dr.zeros(Float, count)
         rays, _ = sensor.sample_ray_differential(
             time=zeros,
             sample1=zeros,
@@ -211,9 +219,9 @@ class Renderer:
         return rays
 
     def _lookup_eps_r(self, shape):
-        eps_r = mi.Float(self.epsilon_r)
+        eps_r = Float(self.epsilon_r)
         for candidate_shape, candidate_eps in self._shape_eps:
-            eps_r = dr.select(shape == candidate_shape, mi.Float(candidate_eps), eps_r)
+            eps_r = dr.select(shape == candidate_shape, Float(candidate_eps), eps_r)
         return eps_r
 
     def trace(self, *, time: float | None = None):
@@ -255,7 +263,7 @@ class Renderer:
         eps_r = self._lookup_eps_r(si.shape)
         reflectance = fresnel(cos_i, eps_r)
         reflectance = dr.select(si.is_valid(), reflectance, 0.0)
-        return mi.TensorXf(reflectance).torch().reshape(self.resolution, self.resolution)
+        return TensorXf(reflectance).torch().reshape(self.resolution, self.resolution)
 
     def _get_dynamic_meshes(self, renderables):
         return [name for name, mesh_data in renderables.items() if mesh_data.dynamic]
@@ -264,24 +272,24 @@ class Renderer:
         vp = self._params[f"{mesh_name}.vertex_positions"]
         fi = self._params[f"{mesh_name}.faces"]
         num_faces = dr.width(fi) // 3
-        face_idx = dr.arange(mi.UInt32, num_faces)
+        face_idx = dr.arange(UInt32, num_faces)
 
-        i0 = dr.gather(mi.UInt32, fi, face_idx * 3)
-        i1 = dr.gather(mi.UInt32, fi, face_idx * 3 + 1)
-        i2 = dr.gather(mi.UInt32, fi, face_idx * 3 + 2)
+        i0 = dr.gather(UInt32, fi, face_idx * 3)
+        i1 = dr.gather(UInt32, fi, face_idx * 3 + 1)
+        i2 = dr.gather(UInt32, fi, face_idx * 3 + 2)
 
         def _vertex(index):
-            return mi.Point3f(
-                dr.gather(mi.Float, vp, index * 3),
-                dr.gather(mi.Float, vp, index * 3 + 1),
-                dr.gather(mi.Float, vp, index * 3 + 2),
+            return Point3f(
+                dr.gather(Float, vp, index * 3),
+                dr.gather(Float, vp, index * 3 + 1),
+                dr.gather(Float, vp, index * 3 + 2),
             )
 
         v0, v1, v2 = _vertex(i0), _vertex(i1), _vertex(i2)
         centroid = (v0 + v1 + v2) / 3.0
         normal = dr.normalize(dr.cross(v1 - v0, v2 - v0))
 
-        origin = mi.Point3f(*self.active_sensor.origin)
+        origin = Point3f(*self.active_sensor.origin)
         view_dir = dr.normalize(origin - centroid)
         front = dr.dot(view_dir, normal) > 0
 
@@ -291,7 +299,7 @@ class Renderer:
         not_occluded = si.is_valid() & (si.t >= expected_t - 0.01)
 
         valid = front & not_occluded
-        return mi.TensorXf(dr.select(valid, mi.Float(1.0), mi.Float(0.0))).torch().bool()
+        return TensorXf(dr.select(valid, Float(1.0), Float(0.0))).torch().bool()
 
     def _trace_triangles(self, renderables):
         all_points = []
@@ -341,16 +349,16 @@ class Renderer:
         @dr.wrap(source="torch", target="drjit")
         def _geometry(vertices):
             vp = dr.ravel(vertices)
-            face_idx = dr.arange(mi.UInt32, num_faces_captured)
-            i0 = dr.gather(mi.UInt32, fi_captured, face_idx * 3)
-            i1 = dr.gather(mi.UInt32, fi_captured, face_idx * 3 + 1)
-            i2 = dr.gather(mi.UInt32, fi_captured, face_idx * 3 + 2)
+            face_idx = dr.arange(UInt32, num_faces_captured)
+            i0 = dr.gather(UInt32, fi_captured, face_idx * 3)
+            i1 = dr.gather(UInt32, fi_captured, face_idx * 3 + 1)
+            i2 = dr.gather(UInt32, fi_captured, face_idx * 3 + 2)
 
             def _vertex(index):
-                return mi.Point3f(
-                    dr.gather(mi.Float, vp, index * 3),
-                    dr.gather(mi.Float, vp, index * 3 + 1),
-                    dr.gather(mi.Float, vp, index * 3 + 2),
+                return Point3f(
+                    dr.gather(Float, vp, index * 3),
+                    dr.gather(Float, vp, index * 3 + 1),
+                    dr.gather(Float, vp, index * 3 + 2),
                 )
 
             v0, v1, v2 = _vertex(i0), _vertex(i1), _vertex(i2)
@@ -360,13 +368,13 @@ class Renderer:
             area = 0.5 * cross_len
             normal = cross / (cross_len + 1e-10)
 
-            origin = mi.Point3f(*sensor_origin)
+            origin = Point3f(*sensor_origin)
             cos_i = dr.abs(dr.dot(dr.normalize(origin - centroid), normal))
             reflectance = fresnel(cos_i, eps_r)
             intensity = area * reflectance
 
-            out = dr.zeros(mi.Float, num_faces_captured * 7)
-            idx = dr.arange(mi.UInt32, num_faces_captured)
+            out = dr.zeros(Float, num_faces_captured * 7)
+            idx = dr.arange(UInt32, num_faces_captured)
             dr.scatter(out, centroid.x, idx * 7)
             dr.scatter(out, centroid.y, idx * 7 + 1)
             dr.scatter(out, centroid.z, idx * 7 + 2)
@@ -374,7 +382,7 @@ class Renderer:
             dr.scatter(out, normal.x, idx * 7 + 4)
             dr.scatter(out, normal.y, idx * 7 + 5)
             dr.scatter(out, normal.z, idx * 7 + 6)
-            return mi.TensorXf(out, shape=(num_faces_captured, 7))
+            return TensorXf(out, shape=(num_faces_captured, 7))
 
         result = _geometry(vertices_torch)
         return (
@@ -414,12 +422,12 @@ class Renderer:
 
             cos_i = dr.abs(dr.dot(-rays.d, si.n))
             reflectance = fresnel(cos_i, first_eps_r)
-            valid_float = dr.select(si.is_valid(), mi.Float(1.0), mi.Float(0.0))
+            valid_float = dr.select(si.is_valid(), Float(1.0), Float(0.0))
             reflectance = reflectance * valid_float
 
             count = dr.width(reflectance)
-            out = dr.zeros(mi.Float, count * 8)
-            idx = dr.arange(mi.UInt32, count)
+            out = dr.zeros(Float, count * 8)
+            idx = dr.arange(UInt32, count)
             dr.scatter(out, si.p.x * valid_float, idx * 8)
             dr.scatter(out, si.p.y * valid_float, idx * 8 + 1)
             dr.scatter(out, si.p.z * valid_float, idx * 8 + 2)
@@ -428,7 +436,7 @@ class Renderer:
             dr.scatter(out, si.n.x * valid_float, idx * 8 + 5)
             dr.scatter(out, si.n.y * valid_float, idx * 8 + 6)
             dr.scatter(out, si.n.z * valid_float, idx * 8 + 7)
-            return mi.TensorXf(out, shape=(count, 8))
+            return TensorXf(out, shape=(count, 8))
 
         result = _pixel(first_vertices)
         valid_index = (result[:, 4] > 0.5).nonzero(as_tuple=True)[0]
@@ -484,11 +492,11 @@ class Renderer:
         all_depths,
         all_normals,
     ) -> None:
-        active = dr.full(mi.Bool, True, count)
-        entry_points = mi.Point3f(0.0, 0.0, 0.0)
-        prev_bounce_points = mi.Point3f(0.0, 0.0, 0.0)
-        fixed_lengths = dr.zeros(mi.Float, count)
-        cumulative_reflectance = dr.full(mi.Float, 1.0, count)
+        active = dr.full(Bool, True, count)
+        entry_points = Point3f(0.0, 0.0, 0.0)
+        prev_bounce_points = Point3f(0.0, 0.0, 0.0)
+        fixed_lengths = dr.zeros(Float, count)
+        cumulative_reflectance = dr.full(Float, 1.0, count)
 
         for depth in range(self.max_reflections + 1):
             if not dr.any(active):
@@ -508,7 +516,7 @@ class Renderer:
 
             if depth == 0:
                 emitted_entry_points = hit_points
-                emitted_fixed_lengths = dr.zeros(mi.Float, count)
+                emitted_fixed_lengths = dr.zeros(Float, count)
                 visible = valid
             else:
                 emitted_entry_points = entry_points
@@ -545,12 +553,12 @@ class Renderer:
             rays = mi.Ray3f(next_origin, reflected_dir)
             entry_points = hit_points if depth == 0 else emitted_entry_points
             prev_bounce_points = hit_points
-            fixed_lengths = dr.zeros(mi.Float, count) if depth == 0 else emitted_fixed_lengths
+            fixed_lengths = dr.zeros(Float, count) if depth == 0 else emitted_fixed_lengths
             cumulative_reflectance = cumulative_reflectance * reflectance
             active = valid
 
     def _visible_from_origin(self, hit_points, normals, active):
-        origin = mi.Point3f(*self.active_sensor.origin)
+        origin = Point3f(*self.active_sensor.origin)
         to_origin = origin - hit_points
         direction = dr.normalize(to_origin)
         offset_sign = dr.select(dr.dot(direction, normals) >= 0.0, 1.0, -1.0)
@@ -581,9 +589,9 @@ class Renderer:
             return
 
         count = dr.width(intensities)
-        idx = dr.arange(mi.UInt32, count)
-        out = dr.zeros(mi.Float, count * 12)
-        valid_float = dr.select(valid, mi.Float(1.0), mi.Float(0.0))
+        idx = dr.arange(UInt32, count)
+        out = dr.zeros(Float, count * 12)
+        valid_float = dr.select(valid, Float(1.0), Float(0.0))
         dr.scatter(out, hit_points.x, idx * 12)
         dr.scatter(out, hit_points.y, idx * 12 + 1)
         dr.scatter(out, hit_points.z, idx * 12 + 2)
@@ -592,13 +600,13 @@ class Renderer:
         dr.scatter(out, entry_points.y, idx * 12 + 5)
         dr.scatter(out, entry_points.z, idx * 12 + 6)
         dr.scatter(out, fixed_lengths, idx * 12 + 7)
-        dr.scatter(out, mi.Float(float(depth)), idx * 12 + 8)
+        dr.scatter(out, Float(float(depth)), idx * 12 + 8)
         dr.scatter(out, normals.x, idx * 12 + 9)
         dr.scatter(out, normals.y, idx * 12 + 10)
         dr.scatter(out, normals.z, idx * 12 + 11)
 
-        packed = mi.TensorXf(out, shape=(count, 12)).torch()
-        mask = mi.TensorXf(valid_float).torch() > 0.5
+        packed = TensorXf(out, shape=(count, 12)).torch()
+        mask = TensorXf(valid_float).torch() > 0.5
         packed = packed[mask]
         if packed.numel() == 0:
             return

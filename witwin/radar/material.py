@@ -6,9 +6,6 @@ normal using the Fresnel equations, all in drjit for GPU acceleration.
 """
 
 import drjit as dr
-import mitsuba as mi
-
-mi.set_variant('cuda_ad_rgb')
 
 
 def fresnel(cos_i, epsilon_r=5.0):
