@@ -1,16 +1,15 @@
 """
 Tests for Range-Doppler DSP functions: range FFT, Doppler FFT, clutter removal.
 
-All tests are CPU-only — they use synthetic numpy arrays directly.
+All DSP helpers are torch-only.
 """
 
 import numpy as np
-import pytest
+import torch
 
 from witwin.radar.sigproc.pointcloud import (
     frame_reshape, range_fft, doppler_fft, clutter_removal,
 )
-from conftest import MockRadar, STANDARD_CONFIG
 
 
 class _FC:
@@ -26,18 +25,22 @@ class _FC:
         self.numDopplerBins = chirps
 
 
+def _randc(*shape, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return torch.randn(*shape, generator=g, dtype=torch.float64) + 1j * torch.randn(*shape, generator=g, dtype=torch.float64)
+
+
 class TestFrameReshape:
 
     def test_output_shape(self):
         fc = _FC(num_tx=3, num_rx=4, chirps=128, adc=256)
-        flat = np.random.randn(fc.numLoopsPerFrame * fc.numTxAntennas *
-                                fc.numRxAntennas * fc.numADCSamples) + 0j
+        flat = _randc(fc.numLoopsPerFrame * fc.numTxAntennas * fc.numRxAntennas * fc.numADCSamples)
         reshaped = frame_reshape(flat, fc)
         assert reshaped.shape == (3, 4, 128, 256)
 
     def test_transpose_is_tx_rx_chirp_adc(self):
         fc = _FC(num_tx=2, num_rx=3, chirps=4, adc=8)
-        flat = np.arange(2 * 3 * 4 * 8, dtype=np.complex64)
+        flat = torch.arange(2 * 3 * 4 * 8, dtype=torch.int64).to(torch.complex64)
         reshaped = frame_reshape(flat, fc)
         assert reshaped.shape == (2, 3, 4, 8)
 
@@ -46,7 +49,7 @@ class TestRangeFFT:
 
     def test_output_shape_matches_input(self):
         fc = _FC(adc=256)
-        frame = np.random.randn(3, 4, 128, 256) + 0j
+        frame = _randc(3, 4, 128, 256)
         result = range_fft(frame, fc)
         assert result.shape == frame.shape
 
@@ -55,32 +58,31 @@ class TestRangeFFT:
         adc = 256
         fc = _FC(num_tx=1, num_rx=1, chirps=1, adc=adc)
         target_bin = 40
-        t = np.arange(adc) / adc
-        signal = np.exp(2j * np.pi * target_bin * t)
+        t = torch.arange(adc, dtype=torch.float64) / adc
+        signal = torch.exp(2j * torch.pi * target_bin * t)
         frame = signal.reshape(1, 1, 1, adc)
 
         result = range_fft(frame, fc)
-        mag = np.abs(result[0, 0, 0, :])
-        peak = np.argmax(mag)
+        mag = torch.abs(result[0, 0, 0, :])
+        peak = int(torch.argmax(mag).item())
         assert abs(peak - target_bin) <= 1, f"Expected bin ~{target_bin}, got {peak}"
 
     def test_hamming_window_applied(self):
         """Result should differ from raw FFT (Hamming window effect)."""
         adc = 256
         fc = _FC(num_tx=1, num_rx=1, chirps=1, adc=adc)
-        signal = np.random.randn(1, 1, 1, adc) + 0j
+        signal = _randc(1, 1, 1, adc)
 
         windowed_result = range_fft(signal, fc)
-        raw_fft = np.fft.fft(signal)
-        # They should NOT be identical because of the Hamming window
-        assert not np.allclose(windowed_result, raw_fft)
+        raw_fft = torch.fft.fft(signal)
+        assert not torch.allclose(windowed_result, raw_fft)
 
 
 class TestDopplerFFT:
 
     def test_output_shape(self):
         fc = _FC(chirps=128, adc=256)
-        data = np.random.randn(3, 4, 128, 256) + 0j
+        data = _randc(3, 4, 128, 256)
         result = doppler_fft(data, fc)
         assert result.shape == data.shape
 
@@ -89,12 +91,10 @@ class TestDopplerFFT:
         chirps = 32
         adc = 64
         fc = _FC(num_tx=1, num_rx=1, chirps=chirps, adc=adc)
-        # Static target: constant across chirps → zero Doppler
-        data = np.ones((1, 1, chirps, adc), dtype=np.complex64)
+        data = torch.ones((1, 1, chirps, adc), dtype=torch.complex64)
         result = doppler_fft(data, fc)
-        mag = np.abs(result[0, 0, :, 0])
-        peak_bin = np.argmax(mag)
-        # After fftshift, zero-Doppler should be at or near bin chirps//2
+        mag = torch.abs(result[0, 0, :, 0])
+        peak_bin = int(torch.argmax(mag).item())
         assert abs(peak_bin - chirps // 2) <= 1
 
 
@@ -102,27 +102,23 @@ class TestClutterRemoval:
 
     def test_removes_dc_component(self):
         """Mean along the clutter axis should be ~0 after removal."""
-        data = np.random.randn(128, 256) + 5.0  # DC offset = 5
+        data = torch.randn(128, 256, dtype=torch.float64) + 5.0
         cleaned = clutter_removal(data, axis=0)
-        mean_after = np.abs(cleaned.mean(axis=0))
-        assert mean_after.max() < 1e-10
+        mean_after = torch.abs(cleaned.mean(dim=0))
+        assert float(mean_after.max()) < 1e-10
 
     def test_preserves_shape(self):
-        data = np.random.randn(3, 4, 128, 256) + 0j
+        data = _randc(3, 4, 128, 256)
         result = clutter_removal(data, axis=2)
         assert result.shape == data.shape
 
     def test_removes_static_preserves_motion(self):
         """A chirp-varying component should survive clutter removal."""
         chirps, adc = 128, 256
-        # Static component (same across chirps)
-        static = np.ones((chirps, adc)) * 10.0
-        # Moving component (varies across chirps)
-        motion = np.sin(2 * np.pi * np.arange(chirps)[:, None] / chirps * 3)
+        static = torch.ones((chirps, adc), dtype=torch.float64) * 10.0
+        motion = torch.sin(2 * torch.pi * torch.arange(chirps, dtype=torch.float64).unsqueeze(1) / chirps * 3)
         data = static + motion
 
         cleaned = clutter_removal(data, axis=0)
-        # Static should be removed
-        assert np.abs(cleaned.mean(axis=0)).max() < 1e-10
-        # Motion should remain
-        assert np.abs(cleaned).max() > 0.5
+        assert float(torch.abs(cleaned.mean(dim=0)).max()) < 1e-10
+        assert float(torch.abs(cleaned).max()) > 0.5

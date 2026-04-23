@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import torch
-
-from .validators import finite_float
 
 
 def vec3_tuple(value, *, name: str = "vector") -> tuple[float, float, float]:
@@ -66,22 +63,3 @@ def vector_norm(value) -> float:
 
 def normalize_rows(vectors: torch.Tensor) -> torch.Tensor:
     return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
-
-
-def parse_vector3(name: str, value: Any, *, prefix: str = "Field", aliases: dict[str, tuple[float, float, float]] | None = None) -> tuple[float, float, float]:
-    """Parse a 3-element vector, optionally resolving string aliases."""
-    if isinstance(value, str):
-        if aliases is None or value.lower() not in aliases:
-            raise ValueError(
-                f"{prefix} '{name}' must be a 3-element vector"
-                + (" or an alias string." if aliases else ".")
-            )
-        return aliases[value.lower()]
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{prefix} '{name}' must be a 3-element vector.")
-    if len(value) != 3:
-        raise ValueError(f"{prefix} '{name}' must contain exactly three values.")
-    vector = tuple(finite_float(f"{name}[{index}]", component, prefix=prefix) for index, component in enumerate(value))
-    if norm3(vector) <= 1e-12:
-        raise ValueError(f"{prefix} '{name}' must be non-zero.")
-    return vector

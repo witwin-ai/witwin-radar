@@ -50,7 +50,7 @@ class Result:
         return self._trace.depths
 
     def trace_normals(self) -> torch.Tensor | None:
-        return getattr(self._trace, "normals", None)
+        return self._trace.normals
 
     def tensor(self, name: str) -> torch.Tensor:
         key = str(name).lower()

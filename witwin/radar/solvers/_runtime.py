@@ -35,52 +35,34 @@ class PathSample:
 
 
 def normalize_interpolated_sample(sample, *, device: str) -> PathSample:
-    """Normalize legacy tuples and TraceResult-like objects into path samples."""
-    if hasattr(sample, "points") and hasattr(sample, "intensities"):
+    """Normalize legacy ``(intensities, points)`` tuples and TraceResult-like objects."""
+    if isinstance(sample, tuple):
+        intensities, points = sample
+        entry_points = points
+        fixed_path_lengths = torch.zeros(points.shape[0], dtype=torch.float32, device=device)
+        depths = torch.zeros(points.shape[0], dtype=torch.int32, device=device)
+        normals = None
+    else:
         intensities = sample.intensities
         points = sample.points
         entry_points = getattr(sample, "entry_points", None)
+        if entry_points is None:
+            entry_points = points
         fixed_path_lengths = getattr(sample, "fixed_path_lengths", None)
+        if fixed_path_lengths is None:
+            fixed_path_lengths = torch.zeros(points.shape[0], dtype=torch.float32, device=device)
         depths = getattr(sample, "depths", None)
+        if depths is None:
+            depths = torch.zeros(points.shape[0], dtype=torch.int32, device=device)
         normals = getattr(sample, "normals", None)
-    else:
-        intensities, points = sample
-        entry_points = None
-        fixed_path_lengths = None
-        depths = None
-        normals = None
 
     points = points.to(dtype=torch.float32, device=device)
     intensities = intensities.to(dtype=torch.float32, device=device)
-
-    if entry_points is None:
-        entry_points = points
-    else:
-        entry_points = entry_points.to(dtype=torch.float32, device=device)
-
-    if fixed_path_lengths is None:
-        fixed_path_lengths = torch.zeros(points.shape[0], dtype=torch.float32, device=device)
-    else:
-        fixed_path_lengths = fixed_path_lengths.to(dtype=torch.float32, device=device)
-
-    if depths is None:
-        depths = torch.zeros(points.shape[0], dtype=torch.int32, device=device)
-    else:
-        depths = depths.to(dtype=torch.int32, device=device)
-
+    entry_points = entry_points.to(dtype=torch.float32, device=device)
+    fixed_path_lengths = fixed_path_lengths.to(dtype=torch.float32, device=device)
+    depths = depths.to(dtype=torch.int32, device=device)
     if normals is not None:
         normals = normals.to(dtype=torch.float32, device=device)
-
-    if points.ndim != 2 or points.shape[-1] != 3:
-        raise ValueError("Interpolated sample points must have shape (N, 3).")
-    if entry_points.shape != points.shape:
-        raise ValueError("Interpolated sample entry_points must match points shape.")
-    if intensities.shape != fixed_path_lengths.shape:
-        raise ValueError("Interpolated sample intensities and fixed_path_lengths must share shape (N,).")
-    if depths.shape != intensities.shape:
-        raise ValueError("Interpolated sample depths must have shape (N,).")
-    if normals is not None and normals.shape != points.shape:
-        raise ValueError("Interpolated sample normals must match points shape.")
 
     return PathSample(
         intensities=intensities,
@@ -94,10 +76,11 @@ def normalize_interpolated_sample(sample, *, device: str) -> PathSample:
 
 def collect_interpolated_samples(radar, interpolator, t0=0.0):
     """Evaluate the scene interpolator once per chirp and keep tensors on-graph."""
-    chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6
+    cfg = radar.config
+    chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
     samples = []
-    for chirp_id in range(radar.chirp_per_frame):
-        time_in_frame = chirp_id * chirp_period * radar.num_tx
+    for chirp_id in range(cfg.chirp_per_frame):
+        time_in_frame = chirp_id * chirp_period * cfg.num_tx
         sample = interpolator(t0 + time_in_frame)
         samples.append(normalize_interpolated_sample(sample, device=radar.device))
     return samples
@@ -128,15 +111,12 @@ def compute_antenna_pattern_gains(
     rx_pos: torch.Tensor,
 ) -> torch.Tensor | None:
     """Return per-path power gains from the configured TX/RX antenna pattern."""
-    pattern = getattr(radar, "antenna_pattern", None)
+    pattern = radar.antenna_pattern
     if pattern is None:
         return None
 
-    tx_vectors = sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1)
-    rx_vectors = sample.points.unsqueeze(0) - rx_pos.unsqueeze(1)
-    if hasattr(radar, "local_from_world_vectors"):
-        tx_vectors = radar.local_from_world_vectors(tx_vectors)
-        rx_vectors = radar.local_from_world_vectors(rx_vectors)
+    tx_vectors = radar.local_from_world_vectors(sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
+    rx_vectors = radar.local_from_world_vectors(sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
     tx_gains = pattern.evaluate_vectors(tx_vectors).unsqueeze(1)
     rx_gains = pattern.evaluate_vectors(rx_vectors).unsqueeze(0)
     return tx_gains * rx_gains
@@ -148,7 +128,7 @@ def _normalize_vectors(vectors: torch.Tensor) -> torch.Tensor:
 
 def compute_polarization_amplitudes(radar, sample: PathSample) -> torch.Tensor | None:
     """Return signed TX/RX polarization projection factors for each path."""
-    polarization = getattr(radar, "polarization", None)
+    polarization = radar.polarization
     if polarization is None:
         return None
     if sample.normals is None:
@@ -177,12 +157,9 @@ def compute_path_amplitudes(
     fspl_amp = radar._lambda / (4.0 * math.pi * torch.clamp(total_path_lengths, min=1e-6))
     scatter_power = torch.clamp(sample.intensities, min=0.0).view(1, 1, -1)
     if tx_pos is None:
-        tx_pos = getattr(radar, "tx_pos", radar.tx_loc)
+        tx_pos = radar.tx_pos
     if rx_pos is None:
-        rx_pos = getattr(radar, "rx_pos", radar.rx_loc)
-
-    tx_pos = torch.as_tensor(tx_pos, dtype=torch.float32, device=total_path_lengths.device)
-    rx_pos = torch.as_tensor(rx_pos, dtype=torch.float32, device=total_path_lengths.device)
+        rx_pos = radar.rx_pos
     pattern_gains = compute_antenna_pattern_gains(radar, sample, tx_pos, rx_pos)
     if pattern_gains is not None:
         scatter_power = scatter_power * torch.clamp(pattern_gains, min=0.0)
@@ -203,13 +180,14 @@ def pytorch_chirp_reference(radar, distances, amplitudes):
 
 
 def pytorch_mimo_from_samples(radar, samples):
+    cfg = radar.config
     frame = torch.zeros(
-        (radar.chirp_per_frame, radar.num_tx, radar.num_rx, radar.adc_samples),
+        (cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples),
         dtype=torch.complex128,
         device=radar.device,
     )
-    tx_pos = torch.as_tensor(radar.tx_pos, device=radar.device, dtype=torch.float32)
-    rx_pos = torch.as_tensor(radar.rx_pos, device=radar.device, dtype=torch.float32)
+    tx_pos = radar.tx_pos
+    rx_pos = radar.rx_pos
 
     for chirp_id, sample in enumerate(samples):
         distances = compute_total_path_lengths(sample, tx_pos, rx_pos).unsqueeze(-1)

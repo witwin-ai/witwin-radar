@@ -1,28 +1,20 @@
-"""Radar noise model configuration and runtime application."""
+"""Radar noise model configuration and runtime application.
+
+Validation lives in :mod:`witwin.radar.validation`. This module defines the
+dataclasses and the runtime that injects noise into complex signal tensors.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-import os
 from typing import Any
 
 import torch
-
-from .utils.validators import non_negative_float, optional_seed, positive_float, positive_int
-
-_PREFIX = "Noise model field"
 
 
 @dataclass(frozen=True)
 class ThermalNoiseConfig:
     std: float
-
-    @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "ThermalNoiseConfig":
-        if not isinstance(config, dict):
-            raise TypeError("Thermal noise config must be a dict.")
-        return cls(std=non_negative_float("thermal.std", config.get("std"), prefix=_PREFIX))
 
     def to_dict(self) -> dict[str, Any]:
         return {"std": self.std}
@@ -33,15 +25,6 @@ class QuantizationNoiseConfig:
     bits: int
     full_scale: float = 1.0
 
-    @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "QuantizationNoiseConfig":
-        if not isinstance(config, dict):
-            raise TypeError("Quantization noise config must be a dict.")
-        return cls(
-            bits=positive_int("quantization.bits", config.get("bits"), prefix=_PREFIX),
-            full_scale=positive_float("quantization.full_scale", config.get("full_scale", 1.0), prefix=_PREFIX),
-        )
-
     def to_dict(self) -> dict[str, Any]:
         return {"bits": self.bits, "full_scale": self.full_scale}
 
@@ -49,12 +32,6 @@ class QuantizationNoiseConfig:
 @dataclass(frozen=True)
 class PhaseNoiseConfig:
     std: float
-
-    @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "PhaseNoiseConfig":
-        if not isinstance(config, dict):
-            raise TypeError("Phase noise config must be a dict.")
-        return cls(std=non_negative_float("phase.std", config.get("std"), prefix=_PREFIX))
 
     def to_dict(self) -> dict[str, Any]:
         return {"std": self.std}
@@ -66,51 +43,6 @@ class NoiseModelConfig:
     quantization: QuantizationNoiseConfig | None = None
     phase: PhaseNoiseConfig | None = None
     seed: int | None = None
-
-    @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "NoiseModelConfig":
-        if not isinstance(config, dict):
-            raise TypeError("Noise model config must be a dict.")
-
-        thermal = (
-            ThermalNoiseConfig.from_dict(config["thermal"])
-            if config.get("thermal") is not None
-            else None
-        )
-        quantization = (
-            QuantizationNoiseConfig.from_dict(config["quantization"])
-            if config.get("quantization") is not None
-            else None
-        )
-        phase = (
-            PhaseNoiseConfig.from_dict(config["phase"])
-            if config.get("phase") is not None
-            else None
-        )
-        seed = optional_seed(config.get("seed"), prefix=_PREFIX)
-
-        if thermal is None and quantization is None and phase is None:
-            raise ValueError(
-                "Noise model config must enable at least one of 'thermal', 'quantization', or 'phase'."
-            )
-
-        return cls(thermal=thermal, quantization=quantization, phase=phase, seed=seed)
-
-    @classmethod
-    def from_json(cls, path: str | os.PathLike[str]) -> "NoiseModelConfig":
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return cls.from_dict(data)
-
-    @classmethod
-    def coerce(cls, config: "NoiseModelConfig | dict[str, Any] | str | os.PathLike[str]") -> "NoiseModelConfig":
-        if isinstance(config, cls):
-            return config
-        if isinstance(config, (str, os.PathLike)):
-            return cls.from_json(config)
-        if isinstance(config, dict):
-            return cls.from_dict(config)
-        raise TypeError("Noise model config must be a NoiseModelConfig, dict, or JSON path.")
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -159,9 +91,6 @@ class NoiseModelRuntime:
         return cls(config=config, device=device)
 
     def apply(self, signal: torch.Tensor, *, generator: torch.Generator | None = None) -> torch.Tensor:
-        if not torch.is_complex(signal):
-            raise TypeError("NoiseModelRuntime.apply expects a complex-valued signal tensor.")
-
         noisy = signal
         if self.config.phase is not None and self.config.phase.std > 0.0:
             noisy = self._apply_phase_noise(noisy, std=self.config.phase.std, generator=generator)

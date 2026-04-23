@@ -42,7 +42,8 @@ def init():
 def chirp_slang(solver, distances, amplitudes, targets_per_chunk=256):
     """Chunked chirp: parallel over time samples AND target chunks (default)."""
     radar = solver.radar
-    T = radar.adc_samples
+    cfg = radar.config
+    T = cfg.adc_samples
     num_targets = distances.shape[0]
 
     distances = distances.to(dtype=torch.float32, device=solver.device).contiguous()
@@ -59,7 +60,7 @@ def chirp_slang(solver, distances, amplitudes, targets_per_chunk=256):
     solver._module.chirp_kernel_chunked(
         t_sample=radar.t_sample,
         distances=distances, amplitudes=amplitudes,
-        fc=radar.fc, slope=radar.slope * 1e12,
+        fc=cfg.fc, slope=cfg.slope * 1e12,
         num_targets=num_targets, targets_per_chunk=targets_per_chunk,
         out_real=out_real, out_imag=out_imag,
     ).launchRaw(blockSize=(block_size, 1, 1), gridSize=(grid_x, num_chunks, 1))
@@ -70,7 +71,8 @@ def chirp_slang(solver, distances, amplitudes, targets_per_chunk=256):
 def chirp_slang_per_target(solver, distances, amplitudes, targets_per_chunk=256):
     """Per-target chirp: each thread = one target, loops all time samples (atomicAdd)."""
     radar = solver.radar
-    T = radar.adc_samples
+    cfg = radar.config
+    T = cfg.adc_samples
     num_targets = distances.shape[0]
 
     distances = distances.to(dtype=torch.float32, device=solver.device).contiguous()
@@ -84,7 +86,7 @@ def chirp_slang_per_target(solver, distances, amplitudes, targets_per_chunk=256)
     solver._module.chirp_kernel_per_target(
         t_sample=radar.t_sample,
         distances=distances, amplitudes=amplitudes,
-        fc=radar.fc, slope=radar.slope * 1e12,
+        fc=cfg.fc, slope=cfg.slope * 1e12,
         num_targets=num_targets, T=T, targets_per_chunk=targets_per_chunk,
         out_real=out_real, out_imag=out_imag,
     ).launchRaw(blockSize=(targets_per_chunk, 1, 1), gridSize=(num_chunks, 1, 1))
@@ -99,18 +101,19 @@ def chirp_slang_per_target(solver, distances, amplitudes, targets_per_chunk=256)
 def frameCuda(solver, samples):
     """Generate a full MIMO frame using Slang CUDA kernels from sampled chirps."""
     radar = solver.radar
-    TX, RX, F, T = radar.num_tx, radar.num_rx, radar.chirp_per_frame, radar.adc_samples
+    cfg = radar.config
+    TX, RX, F, T = cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples
 
     frame_real = torch.zeros((TX, RX, F, T), dtype=torch.float64, device=solver.device)
     frame_imag = torch.zeros_like(frame_real)
 
     t_sample = (
-        torch.arange(0, T, dtype=torch.float64, device=solver.device) / (radar.sample_rate * 1e3)
-        + radar.adc_start_time * 1e-6
+        torch.arange(0, T, dtype=torch.float64, device=solver.device) / (cfg.sample_rate * 1e3)
+        + cfg.adc_start_time * 1e-6
     )
 
-    tx_pos = torch.as_tensor(radar.tx_pos, dtype=torch.float32, device=solver.device)
-    rx_pos = torch.as_tensor(radar.rx_pos, dtype=torch.float32, device=solver.device)
+    tx_pos = radar.tx_pos
+    rx_pos = radar.rx_pos
 
     max_points = 0
     all_total_lengths = []
@@ -147,7 +150,7 @@ def frameCuda(solver, samples):
         t_sample=t_sample.to(torch.float64),
         total_lengths=total_lengths_tensor,
         amplitudes=amplitudes_tensor,
-        fc=radar.fc, slope=radar.slope * 1e6 * 1e6,
+        fc=cfg.fc, slope=cfg.slope * 1e6 * 1e6,
         phi=0.0, max_N=max_points,
         out_real=frame_real.to(torch.float64),
         out_imag=frame_imag.to(torch.float64),
@@ -178,13 +181,14 @@ class SlangSolver(Solver):
 
     def frame(self, interpolator, t0=0):
         r = self.radar
-        T_chirp = (r.idle_time + r.ramp_end_time) * 1e-6
-        tx0 = torch.as_tensor(r.tx_pos[0:1], dtype=torch.float32, device=r.device)
-        rx0 = torch.as_tensor(r.rx_pos[0:1], dtype=torch.float32, device=r.device)
+        cfg = r.config
+        T_chirp = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        tx0 = r.tx_pos[0:1].contiguous()
+        rx0 = r.rx_pos[0:1].contiguous()
 
         result = []
-        for chirp_id in range(r.chirp_per_frame):
-            time_in_frame = chirp_id * T_chirp * r.num_tx
+        for chirp_id in range(cfg.chirp_per_frame):
+            time_in_frame = chirp_id * T_chirp * cfg.num_tx
             sample = normalize_interpolated_sample(interpolator(t0 + time_in_frame), device=r.device)
             total_lengths = compute_total_path_lengths(sample, tx0, rx0)
             one_way = total_lengths.squeeze(0).squeeze(0) * 0.5

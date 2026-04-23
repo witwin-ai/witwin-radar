@@ -9,7 +9,7 @@ Usage:
 
     # From pre-computed point cloud sequence
     timeline = Timeline(frame_rate=30)
-    timeline.add_pointcloud_sequence(pointclouds)  # list of (N_i, 3)
+    timeline.add_pointcloud_sequence(pointclouds)  # list of (N_i, 3) tensors
 
     # Generate radar MIMO frames for the full duration
     radar = Radar(config)
@@ -20,8 +20,10 @@ Usage:
     frame = radar.mimo(interp, t0=0.5)
 """
 
-import torch
+from __future__ import annotations
+
 import numpy as np
+import torch
 from tqdm import tqdm
 
 
@@ -38,45 +40,35 @@ class Timeline:
             frame_rate: source keyframe rate in Hz (e.g. 30 for 30 FPS motion data)
         """
         self.frame_rate = frame_rate
-        self._positions = []    # list of (N_i, 3) tensors
-        self._intensities = []  # list of (N_i,) tensors
+        self._positions: list[torch.Tensor] = []
+        self._intensities: list[torch.Tensor] = []
         self._num_frames = 0
 
     @property
     def duration(self):
-        """Total duration in seconds."""
         if self._num_frames == 0:
             return 0.0
         return (self._num_frames - 1) / self.frame_rate
 
     @property
     def num_frames(self):
-        """Number of keyframes."""
         return self._num_frames
 
     # ── Input methods ─────────────────────────────────────────────
 
-    def add_keyframe(self, positions, intensities=None):
+    def add_keyframe(self, positions: torch.Tensor, intensities: torch.Tensor | None = None):
         """Append one keyframe.
 
         Args:
-            positions: (N, 3) point positions — numpy array or torch tensor
-            intensities: (N,) per-point reflectance, or None (defaults to 1.0)
+            positions: (N, 3) torch tensor on any device
+            intensities: (N,) torch tensor or None (defaults to ones)
         """
-        if isinstance(positions, np.ndarray):
-            positions = torch.tensor(positions, dtype=torch.float32, device='cuda')
-        elif positions.device.type != 'cuda':
-            positions = positions.to(device='cuda', dtype=torch.float32)
-
+        positions = positions.to(device="cuda", dtype=torch.float32)
         n = positions.shape[0]
-
         if intensities is None:
-            intensities = torch.ones(n, dtype=torch.float32, device='cuda')
-        elif isinstance(intensities, np.ndarray):
-            intensities = torch.tensor(intensities, dtype=torch.float32, device='cuda')
-        elif intensities.device.type != 'cuda':
-            intensities = intensities.to(device='cuda', dtype=torch.float32)
-
+            intensities = torch.ones(n, dtype=torch.float32, device="cuda")
+        else:
+            intensities = intensities.to(device="cuda", dtype=torch.float32)
         self._positions.append(positions)
         self._intensities.append(intensities)
         self._num_frames += 1
@@ -85,19 +77,17 @@ class Timeline:
         """Bulk-add from a sequence of point clouds.
 
         Args:
-            pointclouds: list of (N_i, 3) arrays, or (F, N, 3) array/tensor
-            intensities: list of (N_i,) arrays, (F, N) array/tensor, or None
+            pointclouds: list of (N_i, 3) torch tensors, or (F, N, 3) torch tensor
+            intensities: matching structure or None
         """
-        if isinstance(pointclouds, (np.ndarray, torch.Tensor)) and pointclouds.ndim == 3:
-            # (F, N, 3) uniform array
-            for i in range(len(pointclouds)):
+        if isinstance(pointclouds, torch.Tensor) and pointclouds.ndim == 3:
+            for i in range(pointclouds.shape[0]):
                 ints_i = intensities[i] if intensities is not None else None
                 self.add_keyframe(pointclouds[i], ints_i)
-        else:
-            # list of variable-length arrays
-            for i, pc in enumerate(pointclouds):
-                ints_i = intensities[i] if intensities is not None else None
-                self.add_keyframe(pc, ints_i)
+            return
+        for i, pc in enumerate(pointclouds):
+            ints_i = intensities[i] if intensities is not None else None
+            self.add_keyframe(pc, ints_i)
 
     def from_motion(self, scene, renderer, motion_data):
         """Render SMPL motion sequence into keyframes.
@@ -113,18 +103,17 @@ class Timeline:
         if isinstance(motion_data, str):
             motion_data = dict(np.load(motion_data))
 
-        poses = motion_data['pose']
-        shapes = motion_data['shape']
-        translations = motion_data.get('root_translation', None)
+        poses = motion_data["pose"]
+        shapes = motion_data["shape"]
+        translations = motion_data.get("root_translation", None)
 
         num_motion_frames = len(poses)
-
         if shapes.ndim == 1:
             shapes = np.tile(shapes, (num_motion_frames, 1))
 
         for i in tqdm(range(num_motion_frames), desc="Rendering motion frames"):
             trans = translations[i] if translations is not None else None
-            scene.update_structure('human', pose=poses[i], shape=shapes[i], position=trans)
+            scene.update_structure("human", pose=poses[i], shape=shapes[i], position=trans)
             points, intensities = renderer.trace()
             self.add_keyframe(points, intensities)
 
@@ -133,8 +122,8 @@ class Timeline:
     def get_interpolator(self):
         """Return an interpolator function: interpolator(t) -> (intensities, positions).
 
-        Linear interpolation between adjacent keyframes.
-        Points with intensity <= 0.01 are filtered out.
+        Linear interpolation between adjacent keyframes. Points with
+        intensity <= 0.01 are filtered out.
         """
         if self._num_frames == 0:
             raise ValueError("No keyframes added to timeline.")
@@ -159,8 +148,6 @@ class Timeline:
             pos1, pos2 = positions[idx], positions[idx + 1]
             int1, int2 = intensities[idx], intensities[idx + 1]
 
-            # Handle variable point counts: interpolate matching points,
-            # keep extras from the frame with more points
             n1, n2 = pos1.shape[0], pos2.shape[0]
             n_min = min(n1, n2)
 
@@ -186,28 +173,20 @@ class Timeline:
     def get_frame_interpolator(self, radar, frame_idx):
         """Return an interpolator for a single radar frame with velocity correction.
 
-        When source keyframe spacing differs from the radar frame duration,
-        naive linear interpolation inflates/deflates velocities. This method
-        scales the displacement so that the interpolated velocity matches the
-        real physical velocity.
-
-        Args:
-            radar: Radar instance (provides frame timing)
-            frame_idx: which radar frame (0-indexed) to generate
-
-        Returns:
-            interpolator: function(t) -> (intensities, positions)
-            t0: start time for this frame
+        Scales the displacement so that the interpolated velocity matches the
+        real physical velocity when source keyframe spacing differs from the
+        radar frame duration.
         """
         if self._num_frames < 2:
             raise ValueError("Need at least 2 keyframes for frame interpolator.")
 
+        cfg = radar.config
         dt_source = 1.0 / self.frame_rate
-        T_chirp = (radar.idle_time + radar.ramp_end_time) * 1e-6
-        T_frame = T_chirp * radar.num_tx * radar.chirp_per_frame
+        T_chirp = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        T_frame = T_chirp * cfg.num_tx * cfg.chirp_per_frame
         vel_scale = T_frame / dt_source
 
-        t0_real = frame_idx / radar.frame_per_second
+        t0_real = frame_idx / cfg.frame_per_second
         kf_idx = int(t0_real * self.frame_rate)
         kf_idx = min(kf_idx, self._num_frames - 2)
 
@@ -217,9 +196,11 @@ class Timeline:
 
         n = min(p0.shape[0], p1.shape[0])
         if n == 0:
-            def empty_interp(t):
-                return (torch.zeros(0, device='cuda'),
-                        torch.zeros(0, 3, device='cuda'))
+            def empty_interp(_t):
+                return (
+                    torch.zeros(0, device="cuda"),
+                    torch.zeros(0, 3, device="cuda"),
+                )
             return empty_interp, 0.0
 
         p0_n, p1_n = p0[:n], p1[:n]
@@ -236,26 +217,18 @@ class Timeline:
 
     # ── Generation ────────────────────────────────────────────────
 
-    def generate(self, radar, progress=True, velocity_corrected=True):
+    def generate(self, radar, progress: bool = True, velocity_corrected: bool = True) -> torch.Tensor:
         """Generate all radar MIMO frames for the full timeline.
 
-        Args:
-            radar: Radar instance
-            progress: show tqdm progress bar
-            velocity_corrected: if True (default), scale displacement per frame
-                so interpolated velocity matches real physical velocity. Set to
-                False for legacy behavior (may inflate velocities when source
-                frame rate differs from radar frame rate).
-
         Returns:
-            numpy array of shape (num_radar_frames, TX, RX, chirps, ADC) complex
+            torch tensor of shape (num_radar_frames, TX, RX, chirps, ADC) complex
         """
         if self._num_frames < 1:
             raise ValueError("Need at least 1 keyframe to generate frames.")
 
-        num_radar_frames = max(1, int(self.duration * radar.frame_per_second))
+        num_radar_frames = max(1, int(self.duration * radar.config.frame_per_second))
 
-        frames = []
+        frames: list[torch.Tensor] = []
         it = range(num_radar_frames)
         if progress:
             it = tqdm(it, desc="Generating radar frames")
@@ -263,30 +236,22 @@ class Timeline:
         if velocity_corrected and self._num_frames >= 2:
             for i in it:
                 interp, t0 = self.get_frame_interpolator(radar, i)
-                frame = radar.mimo(interp, t0)
-                frames.append(frame.cpu().numpy())
+                frames.append(radar.mimo(interp, t0))
         else:
             interpolator = self.get_interpolator()
             for i in it:
-                t0 = i / radar.frame_per_second
-                frame = radar.mimo(interpolator, t0)
-                frames.append(frame.cpu().numpy())
+                t0 = i / radar.config.frame_per_second
+                frames.append(radar.mimo(interpolator, t0))
 
-        return np.array(frames)
+        return torch.stack(frames, dim=0)
 
-    def generate_rd(self, radar, tx=0, rx=0, progress=True):
+    def generate_rd(self, radar, tx: int = 0, rx: int = 0, progress: bool = True):
         """Generate Range-Doppler maps for all frames.
 
-        Args:
-            radar: Radar instance
-            tx: TX antenna index
-            rx: RX antenna index
-            progress: show tqdm progress bar
-
         Returns:
-            rd_mags: (num_frames, chirps, ADC) float32 array — magnitude in dB
-            ranges: (num_range_bins//2,) float64 array — range axis in meters
-            velocities: (num_doppler_bins,) float64 array — velocity axis in m/s
+            rd_mags: (num_frames, chirps, ADC) numpy array — magnitude in dB
+            ranges: (num_range_bins//2,) numpy array — range axis in meters
+            velocities: (num_doppler_bins,) numpy array — velocity axis in m/s
         """
         frames = self.generate(radar, progress=progress)
         from .sigproc import process_rd
@@ -296,6 +261,8 @@ class Timeline:
             rd_mag, _, _, _ = process_rd(radar, f, tx=tx, rx=rx)
             rd_mags.append(rd_mag)
 
-        ranges = radar.ranges.cpu().numpy()
-        velocities = radar.velocities.cpu().numpy()
-        return np.array(rd_mags), ranges, velocities
+        return (
+            np.stack(rd_mags, axis=0),
+            radar.ranges.detach().cpu().numpy(),
+            radar.velocities.detach().cpu().numpy(),
+        )

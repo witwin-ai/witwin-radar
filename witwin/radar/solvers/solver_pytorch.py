@@ -29,13 +29,14 @@ class PytorchSolver(Solver):
 
     def frame(self, interpolator, t0=0):
         r = self.radar
-        T_chirp = (r.idle_time + r.ramp_end_time) * 1e-6
-        tx0 = torch.as_tensor(r.tx_pos[0:1], dtype=torch.float32, device=r.device)
-        rx0 = torch.as_tensor(r.rx_pos[0:1], dtype=torch.float32, device=r.device)
+        cfg = r.config
+        T_chirp = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        tx0 = r.tx_pos[0:1].contiguous()
+        rx0 = r.rx_pos[0:1].contiguous()
 
         result = []
-        for chirp_id in range(r.chirp_per_frame):
-            time_in_frame = chirp_id * T_chirp * r.num_tx
+        for chirp_id in range(cfg.chirp_per_frame):
+            time_in_frame = chirp_id * T_chirp * cfg.num_tx
             sample = normalize_interpolated_sample(interpolator(t0 + time_in_frame), device=r.device)
             total_lengths = compute_total_path_lengths(sample, tx0, rx0)
             one_way = total_lengths.squeeze(0).squeeze(0) * 0.5
@@ -46,14 +47,15 @@ class PytorchSolver(Solver):
 
     def mimo(self, interpolator, t0=0, **options):
         r = self.radar
+        cfg = r.config
         self._ensure_no_options(options)
         frame = torch.zeros(
-            (r.chirp_per_frame, r.num_tx, r.num_rx, r.adc_samples),
+            (cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples),
             dtype=torch.complex128,
             device=r.device,
         )
-        tx_pos = torch.as_tensor(r.tx_pos, dtype=torch.float32, device=r.device)
-        rx_pos = torch.as_tensor(r.rx_pos, dtype=torch.float32, device=r.device)
+        tx_pos = r.tx_pos
+        rx_pos = r.rx_pos
         samples = collect_interpolated_samples(r, interpolator, t0)
 
         for loop_id, sample in enumerate(samples):

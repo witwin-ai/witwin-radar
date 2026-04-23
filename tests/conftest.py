@@ -92,38 +92,67 @@ class MockRadar:
     """Lightweight CPU-only mock providing the attributes needed by sigproc code."""
 
     def __init__(self, config=None):
-        config = config or STANDARD_CONFIG
+        import torch
+        from witwin.radar.validation import resolve_radar_config
+
         self.c0 = 299792458
-        self.num_tx = config["num_tx"]
-        self.num_rx = config["num_rx"]
-        self.fc = config["fc"]
-        self.slope = config["slope"]
-        self.adc_samples = config["adc_samples"]
-        self.adc_start_time = config.get("adc_start_time", 0)
-        self.sample_rate = config["sample_rate"]
-        self.idle_time = config["idle_time"]
-        self.ramp_end_time = config["ramp_end_time"]
-        self.chirp_per_frame = config["chirp_per_frame"]
-        self.num_angle_bins = config["num_angle_bins"]
-        self.power = config.get("power", 12)
+        self.config = resolve_radar_config(dict(config or STANDARD_CONFIG))
+        cfg = self.config
 
-        self._lambda = self.c0 / self.fc
+        self._lambda = self.c0 / cfg.fc
         antenna_spacing = self._lambda / 2
-        self.tx_loc = np.array(config["tx_loc"], dtype=np.float32) * antenna_spacing
-        self.rx_loc = np.array(config["rx_loc"], dtype=np.float32) * antenna_spacing
+        self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32) * antenna_spacing
+        self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32) * antenna_spacing
 
-        fs = self.sample_rate * 1e3
-        S = self.slope * 1e12
-        self.range_resolution = self.c0 * fs / (2 * S * self.adc_samples)
+        fs = cfg.sample_rate * 1e3
+        S = cfg.slope * 1e12
+        self.range_resolution = self.c0 * fs / (2 * S * cfg.adc_samples)
         self.max_range = self.c0 * fs / (2 * S)
 
-        T_chirp = (self.idle_time + self.ramp_end_time) * 1e-6
-        T_eff = T_chirp * self.num_tx
-        Nd = self.chirp_per_frame
+        T_chirp = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        T_eff = T_chirp * cfg.num_tx
+        Nd = cfg.chirp_per_frame
         self.doppler_resolution = self._lambda / (2 * Nd * T_eff)
-        self.max_doppler = self._lambda / (4 * T_chirp * self.num_tx)
+        self.max_doppler = self._lambda / (4 * T_chirp * cfg.num_tx)
 
         self.gain = 1.0
+
+    # Convenience accessors for sigproc/test code that still needs flat fields
+    @property
+    def num_tx(self) -> int:
+        return self.config.num_tx
+
+    @property
+    def num_rx(self) -> int:
+        return self.config.num_rx
+
+    @property
+    def chirp_per_frame(self) -> int:
+        return self.config.chirp_per_frame
+
+    @property
+    def adc_samples(self) -> int:
+        return self.config.adc_samples
+
+    @property
+    def num_angle_bins(self) -> int:
+        return self.config.num_angle_bins
+
+    @property
+    def idle_time(self) -> float:
+        return self.config.idle_time
+
+    @property
+    def ramp_end_time(self) -> float:
+        return self.config.ramp_end_time
+
+    @property
+    def num_doppler_bins(self) -> int:
+        return self.config.num_doppler_bins
+
+    @property
+    def num_range_bins(self) -> int:
+        return self.config.num_range_bins
 
 
 # ---------------------------------------------------------------------------

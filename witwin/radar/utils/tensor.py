@@ -1,4 +1,4 @@
-"""Tensor / numpy / device coercion helpers shared across radar."""
+"""Tensor / device helpers shared across radar."""
 
 from __future__ import annotations
 
@@ -6,20 +6,10 @@ import numpy as np
 import torch
 
 
-def is_torch_tensor(value) -> bool:
-    return isinstance(value, torch.Tensor)
-
-
 def real_dtype(value: torch.Tensor) -> torch.dtype:
     if value.dtype in {torch.float64, torch.complex128}:
         return torch.float64
     return torch.float32
-
-
-def to_numpy(value):
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
-    return np.asarray(value)
 
 
 def to_tensor3(value, *, device: str) -> torch.Tensor:

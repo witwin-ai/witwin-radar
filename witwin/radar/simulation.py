@@ -11,6 +11,7 @@ from .renderer import Renderer
 from .result import MultiResult, Result
 from .scene import Scene, SceneModule
 from .sensor import Sensor
+from .validation import resolve_radar_config
 from .types import (
     MotionSampling,
     SamplingMode,
@@ -63,7 +64,7 @@ class RadarSpec:
         if not name:
             raise ValueError("RadarSpec.name must be a non-empty string.")
         object.__setattr__(self, "name", name)
-        object.__setattr__(self, "config", RadarConfig.coerce(self.config))
+        object.__setattr__(self, "config", resolve_radar_config(self.config))
         object.__setattr__(self, "backend", normalize_solver_backend(self.backend))
         object.__setattr__(self, "device", str(self.device))
         object.__setattr__(self, "t0", float(self.t0))
@@ -85,7 +86,7 @@ def _execute_mimo(
     metadata: dict[str, Any] | None,
 ) -> Result:
     effective_sensor = sensor or scene.sensor
-    radar = Radar(RadarConfig.coerce(config), backend=backend, device=device, sensor=effective_sensor)
+    radar = Radar(resolve_radar_config(config), backend=backend, device=device, sensor=effective_sensor)
     renderer = Renderer(
         scene,
         resolution=render.resolution,
