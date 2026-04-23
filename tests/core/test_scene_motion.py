@@ -9,10 +9,10 @@ from witwin.core import Material, Mesh, Structure
 from witwin.radar import (
     Radar,
     RadarConfig,
-    RotationMotion,
+    TransformMotion,
 )
 from witwin.radar.material import fresnel
-from witwin.radar.renderer import TraceResult
+from witwin.radar.trace import TraceResult
 from witwin.radar.scene import Scene
 
 
@@ -85,7 +85,7 @@ def _rotating_scene(*, device: str) -> Scene:
     )
     scene.add_structure_motion(
         "rotor",
-        rotation=RotationMotion(
+        TransformMotion(
             axis=(0.0, 1.0, 0.0),
             angular_velocity=800.0,
             origin=(0.0, 0.0, 0.0),
@@ -158,14 +158,14 @@ def test_scene_parent_motion_carries_child_geometry():
     scene.add_structure(Structure(name="child", geometry=child, material=Material(eps_r=3.0)))
     scene.add_structure_motion(
         "parent",
-        rotation=RotationMotion(
+        TransformMotion(
             axis=(0.0, 0.0, 1.0),
             angular_velocity=math.pi / 2.0,
             origin=(0.0, 0.0, 0.0),
             space="world",
         ),
     )
-    scene.add_structure_motion("child", parent="parent")
+    scene.add_structure_motion("child", TransformMotion(parent="parent"))
 
     child0 = scene.compile_renderables(time=0.0)["child"].vertices
     child1 = scene.compile_renderables(time=1.0)["child"].vertices
@@ -202,7 +202,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
             observed_times.append(time)
             return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
 
-    monkeypatch.setattr("witwin.radar.renderer.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
 
     radar = Radar(config, backend="pytorch", device="cpu")
     result = radar.simulate(
@@ -243,7 +243,7 @@ def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
             observed_times.append(time)
             return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
 
-    monkeypatch.setattr("witwin.radar.renderer.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
 
     radar = Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), backend="pytorch", device="cpu")
     radar.simulate(
@@ -275,7 +275,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
         def trace(self, *, time=None):
             return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
 
-    monkeypatch.setattr("witwin.radar.renderer.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
 
     config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
     front = Radar(config, name="front", backend="pytorch", device="cpu")

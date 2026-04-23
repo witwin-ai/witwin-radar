@@ -1,13 +1,12 @@
 """Public radar API."""
 
 from .config import RadarConfig
-from .radar import Radar
+from .radar import Radar, quantize_complex_signal
 from .solvers import Solver
-from .renderer import Renderer, TraceResult
+from .trace import Renderer, TraceResult
 from .material import fresnel
-from .motion import RotationMotion, StructureMotion, TranslationMotion
 from .scene import Scene, SceneModule
-from .timeline import Timeline
+from .timeline import Timeline, TransformMotion
 from .types import DetectorType, MotionSampling, SamplingMode, SolverBackend
 from witwin.core import (
     Box,
@@ -30,6 +29,7 @@ from witwin.core import (
 __all__ = [
     'Radar',
     'RadarConfig',
+    'quantize_complex_signal',
     'Solver',
     'Renderer',
     'TraceResult',
@@ -41,9 +41,7 @@ __all__ = [
     'SceneModule',
     'SMPLBody',
     'Timeline',
-    'TranslationMotion',
-    'RotationMotion',
-    'StructureMotion',
+    'TransformMotion',
     'fresnel',
     'Material',
     'Structure',

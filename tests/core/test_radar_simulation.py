@@ -80,7 +80,7 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
         def trace(self):
             return trace
 
-    monkeypatch.setattr("witwin.radar.renderer.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
 
     radar = Radar(
         RadarConfig.from_dict(_config()),
@@ -126,7 +126,7 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
         def trace(self):
             return trace
 
-    monkeypatch.setattr("witwin.radar.renderer.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
 
     front = Radar(_config(), name="front", backend="pytorch", device="cpu")
     side = Radar(

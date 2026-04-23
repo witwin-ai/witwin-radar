@@ -5,8 +5,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar import Radar, RadarConfig
-from witwin.radar.receiver_chain import quantize_complex_signal
+from witwin.radar import Radar, RadarConfig, quantize_complex_signal
 
 
 def _base_config() -> dict:

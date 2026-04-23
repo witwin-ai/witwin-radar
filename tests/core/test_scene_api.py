@@ -15,7 +15,7 @@ def test_scene_uses_set_and_add_mutators_without_with_aliases():
     assert scene.add_mesh(name="mesh", vertices=vertices, faces=faces) is scene
     assert scene.add_structure_motion(
         "target",
-        translation=wr.TranslationMotion(offset=(0.1, 0.0, 0.0)),
+        wr.TransformMotion(offset=(0.1, 0.0, 0.0)),
     ) is scene
 
     assert [item.name for item in scene.structures] == ["target", "mesh"]
@@ -29,6 +29,9 @@ def test_scene_uses_set_and_add_mutators_without_with_aliases():
     assert not hasattr(wr, "PolarizationConfig")
     assert not hasattr(wr, "ReceiverChainConfig")
     assert not hasattr(wr, "AntennaPatternConfig")
+    assert not hasattr(wr, "TranslationMotion")
+    assert not hasattr(wr, "RotationMotion")
+    assert not hasattr(wr, "StructureMotion")
     assert not hasattr(scene, "set_sensor")
     assert not hasattr(scene, "with_sensor")
     assert not hasattr(scene, "with_structure")

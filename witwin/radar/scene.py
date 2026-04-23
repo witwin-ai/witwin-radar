@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from witwin.core import GeometryBase, Material, Mesh, SMPLBody, SceneBase, Structure
-from .motion import RotationMotion, StructureMotion, TranslationMotion, tensor_scalar, tensor_vec3
+from .timeline import TransformMotion
 from .utils.geometry import (
     apply_transform_to_points,
     apply_transform_to_vectors,
@@ -118,7 +118,7 @@ class Scene(SceneBase):
         self,
         *,
         structures=None,
-        structure_motions: Mapping[str, StructureMotion] | None = None,
+        structure_motions: Mapping[str, TransformMotion] | None = None,
         metadata=None,
         device: str | None = "cuda",
         verbose: bool = False,
@@ -130,13 +130,13 @@ class Scene(SceneBase):
             device=resolved_device,
             verbose=verbose,
         )
-        self._structure_motions: dict[str, StructureMotion] = {}
+        self._structure_motions: dict[str, TransformMotion] = {}
         self._dirty_level = self.DIRTY_FULL
         self._last_compiled_joints: dict[str, torch.Tensor] = {}
         if structure_motions:
             for name, motion in structure_motions.items():
-                if not isinstance(motion, StructureMotion):
-                    raise TypeError(f"structure_motions['{name}'] must be a StructureMotion instance.")
+                if not isinstance(motion, TransformMotion):
+                    raise TypeError(f"structure_motions['{name}'] must be a TransformMotion instance.")
                 self._validate_structure_motion(str(name), motion)
                 self._structure_motions[str(name)] = motion
 
@@ -229,33 +229,23 @@ class Scene(SceneBase):
             )
         )
 
-    def get_structure_motion(self, name: str) -> StructureMotion | None:
+    def get_structure_motion(self, name: str) -> TransformMotion | None:
         return self._structure_motions.get(name)
 
-    def add_structure_motion(
-        self,
-        name: str,
-        *,
-        translation: TranslationMotion | None = None,
-        rotation: RotationMotion | None = None,
-        parent: str | None = None,
-    ) -> "Scene":
+    def add_structure_motion(self, name: str, motion: TransformMotion) -> "Scene":
         self._require_structure(name)
-        if translation is not None and not isinstance(translation, TranslationMotion):
-            raise TypeError("translation must be a TranslationMotion instance.")
-        if rotation is not None and not isinstance(rotation, RotationMotion):
-            raise TypeError("rotation must be a RotationMotion instance.")
-        motion = StructureMotion(translation=translation, rotation=rotation, parent=parent)
+        if not isinstance(motion, TransformMotion):
+            raise TypeError("motion must be a TransformMotion instance.")
         self._validate_structure_motion(name, motion)
         self._structure_motions[name] = motion
         self._set_dirty(self.DIRTY_VERTICES)
         return self
 
-    def set_structure_motion(self, name: str, motion: StructureMotion) -> "Scene":
-        """Replace the motion configuration for ``name`` with the given StructureMotion."""
+    def set_structure_motion(self, name: str, motion: TransformMotion) -> "Scene":
+        """Replace the motion configuration for ``name`` with the given TransformMotion."""
         self._require_structure(name)
-        if not isinstance(motion, StructureMotion):
-            raise TypeError("motion must be a StructureMotion instance.")
+        if not isinstance(motion, TransformMotion):
+            raise TypeError("motion must be a TransformMotion instance.")
         self._validate_structure_motion(name, motion)
         self._structure_motions[name] = motion
         self._set_dirty(self.DIRTY_VERTICES)
@@ -313,9 +303,15 @@ class Scene(SceneBase):
                     self._structure_motions[updated.name] = motion
                 for child_name, child_motion in list(self._structure_motions.items()):
                     if child_motion.parent == structure.name:
-                        self._structure_motions[child_name] = StructureMotion(
-                            translation=child_motion.translation,
-                            rotation=child_motion.rotation,
+                        self._structure_motions[child_name] = TransformMotion(
+                            offset=child_motion.offset,
+                            velocity=child_motion.velocity,
+                            axis=child_motion.axis,
+                            angular_velocity=child_motion.angular_velocity,
+                            angle=child_motion.angle,
+                            origin=child_motion.origin,
+                            space=child_motion.space,
+                            t_ref=child_motion.t_ref,
                             parent=updated.name,
                         )
             self._set_dirty(self.DIRTY_FULL if topology_changed else self.DIRTY_VERTICES)
@@ -345,7 +341,7 @@ class Scene(SceneBase):
         if renderer is None:
             if radar is None:
                 raise ValueError("Scene.trace requires a renderer or radar.")
-            from .renderer import Renderer
+            from .trace import Renderer
 
             renderer = Renderer(self, radar)
         return renderer.trace(time=time)
@@ -374,7 +370,7 @@ class Scene(SceneBase):
                 return structure
         raise KeyError(f"Structure '{name}' not found.")
 
-    def _validate_structure_motion(self, name: str, motion: StructureMotion) -> None:
+    def _validate_structure_motion(self, name: str, motion: TransformMotion) -> None:
         self._require_structure(name)
         if motion.parent is not None:
             if motion.parent == name:
@@ -430,7 +426,7 @@ class Scene(SceneBase):
     def _build_structure_motion_transform(
         self,
         geometry: GeometryBase,
-        motion: StructureMotion,
+        motion: TransformMotion,
         *,
         time: float,
         parent_transform: torch.Tensor,
@@ -440,21 +436,21 @@ class Scene(SceneBase):
         transform = identity_transform(device=device, dtype=dtype)
         translation_delta = torch.zeros(3, device=device, dtype=dtype)
 
-        if motion.translation is not None:
-            translation_delta = self._resolve_translation_delta(
-                geometry,
-                motion.translation,
-                time=time,
-                parent_transform=parent_transform,
-            )
+        translation_delta = self._resolve_translation_delta(
+            geometry,
+            motion,
+            time=time,
+            parent_transform=parent_transform,
+        )
+        if bool(translation_delta.abs().sum().item() > 0.0):
             transform = translation_transform(translation_delta, device=device, dtype=dtype)
 
-        if motion.rotation is None:
+        if motion.axis is None:
             return transform
 
         rotation_transform = self._resolve_rotation_transform(
             geometry,
-            motion.rotation,
+            motion,
             translation_delta=translation_delta,
             parent_transform=parent_transform,
             device=device,
@@ -466,17 +462,17 @@ class Scene(SceneBase):
     def _resolve_translation_delta(
         self,
         geometry: GeometryBase,
-        translation: TranslationMotion,
+        motion: TransformMotion,
         *,
         time: float,
         parent_transform: torch.Tensor,
     ) -> torch.Tensor:
         dtype = torch.float32
-        offset = tensor_vec3(translation.offset, device=self.device, dtype=dtype)
-        velocity = tensor_vec3(translation.velocity, device=self.device, dtype=dtype)
-        t_ref = tensor_scalar(translation.t_ref, device=self.device, dtype=dtype)
+        offset = motion.offset.to(device=self.device, dtype=dtype)
+        velocity = motion.velocity.to(device=self.device, dtype=dtype)
+        t_ref = motion.t_ref.to(device=self.device, dtype=dtype)
         delta = offset + velocity * (torch.tensor(time, device=self.device, dtype=dtype) - t_ref)
-        if translation.space == "world":
+        if motion.space == "world":
             return delta
         world_delta = geometry_local_to_world_vectors(geometry, delta.unsqueeze(0), device=self.device, dtype=dtype)[0]
         return apply_transform_to_vectors(world_delta.unsqueeze(0), parent_transform)[0]
@@ -484,7 +480,7 @@ class Scene(SceneBase):
     def _resolve_rotation_transform(
         self,
         geometry: GeometryBase,
-        rotation: RotationMotion,
+        motion: TransformMotion,
         *,
         translation_delta: torch.Tensor,
         parent_transform: torch.Tensor,
@@ -492,26 +488,26 @@ class Scene(SceneBase):
         dtype: torch.dtype,
         time: float,
     ) -> torch.Tensor:
-        axis = tensor_vec3(rotation.axis, device=device, dtype=dtype)
-        if rotation.space == "local":
+        axis = motion.axis.to(device=device, dtype=dtype)
+        if motion.space == "local":
             axis_world = geometry_local_to_world_vectors(geometry, axis.unsqueeze(0), device=device, dtype=dtype)[0]
             origin_local = torch.zeros(1, 3, device=device, dtype=dtype)
-            if rotation.origin is not None:
-                origin_local = tensor_vec3(rotation.origin, device=device, dtype=dtype).view(1, 3)
+            if motion.origin is not None:
+                origin_local = motion.origin.to(device=device, dtype=dtype).view(1, 3)
             origin_world = geometry_local_to_world_points(geometry, origin_local, device=device, dtype=dtype)[0]
             axis_world = apply_transform_to_vectors(axis_world.unsqueeze(0), parent_transform)[0]
             origin_world = apply_transform_to_points(origin_world.unsqueeze(0), parent_transform)[0]
         else:
             axis_world = axis
-            if rotation.origin is None:
+            if motion.origin is None:
                 origin_world = geometry.position.to(device=device, dtype=dtype)
             else:
-                origin_world = tensor_vec3(rotation.origin, device=device, dtype=dtype)
+                origin_world = motion.origin.to(device=device, dtype=dtype)
 
         origin_world = origin_world + translation_delta
-        angle = tensor_scalar(rotation.angle, device=device, dtype=dtype)
-        angular_velocity = tensor_scalar(rotation.angular_velocity, device=device, dtype=dtype)
-        t_ref = tensor_scalar(rotation.t_ref, device=device, dtype=dtype)
+        angle = motion.angle.to(device=device, dtype=dtype)
+        angular_velocity = motion.angular_velocity.to(device=device, dtype=dtype)
+        t_ref = motion.t_ref.to(device=device, dtype=dtype)
         theta = angle + angular_velocity * (torch.tensor(time, device=device, dtype=dtype) - t_ref)
         return rotation_about_origin_transform(origin_world, axis_world, theta, device=device, dtype=dtype)
 

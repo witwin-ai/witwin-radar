@@ -26,6 +26,63 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from .utils.vector import optional_vec3_tensor, scalar_tensor, vec3_tensor
+
+
+_ALLOWED_SPACES = {"local", "world"}
+
+
+def _normalize_space(value: str | None) -> str:
+    if value is None:
+        return "world"
+    space = str(value).lower()
+    if space not in _ALLOWED_SPACES:
+        raise ValueError("TransformMotion.space must be 'local' or 'world'.")
+    return space
+
+
+class TransformMotion:
+    """Single rigid transform motion for one structure."""
+
+    def __init__(
+        self,
+        *,
+        offset=(0.0, 0.0, 0.0),
+        velocity=(0.0, 0.0, 0.0),
+        axis=None,
+        angular_velocity=0.0,
+        angle=0.0,
+        origin=None,
+        space: str = "world",
+        t_ref=0.0,
+        parent: str | None = None,
+    ) -> None:
+        axis_t = optional_vec3_tensor(axis, name="TransformMotion.axis")
+        if axis_t is not None and torch.linalg.norm(axis_t) <= 1e-12:
+            raise ValueError("TransformMotion.axis must be non-zero.")
+        if parent is not None:
+            parent = str(parent)
+            if not parent:
+                raise ValueError("TransformMotion.parent must be a non-empty string.")
+
+        self.offset: torch.Tensor = vec3_tensor(offset, name="TransformMotion.offset")
+        self.velocity: torch.Tensor = vec3_tensor(velocity, name="TransformMotion.velocity")
+        self.axis: torch.Tensor | None = axis_t
+        self.angular_velocity: torch.Tensor = scalar_tensor(
+            angular_velocity,
+            name="TransformMotion.angular_velocity",
+        )
+        self.angle: torch.Tensor = scalar_tensor(angle, name="TransformMotion.angle")
+        self.origin: torch.Tensor | None = optional_vec3_tensor(origin, name="TransformMotion.origin")
+        self.space: str = _normalize_space(space)
+        self.t_ref: torch.Tensor = scalar_tensor(t_ref, name="TransformMotion.t_ref")
+        self.parent = parent
+
+        has_translation = bool(self.offset.abs().sum().item() > 0.0 or self.velocity.abs().sum().item() > 0.0)
+        has_rotation = self.axis is not None
+        if not has_translation and not has_rotation and self.parent is None:
+            raise ValueError("TransformMotion requires translation, rotation, or parent.")
+
 
 class Timeline:
     """Multi-frame dynamic scene manager.
