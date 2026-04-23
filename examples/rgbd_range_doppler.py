@@ -26,13 +26,10 @@ import json
 import math
 import pathlib
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -72,6 +69,12 @@ class RGBDSequence:
     pointclouds: np.ndarray | None
     masks: np.ndarray | None
     fps: float
+
+
+def _arg(args: argparse.Namespace | Mapping[str, Any], name: str) -> Any:
+    if isinstance(args, Mapping):
+        return args[name]
+    return getattr(args, name)
 
 
 def _load_config(path: str | None) -> dict[str, Any]:
@@ -244,7 +247,7 @@ def _prepare_depths(depths: np.ndarray | None, args: argparse.Namespace) -> np.n
         return None
     if depths.ndim != 3:
         raise ValueError(f"Depth frames must have shape (T,H,W); got {depths.shape}.")
-    scale = _auto_scale(depths, args.depth_scale)
+    scale = _auto_scale(depths, _arg(args, "depth_scale"))
     return np.asarray(depths, dtype=np.float32) * scale
 
 
@@ -255,9 +258,9 @@ def _prepare_pointclouds(pointclouds: np.ndarray | None, args: argparse.Namespac
         pointclouds.ndim == 4 and pointclouds.shape[-1] == 3
     ):
         raise ValueError(f"Pointcloud frames must have shape (T,N,3) or (T,H,W,3); got {pointclouds.shape}.")
-    scale = _auto_scale(pointclouds, args.pointcloud_scale)
+    scale = _auto_scale(pointclouds, _arg(args, "pointcloud_scale"))
     pcs = np.asarray(pointclouds, dtype=np.float32) * scale
-    if args.pointcloud_convention == "camera":
+    if _arg(args, "pointcloud_convention") == "camera":
         pcs = pcs.copy()
         pcs[..., 1] *= -1.0
         pcs[..., 2] *= -1.0
@@ -271,12 +274,12 @@ def _prepare_masks(masks: np.ndarray | None, args: argparse.Namespace) -> np.nda
     if masks.dtype == np.bool_:
         return masks
     if masks.ndim == 4 and masks.shape[-1] in {3, 4}:
-        if args.mask_mode == "foreground-nonzero":
+        if _arg(args, "mask_mode") == "foreground-nonzero":
             masks = np.any(masks[..., :3] > 0, axis=-1)
         else:
             masks = ~np.all(masks[..., :3] >= 250, axis=-1)
     elif masks.ndim in {1, 2, 3}:
-        if args.mask_mode == "not-white":
+        if _arg(args, "mask_mode") == "not-white":
             masks = masks < 250
         else:
             masks = masks > 0
@@ -298,30 +301,37 @@ def _buffer_sampled_masks(sampled_masks: torch.Tensor, buffer: int) -> torch.Ten
 
 
 def _intrinsics_from_args(width: int, height: int, args: argparse.Namespace) -> tuple[float, float, float, float]:
-    cx = (width - 1) * 0.5 if args.cx is None else float(args.cx)
-    cy = (height - 1) * 0.5 if args.cy is None else float(args.cy)
-    if args.fx is not None and args.fy is not None:
-        return float(args.fx), float(args.fy), cx, cy
-    fov_rad = math.radians(float(args.fov_deg))
+    cx_arg = _arg(args, "cx")
+    cy_arg = _arg(args, "cy")
+    fx_arg = _arg(args, "fx")
+    fy_arg = _arg(args, "fy")
+    cx = (width - 1) * 0.5 if cx_arg is None else float(cx_arg)
+    cy = (height - 1) * 0.5 if cy_arg is None else float(cy_arg)
+    if fx_arg is not None and fy_arg is not None:
+        return float(fx_arg), float(fy_arg), cx, cy
+    fov_rad = math.radians(float(_arg(args, "fov_deg")))
     fx = (width * 0.5) / math.tan(fov_rad * 0.5)
-    fy = fx if args.fy is None else float(args.fy)
+    fy = fx if fy_arg is None else float(fy_arg)
     return fx, fy, cx, cy
 
 
 def _sample_indices_from_grid(height: int, width: int, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
-    ys, xs = np.mgrid[0:height:args.pixel_stride, 0:width:args.pixel_stride]
+    pixel_stride = int(_arg(args, "pixel_stride"))
+    max_points = int(_arg(args, "max_points"))
+    ys, xs = np.mgrid[0:height:pixel_stride, 0:width:pixel_stride]
     ys = ys.reshape(-1)
     xs = xs.reshape(-1)
-    if args.max_points > 0 and xs.size > args.max_points:
-        pick = np.linspace(0, xs.size - 1, args.max_points, dtype=np.int64)
+    if max_points > 0 and xs.size > max_points:
+        pick = np.linspace(0, xs.size - 1, max_points, dtype=np.int64)
         ys = ys[pick]
         xs = xs[pick]
     return ys.astype(np.int64), xs.astype(np.int64)
 
 
 def _sample_indices_from_count(count: int, args: argparse.Namespace) -> np.ndarray:
-    if args.max_points > 0 and count > args.max_points:
-        return np.linspace(0, count - 1, args.max_points, dtype=np.int64)
+    max_points = int(_arg(args, "max_points"))
+    if max_points > 0 and count > max_points:
+        return np.linspace(0, count - 1, max_points, dtype=np.int64)
     return np.arange(count, dtype=np.int64)
 
 
@@ -332,7 +342,7 @@ def _depth_to_points(depth_samples: torch.Tensor, rays: torch.Tensor) -> torch.T
 def build_interpolator(
     sequence: RGBDSequence,
     *,
-    args: argparse.Namespace,
+    args: argparse.Namespace | Mapping[str, Any],
     device: str,
 ):
     depths_np = _prepare_depths(sequence.depths, args)
@@ -401,12 +411,12 @@ def build_interpolator(
     if sampled_masks is not None:
         if sampled_masks.shape[0] not in {1, num_frames}:
             raise ValueError("Mask sequence must have one frame or the same number of frames as the RGBD sequence.")
-        sampled_masks = _buffer_sampled_masks(sampled_masks, int(args.mask_buffer))
+        sampled_masks = _buffer_sampled_masks(sampled_masks, int(_arg(args, "mask_buffer")))
 
     source_fps = float(sequence.fps)
     total_time = (num_frames - 1) / source_fps
-    depth_min = float(args.depth_min)
-    depth_max = float(args.depth_max)
+    depth_min = float(_arg(args, "depth_min"))
+    depth_max = float(_arg(args, "depth_max"))
 
     def interpolate_pair(time: float):
         clamped_time = min(max(float(time), 0.0), total_time)
@@ -433,7 +443,7 @@ def build_interpolator(
 
         valid0 = torch.isfinite(d0) & (d0 >= depth_min) & (d0 <= depth_max)
         valid1 = torch.isfinite(d1) & (d1 >= depth_min) & (d1 <= depth_max)
-        if args.zero_fill:
+        if _arg(args, "zero_fill"):
             p0 = torch.where(valid0.unsqueeze(-1), p0, p1)
             p1 = torch.where(valid1.unsqueeze(-1), p1, p0)
             d0 = torch.where(valid0, d0, d1)
@@ -468,6 +478,8 @@ def save_rd_png(
     vmin: float | None,
     vmax: float | None,
 ) -> None:
+    import matplotlib.pyplot as plt
+
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
     im = ax.imshow(

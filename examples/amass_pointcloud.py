@@ -25,7 +25,7 @@ repo_root = pathlib.Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from witwin.radar import Radar, RadarConfig, Scene, Tracer
+from witwin.radar import Material, Radar, RadarConfig, Scene, Tracer
 from witwin.radar.sigproc import process_pc
 
 MODEL_ROOT = repo_root / "models" / "smpl_models"
@@ -101,6 +101,7 @@ def main():
         position=translation,
         gender=gender,
         model_root=str(MODEL_ROOT),
+        material=Material(eps_r=3.0),
     )
     tracer = Tracer(scene, radar, resolution=256)
 
