@@ -146,9 +146,11 @@ python -m examples.humanbody
 python -m examples.music_imaging
 python -m examples.amass_pointcloud
 python -m examples.gen_amass_video
+python -m examples.rgbd_range_doppler --input path/to/depths.npy
 ```
 
 `amass_pointcloud` and `gen_amass_video` additionally require AMASS BMLmovi data under `data/BMLmovi_full/BMLmovi/`. The rendering examples require `mitsuba` and CUDA; the SMPL examples also require `models/smpl_models/`.
+`rgbd_range_doppler` reads `.npy`/`.npz` depth or point-cloud sequences, and can read Azure Kinect `.mkv` files when `pykinect_azure` is installed. It assumes the depth camera view is the radar view by default.
 
 ## Installation
 
