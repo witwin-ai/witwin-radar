@@ -1,4 +1,4 @@
-"""Shared runtime helpers for radar solver backends."""
+"""Shared solver helpers used by all radar backends."""
 
 from __future__ import annotations
 

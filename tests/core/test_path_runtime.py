@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers._runtime import (
+from witwin.radar.solvers.common import (
     compute_path_amplitudes,
     compute_total_path_lengths,
     normalize_interpolated_sample,

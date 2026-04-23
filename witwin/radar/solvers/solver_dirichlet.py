@@ -13,7 +13,7 @@ import slangtorch
 import torch
 
 from . import Solver
-from ._runtime import (
+from .common import (
     collect_interpolated_samples,
     compute_path_amplitudes,
     compute_total_path_lengths,
