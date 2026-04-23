@@ -406,6 +406,7 @@ def process_rd(radar, frame: torch.Tensor, tx: int = 0, rx: int = 0, *, static_c
     )
 
 
+
 def reg_data(data, pc_size):
     """Regularize a point cloud to a fixed size by sampling or duplication."""
     pc_tmp = np.zeros((pc_size, data.shape[1]), dtype=np.float32)
