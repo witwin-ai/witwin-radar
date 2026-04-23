@@ -24,7 +24,7 @@ mi.set_variant("cuda_ad_rgb")
 
 
 class TraceResult:
-    """Opaque trace result. Supports ``points, intensities = renderer.trace()``."""
+    """Opaque trace result. Supports ``points, intensities = tracer.trace()``."""
 
     __slots__ = (
         "points",
@@ -67,8 +67,8 @@ class TraceResult:
         return f"TraceResult({self.points.shape[0]} points)"
 
 
-class Renderer:
-    """Ray tracing renderer for declarative radar scenes."""
+class Tracer:
+    """Ray tracer for declarative radar scenes."""
 
     _RAY_EPSILON = 1e-4
     _VISIBILITY_TOLERANCE = 1e-3

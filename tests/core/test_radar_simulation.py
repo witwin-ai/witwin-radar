@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from witwin.core import Box, Material, Structure
-from witwin.radar import Radar, RadarConfig, Renderer
+from witwin.radar import Radar, RadarConfig, Tracer
 from witwin.radar.scene import Scene
 
 
@@ -80,7 +80,7 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
         def trace(self):
             return trace
 
-    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
     radar = Radar(
         RadarConfig.from_dict(_config()),
@@ -95,6 +95,7 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
     assert signal.shape == (1, 1, 2, 8)
     assert isinstance(signal, torch.Tensor)
     assert radar.last_trace is trace
+    assert radar.last_tracer is not None
 
 
 def test_radar_simulate_rejects_unknown_sampling_mode():
@@ -109,10 +110,10 @@ def test_radar_simulate_rejects_multipath_for_triangle():
         radar.simulate(_scene(), sampling="triangle", multipath=True)
 
 
-def test_renderer_rejects_multipath_for_triangle():
+def test_tracer_rejects_multipath_for_triangle():
     radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
     with pytest.raises(ValueError, match="multipath=True requires sampling='pixel'"):
-        Renderer(_scene(), radar, sampling="triangle", multipath=True)
+        Tracer(_scene(), radar, sampling="triangle", multipath=True)
 
 
 def test_radar_simulate_group_returns_named_results(monkeypatch):
@@ -126,7 +127,7 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
         def trace(self):
             return trace
 
-    monkeypatch.setattr("witwin.radar.trace.Renderer", FakeRenderer)
+    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
     front = Radar(_config(), name="front", backend="pytorch", device="cpu")
     side = Radar(

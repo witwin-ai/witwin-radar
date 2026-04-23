@@ -18,7 +18,7 @@ class TestRadarConfigSchema:
         config = RadarConfig.from_dict(STANDARD_CONFIG)
         assert config.num_tx == STANDARD_CONFIG["num_tx"]
         assert config.tx_loc[1] == tuple(STANDARD_CONFIG["tx_loc"][1])
-        assert config.to_dict()["rx_loc"][0] == list(STANDARD_CONFIG["rx_loc"][0])
+        assert config.rx_loc[0] == tuple(STANDARD_CONFIG["rx_loc"][0])
 
     def test_antenna_pattern_round_trip_from_dict(self):
         radar_config = RadarConfig.from_dict(
@@ -37,7 +37,7 @@ class TestRadarConfigSchema:
         assert radar_config.antenna_pattern is not None
         assert radar_config.antenna_pattern["kind"] == "separable"
         assert radar_config.antenna_pattern["x_values"][1] == pytest.approx(1.0)
-        assert radar_config.to_dict()["antenna_pattern"]["y_values"] == [0.5, 1.0, 0.5]
+        assert radar_config.antenna_pattern["y_values"] == [0.5, 1.0, 0.5]
 
     def test_noise_model_round_trip_from_dict(self):
         radar_config = RadarConfig.from_dict(
@@ -56,7 +56,7 @@ class TestRadarConfigSchema:
         assert radar_config.noise_model["thermal"]["std"] == pytest.approx(0.01)
         assert radar_config.noise_model["quantization"]["bits"] == 12
         assert radar_config.noise_model["phase"]["std"] == pytest.approx(1e-3)
-        assert radar_config.to_dict()["noise_model"] == {
+        assert radar_config.noise_model == {
             "thermal": {"std": 0.01},
             "quantization": {"bits": 12, "full_scale": 0.8},
             "phase": {"std": 0.001},
@@ -79,7 +79,7 @@ class TestRadarConfigSchema:
         assert radar_config.polarization["tx"][0] == pytest.approx((1.0, 0.0, 0.0))
         assert radar_config.polarization["rx"][0] == pytest.approx((0.0, 1.0, 0.0))
         assert radar_config.polarization["rx"][1] == pytest.approx((1.0, 0.0, 0.0))
-        assert radar_config.to_dict()["polarization"]["reflection_flip"] is False
+        assert radar_config.polarization["reflection_flip"] is False
 
     def test_receiver_chain_round_trip_from_dict(self):
         radar_config = RadarConfig.from_dict(

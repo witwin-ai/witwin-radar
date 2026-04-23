@@ -37,7 +37,7 @@ class MotionSampling(StrEnum):
 class TraceSample(Protocol):
     """Structural type for the payload an ``InterpolatorFn`` returns.
 
-    ``Renderer.TraceResult`` satisfies this protocol; user-defined closures
+    ``TraceResult`` satisfies this protocol; user-defined closures
     may return any object with the same attributes.
     """
 

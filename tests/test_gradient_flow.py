@@ -53,14 +53,32 @@ needs_smpl = pytest.mark.skipif(not _smpl_available(), reason="smplpytorch not i
 
 
 def _make_sensor(wr):
-    return wr.Sensor(origin=(0, 0, 0), target=(0, 0, -5), up=(0, 1, 0), fov=60)
+    return {
+        "position": (0, 0, 0),
+        "target": (0, 0, -5),
+        "up": (0, 1, 0),
+        "fov": 60,
+    }
+
+
+def _make_radar(wr, *, backend: str = "pytorch"):
+    sensor = _make_sensor(wr)
+    return wr.Radar(
+        GRADIENT_CONFIG,
+        backend=backend,
+        device="cuda",
+        position=sensor["position"],
+        target=sensor["target"],
+        up=sensor["up"],
+        fov=sensor["fov"],
+    )
 
 
 def _make_smpl_scene(pose, shape, *, position=(0.0, -0.1, -3.0)):
     import witwin.radar as wr
 
     return (
-        wr.Scene(sensor=_make_sensor(wr))
+        wr.Scene(device="cuda")
         .add_smpl(
             name="human",
             pose=pose,
@@ -77,7 +95,7 @@ def _make_mesh_scene(vertices):
 
     _, faces = wr.Box(position=(0.0, -0.1, -3.0), size=(0.8, 1.6, 0.4)).to_mesh()
     return (
-        wr.Scene(sensor=_make_sensor(wr))
+        wr.Scene(device="cuda")
         .add_mesh(
             name="target",
             vertices=vertices,
@@ -93,7 +111,7 @@ def _make_geometry_scene(size):
 
     geometry = wr.Box(position=(0.0, -0.1, -3.0), size=size)
     return (
-        wr.Scene(sensor=_make_sensor(wr))
+        wr.Scene(device="cuda")
         .add_mesh(
             name="target",
             geometry=geometry,
@@ -144,10 +162,9 @@ def _run_simulation(scene, *, backend: str, sampling: str):
     import witwin.radar as wr
 
     try:
-        return wr.Simulation.mimo(
+        radar = _make_radar(wr, backend=backend)
+        return radar.simulate(
             scene,
-            config=GRADIENT_CONFIG,
-            backend=backend,
             resolution=24,
             sampling=sampling,
         )
@@ -159,9 +176,10 @@ def _run_trace(scene, *, sampling: str):
     import witwin.radar as wr
 
     try:
-        return wr.Renderer(scene, resolution=24, sampling=sampling).trace()
+        radar = _make_radar(wr, backend="pytorch")
+        return wr.Tracer(scene, radar, resolution=24, sampling=sampling).trace()
     except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"renderer unavailable: {exc}")
+        pytest.skip(f"tracer unavailable: {exc}")
 
 
 def _signal_loss(signal: torch.Tensor) -> torch.Tensor:
@@ -195,15 +213,15 @@ def _assert_grad_close(ad_grad: float, fd_grad: float, *, label: str, rel_tol: f
 
 
 @needs_smpl
-def test_renderer_trace_triangle_is_differentiable_by_default():
+def test_tracer_trace_triangle_is_differentiable_by_default():
     import witwin.radar as wr
 
     pose = _default_pose().clone().requires_grad_(True)
     shape = _default_shape().clone().requires_grad_(True)
     scene = _make_smpl_scene(pose, shape)
-    renderer = wr.Renderer(scene, resolution=24, sampling="triangle")
+    tracer = wr.Tracer(scene, _make_radar(wr), resolution=24, sampling="triangle")
 
-    trace = renderer.trace()
+    trace = tracer.trace()
     assert trace.points.grad_fn is not None
     assert trace.intensities.grad_fn is not None
     assert trace._tri_indices is not None
@@ -214,15 +232,15 @@ def test_renderer_trace_triangle_is_differentiable_by_default():
 
 
 @needs_smpl
-def test_renderer_trace_pixel_is_differentiable_by_default():
+def test_tracer_trace_pixel_is_differentiable_by_default():
     import witwin.radar as wr
 
     pose = _default_pose().clone().requires_grad_(True)
     shape = _default_shape().clone().requires_grad_(True)
     scene = _make_smpl_scene(pose, shape)
-    renderer = wr.Renderer(scene, resolution=24, sampling="pixel")
+    tracer = wr.Tracer(scene, _make_radar(wr), resolution=24, sampling="pixel")
 
-    trace = renderer.trace()
+    trace = tracer.trace()
     assert trace.points.grad_fn is not None
     assert trace.intensities.grad_fn is not None
 
@@ -236,7 +254,7 @@ def test_trace_mesh_gradients_match_fd_for_pixel_and_triangle(sampling):
     import witwin.radar as wr
 
     vertices = _base_mesh_vertices().clone().requires_grad_(True)
-    trace = wr.Renderer(_make_mesh_scene(vertices), resolution=24, sampling=sampling).trace()
+    trace = wr.Tracer(_make_mesh_scene(vertices), _make_radar(wr), resolution=24, sampling=sampling).trace()
     _trace_loss(trace).backward()
 
     ad_grad = float(vertices.grad[MESH_COMPONENT].item())
@@ -245,7 +263,7 @@ def test_trace_mesh_gradients_match_fd_for_pixel_and_triangle(sampling):
     def evaluate(delta: float) -> float:
         perturbed = base.clone()
         perturbed[MESH_COMPONENT] += delta
-        trace_local = wr.Renderer(_make_mesh_scene(perturbed), resolution=24, sampling=sampling).trace()
+        trace_local = wr.Tracer(_make_mesh_scene(perturbed), _make_radar(wr), resolution=24, sampling=sampling).trace()
         return float(_trace_loss(trace_local).item())
 
     fd_grad = _centered_fd_scalar(evaluate, eps=1e-3)
@@ -294,7 +312,7 @@ def test_trace_parametric_box_size_gradient_matches_fd_for_triangle():
 def test_signal_mesh_vertex_gradients_exist_for_all_render_solver_pairs(backend, sampling):
     vertices = _base_mesh_vertices().clone().requires_grad_(True)
     result = _run_simulation(_make_mesh_scene(vertices), backend=backend, sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     assert vertices.grad is not None and vertices.grad.abs().sum() > 0
 
 
@@ -303,7 +321,7 @@ def test_signal_mesh_vertex_gradients_exist_for_all_render_solver_pairs(backend,
 def test_signal_parametric_box_size_gradients_exist_for_all_render_solver_pairs(backend, sampling):
     size = _base_box_size().clone().requires_grad_(True)
     result = _run_simulation(_make_geometry_scene(size), backend=backend, sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     assert size.grad is not None and size.grad.abs().sum() > 0
 
 
@@ -311,7 +329,7 @@ def test_signal_parametric_box_size_gradients_exist_for_all_render_solver_pairs(
 def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
     size = _base_box_size().clone().requires_grad_(True)
     result = _run_simulation(_make_geometry_scene(size), backend="dirichlet", sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     ad_grad = float(size.grad[0].item())
 
     base = _base_box_size()
@@ -324,7 +342,7 @@ def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
             backend="dirichlet",
             sampling=sampling,
         )
-        return float(_signal_loss(result_local.signal()).item())
+        return float(_signal_loss(result_local).item())
 
     fd_grad = _centered_fd_scalar(evaluate, eps=2e-3)
     _assert_grad_close(
@@ -340,7 +358,7 @@ def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
 def test_signal_mesh_vertex_gradient_matches_fd_for_dirichlet(sampling):
     vertices = _base_mesh_vertices().clone().requires_grad_(True)
     result = _run_simulation(_make_mesh_scene(vertices), backend="dirichlet", sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     ad_grad = float(vertices.grad[MESH_COMPONENT].item())
 
     base = _base_mesh_vertices()
@@ -349,7 +367,7 @@ def test_signal_mesh_vertex_gradient_matches_fd_for_dirichlet(sampling):
         perturbed = base.clone()
         perturbed[MESH_COMPONENT] += delta
         result_local = _run_simulation(_make_mesh_scene(perturbed), backend="dirichlet", sampling=sampling)
-        return float(_signal_loss(result_local.signal()).item())
+        return float(_signal_loss(result_local).item())
 
     fd_grad = _centered_fd_scalar(evaluate, eps=2e-3)
     _assert_grad_close(
@@ -369,7 +387,7 @@ def test_signal_smpl_gradients_exist_for_all_render_solver_pairs(backend, sampli
     pose = base_pose.clone().requires_grad_(True)
     shape = base_shape.clone().requires_grad_(True)
     result = _run_simulation(_make_smpl_scene(pose, shape), backend=backend, sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     assert pose.grad is not None and pose.grad.abs().sum() > 0
     assert shape.grad is not None and shape.grad.abs().sum() > 0
 
@@ -381,7 +399,7 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
     pose = base_pose.clone().requires_grad_(True)
     shape = base_shape.clone().requires_grad_(True)
     result = _run_simulation(_make_smpl_scene(pose, shape), backend="dirichlet", sampling=sampling)
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
 
     ad_pose = float(pose.grad[pose_index].item())
     ad_shape = float(shape.grad[shape_index].item())
@@ -394,7 +412,7 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
             backend="dirichlet",
             sampling=sampling,
         )
-        return float(_signal_loss(result_local.signal()).item())
+        return float(_signal_loss(result_local).item())
 
     def shape_eval(delta: float) -> float:
         perturbed_shape = base_shape.clone()
@@ -404,7 +422,7 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
             backend="dirichlet",
             sampling=sampling,
         )
-        return float(_signal_loss(result_local.signal()).item())
+        return float(_signal_loss(result_local).item())
 
     fd_pose = _centered_fd_scalar(pose_eval, eps=1e-3)
     fd_shape = _centered_fd_scalar(shape_eval, eps=1e-3)
@@ -442,6 +460,6 @@ def test_simulation_accepts_scene_module_and_backpropagates(sampling):
     scene_module = TrainableHumanScene()
     result = _run_simulation(scene_module, backend="pytorch", sampling=sampling)
 
-    _signal_loss(result.signal()).backward()
+    _signal_loss(result).backward()
     assert scene_module.pose.grad is not None and scene_module.pose.grad.abs().sum() > 0
     assert scene_module.shape.grad is not None and scene_module.shape.grad.abs().sum() > 0

@@ -27,7 +27,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar, RadarConfig, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Scene, Tracer
 from witwin.radar.sigproc import process_pc, process_rd
 
 MODEL_ROOT = REPO_ROOT / "models" / "smpl_models"
@@ -163,7 +163,7 @@ def generate_clip(radar: Radar, clip_idx: int, subj_name: str, clip_name: str):
         model_root=str(MODEL_ROOT),
     )
 
-    renderer = Renderer(scene, radar, resolution=256)
+    tracer = Tracer(scene, radar, resolution=256)
     all_pcs = []
     all_rd_mags = []
     all_ray_data = []
@@ -173,11 +173,11 @@ def generate_clip(radar: Radar, clip_idx: int, subj_name: str, clip_name: str):
         src_cur, src_next = indices[frame_idx], indices[frame_idx + 1]
 
         scene.update_structure("human", pose=fix_pose(all_poses[src_cur]), shape=betas, position=translation)
-        trace_cur = renderer.trace()
+        trace_cur = tracer.trace()
         joints_cur = scene.get_joints("human").copy()
 
         scene.update_structure("human", pose=fix_pose(all_poses[src_next]), shape=betas, position=translation)
-        trace_next = renderer.trace()
+        trace_next = tracer.trace()
 
         pts_cur, int_cur = trace_cur
         pts_next, _ = trace_next

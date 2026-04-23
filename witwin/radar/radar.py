@@ -2,17 +2,54 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 
-from .config import RadarConfig
 from .types import MotionSampling, SamplingMode, SolverBackend
 from .utils.antenna import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
 from .utils.vector import vec3_tensor
-from .validation import default_dipole_antenna_pattern
+
+
+@dataclass(frozen=True)
+class RadarConfig:
+    num_tx: int
+    num_rx: int
+    fc: float
+    slope: float
+    adc_samples: int
+    adc_start_time: float
+    sample_rate: float
+    idle_time: float
+    ramp_end_time: float
+    chirp_per_frame: int
+    frame_per_second: float
+    num_doppler_bins: int
+    num_range_bins: int
+    num_angle_bins: int
+    power: float
+    tx_loc: tuple[tuple[float, float, float], ...]
+    rx_loc: tuple[tuple[float, float, float], ...]
+    antenna_pattern: dict[str, Any] | None = None
+    noise_model: dict[str, Any] | None = None
+    polarization: dict[str, Any] | None = None
+    receiver_chain: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, config: dict[str, Any]) -> "RadarConfig":
+        from .validation import validate_radar_config
+
+        return validate_radar_config(config)
+
+    @classmethod
+    def from_json(cls, path: str | os.PathLike[str]) -> "RadarConfig":
+        with open(path, "r", encoding="utf-8") as handle:
+            return cls.from_dict(json.load(handle))
 
 
 def _target_from_position(position: torch.Tensor) -> torch.Tensor:
@@ -204,8 +241,7 @@ class Radar:
     ):
         """
         Args:
-            config: ``RadarConfig``. Use ``RadarConfig.from_dict`` or ``RadarConfig.from_json``
-                to build one from raw sources.
+            config: ``RadarConfig`` or a raw mapping accepted by ``RadarConfig.from_dict``.
             backend: "dirichlet" | "slang" | "pytorch"
             pad_factor: FFT zero-padding factor for the Dirichlet backend
             device: compute device for public tensors and PyTorch execution
@@ -257,6 +293,8 @@ class Radar:
         )
         self.tx_voltage_rms = math.sqrt(self.transmit_power_watts * reference_impedance)
         self.gain = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
+
+        from .validation import default_dipole_antenna_pattern
 
         self.antenna_pattern_config = cfg.antenna_pattern or default_dipole_antenna_pattern()
         self._build_antenna_pattern_runtime(self.antenna_pattern_config)
@@ -498,7 +536,7 @@ class Radar:
         motion_sampling: MotionSampling = "per_chirp",
     ):
         """Run ray tracing plus MIMO signal generation for one scene."""
-        from .trace import Renderer
+        from .trace import Tracer
         from .scene import Scene, SceneModule
 
         if isinstance(scene, SceneModule):
@@ -515,7 +553,7 @@ class Radar:
         if multipath and sampling != SamplingMode.PIXEL:
             raise ValueError("multipath=True requires sampling='pixel'.")
 
-        renderer = Renderer(
+        tracer = Tracer(
             scene,
             self,
             resolution=resolution,
@@ -526,11 +564,11 @@ class Radar:
             ray_batch_size=ray_batch_size,
         )
         t0 = float(t0)
-        trace = renderer.trace(time=t0) if scene.has_motion else renderer.trace()
+        trace = tracer.trace(time=t0) if scene.has_motion else tracer.trace()
 
         if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
             def interpolator(t):
-                return renderer.trace(time=t)
+                return tracer.trace(time=t)
         else:
             def interpolator(t):
                 del t
@@ -538,7 +576,7 @@ class Radar:
 
         signal = self.mimo(interpolator, t0)
         self.last_scene = scene
-        self.last_renderer = renderer
+        self.last_tracer = tracer
         self.last_trace = trace
         return signal
 

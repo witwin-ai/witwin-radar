@@ -8,10 +8,12 @@ any parsing/validation of dict-shaped configuration goes through the
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from .config import RadarConfig
 from .utils.antenna import DEFAULT_DIPOLE_ANGLES_DEG, DEFAULT_DIPOLE_VALUES
+
+if TYPE_CHECKING:
+    from .radar import RadarConfig
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +417,8 @@ def _validate_antenna_locations(
 
 
 def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
+    from .radar import RadarConfig
+
     _require_keys(config, _RADAR_REQUIRED_KEYS, "Radar config")
 
     num_tx = _positive_int("num_tx", config["num_tx"], _RADAR_PREFIX)

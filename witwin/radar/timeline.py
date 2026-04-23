@@ -148,12 +148,12 @@ class Timeline:
             ints_i = intensities[i] if intensities is not None else None
             self.add_keyframe(pc, ints_i)
 
-    def from_motion(self, scene, renderer, motion_data):
+    def from_motion(self, scene, tracer, motion_data):
         """Render SMPL motion sequence into keyframes.
 
         Args:
             scene: Scene with an SMPL body named 'human'
-            renderer: Renderer bound to the scene
+            tracer: Tracer bound to the scene
             motion_data: dict or .npz path with keys:
                 'pose': (F, 72) SMPL pose parameters
                 'shape': (10,) or (F, 10) shape parameters
@@ -173,7 +173,7 @@ class Timeline:
         for i in tqdm(range(num_motion_frames), desc="Rendering motion frames"):
             trans = translations[i] if translations is not None else None
             scene.update_structure("human", pose=poses[i], shape=shapes[i], position=trans)
-            points, intensities = renderer.trace()
+            points, intensities = tracer.trace()
             self.add_keyframe(points, intensities)
 
     # ── Interpolation ─────────────────────────────────────────────

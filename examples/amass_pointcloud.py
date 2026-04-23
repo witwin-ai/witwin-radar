@@ -25,7 +25,7 @@ repo_root = pathlib.Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from witwin.radar import Radar, RadarConfig, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Scene, Tracer
 from witwin.radar.sigproc import process_pc
 
 MODEL_ROOT = repo_root / "models" / "smpl_models"
@@ -102,7 +102,7 @@ def main():
         gender=gender,
         model_root=str(MODEL_ROOT),
     )
-    renderer = Renderer(scene, radar, resolution=256)
+    tracer = Tracer(scene, radar, resolution=256)
 
     print(f"Generating {num_frames} radar frames...")
     all_pcs = []
@@ -110,10 +110,10 @@ def main():
         src_cur, src_next = indices[fi], indices[fi + 1]
 
         scene.update_structure("human", pose=fix_pose(all_poses[src_cur]), shape=betas, position=translation)
-        pts_cur, int_cur = renderer.trace()
+        pts_cur, int_cur = tracer.trace()
 
         scene.update_structure("human", pose=fix_pose(all_poses[src_next]), shape=betas, position=translation)
-        pts_next, _ = renderer.trace()
+        pts_next, _ = tracer.trace()
 
         n = min(pts_cur.shape[0], pts_next.shape[0])
         if n == 0:

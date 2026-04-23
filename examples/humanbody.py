@@ -18,7 +18,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar, RadarConfig, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Scene, Tracer
 from witwin.radar.sigproc import process_pc, process_rd
 
 config = {
@@ -69,10 +69,10 @@ def main():
         model_root=str(MODEL_ROOT),
     )
 
-    renderer = Renderer(scene, radar, resolution=128)
+    tracer = Tracer(scene, radar, resolution=128)
 
     print("Ray tracing...")
-    points, intensities = renderer.trace()
+    points, intensities = tracer.trace()
     assert points.shape[0] > 0, "No reflection points"
     print(f"  {points.shape[0]} reflection points")
 

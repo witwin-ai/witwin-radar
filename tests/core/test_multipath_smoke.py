@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from witwin.core import Box, Material, Structure
-from witwin.radar import Radar, Renderer
+from witwin.radar import Radar, Tracer
 from witwin.radar.scene import Scene
 
 
@@ -43,10 +43,10 @@ def _scene() -> Scene:
     )
 
 
-def test_renderer_multipath_smoke_returns_rich_trace():
+def test_tracer_multipath_smoke_returns_rich_trace():
     radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
     try:
-        trace = Renderer(
+        trace = Tracer(
             _scene(),
             radar,
             resolution=16,
@@ -56,7 +56,7 @@ def test_renderer_multipath_smoke_returns_rich_trace():
             ray_batch_size=64,
         ).trace()
     except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"renderer unavailable: {exc}")
+        pytest.skip(f"tracer unavailable: {exc}")
 
     assert trace.points.ndim == 2 and trace.points.shape[1] == 3
     assert trace.entry_points.shape == trace.points.shape

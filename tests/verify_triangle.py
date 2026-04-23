@@ -5,7 +5,7 @@ import os
 import numpy as np
 import torch
 
-from witwin.radar import Radar, RadarConfig, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Scene, Tracer
 from witwin.radar.sigproc import process_rd
 
 torch.set_default_device("cuda")
@@ -45,7 +45,6 @@ def fix_pose(pose):
 def make_scene(pose, shape, gender="male"):
     return (
         Scene()
-        .set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=80)
         .add_smpl(
             name="human",
             pose=fix_pose(pose),
@@ -66,10 +65,11 @@ def test_static_comparison():
     shape = np.zeros(10, dtype=np.float32)
     scene = make_scene(pose, shape)
 
-    renderer_pixel = Renderer(scene, resolution=256, sampling="pixel")
+    radar = Radar(RadarConfig.from_dict(RADAR_CONFIG), target=(0, 0, -5), fov=80)
+    renderer_pixel = Tracer(scene, radar, resolution=256, sampling="pixel")
     pts_pixel, int_pixel = renderer_pixel.trace()
 
-    renderer_triangle = Renderer(scene, resolution=256, sampling="triangle")
+    renderer_triangle = Tracer(scene, radar, resolution=256, sampling="triangle")
     pts_triangle, int_triangle = renderer_triangle.trace()
 
     print(f"Pixel mode:    {pts_pixel.shape[0]} points, energy = {int_pixel.sum().item():.4f}")
@@ -99,7 +99,8 @@ def test_velocity_tracking():
 
     for mode in ["pixel", "triangle"]:
         scene = make_scene(pose0, shape)
-        renderer = Renderer(scene, resolution=256, sampling=mode)
+        radar = Radar(RadarConfig.from_dict(RADAR_CONFIG), target=(0, 0, -5), fov=80)
+        renderer = Tracer(scene, radar, resolution=256, sampling=mode)
 
         trace0 = renderer.trace()
         scene.update_structure("human", pose=fix_pose(pose1), shape=shape, position=TRANSLATION)
@@ -138,7 +139,7 @@ def test_end_to_end():
 
     for mode in ["pixel", "triangle"]:
         scene = make_scene(pose0, shape)
-        renderer = Renderer(scene, resolution=256, sampling=mode)
+        renderer = Tracer(scene, radar, resolution=256, sampling=mode)
 
         trace0 = renderer.trace()
         scene.update_structure("human", pose=fix_pose(pose1), shape=shape, position=TRANSLATION)
