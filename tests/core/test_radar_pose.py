@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar import Radar, Sensor
+from witwin.radar import Radar, RadarConfig, Sensor
 
 
 def _config() -> dict:
@@ -96,11 +96,11 @@ def test_sensor_transforms_local_points_and_vectors():
 def test_radar_world_positions_follow_sensor_pose():
     sensor = Sensor(origin=(1.0, 0.0, 0.0), target=(2.0, 0.0, 0.0), up=(0.0, 1.0, 0.0))
     radar = Radar(
-        {
+        RadarConfig.from_dict({
             **_config(),
             "num_tx": 2,
             "tx_loc": [[0, 0, 0], [2, 0, 0]],
-        },
+        }),
         backend="pytorch",
         device="cpu",
         sensor=sensor,
@@ -121,8 +121,8 @@ def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
     identity = Sensor.identity()
     moved = Sensor(origin=(1.5, -0.25, 0.5), target=(2.5, -0.25, 0.5), up=(0.0, 1.0, 0.0))
 
-    radar_identity = Radar(_config(), backend="pytorch", device="cpu", sensor=identity)
-    radar_moved = Radar(_config(), backend="pytorch", device="cpu", sensor=moved)
+    radar_identity = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=identity)
+    radar_moved = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=moved)
 
     target_local = torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32)
     target_identity = identity.world_from_local_points(target_local).squeeze(0)
@@ -136,7 +136,7 @@ def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
 
 def test_rotated_radar_pattern_is_evaluated_in_local_frame():
     sensor = Sensor(origin=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0))
-    radar = Radar(_config(), backend="pytorch", device="cpu", sensor=sensor)
+    radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=sensor)
 
     center_world = sensor.world_from_local_points(_local_target(0.0, 0.0).unsqueeze(0)).squeeze(0)
     off_axis_world = sensor.world_from_local_points(_local_target(45.0, 0.0).unsqueeze(0)).squeeze(0)

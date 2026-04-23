@@ -489,7 +489,7 @@ def save_rd_png(
 
 
 def generate_range_doppler(args: argparse.Namespace) -> None:
-    from witwin.radar import Radar
+    from witwin.radar import Radar, RadarConfig
     from witwin.radar.sigproc import process_rd
 
     input_path = pathlib.Path(args.input).expanduser().resolve()
@@ -509,7 +509,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     sequence = load_rgbd_sequence(input_path, args)
     if args.mask is not None:
         sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
-    radar = Radar(config, backend=args.backend, device=device)
+    radar = Radar(RadarConfig.from_dict(config), backend=args.backend, device=device)
     interpolator, total_time, source_frames, source_fps = build_interpolator(sequence, args=args, device=radar.device)
 
     chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6

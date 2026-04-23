@@ -19,7 +19,7 @@ pip install witwin[radar]
 import numpy as np
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 from witwin.radar.sigproc import process_pc, process_rd
 
 # FMCW radar configuration.
@@ -44,7 +44,7 @@ config = {
 }
 
 # Use the recommended GPU backend.
-radar = Radar(config, backend="dirichlet", device="cuda")
+radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
 
 point = np.array([[0.0, 0.0, -3.0]], dtype=np.float32)
 velocity = np.array([[0.0, 0.0, 0.01]], dtype=np.float32)
@@ -100,7 +100,7 @@ result = Simulation.mimo(
     config=config,
     backend="dirichlet",
     sampling="triangle",
-    motion_sampling="chirp",
+    motion_sampling="per_chirp",
     device="cpu",
 )
 ```

@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from conftest import STANDARD_CONFIG
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 from witwin.radar.sigproc import (
     PointCloudProcessConfig,
     clutter_removal,
@@ -30,7 +30,7 @@ CPU_SIGPROC_CONFIG = {
 
 
 def _make_cpu_radar() -> Radar:
-    return Radar(CPU_SIGPROC_CONFIG, backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(CPU_SIGPROC_CONFIG), backend="pytorch", device="cpu")
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

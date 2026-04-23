@@ -288,7 +288,7 @@ def test_pytorch_radar_can_target_cpu_device(standard_config):
 def test_radar_rejects_unknown_backend(standard_config):
     from witwin.radar import Radar
 
-    with pytest.raises(ValueError, match="Unsupported backend"):
+    with pytest.raises(ValueError, match="not a valid SolverBackend"):
         Radar(standard_config, backend="unknown")
 
 
@@ -296,15 +296,15 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(
-        {
-            **standard_config,
+        RadarConfig.from_dict({
+            **STANDARD_CONFIG,
             "antenna_pattern": {
                 "x_angles_deg": [-60, 0, 60],
                 "x_values": [0.25, 1.0, 0.25],
                 "y_angles_deg": [-30, 0, 30],
                 "y_values": [0.5, 1.0, 0.5],
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -316,13 +316,13 @@ def test_radar_builds_runtime_noise_model(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(
-        {
-            **standard_config,
+        RadarConfig.from_dict({
+            **STANDARD_CONFIG,
             "noise_model": {
                 "thermal": {"std": 0.01},
                 "seed": 5,
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -334,13 +334,13 @@ def test_radar_builds_runtime_polarization(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(
-        {
-            **standard_config,
+        RadarConfig.from_dict({
+            **STANDARD_CONFIG,
             "polarization": {
                 "tx": "horizontal",
                 "rx": "vertical",
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -354,13 +354,13 @@ def test_radar_builds_runtime_receiver_chain(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(
-        {
-            **standard_config,
+        RadarConfig.from_dict({
+            **STANDARD_CONFIG,
             "receiver_chain": {
                 "lna": {"gain_db": 20.0},
                 "adc": {"bits": 10, "full_scale": 1.0},
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -374,11 +374,11 @@ def test_radar_rejects_double_quantization(standard_config):
 
     with pytest.raises(ValueError, match="cannot both be enabled"):
         Radar(
-            {
-                **standard_config,
+            RadarConfig.from_dict({
+                **STANDARD_CONFIG,
                 "noise_model": {"quantization": {"bits": 8, "full_scale": 1.0}},
                 "receiver_chain": {"adc": {"bits": 10, "full_scale": 1.0}},
-            },
+            }),
             backend="pytorch",
             device="cpu",
         )
@@ -401,9 +401,8 @@ class TestRadarConstruction:
     def test_radar_accepts_schema_object(self, standard_config):
         from witwin.radar import Radar
 
-        config = RadarConfig.from_dict(standard_config)
-        radar = Radar(config, backend="pytorch")
-        assert radar.config == config
+        radar = Radar(standard_config, backend="pytorch")
+        assert radar.config is standard_config
 
     def test_radar_matches_formula(self, standard_config):
         from witwin.radar import Radar
@@ -431,4 +430,4 @@ class TestRadarConstruction:
 
         assert not hasattr(radar, "N_fft")
         assert not hasattr(radar, "pad_factor")
-        assert radar.solver.N_fft == standard_config["adc_samples"] * radar.solver.pad_factor
+        assert radar.solver.N_fft == standard_config.adc_samples * radar.solver.pad_factor

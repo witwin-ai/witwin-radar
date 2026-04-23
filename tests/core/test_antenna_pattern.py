@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 
 
 def _base_config() -> dict:
@@ -34,7 +34,7 @@ def _make_radar(*, antenna_pattern=None) -> Radar:
     config = _base_config()
     if antenna_pattern is not None:
         config["antenna_pattern"] = antenna_pattern
-    return Radar(config, backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:

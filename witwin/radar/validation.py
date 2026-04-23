@@ -7,9 +7,7 @@ any parsing/validation of dict-shaped configuration goes through the
 
 from __future__ import annotations
 
-import json
 import math
-import os
 from typing import Any, Iterable
 
 from .antenna_pattern import (
@@ -467,19 +465,3 @@ def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
     )
 
 
-def load_radar_config(path: str | os.PathLike[str]) -> RadarConfig:
-    with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    return validate_radar_config(data)
-
-
-def resolve_radar_config(
-    config: RadarConfig | dict[str, Any] | str | os.PathLike[str],
-) -> RadarConfig:
-    if isinstance(config, RadarConfig):
-        return config
-    if isinstance(config, (str, os.PathLike)):
-        return load_radar_config(config)
-    if isinstance(config, dict):
-        return validate_radar_config(config)
-    raise TypeError("Radar config must be a RadarConfig, dict, or JSON path.")

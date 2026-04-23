@@ -22,7 +22,7 @@
 - `Radar` accepts `RadarConfig`, `dict`, or JSON config path
 - `Simulation` accepts the same validated config inputs as `Radar`
 - `Renderer(...)` and `Simulation.mimo(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
-- `Simulation.mimo(...)` and `Simulation.mimo_group(...)` accept `motion_sampling="frame" | "chirp"` for dynamic scenes
+- `Simulation.mimo(...)` and `Simulation.mimo_group(...)` accept `motion_sampling="per_frame" | "per_chirp"` for dynamic scenes
 
 ## Backend Execution
 

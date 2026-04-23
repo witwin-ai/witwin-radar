@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 from witwin.radar.noise import quantize_complex_signal
 
 
@@ -37,7 +37,7 @@ def _make_radar(*, receiver_chain=None, noise_model=None) -> Radar:
         config["receiver_chain"] = receiver_chain
     if noise_model is not None:
         config["noise_model"] = noise_model
-    return Radar(config, backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

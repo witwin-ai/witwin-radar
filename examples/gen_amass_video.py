@@ -27,7 +27,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Renderer, Scene
 from witwin.radar.sigproc import process_pc, process_rd
 
 MODEL_ROOT = REPO_ROOT / "models" / "smpl_models"
@@ -299,7 +299,7 @@ def main():
     require_cuda()
     ensure_inputs()
 
-    radar = Radar(CONFIG, backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
     print(f"Generating {len(CLIPS)} clips x {NUM_FRAMES} frames each (CFAR pfa={CFAR_PFA})...")
 
     outputs = []

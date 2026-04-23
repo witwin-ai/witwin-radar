@@ -142,7 +142,7 @@ def test_process_pc_rejects_unknown_detector():
         dtype=torch.complex64,
     )
 
-    with pytest.raises(ValueError, match="Unsupported detector"):
+    with pytest.raises(ValueError, match="not a valid DetectorType"):
         process_pc(radar, frame, detector="unknown")
 
 

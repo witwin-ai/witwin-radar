@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from ..types import DetectorType, normalize_detector_type
+from ..types import DetectorType
 from ..utils.tensor import real_dtype as _real_dtype
 
 
@@ -294,9 +294,9 @@ def process_pc(
     energy_top_k=128,
 ) -> np.ndarray:
     """Radar frame -> filtered point cloud (N, 6) as numpy."""
-    detector_kind = normalize_detector_type(detector)
+    detector_kind = DetectorType(detector)
 
-    if detector_kind == "topk":
+    if detector_kind == DetectorType.TOPK:
         cfg = PointCloudProcessConfig(
             radar,
             static_clutter_removal=static_clutter_removal,

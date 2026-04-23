@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 from witwin.radar.solvers._runtime import (
     compute_path_amplitudes,
     compute_total_path_lengths,
@@ -14,57 +14,36 @@ from witwin.radar.solvers._runtime import (
 )
 
 
+def _tiny_config_dict() -> dict:
+    return {
+        "num_tx": 1,
+        "num_rx": 1,
+        "fc": 77e9,
+        "slope": 60.012,
+        "adc_samples": 8,
+        "adc_start_time": 0,
+        "sample_rate": 4400,
+        "idle_time": 7,
+        "ramp_end_time": 58,
+        "chirp_per_frame": 1,
+        "frame_per_second": 10,
+        "num_doppler_bins": 1,
+        "num_range_bins": 8,
+        "num_angle_bins": 8,
+        "power": 12,
+        "tx_loc": [[0, 0, 0]],
+        "rx_loc": [[0, 0, 0]],
+    }
+
+
 def _radar() -> Radar:
-    return Radar(
-        {
-            "num_tx": 1,
-            "num_rx": 1,
-            "fc": 77e9,
-            "slope": 60.012,
-            "adc_samples": 8,
-            "adc_start_time": 0,
-            "sample_rate": 4400,
-            "idle_time": 7,
-            "ramp_end_time": 58,
-            "chirp_per_frame": 1,
-            "frame_per_second": 10,
-            "num_doppler_bins": 1,
-            "num_range_bins": 8,
-            "num_angle_bins": 8,
-            "power": 12,
-            "tx_loc": [[0, 0, 0]],
-            "rx_loc": [[0, 0, 0]],
-        },
-        backend="pytorch",
-        device="cpu",
-    )
+    return Radar(RadarConfig.from_dict(_tiny_config_dict()), backend="pytorch", device="cpu")
 
 
 def _radar_with_pattern(pattern) -> Radar:
-    return Radar(
-        {
-            "num_tx": 1,
-            "num_rx": 1,
-            "fc": 77e9,
-            "slope": 60.012,
-            "adc_samples": 8,
-            "adc_start_time": 0,
-            "sample_rate": 4400,
-            "idle_time": 7,
-            "ramp_end_time": 58,
-            "chirp_per_frame": 1,
-            "frame_per_second": 10,
-            "num_doppler_bins": 1,
-            "num_range_bins": 8,
-            "num_angle_bins": 8,
-            "power": 12,
-            "tx_loc": [[0, 0, 0]],
-            "rx_loc": [[0, 0, 0]],
-            "antenna_pattern": pattern,
-        },
-        backend="pytorch",
-        device="cpu",
-    )
+    config = _tiny_config_dict()
+    config["antenna_pattern"] = pattern
+    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
 
 
 def test_normalize_interpolated_sample_accepts_legacy_tuple():
@@ -266,13 +245,13 @@ def test_pytorch_mimo_respects_antenna_pattern_gain():
 
 def test_path_amplitudes_apply_simplified_polarization_projection():
     radar = Radar(
-        {
-            **_radar().config.to_dict(),
+        RadarConfig.from_dict({
+            **_tiny_config_dict(),
             "polarization": {
                 "tx": "horizontal",
                 "rx": "vertical",
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -296,13 +275,13 @@ def test_path_amplitudes_apply_simplified_polarization_projection():
 
 
 def test_pytorch_mimo_respects_simplified_polarization_gain():
-    config = _radar().config.to_dict()
+    config = _tiny_config_dict()
     config["polarization"] = {"tx": "horizontal", "rx": "horizontal"}
-    radar_hh = Radar(config, backend="pytorch", device="cpu")
+    radar_hh = Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
 
     config_cross = dict(config)
     config_cross["polarization"] = {"tx": "horizontal", "rx": "vertical"}
-    radar_hv = Radar(config_cross, backend="pytorch", device="cpu")
+    radar_hv = Radar(RadarConfig.from_dict(config_cross), backend="pytorch", device="cpu")
 
     position = torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32)
     intensity = torch.tensor([1.0], dtype=torch.float32)
@@ -322,13 +301,13 @@ def test_pytorch_mimo_respects_simplified_polarization_gain():
 
 def test_polarization_requires_surface_normals():
     radar = Radar(
-        {
-            **_radar().config.to_dict(),
+        RadarConfig.from_dict({
+            **_tiny_config_dict(),
             "polarization": {
                 "tx": "horizontal",
                 "rx": "vertical",
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )
@@ -345,7 +324,7 @@ def test_polarization_requires_surface_normals():
 
 def test_pytorch_frame_supports_pattern_with_multi_tx_config():
     radar = Radar(
-        {
+        RadarConfig.from_dict({
             "num_tx": 3,
             "num_rx": 4,
             "fc": 77e9,
@@ -370,7 +349,7 @@ def test_pytorch_frame_supports_pattern_with_multi_tx_config():
                 "y_angles_deg": [-30, 0, 30],
                 "y_values": [0.5, 1.0, 0.5],
             },
-        },
+        }),
         backend="pytorch",
         device="cpu",
     )

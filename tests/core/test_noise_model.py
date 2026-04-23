@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 
 
 def _base_config() -> dict:
@@ -35,7 +35,7 @@ def _make_radar(*, noise_model=None) -> Radar:
     config = _base_config()
     if noise_model is not None:
         config["noise_model"] = noise_model
-    return Radar(config, backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

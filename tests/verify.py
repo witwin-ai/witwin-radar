@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 
 
 CONFIG = {
@@ -48,9 +48,10 @@ def main():
     num_targets = 1024
     rng = np.random.RandomState(42)
 
-    radar_pytorch = Radar(CONFIG, backend="pytorch")
-    radar_slang = Radar(CONFIG, backend="slang")
-    radar_dirichlet = Radar(CONFIG, backend="dirichlet")
+    cfg = RadarConfig.from_dict(CONFIG)
+    radar_pytorch = Radar(cfg, backend="pytorch")
+    radar_slang = Radar(cfg, backend="slang")
+    radar_dirichlet = Radar(cfg, backend="dirichlet")
 
     n_fft = radar_dirichlet.solver.N_fft
     fs = radar_dirichlet.sample_rate * 1e3

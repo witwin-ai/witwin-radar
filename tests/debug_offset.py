@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import slangtorch
 
-from core import Radar
+from core import Radar, RadarConfig
 
 # Load Slang module for Dirichlet
 _slang_module = None
@@ -44,7 +44,7 @@ def create_radar():
         "tx_loc": [[0, 0, 0]],
         "rx_loc": [[0, 0, 0]],
     }
-    return Radar(config, backend="pytorch")
+    return Radar(RadarConfig.from_dict(config), backend="pytorch")
 
 
 def compute_fft(radar, distance, pad_factor=16):

@@ -12,7 +12,7 @@ import time
 import numpy as np
 import torch
 
-from core import Radar
+from core import Radar, RadarConfig
 from core.solvers import solver_slang
 from core.solvers import solver_dirichlet
 
@@ -90,9 +90,10 @@ def compute_dirichlet(radar_dir, distances, amplitudes):
 
 
 def benchmark(num_targets_list, num_warmup=3, num_runs=10):
-    radar_py = Radar(_config, backend="pytorch")
-    radar_slang = Radar(_config, backend="slang")
-    radar_dir = Radar(_config, backend="dirichlet")
+    cfg = RadarConfig.from_dict(_config)
+    radar_py = Radar(cfg, backend="pytorch")
+    radar_slang = Radar(cfg, backend="slang")
+    radar_dir = Radar(cfg, backend="dirichlet")
     pad_factor = radar_dir.solver.pad_factor
 
     print(f"{'Targets':<10} {'PyTorch':<10} {'Slang':<10} {'Slang_pt':<10} {'Dirichlet':<10}")

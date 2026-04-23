@@ -17,7 +17,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar, Renderer, Scene, Timeline
+from witwin.radar import Radar, RadarConfig, Renderer, Scene, Timeline
 from witwin.radar.sigproc import process_pc, process_rd
 from witwin.core import Box
 
@@ -47,7 +47,7 @@ def require_cuda():
 
 def main():
     require_cuda()
-    radar = Radar(config, backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
 
     scene = Scene()
     scene.set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=60)

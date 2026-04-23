@@ -5,7 +5,7 @@ import os
 import numpy as np
 import torch
 
-from witwin.radar import Radar, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Renderer, Scene
 from witwin.radar.sigproc import process_rd
 
 torch.set_default_device("cuda")
@@ -126,7 +126,7 @@ def test_end_to_end():
     print("Test 3: End-to-end radar pipeline")
     print("=" * 60)
 
-    radar = Radar(RADAR_CONFIG)
+    radar = Radar(RadarConfig.from_dict(RADAR_CONFIG))
     shape = np.zeros(10, dtype=np.float32)
     pose0 = np.zeros(72, dtype=np.float32)
     pose1 = pose0.copy()

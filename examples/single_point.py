@@ -16,7 +16,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 from witwin.radar.sigproc import process_pc, process_rd
 
 config = {
@@ -44,7 +44,7 @@ point = np.array([[0, 0, -3]], dtype=np.float32)
 velocity = np.array([[0, 0, 0.01]], dtype=np.float32)
 
 def main():
-    radar = Radar(config, backend=backend, device=device)
+    radar = Radar(RadarConfig.from_dict(config), backend=backend, device=device)
 
     def location_function(t):
         pos = torch.tensor(point + velocity * t, dtype=torch.float32, device=radar.device)

@@ -123,7 +123,7 @@ def test_mimo_smoke_result_exposes_signal_and_trace_tensors(monkeypatch):
 
 
 def test_simulation_rejects_unknown_sampling_mode():
-    with pytest.raises(ValueError, match="Unsupported sampling mode"):
+    with pytest.raises(ValueError, match="not a valid SamplingMode"):
         Simulation.mimo(
             _scene(),
             config=RadarConfig.from_dict(_config()),

@@ -12,14 +12,14 @@ from .noise import NoiseModelRuntime
 from .polarization import PolarizationRuntime
 from .receiver_chain import ReceiverChainRuntime
 from .sensor import Sensor
-from .types import SolverBackend, normalize_solver_backend
-from .validation import default_dipole_antenna_pattern, resolve_radar_config
+from .types import SolverBackend
+from .validation import default_dipole_antenna_pattern
 
 
 class Radar:
     def __init__(
         self,
-        config: RadarConfig | dict | str = "config.json",
+        config: RadarConfig,
         backend: SolverBackend = "dirichlet",
         pad_factor: int = 16,
         device: str = "cuda",
@@ -27,18 +27,19 @@ class Radar:
     ):
         """
         Args:
-            config: RadarConfig, JSON path, or dict
+            config: ``RadarConfig``. Use ``RadarConfig.from_dict`` or ``RadarConfig.from_json``
+                to build one from raw sources.
             backend: "dirichlet" | "slang" | "pytorch"
             pad_factor: FFT zero-padding factor for the Dirichlet backend
             device: compute device for public tensors and PyTorch execution
             sensor: radar pose in world coordinates
         """
         self.c0 = 299792458
-        self.backend = normalize_solver_backend(backend)
+        self.backend = SolverBackend(backend)
         self.device = self._resolve_device(device=self._normalize_device(device), backend=self.backend)
         self.sensor = sensor or Sensor.identity()
 
-        self.config: RadarConfig = resolve_radar_config(config)
+        self.config: RadarConfig = config
         cfg = self.config
 
         if (
@@ -122,15 +123,15 @@ class Radar:
             * self.doppler_resolution
         )
 
-        if self.backend == "pytorch":
+        if self.backend == SolverBackend.PYTORCH:
             from .solvers.solver_pytorch import PytorchSolver
 
             self.solver = PytorchSolver(self)
-        elif self.backend == "slang":
+        elif self.backend == SolverBackend.SLANG:
             from .solvers.solver_slang import SlangSolver
 
             self.solver = SlangSolver(self)
-        elif self.backend == "dirichlet":
+        else:
             from .solvers.solver_dirichlet import DirichletSolver
 
             self.solver = DirichletSolver(self, pad_factor)
@@ -146,7 +147,7 @@ class Radar:
                 "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
                 "Pass device='cpu' only when using the PyTorch backend without CUDA."
             )
-        if device.type != "cuda" and backend in {"slang", "dirichlet"}:
+        if device.type != "cuda" and backend in {SolverBackend.SLANG, SolverBackend.DIRICHLET}:
             raise ValueError(f"Radar backend '{backend}' requires device='cuda'.")
         return str(device)
 

@@ -93,10 +93,15 @@ class MockRadar:
 
     def __init__(self, config=None):
         import torch
-        from witwin.radar.validation import resolve_radar_config
+        from witwin.radar import RadarConfig
 
         self.c0 = 299792458
-        self.config = resolve_radar_config(dict(config or STANDARD_CONFIG))
+        if config is None:
+            config = STANDARD_CONFIG
+        if isinstance(config, RadarConfig):
+            self.config = config
+        else:
+            self.config = RadarConfig.from_dict(dict(config))
         cfg = self.config
 
         self._lambda = self.c0 / cfg.fc
@@ -161,17 +166,20 @@ class MockRadar:
 
 @pytest.fixture
 def standard_config():
-    return STANDARD_CONFIG.copy()
+    from witwin.radar import RadarConfig
+    return RadarConfig.from_dict(STANDARD_CONFIG)
 
 
 @pytest.fixture
 def fast_config():
-    return FAST_CONFIG.copy()
+    from witwin.radar import RadarConfig
+    return RadarConfig.from_dict(FAST_CONFIG)
 
 
 @pytest.fixture
 def minimal_config():
-    return MINIMAL_CONFIG.copy()
+    from witwin.radar import RadarConfig
+    return RadarConfig.from_dict(MINIMAL_CONFIG)
 
 
 @pytest.fixture
@@ -242,8 +250,10 @@ def make_moving_interpolator(pos0, velocity, sigma=1.0):
 
 def make_radar_or_skip(config, *, backend):
     """Construct a Radar backend or skip when the local toolchain is missing."""
-    from witwin.radar import Radar
+    from witwin.radar import Radar, RadarConfig
 
+    if not isinstance(config, RadarConfig):
+        config = RadarConfig.from_dict(dict(config))
     try:
         return Radar(config, backend=backend)
     except (FileNotFoundError, OSError, RuntimeError) as exc:

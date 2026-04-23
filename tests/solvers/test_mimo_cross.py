@@ -11,8 +11,8 @@ from conftest import complex_correlation, mag_correlation, peak_ratio, make_stat
 pytestmark = pytest.mark.gpu
 
 
-def _mimo_config(**overrides):
-    """MIMO validation config derived from verify_mimo.py."""
+def _mimo_config_dict(**overrides):
+    """MIMO validation config dict derived from verify_mimo.py."""
     cfg = {
         "num_tx": 3,
         "num_rx": 4,
@@ -34,6 +34,12 @@ def _mimo_config(**overrides):
     }
     cfg.update(overrides)
     return cfg
+
+
+def _mimo_config(**overrides):
+    from witwin.radar import RadarConfig
+
+    return RadarConfig.from_dict(_mimo_config_dict(**overrides))
 
 
 def _random_static_scene(n_targets=50, seed=42):
@@ -98,7 +104,7 @@ class TestMIMOCrossValidation:
         frame_slang = radar_slang.mimo(interp).detach().cpu().numpy()
         frame_dirichlet = radar_dirichlet.mimo(interp).detach().cpu().numpy()
 
-        for chirp_id in range(cfg["chirp_per_frame"]):
+        for chirp_id in range(cfg.chirp_per_frame):
             mag_corr = mag_correlation(frame_slang[0, 0, chirp_id, :], frame_dirichlet[0, 0, chirp_id, :])
             cx_corr = complex_correlation(frame_slang[0, 0, chirp_id, :], frame_dirichlet[0, 0, chirp_id, :])
             assert mag_corr > 0.99, f"chirp {chirp_id} magnitude correlation = {mag_corr:.4f}"
@@ -142,10 +148,10 @@ class TestMIMOOutputShape:
             except (FileNotFoundError, OSError, RuntimeError) as exc:
                 pytest.skip(f"backend unavailable: {exc}")
             assert frame.shape == (
-                cfg["num_tx"],
-                cfg["num_rx"],
-                cfg["chirp_per_frame"],
-                cfg["adc_samples"],
+                cfg.num_tx,
+                cfg.num_rx,
+                cfg.chirp_per_frame,
+                cfg.adc_samples,
             ), f"backend={backend}: shape={frame.shape}"
 
     def test_output_not_all_zeros(self):

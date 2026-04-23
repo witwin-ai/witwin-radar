@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from witwin.core import Material, Mesh, Structure
-from witwin.radar import Radar, RadarSpec, Sensor, Simulation
+from witwin.radar import Radar, RadarConfig, RadarSpec, Sensor, Simulation
 from witwin.radar.material import fresnel
 from witwin.radar.renderer import TraceResult
 from witwin.radar.scene import Scene
@@ -179,7 +179,7 @@ def test_scene_parent_motion_carries_child_geometry():
 
 def test_simulation_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
     scene = _rotating_scene(device="cpu")
-    config = _config(chirps=3, adc_samples=16)
+    config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
     observed_times: list[float | None] = []
 
     class FakeRenderer:
@@ -207,7 +207,7 @@ def test_simulation_motion_sampling_chirp_matches_manual_interpolator(monkeypatc
         config=config,
         backend="pytorch",
         device="cpu",
-        motion_sampling="chirp",
+        motion_sampling="per_chirp",
     )
 
     radar = Radar(config, backend="pytorch", device="cpu", sensor=scene.sensor)
@@ -248,10 +248,10 @@ def test_simulation_motion_sampling_frame_uses_single_trace(monkeypatch):
 
     Simulation.mimo(
         scene,
-        config=_config(chirps=4, adc_samples=16),
+        config=RadarConfig.from_dict(_config(chirps=4, adc_samples=16)),
         backend="pytorch",
         device="cpu",
-        motion_sampling="frame",
+        motion_sampling="per_frame",
     )
 
     assert observed_times == [0.0]
@@ -281,7 +281,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
 
     front = Sensor(origin=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
     side = Sensor(origin=(1.0, 0.0, 0.0), target=(1.0, 0.0, -1.0), up=(0.0, 1.0, 0.0))
-    config = _config(chirps=3, adc_samples=16)
+    config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
 
     group = Simulation.mimo_group(
         scene,
@@ -289,7 +289,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
             RadarSpec(name="front", config=config, sensor=front, backend="pytorch", device="cpu"),
             RadarSpec(name="side", config=config, sensor=side, backend="pytorch", device="cpu"),
         ],
-        motion_sampling="chirp",
+        motion_sampling="per_chirp",
     )
 
     front_single = Simulation.mimo(
@@ -298,7 +298,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
         sensor=front,
         backend="pytorch",
         device="cpu",
-        motion_sampling="chirp",
+        motion_sampling="per_chirp",
     )
     side_single = Simulation.mimo(
         scene,
@@ -306,7 +306,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
         sensor=side,
         backend="pytorch",
         device="cpu",
-        motion_sampling="chirp",
+        motion_sampling="per_chirp",
     )
 
     assert torch.allclose(group.signal("front"), front_single.signal(), atol=1e-6, rtol=1e-6)
@@ -316,7 +316,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
 @pytest.mark.gpu
 def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
     scene = _rotating_scene(device="cuda")
-    config = _config(chirps=4, adc_samples=32)
+    config = RadarConfig.from_dict(_config(chirps=4, adc_samples=32))
 
     result = Simulation.mimo(
         scene,
@@ -324,7 +324,7 @@ def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
         backend="pytorch",
         device="cuda",
         sampling="triangle",
-        motion_sampling="chirp",
+        motion_sampling="per_chirp",
         resolution=32,
     )
 

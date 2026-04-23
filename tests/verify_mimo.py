@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from witwin.radar import Radar
+from witwin.radar import Radar, RadarConfig
 
 
 CONFIG = {
@@ -28,10 +28,11 @@ CONFIG = {
 
 
 def main():
+    cfg = RadarConfig.from_dict(CONFIG)
     print("Creating Slang radar...")
-    radar_slang = Radar(CONFIG, backend="slang")
+    radar_slang = Radar(cfg, backend="slang")
     print("Creating Dirichlet radar...")
-    radar_dirichlet = Radar(CONFIG, backend="dirichlet")
+    radar_dirichlet = Radar(cfg, backend="dirichlet")
 
     rng = np.random.RandomState(42)
     num_targets = 50

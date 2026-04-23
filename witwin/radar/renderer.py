@@ -19,7 +19,7 @@ TensorXf = dr.cuda.ad.TensorXf
 
 from .material import fresnel
 from .sensor import Sensor
-from .types import SamplingMode, normalize_sampling_mode
+from .types import SamplingMode
 
 mi.set_variant("cuda_ad_rgb")
 
@@ -89,7 +89,7 @@ class Renderer:
         self.scene = scene
         self.resolution = int(resolution)
         self.epsilon_r = float(epsilon_r)
-        self.sampling = normalize_sampling_mode(sampling)
+        self.sampling = SamplingMode(sampling)
         self.sensor = sensor
         self.multipath = bool(multipath)
         self.max_reflections = int(max_reflections)
@@ -100,7 +100,7 @@ class Renderer:
             raise ValueError("max_reflections must be >= 0.")
         if self.ray_batch_size <= 0:
             raise ValueError("ray_batch_size must be > 0.")
-        if self.multipath and self.sampling != "pixel":
+        if self.multipath and self.sampling != SamplingMode.PIXEL:
             raise ValueError("multipath=True requires sampling='pixel'.")
 
         self._mi_scene = None

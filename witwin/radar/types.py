@@ -1,34 +1,53 @@
-"""Public string-literal types and validators for radar APIs."""
+"""Public API enums and protocols for radar.
+
+The enums subclass ``StrEnum`` so users can pass either a member or a raw
+string; IDEs still complete members and invalid values raise immediately.
+"""
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias, cast
+from enum import StrEnum
+from typing import Callable, Protocol, TypeAlias, runtime_checkable
+
+import torch
 
 
-SolverBackend: TypeAlias = Literal["pytorch", "slang", "dirichlet"]
-DetectorType: TypeAlias = Literal["cfar", "topk"]
-SamplingMode: TypeAlias = Literal["pixel", "triangle"]
-MotionSampling: TypeAlias = Literal["frame", "chirp"]
+class SolverBackend(StrEnum):
+    PYTORCH = "pytorch"
+    SLANG = "slang"
+    DIRICHLET = "dirichlet"
 
 
-def _check_literal(value, *, allowed: tuple[str, ...], label: str) -> str:
-    normalized = str(value).lower()
-    if normalized not in allowed:
-        raise ValueError(f"Unsupported {label} '{value}'. Expected one of: {', '.join(allowed)}.")
-    return normalized
+class DetectorType(StrEnum):
+    CFAR = "cfar"
+    TOPK = "topk"
 
 
-def normalize_solver_backend(value: str) -> SolverBackend:
-    return cast(SolverBackend, _check_literal(value, allowed=("pytorch", "slang", "dirichlet"), label="backend"))
+class SamplingMode(StrEnum):
+    PIXEL = "pixel"
+    TRIANGLE = "triangle"
 
 
-def normalize_detector_type(value: str) -> DetectorType:
-    return cast(DetectorType, _check_literal(value, allowed=("cfar", "topk"), label="detector"))
+class MotionSampling(StrEnum):
+    PER_FRAME = "per_frame"
+    PER_CHIRP = "per_chirp"
 
 
-def normalize_sampling_mode(value: str) -> SamplingMode:
-    return cast(SamplingMode, _check_literal(value, allowed=("pixel", "triangle"), label="sampling mode"))
+@runtime_checkable
+class TraceSample(Protocol):
+    """Structural type for the payload an ``InterpolatorFn`` returns.
+
+    ``Renderer.TraceResult`` satisfies this protocol; user-defined closures
+    may return any object with the same attributes.
+    """
+
+    points: torch.Tensor
+    intensities: torch.Tensor
+    entry_points: torch.Tensor
+    fixed_path_lengths: torch.Tensor
+    depths: torch.Tensor
+    normals: torch.Tensor | None
 
 
-def normalize_motion_sampling(value: str) -> MotionSampling:
-    return cast(MotionSampling, _check_literal(value, allowed=("frame", "chirp"), label="motion sampling mode"))
+InterpolatorFn: TypeAlias = Callable[[float], TraceSample]
+"""``(time_seconds) -> TraceSample``. Used by ``Radar.frame`` / ``Radar.mimo``."""

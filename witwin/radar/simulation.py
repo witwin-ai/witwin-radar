@@ -11,15 +11,7 @@ from .renderer import Renderer
 from .result import MultiResult, Result
 from .scene import Scene, SceneModule
 from .sensor import Sensor
-from .validation import resolve_radar_config
-from .types import (
-    MotionSampling,
-    SamplingMode,
-    SolverBackend,
-    normalize_motion_sampling,
-    normalize_sampling_mode,
-    normalize_solver_backend,
-)
+from .types import MotionSampling, SamplingMode, SolverBackend
 
 
 def _resolve_scene(scene_like) -> Scene:
@@ -40,19 +32,19 @@ class RenderOptions:
     ray_batch_size: int = 65536
 
     def __post_init__(self):
-        object.__setattr__(self, "sampling", normalize_sampling_mode(self.sampling))
+        object.__setattr__(self, "sampling", SamplingMode(self.sampling))
         if self.max_reflections < 0:
             raise ValueError("max_reflections must be >= 0.")
         if self.ray_batch_size <= 0:
             raise ValueError("ray_batch_size must be > 0.")
-        if self.multipath and self.sampling != "pixel":
+        if self.multipath and self.sampling != SamplingMode.PIXEL:
             raise ValueError("multipath=True requires sampling='pixel'.")
 
 
 @dataclass(frozen=True)
 class RadarSpec:
     name: str
-    config: RadarConfig | dict | str
+    config: RadarConfig
     sensor: Sensor | None = None
     backend: SolverBackend = "dirichlet"
     device: str = "cuda"
@@ -60,23 +52,16 @@ class RadarSpec:
     metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
-        name = str(self.name)
-        if not name:
+        if not self.name:
             raise ValueError("RadarSpec.name must be a non-empty string.")
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "config", resolve_radar_config(self.config))
-        object.__setattr__(self, "backend", normalize_solver_backend(self.backend))
-        object.__setattr__(self, "device", str(self.device))
-        object.__setattr__(self, "t0", float(self.t0))
-        if self.sensor is not None and not isinstance(self.sensor, Sensor):
-            raise TypeError("RadarSpec.sensor must be a radar.Sensor.")
+        object.__setattr__(self, "backend", SolverBackend(self.backend))
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
 
 
 def _execute_mimo(
     *,
     scene: Scene,
-    config: RadarConfig | dict | str,
+    config: RadarConfig,
     backend: SolverBackend,
     render: RenderOptions,
     device: str,
@@ -86,7 +71,7 @@ def _execute_mimo(
     metadata: dict[str, Any] | None,
 ) -> Result:
     effective_sensor = sensor or scene.sensor
-    radar = Radar(resolve_radar_config(config), backend=backend, device=device, sensor=effective_sensor)
+    radar = Radar(config, backend=backend, device=device, sensor=effective_sensor)
     renderer = Renderer(
         scene,
         resolution=render.resolution,
@@ -100,7 +85,7 @@ def _execute_mimo(
 
     trace = renderer.trace(time=t0) if scene.has_motion else renderer.trace()
 
-    if scene.has_motion and motion_sampling == "chirp":
+    if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
         def interpolator(t):
             return renderer.trace(time=t)
     else:
@@ -129,7 +114,7 @@ class Simulation:
         cls,
         scene,
         *,
-        config,
+        config: RadarConfig,
         backend: SolverBackend = "dirichlet",
         resolution: int = 128,
         epsilon_r: float = 5.0,
@@ -140,13 +125,13 @@ class Simulation:
         device: str = "cuda",
         t0: float = 0.0,
         sensor: Sensor | None = None,
-        motion_sampling: MotionSampling = "chirp",
+        motion_sampling: MotionSampling = "per_chirp",
         metadata: dict[str, Any] | None = None,
     ) -> Result:
         return _execute_mimo(
             scene=_resolve_scene(scene),
             config=config,
-            backend=normalize_solver_backend(backend),
+            backend=SolverBackend(backend),
             render=RenderOptions(
                 resolution=resolution,
                 epsilon_r=epsilon_r,
@@ -158,7 +143,7 @@ class Simulation:
             device=str(device),
             t0=float(t0),
             sensor=sensor,
-            motion_sampling=normalize_motion_sampling(motion_sampling),
+            motion_sampling=MotionSampling(motion_sampling),
             metadata=metadata,
         )
 
@@ -174,7 +159,7 @@ class Simulation:
         multipath: bool = False,
         max_reflections: int = 0,
         ray_batch_size: int = 65536,
-        motion_sampling: MotionSampling = "chirp",
+        motion_sampling: MotionSampling = "per_chirp",
         metadata: dict[str, Any] | None = None,
     ) -> MultiResult:
         specs = tuple(radars)
@@ -192,7 +177,7 @@ class Simulation:
             max_reflections=max_reflections,
             ray_batch_size=ray_batch_size,
         )
-        resolved_sampling = normalize_motion_sampling(motion_sampling)
+        resolved_sampling = MotionSampling(motion_sampling)
 
         results: dict[str, Result] = {}
         for spec in specs:

@@ -6,6 +6,8 @@ pure data container only.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +46,11 @@ class RadarConfig:
         from .validation import validate_radar_config
 
         return validate_radar_config(config)
+
+    @classmethod
+    def from_json(cls, path: str | os.PathLike[str]) -> "RadarConfig":
+        with open(path, "r", encoding="utf-8") as handle:
+            return cls.from_dict(json.load(handle))
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {

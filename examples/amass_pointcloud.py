@@ -25,7 +25,7 @@ repo_root = pathlib.Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from witwin.radar import Radar, Renderer, Scene
+from witwin.radar import Radar, RadarConfig, Renderer, Scene
 from witwin.radar.sigproc import process_pc
 
 MODEL_ROOT = repo_root / "models" / "smpl_models"
@@ -80,7 +80,7 @@ def main():
     source_fps = float(pose_data["mocap_framerate"])
     print(f"Loaded {pose_files[0].name}: {all_poses.shape[0]} frames at {source_fps} fps, gender={gender}")
 
-    radar = Radar(config, backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
 
     step = int(source_fps / config["frame_per_second"])
     num_frames = 30
