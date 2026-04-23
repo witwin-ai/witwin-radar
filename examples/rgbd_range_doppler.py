@@ -512,11 +512,11 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     radar = Radar(RadarConfig.from_dict(config), backend=args.backend, device=device)
     interpolator, total_time, source_frames, source_fps = build_interpolator(sequence, args=args, device=radar.device)
 
-    chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6
-    radar_valid_time = chirp_period * radar.num_tx * max(0, radar.chirp_per_frame - 1)
+    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
+    radar_valid_time = chirp_period * radar.config.num_tx * max(0, radar.config.chirp_per_frame - 1)
     start_time = args.start_frame / source_fps
     remaining_time = total_time - start_time
-    max_output_frames = max(0, int(math.floor((remaining_time - radar_valid_time) * radar.frame_per_second)) + 1)
+    max_output_frames = max(0, int(math.floor((remaining_time - radar_valid_time) * radar.config.frame_per_second)) + 1)
     if max_output_frames <= 0:
         raise ValueError(
             "Input sequence is too short for one radar frame. "
@@ -532,7 +532,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     ranges = None
     velocities = None
     for frame_idx in range(num_frames):
-        t0 = start_time + frame_idx / radar.frame_per_second
+        t0 = start_time + frame_idx / radar.config.frame_per_second
         frame = radar.mimo(interpolator, t0=t0)
         rd_db, _, ranges, velocities = process_rd(
             radar,

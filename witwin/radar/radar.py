@@ -442,68 +442,6 @@ class Radar:
         generator.manual_seed(self.config.noise_model["seed"])
         return generator
 
-    # ---- Convenience accessors mirroring config fields (no duplicated state) ----
-
-    @property
-    def num_tx(self) -> int:
-        return self.config.num_tx
-
-    @property
-    def num_rx(self) -> int:
-        return self.config.num_rx
-
-    @property
-    def fc(self) -> float:
-        return self.config.fc
-
-    @property
-    def slope(self) -> float:
-        return self.config.slope
-
-    @property
-    def adc_samples(self) -> int:
-        return self.config.adc_samples
-
-    @property
-    def adc_start_time(self) -> float:
-        return self.config.adc_start_time
-
-    @property
-    def sample_rate(self) -> float:
-        return self.config.sample_rate
-
-    @property
-    def idle_time(self) -> float:
-        return self.config.idle_time
-
-    @property
-    def ramp_end_time(self) -> float:
-        return self.config.ramp_end_time
-
-    @property
-    def chirp_per_frame(self) -> int:
-        return self.config.chirp_per_frame
-
-    @property
-    def frame_per_second(self) -> float:
-        return self.config.frame_per_second
-
-    @property
-    def num_doppler_bins(self) -> int:
-        return self.config.num_doppler_bins
-
-    @property
-    def num_range_bins(self) -> int:
-        return self.config.num_range_bins
-
-    @property
-    def num_angle_bins(self) -> int:
-        return self.config.num_angle_bins
-
-    @property
-    def power(self) -> float:
-        return self.config.power
-
     def waveform(self, t, phi=0):
         """FMCW chirp waveform: exp(j * 2pi * (fc*t + 0.5*slope*t^2))."""
         phase = self.config.fc * t + 0.5 * (self.config.slope * 1e12) * t * t

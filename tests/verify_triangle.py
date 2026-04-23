@@ -127,13 +127,14 @@ def test_end_to_end():
     print("=" * 60)
 
     radar = Radar(RadarConfig.from_dict(RADAR_CONFIG))
+    cfg = radar.config
     shape = np.zeros(10, dtype=np.float32)
     pose0 = np.zeros(72, dtype=np.float32)
     pose1 = pose0.copy()
     pose1[18 * 3] = 1.0
 
-    chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6
-    frame_period = chirp_period * radar.num_tx * radar.chirp_per_frame
+    chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+    frame_period = chirp_period * cfg.num_tx * cfg.chirp_per_frame
 
     for mode in ["pixel", "triangle"]:
         scene = make_scene(pose0, shape)

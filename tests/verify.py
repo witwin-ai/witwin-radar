@@ -54,8 +54,8 @@ def main():
     radar_dirichlet = Radar(cfg, backend="dirichlet")
 
     n_fft = radar_dirichlet.solver.N_fft
-    fs = radar_dirichlet.sample_rate * 1e3
-    slope = radar_dirichlet.slope * 1e12
+    fs = radar_dirichlet.config.sample_rate * 1e3
+    slope = radar_dirichlet.config.slope * 1e12
 
     freq_axis = np.fft.fftfreq(n_fft, 1 / fs)[: n_fft // 2]
     range_axis = freq_axis * radar_dirichlet.c0 / (2 * slope)

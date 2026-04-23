@@ -241,24 +241,6 @@ class Scene(SceneBase):
         self._set_dirty(self.DIRTY_VERTICES)
         return self
 
-    def set_structure_motion(self, name: str, motion: TransformMotion) -> "Scene":
-        """Replace the motion configuration for ``name`` with the given TransformMotion."""
-        self._require_structure(name)
-        if not isinstance(motion, TransformMotion):
-            raise TypeError("motion must be a TransformMotion instance.")
-        self._validate_structure_motion(name, motion)
-        self._structure_motions[name] = motion
-        self._set_dirty(self.DIRTY_VERTICES)
-        return self
-
-    def clear_structure_motion(self, name: str) -> "Scene":
-        self._require_structure(name)
-        if name not in self._structure_motions:
-            raise KeyError(f"Structure '{name}' does not have motion configured.")
-        self._structure_motions.pop(name, None)
-        self._set_dirty(self.DIRTY_VERTICES)
-        return self
-
     def update_structure(self, name: str, **changes) -> "Scene":
         structure_keys = {"geometry", "material", "priority", "enabled", "tags", "metadata", "name"}
         metadata_keys = {"bsdf", "dynamic"}
@@ -327,35 +309,6 @@ class Scene(SceneBase):
                 self._structure_motions.pop(name, None)
                 return self
         raise KeyError(f"Structure '{name}' not found.")
-
-    def clone(self, **overrides) -> "Scene":
-        return Scene(
-            structures=overrides.get("structures", list(self.structures)),
-            structure_motions=overrides.get("structure_motions", dict(self._structure_motions)),
-            metadata=overrides.get("metadata", dict(self.metadata)),
-            device=overrides.get("device", self.device),
-            verbose=overrides.get("verbose", self.verbose),
-        )
-
-    def trace(self, renderer=None, *, radar=None, time: float | None = None):
-        if renderer is None:
-            if radar is None:
-                raise ValueError("Scene.trace requires a renderer or radar.")
-            from .trace import Renderer
-
-            renderer = Renderer(self, radar)
-        return renderer.trace(time=time)
-
-    def interpolator(self, renderer=None, *, radar=None):
-        trace = self.trace(renderer=renderer, radar=radar)
-
-        def _interpolator(t):
-            if self.has_motion:
-                return self.trace(renderer=renderer, radar=radar, time=t)
-            del t
-            return trace
-
-        return _interpolator
 
     def get_joints(self, name: str, *, time: float | None = None) -> np.ndarray:
         if time is not None or name not in self._last_compiled_joints:

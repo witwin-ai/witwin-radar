@@ -27,11 +27,12 @@ class FrameConfig:
     """Derived frame parameters from a Radar config."""
 
     def __init__(self, radar):
-        self.numTxAntennas = radar.num_tx
-        self.numRxAntennas = radar.num_rx
-        self.numLoopsPerFrame = radar.chirp_per_frame
-        self.numADCSamples = radar.adc_samples
-        self.numAngleBins = radar.num_angle_bins
+        cfg = radar.config
+        self.numTxAntennas = cfg.num_tx
+        self.numRxAntennas = cfg.num_rx
+        self.numLoopsPerFrame = cfg.chirp_per_frame
+        self.numADCSamples = cfg.adc_samples
+        self.numAngleBins = cfg.num_angle_bins
 
         self.numChirpsPerFrame = self.numTxAntennas * self.numLoopsPerFrame
         self.numRangeBins = self.numADCSamples
@@ -203,7 +204,7 @@ def _aoa_2d_fft(virtual_ant: torch.Tensor, num_tx, num_rx, fft_size):
 def _compensate_tdm_phase(aoa_input: torch.Tensor, velocities: torch.Tensor, radar, fc) -> torch.Tensor:
     """Remove the velocity-dependent TDM-MIMO phase offset."""
     lam = radar._lambda
-    t_chirp = (radar.idle_time + radar.ramp_end_time) * 1e-6
+    t_chirp = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
     num_tx = fc.numTxAntennas
     num_rx = fc.numRxAntennas
 

@@ -340,8 +340,8 @@ def test_radar_builds_runtime_polarization(standard_config):
     )
     assert radar.polarization_config is not None
     assert radar.polarization is not None
-    assert radar.polarization.tx_world.shape == (radar.num_tx, 3)
-    assert radar.polarization.rx_world.shape == (radar.num_rx, 3)
+    assert radar.polarization.tx_world.shape == (radar.config.num_tx, 3)
+    assert radar.polarization.rx_world.shape == (radar.config.num_rx, 3)
 
 
 def test_radar_builds_runtime_receiver_chain(standard_config):
@@ -388,9 +388,9 @@ class TestRadarConstruction:
                 radar = Radar(standard_config, backend=backend)
             except (FileNotFoundError, OSError, RuntimeError) as exc:
                 pytest.skip(f"backend unavailable: {exc}")
-            assert radar.adc_samples == 256
-            assert radar.num_tx == 3
-            assert radar.num_rx == 4
+            assert radar.config.adc_samples == 256
+            assert radar.config.num_tx == 3
+            assert radar.config.num_rx == 4
 
     def test_radar_accepts_schema_object(self, standard_config):
         from witwin.radar import Radar
@@ -411,8 +411,8 @@ class TestRadarConstruction:
         from witwin.radar import Radar
 
         radar = Radar(standard_config, backend="pytorch")
-        assert radar.ranges.shape[0] == radar.num_range_bins // 2
-        assert radar.velocities.shape[0] == radar.num_doppler_bins
+        assert radar.ranges.shape[0] == radar.config.num_range_bins // 2
+        assert radar.velocities.shape[0] == radar.config.num_doppler_bins
 
     def test_dirichlet_solver_owns_fft_state(self, standard_config):
         from witwin.radar import Radar

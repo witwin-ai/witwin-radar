@@ -49,7 +49,8 @@ def create_radar():
 
 def compute_fft(radar, distance, pad_factor=16):
     """Compute FFT for a single target."""
-    N_samples = radar.adc_samples
+    cfg = radar.config
+    N_samples = cfg.adc_samples
     N_fft = N_samples * pad_factor
 
     dist_tensor = torch.tensor([distance], dtype=torch.float64, device='cuda')
@@ -87,13 +88,14 @@ def compute_dirichlet(distance, amplitude, N_samples, N_fft, k0_per_meter, fc, s
 
 def main():
     radar = create_radar()
-    N_samples = radar.adc_samples
+    cfg = radar.config
+    N_samples = cfg.adc_samples
     pad_factor = 16
     N_fft = N_samples * pad_factor
-    fs = radar.sample_rate * 1e3
-    slope = radar.slope * 1e12
+    fs = cfg.sample_rate * 1e3
+    slope = cfg.slope * 1e12
     k0_per_meter = (slope * 2 / radar.c0) * N_fft / fs
-    fc = radar.fc  # Scaled carrier frequency (77 for 77 GHz)
+    fc = cfg.fc
 
     print(f"N_samples: {N_samples}")
     print(f"N_fft: {N_fft}")
@@ -203,19 +205,20 @@ def main():
     print(f"t_sample[0] = {radar.t_sample[0].item():.10e}")
     print(f"t_sample[1] = {radar.t_sample[1].item():.10e}")
     print(f"t_sample[-1] = {radar.t_sample[-1].item():.10e}")
-    print(f"adc_start_time = {radar.adc_start_time}")
+    print(f"adc_start_time = {cfg.adc_start_time}")
 
 
 def analyze_phase():
     """Analyze phase difference between FFT and Dirichlet."""
     radar = create_radar()
-    N_samples = radar.adc_samples
+    cfg = radar.config
+    N_samples = cfg.adc_samples
     pad_factor = 16
     N_fft = N_samples * pad_factor
-    fs = radar.sample_rate * 1e3
-    slope = radar.slope * 1e12
+    fs = cfg.sample_rate * 1e3
+    slope = cfg.slope * 1e12
     k0_per_meter = (slope * 2 / radar.c0) * N_fft / fs
-    fc = radar.fc
+    fc = cfg.fc
 
     print("=" * 80)
     print("Phase analysis")
@@ -256,13 +259,14 @@ def analyze_phase():
 def analyze_multi_target():
     """Analyze with multiple targets (like verify.py)."""
     radar = create_radar()
-    N_samples = radar.adc_samples
+    cfg = radar.config
+    N_samples = cfg.adc_samples
     pad_factor = 16
     N_fft = N_samples * pad_factor
-    fs = radar.sample_rate * 1e3
-    slope = radar.slope * 1e12
+    fs = cfg.sample_rate * 1e3
+    slope = cfg.slope * 1e12
     k0_per_meter = (slope * 2 / radar.c0) * N_fft / fs
-    fc = radar.fc
+    fc = cfg.fc
 
     print("\n" + "=" * 80)
     print("Multi-target analysis (1024 targets)")

@@ -216,7 +216,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
     expected = radar.mimo(interpolator, 0.0)
     assert torch.allclose(result, expected, atol=1e-6, rtol=1e-6)
 
-    chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6 * radar.num_tx
+    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6 * radar.config.num_tx
     assert observed_times == pytest.approx([0.0, 0.0, chirp_period, 2.0 * chirp_period], rel=0.0, abs=1e-12)
 
 

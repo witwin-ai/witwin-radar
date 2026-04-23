@@ -132,12 +132,12 @@ class TestChirpPeakLocation:
         spectrum = torch.fft.fft(beat)
         magnitude = torch.abs(spectrum).cpu().numpy()
 
-        fs = radar.sample_rate * 1e3
-        slope = radar.slope * 1e12
+        fs = radar.config.sample_rate * 1e3
+        slope = radar.config.slope * 1e12
         beat_freq = slope * 2 * distance / radar.c0
-        expected_bin = beat_freq / (fs / radar.adc_samples)
+        expected_bin = beat_freq / (fs / radar.config.adc_samples)
 
-        peak_bin = np.argmax(magnitude[: radar.adc_samples // 2])
+        peak_bin = np.argmax(magnitude[: radar.config.adc_samples // 2])
         assert abs(peak_bin - expected_bin) <= 1, (
             f"distance={distance}m: peak at bin {peak_bin}, expected ~{expected_bin:.1f}"
         )
@@ -153,8 +153,8 @@ class TestChirpPeakLocation:
         spectrum = torch.fft.fft(beat, n=n_fft)
         magnitude = torch.abs(spectrum[: n_fft // 2]).cpu().numpy()
 
-        fs = radar.sample_rate * 1e3
-        slope = radar.slope * 1e12
+        fs = radar.config.sample_rate * 1e3
+        slope = radar.config.slope * 1e12
         bin1 = int(slope * 2 * 1.5 / radar.c0 / (fs / n_fft))
         bin2 = int(slope * 2 * 4.0 / radar.c0 / (fs / n_fft))
 

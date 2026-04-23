@@ -94,5 +94,5 @@ class TestRadarWaveform:
         from witwin.radar import Radar
 
         r = Radar(standard_config, backend="pytorch")
-        assert r.tx_waveform.shape == (r.adc_samples,)
-        assert r.t_sample.shape == (r.adc_samples,)
+        assert r.tx_waveform.shape == (r.config.adc_samples,)
+        assert r.t_sample.shape == (r.config.adc_samples,)

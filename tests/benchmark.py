@@ -30,7 +30,8 @@ _config = {
 # PyTorch (batched, external sum via tensor ops)
 # ============================================================================
 def compute_pytorch(radar_py, distances, amplitudes, pad_factor=16):
-    N_samples = radar_py.adc_samples
+    cfg = radar_py.config
+    N_samples = cfg.adc_samples
     N_fft = N_samples * pad_factor
     num_targets = len(distances)
 
@@ -41,7 +42,7 @@ def compute_pytorch(radar_py, distances, amplitudes, pad_factor=16):
     toa = dist_tensor / radar_py.c0
     t_shifted = radar_py.t_sample.view(1, 1, 1, -1) - toa
 
-    fc = radar_py.fc * t_shifted + 0.5 * (radar_py.slope * 1e12) * t_shifted * t_shifted
+    fc = cfg.fc * t_shifted + 0.5 * (cfg.slope * 1e12) * t_shifted * t_shifted
     rx = torch.exp(1j * 2 * torch.pi * fc)
 
     sig = radar_py.tx_waveform * torch.conj(rx)
@@ -56,7 +57,7 @@ def compute_pytorch(radar_py, distances, amplitudes, pad_factor=16):
 # Slang+FFT: chunked (default)
 # ============================================================================
 def compute_slang(radar_slang, distances, amplitudes, pad_factor=16):
-    N_fft = radar_slang.adc_samples * pad_factor
+    N_fft = radar_slang.config.adc_samples * pad_factor
 
     dist_tensor = torch.tensor(distances, dtype=torch.float32) * 2
     amp_tensor = torch.tensor(amplitudes, dtype=torch.float32)
@@ -70,7 +71,7 @@ def compute_slang(radar_slang, distances, amplitudes, pad_factor=16):
 # Slang+FFT: per-target (alternative for large N)
 # ============================================================================
 def compute_slang_per_target(radar_slang, distances, amplitudes, pad_factor=16):
-    N_fft = radar_slang.adc_samples * pad_factor
+    N_fft = radar_slang.config.adc_samples * pad_factor
 
     dist_tensor = torch.tensor(distances, dtype=torch.float32) * 2
     amp_tensor = torch.tensor(amplitudes, dtype=torch.float32)

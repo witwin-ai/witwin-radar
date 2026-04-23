@@ -138,7 +138,7 @@ class TestCFARParameterRanges:
 def test_process_pc_rejects_unknown_detector():
     radar = MockRadar(MINIMAL_CONFIG)
     frame = torch.zeros(
-        (radar.num_tx, radar.num_rx, radar.chirp_per_frame, radar.adc_samples),
+        (radar.config.num_tx, radar.config.num_rx, radar.config.chirp_per_frame, radar.config.adc_samples),
         dtype=torch.complex64,
     )
 
