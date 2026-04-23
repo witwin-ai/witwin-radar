@@ -22,7 +22,7 @@ class Radar:
         config: RadarConfig,
         backend: SolverBackend = "dirichlet",
         pad_factor: int = 16,
-        device: str = "cuda",
+        device: str | torch.device = "cuda",
         sensor: Sensor | None = None,
     ):
         """
@@ -36,7 +36,9 @@ class Radar:
         """
         self.c0 = 299792458
         self.backend = SolverBackend(backend)
-        self.device = self._resolve_device(device=self._normalize_device(device), backend=self.backend)
+        self.device: torch.device = self._resolve_device(
+            device=torch.device(device), backend=self.backend
+        )
         self.sensor = sensor or Sensor.identity()
 
         self.config: RadarConfig = config
@@ -60,7 +62,7 @@ class Radar:
         self.tx_pos = self.world_from_local_points(tx_loc).contiguous()
         self.rx_pos = self.world_from_local_points(rx_loc).contiguous()
 
-        self.sensor_origin = torch.tensor(self.sensor.origin, dtype=torch.float32, device=self.device)
+        self.sensor_origin = self.sensor.origin.to(dtype=torch.float32, device=self.device)
 
         self.t_sample = (
             torch.arange(0, cfg.adc_samples, dtype=torch.float64, device=self.device)
@@ -137,11 +139,7 @@ class Radar:
             self.solver = DirichletSolver(self, pad_factor)
 
     @staticmethod
-    def _normalize_device(device: str) -> torch.device:
-        return torch.device(device)
-
-    @staticmethod
-    def _resolve_device(*, device: torch.device, backend: SolverBackend) -> str:
+    def _resolve_device(*, device: torch.device, backend: SolverBackend) -> torch.device:
         if device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
                 "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
@@ -149,7 +147,7 @@ class Radar:
             )
         if device.type != "cuda" and backend in {SolverBackend.SLANG, SolverBackend.DIRICHLET}:
             raise ValueError(f"Radar backend '{backend}' requires device='cuda'.")
-        return str(device)
+        return device
 
     def world_from_local_points(self, points: torch.Tensor) -> torch.Tensor:
         return self.sensor.world_from_local_points(points)

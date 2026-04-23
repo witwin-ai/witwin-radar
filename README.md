@@ -87,12 +87,12 @@ scene.add_structure(
 scene.add_mesh(name="wheel_fl", vertices=wheel_vertices, faces=wheel_faces, dynamic=True)
 scene.add_structure_motion(
     "wheel_fl",
-    rotation={
-        "axis": (0.0, 1.0, 0.0),
-        "angular_velocity": 32.0,
-        "origin": (0.0, 0.0, 0.0),
-        "space": "local",
-    },
+    rotation=RotationMotion(
+        axis=(0.0, 1.0, 0.0),
+        angular_velocity=32.0,
+        origin=(0.0, 0.0, 0.0),
+        space="local",
+    ),
 )
 
 result = Simulation.mimo(
@@ -113,7 +113,7 @@ Available mutating scene methods:
 - `Scene.add_smpl(...)`
 - `Scene.add_structure_motion(...)`
 - `Scene.update_structure(...)`
-- `Scene.update_structure_motion(...)`
+- `Scene.set_structure_motion(...)`
 - `Scene.clear_structure_motion(...)`
 
 ## Features

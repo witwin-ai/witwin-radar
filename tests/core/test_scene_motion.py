@@ -6,7 +6,14 @@ import pytest
 import torch
 
 from witwin.core import Material, Mesh, Structure
-from witwin.radar import Radar, RadarConfig, RadarSpec, Sensor, Simulation
+from witwin.radar import (
+    Radar,
+    RadarConfig,
+    RadarSpec,
+    RotationMotion,
+    Sensor,
+    Simulation,
+)
 from witwin.radar.material import fresnel
 from witwin.radar.renderer import TraceResult
 from witwin.radar.scene import Scene
@@ -84,12 +91,12 @@ def _rotating_scene(*, device: str) -> Scene:
     )
     scene.add_structure_motion(
         "rotor",
-        rotation={
-            "axis": (0.0, 1.0, 0.0),
-            "angular_velocity": 800.0,
-            "origin": (0.0, 0.0, 0.0),
-            "space": "local",
-        },
+        rotation=RotationMotion(
+            axis=(0.0, 1.0, 0.0),
+            angular_velocity=800.0,
+            origin=(0.0, 0.0, 0.0),
+            space="local",
+        ),
     )
     return scene
 
@@ -109,7 +116,7 @@ def _triangle_trace(scene: Scene, *, time: float) -> TraceResult:
     cross = torch.cross(v1 - v0, v2 - v0, dim=0)
     area = 0.5 * torch.linalg.norm(cross)
     normal = cross / torch.clamp(torch.linalg.norm(cross), min=1e-10)
-    origin = torch.tensor(scene.sensor.origin, dtype=vertices.dtype, device=vertices.device)
+    origin = scene.sensor.origin.to(dtype=vertices.dtype, device=vertices.device)
     view_dir = origin - centroid[0]
     view_dir = view_dir / torch.linalg.norm(view_dir)
     if torch.dot(view_dir, normal) <= 0:
@@ -157,12 +164,12 @@ def test_scene_parent_motion_carries_child_geometry():
     scene.add_structure(Structure(name="child", geometry=child, material=Material(eps_r=3.0)))
     scene.add_structure_motion(
         "parent",
-        rotation={
-            "axis": (0.0, 0.0, 1.0),
-            "angular_velocity": math.pi / 2.0,
-            "origin": (0.0, 0.0, 0.0),
-            "space": "world",
-        },
+        rotation=RotationMotion(
+            axis=(0.0, 0.0, 1.0),
+            angular_velocity=math.pi / 2.0,
+            origin=(0.0, 0.0, 0.0),
+            space="world",
+        ),
     )
     scene.add_structure_motion("child", parent="parent")
 

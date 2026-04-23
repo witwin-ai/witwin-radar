@@ -2,32 +2,41 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 
-from .utils.vector import cross3, norm3, sub3, vec3_tuple
+from .utils.vector import vec3_tensor
 
 
-@dataclass(frozen=True)
 class Sensor:
-    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    target: tuple[float, float, float] = (0.0, 0.0, -1.0)
-    up: tuple[float, float, float] = (0.0, 1.0, 0.0)
-    fov: float = 60.0
+    """Radar pose in world coordinates with tensor-valued fields."""
 
-    def __post_init__(self):
-        object.__setattr__(self, "origin", vec3_tuple(self.origin, name="Sensor.origin"))
-        object.__setattr__(self, "target", vec3_tuple(self.target, name="Sensor.target"))
-        object.__setattr__(self, "up", vec3_tuple(self.up, name="Sensor.up"))
-        object.__setattr__(self, "fov", float(self.fov))
-        forward = sub3(self.target, self.origin)
-        if norm3(forward) <= 1e-12:
+    def __init__(
+        self,
+        origin=(0.0, 0.0, 0.0),
+        target=(0.0, 0.0, -1.0),
+        up=(0.0, 1.0, 0.0),
+        fov: float = 60.0,
+    ) -> None:
+        origin_t = vec3_tensor(origin, name="Sensor.origin")
+        target_t = vec3_tensor(target, name="Sensor.target")
+        up_t = vec3_tensor(up, name="Sensor.up")
+        forward = target_t - origin_t
+        if torch.linalg.norm(forward) <= 1e-12:
             raise ValueError("Sensor.target must differ from Sensor.origin.")
-        if norm3(self.up) <= 1e-12:
+        if torch.linalg.norm(up_t) <= 1e-12:
             raise ValueError("Sensor.up must be non-zero.")
-        if norm3(cross3(forward, self.up)) <= 1e-12:
+        if torch.linalg.norm(torch.cross(forward, up_t, dim=0)) <= 1e-12:
             raise ValueError("Sensor.up must not be collinear with the viewing direction.")
+        self.origin: torch.Tensor = origin_t
+        self.target: torch.Tensor = target_t
+        self.up: torch.Tensor = up_t
+        self.fov: float = float(fov)
+
+    def __repr__(self) -> str:
+        return (
+            f"Sensor(origin={self.origin.tolist()}, target={self.target.tolist()}, "
+            f"up={self.up.tolist()}, fov={self.fov})"
+        )
 
     @classmethod
     def identity(cls, *, fov: float = 60.0) -> "Sensor":
@@ -42,9 +51,9 @@ class Sensor:
         )
 
     def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
-        origin = torch.tensor(self.origin, device=device, dtype=dtype)
-        target = torch.tensor(self.target, device=device, dtype=dtype)
-        up = torch.tensor(self.up, device=device, dtype=dtype)
+        origin = self.origin.to(device=device, dtype=dtype)
+        target = self.target.to(device=device, dtype=dtype)
+        up = self.up.to(device=device, dtype=dtype)
 
         forward = target - origin
         forward = forward / torch.linalg.norm(forward)

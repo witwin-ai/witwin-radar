@@ -6,7 +6,7 @@
 - Radar pose can be controlled explicitly with `Sensor(...)` on `Radar`, `Renderer`, or `Simulation`
 - Scene assembly uses `Scene.set_sensor(...)`, `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
 - Multi-radar orchestration is available via `Simulation.mimo_group(...)`, `RadarSpec`, and `MultiResult`
-- Optional per-structure motion is available through `Scene.add_structure_motion(...)`, `Scene.update_structure_motion(...)`, and `Scene.clear_structure_motion(...)`
+- Optional per-structure motion is available through `Scene.add_structure_motion(...)`, `Scene.set_structure_motion(...)`, and `Scene.clear_structure_motion(...)`. Callers pass `TranslationMotion` / `RotationMotion` instances directly.
 - Public string-literal API types: `SolverBackend`, `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
 - Ray-tracing entrypoint: `Renderer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, and `depths` for generalized path tracing

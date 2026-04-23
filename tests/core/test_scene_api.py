@@ -21,7 +21,10 @@ def test_scene_uses_set_and_add_mutators_without_with_aliases():
 
     assert scene.add_structure(structure) is scene
     assert scene.add_mesh(name="mesh", vertices=vertices, faces=faces) is scene
-    assert scene.add_structure_motion("target", translation={"offset": (0.1, 0.0, 0.0)}) is scene
+    assert scene.add_structure_motion(
+        "target",
+        translation=wr.TranslationMotion(offset=(0.1, 0.0, 0.0)),
+    ) is scene
 
     assert scene.sensor.fov == 55.0
     assert [item.name for item in scene.structures] == ["target", "mesh"]

@@ -115,9 +115,9 @@ class Renderer:
         return {
             "type": "perspective",
             "to_world": T.look_at(
-                origin=self.active_sensor.origin,
-                target=self.active_sensor.target,
-                up=self.active_sensor.up,
+                origin=self.active_sensor.origin.tolist(),
+                target=self.active_sensor.target.tolist(),
+                up=self.active_sensor.up.tolist(),
             ),
             "fov": self.active_sensor.fov,
             "film": {
@@ -289,7 +289,7 @@ class Renderer:
         centroid = (v0 + v1 + v2) / 3.0
         normal = dr.normalize(dr.cross(v1 - v0, v2 - v0))
 
-        origin = Point3f(*self.active_sensor.origin)
+        origin = Point3f(*self.active_sensor.origin.tolist())
         view_dir = dr.normalize(origin - centroid)
         front = dr.dot(view_dir, normal) > 0
 
@@ -342,7 +342,7 @@ class Renderer:
         if visible_index.numel() == 0:
             return (*empty, num_faces)
 
-        sensor_origin = self.active_sensor.origin
+        sensor_origin = self.active_sensor.origin.tolist()
         num_faces_captured = num_faces
         fi_captured = fi
 
@@ -558,7 +558,7 @@ class Renderer:
             active = valid
 
     def _visible_from_origin(self, hit_points, normals, active):
-        origin = Point3f(*self.active_sensor.origin)
+        origin = Point3f(*self.active_sensor.origin.tolist())
         to_origin = origin - hit_points
         direction = dr.normalize(to_origin)
         offset_sign = dr.select(dr.dot(direction, normals) >= 0.0, 1.0, -1.0)

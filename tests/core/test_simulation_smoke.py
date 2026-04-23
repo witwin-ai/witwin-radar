@@ -259,12 +259,11 @@ def test_multi_simulation_returns_named_results(monkeypatch):
     assert result.names() == ("front", "side")
     assert torch.allclose(result.signal("front").real, torch.ones((1, 1, 2, 8)))
     assert torch.allclose(result.signal("side").real, torch.full((1, 1, 2, 8), 3.0))
-    assert seen == [
-        ("radar", front.origin),
-        ("renderer", front.origin),
-        ("radar", side.origin),
-        ("renderer", side.origin),
-    ]
+    assert [label for label, _ in seen] == ["radar", "renderer", "radar", "renderer"]
+    assert torch.equal(seen[0][1], front.origin)
+    assert torch.equal(seen[1][1], front.origin)
+    assert torch.equal(seen[2][1], side.origin)
+    assert torch.equal(seen[3][1], side.origin)
 
 
 def test_multi_simulation_rejects_duplicate_radar_names():

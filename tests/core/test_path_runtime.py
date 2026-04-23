@@ -87,6 +87,7 @@ def test_total_path_length_uses_entry_fixed_and_exit_segments():
             entry_points=torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32),
             fixed_path_lengths=torch.tensor([0.5], dtype=torch.float32),
             depths=torch.tensor([1], dtype=torch.int32),
+            normals=None,
         ),
         device="cpu",
     )
@@ -286,12 +287,28 @@ def test_pytorch_mimo_respects_simplified_polarization_gain():
     position = torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32)
     intensity = torch.tensor([1.0], dtype=torch.float32)
     normals = torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.float32)
+    zero_lengths = torch.zeros(1, dtype=torch.float32)
+    zero_depths = torch.zeros(1, dtype=torch.int32)
 
     def interp_hh(_t):
-        return SimpleNamespace(intensities=intensity, points=position, normals=normals)
+        return SimpleNamespace(
+            intensities=intensity,
+            points=position,
+            entry_points=position,
+            fixed_path_lengths=zero_lengths,
+            depths=zero_depths,
+            normals=normals,
+        )
 
     def interp_hv(_t):
-        return SimpleNamespace(intensities=intensity, points=position, normals=normals)
+        return SimpleNamespace(
+            intensities=intensity,
+            points=position,
+            entry_points=position,
+            fixed_path_lengths=zero_lengths,
+            depths=zero_depths,
+            normals=normals,
+        )
 
     hh_peak = radar_hh.mimo(interp_hh).abs().max()
     hv_peak = radar_hv.mimo(interp_hv).abs().max()

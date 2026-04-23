@@ -11,6 +11,7 @@ from .simulation import RadarSpec, RenderOptions, Simulation
 from .solvers import Solver
 from .renderer import Renderer, TraceResult
 from .material import fresnel
+from .motion import RotationMotion, StructureMotion, TranslationMotion
 from .scene import Scene, SceneModule
 from .sensor import Sensor
 from .timeline import Timeline
@@ -62,6 +63,9 @@ __all__ = [
     'Sensor',
     'SMPLBody',
     'Timeline',
+    'TranslationMotion',
+    'RotationMotion',
+    'StructureMotion',
     'fresnel',
     'Material',
     'Structure',

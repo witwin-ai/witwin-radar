@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from conftest import MockRadar, STANDARD_CONFIG
 from witwin.radar import RadarConfig
@@ -280,7 +281,7 @@ def test_pytorch_radar_can_target_cpu_device(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(standard_config, backend="pytorch", device="cpu")
-    assert radar.device == "cpu"
+    assert radar.device == torch.device("cpu")
     assert radar.tx_pos.device.type == "cpu"
     assert radar.ranges.device.type == "cpu"
 

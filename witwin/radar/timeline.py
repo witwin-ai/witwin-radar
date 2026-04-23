@@ -34,12 +34,14 @@ class Timeline:
     for radar frame generation.
     """
 
-    def __init__(self, frame_rate=30):
+    def __init__(self, frame_rate: int | float = 30, *, device: str | torch.device = "cuda"):
         """
         Args:
             frame_rate: source keyframe rate in Hz (e.g. 30 for 30 FPS motion data)
+            device: torch device on which keyframe tensors are stored
         """
         self.frame_rate = frame_rate
+        self.device = torch.device(device)
         self._positions: list[torch.Tensor] = []
         self._intensities: list[torch.Tensor] = []
         self._num_frames = 0
@@ -63,12 +65,12 @@ class Timeline:
             positions: (N, 3) torch tensor on any device
             intensities: (N,) torch tensor or None (defaults to ones)
         """
-        positions = positions.to(device="cuda", dtype=torch.float32)
+        positions = positions.to(device=self.device, dtype=torch.float32)
         n = positions.shape[0]
         if intensities is None:
-            intensities = torch.ones(n, dtype=torch.float32, device="cuda")
+            intensities = torch.ones(n, dtype=torch.float32, device=self.device)
         else:
-            intensities = intensities.to(device="cuda", dtype=torch.float32)
+            intensities = intensities.to(device=self.device, dtype=torch.float32)
         self._positions.append(positions)
         self._intensities.append(intensities)
         self._num_frames += 1
@@ -196,10 +198,12 @@ class Timeline:
 
         n = min(p0.shape[0], p1.shape[0])
         if n == 0:
+            device = self.device
+
             def empty_interp(_t):
                 return (
-                    torch.zeros(0, device="cuda"),
-                    torch.zeros(0, 3, device="cuda"),
+                    torch.zeros(0, device=device),
+                    torch.zeros(0, 3, device=device),
                 )
             return empty_interp, 0.0
 

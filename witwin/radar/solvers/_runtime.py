@@ -34,35 +34,27 @@ class PathSample:
     normals: torch.Tensor | None
 
 
-def normalize_interpolated_sample(sample, *, device: str) -> PathSample:
-    """Normalize legacy ``(intensities, points)`` tuples and TraceResult-like objects."""
+def normalize_interpolated_sample(sample, *, device: str | torch.device) -> PathSample:
+    """Promote a TraceResult-like sample (or legacy ``(intensities, points)`` tuple) onto ``device``."""
     if isinstance(sample, tuple):
         intensities, points = sample
-        entry_points = points
-        fixed_path_lengths = torch.zeros(points.shape[0], dtype=torch.float32, device=device)
-        depths = torch.zeros(points.shape[0], dtype=torch.int32, device=device)
-        normals = None
-    else:
-        intensities = sample.intensities
-        points = sample.points
-        entry_points = getattr(sample, "entry_points", None)
-        if entry_points is None:
-            entry_points = points
-        fixed_path_lengths = getattr(sample, "fixed_path_lengths", None)
-        if fixed_path_lengths is None:
-            fixed_path_lengths = torch.zeros(points.shape[0], dtype=torch.float32, device=device)
-        depths = getattr(sample, "depths", None)
-        if depths is None:
-            depths = torch.zeros(points.shape[0], dtype=torch.int32, device=device)
-        normals = getattr(sample, "normals", None)
+        points = points.to(dtype=torch.float32, device=device)
+        intensities = intensities.to(dtype=torch.float32, device=device)
+        return PathSample(
+            intensities=intensities,
+            points=points,
+            entry_points=points,
+            fixed_path_lengths=torch.zeros(points.shape[0], dtype=torch.float32, device=device),
+            depths=torch.zeros(points.shape[0], dtype=torch.int32, device=device),
+            normals=None,
+        )
 
-    points = points.to(dtype=torch.float32, device=device)
-    intensities = intensities.to(dtype=torch.float32, device=device)
-    entry_points = entry_points.to(dtype=torch.float32, device=device)
-    fixed_path_lengths = fixed_path_lengths.to(dtype=torch.float32, device=device)
-    depths = depths.to(dtype=torch.int32, device=device)
-    if normals is not None:
-        normals = normals.to(dtype=torch.float32, device=device)
+    points = sample.points.to(dtype=torch.float32, device=device)
+    intensities = sample.intensities.to(dtype=torch.float32, device=device)
+    entry_points = sample.entry_points.to(dtype=torch.float32, device=device)
+    fixed_path_lengths = sample.fixed_path_lengths.to(dtype=torch.float32, device=device)
+    depths = sample.depths.to(dtype=torch.int32, device=device)
+    normals = sample.normals.to(dtype=torch.float32, device=device) if sample.normals is not None else None
 
     return PathSample(
         intensities=intensities,

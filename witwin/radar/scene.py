@@ -28,9 +28,6 @@ from .utils.tensor import (
     to_vertex_tensor,
 )
 
-_UNSET = object()
-
-
 def _materialize_geometry(geometry: GeometryBase | Mesh, *, device: str) -> tuple[torch.Tensor, np.ndarray]:
     if isinstance(geometry, (Mesh, SMPLBody)):
         vertices, faces = geometry.to_mesh(device=device)
@@ -123,7 +120,7 @@ class Scene(SceneBase):
         sensor: Sensor | None = None,
         *,
         structures=None,
-        structure_motions: Mapping[str, StructureMotion | Mapping[str, Any]] | None = None,
+        structure_motions: Mapping[str, StructureMotion] | None = None,
         metadata=None,
         device: str | None = "cuda",
         verbose: bool = False,
@@ -141,7 +138,10 @@ class Scene(SceneBase):
         self._last_compiled_joints: dict[str, torch.Tensor] = {}
         if structure_motions:
             for name, motion in structure_motions.items():
-                self.add_structure_motion(str(name), **dict(StructureMotion.from_value(motion).__dict__))
+                if not isinstance(motion, StructureMotion):
+                    raise TypeError(f"structure_motions['{name}'] must be a StructureMotion instance.")
+                self._validate_structure_motion(str(name), motion)
+                self._structure_motions[str(name)] = motion
 
     @property
     def dirty(self) -> bool:
@@ -152,15 +152,15 @@ class Scene(SceneBase):
         return self._dirty_level
 
     @property
-    def sensor_origin(self) -> tuple[float, float, float]:
+    def sensor_origin(self) -> torch.Tensor:
         return self.sensor.origin
 
     @property
-    def sensor_target(self) -> tuple[float, float, float]:
+    def sensor_target(self) -> torch.Tensor:
         return self.sensor.target
 
     @property
-    def sensor_up(self) -> tuple[float, float, float]:
+    def sensor_up(self) -> torch.Tensor:
         return self.sensor.up
 
     @property
@@ -275,40 +275,28 @@ class Scene(SceneBase):
         self,
         name: str,
         *,
-        translation: TranslationMotion | Mapping[str, Any] | None = None,
-        rotation: RotationMotion | Mapping[str, Any] | None = None,
+        translation: TranslationMotion | None = None,
+        rotation: RotationMotion | None = None,
         parent: str | None = None,
     ) -> "Scene":
         self._require_structure(name)
-        motion = StructureMotion(
-            translation=TranslationMotion.from_value(translation),
-            rotation=RotationMotion.from_value(rotation),
-            parent=parent,
-        )
+        if translation is not None and not isinstance(translation, TranslationMotion):
+            raise TypeError("translation must be a TranslationMotion instance.")
+        if rotation is not None and not isinstance(rotation, RotationMotion):
+            raise TypeError("rotation must be a RotationMotion instance.")
+        motion = StructureMotion(translation=translation, rotation=rotation, parent=parent)
         self._validate_structure_motion(name, motion)
         self._structure_motions[name] = motion
         self._set_dirty(self.DIRTY_VERTICES)
         return self
 
-    def update_structure_motion(
-        self,
-        name: str,
-        *,
-        translation: TranslationMotion | Mapping[str, Any] | None | object = _UNSET,
-        rotation: RotationMotion | Mapping[str, Any] | None | object = _UNSET,
-        parent: str | None | object = _UNSET,
-    ) -> "Scene":
+    def set_structure_motion(self, name: str, motion: StructureMotion) -> "Scene":
+        """Replace the motion configuration for ``name`` with the given StructureMotion."""
         self._require_structure(name)
-        existing = self._structure_motions.get(name)
-        if existing is None:
-            raise KeyError(f"Structure '{name}' does not have motion configured.")
-        updated = StructureMotion(
-            translation=existing.translation if translation is _UNSET else TranslationMotion.from_value(translation),
-            rotation=existing.rotation if rotation is _UNSET else RotationMotion.from_value(rotation),
-            parent=existing.parent if parent is _UNSET else parent,
-        )
-        self._validate_structure_motion(name, updated)
-        self._structure_motions[name] = updated
+        if not isinstance(motion, StructureMotion):
+            raise TypeError("motion must be a StructureMotion instance.")
+        self._validate_structure_motion(name, motion)
+        self._structure_motions[name] = motion
         self._set_dirty(self.DIRTY_VERTICES)
         return self
 
