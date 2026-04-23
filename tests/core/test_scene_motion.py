@@ -214,7 +214,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
         return _centroid_trace(scene, time=float(t))
 
     expected = radar.mimo(interpolator, 0.0)
-    assert torch.allclose(result.signal(), expected, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(result, expected, atol=1e-6, rtol=1e-6)
 
     chirp_period = (radar.idle_time + radar.ramp_end_time) * 1e-6 * radar.num_tx
     assert observed_times == pytest.approx([0.0, 0.0, chirp_period, 2.0 * chirp_period], rel=0.0, abs=1e-12)
@@ -303,8 +303,8 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
         motion_sampling="per_chirp",
     )
 
-    assert torch.allclose(group.signal("front"), front_single.signal(), atol=1e-6, rtol=1e-6)
-    assert torch.allclose(group.signal("side"), side_single.signal(), atol=1e-6, rtol=1e-6)
+    assert torch.allclose(group["front"], front_single, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(group["side"], side_single, atol=1e-6, rtol=1e-6)
 
 
 @pytest.mark.gpu
@@ -326,6 +326,6 @@ def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
     expected = radar.mimo(interpolator, 0.0)
     expected_trace = _triangle_trace(scene, radar, time=0.0)
 
-    assert torch.allclose(result.trace_points(), expected_trace.points, atol=5e-4, rtol=5e-4)
-    assert torch.allclose(result.trace_intensities(), expected_trace.intensities, atol=5e-4, rtol=5e-4)
-    assert torch.allclose(result.signal(), expected, atol=5e-4, rtol=5e-4)
+    assert torch.allclose(radar.last_trace.points, expected_trace.points, atol=5e-4, rtol=5e-4)
+    assert torch.allclose(radar.last_trace.intensities, expected_trace.intensities, atol=5e-4, rtol=5e-4)
+    assert torch.allclose(result, expected, atol=5e-4, rtol=5e-4)

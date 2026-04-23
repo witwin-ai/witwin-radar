@@ -35,8 +35,8 @@ class TestRadarConfigSchema:
         )
 
         assert radar_config.antenna_pattern is not None
-        assert radar_config.antenna_pattern.kind == "separable"
-        assert radar_config.antenna_pattern.x_values[1] == pytest.approx(1.0)
+        assert radar_config.antenna_pattern["kind"] == "separable"
+        assert radar_config.antenna_pattern["x_values"][1] == pytest.approx(1.0)
         assert radar_config.to_dict()["antenna_pattern"]["y_values"] == [0.5, 1.0, 0.5]
 
     def test_noise_model_round_trip_from_dict(self):
@@ -53,12 +53,9 @@ class TestRadarConfigSchema:
         )
 
         assert radar_config.noise_model is not None
-        assert radar_config.noise_model.thermal is not None
-        assert radar_config.noise_model.thermal.std == pytest.approx(0.01)
-        assert radar_config.noise_model.quantization is not None
-        assert radar_config.noise_model.quantization.bits == 12
-        assert radar_config.noise_model.phase is not None
-        assert radar_config.noise_model.phase.std == pytest.approx(1e-3)
+        assert radar_config.noise_model["thermal"]["std"] == pytest.approx(0.01)
+        assert radar_config.noise_model["quantization"]["bits"] == 12
+        assert radar_config.noise_model["phase"]["std"] == pytest.approx(1e-3)
         assert radar_config.to_dict()["noise_model"] == {
             "thermal": {"std": 0.01},
             "quantization": {"bits": 12, "full_scale": 0.8},
@@ -79,9 +76,9 @@ class TestRadarConfigSchema:
         )
 
         assert radar_config.polarization is not None
-        assert radar_config.polarization.tx[0] == pytest.approx((1.0, 0.0, 0.0))
-        assert radar_config.polarization.rx[0] == pytest.approx((0.0, 1.0, 0.0))
-        assert radar_config.polarization.rx[1] == pytest.approx((1.0, 0.0, 0.0))
+        assert radar_config.polarization["tx"][0] == pytest.approx((1.0, 0.0, 0.0))
+        assert radar_config.polarization["rx"][0] == pytest.approx((0.0, 1.0, 0.0))
+        assert radar_config.polarization["rx"][1] == pytest.approx((1.0, 0.0, 0.0))
         assert radar_config.to_dict()["polarization"]["reflection_flip"] is False
 
     def test_receiver_chain_round_trip_from_dict(self):
@@ -98,13 +95,10 @@ class TestRadarConfigSchema:
         )
 
         assert radar_config.receiver_chain is not None
-        assert radar_config.receiver_chain.reference_impedance_ohm == pytest.approx(75.0)
-        assert radar_config.receiver_chain.lna is not None
-        assert radar_config.receiver_chain.lna.gain_db == pytest.approx(24.0)
-        assert radar_config.receiver_chain.agc is not None
-        assert radar_config.receiver_chain.agc.target_rms == pytest.approx(0.2)
-        assert radar_config.receiver_chain.adc is not None
-        assert radar_config.receiver_chain.to_dict()["adc"]["bits"] == 12
+        assert radar_config.receiver_chain["reference_impedance_ohm"] == pytest.approx(75.0)
+        assert radar_config.receiver_chain["lna"]["gain_db"] == pytest.approx(24.0)
+        assert radar_config.receiver_chain["agc"]["target_rms"] == pytest.approx(0.2)
+        assert radar_config.receiver_chain["adc"]["bits"] == 12
 
     def test_missing_required_key_raises(self):
         broken = dict(STANDARD_CONFIG)
@@ -309,8 +303,7 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
         backend="pytorch",
         device="cpu",
     )
-    assert radar.antenna_pattern is not None
-    assert radar.antenna_pattern.kind == "separable"
+    assert radar.antenna_pattern_kind == "separable"
 
 
 def test_radar_builds_runtime_noise_model(standard_config):

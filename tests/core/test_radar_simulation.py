@@ -53,7 +53,7 @@ def _trace():
     )
 
 
-def test_radar_simulate_exposes_signal_and_trace_tensors(monkeypatch):
+def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch):
     trace = _trace()
 
     class FakeRenderer:
@@ -90,17 +90,11 @@ def test_radar_simulate_exposes_signal_and_trace_tensors(monkeypatch):
         target=(0.0, 0.0, -5.0),
         fov=60.0,
     )
-    result = radar.simulate(_scene(), resolution=32, sampling="pixel")
+    signal = radar.simulate(_scene(), resolution=32, sampling="pixel")
 
-    assert result.method == "mimo"
-    assert result.signal().shape == (1, 1, 2, 8)
-    assert torch.equal(result.trace_points(), trace.points)
-    assert torch.equal(result.trace_intensities(), trace.intensities)
-    assert torch.equal(result.trace_entry_points(), trace.entry_points)
-    assert torch.equal(result.trace_fixed_path_lengths(), trace.fixed_path_lengths)
-    assert torch.equal(result.trace_depths(), trace.depths)
-    assert torch.equal(result.tensor("signal"), result.signal())
-    assert torch.equal(result.tensor("trace_points"), trace.points)
+    assert signal.shape == (1, 1, 2, 8)
+    assert isinstance(signal, torch.Tensor)
+    assert radar.last_trace is trace
 
 
 def test_radar_simulate_rejects_unknown_sampling_mode():
@@ -146,10 +140,10 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
 
     result = Radar.simulate_group(_scene(), radars=[front, side])
 
-    assert result.names() == ("front", "side")
-    assert result.signal("front").shape == (1, 1, 2, 8)
-    assert result.signal("side").shape == (1, 1, 2, 8)
-    assert not torch.allclose(result.signal("front"), result.signal("side"))
+    assert tuple(result) == ("front", "side")
+    assert result["front"].shape == (1, 1, 2, 8)
+    assert result["side"].shape == (1, 1, 2, 8)
+    assert not torch.allclose(result["front"], result["side"])
 
 
 def test_radar_simulate_group_requires_names_for_sequences():

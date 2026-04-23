@@ -87,12 +87,12 @@ def test_end_to_end_polarization_changes_measured_signal(sampling):
         resolution=96 if sampling == "pixel" else 32,
     )
 
-    hh_peak = hh.signal().abs().max()
-    hv_peak = hv.signal().abs().max()
+    hh_peak = hh.abs().max()
+    hv_peak = hv.abs().max()
     ratio = hv_peak / hh_peak
 
-    assert hh.trace_normals() is not None
-    assert hh.trace_normals().shape == hh.trace_points().shape
+    assert hh_radar.last_trace.normals is not None
+    assert hh_radar.last_trace.normals.shape == hh_radar.last_trace.points.shape
     torch.testing.assert_close(ratio, torch.tensor(2.0, dtype=ratio.dtype, device=ratio.device), atol=0.15, rtol=0.1)
 
 
@@ -120,8 +120,8 @@ def test_process_rd_preserves_polarization_contrast():
         sampling="triangle",
     )
 
-    hh_rd, _, _, _ = process_rd(hh.radar, hh.signal(), tx=0, rx=0)
-    hv_rd, _, _, _ = process_rd(hv.radar, hv.signal(), tx=0, rx=0)
+    hh_rd, _, _, _ = process_rd(hh_radar, hh, tx=0, rx=0)
+    hv_rd, _, _, _ = process_rd(hv_radar, hv, tx=0, rx=0)
 
     assert hv_rd.shape == hh_rd.shape
     assert float(hv_rd.max()) > float(hh_rd.max()) + 4.0

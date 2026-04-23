@@ -106,7 +106,7 @@ scene.add_structure_motion(
     ),
 )
 
-result = radar.simulate(
+frame = radar.simulate(
     scene,
     sampling="triangle",
     motion_sampling="per_chirp",

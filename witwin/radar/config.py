@@ -11,11 +11,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from .antenna_pattern import AntennaPatternConfig
-from .noise import NoiseModelConfig
-from .polarization import PolarizationConfig
-from .receiver_chain import ReceiverChainConfig
-
 
 @dataclass(frozen=True)
 class RadarConfig:
@@ -36,10 +31,10 @@ class RadarConfig:
     power: float
     tx_loc: tuple[tuple[float, float, float], ...]
     rx_loc: tuple[tuple[float, float, float], ...]
-    antenna_pattern: AntennaPatternConfig | None = None
-    noise_model: NoiseModelConfig | None = None
-    polarization: PolarizationConfig | None = None
-    receiver_chain: ReceiverChainConfig | None = None
+    antenna_pattern: dict[str, Any] | None = None
+    noise_model: dict[str, Any] | None = None
+    polarization: dict[str, Any] | None = None
+    receiver_chain: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "RadarConfig":
@@ -79,5 +74,5 @@ class RadarConfig:
             ("receiver_chain", self.receiver_chain),
         ):
             if value is not None:
-                data[name] = value.to_dict()
+                data[name] = value
         return data

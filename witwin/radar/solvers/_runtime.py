@@ -103,14 +103,10 @@ def compute_antenna_pattern_gains(
     rx_pos: torch.Tensor,
 ) -> torch.Tensor | None:
     """Return per-path power gains from the configured TX/RX antenna pattern."""
-    pattern = radar.antenna_pattern
-    if pattern is None:
-        return None
-
     tx_vectors = radar.local_from_world_vectors(sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
     rx_vectors = radar.local_from_world_vectors(sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
-    tx_gains = pattern.evaluate_vectors(tx_vectors).unsqueeze(1)
-    rx_gains = pattern.evaluate_vectors(rx_vectors).unsqueeze(0)
+    tx_gains = radar.evaluate_antenna_pattern_vectors(tx_vectors).unsqueeze(1)
+    rx_gains = radar.evaluate_antenna_pattern_vectors(rx_vectors).unsqueeze(0)
     return tx_gains * rx_gains
 
 

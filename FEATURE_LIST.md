@@ -2,15 +2,15 @@
 
 ## Public API
 
-- Declarative simulation flow: `Radar -> Scene -> Result` via `radar.simulate(scene, ...)`
+- Declarative simulation flow: `Radar -> Scene -> torch.Tensor` via `radar.simulate(scene, ...)`
 - Radar pose is controlled directly with `Radar(position=..., target=..., up=..., fov=...)` or `radar.set_pose(...)`
 - Scene assembly uses `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
-- Multi-radar orchestration is available via `Radar.simulate_group(...)` and `MultiResult`
+- Multi-radar orchestration is available via `Radar.simulate_group(...)`, returning a `dict[str, torch.Tensor]`
 - Optional per-structure motion is available through `Scene.add_structure_motion(...)`, `Scene.set_structure_motion(...)`, and `Scene.clear_structure_motion(...)`. Callers pass `TranslationMotion` / `RotationMotion` instances directly.
 - Public string-literal API types: `SolverBackend`, `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
 - Ray-tracing entrypoint: `Renderer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, and `depths` for generalized path tracing
-- `Result.signal()`, `Result.trace_points()`, `Result.trace_intensities()`, `Result.trace_entry_points()`, `Result.trace_fixed_path_lengths()`, and `Result.trace_depths()` provide semantic tensor access, with `Result.tensor(...)` retained as a generic fallback
+- `radar.simulate(...)` returns the radar data tensor directly. The most recent trace and renderer are available as `radar.last_trace` and `radar.last_renderer` for debugging.
 
 ## Configuration
 

@@ -69,7 +69,7 @@ def test_renderer_multipath_smoke_returns_rich_trace():
 def test_radar_multipath_smoke_runs_for_all_backends(backend):
     radar = Radar(CONFIG, backend=backend, device="cuda", target=(0, 0, -5), fov=60)
     try:
-        result = radar.simulate(
+        signal = radar.simulate(
             _scene(),
             resolution=16,
             sampling="pixel",
@@ -80,10 +80,9 @@ def test_radar_multipath_smoke_runs_for_all_backends(backend):
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"{backend} unavailable: {exc}")
 
-    signal = result.signal()
     assert signal.shape == (1, 1, 2, 16)
-    assert result.trace_entry_points().shape == result.trace_points().shape
-    assert result.trace_fixed_path_lengths().shape == result.trace_intensities().shape
+    assert radar.last_trace.entry_points.shape == radar.last_trace.points.shape
+    assert radar.last_trace.fixed_path_lengths.shape == radar.last_trace.intensities.shape
 
 
 def test_process_rd_runs_on_multipath_signal():
@@ -91,7 +90,7 @@ def test_process_rd_runs_on_multipath_signal():
 
     radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
     try:
-        result = radar.simulate(
+        signal = radar.simulate(
             _scene(),
             resolution=16,
             sampling="pixel",
@@ -102,7 +101,7 @@ def test_process_rd_runs_on_multipath_signal():
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"multipath unavailable: {exc}")
 
-    rd_mag, rd_map, ranges, velocities = process_rd(result.radar, result.signal(), tx=0, rx=0)
+    rd_mag, rd_map, ranges, velocities = process_rd(radar, signal, tx=0, rx=0)
 
     assert rd_mag.shape == (CONFIG["chirp_per_frame"], CONFIG["adc_samples"])
     assert rd_map.shape == rd_mag.shape

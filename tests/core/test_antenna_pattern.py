@@ -98,13 +98,13 @@ def test_missing_antenna_pattern_uses_default_dipole_runtime():
     radar = _make_radar()
 
     assert radar.config.antenna_pattern is None
-    assert radar.antenna_pattern_config.kind == "separable"
+    assert radar.antenna_pattern_config["kind"] == "separable"
 
-    center_gain = radar.antenna_pattern.evaluate_xy(
+    center_gain = radar.evaluate_antenna_pattern_xy(
         torch.tensor([0.0], dtype=torch.float32),
         torch.tensor([0.0], dtype=torch.float32),
     )
-    edge_gain = radar.antenna_pattern.evaluate_xy(
+    edge_gain = radar.evaluate_antenna_pattern_xy(
         torch.tensor([85.0], dtype=torch.float32),
         torch.tensor([0.0], dtype=torch.float32),
     )

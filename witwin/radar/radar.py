@@ -8,18 +8,125 @@ from typing import Any
 
 import torch
 
-from .antenna_pattern import AntennaPatternRuntime
 from .config import RadarConfig
-from .noise import NoiseModelRuntime
-from .polarization import PolarizationRuntime
 from .receiver_chain import ReceiverChainRuntime
 from .types import MotionSampling, SamplingMode, SolverBackend
+from .utils.antenna import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
 from .utils.vector import vec3_tensor
 from .validation import default_dipole_antenna_pattern
 
 
 def _target_from_position(position: torch.Tensor) -> torch.Tensor:
     return position + torch.tensor((0.0, 0.0, -1.0), dtype=torch.float32)
+
+
+def _component_dtype(signal: torch.Tensor) -> torch.dtype:
+    return torch.float64 if signal.dtype == torch.complex128 else torch.float32
+
+
+def _randn(shape, *, device, dtype, generator: torch.Generator | None) -> torch.Tensor:
+    if generator is None:
+        return torch.randn(shape, device=device, dtype=dtype)
+    return torch.randn(shape, device=device, dtype=dtype, generator=generator)
+
+
+def _normalize_rows(vectors: torch.Tensor) -> torch.Tensor:
+    return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
+
+
+class NoiseModelRuntime:
+    def __init__(self, config: dict[str, Any], *, device: str | torch.device):
+        self.config = config
+        self.device = device
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any], *, device: str | torch.device) -> "NoiseModelRuntime":
+        return cls(config=config, device=device)
+
+    def apply(self, signal: torch.Tensor, *, generator: torch.Generator | None = None) -> torch.Tensor:
+        noisy = signal
+        phase = self.config.get("phase")
+        thermal = self.config.get("thermal")
+        quantization = self.config.get("quantization")
+        if phase is not None and phase["std"] > 0.0:
+            noisy = self._apply_phase_noise(noisy, std=phase["std"], generator=generator)
+        if thermal is not None and thermal["std"] > 0.0:
+            noisy = self._apply_thermal_noise(noisy, std=thermal["std"], generator=generator)
+        if quantization is not None:
+            from .receiver_chain import quantize_complex_signal
+
+            noisy = quantize_complex_signal(
+                noisy,
+                bits=quantization["bits"],
+                full_scale=quantization["full_scale"],
+            )
+        return noisy
+
+    def _apply_phase_noise(
+        self,
+        signal: torch.Tensor,
+        *,
+        std: float,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        real = _component_dtype(signal)
+        if signal.ndim == 4:
+            phase_shape = signal.shape[-2:]
+            broadcast_shape = (1, 1, *phase_shape)
+        elif signal.ndim in (1, 2):
+            phase_shape = signal.shape
+            broadcast_shape = phase_shape
+        else:
+            raise ValueError("Phase noise currently supports chirp (T,), frame (F, T), or mimo (TX, RX, F, T) tensors.")
+
+        innovations = _randn(phase_shape, device=signal.device, dtype=real, generator=generator) * std
+        phase = torch.cumsum(innovations.reshape(-1), dim=0).reshape(phase_shape).reshape(broadcast_shape)
+        phase_factor = torch.polar(torch.ones_like(phase, dtype=real), phase)
+        return signal * phase_factor.to(dtype=signal.dtype)
+
+    def _apply_thermal_noise(
+        self,
+        signal: torch.Tensor,
+        *,
+        std: float,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        real = _component_dtype(signal)
+        real_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
+        imag_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
+        noise = torch.complex(real_part, imag_part).to(dtype=signal.dtype)
+        return signal + noise
+
+
+class PolarizationRuntime:
+    def __init__(
+        self,
+        *,
+        tx_world: torch.Tensor,
+        rx_world: torch.Tensor,
+        reflection_flip: bool = True,
+    ) -> None:
+        self.tx_world = tx_world
+        self.rx_world = rx_world
+        self.reflection_flip = bool(reflection_flip)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: dict[str, Any],
+        *,
+        device: str | torch.device,
+        radar,
+    ) -> "PolarizationRuntime":
+        tx_local = _normalize_rows(torch.tensor(config["tx"], dtype=torch.float32, device=device))
+        rx_local = _normalize_rows(torch.tensor(config["rx"], dtype=torch.float32, device=device))
+        tx_world = _normalize_rows(radar.world_from_local_vectors(tx_local))
+        rx_world = _normalize_rows(radar.world_from_local_vectors(rx_local))
+        return cls(
+            tx_world=tx_world.contiguous(),
+            rx_world=rx_world.contiguous(),
+            reflection_flip=bool(config.get("reflection_flip", True)),
+        )
 
 
 class Radar:
@@ -35,7 +142,6 @@ class Radar:
         up=(0.0, 1.0, 0.0),
         fov: float = 60.0,
         name: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
     ):
         """
         Args:
@@ -56,7 +162,6 @@ class Radar:
             device=torch.device(device), backend=self.backend
         )
         self.name = None if name is None else str(name)
-        self.metadata = dict(metadata or {})
         self._set_pose_fields(position=position, target=target, up=up, fov=fov)
 
         self.config: RadarConfig = config if isinstance(config, RadarConfig) else RadarConfig.from_dict(config)
@@ -64,9 +169,9 @@ class Radar:
 
         if (
             cfg.receiver_chain is not None
-            and cfg.receiver_chain.adc is not None
+            and cfg.receiver_chain.get("adc") is not None
             and cfg.noise_model is not None
-            and cfg.noise_model.quantization is not None
+            and cfg.noise_model.get("quantization") is not None
         ):
             raise ValueError(
                 "Radar receiver_chain.adc and noise_model.quantization cannot both be enabled; use one quantizer."
@@ -89,13 +194,13 @@ class Radar:
 
         self.transmit_power_watts = 1e-3 * (10.0 ** (cfg.power / 10.0))
         reference_impedance = (
-            cfg.receiver_chain.reference_impedance_ohm if cfg.receiver_chain is not None else 50.0
+            cfg.receiver_chain["reference_impedance_ohm"] if cfg.receiver_chain is not None else 50.0
         )
         self.tx_voltage_rms = math.sqrt(self.transmit_power_watts * reference_impedance)
         self.gain = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
 
         self.antenna_pattern_config = cfg.antenna_pattern or default_dipole_antenna_pattern()
-        self.antenna_pattern = AntennaPatternRuntime.from_config(self.antenna_pattern_config, device=self.device)
+        self._build_antenna_pattern_runtime(self.antenna_pattern_config)
         self.noise_model_config = cfg.noise_model
         self.noise_model = (
             NoiseModelRuntime.from_config(cfg.noise_model, device=self.device)
@@ -185,6 +290,42 @@ class Radar:
         self.rx_pos = self.world_from_local_points(self.rx_loc).contiguous()
         self.origin = self.position
 
+    def _build_antenna_pattern_runtime(self, config: dict[str, Any]) -> None:
+        self.antenna_pattern_kind = config["kind"]
+        self.antenna_pattern_x_angles_deg = torch.tensor(config["x_angles_deg"], dtype=torch.float32, device=self.device)
+        self.antenna_pattern_y_angles_deg = torch.tensor(config["y_angles_deg"], dtype=torch.float32, device=self.device)
+        self.antenna_pattern_x_values = None
+        self.antenna_pattern_y_values = None
+        self.antenna_pattern_values = None
+        if config["kind"] == "separable":
+            self.antenna_pattern_x_values = torch.tensor(config["x_values"], dtype=torch.float32, device=self.device)
+            self.antenna_pattern_y_values = torch.tensor(config["y_values"], dtype=torch.float32, device=self.device)
+        else:
+            self.antenna_pattern_values = torch.tensor(config["values"], dtype=torch.float32, device=self.device)
+
+    def evaluate_antenna_pattern_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
+        return evaluate_antenna_pattern_xy(
+            self.antenna_pattern_kind,
+            self.antenna_pattern_x_angles_deg,
+            self.antenna_pattern_y_angles_deg,
+            self.antenna_pattern_x_values,
+            self.antenna_pattern_y_values,
+            self.antenna_pattern_values,
+            x_angles_deg,
+            y_angles_deg,
+        )
+
+    def evaluate_antenna_pattern_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
+        return evaluate_antenna_pattern_vectors(
+            self.antenna_pattern_kind,
+            self.antenna_pattern_x_angles_deg,
+            self.antenna_pattern_y_angles_deg,
+            self.antenna_pattern_x_values,
+            self.antenna_pattern_y_values,
+            self.antenna_pattern_values,
+            vectors,
+        )
+
     def set_pose(self, *, position=None, target=None, up=None, fov=None) -> "Radar":
         """Mutate radar pose and refresh pose-dependent antenna state."""
         new_position = self.position if position is None else vec3_tensor(position, name="Radar.position")
@@ -236,10 +377,10 @@ class Radar:
         return vectors @ world_from_local
 
     def _make_noise_generator(self) -> torch.Generator | None:
-        if self.config.noise_model is None or self.config.noise_model.seed is None:
+        if self.config.noise_model is None or self.config.noise_model.get("seed") is None:
             return None
         generator = torch.Generator(device=self.device)
-        generator.manual_seed(self.config.noise_model.seed)
+        generator.manual_seed(self.config.noise_model["seed"])
         return generator
 
     # ---- Convenience accessors mirroring config fields (no duplicated state) ----
@@ -358,11 +499,9 @@ class Radar:
         ray_batch_size: int = 65536,
         t0: float = 0.0,
         motion_sampling: MotionSampling = "per_chirp",
-        metadata: Mapping[str, Any] | None = None,
     ):
         """Run ray tracing plus MIMO signal generation for one scene."""
         from .renderer import Renderer
-        from .result import Result
         from .scene import Scene, SceneModule
 
         if isinstance(scene, SceneModule):
@@ -401,16 +540,10 @@ class Radar:
                 return trace
 
         signal = self.mimo(interpolator, t0)
-        result_metadata = dict(self.metadata if metadata is None else metadata)
-        return Result(
-            method="mimo",
-            scene=scene,
-            signal=signal,
-            trace=trace,
-            radar=self,
-            renderer=renderer,
-            metadata=result_metadata,
-        )
+        self.last_scene = scene
+        self.last_renderer = renderer
+        self.last_trace = trace
+        return signal
 
     @classmethod
     def simulate_group(
@@ -426,11 +559,8 @@ class Radar:
         ray_batch_size: int = 65536,
         t0: float = 0.0,
         motion_sampling: MotionSampling = "per_chirp",
-        metadata: Mapping[str, Any] | None = None,
-    ):
+    ) -> dict[str, torch.Tensor]:
         """Run the same scene for multiple named Radar instances."""
-        from .result import MultiResult
-
         if isinstance(radars, Mapping):
             items = tuple((str(name), radar) for name, radar in radars.items())
         else:
@@ -451,7 +581,7 @@ class Radar:
             if not isinstance(radar, cls):
                 raise TypeError(f"radars['{name}'] must be a Radar instance.")
 
-        results = {
+        return {
             name: radar.simulate(
                 scene,
                 resolution=resolution,
@@ -465,4 +595,3 @@ class Radar:
             )
             for name, radar in items
         }
-        return MultiResult(results=results, metadata=dict(metadata or {}))
