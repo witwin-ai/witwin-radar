@@ -153,7 +153,6 @@ def generate_clip(radar: Radar, clip_idx: int, subj_name: str, clip_name: str):
     indices = [start + i * step for i in range(NUM_FRAMES + 1)]
 
     scene = Scene()
-    scene.set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=80)
     translation = [0, -0.1, -3]
     scene.add_smpl(
         name="human",
@@ -164,7 +163,7 @@ def generate_clip(radar: Radar, clip_idx: int, subj_name: str, clip_name: str):
         model_root=str(MODEL_ROOT),
     )
 
-    renderer = Renderer(scene, resolution=256)
+    renderer = Renderer(scene, radar, resolution=256)
     all_pcs = []
     all_rd_mags = []
     all_ray_data = []
@@ -299,7 +298,7 @@ def main():
     require_cuda()
     ensure_inputs()
 
-    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=80)
     print(f"Generating {len(CLIPS)} clips x {NUM_FRAMES} frames each (CFAR pfa={CFAR_PFA})...")
 
     outputs = []

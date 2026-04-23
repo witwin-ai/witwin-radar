@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
 
@@ -11,19 +13,29 @@ from .config import RadarConfig
 from .noise import NoiseModelRuntime
 from .polarization import PolarizationRuntime
 from .receiver_chain import ReceiverChainRuntime
-from .sensor import Sensor
-from .types import SolverBackend
+from .types import MotionSampling, SamplingMode, SolverBackend
+from .utils.vector import vec3_tensor
 from .validation import default_dipole_antenna_pattern
+
+
+def _target_from_position(position: torch.Tensor) -> torch.Tensor:
+    return position + torch.tensor((0.0, 0.0, -1.0), dtype=torch.float32)
 
 
 class Radar:
     def __init__(
         self,
-        config: RadarConfig,
+        config: RadarConfig | Mapping[str, Any],
         backend: SolverBackend = "dirichlet",
         pad_factor: int = 16,
         device: str | torch.device = "cuda",
-        sensor: Sensor | None = None,
+        *,
+        position=(0.0, 0.0, 0.0),
+        target=None,
+        up=(0.0, 1.0, 0.0),
+        fov: float = 60.0,
+        name: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ):
         """
         Args:
@@ -32,16 +44,22 @@ class Radar:
             backend: "dirichlet" | "slang" | "pytorch"
             pad_factor: FFT zero-padding factor for the Dirichlet backend
             device: compute device for public tensors and PyTorch execution
-            sensor: radar pose in world coordinates
+            position: radar origin in world coordinates
+            target: look-at target in world coordinates. Defaults to one meter along -Z from position.
+            up: world-space up vector
+            fov: perspective field of view in degrees for ray tracing
+            name: optional identifier used by ``Radar.simulate_group``
         """
         self.c0 = 299792458
         self.backend = SolverBackend(backend)
         self.device: torch.device = self._resolve_device(
             device=torch.device(device), backend=self.backend
         )
-        self.sensor = sensor or Sensor.identity()
+        self.name = None if name is None else str(name)
+        self.metadata = dict(metadata or {})
+        self._set_pose_fields(position=position, target=target, up=up, fov=fov)
 
-        self.config: RadarConfig = config
+        self.config: RadarConfig = config if isinstance(config, RadarConfig) else RadarConfig.from_dict(config)
         cfg = self.config
 
         if (
@@ -59,10 +77,7 @@ class Radar:
         rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
         self.tx_loc = tx_loc
         self.rx_loc = rx_loc
-        self.tx_pos = self.world_from_local_points(tx_loc).contiguous()
-        self.rx_pos = self.world_from_local_points(rx_loc).contiguous()
-
-        self.sensor_origin = self.sensor.origin.to(dtype=torch.float32, device=self.device)
+        self._refresh_pose_dependent_state()
 
         self.t_sample = (
             torch.arange(0, cfg.adc_samples, dtype=torch.float64, device=self.device)
@@ -89,7 +104,7 @@ class Radar:
         )
         self.polarization_config = cfg.polarization
         self.polarization = (
-            PolarizationRuntime.from_config(cfg.polarization, device=self.device, sensor=self.sensor)
+            PolarizationRuntime.from_config(cfg.polarization, device=self.device, radar=self)
             if cfg.polarization is not None
             else None
         )
@@ -149,17 +164,76 @@ class Radar:
             raise ValueError(f"Radar backend '{backend}' requires device='cuda'.")
         return device
 
+    def _set_pose_fields(self, *, position, target, up, fov) -> None:
+        position_t = vec3_tensor(position, name="Radar.position")
+        target_t = _target_from_position(position_t) if target is None else vec3_tensor(target, name="Radar.target")
+        up_t = vec3_tensor(up, name="Radar.up")
+        forward = target_t - position_t
+        if torch.linalg.norm(forward) <= 1e-12:
+            raise ValueError("Radar.target must differ from Radar.position.")
+        if torch.linalg.norm(up_t) <= 1e-12:
+            raise ValueError("Radar.up must be non-zero.")
+        if torch.linalg.norm(torch.cross(forward, up_t, dim=0)) <= 1e-12:
+            raise ValueError("Radar.up must not be collinear with the viewing direction.")
+        self.position = position_t
+        self.target = target_t
+        self.up = up_t
+        self.fov = float(fov)
+
+    def _refresh_pose_dependent_state(self) -> None:
+        self.tx_pos = self.world_from_local_points(self.tx_loc).contiguous()
+        self.rx_pos = self.world_from_local_points(self.rx_loc).contiguous()
+        self.origin = self.position
+
+    def set_pose(self, *, position=None, target=None, up=None, fov=None) -> "Radar":
+        """Mutate radar pose and refresh pose-dependent antenna state."""
+        new_position = self.position if position is None else vec3_tensor(position, name="Radar.position")
+        if target is None:
+            target_t = self.target if position is None else new_position + (self.target - self.position)
+        else:
+            target_t = vec3_tensor(target, name="Radar.target")
+        up_t = self.up if up is None else vec3_tensor(up, name="Radar.up")
+        fov_value = self.fov if fov is None else float(fov)
+        self._set_pose_fields(position=new_position, target=target_t, up=up_t, fov=fov_value)
+        self._refresh_pose_dependent_state()
+        if self.polarization_config is not None:
+            self.polarization = PolarizationRuntime.from_config(
+                self.polarization_config,
+                device=self.device,
+                radar=self,
+            )
+        return self
+
+    def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        position = self.position.to(device=device, dtype=dtype)
+        target = self.target.to(device=device, dtype=dtype)
+        up = self.up.to(device=device, dtype=dtype)
+
+        forward = target - position
+        forward = forward / torch.linalg.norm(forward)
+        right = torch.cross(forward, up, dim=0)
+        right = right / torch.linalg.norm(right)
+        true_up = torch.cross(right, forward, dim=0)
+        true_up = true_up / torch.linalg.norm(true_up)
+        back = -forward
+        world_from_local = torch.stack((right, true_up, back), dim=1)
+        return position, world_from_local
+
     def world_from_local_points(self, points: torch.Tensor) -> torch.Tensor:
-        return self.sensor.world_from_local_points(points)
+        position, world_from_local = self._world_from_local_matrix(device=points.device, dtype=points.dtype)
+        return points @ world_from_local.transpose(0, 1) + position
 
     def world_from_local_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
-        return self.sensor.world_from_local_vectors(vectors)
+        _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
+        return vectors @ world_from_local.transpose(0, 1)
 
     def local_from_world_points(self, points: torch.Tensor) -> torch.Tensor:
-        return self.sensor.local_from_world_points(points)
+        position, world_from_local = self._world_from_local_matrix(device=points.device, dtype=points.dtype)
+        return (points - position) @ world_from_local
 
     def local_from_world_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
-        return self.sensor.local_from_world_vectors(vectors)
+        _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
+        return vectors @ world_from_local
 
     def _make_noise_generator(self) -> torch.Generator | None:
         if self.config.noise_model is None or self.config.noise_model.seed is None:
@@ -271,3 +345,124 @@ class Radar:
             )
         signal = self.solver.mimo(interpolator, t0, **options)
         return self.apply_signal_models(signal)
+
+    def simulate(
+        self,
+        scene,
+        *,
+        resolution: int = 128,
+        epsilon_r: float = 5.0,
+        sampling: SamplingMode = "triangle",
+        multipath: bool = False,
+        max_reflections: int = 0,
+        ray_batch_size: int = 65536,
+        t0: float = 0.0,
+        motion_sampling: MotionSampling = "per_chirp",
+        metadata: Mapping[str, Any] | None = None,
+    ):
+        """Run ray tracing plus MIMO signal generation for one scene."""
+        from .renderer import Renderer
+        from .result import Result
+        from .scene import Scene, SceneModule
+
+        if isinstance(scene, SceneModule):
+            scene = scene.to_scene()
+        if not isinstance(scene, Scene):
+            raise TypeError("scene must be a radar.Scene or radar.SceneModule.")
+
+        sampling = SamplingMode(sampling)
+        motion_sampling = MotionSampling(motion_sampling)
+        if max_reflections < 0:
+            raise ValueError("max_reflections must be >= 0.")
+        if ray_batch_size <= 0:
+            raise ValueError("ray_batch_size must be > 0.")
+        if multipath and sampling != SamplingMode.PIXEL:
+            raise ValueError("multipath=True requires sampling='pixel'.")
+
+        renderer = Renderer(
+            scene,
+            self,
+            resolution=resolution,
+            epsilon_r=epsilon_r,
+            sampling=sampling,
+            multipath=multipath,
+            max_reflections=max_reflections,
+            ray_batch_size=ray_batch_size,
+        )
+        t0 = float(t0)
+        trace = renderer.trace(time=t0) if scene.has_motion else renderer.trace()
+
+        if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
+            def interpolator(t):
+                return renderer.trace(time=t)
+        else:
+            def interpolator(t):
+                del t
+                return trace
+
+        signal = self.mimo(interpolator, t0)
+        result_metadata = dict(self.metadata if metadata is None else metadata)
+        return Result(
+            method="mimo",
+            scene=scene,
+            signal=signal,
+            trace=trace,
+            radar=self,
+            renderer=renderer,
+            metadata=result_metadata,
+        )
+
+    @classmethod
+    def simulate_group(
+        cls,
+        scene,
+        *,
+        radars: Mapping[str, "Radar"] | Sequence["Radar"],
+        resolution: int = 128,
+        epsilon_r: float = 5.0,
+        sampling: SamplingMode = "triangle",
+        multipath: bool = False,
+        max_reflections: int = 0,
+        ray_batch_size: int = 65536,
+        t0: float = 0.0,
+        motion_sampling: MotionSampling = "per_chirp",
+        metadata: Mapping[str, Any] | None = None,
+    ):
+        """Run the same scene for multiple named Radar instances."""
+        from .result import MultiResult
+
+        if isinstance(radars, Mapping):
+            items = tuple((str(name), radar) for name, radar in radars.items())
+        else:
+            items = tuple((radar.name, radar) for radar in radars)
+            missing = [index for index, (name, _) in enumerate(items) if not name]
+            if missing:
+                raise ValueError(
+                    "Radar.simulate_group requires names for sequence entries; "
+                    "pass a mapping or set Radar(name=...)."
+                )
+
+        if not items:
+            raise ValueError("Radar.simulate_group requires at least one radar.")
+        names = [name for name, _ in items]
+        if len(names) != len(set(names)):
+            raise ValueError("Radar.simulate_group radar names must be unique.")
+        for name, radar in items:
+            if not isinstance(radar, cls):
+                raise TypeError(f"radars['{name}'] must be a Radar instance.")
+
+        results = {
+            name: radar.simulate(
+                scene,
+                resolution=resolution,
+                epsilon_r=epsilon_r,
+                sampling=sampling,
+                multipath=multipath,
+                max_reflections=max_reflections,
+                ray_batch_size=ray_batch_size,
+                t0=t0,
+                motion_sampling=motion_sampling,
+            )
+            for name, radar in items
+        }
+        return MultiResult(results=results, metadata=dict(metadata or {}))

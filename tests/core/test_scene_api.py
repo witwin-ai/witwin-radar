@@ -4,14 +4,6 @@ import witwin.radar as wr
 def test_scene_uses_set_and_add_mutators_without_with_aliases():
     scene = wr.Scene(device="cpu")
 
-    returned = scene.set_sensor(
-        origin=(0.0, 0.0, 0.0),
-        target=(0.0, 0.0, -1.0),
-        up=(0.0, 1.0, 0.0),
-        fov=55.0,
-    )
-    assert returned is scene
-
     structure = wr.Structure(
         name="target",
         geometry=wr.Box(position=(0.0, 0.0, -3.0), size=(1.0, 1.0, 1.0)),
@@ -26,9 +18,12 @@ def test_scene_uses_set_and_add_mutators_without_with_aliases():
         translation=wr.TranslationMotion(offset=(0.1, 0.0, 0.0)),
     ) is scene
 
-    assert scene.sensor.fov == 55.0
     assert [item.name for item in scene.structures] == ["target", "mesh"]
     assert "target" in scene._structure_motions
+    assert not hasattr(wr, "Sensor")
+    assert not hasattr(wr, "Simulation")
+    assert not hasattr(wr, "RadarSpec")
+    assert not hasattr(scene, "set_sensor")
     assert not hasattr(scene, "with_sensor")
     assert not hasattr(scene, "with_structure")
     assert not hasattr(scene, "with_mesh")

@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from witwin.core import Material
-from witwin.radar import Scene, Simulation, Sensor
+from witwin.radar import Radar, Scene
 
 
 def _config(*, polarization) -> dict:
@@ -51,10 +51,7 @@ def _slanted_plate_scene(*, device: str) -> Scene:
     )
     faces = torch.tensor([[0, 1, 2], [0, 2, 3]], dtype=torch.int64, device=device)
 
-    scene = Scene(
-        sensor=Sensor(origin=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0), up=(0.0, 1.0, 0.0)),
-        device=device,
-    )
+    scene = Scene(device=device)
     scene.add_mesh(
         name="plate",
         vertices=vertices,
@@ -69,19 +66,23 @@ def _slanted_plate_scene(*, device: str) -> Scene:
 @pytest.mark.parametrize("sampling", ["triangle", "pixel"])
 def test_end_to_end_polarization_changes_measured_signal(sampling):
     scene = _slanted_plate_scene(device="cuda")
-    hh = Simulation.mimo(
-        scene,
-        config=_config(polarization={"tx": "horizontal", "rx": "horizontal"}),
+    hh_radar = Radar(
+        _config(polarization={"tx": "horizontal", "rx": "horizontal"}),
         backend="pytorch",
         device="cuda",
+    )
+    hv_radar = Radar(
+        _config(polarization={"tx": "horizontal", "rx": "vertical"}),
+        backend="pytorch",
+        device="cuda",
+    )
+    hh = hh_radar.simulate(
+        scene,
         sampling=sampling,
         resolution=96 if sampling == "pixel" else 32,
     )
-    hv = Simulation.mimo(
+    hv = hv_radar.simulate(
         scene,
-        config=_config(polarization={"tx": "horizontal", "rx": "vertical"}),
-        backend="pytorch",
-        device="cuda",
         sampling=sampling,
         resolution=96 if sampling == "pixel" else 32,
     )
@@ -100,18 +101,22 @@ def test_process_rd_preserves_polarization_contrast():
     from witwin.radar.sigproc import process_rd
 
     scene = _slanted_plate_scene(device="cuda")
-    hh = Simulation.mimo(
-        scene,
-        config=_config(polarization={"tx": "horizontal", "rx": "horizontal"}),
+    hh_radar = Radar(
+        _config(polarization={"tx": "horizontal", "rx": "horizontal"}),
         backend="pytorch",
         device="cuda",
+    )
+    hv_radar = Radar(
+        _config(polarization={"tx": "horizontal", "rx": "vertical"}),
+        backend="pytorch",
+        device="cuda",
+    )
+    hh = hh_radar.simulate(
+        scene,
         sampling="triangle",
     )
-    hv = Simulation.mimo(
+    hv = hv_radar.simulate(
         scene,
-        config=_config(polarization={"tx": "horizontal", "rx": "vertical"}),
-        backend="pytorch",
-        device="cuda",
         sampling="triangle",
     )
 

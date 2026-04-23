@@ -7,13 +7,11 @@ from .polarization import PolarizationConfig
 from .receiver_chain import AGCConfig, LNAConfig, ReceiverChainConfig
 from .radar import Radar
 from .result import MultiResult, Result
-from .simulation import RadarSpec, RenderOptions, Simulation
 from .solvers import Solver
 from .renderer import Renderer, TraceResult
 from .material import fresnel
 from .motion import RotationMotion, StructureMotion, TranslationMotion
 from .scene import Scene, SceneModule
-from .sensor import Sensor
 from .timeline import Timeline
 from .types import DetectorType, MotionSampling, SamplingMode, SolverBackend
 from witwin.core import (
@@ -48,9 +46,6 @@ __all__ = [
     'ReceiverChainConfig',
     'Result',
     'MultiResult',
-    'Simulation',
-    'RadarSpec',
-    'RenderOptions',
     'Solver',
     'Renderer',
     'TraceResult',
@@ -60,7 +55,6 @@ __all__ = [
     'SamplingMode',
     'Scene',
     'SceneModule',
-    'Sensor',
     'SMPLBody',
     'Timeline',
     'TranslationMotion',

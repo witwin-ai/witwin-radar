@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from witwin.core import Box, Material, Structure
-from witwin.radar import Renderer, Sensor, Simulation
+from witwin.radar import Radar, Renderer
 from witwin.radar.scene import Scene
 
 
@@ -34,9 +34,7 @@ CONFIG = {
 
 
 def _scene() -> Scene:
-    return Scene(
-        sensor=Sensor(origin=(0, 0, 0), target=(0, 0, -5), up=(0, 1, 0), fov=60),
-    ).add_structure(
+    return Scene().add_structure(
         Structure(
             name="target",
             geometry=Box(position=(0.0, 0.0, -4.0), size=(1.0, 1.0, 1.0)),
@@ -46,9 +44,11 @@ def _scene() -> Scene:
 
 
 def test_renderer_multipath_smoke_returns_rich_trace():
+    radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
     try:
         trace = Renderer(
             _scene(),
+            radar,
             resolution=16,
             sampling="pixel",
             multipath=True,
@@ -66,12 +66,11 @@ def test_renderer_multipath_smoke_returns_rich_trace():
 
 
 @pytest.mark.parametrize("backend", ["pytorch", "dirichlet", "slang"])
-def test_simulation_multipath_smoke_runs_for_all_backends(backend):
+def test_radar_multipath_smoke_runs_for_all_backends(backend):
+    radar = Radar(CONFIG, backend=backend, device="cuda", target=(0, 0, -5), fov=60)
     try:
-        result = Simulation.mimo(
+        result = radar.simulate(
             _scene(),
-            config=CONFIG,
-            backend=backend,
             resolution=16,
             sampling="pixel",
             multipath=True,
@@ -90,11 +89,10 @@ def test_simulation_multipath_smoke_runs_for_all_backends(backend):
 def test_process_rd_runs_on_multipath_signal():
     from witwin.radar.sigproc import process_rd
 
+    radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
     try:
-        result = Simulation.mimo(
+        result = radar.simulate(
             _scene(),
-            config=CONFIG,
-            backend="pytorch",
             resolution=16,
             sampling="pixel",
             multipath=True,

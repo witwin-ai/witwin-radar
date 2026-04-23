@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar import Radar, RadarConfig, Sensor
+from witwin.radar import Radar, RadarConfig
 
 
 def _config() -> dict:
@@ -64,8 +64,15 @@ def _half_wave_dipole_power(angle_deg: float) -> float:
     return field * field
 
 
-def test_sensor_transforms_local_points_and_vectors():
-    sensor = Sensor(origin=(1.0, 2.0, 3.0), target=(2.0, 2.0, 3.0), up=(0.0, 1.0, 0.0))
+def test_radar_transforms_local_points_and_vectors():
+    radar = Radar(
+        RadarConfig.from_dict(_config()),
+        backend="pytorch",
+        device="cpu",
+        position=(1.0, 2.0, 3.0),
+        target=(2.0, 2.0, 3.0),
+        up=(0.0, 1.0, 0.0),
+    )
     local_points = torch.tensor(
         [
             [0.0, 0.0, 0.0],
@@ -76,7 +83,7 @@ def test_sensor_transforms_local_points_and_vectors():
         dtype=torch.float32,
     )
 
-    world_points = sensor.world_from_local_points(local_points)
+    world_points = radar.world_from_local_points(local_points)
     expected_points = torch.tensor(
         [
             [1.0, 2.0, 3.0],
@@ -89,12 +96,11 @@ def test_sensor_transforms_local_points_and_vectors():
     assert torch.allclose(world_points, expected_points)
 
     world_forward = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float32)
-    local_forward = sensor.local_from_world_vectors(world_forward)
+    local_forward = radar.local_from_world_vectors(world_forward)
     assert torch.allclose(local_forward, torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32), atol=1e-6, rtol=1e-6)
 
 
-def test_radar_world_positions_follow_sensor_pose():
-    sensor = Sensor(origin=(1.0, 0.0, 0.0), target=(2.0, 0.0, 0.0), up=(0.0, 1.0, 0.0))
+def test_radar_world_positions_follow_pose():
     radar = Radar(
         RadarConfig.from_dict({
             **_config(),
@@ -103,7 +109,9 @@ def test_radar_world_positions_follow_sensor_pose():
         }),
         backend="pytorch",
         device="cpu",
-        sensor=sensor,
+        position=(1.0, 0.0, 0.0),
+        target=(2.0, 0.0, 0.0),
+        up=(0.0, 1.0, 0.0),
     )
     spacing = radar._lambda / 2.0
 
@@ -118,15 +126,19 @@ def test_radar_world_positions_follow_sensor_pose():
 
 
 def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
-    identity = Sensor.identity()
-    moved = Sensor(origin=(1.5, -0.25, 0.5), target=(2.5, -0.25, 0.5), up=(0.0, 1.0, 0.0))
-
-    radar_identity = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=identity)
-    radar_moved = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=moved)
+    radar_identity = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
+    radar_moved = Radar(
+        RadarConfig.from_dict(_config()),
+        backend="pytorch",
+        device="cpu",
+        position=(1.5, -0.25, 0.5),
+        target=(2.5, -0.25, 0.5),
+        up=(0.0, 1.0, 0.0),
+    )
 
     target_local = torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32)
-    target_identity = identity.world_from_local_points(target_local).squeeze(0)
-    target_moved = moved.world_from_local_points(target_local).squeeze(0)
+    target_identity = radar_identity.world_from_local_points(target_local).squeeze(0)
+    target_moved = radar_moved.world_from_local_points(target_local).squeeze(0)
 
     peak_identity = _signal_peak(radar_identity, target_identity)
     peak_moved = _signal_peak(radar_moved, target_moved)
@@ -135,13 +147,43 @@ def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
 
 
 def test_rotated_radar_pattern_is_evaluated_in_local_frame():
-    sensor = Sensor(origin=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0))
-    radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=sensor)
+    radar = Radar(
+        RadarConfig.from_dict(_config()),
+        backend="pytorch",
+        device="cpu",
+        position=(0.0, 0.0, 0.0),
+        target=(1.0, 0.0, 0.0),
+        up=(0.0, 1.0, 0.0),
+    )
 
-    center_world = sensor.world_from_local_points(_local_target(0.0, 0.0).unsqueeze(0)).squeeze(0)
-    off_axis_world = sensor.world_from_local_points(_local_target(45.0, 0.0).unsqueeze(0)).squeeze(0)
+    center_world = radar.world_from_local_points(_local_target(0.0, 0.0).unsqueeze(0)).squeeze(0)
+    off_axis_world = radar.world_from_local_points(_local_target(45.0, 0.0).unsqueeze(0)).squeeze(0)
 
     center_peak = _signal_peak(radar, center_world)
     off_axis_peak = _signal_peak(radar, off_axis_world)
 
     assert off_axis_peak / center_peak == pytest.approx(_half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3)
+
+
+def test_set_pose_updates_position_target_fov_and_antenna_positions():
+    radar = Radar(
+        RadarConfig.from_dict({
+            **_config(),
+            "num_tx": 2,
+            "tx_loc": [[0, 0, 0], [2, 0, 0]],
+        }),
+        backend="pytorch",
+        device="cpu",
+    )
+    radar.set_pose(position=(1.0, 0.0, 0.0), target=(2.0, 0.0, 0.0), fov=42.0)
+
+    spacing = radar._lambda / 2.0
+    expected = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 2.0 * spacing],
+        ],
+        dtype=torch.float32,
+    )
+    assert radar.fov == 42.0
+    assert torch.allclose(radar.tx_pos.cpu(), expected, atol=1e-6, rtol=1e-6)

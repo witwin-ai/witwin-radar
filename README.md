@@ -44,7 +44,14 @@ config = {
 }
 
 # Use the recommended GPU backend.
-radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
+radar = Radar(
+    RadarConfig.from_dict(config),
+    backend="dirichlet",
+    device="cuda",
+    position=(0.0, 0.0, 0.0),
+    target=(0.0, 0.0, -5.0),
+    fov=60.0,
+)
 
 point = np.array([[0.0, 0.0, -3.0]], dtype=np.float32)
 velocity = np.array([[0.0, 0.0, 0.01]], dtype=np.float32)
@@ -65,17 +72,21 @@ rd, _, ranges, vels = process_rd(radar, frame)
 
 ## Scene API
 
-Use `Sensor(...)` to define the radar pose, `Scene.set_sensor(...)` to configure the default scene sensor, and `Scene.add_*` methods for scene assembly.
+Use `Radar(..., position=..., target=..., fov=...)` to define the radar pose, and `Scene.add_*` methods for scene assembly.
 
 ```python
 from witwin.core import Material, Structure
-from witwin.radar import Scene, Sensor, Simulation
+from witwin.radar import Radar, RadarConfig, Scene
 
-scene = Scene(device="cpu").set_sensor(
-    origin=(0.0, 0.0, 0.0),
+radar = Radar(
+    RadarConfig.from_dict(config),
+    backend="dirichlet",
+    device="cuda",
+    position=(0.0, 0.0, 0.0),
     target=(0.0, 0.0, -1.0),
-    up=(0.0, 1.0, 0.0),
+    fov=60.0,
 )
+scene = Scene(device="cpu")
 
 scene.add_structure(
     Structure(
@@ -95,19 +106,15 @@ scene.add_structure_motion(
     ),
 )
 
-result = Simulation.mimo(
+result = radar.simulate(
     scene,
-    config=config,
-    backend="dirichlet",
     sampling="triangle",
     motion_sampling="per_chirp",
-    device="cpu",
 )
 ```
 
 Available mutating scene methods:
 
-- `Scene.set_sensor(...)`
 - `Scene.add_structure(...)`
 - `Scene.add_mesh(...)`
 - `Scene.add_smpl(...)`
@@ -123,7 +130,7 @@ Available mutating scene methods:
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
 - Optional per-structure rigid motion with parent inheritance
-- Multi-radar orchestration through `Simulation.mimo_group(...)`
+- Multi-radar orchestration through `Radar.simulate_group(...)`
 - Torch-native DSP pipeline for range/Doppler processing and point-cloud extraction
 - Optional antenna pattern, polarization, noise-model, and receiver-chain configuration
 

@@ -47,10 +47,9 @@ def require_cuda():
 
 def main():
     require_cuda()
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
 
     scene = Scene()
-    scene.set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=60)
 
     wall_v, wall_f = Box(position=(0, 0, -5), size=(6, 4, 0.01)).to_mesh()
     scene.add_mesh(name="wall", vertices=wall_v, faces=wall_f)
@@ -59,7 +58,7 @@ def main():
     box2_v, box2_f = Box(position=(-1.0, -0.5, -4), size=(0.6, 1.0, 0.6)).to_mesh()
     scene.add_mesh(name="box_b", vertices=box2_v, faces=box2_f)
 
-    renderer = Renderer(scene, resolution=128)
+    renderer = Renderer(scene, radar, resolution=128)
 
     print("Ray tracing...")
     points, intensities = renderer.trace()

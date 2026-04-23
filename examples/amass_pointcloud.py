@@ -80,7 +80,7 @@ def main():
     source_fps = float(pose_data["mocap_framerate"])
     print(f"Loaded {pose_files[0].name}: {all_poses.shape[0]} frames at {source_fps} fps, gender={gender}")
 
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=80)
 
     step = int(source_fps / config["frame_per_second"])
     num_frames = 30
@@ -94,7 +94,6 @@ def main():
     translation = [0, -0.1, -3]
 
     scene = Scene()
-    scene.set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=80)
     scene.add_smpl(
         name="human",
         pose=fix_pose(all_poses[indices[0]]),
@@ -103,7 +102,7 @@ def main():
         gender=gender,
         model_root=str(MODEL_ROOT),
     )
-    renderer = Renderer(scene, resolution=256)
+    renderer = Renderer(scene, radar, resolution=256)
 
     print(f"Generating {num_frames} radar frames...")
     all_pcs = []

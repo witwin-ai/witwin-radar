@@ -11,8 +11,6 @@ from typing import Any
 
 import torch
 
-from .sensor import Sensor
-
 
 @dataclass(frozen=True)
 class PolarizationConfig:
@@ -47,13 +45,13 @@ class PolarizationRuntime:
         cls,
         config: PolarizationConfig,
         *,
-        device: str,
-        sensor: Sensor,
+        device: str | torch.device,
+        radar,
     ) -> "PolarizationRuntime":
         tx_local = _normalize_rows(torch.tensor(config.tx, dtype=torch.float32, device=device))
         rx_local = _normalize_rows(torch.tensor(config.rx, dtype=torch.float32, device=device))
-        tx_world = _normalize_rows(sensor.world_from_local_vectors(tx_local))
-        rx_world = _normalize_rows(sensor.world_from_local_vectors(rx_local))
+        tx_world = _normalize_rows(radar.world_from_local_vectors(tx_local))
+        rx_world = _normalize_rows(radar.world_from_local_vectors(rx_local))
         return cls(
             tx_world=tx_world.contiguous(),
             rx_world=rx_world.contiguous(),

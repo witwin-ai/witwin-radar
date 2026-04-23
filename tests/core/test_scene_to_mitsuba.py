@@ -13,10 +13,6 @@ import torch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 
-def _make_sensor(wr):
-    return wr.Sensor(origin=(0, 0, 0), target=(0, 0, -5), up=(0, 1, 0), fov=60)
-
-
 def _make_box_arrays():
     import witwin.radar as wr
 
@@ -65,7 +61,7 @@ def test_static_mesh_arrays_promote_to_core_mesh():
 
     vertices, faces = _make_box_arrays()
     vertices_np = vertices.detach().cpu().numpy()
-    scene = wr.Scene(sensor=_make_sensor(wr), device="cpu").add_mesh(
+    scene = wr.Scene(device="cpu").add_mesh(
         name="target",
         vertices=vertices_np,
         faces=faces,
@@ -82,7 +78,7 @@ def test_tensor_mesh_inputs_promote_to_core_mesh_and_keep_dynamic_metadata():
     import witwin.radar as wr
 
     vertices, faces = _make_box_arrays()
-    scene = wr.Scene(sensor=_make_sensor(wr), device="cpu").add_mesh(
+    scene = wr.Scene(device="cpu").add_mesh(
         name="target",
         vertices=torch.as_tensor(vertices, dtype=torch.float32),
         faces=torch.tensor(faces, dtype=torch.int64),
@@ -103,7 +99,7 @@ def test_scene_accepts_shared_structure_directly():
         material=wr.Material(eps_r=3.0),
         name="target",
     )
-    scene = wr.Scene(sensor=_make_sensor(wr), device="cpu").add_structure(structure)
+    scene = wr.Scene(device="cpu").add_structure(structure)
 
     compiled = scene.compile_renderables()
     assert "target" in compiled
@@ -114,7 +110,7 @@ def test_add_smpl_builds_shared_structure_and_dynamic_metadata():
     import witwin.radar as wr
     import witwin.core as wc
 
-    scene = wr.Scene(sensor=_make_sensor(wr), device="cpu").add_smpl(
+    scene = wr.Scene(device="cpu").add_smpl(
         name="human",
         pose=np.zeros(72, dtype=np.float32),
         shape=np.zeros(10, dtype=np.float32),
@@ -129,7 +125,7 @@ def test_add_smpl_builds_shared_structure_and_dynamic_metadata():
 def test_update_structure_moves_box_geometry():
     import witwin.radar as wr
 
-    scene = wr.Scene(sensor=_make_sensor(wr), device="cpu").add_structure(
+    scene = wr.Scene(device="cpu").add_structure(
         wr.Structure(
             geometry=wr.Box(position=(0.0, 0.0, -3.0), size=(1.0, 1.0, 1.0)),
             material=wr.Material(),

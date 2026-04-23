@@ -18,7 +18,6 @@ Vector2f = dr.cuda.ad.Array2f
 TensorXf = dr.cuda.ad.TensorXf
 
 from .material import fresnel
-from .sensor import Sensor
 from .types import SamplingMode
 
 mi.set_variant("cuda_ad_rgb")
@@ -77,20 +76,20 @@ class Renderer:
     def __init__(
         self,
         scene,
+        radar,
         resolution=128,
         epsilon_r=5.0,
         sampling: SamplingMode = "pixel",
-        sensor: Sensor | None = None,
         *,
         multipath: bool = False,
         max_reflections: int = 0,
         ray_batch_size: int = 65536,
     ):
         self.scene = scene
+        self.radar = radar
         self.resolution = int(resolution)
         self.epsilon_r = float(epsilon_r)
         self.sampling = SamplingMode(sampling)
-        self.sensor = sensor
         self.multipath = bool(multipath)
         self.max_reflections = int(max_reflections)
         self.ray_batch_size = int(ray_batch_size)
@@ -107,19 +106,15 @@ class Renderer:
         self._params = None
         self._shape_eps = []
 
-    @property
-    def active_sensor(self) -> Sensor:
-        return self.sensor or self.scene.sensor
-
-    def _sensor_dict(self):
+    def _mitsuba_sensor_dict(self):
         return {
             "type": "perspective",
             "to_world": T.look_at(
-                origin=self.active_sensor.origin.tolist(),
-                target=self.active_sensor.target.tolist(),
-                up=self.active_sensor.up.tolist(),
+                origin=self.radar.position.tolist(),
+                target=self.radar.target.tolist(),
+                up=self.radar.up.tolist(),
             ),
-            "fov": self.active_sensor.fov,
+            "fov": self.radar.fov,
             "film": {
                 "type": "hdrfilm",
                 "width": self.resolution,
@@ -137,7 +132,7 @@ class Renderer:
         }
 
     def _empty_trace(self, *, include_tri_indices: bool = False) -> TraceResult:
-        device = torch.device("cuda")
+        device = self.radar.device
         tri_indices = None
         if include_tri_indices:
             tri_indices = torch.empty((0,), dtype=torch.int64, device=device)
@@ -157,7 +152,7 @@ class Renderer:
             "reflectance": {"type": "rgb", "value": (0.8, 0.8, 0.8)},
         }
         state = build_mitsuba_scene(
-            sensor=self._sensor_dict(),
+            sensor=self._mitsuba_sensor_dict(),
             renderables=renderables,
             integrator={"type": "direct"},
             default_bsdf=default_bsdf,
@@ -289,7 +284,7 @@ class Renderer:
         centroid = (v0 + v1 + v2) / 3.0
         normal = dr.normalize(dr.cross(v1 - v0, v2 - v0))
 
-        origin = Point3f(*self.active_sensor.origin.tolist())
+        origin = Point3f(*self.radar.position.tolist())
         view_dir = dr.normalize(origin - centroid)
         front = dr.dot(view_dir, normal) > 0
 
@@ -342,7 +337,7 @@ class Renderer:
         if visible_index.numel() == 0:
             return (*empty, num_faces)
 
-        sensor_origin = self.active_sensor.origin.tolist()
+        sensor_origin = self.radar.position.tolist()
         num_faces_captured = num_faces
         fi_captured = fi
 
@@ -558,7 +553,7 @@ class Renderer:
             active = valid
 
     def _visible_from_origin(self, hit_points, normals, active):
-        origin = Point3f(*self.active_sensor.origin.tolist())
+        origin = Point3f(*self.radar.position.tolist())
         to_origin = origin - hit_points
         direction = dr.normalize(to_origin)
         offset_sign = dr.select(dr.dot(direction, normals) >= 0.0, 1.0, -1.0)

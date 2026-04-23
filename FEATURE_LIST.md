@@ -2,10 +2,10 @@
 
 ## Public API
 
-- Declarative simulation flow: `Scene -> Simulation -> Result`
-- Radar pose can be controlled explicitly with `Sensor(...)` on `Radar`, `Renderer`, or `Simulation`
-- Scene assembly uses `Scene.set_sensor(...)`, `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
-- Multi-radar orchestration is available via `Simulation.mimo_group(...)`, `RadarSpec`, and `MultiResult`
+- Declarative simulation flow: `Radar -> Scene -> Result` via `radar.simulate(scene, ...)`
+- Radar pose is controlled directly with `Radar(position=..., target=..., up=..., fov=...)` or `radar.set_pose(...)`
+- Scene assembly uses `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
+- Multi-radar orchestration is available via `Radar.simulate_group(...)` and `MultiResult`
 - Optional per-structure motion is available through `Scene.add_structure_motion(...)`, `Scene.set_structure_motion(...)`, and `Scene.clear_structure_motion(...)`. Callers pass `TranslationMotion` / `RotationMotion` instances directly.
 - Public string-literal API types: `SolverBackend`, `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
@@ -19,10 +19,9 @@
 - Optional `noise_model` config supports thermal noise, quantization noise, and phase noise with optional deterministic seeding
 - Optional `polarization` config supports simplified TX/RX polarization vectors with alias strings (`horizontal` / `vertical`) or per-element 3D vectors
 - Optional `receiver_chain` config supports `lna`, `agc`, and `adc` stages plus absolute TX-power scaling via `config["power"]`
-- `Radar` accepts `RadarConfig`, `dict`, or JSON config path
-- `Simulation` accepts the same validated config inputs as `Radar`
-- `Renderer(...)` and `Simulation.mimo(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
-- `Simulation.mimo(...)` and `Simulation.mimo_group(...)` accept `motion_sampling="per_frame" | "per_chirp"` for dynamic scenes
+- `Radar` accepts `RadarConfig` or raw config dictionaries
+- `Renderer(scene, radar, ...)` and `radar.simulate(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
+- `radar.simulate(...)` and `Radar.simulate_group(...)` accept `motion_sampling="per_frame" | "per_chirp"` for dynamic scenes
 
 ## Backend Execution
 

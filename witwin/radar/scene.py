@@ -11,7 +11,6 @@ import torch
 
 from witwin.core import GeometryBase, Material, Mesh, SMPLBody, SceneBase, Structure
 from .motion import RotationMotion, StructureMotion, TranslationMotion, tensor_scalar, tensor_vec3
-from .sensor import Sensor
 from .utils.geometry import (
     apply_transform_to_points,
     apply_transform_to_vectors,
@@ -117,7 +116,6 @@ class Scene(SceneBase):
 
     def __init__(
         self,
-        sensor: Sensor | None = None,
         *,
         structures=None,
         structure_motions: Mapping[str, StructureMotion] | None = None,
@@ -132,7 +130,6 @@ class Scene(SceneBase):
             device=resolved_device,
             verbose=verbose,
         )
-        self.sensor = sensor or Sensor.identity()
         self._structure_motions: dict[str, StructureMotion] = {}
         self._dirty_level = self.DIRTY_FULL
         self._last_compiled_joints: dict[str, torch.Tensor] = {}
@@ -152,22 +149,6 @@ class Scene(SceneBase):
         return self._dirty_level
 
     @property
-    def sensor_origin(self) -> torch.Tensor:
-        return self.sensor.origin
-
-    @property
-    def sensor_target(self) -> torch.Tensor:
-        return self.sensor.target
-
-    @property
-    def sensor_up(self) -> torch.Tensor:
-        return self.sensor.up
-
-    @property
-    def fov(self) -> float:
-        return self.sensor.fov
-
-    @property
     def has_motion(self) -> bool:
         return bool(self._structure_motions)
 
@@ -176,26 +157,6 @@ class Scene(SceneBase):
 
     def _set_dirty(self, level: int) -> None:
         self._dirty_level = max(self._dirty_level, level)
-
-    def set_sensor(
-        self,
-        sensor: Sensor | None = None,
-        *,
-        origin=None,
-        target=None,
-        up=None,
-        fov=None,
-    ) -> "Scene":
-        if sensor is None:
-            sensor = Sensor(
-                origin=self.sensor.origin if origin is None else origin,
-                target=self.sensor.target if target is None else target,
-                up=self.sensor.up if up is None else up,
-                fov=self.sensor.fov if fov is None else fov,
-            )
-        self.sensor = sensor
-        self._set_dirty(self.DIRTY_FULL)
-        return self
 
     def add_structure(self, structure: Structure) -> "Scene":
         if not isinstance(structure, Structure):
@@ -373,7 +334,6 @@ class Scene(SceneBase):
 
     def clone(self, **overrides) -> "Scene":
         return Scene(
-            sensor=overrides.get("sensor", self.sensor),
             structures=overrides.get("structures", list(self.structures)),
             structure_motions=overrides.get("structure_motions", dict(self._structure_motions)),
             metadata=overrides.get("metadata", dict(self.metadata)),
@@ -381,19 +341,21 @@ class Scene(SceneBase):
             verbose=overrides.get("verbose", self.verbose),
         )
 
-    def trace(self, renderer=None, *, time: float | None = None):
+    def trace(self, renderer=None, *, radar=None, time: float | None = None):
         if renderer is None:
+            if radar is None:
+                raise ValueError("Scene.trace requires a renderer or radar.")
             from .renderer import Renderer
 
-            renderer = Renderer(self)
+            renderer = Renderer(self, radar)
         return renderer.trace(time=time)
 
-    def interpolator(self, renderer=None):
-        trace = self.trace(renderer=renderer)
+    def interpolator(self, renderer=None, *, radar=None):
+        trace = self.trace(renderer=renderer, radar=radar)
 
         def _interpolator(t):
             if self.has_motion:
-                return self.trace(renderer=renderer, time=t)
+                return self.trace(renderer=renderer, radar=radar, time=t)
             del t
             return trace
 

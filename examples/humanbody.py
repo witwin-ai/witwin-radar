@@ -53,10 +53,9 @@ def main():
     if not MODEL_ROOT.exists():
         raise FileNotFoundError(f"SMPL models not found: {MODEL_ROOT}")
 
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
 
     scene = Scene()
-    scene.set_sensor(origin=(0, 0, 0), target=(0, 0, -5), fov=60)
 
     print("Adding SMPL body...")
     pose = np.zeros(72, dtype=np.float32)
@@ -70,7 +69,7 @@ def main():
         model_root=str(MODEL_ROOT),
     )
 
-    renderer = Renderer(scene, resolution=128)
+    renderer = Renderer(scene, radar, resolution=128)
 
     print("Ray tracing...")
     points, intensities = renderer.trace()
