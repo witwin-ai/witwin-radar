@@ -76,7 +76,7 @@ def test_end_to_end_polarization_changes_measured_signal(sampling):
         device="cuda",
         sampling=sampling,
         resolution=96 if sampling == "pixel" else 32,
-    ).run()
+    )
     hv = Simulation.mimo(
         scene,
         config=_config(polarization={"tx": "horizontal", "rx": "vertical"}),
@@ -84,7 +84,7 @@ def test_end_to_end_polarization_changes_measured_signal(sampling):
         device="cuda",
         sampling=sampling,
         resolution=96 if sampling == "pixel" else 32,
-    ).run()
+    )
 
     hh_peak = hh.signal().abs().max()
     hv_peak = hv.signal().abs().max()
@@ -106,14 +106,14 @@ def test_process_rd_preserves_polarization_contrast():
         backend="pytorch",
         device="cuda",
         sampling="triangle",
-    ).run()
+    )
     hv = Simulation.mimo(
         scene,
         config=_config(polarization={"tx": "horizontal", "rx": "vertical"}),
         backend="pytorch",
         device="cuda",
         sampling="triangle",
-    ).run()
+    )
 
     hh_rd, _, _, _ = process_rd(hh.radar, hh.signal(), tx=0, rx=0)
     hv_rd, _, _, _ = process_rd(hv.radar, hv.signal(), tx=0, rx=0)

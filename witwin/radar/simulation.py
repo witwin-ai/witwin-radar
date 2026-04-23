@@ -21,11 +21,11 @@ from .types import (
 )
 
 
-def _resolve_scene_input(scene_like):
+def _resolve_scene(scene_like) -> Scene:
     if isinstance(scene_like, Scene):
-        return scene_like, None
+        return scene_like
     if isinstance(scene_like, SceneModule):
-        return scene_like.to_scene(), scene_like
+        return scene_like.to_scene()
     raise TypeError("scene must be a radar.Scene or radar.SceneModule.")
 
 
@@ -72,36 +72,56 @@ class RadarSpec:
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
 
 
+def _execute_mimo(
+    *,
+    scene: Scene,
+    config: RadarConfig | dict | str,
+    backend: SolverBackend,
+    render: RenderOptions,
+    device: str,
+    t0: float,
+    sensor: Sensor | None,
+    motion_sampling: MotionSampling,
+    metadata: dict[str, Any] | None,
+) -> Result:
+    effective_sensor = sensor or scene.sensor
+    radar = Radar(RadarConfig.coerce(config), backend=backend, device=device, sensor=effective_sensor)
+    renderer = Renderer(
+        scene,
+        resolution=render.resolution,
+        epsilon_r=render.epsilon_r,
+        sampling=render.sampling,
+        sensor=effective_sensor,
+        multipath=render.multipath,
+        max_reflections=render.max_reflections,
+        ray_batch_size=render.ray_batch_size,
+    )
+
+    trace = renderer.trace(time=t0) if scene.has_motion else renderer.trace()
+
+    if scene.has_motion and motion_sampling == "chirp":
+        def interpolator(t):
+            return renderer.trace(time=t)
+    else:
+        def interpolator(t):
+            del t
+            return trace
+
+    signal = radar.mimo(interpolator, t0)
+
+    return Result(
+        method="mimo",
+        scene=scene,
+        signal=signal,
+        trace=trace,
+        radar=radar,
+        renderer=renderer,
+        metadata=dict(metadata or {}),
+    )
+
+
 class Simulation:
     """Scene -> renderer -> radar solver -> result."""
-
-    def __init__(
-        self,
-        *,
-        scene,
-        method: str,
-        config: RadarConfig | dict | str,
-        backend: SolverBackend = "dirichlet",
-        render: RenderOptions | None = None,
-        device: str = "cuda",
-        t0: float = 0.0,
-        sensor: Sensor | None = None,
-        motion_sampling: MotionSampling = "chirp",
-        metadata: dict[str, Any] | None = None,
-    ):
-        resolved_scene, scene_module = _resolve_scene_input(scene)
-        self.scene_input = scene
-        self.scene = resolved_scene
-        self.scene_module = scene_module
-        self.method = str(method)
-        self.config = RadarConfig.coerce(config)
-        self.backend = normalize_solver_backend(backend)
-        self.device = str(device)
-        self.render = render or RenderOptions()
-        self.t0 = float(t0)
-        self.sensor = sensor
-        self.motion_sampling = normalize_motion_sampling(motion_sampling)
-        self.metadata = dict(metadata or {})
 
     @classmethod
     def mimo(
@@ -121,12 +141,11 @@ class Simulation:
         sensor: Sensor | None = None,
         motion_sampling: MotionSampling = "chirp",
         metadata: dict[str, Any] | None = None,
-    ) -> "Simulation":
-        return cls(
-            scene=scene,
-            method="mimo",
+    ) -> Result:
+        return _execute_mimo(
+            scene=_resolve_scene(scene),
             config=config,
-            backend=backend,
+            backend=normalize_solver_backend(backend),
             render=RenderOptions(
                 resolution=resolution,
                 epsilon_r=epsilon_r,
@@ -135,10 +154,10 @@ class Simulation:
                 max_reflections=max_reflections,
                 ray_batch_size=ray_batch_size,
             ),
-            device=device,
-            t0=t0,
+            device=str(device),
+            t0=float(t0),
             sensor=sensor,
-            motion_sampling=motion_sampling,
+            motion_sampling=normalize_motion_sampling(motion_sampling),
             metadata=metadata,
         )
 
@@ -156,120 +175,35 @@ class Simulation:
         ray_batch_size: int = 65536,
         motion_sampling: MotionSampling = "chirp",
         metadata: dict[str, Any] | None = None,
-    ) -> "MultiSimulation":
-        return MultiSimulation(
-            scene=scene,
-            method="mimo",
-            radars=radars,
-            render=RenderOptions(
-                resolution=resolution,
-                epsilon_r=epsilon_r,
-                sampling=sampling,
-                multipath=multipath,
-                max_reflections=max_reflections,
-                ray_batch_size=ray_batch_size,
-            ),
-            motion_sampling=motion_sampling,
-            metadata=metadata,
-        )
-
-    def prepare(self):
-        self._refresh_scene()
-        sensor = self.sensor or self.scene.sensor
-        radar = Radar(self.config, backend=self.backend, device=self.device, sensor=sensor)
-        renderer = Renderer(
-            self.scene,
-            resolution=self.render.resolution,
-            epsilon_r=self.render.epsilon_r,
-            sampling=self.render.sampling,
-            sensor=sensor,
-            multipath=self.render.multipath,
-            max_reflections=self.render.max_reflections,
-            ray_batch_size=self.render.ray_batch_size,
-        )
-        return PreparedSimulation(self, radar=radar, renderer=renderer)
-
-    def run(self) -> Result:
-        prepared = self.prepare()
-        trace = prepared.renderer.trace(time=self.t0) if self.scene.has_motion else prepared.renderer.trace()
-
-        if self.scene.has_motion and self.motion_sampling == "chirp":
-            def interpolator(t):
-                return prepared.renderer.trace(time=t)
-        else:
-            def interpolator(t):
-                del t
-                return trace
-
-        if self.method == "mimo":
-            signal = prepared.radar.mimo(interpolator, self.t0)
-        else:
-            raise ValueError(f"Unsupported radar simulation method '{self.method}'.")
-
-        return Result(
-            method=self.method,
-            scene=self.scene,
-            signal=signal,
-            trace=trace,
-            radar=prepared.radar,
-            renderer=prepared.renderer,
-            metadata=self.metadata,
-        )
-
-    def _refresh_scene(self):
-        if self.scene_module is not None:
-            self.scene = self.scene_module.to_scene()
-        elif isinstance(self.scene_input, Scene):
-            self.scene = self.scene_input
-
-
-class PreparedSimulation:
-    def __init__(self, simulation: Simulation, *, radar: Radar, renderer: Renderer):
-        self.simulation = simulation
-        self.radar = radar
-        self.renderer = renderer
-
-
-class MultiSimulation:
-    """Run the same scene against multiple radar poses/configurations."""
-
-    def __init__(
-        self,
-        *,
-        scene,
-        method: str,
-        radars: list[RadarSpec] | tuple[RadarSpec, ...],
-        render: RenderOptions | None = None,
-        motion_sampling: MotionSampling = "chirp",
-        metadata: dict[str, Any] | None = None,
-    ):
-        _resolve_scene_input(scene)
-        self.scene_input = scene
-        self.method = str(method)
-        self.radars = tuple(radars)
-        if not self.radars:
-            raise ValueError("MultiSimulation requires at least one RadarSpec.")
-        names = [spec.name for spec in self.radars]
+    ) -> MultiResult:
+        specs = tuple(radars)
+        if not specs:
+            raise ValueError("mimo_group requires at least one RadarSpec.")
+        names = [spec.name for spec in specs]
         if len(names) != len(set(names)):
-            raise ValueError("MultiSimulation radar names must be unique.")
-        self.render = render or RenderOptions()
-        self.motion_sampling = normalize_motion_sampling(motion_sampling)
-        self.metadata = dict(metadata or {})
+            raise ValueError("mimo_group radar names must be unique.")
 
-    def run(self) -> MultiResult:
+        render = RenderOptions(
+            resolution=resolution,
+            epsilon_r=epsilon_r,
+            sampling=sampling,
+            multipath=multipath,
+            max_reflections=max_reflections,
+            ray_batch_size=ray_batch_size,
+        )
+        resolved_sampling = normalize_motion_sampling(motion_sampling)
+
         results: dict[str, Result] = {}
-        for spec in self.radars:
-            simulation = Simulation(
-                scene=self.scene_input,
-                method=self.method,
+        for spec in specs:
+            results[spec.name] = _execute_mimo(
+                scene=_resolve_scene(scene),
                 config=spec.config,
                 backend=spec.backend,
-                render=self.render,
+                render=render,
                 device=spec.device,
                 t0=spec.t0,
                 sensor=spec.sensor,
-                motion_sampling=self.motion_sampling,
+                motion_sampling=resolved_sampling,
                 metadata=spec.metadata,
             )
-            results[spec.name] = simulation.run()
-        return MultiResult(results=results, metadata=self.metadata)
+        return MultiResult(results=results, metadata=dict(metadata or {}))

@@ -10,45 +10,25 @@ import numpy as np
 import torch
 
 from witwin.core import GeometryBase, Material, Mesh, SMPLBody, SceneBase, Structure
-from witwin.core.math import quat_to_rotation_matrix
 from .motion import RotationMotion, StructureMotion, TranslationMotion, tensor_scalar, tensor_vec3
 from .sensor import Sensor
-
+from .utils.geometry import (
+    apply_transform_to_points,
+    apply_transform_to_vectors,
+    geometry_local_to_world_points,
+    geometry_local_to_world_vectors,
+    identity_transform,
+    rotation_about_origin_transform,
+    translation_transform,
+)
+from .utils.tensor import (
+    resolve_scene_device,
+    to_faces_array,
+    to_tensor3,
+    to_vertex_tensor,
+)
 
 _UNSET = object()
-
-
-def _resolve_scene_device(device: str | None) -> str:
-    requested = "cuda" if device is None else device
-    resolved = torch.device(requested)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(
-            "Radar scenes default to CUDA, but torch.cuda.is_available() is False. "
-            "Pass device='cpu' only for scene construction or non-rendering workflows."
-        )
-    return str(resolved)
-
-
-def _to_tensor3(value, *, device: str) -> torch.Tensor:
-    tensor = torch.as_tensor(value, device=device, dtype=torch.float32)
-    if tensor.shape != (3,):
-        raise ValueError("value must have shape (3,).")
-    return tensor
-
-
-def _to_vertex_tensor(value, *, device: str) -> torch.Tensor:
-    if isinstance(value, torch.Tensor):
-        return value.to(device=device, dtype=torch.float32)
-    return torch.as_tensor(value, device=device, dtype=torch.float32)
-
-
-def _to_faces_array(value) -> np.ndarray:
-    if isinstance(value, torch.Tensor):
-        value = value.detach().cpu().numpy()
-    faces = np.asarray(value, dtype=np.int32)
-    if faces.ndim != 2 or faces.shape[1] != 3:
-        raise ValueError("faces must have shape (F, 3).")
-    return np.ascontiguousarray(faces)
 
 
 def _materialize_geometry(geometry: GeometryBase | Mesh, *, device: str) -> tuple[torch.Tensor, np.ndarray]:
@@ -60,16 +40,10 @@ def _materialize_geometry(geometry: GeometryBase | Mesh, *, device: str) -> tupl
         vertices = vertices.to(device=device, dtype=torch.float32)
     else:
         vertices = torch.as_tensor(vertices, device=device, dtype=torch.float32)
-    faces = _to_faces_array(faces)
+    faces = to_faces_array(faces)
     if vertices.ndim != 2 or vertices.shape[1] != 3:
         raise ValueError("geometry.to_mesh() must return vertices with shape (V, 3).")
-    if faces.ndim != 2 or faces.shape[1] != 3:
-        raise ValueError("geometry.to_mesh() must return faces with shape (F, 3).")
     return vertices.contiguous(), np.ascontiguousarray(faces)
-
-
-def _default_material(material: Material | None) -> Material:
-    return material if material is not None else Material()
 
 
 def _radar_metadata(
@@ -84,10 +58,6 @@ def _radar_metadata(
     if dynamic is not None:
         merged["dynamic"] = bool(dynamic)
     return merged
-
-
-def _metadata_value(structure: Structure, key: str, default):
-    return structure.metadata.get(key, default)
 
 
 def _clone_geometry(geometry: GeometryBase, **changes):
@@ -113,90 +83,13 @@ def _clone_geometry(geometry: GeometryBase, **changes):
 
     updated = copy.copy(geometry)
     if "position" in changes:
-        updated.position = _to_tensor3(changes.pop("position"), device=str(geometry.position.device))
+        updated.position = to_tensor3(changes.pop("position"), device=str(geometry.position.device))
     if "rotation" in changes:
         updated.rotation = torch.as_tensor(changes.pop("rotation"), device=geometry.position.device, dtype=torch.float32)
     if changes:
         unsupported = ", ".join(sorted(changes))
         raise TypeError(f"Unsupported geometry updates for {type(geometry).__name__}: {unsupported}")
     return updated
-
-
-def _identity_transform(*, device: str, dtype: torch.dtype) -> torch.Tensor:
-    return torch.eye(4, device=device, dtype=dtype)
-
-
-def _translation_transform(translation: torch.Tensor, *, device: str, dtype: torch.dtype) -> torch.Tensor:
-    transform = _identity_transform(device=device, dtype=dtype)
-    transform[:3, 3] = translation
-    return transform
-
-
-def _axis_angle_rotation(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
-    axis = axis / torch.clamp(torch.linalg.norm(axis), min=1e-12)
-    x, y, z = axis[0], axis[1], axis[2]
-    c = torch.cos(angle)
-    s = torch.sin(angle)
-    one_minus_c = 1.0 - c
-    row0 = torch.stack((c + x * x * one_minus_c, x * y * one_minus_c - z * s, x * z * one_minus_c + y * s))
-    row1 = torch.stack((y * x * one_minus_c + z * s, c + y * y * one_minus_c, y * z * one_minus_c - x * s))
-    row2 = torch.stack((z * x * one_minus_c - y * s, z * y * one_minus_c + x * s, c + z * z * one_minus_c))
-    return torch.stack((row0, row1, row2), dim=0)
-
-
-def _rotation_about_origin_transform(
-    origin: torch.Tensor,
-    axis: torch.Tensor,
-    angle: torch.Tensor,
-    *,
-    device: str,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    rotation = _axis_angle_rotation(axis.to(device=device, dtype=dtype), angle.to(device=device, dtype=dtype))
-    translate_to = _translation_transform(origin.to(device=device, dtype=dtype), device=device, dtype=dtype)
-    translate_back = _translation_transform(-origin.to(device=device, dtype=dtype), device=device, dtype=dtype)
-    transform = _identity_transform(device=device, dtype=dtype)
-    transform[:3, :3] = rotation
-    return translate_to @ transform @ translate_back
-
-
-def _apply_transform_to_points(points: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
-    rotation = transform[:3, :3]
-    translation = transform[:3, 3]
-    return points @ rotation.transpose(0, 1) + translation
-
-
-def _apply_transform_to_vectors(vectors: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
-    rotation = transform[:3, :3]
-    return vectors @ rotation.transpose(0, 1)
-
-
-def _geometry_local_to_world_points(
-    geometry: GeometryBase,
-    points: torch.Tensor,
-    *,
-    device: str,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    points = points.to(device=device, dtype=dtype)
-    rotation = quat_to_rotation_matrix(geometry.rotation.to(device=device, dtype=dtype))
-    position = geometry.position.to(device=device, dtype=dtype)
-    if isinstance(geometry, Mesh):
-        scale = geometry.scale.to(device=device, dtype=dtype)
-        points = points * scale
-    return points @ rotation.transpose(0, 1) + position
-
-
-def _geometry_local_to_world_vectors(
-    geometry: GeometryBase,
-    vectors: torch.Tensor,
-    *,
-    device: str,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    vectors = vectors.to(device=device, dtype=dtype)
-    rotation = quat_to_rotation_matrix(geometry.rotation.to(device=device, dtype=dtype))
-    return vectors @ rotation.transpose(0, 1)
 
 
 @dataclass
@@ -235,7 +128,7 @@ class Scene(SceneBase):
         device: str | None = "cuda",
         verbose: bool = False,
     ):
-        resolved_device = _resolve_scene_device(device)
+        resolved_device = resolve_scene_device(device)
         super().__init__(
             structures=structures,
             metadata=metadata,
@@ -338,7 +231,7 @@ class Scene(SceneBase):
         return self.add_structure(
             Structure(
                 geometry=geometry,
-                material=_default_material(material),
+                material=material if material is not None else Material(),
                 name=name,
                 metadata=_radar_metadata(metadata, bsdf=bsdf, dynamic=True if dynamic else None),
             )
@@ -369,7 +262,7 @@ class Scene(SceneBase):
                     rotation=rotation,
                     device=self.device,
                 ),
-                material=_default_material(material),
+                material=material if material is not None else Material(),
                 name=name,
                 metadata=_radar_metadata(metadata, bsdf=bsdf, dynamic=True),
             )
@@ -560,7 +453,7 @@ class Scene(SceneBase):
             raise ValueError("Structure motion graph must be acyclic.")
 
         structure = self._require_structure(name)
-        parent_transform = _identity_transform(device=self.device, dtype=torch.float32)
+        parent_transform = identity_transform(device=self.device, dtype=torch.float32)
         motion = self._structure_motions.get(name)
         if motion is not None and motion.parent is not None:
             parent_transform = self._resolve_structure_transform(
@@ -594,7 +487,7 @@ class Scene(SceneBase):
     ) -> torch.Tensor:
         dtype = torch.float32
         device = self.device
-        transform = _identity_transform(device=device, dtype=dtype)
+        transform = identity_transform(device=device, dtype=dtype)
         translation_delta = torch.zeros(3, device=device, dtype=dtype)
 
         if motion.translation is not None:
@@ -604,7 +497,7 @@ class Scene(SceneBase):
                 time=time,
                 parent_transform=parent_transform,
             )
-            transform = _translation_transform(translation_delta, device=device, dtype=dtype)
+            transform = translation_transform(translation_delta, device=device, dtype=dtype)
 
         if motion.rotation is None:
             return transform
@@ -635,8 +528,8 @@ class Scene(SceneBase):
         delta = offset + velocity * (torch.tensor(time, device=self.device, dtype=dtype) - t_ref)
         if translation.space == "world":
             return delta
-        world_delta = _geometry_local_to_world_vectors(geometry, delta.unsqueeze(0), device=self.device, dtype=dtype)[0]
-        return _apply_transform_to_vectors(world_delta.unsqueeze(0), parent_transform)[0]
+        world_delta = geometry_local_to_world_vectors(geometry, delta.unsqueeze(0), device=self.device, dtype=dtype)[0]
+        return apply_transform_to_vectors(world_delta.unsqueeze(0), parent_transform)[0]
 
     def _resolve_rotation_transform(
         self,
@@ -651,13 +544,13 @@ class Scene(SceneBase):
     ) -> torch.Tensor:
         axis = tensor_vec3(rotation.axis, device=device, dtype=dtype)
         if rotation.space == "local":
-            axis_world = _geometry_local_to_world_vectors(geometry, axis.unsqueeze(0), device=device, dtype=dtype)[0]
+            axis_world = geometry_local_to_world_vectors(geometry, axis.unsqueeze(0), device=device, dtype=dtype)[0]
             origin_local = torch.zeros(1, 3, device=device, dtype=dtype)
             if rotation.origin is not None:
                 origin_local = tensor_vec3(rotation.origin, device=device, dtype=dtype).view(1, 3)
-            origin_world = _geometry_local_to_world_points(geometry, origin_local, device=device, dtype=dtype)[0]
-            axis_world = _apply_transform_to_vectors(axis_world.unsqueeze(0), parent_transform)[0]
-            origin_world = _apply_transform_to_points(origin_world.unsqueeze(0), parent_transform)[0]
+            origin_world = geometry_local_to_world_points(geometry, origin_local, device=device, dtype=dtype)[0]
+            axis_world = apply_transform_to_vectors(axis_world.unsqueeze(0), parent_transform)[0]
+            origin_world = apply_transform_to_points(origin_world.unsqueeze(0), parent_transform)[0]
         else:
             axis_world = axis
             if rotation.origin is None:
@@ -670,7 +563,7 @@ class Scene(SceneBase):
         angular_velocity = tensor_scalar(rotation.angular_velocity, device=device, dtype=dtype)
         t_ref = tensor_scalar(rotation.t_ref, device=device, dtype=dtype)
         theta = angle + angular_velocity * (torch.tensor(time, device=device, dtype=dtype) - t_ref)
-        return _rotation_about_origin_transform(origin_world, axis_world, theta, device=device, dtype=dtype)
+        return rotation_about_origin_transform(origin_world, axis_world, theta, device=device, dtype=dtype)
 
     def compile_renderables(self, *, time: float | None = None) -> dict[str, CompiledMesh]:
         renderables: dict[str, CompiledMesh] = {}
@@ -702,15 +595,15 @@ class Scene(SceneBase):
             source_kind = "smpl"
         else:
             vertices, faces = _materialize_geometry(geometry, device=self.device)
-        vertex_tensor = _to_vertex_tensor(vertices, device=self.device).contiguous()
-        vertex_tensor = _apply_transform_to_points(vertex_tensor, motion_transform).contiguous()
+        vertex_tensor = to_vertex_tensor(vertices, device=self.device).contiguous()
+        vertex_tensor = apply_transform_to_points(vertex_tensor, motion_transform).contiguous()
         if joints is not None:
-            joints = _apply_transform_to_points(
-                _to_vertex_tensor(joints, device=self.device).contiguous(),
+            joints = apply_transform_to_points(
+                to_vertex_tensor(joints, device=self.device).contiguous(),
                 motion_transform,
             ).contiguous()
         dynamic = bool(
-            _metadata_value(structure, "dynamic", False)
+            structure.metadata.get("dynamic", False)
             or vertex_tensor.requires_grad
             or joints is not None
             or structure.name in self._structure_motions
@@ -719,9 +612,9 @@ class Scene(SceneBase):
         return CompiledMesh(
             name=structure.name,
             vertices=vertex_tensor,
-            faces=_to_faces_array(faces),
+            faces=to_faces_array(faces),
             eps_r=eps_r,
-            bsdf=_metadata_value(structure, "bsdf", None),
+            bsdf=structure.metadata.get("bsdf"),
             dynamic=dynamic,
             joints=joints,
             source_kind=source_kind,

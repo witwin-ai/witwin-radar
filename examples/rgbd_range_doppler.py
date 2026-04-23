@@ -15,7 +15,7 @@ Usage:
 Input formats:
     .npy depth:      (T, H, W), depth in meters or millimeters
     .npy pointcloud: (T, N, 3) or (T, H, W, 3)
-    .npz:            depth key such as "depths", optional pointcloud key
+    .npz:            depth key such as "depths", optional pointcloud/mask keys
     .mkv:            Azure Kinect playback, requires pykinect_azure
 """
 
@@ -63,12 +63,14 @@ DEFAULT_RADAR_CONFIG = {
 
 DEPTH_KEYS = ("depths", "depth", "depth_frames", "depth_images")
 POINTCLOUD_KEYS = ("pointclouds", "pointcloud", "points", "pc", "pcs")
+MASK_KEYS = ("masks", "mask", "body_mask", "human_mask", "segmentation", "segments")
 
 
 @dataclass
 class RGBDSequence:
     depths: np.ndarray | None
     pointclouds: np.ndarray | None
+    masks: np.ndarray | None
     fps: float
 
 
@@ -90,10 +92,13 @@ def _pick_npz_key(data: np.lib.npyio.NpzFile, explicit: str | None, candidates: 
     return None
 
 
-def _infer_npz_key_by_shape(data: np.lib.npyio.NpzFile, *, pointcloud: bool) -> str | None:
+def _infer_npz_key_by_shape(data: np.lib.npyio.NpzFile, *, pointcloud: bool, mask: bool = False) -> str | None:
     for key in data.files:
         shape = data[key].shape
-        if pointcloud:
+        if mask:
+            if len(shape) in {2, 3, 4} and key not in DEPTH_KEYS and key not in POINTCLOUD_KEYS:
+                return key
+        elif pointcloud:
             if (len(shape) == 3 and shape[-1] == 3) or (len(shape) == 4 and shape[-1] == 3):
                 return key
         elif len(shape) == 3 and shape[-1] != 3:
@@ -106,11 +111,11 @@ def _load_numpy_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSe
         array = np.load(path)
         fps = args.source_fps if args.source_fps is not None else 30.0
         if array.ndim == 3 and array.shape[-1] == 3:
-            return RGBDSequence(depths=None, pointclouds=array, fps=fps)
+            return RGBDSequence(depths=None, pointclouds=array, masks=None, fps=fps)
         if array.ndim == 4 and array.shape[-1] == 3:
-            return RGBDSequence(depths=None, pointclouds=array, fps=fps)
+            return RGBDSequence(depths=None, pointclouds=array, masks=None, fps=fps)
         if array.ndim == 3:
-            return RGBDSequence(depths=array, pointclouds=None, fps=fps)
+            return RGBDSequence(depths=array, pointclouds=None, masks=None, fps=fps)
         raise ValueError(
             ".npy input must have shape (T,H,W), (T,N,3), or (T,H,W,3); "
             f"got {array.shape}."
@@ -119,6 +124,7 @@ def _load_numpy_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSe
     with np.load(path) as data:
         depth_key = _pick_npz_key(data, args.depth_key, DEPTH_KEYS)
         pc_key = _pick_npz_key(data, args.pointcloud_key, POINTCLOUD_KEYS)
+        mask_key = _pick_npz_key(data, args.mask_key, MASK_KEYS)
         if depth_key is None and args.depth_key is None:
             depth_key = _infer_npz_key_by_shape(data, pointcloud=False)
         if pc_key is None and args.pointcloud_key is None:
@@ -136,7 +142,8 @@ def _load_numpy_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSe
             fps = 30.0
         depths = np.asarray(data[depth_key]) if depth_key is not None else None
         pointclouds = np.asarray(data[pc_key]) if pc_key is not None else None
-    return RGBDSequence(depths=depths, pointclouds=pointclouds, fps=float(fps))
+        masks = np.asarray(data[mask_key]) if mask_key is not None else None
+    return RGBDSequence(depths=depths, pointclouds=pointclouds, masks=masks, fps=float(fps))
 
 
 def _load_mkv_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSequence:
@@ -192,7 +199,7 @@ def _load_mkv_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSequ
     fps = args.source_fps if args.source_fps is not None else 30.0
     fps = fps / keep_every
     pcs = np.asarray(pointclouds) if len(pointclouds) == len(depths) else None
-    return RGBDSequence(depths=np.asarray(depths), pointclouds=pcs, fps=float(fps))
+    return RGBDSequence(depths=np.asarray(depths), pointclouds=pcs, masks=None, fps=float(fps))
 
 
 def load_rgbd_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSequence:
@@ -202,6 +209,20 @@ def load_rgbd_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSequ
     if suffix == ".mkv":
         return _load_mkv_sequence(path, args)
     raise ValueError(f"Unsupported input suffix '{path.suffix}'. Expected .npy, .npz, or .mkv.")
+
+
+def load_mask(path: pathlib.Path, args: argparse.Namespace) -> np.ndarray:
+    if path.suffix.lower() == ".npy":
+        return np.asarray(np.load(path))
+    if path.suffix.lower() == ".npz":
+        with np.load(path) as data:
+            key = _pick_npz_key(data, args.mask_key, MASK_KEYS)
+            if key is None:
+                key = _infer_npz_key_by_shape(data, pointcloud=False, mask=True)
+            if key is None:
+                raise KeyError(f"No mask-like array found in {path}. Available keys: {data.files}.")
+            return np.asarray(data[key])
+    raise ValueError(f"Unsupported mask suffix '{path.suffix}'. Expected .npy or .npz.")
 
 
 def _auto_scale(values: np.ndarray, explicit: str | float) -> float:
@@ -241,6 +262,39 @@ def _prepare_pointclouds(pointclouds: np.ndarray | None, args: argparse.Namespac
         pcs[..., 1] *= -1.0
         pcs[..., 2] *= -1.0
     return pcs
+
+
+def _prepare_masks(masks: np.ndarray | None, args: argparse.Namespace) -> np.ndarray | None:
+    if masks is None:
+        return None
+    masks = np.asarray(masks)
+    if masks.dtype == np.bool_:
+        return masks
+    if masks.ndim == 4 and masks.shape[-1] in {3, 4}:
+        if args.mask_mode == "foreground-nonzero":
+            masks = np.any(masks[..., :3] > 0, axis=-1)
+        else:
+            masks = ~np.all(masks[..., :3] >= 250, axis=-1)
+    elif masks.ndim in {1, 2, 3}:
+        if args.mask_mode == "not-white":
+            masks = masks < 250
+        else:
+            masks = masks > 0
+    else:
+        raise ValueError(f"Mask frames must have shape (T,H,W), (T,N), or (T,H,W,3); got {masks.shape}.")
+
+    masks = np.asarray(masks, dtype=bool)
+    return masks
+
+
+def _buffer_sampled_masks(sampled_masks: torch.Tensor, buffer: int) -> torch.Tensor:
+    if buffer <= 0 or sampled_masks.shape[0] <= 1:
+        return sampled_masks
+    buffered = sampled_masks.clone()
+    for offset in range(1, buffer + 1):
+        buffered[offset:] |= sampled_masks[:-offset]
+        buffered[:-offset] |= sampled_masks[offset:]
+    return buffered
 
 
 def _intrinsics_from_args(width: int, height: int, args: argparse.Namespace) -> tuple[float, float, float, float]:
@@ -283,6 +337,7 @@ def build_interpolator(
 ):
     depths_np = _prepare_depths(sequence.depths, args)
     pcs_np = _prepare_pointclouds(sequence.pointclouds, args)
+    masks_np = _prepare_masks(sequence.masks, args)
 
     if depths_np is None and pcs_np is None:
         raise ValueError("At least one of depth or pointcloud frames is required.")
@@ -295,14 +350,22 @@ def build_interpolator(
 
     if pcs_np is not None and pcs_np.shape[0] != num_frames:
         raise ValueError("Depth and pointcloud sequences must have the same number of frames.")
-
     rays = None
     sampled_depths = None
     sampled_points = None
+    sampled_masks = None
 
     if depths_np is not None:
         ys, xs = _sample_indices_from_grid(height, width, args)
         sampled_depths = torch.as_tensor(depths_np[:, ys, xs], dtype=torch.float32, device=device)
+        if masks_np is not None:
+            if masks_np.ndim == 2 and masks_np.shape == (height, width):
+                sampled_mask_values = masks_np[ys, xs][None, :]
+            elif masks_np.ndim == 3 and masks_np.shape[-2:] == (height, width):
+                sampled_mask_values = masks_np[:, ys, xs]
+            else:
+                raise ValueError("Depth masks must have shape (T,H,W) matching depth frames.")
+            sampled_masks = torch.as_tensor(sampled_mask_values, dtype=torch.bool, device=device)
         fx, fy, cx, cy = _intrinsics_from_args(width, height, args)
         x_ray = (xs.astype(np.float32) - cx) / fx
         y_ray = -(ys.astype(np.float32) - cy) / fy
@@ -314,10 +377,31 @@ def build_interpolator(
             _, pc_h, pc_w, _ = pcs_np.shape
             ys, xs = _sample_indices_from_grid(pc_h, pc_w, args)
             sampled = pcs_np[:, ys, xs, :]
+            if sampled_masks is None and masks_np is not None:
+                if masks_np.ndim == 2 and masks_np.shape == (pc_h, pc_w):
+                    sampled_mask_values = masks_np[ys, xs][None, :]
+                elif masks_np.ndim == 3 and masks_np.shape[-2:] == (pc_h, pc_w):
+                    sampled_mask_values = masks_np[:, ys, xs]
+                else:
+                    raise ValueError("Pointcloud grid masks must have shape (T,H,W) matching pointcloud frames.")
+                sampled_masks = torch.as_tensor(sampled_mask_values, dtype=torch.bool, device=device)
         else:
             idx = _sample_indices_from_count(pcs_np.shape[1], args)
             sampled = pcs_np[:, idx, :]
+            if sampled_masks is None and masks_np is not None:
+                if masks_np.ndim == 1 and masks_np.shape[0] == pcs_np.shape[1]:
+                    sampled_mask_values = masks_np[idx][None, :]
+                elif masks_np.ndim == 2 and masks_np.shape[1] == pcs_np.shape[1]:
+                    sampled_mask_values = masks_np[:, idx]
+                else:
+                    raise ValueError("Flat pointcloud masks must have shape (T,N) matching pointcloud frames.")
+                sampled_masks = torch.as_tensor(sampled_mask_values, dtype=torch.bool, device=device)
         sampled_points = torch.as_tensor(sampled, dtype=torch.float32, device=device)
+
+    if sampled_masks is not None:
+        if sampled_masks.shape[0] not in {1, num_frames}:
+            raise ValueError("Mask sequence must have one frame or the same number of frames as the RGBD sequence.")
+        sampled_masks = _buffer_sampled_masks(sampled_masks, int(args.mask_buffer))
 
     source_fps = float(sequence.fps)
     total_time = (num_frames - 1) / source_fps
@@ -363,6 +447,10 @@ def build_interpolator(
             & (depths <= depth_max)
             & torch.isfinite(points).all(dim=-1)
         )
+        if sampled_masks is not None:
+            mask0 = sampled_masks[0 if sampled_masks.shape[0] == 1 else i0]
+            mask1 = sampled_masks[0 if sampled_masks.shape[0] == 1 else i1]
+            valid = valid & (mask0 | mask1)
         points = points[valid].contiguous()
         intensities = torch.ones(points.shape[0], dtype=torch.float32, device=device)
         return intensities, points
@@ -419,6 +507,8 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
         raise ValueError("The default dirichlet backend requires --device cuda.")
 
     sequence = load_rgbd_sequence(input_path, args)
+    if args.mask is not None:
+        sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
     radar = Radar(config, backend=args.backend, device=device)
     interpolator, total_time, source_frames, source_fps = build_interpolator(sequence, args=args, device=radar.device)
 
@@ -492,6 +582,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-source-frames", type=int, default=0, help="Limit .mkv frames loaded; 0 means no limit.")
     parser.add_argument("--depth-key", default=None, help="Depth array key for .npz inputs.")
     parser.add_argument("--pointcloud-key", default=None, help="Pointcloud array key for .npz inputs.")
+    parser.add_argument("--mask", default=None, help="Optional .npy/.npz human/body mask path.")
+    parser.add_argument("--mask-key", default=None, help="Mask array key for .npz inputs.")
+    parser.add_argument(
+        "--mask-mode",
+        choices=("auto", "not-white", "foreground-nonzero"),
+        default="auto",
+        help="How to convert numeric/RGB masks to foreground.",
+    )
+    parser.add_argument("--mask-buffer", type=int, default=1, help="Temporal OR buffer in source frames for masks.")
     parser.add_argument("--depth-scale", default="auto", help="Scale depth to meters; use 0.001 for millimeters.")
     parser.add_argument("--pointcloud-scale", default="auto", help="Scale pointcloud coordinates to meters.")
     parser.add_argument("--pointcloud-convention", choices=("camera", "radar"), default="camera")
@@ -507,7 +606,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zero-fill", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--tx", type=int, default=0, help="TX index used for RD visualization.")
     parser.add_argument("--rx", type=int, default=0, help="RX index used for RD visualization.")
-    parser.add_argument("--static-clutter-removal", action="store_true", help="Subtract slow-time mean before RD FFT.")
+    parser.add_argument(
+        "--static-clutter-removal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Subtract slow-time mean before RD FFT.",
+    )
     parser.add_argument("--db-min", type=float, default=None, help="PNG color lower bound in dB.")
     parser.add_argument("--db-max", type=float, default=None, help="PNG color upper bound in dB.")
     return parser

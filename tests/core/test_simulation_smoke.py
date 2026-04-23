@@ -99,14 +99,13 @@ def test_mimo_smoke_result_exposes_signal_and_trace_tensors(monkeypatch):
     monkeypatch.setattr("witwin.radar.simulation.Radar", FakeRadar)
     monkeypatch.setattr("witwin.radar.simulation.Renderer", FakeRenderer)
 
-    sim = Simulation.mimo(
+    result = Simulation.mimo(
         _scene(),
         config=RadarConfig.from_dict(_config()),
         backend="dirichlet",
         resolution=32,
         sampling="pixel",
     )
-    result = sim.run()
 
     assert result.method == "mimo"
     assert torch.equal(result.signal(), signal)
@@ -176,7 +175,7 @@ def test_simulation_uses_scene_sensor_by_default(monkeypatch):
     monkeypatch.setattr("witwin.radar.simulation.Renderer", FakeRenderer)
 
     scene = _scene()
-    Simulation.mimo(scene, config=RadarConfig.from_dict(_config()), backend="pytorch", device="cpu").run()
+    Simulation.mimo(scene, config=RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
 
     assert observed["radar_sensor"] == scene.sensor
     assert observed["renderer_sensor"] == scene.sensor
@@ -211,7 +210,7 @@ def test_simulation_explicit_sensor_overrides_scene_sensor(monkeypatch):
     monkeypatch.setattr("witwin.radar.simulation.Radar", FakeRadar)
     monkeypatch.setattr("witwin.radar.simulation.Renderer", FakeRenderer)
 
-    Simulation.mimo(_scene(), config=RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=override).run()
+    Simulation.mimo(_scene(), config=RadarConfig.from_dict(_config()), backend="pytorch", device="cpu", sensor=override)
 
     assert observed["radar_sensor"] == override
     assert observed["renderer_sensor"] == override
@@ -255,7 +254,7 @@ def test_multi_simulation_returns_named_results(monkeypatch):
             RadarSpec(name="front", config=_config(), sensor=front, backend="pytorch", device="cpu"),
             RadarSpec(name="side", config=_config(), sensor=side, backend="pytorch", device="cpu"),
         ],
-    ).run()
+    )
 
     assert result.names() == ("front", "side")
     assert torch.allclose(result.signal("front").real, torch.ones((1, 1, 2, 8)))

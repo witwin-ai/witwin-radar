@@ -77,7 +77,7 @@ def test_simulation_multipath_smoke_runs_for_all_backends(backend):
             multipath=True,
             max_reflections=1,
             ray_batch_size=64,
-        ).run()
+        )
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"{backend} unavailable: {exc}")
 
@@ -100,7 +100,7 @@ def test_process_rd_runs_on_multipath_signal():
             multipath=True,
             max_reflections=1,
             ray_batch_size=64,
-        ).run()
+        )
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"multipath unavailable: {exc}")
 

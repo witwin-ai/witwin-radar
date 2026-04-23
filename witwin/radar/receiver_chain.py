@@ -3,33 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any
 
 import torch
 
 from .noise import QuantizationNoiseConfig, quantize_complex_signal
+from .utils.validators import finite_float, positive_float
 
-
-def _finite_float(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Receiver chain field '{name}' must be a finite float.") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"Receiver chain field '{name}' must be a finite float.")
-    return parsed
-
-
-def _positive_float(name: str, value: Any) -> float:
-    parsed = _finite_float(name, value)
-    if parsed <= 0.0:
-        raise ValueError(f"Receiver chain field '{name}' must be positive.")
-    return parsed
-
-
-def _finite_gain_db(name: str, value: Any) -> float:
-    return _finite_float(name, value)
+_PREFIX = "Receiver chain field"
 
 
 @dataclass(frozen=True)
@@ -40,7 +21,7 @@ class LNAConfig:
     def from_dict(cls, config: dict[str, Any]) -> "LNAConfig":
         if not isinstance(config, dict):
             raise TypeError("LNA config must be a dict.")
-        return cls(gain_db=_finite_gain_db("lna.gain_db", config.get("gain_db", 0.0)))
+        return cls(gain_db=finite_float("lna.gain_db", config.get("gain_db", 0.0), prefix=_PREFIX))
 
     def to_dict(self) -> dict[str, Any]:
         return {"gain_db": self.gain_db}
@@ -60,12 +41,12 @@ class AGCConfig:
         mode = str(config.get("mode", "per_rx")).lower()
         if mode not in {"global", "per_rx"}:
             raise ValueError("Receiver chain field 'agc.mode' must be 'global' or 'per_rx'.")
-        max_gain_db = _finite_gain_db("agc.max_gain_db", config.get("max_gain_db", 60.0))
-        min_gain_db = _finite_gain_db("agc.min_gain_db", config.get("min_gain_db", -60.0))
+        max_gain_db = finite_float("agc.max_gain_db", config.get("max_gain_db", 60.0), prefix=_PREFIX)
+        min_gain_db = finite_float("agc.min_gain_db", config.get("min_gain_db", -60.0), prefix=_PREFIX)
         if min_gain_db > max_gain_db:
             raise ValueError("Receiver chain AGC requires min_gain_db <= max_gain_db.")
         return cls(
-            target_rms=_positive_float("agc.target_rms", config.get("target_rms")),
+            target_rms=positive_float("agc.target_rms", config.get("target_rms"), prefix=_PREFIX),
             max_gain_db=max_gain_db,
             min_gain_db=min_gain_db,
             mode=mode,
@@ -97,9 +78,10 @@ class ReceiverChainConfig:
         if lna is None and agc is None and adc is None:
             raise ValueError("Receiver chain config must enable at least one of 'lna', 'agc', or 'adc'.")
         return cls(
-            reference_impedance_ohm=_positive_float(
+            reference_impedance_ohm=positive_float(
                 "receiver_chain.reference_impedance_ohm",
                 config.get("reference_impedance_ohm", 50.0),
+                prefix=_PREFIX,
             ),
             lna=lna,
             agc=agc,

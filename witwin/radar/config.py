@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import math
 import os
 from typing import Any
 
@@ -12,7 +11,9 @@ from .antenna_pattern import AntennaPatternConfig
 from .noise import NoiseModelConfig
 from .polarization import PolarizationConfig
 from .receiver_chain import ReceiverChainConfig
+from .utils.validators import finite_float, positive_int, require_keys
 
+_PREFIX = "Radar config field"
 
 _REQUIRED_KEYS = (
     "num_tx",
@@ -35,46 +36,23 @@ _REQUIRED_KEYS = (
 )
 
 
-def _require_keys(config: dict[str, Any]) -> None:
-    missing = [key for key in _REQUIRED_KEYS if key not in config]
-    if missing:
-        joined = ", ".join(missing)
-        raise ValueError(f"Radar config is missing required keys: {joined}")
-
-
-def _positive_int(name: str, value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"Radar config field '{name}' must be a positive int.")
-    return value
-
-
-def _finite_float(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Radar config field '{name}' must be a finite float.") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"Radar config field '{name}' must be a finite float.")
-    return parsed
-
-
 def _validate_locations(name: str, value: Any, expected_count: int) -> tuple[tuple[float, float, float], ...]:
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Radar config field '{name}' must be a sequence of 3D coordinates.")
+        raise ValueError(f"{_PREFIX} '{name}' must be a sequence of 3D coordinates.")
     if len(value) != expected_count:
         raise ValueError(
-            f"Radar config field '{name}' must contain exactly {expected_count} entries; got {len(value)}."
+            f"{_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}."
         )
 
     coords: list[tuple[float, float, float]] = []
     for index, coord in enumerate(value):
         if not isinstance(coord, (list, tuple)) or len(coord) != 3:
-            raise ValueError(f"Radar config field '{name}[{index}]' must be a 3-element coordinate.")
+            raise ValueError(f"{_PREFIX} '{name}[{index}]' must be a 3-element coordinate.")
         coords.append(
             (
-                _finite_float(f"{name}[{index}][0]", coord[0]),
-                _finite_float(f"{name}[{index}][1]", coord[1]),
-                _finite_float(f"{name}[{index}][2]", coord[2]),
+                finite_float(f"{name}[{index}][0]", coord[0], prefix=_PREFIX),
+                finite_float(f"{name}[{index}][1]", coord[1], prefix=_PREFIX),
+                finite_float(f"{name}[{index}][2]", coord[2], prefix=_PREFIX),
             )
         )
     return tuple(coords)
@@ -108,27 +86,33 @@ class RadarConfig:
     def from_dict(cls, config: dict[str, Any]) -> "RadarConfig":
         if not isinstance(config, dict):
             raise TypeError("Radar config must be a dict.")
-        _require_keys(config)
+        require_keys(config, _REQUIRED_KEYS, label="Radar config")
 
-        num_tx = _positive_int("num_tx", config["num_tx"])
-        num_rx = _positive_int("num_rx", config["num_rx"])
+        num_tx = positive_int("num_tx", config["num_tx"], prefix=_PREFIX)
+        num_rx = positive_int("num_rx", config["num_rx"], prefix=_PREFIX)
+
+        def _ff(name: str) -> float:
+            return finite_float(name, config[name], prefix=_PREFIX)
+
+        def _pi(name: str) -> int:
+            return positive_int(name, config[name], prefix=_PREFIX)
 
         return cls(
             num_tx=num_tx,
             num_rx=num_rx,
-            fc=_finite_float("fc", config["fc"]),
-            slope=_finite_float("slope", config["slope"]),
-            adc_samples=_positive_int("adc_samples", config["adc_samples"]),
-            adc_start_time=_finite_float("adc_start_time", config["adc_start_time"]),
-            sample_rate=_finite_float("sample_rate", config["sample_rate"]),
-            idle_time=_finite_float("idle_time", config["idle_time"]),
-            ramp_end_time=_finite_float("ramp_end_time", config["ramp_end_time"]),
-            chirp_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"]),
-            frame_per_second=_finite_float("frame_per_second", config["frame_per_second"]),
-            num_doppler_bins=_positive_int("num_doppler_bins", config["num_doppler_bins"]),
-            num_range_bins=_positive_int("num_range_bins", config["num_range_bins"]),
-            num_angle_bins=_positive_int("num_angle_bins", config["num_angle_bins"]),
-            power=_finite_float("power", config["power"]),
+            fc=_ff("fc"),
+            slope=_ff("slope"),
+            adc_samples=_pi("adc_samples"),
+            adc_start_time=_ff("adc_start_time"),
+            sample_rate=_ff("sample_rate"),
+            idle_time=_ff("idle_time"),
+            ramp_end_time=_ff("ramp_end_time"),
+            chirp_per_frame=_pi("chirp_per_frame"),
+            frame_per_second=_ff("frame_per_second"),
+            num_doppler_bins=_pi("num_doppler_bins"),
+            num_range_bins=_pi("num_range_bins"),
+            num_angle_bins=_pi("num_angle_bins"),
+            power=_ff("power"),
             tx_loc=_validate_locations("tx_loc", config["tx_loc"], num_tx),
             rx_loc=_validate_locations("rx_loc", config["rx_loc"], num_rx),
             antenna_pattern=(
@@ -170,7 +154,7 @@ class RadarConfig:
         raise TypeError("Radar config must be a RadarConfig, dict, or JSON path.")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "num_tx": self.num_tx,
             "num_rx": self.num_rx,
             "fc": self.fc,
@@ -188,24 +172,13 @@ class RadarConfig:
             "power": self.power,
             "tx_loc": [list(coord) for coord in self.tx_loc],
             "rx_loc": [list(coord) for coord in self.rx_loc],
-            **(
-                {"antenna_pattern": self.antenna_pattern.to_dict()}
-                if self.antenna_pattern is not None
-                else {}
-            ),
-            **(
-                {"noise_model": self.noise_model.to_dict()}
-                if self.noise_model is not None
-                else {}
-            ),
-            **(
-                {"polarization": self.polarization.to_dict()}
-                if self.polarization is not None
-                else {}
-            ),
-            **(
-                {"receiver_chain": self.receiver_chain.to_dict()}
-                if self.receiver_chain is not None
-                else {}
-            ),
         }
+        for name, value in (
+            ("antenna_pattern", self.antenna_pattern),
+            ("noise_model", self.noise_model),
+            ("polarization", self.polarization),
+            ("receiver_chain", self.receiver_chain),
+        ):
+            if value is not None:
+                data[name] = value.to_dict()
+        return data

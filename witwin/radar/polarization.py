@@ -3,49 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any
 
 import torch
 
 from .sensor import Sensor
+from .utils.vector import normalize_rows, parse_vector3
 
-
+_PREFIX = "Polarization field"
 _ALIASES = {
     "horizontal": (1.0, 0.0, 0.0),
     "h": (1.0, 0.0, 0.0),
     "vertical": (0.0, 1.0, 0.0),
     "v": (0.0, 1.0, 0.0),
 }
-
-
-def _finite_float(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Polarization field '{name}' must be a finite float.") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"Polarization field '{name}' must be a finite float.")
-    return parsed
-
-
-def _vector3(name: str, value: Any) -> tuple[float, float, float]:
-    if isinstance(value, str):
-        alias = _ALIASES.get(value.lower())
-        if alias is None:
-            raise ValueError(
-                f"Polarization field '{name}' must be 'horizontal', 'vertical', or a 3-element vector."
-            )
-        return alias
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Polarization field '{name}' must be a 3-element vector or alias string.")
-    if len(value) != 3:
-        raise ValueError(f"Polarization field '{name}' must contain exactly three values.")
-    vector = tuple(_finite_float(f"{name}[{index}]", component) for index, component in enumerate(value))
-    norm = math.sqrt(sum(component * component for component in vector))
-    if norm <= 1e-12:
-        raise ValueError(f"Polarization field '{name}' must be non-zero.")
-    return vector
 
 
 def _is_single_vector_spec(value: Any) -> bool:
@@ -60,19 +31,15 @@ def _is_single_vector_spec(value: Any) -> bool:
 
 def _vector_bank(name: str, value: Any, expected_count: int) -> tuple[tuple[float, float, float], ...]:
     if _is_single_vector_spec(value):
-        vector = _vector3(name, value)
+        vector = parse_vector3(name, value, prefix=_PREFIX, aliases=_ALIASES)
         return tuple(vector for _ in range(expected_count))
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Polarization field '{name}' must be a vector or a sequence of {expected_count} vectors.")
+        raise ValueError(f"{_PREFIX} '{name}' must be a vector or a sequence of {expected_count} vectors.")
     if len(value) != expected_count:
         raise ValueError(
-            f"Polarization field '{name}' must contain exactly {expected_count} entries; got {len(value)}."
+            f"{_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}."
         )
-    return tuple(_vector3(f"{name}[{index}]", entry) for index, entry in enumerate(value))
-
-
-def _normalize_rows(vectors: torch.Tensor) -> torch.Tensor:
-    return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
+    return tuple(parse_vector3(f"{name}[{index}]", entry, prefix=_PREFIX, aliases=_ALIASES) for index, entry in enumerate(value))
 
 
 @dataclass(frozen=True)
@@ -145,10 +112,10 @@ class PolarizationRuntime:
         device: str,
         sensor: Sensor,
     ) -> "PolarizationRuntime":
-        tx_local = _normalize_rows(torch.tensor(config.tx, dtype=torch.float32, device=device))
-        rx_local = _normalize_rows(torch.tensor(config.rx, dtype=torch.float32, device=device))
-        tx_world = _normalize_rows(sensor.world_from_local_vectors(tx_local))
-        rx_world = _normalize_rows(sensor.world_from_local_vectors(rx_local))
+        tx_local = normalize_rows(torch.tensor(config.tx, dtype=torch.float32, device=device))
+        rx_local = normalize_rows(torch.tensor(config.rx, dtype=torch.float32, device=device))
+        tx_world = normalize_rows(sensor.world_from_local_vectors(tx_local))
+        rx_world = normalize_rows(sensor.world_from_local_vectors(rx_local))
         return cls(
             tx_world=tx_world.contiguous(),
             rx_world=rx_world.contiguous(),

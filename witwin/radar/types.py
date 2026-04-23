@@ -11,35 +11,24 @@ SamplingMode: TypeAlias = Literal["pixel", "triangle"]
 MotionSampling: TypeAlias = Literal["frame", "chirp"]
 
 
-_SOLVER_BACKENDS = ("pytorch", "slang", "dirichlet")
-_DETECTOR_TYPES = ("cfar", "topk")
-_SAMPLING_MODES = ("pixel", "triangle")
-_MOTION_SAMPLING_MODES = ("frame", "chirp")
+def _check_literal(value, *, allowed: tuple[str, ...], label: str) -> str:
+    normalized = str(value).lower()
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported {label} '{value}'. Expected one of: {', '.join(allowed)}.")
+    return normalized
 
 
 def normalize_solver_backend(value: str) -> SolverBackend:
-    backend = str(value).lower()
-    if backend not in _SOLVER_BACKENDS:
-        raise ValueError(f"Unknown backend: {value}")
-    return cast(SolverBackend, backend)
+    return cast(SolverBackend, _check_literal(value, allowed=("pytorch", "slang", "dirichlet"), label="backend"))
 
 
 def normalize_detector_type(value: str) -> DetectorType:
-    detector = str(value).lower()
-    if detector not in _DETECTOR_TYPES:
-        raise ValueError(f"Unsupported detector '{value}'. Expected 'cfar' or 'topk'.")
-    return cast(DetectorType, detector)
+    return cast(DetectorType, _check_literal(value, allowed=("cfar", "topk"), label="detector"))
 
 
 def normalize_sampling_mode(value: str) -> SamplingMode:
-    sampling = str(value).lower()
-    if sampling not in _SAMPLING_MODES:
-        raise ValueError(f"Unsupported sampling mode '{value}'.")
-    return cast(SamplingMode, sampling)
+    return cast(SamplingMode, _check_literal(value, allowed=("pixel", "triangle"), label="sampling mode"))
 
 
 def normalize_motion_sampling(value: str) -> MotionSampling:
-    sampling = str(value).lower()
-    if sampling not in _MOTION_SAMPLING_MODES:
-        raise ValueError(f"Unsupported motion sampling mode '{value}'.")
-    return cast(MotionSampling, sampling)
+    return cast(MotionSampling, _check_literal(value, allowed=("frame", "chirp"), label="motion sampling mode"))

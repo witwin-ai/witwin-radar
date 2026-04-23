@@ -7,30 +7,7 @@ from typing import Any, Mapping
 
 import torch
 
-
-def _coerce_vec3(value, *, name: str):
-    if isinstance(value, torch.Tensor):
-        tensor = value.to(dtype=torch.float32)
-        if tensor.shape != (3,):
-            raise ValueError(f"{name} must have shape (3,).")
-        return tensor
-    values = tuple(float(component) for component in value)
-    if len(values) != 3:
-        raise ValueError(f"{name} must contain exactly three values.")
-    return values
-
-
-def _coerce_scalar(value, *, name: str):
-    if isinstance(value, torch.Tensor):
-        tensor = value.to(dtype=torch.float32).reshape(())
-        return tensor
-    return float(value)
-
-
-def _coerce_optional_vec3(value, *, name: str):
-    if value is None:
-        return None
-    return _coerce_vec3(value, name=name)
+from .utils.vector import coerce_optional_vec3, coerce_scalar, coerce_vec3, vector_norm
 
 
 def _normalize_space(value, *, name: str, default: str) -> str:
@@ -40,12 +17,6 @@ def _normalize_space(value, *, name: str, default: str) -> str:
     if space not in {"local", "world"}:
         raise ValueError(f"{name} must be 'local' or 'world'.")
     return space
-
-
-def _vector_norm(value) -> float:
-    if isinstance(value, torch.Tensor):
-        return float(torch.linalg.norm(value.detach().cpu()).item())
-    return sum(float(component) * float(component) for component in value) ** 0.5
 
 
 def tensor_vec3(value, *, device, dtype) -> torch.Tensor:
@@ -67,14 +38,14 @@ class TranslationMotion:
     t_ref: Any = 0.0
 
     def __post_init__(self):
-        object.__setattr__(self, "offset", _coerce_vec3(self.offset, name="TranslationMotion.offset"))
-        object.__setattr__(self, "velocity", _coerce_vec3(self.velocity, name="TranslationMotion.velocity"))
+        object.__setattr__(self, "offset", coerce_vec3(self.offset, name="TranslationMotion.offset"))
+        object.__setattr__(self, "velocity", coerce_vec3(self.velocity, name="TranslationMotion.velocity"))
         object.__setattr__(
             self,
             "space",
             _normalize_space(self.space, name="TranslationMotion.space", default="world"),
         )
-        object.__setattr__(self, "t_ref", _coerce_scalar(self.t_ref, name="TranslationMotion.t_ref"))
+        object.__setattr__(self, "t_ref", coerce_scalar(self.t_ref, name="TranslationMotion.t_ref"))
 
     @classmethod
     def from_value(cls, value) -> "TranslationMotion | None":
@@ -106,22 +77,22 @@ class RotationMotion:
     t_ref: Any = 0.0
 
     def __post_init__(self):
-        object.__setattr__(self, "axis", _coerce_vec3(self.axis, name="RotationMotion.axis"))
-        if _vector_norm(self.axis) <= 1e-12:
+        object.__setattr__(self, "axis", coerce_vec3(self.axis, name="RotationMotion.axis"))
+        if vector_norm(self.axis) <= 1e-12:
             raise ValueError("RotationMotion.axis must be non-zero.")
         object.__setattr__(
             self,
             "angular_velocity",
-            _coerce_scalar(self.angular_velocity, name="RotationMotion.angular_velocity"),
+            coerce_scalar(self.angular_velocity, name="RotationMotion.angular_velocity"),
         )
-        object.__setattr__(self, "angle", _coerce_scalar(self.angle, name="RotationMotion.angle"))
-        object.__setattr__(self, "origin", _coerce_optional_vec3(self.origin, name="RotationMotion.origin"))
+        object.__setattr__(self, "angle", coerce_scalar(self.angle, name="RotationMotion.angle"))
+        object.__setattr__(self, "origin", coerce_optional_vec3(self.origin, name="RotationMotion.origin"))
         object.__setattr__(
             self,
             "space",
             _normalize_space(self.space, name="RotationMotion.space", default="local"),
         )
-        object.__setattr__(self, "t_ref", _coerce_scalar(self.t_ref, name="RotationMotion.t_ref"))
+        object.__setattr__(self, "t_ref", coerce_scalar(self.t_ref, name="RotationMotion.t_ref"))
 
     @classmethod
     def from_value(cls, value) -> "RotationMotion | None":

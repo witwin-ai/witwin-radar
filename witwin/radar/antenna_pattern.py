@@ -9,73 +9,64 @@ from typing import Any
 
 import torch
 
+from .utils.validators import finite_float
 
+_PREFIX = "Antenna pattern field"
 _DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
-
-
-def _finite_float(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Antenna pattern field '{name}' must be a finite float.") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"Antenna pattern field '{name}' must be a finite float.")
-    return parsed
 
 
 def _validate_axis(name: str, value: Any) -> tuple[float, ...]:
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Antenna pattern field '{name}' must be a sequence of angles in degrees.")
+        raise ValueError(f"{_PREFIX} '{name}' must be a sequence of angles in degrees.")
     if len(value) < 2:
-        raise ValueError(f"Antenna pattern field '{name}' must contain at least 2 samples.")
+        raise ValueError(f"{_PREFIX} '{name}' must contain at least 2 samples.")
 
-    axis = tuple(_finite_float(f"{name}[{index}]", angle) for index, angle in enumerate(value))
+    axis = tuple(finite_float(f"{name}[{index}]", angle, prefix=_PREFIX) for index, angle in enumerate(value))
     for index in range(1, len(axis)):
         if axis[index] <= axis[index - 1]:
-            raise ValueError(f"Antenna pattern field '{name}' must be strictly increasing.")
+            raise ValueError(f"{_PREFIX} '{name}' must be strictly increasing.")
     return axis
 
 
 def _validate_values_1d(name: str, value: Any, expected_count: int) -> tuple[float, ...]:
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Antenna pattern field '{name}' must be a sequence of gain values.")
+        raise ValueError(f"{_PREFIX} '{name}' must be a sequence of gain values.")
     if len(value) != expected_count:
         raise ValueError(
-            f"Antenna pattern field '{name}' must contain exactly {expected_count} entries; got {len(value)}."
+            f"{_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}."
         )
 
     gains = []
     for index, item in enumerate(value):
-        gain = _finite_float(f"{name}[{index}]", item)
+        gain = finite_float(f"{name}[{index}]", item, prefix=_PREFIX)
         if gain < 0.0:
-            raise ValueError(f"Antenna pattern field '{name}[{index}]' must be non-negative.")
+            raise ValueError(f"{_PREFIX} '{name}[{index}]' must be non-negative.")
         gains.append(gain)
     return tuple(gains)
 
 
 def _validate_values_2d(name: str, value: Any, expected_rows: int, expected_cols: int) -> tuple[tuple[float, ...], ...]:
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"Antenna pattern field '{name}' must be a 2D sequence of gain values.")
+        raise ValueError(f"{_PREFIX} '{name}' must be a 2D sequence of gain values.")
     if len(value) != expected_rows:
         raise ValueError(
-            f"Antenna pattern field '{name}' must contain exactly {expected_rows} rows; got {len(value)}."
+            f"{_PREFIX} '{name}' must contain exactly {expected_rows} rows; got {len(value)}."
         )
 
     rows = []
     for row_index, row in enumerate(value):
         if not isinstance(row, (list, tuple)):
-            raise ValueError(f"Antenna pattern field '{name}[{row_index}]' must be a sequence of gain values.")
+            raise ValueError(f"{_PREFIX} '{name}[{row_index}]' must be a sequence of gain values.")
         if len(row) != expected_cols:
             raise ValueError(
-                f"Antenna pattern field '{name}[{row_index}]' must contain exactly {expected_cols} entries; "
-                f"got {len(row)}."
+                f"{_PREFIX} '{name}[{row_index}]' must contain exactly {expected_cols} entries; got {len(row)}."
             )
 
         parsed_row = []
         for col_index, item in enumerate(row):
-            gain = _finite_float(f"{name}[{row_index}][{col_index}]", item)
+            gain = finite_float(f"{name}[{row_index}][{col_index}]", item, prefix=_PREFIX)
             if gain < 0.0:
-                raise ValueError(f"Antenna pattern field '{name}[{row_index}][{col_index}]' must be non-negative.")
+                raise ValueError(f"{_PREFIX} '{name}[{row_index}][{col_index}]' must be non-negative.")
             parsed_row.append(gain)
         rows.append(tuple(parsed_row))
     return tuple(rows)

@@ -288,7 +288,7 @@ def test_pytorch_radar_can_target_cpu_device(standard_config):
 def test_radar_rejects_unknown_backend(standard_config):
     from witwin.radar import Radar
 
-    with pytest.raises(ValueError, match="Unknown backend"):
+    with pytest.raises(ValueError, match="Unsupported backend"):
         Radar(standard_config, backend="unknown")
 
 

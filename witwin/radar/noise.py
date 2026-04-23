@@ -4,49 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import math
 import os
 from typing import Any
 
 import torch
 
+from .utils.validators import non_negative_float, optional_seed, positive_float, positive_int
 
-def _finite_float(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Noise model field '{name}' must be a finite float.") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"Noise model field '{name}' must be a finite float.")
-    return parsed
-
-
-def _non_negative_float(name: str, value: Any) -> float:
-    parsed = _finite_float(name, value)
-    if parsed < 0.0:
-        raise ValueError(f"Noise model field '{name}' must be non-negative.")
-    return parsed
-
-
-def _positive_float(name: str, value: Any) -> float:
-    parsed = _finite_float(name, value)
-    if parsed <= 0.0:
-        raise ValueError(f"Noise model field '{name}' must be positive.")
-    return parsed
-
-
-def _positive_int(name: str, value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"Noise model field '{name}' must be a positive int.")
-    return value
-
-
-def _optional_seed(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError("Noise model field 'seed' must be a non-negative int.")
-    return value
+_PREFIX = "Noise model field"
 
 
 @dataclass(frozen=True)
@@ -57,7 +22,7 @@ class ThermalNoiseConfig:
     def from_dict(cls, config: dict[str, Any]) -> "ThermalNoiseConfig":
         if not isinstance(config, dict):
             raise TypeError("Thermal noise config must be a dict.")
-        return cls(std=_non_negative_float("thermal.std", config.get("std")))
+        return cls(std=non_negative_float("thermal.std", config.get("std"), prefix=_PREFIX))
 
     def to_dict(self) -> dict[str, Any]:
         return {"std": self.std}
@@ -73,8 +38,8 @@ class QuantizationNoiseConfig:
         if not isinstance(config, dict):
             raise TypeError("Quantization noise config must be a dict.")
         return cls(
-            bits=_positive_int("quantization.bits", config.get("bits")),
-            full_scale=_positive_float("quantization.full_scale", config.get("full_scale", 1.0)),
+            bits=positive_int("quantization.bits", config.get("bits"), prefix=_PREFIX),
+            full_scale=positive_float("quantization.full_scale", config.get("full_scale", 1.0), prefix=_PREFIX),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,7 +54,7 @@ class PhaseNoiseConfig:
     def from_dict(cls, config: dict[str, Any]) -> "PhaseNoiseConfig":
         if not isinstance(config, dict):
             raise TypeError("Phase noise config must be a dict.")
-        return cls(std=_non_negative_float("phase.std", config.get("std")))
+        return cls(std=non_negative_float("phase.std", config.get("std"), prefix=_PREFIX))
 
     def to_dict(self) -> dict[str, Any]:
         return {"std": self.std}
@@ -122,19 +87,14 @@ class NoiseModelConfig:
             if config.get("phase") is not None
             else None
         )
-        seed = _optional_seed(config.get("seed"))
+        seed = optional_seed(config.get("seed"), prefix=_PREFIX)
 
         if thermal is None and quantization is None and phase is None:
             raise ValueError(
                 "Noise model config must enable at least one of 'thermal', 'quantization', or 'phase'."
             )
 
-        return cls(
-            thermal=thermal,
-            quantization=quantization,
-            phase=phase,
-            seed=seed,
-        )
+        return cls(thermal=thermal, quantization=quantization, phase=phase, seed=seed)
 
     @classmethod
     def from_json(cls, path: str | os.PathLike[str]) -> "NoiseModelConfig":
@@ -208,7 +168,7 @@ class NoiseModelRuntime:
         if self.config.thermal is not None and self.config.thermal.std > 0.0:
             noisy = self._apply_thermal_noise(noisy, std=self.config.thermal.std, generator=generator)
         if self.config.quantization is not None:
-            noisy = self._apply_quantization(
+            noisy = quantize_complex_signal(
                 noisy,
                 bits=self.config.quantization.bits,
                 full_scale=self.config.quantization.full_scale,
@@ -222,23 +182,19 @@ class NoiseModelRuntime:
         std: float,
         generator: torch.Generator | None,
     ) -> torch.Tensor:
-        real_dtype = _component_dtype(signal)
+        real = _component_dtype(signal)
         if signal.ndim == 4:
             phase_shape = signal.shape[-2:]
             broadcast_shape = (1, 1, *phase_shape)
-        elif signal.ndim == 2:
-            phase_shape = signal.shape
-            broadcast_shape = phase_shape
-        elif signal.ndim == 1:
+        elif signal.ndim in (1, 2):
             phase_shape = signal.shape
             broadcast_shape = phase_shape
         else:
             raise ValueError("Phase noise currently supports chirp (T,), frame (F, T), or mimo (TX, RX, F, T) tensors.")
 
-        innovations = _randn(phase_shape, device=signal.device, dtype=real_dtype, generator=generator) * std
-        phase = torch.cumsum(innovations.reshape(-1), dim=0).reshape(phase_shape)
-        phase = phase.reshape(broadcast_shape)
-        phase_factor = torch.polar(torch.ones_like(phase, dtype=real_dtype), phase)
+        innovations = _randn(phase_shape, device=signal.device, dtype=real, generator=generator) * std
+        phase = torch.cumsum(innovations.reshape(-1), dim=0).reshape(phase_shape).reshape(broadcast_shape)
+        phase_factor = torch.polar(torch.ones_like(phase, dtype=real), phase)
         return signal * phase_factor.to(dtype=signal.dtype)
 
     def _apply_thermal_noise(
@@ -248,11 +204,8 @@ class NoiseModelRuntime:
         std: float,
         generator: torch.Generator | None,
     ) -> torch.Tensor:
-        real_dtype = _component_dtype(signal)
-        real = _randn(signal.shape, device=signal.device, dtype=real_dtype, generator=generator) * std
-        imag = _randn(signal.shape, device=signal.device, dtype=real_dtype, generator=generator) * std
-        noise = torch.complex(real, imag).to(dtype=signal.dtype)
+        real = _component_dtype(signal)
+        real_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
+        imag_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
+        noise = torch.complex(real_part, imag_part).to(dtype=signal.dtype)
         return signal + noise
-
-    def _apply_quantization(self, signal: torch.Tensor, *, bits: int, full_scale: float) -> torch.Tensor:
-        return quantize_complex_signal(signal, bits=bits, full_scale=full_scale)

@@ -3,32 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 
 import torch
 
-
-def _vec3(value, *, field_name: str) -> tuple[float, float, float]:
-    values = tuple(float(component) for component in value)
-    if len(values) != 3:
-        raise ValueError(f"{field_name} must contain exactly three values.")
-    return values
-
-
-def _sub3(a: tuple[float, float, float], b: tuple[float, float, float]) -> tuple[float, float, float]:
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _norm3(value: tuple[float, float, float]) -> float:
-    return math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
-
-
-def _cross3(a: tuple[float, float, float], b: tuple[float, float, float]) -> tuple[float, float, float]:
-    return (
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    )
+from .utils.vector import cross3, norm3, sub3, vec3_tuple
 
 
 @dataclass(frozen=True)
@@ -39,16 +17,16 @@ class Sensor:
     fov: float = 60.0
 
     def __post_init__(self):
-        object.__setattr__(self, "origin", _vec3(self.origin, field_name="Sensor.origin"))
-        object.__setattr__(self, "target", _vec3(self.target, field_name="Sensor.target"))
-        object.__setattr__(self, "up", _vec3(self.up, field_name="Sensor.up"))
+        object.__setattr__(self, "origin", vec3_tuple(self.origin, name="Sensor.origin"))
+        object.__setattr__(self, "target", vec3_tuple(self.target, name="Sensor.target"))
+        object.__setattr__(self, "up", vec3_tuple(self.up, name="Sensor.up"))
         object.__setattr__(self, "fov", float(self.fov))
-        forward = _sub3(self.target, self.origin)
-        if _norm3(forward) <= 1e-12:
+        forward = sub3(self.target, self.origin)
+        if norm3(forward) <= 1e-12:
             raise ValueError("Sensor.target must differ from Sensor.origin.")
-        if _norm3(self.up) <= 1e-12:
+        if norm3(self.up) <= 1e-12:
             raise ValueError("Sensor.up must be non-zero.")
-        if _norm3(_cross3(forward, self.up)) <= 1e-12:
+        if norm3(cross3(forward, self.up)) <= 1e-12:
             raise ValueError("Sensor.up must not be collinear with the viewing direction.")
 
     @classmethod

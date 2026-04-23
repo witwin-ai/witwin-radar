@@ -102,7 +102,7 @@ result = Simulation.mimo(
     sampling="triangle",
     motion_sampling="chirp",
     device="cpu",
-).run()
+)
 ```
 
 Available mutating scene methods:

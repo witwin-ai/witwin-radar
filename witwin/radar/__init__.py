@@ -7,7 +7,7 @@ from .polarization import PolarizationConfig
 from .receiver_chain import AGCConfig, LNAConfig, ReceiverChainConfig
 from .radar import Radar
 from .result import MultiResult, Result
-from .simulation import MultiSimulation, RadarSpec, RenderOptions, Simulation
+from .simulation import RadarSpec, RenderOptions, Simulation
 from .solvers import Solver
 from .renderer import Renderer, TraceResult
 from .material import fresnel
@@ -48,7 +48,6 @@ __all__ = [
     'Result',
     'MultiResult',
     'Simulation',
-    'MultiSimulation',
     'RadarSpec',
     'RenderOptions',
     'Solver',

@@ -150,7 +150,7 @@ def _run_simulation(scene, *, backend: str, sampling: str):
             backend=backend,
             resolution=24,
             sampling=sampling,
-        ).run()
+        )
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"{backend} backend unavailable: {exc}")
 

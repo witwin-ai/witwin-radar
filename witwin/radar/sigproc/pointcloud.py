@@ -11,22 +11,11 @@ import numpy as np
 import torch
 
 from ..types import DetectorType, normalize_detector_type
-
-
-def _is_torch_tensor(value) -> bool:
-    return isinstance(value, torch.Tensor)
-
-
-def _real_dtype(value: torch.Tensor) -> torch.dtype:
-    if value.dtype in {torch.float64, torch.complex128}:
-        return torch.float64
-    return torch.float32
-
-
-def _to_numpy(value):
-    if _is_torch_tensor(value):
-        return value.detach().cpu().numpy()
-    return np.asarray(value)
+from ..utils.tensor import (
+    is_torch_tensor as _is_torch_tensor,
+    real_dtype as _real_dtype,
+    to_numpy as _to_numpy,
+)
 
 
 def _hamming_window(length: int, *, reference):
