@@ -5,7 +5,7 @@ Usage:
     python -m examples.mesh_scene
     python examples/mesh_scene.py
 
-Requires: mitsuba (cuda_ad_rgb variant)
+Requires: RayD and CUDA
 """
 
 import pathlib

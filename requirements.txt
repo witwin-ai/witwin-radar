@@ -4,6 +4,6 @@ slangtorch
 tqdm
 matplotlib
 scipy
-mitsuba
 drjit
+rayd
 smplpytorch

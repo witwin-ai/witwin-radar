@@ -156,7 +156,7 @@ python -m examples.gen_amass_video
 python -m examples.rgbd_range_doppler --input path/to/depths.npy
 ```
 
-`amass_pointcloud` and `gen_amass_video` additionally require AMASS BMLmovi data under `data/BMLmovi_full/BMLmovi/`. The rendering examples require `mitsuba` and CUDA; the SMPL examples also require `models/smpl_models/`.
+`amass_pointcloud` and `gen_amass_video` additionally require AMASS BMLmovi data under `data/BMLmovi_full/BMLmovi/`. The rendering examples require RayD and CUDA; the SMPL examples also require `models/smpl_models/`.
 `rgbd_range_doppler` reads `.npy`/`.npz` depth or point-cloud sequences, and can read Azure Kinect `.mkv` files when `pykinect_azure` is installed. It assumes the depth camera view is the radar view by default.
 
 ## Installation
@@ -167,7 +167,7 @@ Python 3.10+ and an NVIDIA GPU are required.
 pip install witwin[radar]
 ```
 
-Core dependencies include `torch`, `numpy`, `slangtorch`, `tqdm`, `matplotlib`, and `scipy`. Optional rendering dependencies are `mitsuba` and `drjit`.
+Core dependencies include `torch`, `numpy`, `slangtorch`, `drjit`, `rayd`, `tqdm`, `matplotlib`, and `scipy`.
 
 ## Citation
 

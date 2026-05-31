@@ -1,26 +1,35 @@
-"""Mitsuba-based ray tracing for radar scenes."""
+"""RayD-based ray tracing for radar scenes."""
 
 from __future__ import annotations
 
-import drjit as dr
-import mitsuba as mi
-from mitsuba.scalar_rgb import Transform4f as T
-import numpy as np
-import torch
-from witwin.core import build_mitsuba_scene, update_mitsuba_scene_vertices
+from dataclasses import dataclass
+import math
 
-# drjit type aliases (avoid mitsuba wrappers for pure array types)
-Float = dr.cuda.ad.Float
-UInt32 = dr.cuda.ad.UInt
-Bool = dr.cuda.ad.Bool
-Point3f = dr.cuda.ad.Array3f
-Vector2f = dr.cuda.ad.Array2f
-TensorXf = dr.cuda.ad.TensorXf
+import drjit as dr
+import numpy as np
+import rayd as rd
+import torch
 
 from .material import fresnel
 from .types import SamplingMode
 
-mi.set_variant("cuda_ad_rgb")
+
+Float = dr.cuda.ad.Float
+UInt32 = dr.cuda.UInt
+Bool = dr.cuda.ad.Bool
+Point3f = dr.cuda.ad.Array3f
+TensorXf = dr.cuda.ad.TensorXf
+
+
+@dataclass(frozen=True)
+class _RayDMeshState:
+    name: str
+    mesh_id: int
+    num_vertices: int
+    num_faces: int
+    eps_r: float
+    dynamic: bool
+    face_columns: tuple[UInt32, UInt32, UInt32]
 
 
 class TraceResult:
@@ -67,6 +76,57 @@ class TraceResult:
         return f"TraceResult({self.points.shape[0]} points)"
 
 
+def _faces_array(faces) -> np.ndarray:
+    faces_np = np.asarray(faces, dtype=np.int32)
+    if faces_np.ndim != 2 or faces_np.shape[1] != 3:
+        raise ValueError("Compiled mesh faces must have shape (F, 3).")
+    return np.ascontiguousarray(faces_np)
+
+
+def _rayd_faces(faces: np.ndarray):
+    return dr.cuda.Array3i(
+        faces[:, 0].tolist(),
+        faces[:, 1].tolist(),
+        faces[:, 2].tolist(),
+    )
+
+
+def _face_columns(faces: np.ndarray) -> tuple[UInt32, UInt32, UInt32]:
+    return (
+        UInt32(faces[:, 0].tolist()),
+        UInt32(faces[:, 1].tolist()),
+        UInt32(faces[:, 2].tolist()),
+    )
+
+
+def _torch_vertices_to_cuda_array3f(vertices: torch.Tensor):
+    values = vertices.detach().to(device="cpu", dtype=torch.float32).numpy()
+    return dr.cuda.Array3f(
+        values[:, 0].tolist(),
+        values[:, 1].tolist(),
+        values[:, 2].tolist(),
+    )
+
+
+def _torch_vertices_to_cuda_ad_array3f(vertices: torch.Tensor):
+    values = vertices.detach().to(device="cpu", dtype=torch.float32).numpy()
+    return Point3f(
+        values[:, 0].tolist(),
+        values[:, 1].tolist(),
+        values[:, 2].tolist(),
+    )
+
+
+def _wrapped_vertices_to_point3f(vertices, num_vertices: int):
+    flat = dr.ravel(vertices)
+    idx = dr.arange(UInt32, num_vertices)
+    return Point3f(
+        dr.gather(Float, flat, idx * 3),
+        dr.gather(Float, flat, idx * 3 + 1),
+        dr.gather(Float, flat, idx * 3 + 2),
+    )
+
+
 class Tracer:
     """Ray tracer for declarative radar scenes."""
 
@@ -93,7 +153,6 @@ class Tracer:
         self.multipath = bool(multipath)
         self.max_reflections = int(max_reflections)
         self.ray_batch_size = int(ray_batch_size)
-        self.variant = "cuda_ad_rgb"
 
         if self.max_reflections < 0:
             raise ValueError("max_reflections must be >= 0.")
@@ -102,34 +161,9 @@ class Tracer:
         if self.multipath and self.sampling != SamplingMode.PIXEL:
             raise ValueError("multipath=True requires sampling='pixel'.")
 
-        self._mi_scene = None
-        self._params = None
-        self._shape_eps = []
-
-    def _mitsuba_sensor_dict(self):
-        return {
-            "type": "perspective",
-            "to_world": T.look_at(
-                origin=self.radar.position.tolist(),
-                target=self.radar.target.tolist(),
-                up=self.radar.up.tolist(),
-            ),
-            "fov": self.radar.fov,
-            "film": {
-                "type": "hdrfilm",
-                "width": self.resolution,
-                "height": self.resolution,
-                "rfilter": {"type": "gaussian"},
-                "sample_border": True,
-                "pixel_format": "luminance",
-                "component_format": "float32",
-            },
-            "sampler": {
-                "type": "independent",
-                "sample_count": 1,
-                "seed": 42,
-            },
-        }
+        self._rd_scene = None
+        self._mesh_states: list[_RayDMeshState] = []
+        self._renderable_signature = None
 
     def _empty_trace(self, *, include_tri_indices: bool = False) -> TraceResult:
         device = self.radar.device
@@ -146,89 +180,155 @@ class Tracer:
             normals=torch.empty((0, 3), dtype=torch.float32, device=device),
         )
 
-    def _build_scene(self, renderables):
-        default_bsdf = {
-            "type": "diffuse",
-            "reflectance": {"type": "rgb", "value": (0.8, 0.8, 0.8)},
-        }
-        state = build_mitsuba_scene(
-            sensor=self._mitsuba_sensor_dict(),
-            renderables=renderables,
-            integrator={"type": "direct"},
-            default_bsdf=default_bsdf,
-            variant=self.variant,
-        )
-        self._mi_scene = state.scene
-        self._params = state.params
-        eps_by_name = {name: mesh_data.eps_r for name, mesh_data in renderables.items()}
-        self._shape_eps = [(shape, float(eps_by_name.get(shape.id(), self.epsilon_r))) for shape in self._mi_scene.shapes()]
+    def _require_cuda(self) -> None:
+        if self.radar.device.type != "cuda":
+            raise RuntimeError("RayD tracing requires a CUDA radar device.")
+        index = self.radar.device.index
+        if index is not None:
+            rd.set_device(int(index))
+
+    def _signature(self, renderables):
+        signature = []
+        for name, mesh_data in renderables.items():
+            faces = _faces_array(mesh_data.faces)
+            signature.append(
+                (
+                    name,
+                    int(mesh_data.vertices.shape[0]),
+                    int(faces.shape[0]),
+                    faces.tobytes(),
+                )
+            )
+        return tuple(signature)
+
+    def _vertex_inputs(self, renderables) -> list[torch.Tensor]:
+        return [
+            renderables[state.name].vertices.to(device=self.radar.device, dtype=torch.float32).contiguous()
+            for state in self._mesh_states
+        ]
+
+    def _build_scene(self, renderables) -> None:
+        self._require_cuda()
+        rd_scene = rd.Scene()
+        mesh_states: list[_RayDMeshState] = []
+        for name, mesh_data in renderables.items():
+            vertices = mesh_data.vertices.to(device=self.radar.device, dtype=torch.float32).contiguous()
+            faces = _faces_array(mesh_data.faces)
+            mesh = rd.Mesh(_torch_vertices_to_cuda_array3f(vertices), _rayd_faces(faces))
+            if hasattr(mesh, "use_face_normals"):
+                mesh.use_face_normals = True
+            # Mark every mesh dynamic so structure transforms and differentiable
+            # geometry can be refit without rebuilding the whole OptiX scene.
+            mesh_id = rd_scene.add_mesh(mesh, dynamic=True)
+            mesh_states.append(
+                _RayDMeshState(
+                    name=name,
+                    mesh_id=int(mesh_id),
+                    num_vertices=int(vertices.shape[0]),
+                    num_faces=int(faces.shape[0]),
+                    eps_r=float(mesh_data.eps_r),
+                    dynamic=bool(mesh_data.dynamic),
+                    face_columns=_face_columns(faces),
+                )
+            )
+        rd_scene.build()
+        self._rd_scene = rd_scene
+        self._mesh_states = mesh_states
+        self._renderable_signature = self._signature(renderables)
         self.scene.mark_clean()
 
-    def _update_vertices(self, renderables):
-        update_mitsuba_scene_vertices(self._params, renderables, variant=self.variant)
+    def _sync_scene_vertices(self, renderables) -> None:
+        if self._rd_scene is None:
+            return
+        for state in self._mesh_states:
+            vertices = renderables[state.name].vertices.to(device=self.radar.device, dtype=torch.float32).contiguous()
+            self._rd_scene.update_mesh_vertices(state.mesh_id, _torch_vertices_to_cuda_ad_array3f(vertices))
+        if self._mesh_states:
+            self._rd_scene.sync()
         self.scene.mark_clean()
 
-    def _gen_rays(self):
-        sensor = self._mi_scene.sensors()[0]
-        film = sensor.film()
-        sampler = sensor.sampler()
-        film_size = film.crop_size()
-        spp = 1
-        total_sample_count = dr.prod(film_size) * spp
+    def _prepare_scene(self, renderables) -> bool:
+        if not renderables:
+            self._rd_scene = None
+            self._mesh_states = []
+            self._renderable_signature = None
+            self.scene.mark_clean()
+            return False
+        signature = self._signature(renderables)
+        if (
+            self._rd_scene is None
+            or self.scene.dirty_level >= self.scene.DIRTY_FULL
+            or signature != self._renderable_signature
+        ):
+            self._build_scene(renderables)
+        else:
+            self._sync_scene_vertices(renderables)
+        return bool(self._mesh_states)
 
-        if sampler.wavefront_size() != total_sample_count:
-            sampler.seed(0, total_sample_count)
+    def _update_scene_from_wrapped_inputs(self, vertex_inputs) -> None:
+        for state, vertices in zip(self._mesh_states, vertex_inputs):
+            self._rd_scene.update_mesh_vertices(
+                state.mesh_id,
+                _wrapped_vertices_to_point3f(vertices, state.num_vertices),
+            )
+        if self._mesh_states:
+            self._rd_scene.sync()
 
-        pos = dr.arange(UInt32, total_sample_count)
-        pos //= spp
-        scale = Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
-        pos = Vector2f(
-            Float(pos % int(film_size[0])) + 0.5,
-            Float(pos // int(film_size[0])) + 0.5,
-        )
-        rays, _ = sensor.sample_ray_differential(
-            time=0,
-            sample1=sampler.next_1d(),
-            sample2=pos * scale,
-            sample3=0,
-        )
-        return rays
+    def _camera_basis(self):
+        position = self.radar.position.to(dtype=torch.float32)
+        target = self.radar.target.to(dtype=torch.float32)
+        up = self.radar.up.to(dtype=torch.float32)
+        forward = target - position
+        forward = forward / torch.linalg.norm(forward)
+        right = torch.cross(forward, up, dim=0)
+        right = right / torch.linalg.norm(right)
+        true_up = torch.cross(right, forward, dim=0)
+        true_up = true_up / torch.linalg.norm(true_up)
+        back = -forward
+        return position.detach().cpu().tolist(), right.detach().cpu().tolist(), true_up.detach().cpu().tolist(), back.detach().cpu().tolist()
 
     def _gen_rays_batch(self, start: int, count: int):
-        sensor = self._mi_scene.sensors()[0]
-        film = sensor.film()
-        film_size = film.crop_size()
-        pos = dr.arange(UInt32, count) + start
-        scale = Vector2f(1.0 / film_size[0], 1.0 / film_size[1])
-        pos = Vector2f(
-            Float(pos % int(film_size[0])) + 0.5,
-            Float(pos // int(film_size[0])) + 0.5,
+        origin, right, up, back = self._camera_basis()
+        idx = dr.arange(UInt32, count) + int(start)
+        width = self.resolution
+        height = self.resolution
+        px = Float(idx % width)
+        py = Float(idx // width)
+        tan_half = math.tan(math.radians(float(self.radar.fov)) * 0.5)
+        x = ((px + 0.5) / float(width) * 2.0 - 1.0) * tan_half
+        y = (1.0 - (py + 0.5) / float(height) * 2.0) * tan_half
+        z = Float(-1.0)
+        direction = dr.normalize(
+            Point3f(
+                x * right[0] + y * up[0] + z * back[0],
+                x * right[1] + y * up[1] + z * back[1],
+                x * right[2] + y * up[2] + z * back[2],
+            )
         )
-        zeros = dr.zeros(Float, count)
-        rays, _ = sensor.sample_ray_differential(
-            time=zeros,
-            sample1=zeros,
-            sample2=pos * scale,
-            sample3=zeros,
+        ray_origin = Point3f(
+            dr.full(Float, origin[0], count),
+            dr.full(Float, origin[1], count),
+            dr.full(Float, origin[2], count),
         )
-        return rays
+        return rd.RayAD(ray_origin, direction)
 
-    def _lookup_eps_r(self, shape):
+    def _gen_rays(self):
+        return self._gen_rays_batch(0, self.resolution * self.resolution)
+
+    def _lookup_eps_r(self, shape_id):
         eps_r = Float(self.epsilon_r)
-        for candidate_shape, candidate_eps in self._shape_eps:
-            eps_r = dr.select(shape == candidate_shape, Float(candidate_eps), eps_r)
+        for state in self._mesh_states:
+            eps_r = dr.select(shape_id == state.mesh_id, Float(state.eps_r), eps_r)
         return eps_r
 
     def trace(self, *, time: float | None = None):
         renderables = self.scene.compile_renderables(time=time)
-        if self._mi_scene is None or self.scene.dirty_level >= self.scene.DIRTY_FULL:
-            self._build_scene(renderables)
-        else:
-            self._update_vertices(renderables)
+        if not self._prepare_scene(renderables):
+            return self._empty_trace(include_tri_indices=self.sampling == SamplingMode.TRIANGLE)
 
-        if self.sampling == "triangle":
+        if self.sampling == SamplingMode.TRIANGLE:
             return self._trace_triangles(renderables)
-        if self.sampling == "pixel":
+        if self.sampling == SamplingMode.PIXEL:
             if self.multipath:
                 return self._trace_pixels_multipath()
             return self._trace_pixels(renderables)
@@ -247,54 +347,27 @@ class Tracer:
 
     def render_image(self, *, time: float | None = None):
         renderables = self.scene.compile_renderables(time=time)
-        if self._mi_scene is None or self.scene.dirty_level >= self.scene.DIRTY_FULL:
-            self._build_scene(renderables)
-        else:
-            self._update_vertices(renderables)
+        if not self._prepare_scene(renderables):
+            return torch.zeros((self.resolution, self.resolution), dtype=torch.float32, device=self.radar.device)
 
+        scene_ref = self._rd_scene
         rays = self._gen_rays()
-        si = self._mi_scene.ray_intersect(rays)
-        cos_i = dr.abs(dr.dot(-rays.d, si.n))
-        eps_r = self._lookup_eps_r(si.shape)
-        reflectance = fresnel(cos_i, eps_r)
-        reflectance = dr.select(si.is_valid(), reflectance, 0.0)
-        return TensorXf(reflectance).torch().reshape(self.resolution, self.resolution)
+        vertex_inputs = self._vertex_inputs(renderables)
 
-    def _get_dynamic_meshes(self, renderables):
-        return [name for name, mesh_data in renderables.items() if mesh_data.dynamic]
+        @dr.wrap(source="torch", target="drjit")
+        def _image(*vertices):
+            self._update_scene_from_wrapped_inputs(vertices)
+            its = scene_ref.intersect(rays, flags=rd.RayFlags.Geometric)
+            normals = its.geo_n
+            cos_i = dr.abs(dr.dot(-rays.d, normals))
+            reflectance = fresnel(cos_i, self._lookup_eps_r(its.shape_id))
+            valid_float = dr.select(its.is_valid(), Float(1.0), Float(0.0))
+            return TensorXf(reflectance * valid_float, shape=(self.resolution * self.resolution,))
 
-    def _compute_visibility_mask(self, mesh_name):
-        vp = self._params[f"{mesh_name}.vertex_positions"]
-        fi = self._params[f"{mesh_name}.faces"]
-        num_faces = dr.width(fi) // 3
-        face_idx = dr.arange(UInt32, num_faces)
+        return _image(*vertex_inputs).reshape(self.resolution, self.resolution)
 
-        i0 = dr.gather(UInt32, fi, face_idx * 3)
-        i1 = dr.gather(UInt32, fi, face_idx * 3 + 1)
-        i2 = dr.gather(UInt32, fi, face_idx * 3 + 2)
-
-        def _vertex(index):
-            return Point3f(
-                dr.gather(Float, vp, index * 3),
-                dr.gather(Float, vp, index * 3 + 1),
-                dr.gather(Float, vp, index * 3 + 2),
-            )
-
-        v0, v1, v2 = _vertex(i0), _vertex(i1), _vertex(i2)
-        centroid = (v0 + v1 + v2) / 3.0
-        normal = dr.normalize(dr.cross(v1 - v0, v2 - v0))
-
-        origin = Point3f(*self.radar.position.tolist())
-        view_dir = dr.normalize(origin - centroid)
-        front = dr.dot(view_dir, normal) > 0
-
-        ray_d = dr.normalize(centroid - origin)
-        expected_t = dr.norm(centroid - origin)
-        si = self._mi_scene.ray_intersect(mi.Ray3f(origin, ray_d))
-        not_occluded = si.is_valid() & (si.t >= expected_t - 0.01)
-
-        valid = front & not_occluded
-        return TensorXf(dr.select(valid, Float(1.0), Float(0.0))).torch().bool()
+    def _get_dynamic_meshes(self):
+        return [state for state in self._mesh_states if state.dynamic]
 
     def _trace_triangles(self, renderables):
         all_points = []
@@ -303,9 +376,12 @@ class Tracer:
         all_normals = []
         tri_offset = 0
 
-        for mesh_name in self._get_dynamic_meshes(renderables):
+        for state in self._get_dynamic_meshes():
+            mesh_data = renderables[state.name]
             pts, intensities, normals, tri_idx, num_faces = self._trace_mesh_triangles(
-                mesh_name, renderables[mesh_name].vertices, renderables[mesh_name].eps_r
+                state,
+                mesh_data.vertices.to(device=self.radar.device, dtype=torch.float32).contiguous(),
+                mesh_data.eps_r,
             )
             if pts.shape[0] > 0:
                 all_points.append(pts)
@@ -323,117 +399,115 @@ class Tracer:
             normals=torch.cat(all_normals),
         )
 
-    def _trace_mesh_triangles(self, mesh_name, vertices_torch, eps_r):
-        fi = self._params[f"{mesh_name}.faces"]
-        num_faces = dr.width(fi) // 3
-        visibility = self._compute_visibility_mask(mesh_name)
-        visible_index = visibility.nonzero(as_tuple=True)[0]
-        empty = (
-            torch.empty((0, 3), dtype=torch.float32, device="cuda"),
-            torch.empty((0,), dtype=torch.float32, device="cuda"),
-            torch.empty((0, 3), dtype=torch.float32, device="cuda"),
-            torch.empty((0,), dtype=torch.int64, device="cuda"),
-        )
-        if visible_index.numel() == 0:
-            return (*empty, num_faces)
+    def _trace_mesh_triangles(self, state: _RayDMeshState, vertices_torch: torch.Tensor, eps_r):
+        if state.num_faces == 0:
+            empty = (
+                torch.empty((0, 3), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0,), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0, 3), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0,), dtype=torch.int64, device=self.radar.device),
+            )
+            return (*empty, 0)
 
-        sensor_origin = self.radar.position.tolist()
-        num_faces_captured = num_faces
-        fi_captured = fi
+        scene_ref = self._rd_scene
+        face0, face1, face2 = state.face_columns
+        origin = self.radar.position.detach().cpu().tolist()
 
         @dr.wrap(source="torch", target="drjit")
         def _geometry(vertices):
-            vp = dr.ravel(vertices)
-            face_idx = dr.arange(UInt32, num_faces_captured)
-            i0 = dr.gather(UInt32, fi_captured, face_idx * 3)
-            i1 = dr.gather(UInt32, fi_captured, face_idx * 3 + 1)
-            i2 = dr.gather(UInt32, fi_captured, face_idx * 3 + 2)
+            positions = _wrapped_vertices_to_point3f(vertices, state.num_vertices)
+            face_idx = dr.arange(UInt32, state.num_faces)
+            i0 = dr.gather(UInt32, face0, face_idx)
+            i1 = dr.gather(UInt32, face1, face_idx)
+            i2 = dr.gather(UInt32, face2, face_idx)
 
-            def _vertex(index):
-                return Point3f(
-                    dr.gather(Float, vp, index * 3),
-                    dr.gather(Float, vp, index * 3 + 1),
-                    dr.gather(Float, vp, index * 3 + 2),
-                )
-
-            v0, v1, v2 = _vertex(i0), _vertex(i1), _vertex(i2)
+            v0 = dr.gather(Point3f, positions, i0)
+            v1 = dr.gather(Point3f, positions, i1)
+            v2 = dr.gather(Point3f, positions, i2)
             centroid = (v0 + v1 + v2) / 3.0
             cross = dr.cross(v1 - v0, v2 - v0)
             cross_len = dr.norm(cross)
             area = 0.5 * cross_len
             normal = cross / (cross_len + 1e-10)
 
-            origin = Point3f(*sensor_origin)
-            cos_i = dr.abs(dr.dot(dr.normalize(origin - centroid), normal))
-            reflectance = fresnel(cos_i, eps_r)
-            intensity = area * reflectance
+            radar_origin = Point3f(origin[0], origin[1], origin[2])
+            view_dir = dr.normalize(radar_origin - centroid)
+            front = dr.dot(view_dir, normal) > 0.0
 
-            out = dr.zeros(Float, num_faces_captured * 7)
-            idx = dr.arange(UInt32, num_faces_captured)
-            dr.scatter(out, centroid.x, idx * 7)
-            dr.scatter(out, centroid.y, idx * 7 + 1)
-            dr.scatter(out, centroid.z, idx * 7 + 2)
-            dr.scatter(out, intensity, idx * 7 + 3)
-            dr.scatter(out, normal.x, idx * 7 + 4)
-            dr.scatter(out, normal.y, idx * 7 + 5)
-            dr.scatter(out, normal.z, idx * 7 + 6)
-            return TensorXf(out, shape=(num_faces_captured, 7))
+            ray_d = dr.normalize(centroid - radar_origin)
+            expected_t = dr.norm(centroid - radar_origin)
+            ray_o = Point3f(
+                dr.full(Float, origin[0], state.num_faces),
+                dr.full(Float, origin[1], state.num_faces),
+                dr.full(Float, origin[2], state.num_faces),
+            )
+            its = scene_ref.intersect(rd.RayAD(ray_o, ray_d), flags=rd.RayFlags.Geometric)
+            not_occluded = its.is_valid() & (its.t >= expected_t - 0.01)
+            valid = front & not_occluded
+
+            cos_i = dr.abs(dr.dot(view_dir, normal))
+            intensity = area * fresnel(cos_i, eps_r)
+            valid_float = dr.select(valid, Float(1.0), Float(0.0))
+
+            out = dr.zeros(Float, state.num_faces * 8)
+            idx = dr.arange(UInt32, state.num_faces)
+            dr.scatter(out, centroid[0], idx * 8)
+            dr.scatter(out, centroid[1], idx * 8 + 1)
+            dr.scatter(out, centroid[2], idx * 8 + 2)
+            dr.scatter(out, intensity, idx * 8 + 3)
+            dr.scatter(out, normal[0], idx * 8 + 4)
+            dr.scatter(out, normal[1], idx * 8 + 5)
+            dr.scatter(out, normal[2], idx * 8 + 6)
+            dr.scatter(out, valid_float, idx * 8 + 7)
+            return TensorXf(out, shape=(state.num_faces, 8))
 
         result = _geometry(vertices_torch)
+        visible_index = (result[:, 7] > 0.5).nonzero(as_tuple=True)[0]
+        if visible_index.numel() == 0:
+            empty = (
+                torch.empty((0, 3), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0,), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0, 3), dtype=torch.float32, device=self.radar.device),
+                torch.empty((0,), dtype=torch.int64, device=self.radar.device),
+            )
+            return (*empty, state.num_faces)
         return (
             result[:, :3][visible_index],
             result[:, 3][visible_index],
             result[:, 4:7][visible_index],
-            visible_index,
-            num_faces,
+            visible_index.to(torch.int64),
+            state.num_faces,
         )
 
     def _trace_pixels(self, renderables):
-        first_name = None
-        first_vertices = None
-        first_eps_r = self.epsilon_r
-        for name, mesh_data in renderables.items():
-            key = f"{name}.vertex_positions"
-            if key not in self._params:
-                continue
-            first_name = name
-            first_vertices = mesh_data.vertices
-            first_eps_r = mesh_data.eps_r
-            break
-
-        if first_name is None or first_vertices is None:
-            return self._empty_trace()
-
-        key = f"{first_name}.vertex_positions"
-        params_ref = self._params
-        scene_ref = self._mi_scene
+        scene_ref = self._rd_scene
         rays = self._gen_rays()
+        vertex_inputs = self._vertex_inputs(renderables)
+        count = self.resolution * self.resolution
 
         @dr.wrap(source="torch", target="drjit")
-        def _pixel(vertices):
-            params_ref[key] = dr.ravel(vertices)
-            params_ref.update()
-            si = scene_ref.ray_intersect(rays)
-
-            cos_i = dr.abs(dr.dot(-rays.d, si.n))
-            reflectance = fresnel(cos_i, first_eps_r)
-            valid_float = dr.select(si.is_valid(), Float(1.0), Float(0.0))
+        def _pixel(*vertices):
+            self._update_scene_from_wrapped_inputs(vertices)
+            its = scene_ref.intersect(rays, flags=rd.RayFlags.Geometric)
+            normals = its.geo_n
+            cos_i = dr.abs(dr.dot(-rays.d, normals))
+            reflectance = fresnel(cos_i, self._lookup_eps_r(its.shape_id))
+            valid_float = dr.select(its.is_valid(), Float(1.0), Float(0.0))
             reflectance = reflectance * valid_float
 
-            count = dr.width(reflectance)
             out = dr.zeros(Float, count * 8)
             idx = dr.arange(UInt32, count)
-            dr.scatter(out, si.p.x * valid_float, idx * 8)
-            dr.scatter(out, si.p.y * valid_float, idx * 8 + 1)
-            dr.scatter(out, si.p.z * valid_float, idx * 8 + 2)
+            dr.scatter(out, its.p[0] * valid_float, idx * 8)
+            dr.scatter(out, its.p[1] * valid_float, idx * 8 + 1)
+            dr.scatter(out, its.p[2] * valid_float, idx * 8 + 2)
             dr.scatter(out, reflectance, idx * 8 + 3)
             dr.scatter(out, valid_float, idx * 8 + 4)
-            dr.scatter(out, si.n.x * valid_float, idx * 8 + 5)
-            dr.scatter(out, si.n.y * valid_float, idx * 8 + 6)
-            dr.scatter(out, si.n.z * valid_float, idx * 8 + 7)
+            dr.scatter(out, normals[0] * valid_float, idx * 8 + 5)
+            dr.scatter(out, normals[1] * valid_float, idx * 8 + 6)
+            dr.scatter(out, normals[2] * valid_float, idx * 8 + 7)
             return TensorXf(out, shape=(count, 8))
 
-        result = _pixel(first_vertices)
+        result = _pixel(*vertex_inputs)
         valid_index = (result[:, 4] > 0.5).nonzero(as_tuple=True)[0]
         if valid_index.numel() == 0:
             return self._empty_trace()
@@ -497,15 +571,15 @@ class Tracer:
             if not dr.any(active):
                 break
 
-            si = self._mi_scene.ray_intersect(rays, active=active)
-            valid = active & si.is_valid()
+            its = self._rd_scene.intersect(rays, active, flags=rd.RayFlags.Geometric)
+            valid = active & its.is_valid()
             if not dr.any(valid):
                 break
 
-            hit_points = si.p
-            normals = si.n
+            hit_points = its.p
+            normals = its.geo_n
             incoming = rays.d
-            eps_r = self._lookup_eps_r(si.shape)
+            eps_r = self._lookup_eps_r(its.shape_id)
             cos_i = dr.abs(dr.dot(-incoming, normals))
             reflectance = fresnel(cos_i, eps_r)
 
@@ -545,7 +619,7 @@ class Tracer:
             offset_sign = dr.select(dr.dot(reflected_dir, normals) >= 0.0, 1.0, -1.0)
             next_origin = hit_points + normals * (offset_sign * self._RAY_EPSILON)
 
-            rays = mi.Ray3f(next_origin, reflected_dir)
+            rays = rd.RayAD(next_origin, reflected_dir)
             entry_points = hit_points if depth == 0 else emitted_entry_points
             prev_bounce_points = hit_points
             fixed_lengths = dr.zeros(Float, count) if depth == 0 else emitted_fixed_lengths
@@ -553,13 +627,13 @@ class Tracer:
             active = valid
 
     def _visible_from_origin(self, hit_points, normals, active):
-        origin = Point3f(*self.radar.position.tolist())
-        to_origin = origin - hit_points
+        origin = self.radar.position.detach().cpu().tolist()
+        radar_origin = Point3f(origin[0], origin[1], origin[2])
+        to_origin = radar_origin - hit_points
         direction = dr.normalize(to_origin)
         offset_sign = dr.select(dr.dot(direction, normals) >= 0.0, 1.0, -1.0)
         shadow_origin = hit_points + normals * (offset_sign * self._RAY_EPSILON)
-        shadow_rays = mi.Ray3f(shadow_origin, direction)
-        shadow_si = self._mi_scene.ray_intersect(shadow_rays, active=active)
+        shadow_si = self._rd_scene.intersect(rd.RayAD(shadow_origin, direction), active, flags=rd.RayFlags.Geometric)
         expected_t = dr.norm(to_origin)
         return (~shadow_si.is_valid()) | (shadow_si.t >= expected_t - self._VISIBILITY_TOLERANCE)
 
@@ -587,18 +661,18 @@ class Tracer:
         idx = dr.arange(UInt32, count)
         out = dr.zeros(Float, count * 12)
         valid_float = dr.select(valid, Float(1.0), Float(0.0))
-        dr.scatter(out, hit_points.x, idx * 12)
-        dr.scatter(out, hit_points.y, idx * 12 + 1)
-        dr.scatter(out, hit_points.z, idx * 12 + 2)
+        dr.scatter(out, hit_points[0], idx * 12)
+        dr.scatter(out, hit_points[1], idx * 12 + 1)
+        dr.scatter(out, hit_points[2], idx * 12 + 2)
         dr.scatter(out, intensities, idx * 12 + 3)
-        dr.scatter(out, entry_points.x, idx * 12 + 4)
-        dr.scatter(out, entry_points.y, idx * 12 + 5)
-        dr.scatter(out, entry_points.z, idx * 12 + 6)
+        dr.scatter(out, entry_points[0], idx * 12 + 4)
+        dr.scatter(out, entry_points[1], idx * 12 + 5)
+        dr.scatter(out, entry_points[2], idx * 12 + 6)
         dr.scatter(out, fixed_lengths, idx * 12 + 7)
         dr.scatter(out, Float(float(depth)), idx * 12 + 8)
-        dr.scatter(out, normals.x, idx * 12 + 9)
-        dr.scatter(out, normals.y, idx * 12 + 10)
-        dr.scatter(out, normals.z, idx * 12 + 11)
+        dr.scatter(out, normals[0], idx * 12 + 9)
+        dr.scatter(out, normals[1], idx * 12 + 10)
+        dr.scatter(out, normals[2], idx * 12 + 11)
 
         packed = TensorXf(out, shape=(count, 12)).torch()
         mask = TensorXf(valid_float).torch() > 0.5

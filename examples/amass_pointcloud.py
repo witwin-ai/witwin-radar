@@ -2,7 +2,7 @@
 AMASS BMLmovi: multi-frame radar point cloud from SMPL body motion capture.
 
 Loads SMPL pose sequences from the BMLmovi subset of AMASS, drives a full
-SMPL mesh through Mitsuba ray tracing, and runs the FMCW radar pipeline
+SMPL mesh through RayD ray tracing, and runs the FMCW radar pipeline
 to produce 30 consecutive radar point clouds with Range-Doppler maps.
 
 Usage (from repo root):
@@ -12,7 +12,7 @@ Usage (from repo root):
 Requires:
     - BMLmovi data in data/BMLmovi_full/ (extracted from BMLmovi.tar.bz2)
     - SMPL model files in models/smpl_models/
-    - smplpytorch, mitsuba (cuda_ad_rgb variant)
+    - smplpytorch, RayD, CUDA
 """
 
 import pathlib

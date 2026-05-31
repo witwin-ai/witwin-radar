@@ -5,7 +5,7 @@ Usage:
     python -m examples.humanbody
     python examples/humanbody.py
 
-Requires: smplpytorch, mitsuba (cuda_ad_rgb variant)
+Requires: smplpytorch, RayD, and CUDA
 """
 
 import pathlib
