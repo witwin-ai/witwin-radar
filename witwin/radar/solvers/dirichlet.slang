@@ -205,6 +205,82 @@ void forward_chunked(
 }
 
 // ============================================================================
+// Forward MIMO with a linear per-path distance model:
+// d(chirp) = d0 + d_rate * chirp_time
+// Output: output_re/output_im (chirps, antenna_pairs, bins)
+// ============================================================================
+
+[AutoPyBindCUDA]
+[CUDAKernel]
+void forward_mimo_linear_chunked(
+    TensorView<float> d0,         // (num_pairs * targets_per_pair,) one-way distance at frame start
+    TensorView<float> d_rate,     // (num_pairs * targets_per_pair,) one-way distance rate in m/s
+    TensorView<float> a0,         // (num_pairs * targets_per_pair,) amplitude at frame start
+    TensorView<float> output_re,  // (chirps, num_pairs, M) output real
+    TensorView<float> output_im,  // (chirps, num_pairs, M) output imag
+    float n,
+    float k0_per_meter,
+    int num_bins,
+    int N_fft,
+    int targets_per_pair,
+    int chirp_per_frame,
+    float chirp_period,
+    int num_tx,
+    int range_loss_update,
+    float fc,
+    float slope,
+    float t_start
+)
+{
+    uint bin = cudaThreadIdx().x + cudaBlockIdx().x * cudaBlockDim().x;
+    uint pair_id = cudaBlockIdx().y;
+    uint chirp_id = cudaBlockIdx().z;
+
+    if (bin >= num_bins || chirp_id >= uint(chirp_per_frame)) return;
+
+    float c0 = 299792458.0f;
+    float chirp_time = float(chirp_id) * chirp_period * float(num_tx);
+    int target_start = int(pair_id) * targets_per_pair;
+
+    float sum_re = 0.0f;
+    float sum_im = 0.0f;
+
+    for (int i = 0; i < targets_per_pair; i++)
+    {
+        int target_idx = target_start + i;
+        float dist0 = d0[target_idx];
+        float dist = dist0 + d_rate[target_idx] * chirp_time;
+        if (dist <= 0.0f) continue;
+
+        float amp = a0[target_idx];
+        if (amp == 0.0f) continue;
+
+        if (range_loss_update != 0)
+        {
+            // Existing path amplitudes include free-space loss at dist0.
+            // Preserve first-order range-loss variation without recomputing
+            // antenna pattern or polarization gains.
+            amp *= dist0 / max(dist, 1e-6f);
+        }
+
+        float tau = 2.0f * dist / c0;
+        float phi_0 = TWO_PI * (fc * tau + slope * tau * (t_start - 0.5f * tau));
+        float k0 = dist * k0_per_meter;
+        float x = TWO_PI * (float(bin) - k0) / float(N_fft);
+
+        Complex kernel = dirichlet_kernel(x, n);
+        Complex phase_corr = cexp_f(phi_0);
+        Complex result = cmul(kernel, phase_corr);
+
+        sum_re += amp * result.re;
+        sum_im += amp * result.im;
+    }
+
+    output_re[chirp_id, pair_id, bin] = sum_re;
+    output_im[chirp_id, pair_id, bin] = sum_im;
+}
+
+// ============================================================================
 // Backward: gradients w.r.t. d and a
 // ============================================================================
 

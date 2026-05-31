@@ -535,6 +535,87 @@ class Radar:
         signal = self.solver.mimo(interpolator, t0, **options)
         return self.apply_signal_models(signal)
 
+    def mimo_from_trace(self, trace, *, velocities=None, t0=0, **options):
+        """Full MIMO data cube from one pre-traced frame.
+
+        This is the fixed-trace fast path: it does not call ray tracing or a
+        per-chirp interpolator inside the frame. When ``velocities`` is passed,
+        the Dirichlet backend uses a first-order per-path range-rate model; it
+        does not update incidence, antenna-pattern, polarization, or occlusion
+        terms within the frame.
+
+        Args:
+            trace: ``TraceResult`` or legacy ``(intensities, points)`` sample at frame start.
+            velocities: optional per-path world velocity tensor with shape ``(N, 3)``.
+            t0: frame start time in seconds, used only by fallback backends.
+            **options: backend options, including ``freq_domain=True`` for Dirichlet.
+        """
+        if bool(options.get("freq_domain", False)) and (
+            self.noise_model is not None or self.receiver_chain is not None
+        ):
+            raise ValueError(
+                "Radar noise_model and receiver_chain only support time-domain mimo output; "
+                "omit freq_domain=True."
+            )
+        if hasattr(self.solver, "mimo_from_trace"):
+            signal = self.solver.mimo_from_trace(
+                trace,
+                velocities=velocities,
+                t0=t0,
+                **options,
+            )
+            return self.apply_signal_models(signal)
+
+        if velocities is None:
+            return self.mimo(lambda _t: trace, t0=t0, **options)
+
+        if not hasattr(trace, "points"):
+            raise TypeError("mimo_from_trace with velocities requires a TraceResult-like trace object.")
+
+        from .trace_result import TraceResult
+
+        velocity_t = torch.as_tensor(velocities, dtype=torch.float32, device=self.device)
+        base_points = trace.points.to(dtype=torch.float32, device=self.device)
+        base_entry = trace.entry_points.to(dtype=torch.float32, device=self.device)
+
+        def interpolator(t):
+            dt = float(t) - float(t0)
+            return TraceResult(
+                base_points + velocity_t * dt,
+                trace.intensities,
+                entry_points=base_entry + velocity_t * dt,
+                fixed_path_lengths=trace.fixed_path_lengths,
+                depths=trace.depths,
+                normals=trace.normals,
+            )
+
+        return self.mimo(interpolator, t0=t0, **options)
+
+    def path_cache_from_trace(self, trace, *, velocities=None):
+        """Precompute fixed-trace path distances and amplitudes for fast MIMO.
+
+        Optional velocities are converted to first-order one-way range rates at
+        the trace pose. The cache intentionally freezes material, antenna, and
+        polarization terms within the frame.
+        """
+        if not hasattr(self.solver, "path_cache_from_trace"):
+            raise NotImplementedError("path_cache_from_trace is currently implemented by the Dirichlet backend.")
+        return self.solver.path_cache_from_trace(trace, velocities=velocities)
+
+    def mimo_from_paths(self, cache, **options):
+        """Full MIMO data cube from a ``MimoPathCache``."""
+        if bool(options.get("freq_domain", False)) and (
+            self.noise_model is not None or self.receiver_chain is not None
+        ):
+            raise ValueError(
+                "Radar noise_model and receiver_chain only support time-domain mimo output; "
+                "omit freq_domain=True."
+            )
+        if not hasattr(self.solver, "mimo_from_paths"):
+            raise NotImplementedError("mimo_from_paths is currently implemented by the Dirichlet backend.")
+        signal = self.solver.mimo_from_paths(cache, **options)
+        return self.apply_signal_models(signal)
+
     def simulate(
         self,
         scene,
@@ -582,12 +663,10 @@ class Radar:
         if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
             def interpolator(t):
                 return tracer.trace(time=t)
-        else:
-            def interpolator(t):
-                del t
-                return trace
 
-        signal = self.mimo(interpolator, t0)
+            signal = self.mimo(interpolator, t0)
+        else:
+            signal = self.mimo_from_trace(trace, t0=t0)
         self.last_scene = scene
         self.last_tracer = tracer
         self.last_trace = trace

@@ -58,6 +58,15 @@ def _random_static_scene(n_targets=50, seed=42):
     return interp
 
 
+def _trace_result(points, intensities):
+    from witwin.radar import TraceResult
+
+    return TraceResult(
+        torch.as_tensor(points, dtype=torch.float32, device="cuda"),
+        torch.as_tensor(intensities, dtype=torch.float32, device="cuda"),
+    )
+
+
 class TestMIMOCrossValidation:
 
     @pytest.mark.parametrize(
@@ -130,6 +139,109 @@ class TestMIMOCrossValidation:
         cx_corr = complex_correlation(frame_slang, frame_dirichlet)
         assert mag_corr > 0.99, f"non-zero adc_start magnitude correlation = {mag_corr:.4f}"
         assert cx_corr > 0.99, f"non-zero adc_start complex correlation = {cx_corr:.4f}"
+
+    def test_dirichlet_mimo_from_static_trace_matches_legacy_path(self):
+        """Static per-frame traces should be reusable without changing the generated MIMO frame."""
+        from witwin.radar import Radar
+
+        cfg = _mimo_config(chirp_per_frame=4, num_doppler_bins=4, adc_start_time=6)
+        trace = _trace_result(
+            points=[
+                [0.0, 0.0, -3.0],
+                [0.4, -0.1, -3.8],
+                [-0.3, 0.2, -2.5],
+            ],
+            intensities=[0.7, 0.4, 1.1],
+        )
+
+        radar = Radar(cfg, backend="dirichlet")
+
+        def interp(_t):
+            return trace
+
+        legacy = radar.mimo(interp, fast=False)
+        fast = radar.mimo_from_trace(trace)
+        cache = radar.path_cache_from_trace(trace)
+        fast_from_cache = radar.mimo_from_paths(cache)
+        legacy_freq = radar.mimo(interp, fast=False, freq_domain=True)
+        fast_freq = radar.mimo_from_trace(trace, freq_domain=True)
+
+        legacy_np = legacy.detach().cpu().numpy()
+        fast_np = fast.detach().cpu().numpy()
+        assert fast.shape == legacy.shape
+        torch.testing.assert_close(fast, legacy, rtol=1e-5, atol=1e-8)
+        torch.testing.assert_close(fast_from_cache, fast, rtol=1e-6, atol=1e-9)
+        torch.testing.assert_close(fast_freq, legacy_freq, rtol=1e-5, atol=1e-8)
+        torch.testing.assert_close(fast_freq, torch.fft.fft(fast, dim=-1), rtol=1e-5, atol=1e-8)
+        assert mag_correlation(legacy_np, fast_np) > 0.9999
+        assert complex_correlation(legacy_np, fast_np) > 0.9999
+        assert 0.999 < peak_ratio(legacy_np, fast_np) < 1.001
+
+    def test_dirichlet_mimo_from_trace_with_radial_velocity_matches_legacy_path(self):
+        """A linear velocity prior should reproduce per-chirp recomputation for boresight radial motion."""
+        from witwin.radar import Radar, TraceResult
+
+        cfg = _mimo_config(
+            num_tx=1,
+            num_rx=1,
+            tx_loc=[[0, 0, 0]],
+            rx_loc=[[0, 0, 0]],
+            chirp_per_frame=8,
+            num_doppler_bins=8,
+            adc_start_time=6,
+        )
+        base_points = torch.tensor([[0.0, 0.0, -3.0]], dtype=torch.float32, device="cuda")
+        intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
+        velocities = torch.tensor([[0.0, 0.0, -0.75]], dtype=torch.float32, device="cuda")
+        trace = TraceResult(base_points, intensities)
+        radar = Radar(cfg, backend="dirichlet")
+        t0 = 0.25
+
+        def interp(t):
+            return TraceResult(base_points + velocities * (float(t) - t0), intensities)
+
+        legacy = radar.mimo(interp, t0=t0, fast=False)
+        fast = radar.mimo_from_trace(trace, velocities=velocities, t0=t0)
+        cache = radar.path_cache_from_trace(trace, velocities=velocities)
+        fast_from_cache = radar.mimo_from_paths(cache)
+
+        legacy_np = legacy.detach().cpu().numpy()
+        fast_np = fast.detach().cpu().numpy()
+        assert fast.shape == legacy.shape
+        torch.testing.assert_close(fast, legacy, rtol=5e-4, atol=1e-8)
+        torch.testing.assert_close(fast_from_cache, fast, rtol=1e-6, atol=1e-9)
+        assert mag_correlation(legacy_np, fast_np) > 0.9999
+        assert complex_correlation(legacy_np, fast_np) > 0.9999
+        assert 0.999 < peak_ratio(legacy_np, fast_np) < 1.001
+
+    def test_dirichlet_mimo_from_trace_grad_fallback_honors_t0(self):
+        """Gradient-preserving linear fallback should use trace time as frame start."""
+        from witwin.radar import Radar, TraceResult
+
+        cfg = _mimo_config(
+            num_tx=1,
+            num_rx=1,
+            tx_loc=[[0, 0, 0]],
+            rx_loc=[[0, 0, 0]],
+            chirp_per_frame=4,
+            num_doppler_bins=4,
+            adc_start_time=6,
+        )
+        base_points = torch.tensor([[0.0, 0.0, -3.0]], dtype=torch.float32, device="cuda", requires_grad=True)
+        intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
+        velocities = torch.tensor([[0.0, 0.0, -0.5]], dtype=torch.float32, device="cuda", requires_grad=True)
+        trace = TraceResult(base_points, intensities)
+        radar = Radar(cfg, backend="dirichlet")
+        t0 = 0.4
+
+        def interp(t):
+            return TraceResult(base_points + velocities * (float(t) - t0), intensities)
+
+        legacy = radar.mimo(interp, t0=t0, fast=False)
+        fallback = radar.mimo_from_trace(trace, velocities=velocities, t0=t0)
+
+        torch.testing.assert_close(fallback, legacy, rtol=5e-4, atol=1e-8)
+        assert fallback.requires_grad
 
 
 class TestMIMOOutputShape:

@@ -4,6 +4,7 @@ from .radar import Radar, RadarConfig, quantize_complex_signal
 from .solvers import Solver
 from .trace import TraceResult, Tracer
 from .material import fresnel
+from .path_cache import MimoPathCache
 from .scene import Scene, SceneModule
 from .timeline import Timeline, TransformMotion
 from .types import DetectorType, MotionSampling, SamplingMode, SolverBackend
@@ -36,6 +37,7 @@ __all__ = [
     'DetectorType',
     'MotionSampling',
     'SamplingMode',
+    'MimoPathCache',
     'Scene',
     'SceneModule',
     'SMPLBody',
