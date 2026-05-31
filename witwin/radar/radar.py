@@ -262,6 +262,16 @@ class Radar:
         self.config: RadarConfig = config if isinstance(config, RadarConfig) else RadarConfig.from_dict(config)
         cfg = self.config
 
+        self._validate_runtime_config(cfg)
+        self._init_antenna_locations(cfg)
+        self._init_waveform_state(cfg)
+        self._init_rf_state(cfg)
+        self._init_runtime_models(cfg)
+        self._init_axes(cfg)
+        self.solver = self._make_solver(pad_factor)
+
+    @staticmethod
+    def _validate_runtime_config(cfg: RadarConfig) -> None:
         if (
             cfg.receiver_chain is not None
             and cfg.receiver_chain.get("adc") is not None
@@ -272,13 +282,13 @@ class Radar:
                 "Radar receiver_chain.adc and noise_model.quantization cannot both be enabled; use one quantizer."
             )
 
+    def _init_antenna_locations(self, cfg: RadarConfig) -> None:
         antenna_spacing = self.c0 / cfg.fc / 2
-        tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
-        rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
-        self.tx_loc = tx_loc
-        self.rx_loc = rx_loc
+        self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
+        self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
         self._refresh_pose_dependent_state()
 
+    def _init_waveform_state(self, cfg: RadarConfig) -> None:
         self.t_sample = (
             torch.arange(0, cfg.adc_samples, dtype=torch.float64, device=self.device)
             / (cfg.sample_rate * 1e3)
@@ -287,6 +297,7 @@ class Radar:
         self.tx_waveform = self.waveform(self.t_sample)
         self._lambda = self.c0 / cfg.fc
 
+    def _init_rf_state(self, cfg: RadarConfig) -> None:
         self.transmit_power_watts = 1e-3 * (10.0 ** (cfg.power / 10.0))
         reference_impedance = (
             cfg.receiver_chain["reference_impedance_ohm"] if cfg.receiver_chain is not None else 50.0
@@ -294,6 +305,7 @@ class Radar:
         self.tx_voltage_rms = math.sqrt(self.transmit_power_watts * reference_impedance)
         self.gain = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
 
+    def _init_runtime_models(self, cfg: RadarConfig) -> None:
         from .validation import default_dipole_antenna_pattern
 
         self.antenna_pattern_config = cfg.antenna_pattern or default_dipole_antenna_pattern()
@@ -318,6 +330,7 @@ class Radar:
         )
         self._noise_generator = self._make_noise_generator()
 
+    def _init_axes(self, cfg: RadarConfig) -> None:
         fs = cfg.sample_rate * 1e3
         slope_hz = cfg.slope * 1e12
 
@@ -342,18 +355,18 @@ class Radar:
             * self.doppler_resolution
         )
 
+    def _make_solver(self, pad_factor: int):
         if self.backend == SolverBackend.PYTORCH:
             from .solvers.solver_pytorch import PytorchSolver
 
-            self.solver = PytorchSolver(self)
-        elif self.backend == SolverBackend.SLANG:
+            return PytorchSolver(self)
+        if self.backend == SolverBackend.SLANG:
             from .solvers.solver_slang import SlangSolver
 
-            self.solver = SlangSolver(self)
-        else:
-            from .solvers.solver_dirichlet import DirichletSolver
+            return SlangSolver(self)
+        from .solvers.solver_dirichlet import DirichletSolver
 
-            self.solver = DirichletSolver(self, pad_factor)
+        return DirichletSolver(self, pad_factor)
 
     @staticmethod
     def _resolve_device(*, device: torch.device, backend: SolverBackend) -> torch.device:

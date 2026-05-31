@@ -27,6 +27,11 @@ from .utils.tensor import (
     to_vertex_tensor,
 )
 
+
+_STRUCTURE_UPDATE_KEYS = {"geometry", "material", "priority", "enabled", "tags", "metadata", "name"}
+_STRUCTURE_METADATA_KEYS = {"bsdf", "dynamic"}
+
+
 def _materialize_geometry(geometry: GeometryBase | Mesh, *, device: str) -> tuple[torch.Tensor, np.ndarray]:
     if isinstance(geometry, (Mesh, SMPLBody)):
         vertices, faces = geometry.to_mesh(device=device)
@@ -86,6 +91,20 @@ def _clone_geometry(geometry: GeometryBase, **changes):
         unsupported = ", ".join(sorted(changes))
         raise TypeError(f"Unsupported geometry updates for {type(geometry).__name__}: {unsupported}")
     return updated
+
+
+def _copy_motion_with_parent(motion: TransformMotion, parent: str) -> TransformMotion:
+    return TransformMotion(
+        offset=motion.offset,
+        velocity=motion.velocity,
+        axis=motion.axis,
+        angular_velocity=motion.angular_velocity,
+        angle=motion.angle,
+        origin=motion.origin,
+        space=motion.space,
+        t_ref=motion.t_ref,
+        parent=parent,
+    )
 
 
 @dataclass
@@ -242,63 +261,58 @@ class Scene(SceneBase):
         return self
 
     def update_structure(self, name: str, **changes) -> "Scene":
-        structure_keys = {"geometry", "material", "priority", "enabled", "tags", "metadata", "name"}
-        metadata_keys = {"bsdf", "dynamic"}
         for index, structure in enumerate(self.structures):
             if structure.name != name:
                 continue
 
-            structure_changes = {key: changes[key] for key in structure_keys & changes.keys()}
-            metadata = dict(structure.metadata)
-            for key in metadata_keys & changes.keys():
-                metadata[key] = changes[key]
-            geometry_changes = {
-                key: value
-                for key, value in changes.items()
-                if key not in structure_keys and key not in metadata_keys
-            }
-
-            topology_changed = "name" in structure_changes or "geometry" in structure_changes
-            updated_geometry = structure_changes.pop("geometry", structure.geometry)
-            if geometry_changes:
-                updated_geometry = _clone_geometry(updated_geometry, **geometry_changes)
-                topology_changed = topology_changed or any(
-                    key in geometry_changes for key in ("faces", "gender", "model_root")
-                )
-
-            updated = Structure(
-                geometry=updated_geometry,
-                material=structure_changes.pop("material", structure.material),
-                name=structure_changes.pop("name", structure.name),
-                priority=structure_changes.pop("priority", structure.priority),
-                enabled=structure_changes.pop("enabled", structure.enabled),
-                tags=structure_changes.pop("tags", structure.tags),
-                metadata=structure_changes.pop("metadata", metadata),
-            )
-            if structure_changes:
-                unsupported = ", ".join(sorted(structure_changes))
-                raise TypeError(f"Unsupported Structure updates: {unsupported}")
+            updated, topology_changed = self._updated_structure(structure, changes)
             self.structures[index] = updated
             if structure.name != updated.name:
-                motion = self._structure_motions.pop(structure.name, None)
-                if motion is not None:
-                    self._structure_motions[updated.name] = motion
-                for child_name, child_motion in list(self._structure_motions.items()):
-                    if child_motion.parent == structure.name:
-                        self._structure_motions[child_name] = TransformMotion(
-                            offset=child_motion.offset,
-                            velocity=child_motion.velocity,
-                            axis=child_motion.axis,
-                            angular_velocity=child_motion.angular_velocity,
-                            angle=child_motion.angle,
-                            origin=child_motion.origin,
-                            space=child_motion.space,
-                            t_ref=child_motion.t_ref,
-                            parent=updated.name,
-                        )
+                self._rename_structure_motion(structure.name, updated.name)
             self._set_dirty(self.DIRTY_FULL if topology_changed else self.DIRTY_VERTICES)
             return self
         raise KeyError(f"Structure '{name}' not found.")
+
+    def _updated_structure(self, structure: Structure, changes: Mapping[str, Any]) -> tuple[Structure, bool]:
+        structure_changes = {key: changes[key] for key in _STRUCTURE_UPDATE_KEYS & changes.keys()}
+        metadata = dict(structure.metadata)
+        for key in _STRUCTURE_METADATA_KEYS & changes.keys():
+            metadata[key] = changes[key]
+        geometry_changes = {
+            key: value
+            for key, value in changes.items()
+            if key not in _STRUCTURE_UPDATE_KEYS and key not in _STRUCTURE_METADATA_KEYS
+        }
+
+        topology_changed = "name" in structure_changes or "geometry" in structure_changes
+        updated_geometry = structure_changes.pop("geometry", structure.geometry)
+        if geometry_changes:
+            updated_geometry = _clone_geometry(updated_geometry, **geometry_changes)
+            topology_changed = topology_changed or any(
+                key in geometry_changes for key in ("faces", "gender", "model_root")
+            )
+
+        updated = Structure(
+            geometry=updated_geometry,
+            material=structure_changes.pop("material", structure.material),
+            name=structure_changes.pop("name", structure.name),
+            priority=structure_changes.pop("priority", structure.priority),
+            enabled=structure_changes.pop("enabled", structure.enabled),
+            tags=structure_changes.pop("tags", structure.tags),
+            metadata=structure_changes.pop("metadata", metadata),
+        )
+        if structure_changes:
+            unsupported = ", ".join(sorted(structure_changes))
+            raise TypeError(f"Unsupported Structure updates: {unsupported}")
+        return updated, topology_changed
+
+    def _rename_structure_motion(self, old_name: str, new_name: str) -> None:
+        motion = self._structure_motions.pop(old_name, None)
+        if motion is not None:
+            self._structure_motions[new_name] = motion
+        for child_name, child_motion in list(self._structure_motions.items()):
+            if child_motion.parent == old_name:
+                self._structure_motions[child_name] = _copy_motion_with_parent(child_motion, new_name)
 
     def remove(self, name: str) -> "Scene":
         for index, structure in enumerate(self.structures):

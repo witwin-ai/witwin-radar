@@ -171,3 +171,25 @@ def test_rayd_tracer_matches_cylinder_axis_coordinate_convention():
     assert trace_x.points.shape[0] == 1
     assert abs(float(trace_z.points[0, 2]) - (-2.0)) < 1e-4
     assert abs(float(trace_x.points[0, 2]) - (-2.75)) < 1e-4
+
+
+@pytest.mark.gpu
+def test_rayd_tracer_reuses_instance_after_material_update():
+    import witwin.radar as wr
+
+    scene = wr.Scene(device="cuda").add_structure(
+        wr.Structure(
+            name="target",
+            geometry=wr.Box(position=(0.0, 0.0, -3.0), size=(1.0, 1.0, 1.0)),
+            material=wr.Material(eps_r=2.0),
+        )
+    )
+    radar = wr.Radar(_config(), backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
+    tracer = wr.Tracer(scene, radar, resolution=1, sampling="pixel")
+
+    first = tracer.trace()
+    scene.update_structure("target", material=wr.Material(eps_r=9.0))
+    second = tracer.trace()
+
+    assert first.points.shape == second.points.shape == (1, 3)
+    assert not torch.allclose(first.intensities, second.intensities)
