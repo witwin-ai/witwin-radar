@@ -42,7 +42,7 @@ config = {
 
 def require_cuda():
     if not torch.cuda.is_available():
-        raise RuntimeError("This example requires CUDA for Mitsuba rendering and radar simulation.")
+        raise RuntimeError("This example requires CUDA for RayD tracing and radar simulation.")
 
 
 def main():

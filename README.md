@@ -1,13 +1,15 @@
 # WiTwin Radar - Differentiable Radar Simulator
 
-A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines Mitsuba ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
+A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines RayD/Dr.Jit ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
 
 This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
 
 ## Get Started
 
-Python 3.10+ and an NVIDIA GPU are required.
+Python 3.10+ is required. The PyTorch backend can run on CPU for non-rendering workflows; RayD tracing and the `slang`/`dirichlet` backends require an NVIDIA GPU with CUDA.
 This package depends on the base `witwin` package.
+
+Linux and Windows are supported targets. On Linux, use a normal Python virtual environment or conda environment with a CUDA-enabled PyTorch build, NVIDIA driver, CUDA toolkit, and a working compiler toolchain for Slang kernel builds.
 
 ```bash
 pip install witwin[radar]
@@ -76,7 +78,7 @@ Use `Radar(..., position=..., target=..., fov=...)` to define the radar pose, an
 
 ```python
 from witwin.core import Material, Structure
-from witwin.radar import Radar, RadarConfig, Scene
+from witwin.radar import Radar, RadarConfig, Scene, TransformMotion
 
 radar = Radar(
     RadarConfig.from_dict(config),
@@ -98,7 +100,7 @@ scene.add_structure(
 scene.add_mesh(name="wheel_fl", vertices=wheel_vertices, faces=wheel_faces, dynamic=True)
 scene.add_structure_motion(
     "wheel_fl",
-    rotation=RotationMotion(
+    TransformMotion(
         axis=(0.0, 1.0, 0.0),
         angular_velocity=32.0,
         origin=(0.0, 0.0, 0.0),
@@ -120,13 +122,12 @@ Available mutating scene methods:
 - `Scene.add_smpl(...)`
 - `Scene.add_structure_motion(...)`
 - `Scene.update_structure(...)`
-- `Scene.set_structure_motion(...)`
-- `Scene.clear_structure_motion(...)`
+- `Scene.remove(...)`
 
 ## Features
 
 - Recommended backend: `dirichlet`
-- Ray tracing through Mitsuba with differentiable scene support
+- Ray tracing through RayD/Dr.Jit with differentiable scene support
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
 - Optional per-structure rigid motion with parent inheritance
@@ -161,7 +162,7 @@ python -m examples.rgbd_range_doppler --input path/to/depths.npy
 
 ## Installation
 
-Python 3.10+ and an NVIDIA GPU are required.
+Python 3.10+ is required. Install a CUDA-enabled PyTorch build for GPU backends and tracing. Linux and Windows are supported; Linux users should ensure the NVIDIA driver, CUDA toolkit, `ninja`, and a C/C++ compiler are available on `PATH` before first Slang compilation.
 
 ```bash
 pip install witwin[radar]

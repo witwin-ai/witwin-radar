@@ -6,11 +6,11 @@
 - Radar pose is controlled directly with `Radar(position=..., target=..., up=..., fov=...)` or `radar.set_pose(...)`
 - Scene assembly uses `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
 - Multi-radar orchestration is available via `Radar.simulate_group(...)`, returning a `dict[str, torch.Tensor]`
-- Optional per-structure motion is available through `Scene.add_structure_motion(...)`, `Scene.set_structure_motion(...)`, and `Scene.clear_structure_motion(...)`. Callers pass `TranslationMotion` / `RotationMotion` instances directly.
+- Optional per-structure motion is available through `Scene.add_structure_motion(...)` and `Scene.update_structure(...)`. Callers pass `TransformMotion` instances directly.
 - Public string-literal API types: `SolverBackend`, `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
-- Ray-tracing entrypoint: `Renderer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, and `depths` for generalized path tracing
-- `radar.simulate(...)` returns the radar data tensor directly. The most recent trace and renderer are available as `radar.last_trace` and `radar.last_renderer` for debugging.
+- Ray-tracing entrypoint: `Tracer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, `depths`, and optional `normals` for generalized path tracing
+- `radar.simulate(...)` returns the radar data tensor directly. The most recent scene, trace, and tracer are available as `radar.last_scene`, `radar.last_trace`, and `radar.last_tracer` for debugging.
 
 ## Configuration
 
@@ -20,7 +20,7 @@
 - Optional `polarization` config supports simplified TX/RX polarization vectors with alias strings (`horizontal` / `vertical`) or per-element 3D vectors
 - Optional `receiver_chain` config supports `lna`, `agc`, and `adc` stages plus absolute TX-power scaling via `config["power"]`
 - `Radar` accepts `RadarConfig` or raw config dictionaries
-- `Renderer(scene, radar, ...)` and `radar.simulate(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
+- `Tracer(scene, radar, ...)` and `radar.simulate(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
 - `radar.simulate(...)` and `Radar.simulate_group(...)` accept `motion_sampling="per_frame" | "per_chirp"` for dynamic scenes
 
 ## Backend Execution
@@ -28,19 +28,20 @@
 - Three solver backends: `pytorch`, `slang`, `dirichlet`
 - Backend-specific runtime state lives on `radar.solver`, including Dirichlet FFT metadata such as `pad_factor` and `N_fft`
 - `Radar(device=...)` validates CUDA availability explicitly; `slang` and `dirichlet` require CUDA, while `pytorch` honors the selected device
+- Linux and Windows are supported targets. GPU tracing and Slang-backed solvers require a CUDA-enabled PyTorch build plus a working Slang/CUDA compilation toolchain; CPU-only operation is limited to the PyTorch backend and non-rendering workflows.
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves `Radar.gain` onto an absolute transmit-voltage scale
 - `receiver_chain.adc` and `noise_model.quantization` are mutually exclusive so only one ADC quantizer is active
 
 ## Rendering And Dynamics
 
-- `Renderer.trace()` has a single public signature with no ignored `spp` parameter
-- `Scene.compile_renderables(time=...)` and `Renderer.trace(time=...)` expose time-dependent geometry for dynamic scenes
+- `Tracer.trace()` has a single public signature with no ignored `spp` parameter
+- `Scene.compile_renderables(time=...)` and `Tracer.trace(time=...)` expose time-dependent geometry for dynamic scenes
 - Multipath tracing is available for `sampling="pixel"` and uses radar-center path tracing with configurable maximum specular reflection depth
 - Solver backends consume generalized path samples and apply FSPL from the total `tx -> bounces -> scatter -> rx` distance
 - When `polarization` is configured, traced path normals are propagated through the runtime and used for simplified reflection/projection coupling
 - Shared core geometry constructors default to `device=None`, while radar `Scene(...)` owns device placement and defaults to CUDA
-- `Timeline.from_motion()` uses the renderer trace contract directly
+- `Timeline.from_motion()` uses the tracer result contract directly
 - Dynamic structure motion supports rigid `translation`, `rotation`, and `parent` inheritance so rotational Doppler can be modeled directly from the scene
 - `radar.mimo(..., freq_domain=True)` remains available for Dirichlet frequency-domain output
 

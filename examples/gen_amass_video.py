@@ -2,7 +2,7 @@
 Generate combined radar visualization videos from AMASS BMLmovi clips.
 
 Each clip runs the full pipeline:
-AMASS pose -> SMPL mesh -> Mitsuba ray tracing -> FMCW radar ->
+AMASS pose -> SMPL mesh -> RayD ray tracing -> FMCW radar ->
 CA-CFAR detection -> combined MP4 with reflections, RD map, and radar point cloud.
 
 Usage:
@@ -101,7 +101,7 @@ SMPL_BONES = [
 
 def require_cuda():
     if not torch.cuda.is_available():
-        raise RuntimeError("This example requires CUDA for Mitsuba rendering and radar simulation.")
+        raise RuntimeError("This example requires CUDA for RayD tracing and radar simulation.")
 
 
 def ensure_inputs():
