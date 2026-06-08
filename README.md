@@ -189,7 +189,7 @@ If this module or its original RF-Genesis work is relevant to your research, ple
 
 ## License
 
-MIT
+BSD-3-Clause
 
 ## Developer
 
