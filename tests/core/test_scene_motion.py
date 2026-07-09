@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -100,6 +101,38 @@ def _centroid_trace(scene: Scene, *, time: float) -> TraceResult:
     centroid = compiled.vertices.mean(dim=0, keepdim=True)
     intensities = torch.ones(1, dtype=torch.float32, device=compiled.vertices.device)
     return TraceResult(centroid, intensities)
+
+
+def _trace_value(trace: TraceResult) -> float:
+    return float(trace.points.sum().item() + trace.intensities.sum().item())
+
+
+def _attach_fake_solver(radar: Radar) -> Radar:
+    def _mimo(interpolator, t0=0.0, **_options):
+        cfg = radar.config
+        chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6 * cfg.num_tx
+        frame = torch.zeros(
+            (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
+            dtype=torch.complex64,
+            device=radar.device,
+        )
+        for chirp_id in range(cfg.chirp_per_frame):
+            sample = interpolator(t0 + chirp_id * chirp_period)
+            frame[:, :, chirp_id, :] = complex(_trace_value(sample), 0.0)
+        return frame
+
+    def _mimo_from_trace(trace, t0=0.0, **_options):
+        cfg = radar.config
+        value = complex(_trace_value(trace), 0.0)
+        return torch.full(
+            (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
+            value,
+            dtype=torch.complex64,
+            device=radar.device,
+        )
+
+    radar.solver = SimpleNamespace(mimo=_mimo, mimo_from_trace=_mimo_from_trace)
+    return radar
 
 
 def _triangle_trace(scene: Scene, radar: Radar, *, time: float) -> TraceResult:
@@ -204,7 +237,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
 
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
-    radar = Radar(config, backend="pytorch", device="cpu")
+    radar = _attach_fake_solver(Radar(config, backend="dirichlet", device="cpu"))
     result = radar.simulate(
         scene,
         motion_sampling="per_chirp",
@@ -245,7 +278,9 @@ def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
 
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
-    radar = Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), backend="pytorch", device="cpu")
+    radar = _attach_fake_solver(
+        Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), backend="dirichlet", device="cpu")
+    )
     radar.simulate(
         scene,
         motion_sampling="per_frame",
@@ -278,15 +313,15 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
     config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
-    front = Radar(config, name="front", backend="pytorch", device="cpu")
-    side = Radar(
+    front = _attach_fake_solver(Radar(config, name="front", backend="dirichlet", device="cpu"))
+    side = _attach_fake_solver(Radar(
         config,
         name="side",
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
         position=(1.0, 0.0, 0.0),
         target=(1.0, 0.0, -1.0),
-    )
+    ))
 
     group = Radar.simulate_group(
         scene,
@@ -311,7 +346,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
 def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
     scene = _rotating_scene(device="cuda")
     config = RadarConfig.from_dict(_config(chirps=4, adc_samples=32))
-    radar = Radar(config, backend="pytorch", device="cuda")
+    radar = Radar(config, backend="dirichlet", device="cuda")
 
     result = radar.simulate(
         scene,

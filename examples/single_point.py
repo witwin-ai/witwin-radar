@@ -37,8 +37,10 @@ config = {
     "tx_loc": [[0, 0, 0], [4, 0, 0], [2, 1, 0]],
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
-device = "cuda" if torch.cuda.is_available() else "cpu"
-backend = "dirichlet" if device == "cuda" else "pytorch"
+if not torch.cuda.is_available():
+    raise RuntimeError("This example requires CUDA for native Dirichlet radar simulation.")
+device = "cuda"
+backend = "dirichlet"
 
 point = np.array([[0, 0, -3]], dtype=np.float32)
 velocity = np.array([[0, 0, 0.01]], dtype=np.float32)

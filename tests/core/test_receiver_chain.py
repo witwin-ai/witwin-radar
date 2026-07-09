@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -36,7 +37,21 @@ def _make_radar(*, receiver_chain=None, noise_model=None) -> Radar:
         config["receiver_chain"] = receiver_chain
     if noise_model is not None:
         config["noise_model"] = noise_model
-    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
+    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    radar.solver = SimpleNamespace(mimo=lambda interpolator, t0=0, **options: _deterministic_mimo(radar))
+    return radar
+
+
+def _deterministic_mimo(radar: Radar) -> torch.Tensor:
+    shape = (
+        radar.config.num_tx,
+        radar.config.num_rx,
+        radar.config.chirp_per_frame,
+        radar.config.adc_samples,
+    )
+    values = torch.arange(math.prod(shape), dtype=torch.float32, device=radar.device).reshape(shape)
+    signal = torch.complex(0.01 * (values + 1.0), -0.004 * (values + 2.0))
+    return (signal * radar.gain).to(torch.complex64)
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

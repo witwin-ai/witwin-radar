@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 import drjit as dr
@@ -187,9 +187,19 @@ class RayDSceneCache:
     def sync_vertices(self, renderables) -> None:
         if self.scene is None:
             return
+        updated_states: list[RayDMeshState] = []
         for state in self.mesh_states:
-            vertices = as_cuda_vertices(renderables[state.name].vertices, self.device)
+            mesh_data = renderables[state.name]
+            vertices = as_cuda_vertices(mesh_data.vertices, self.device)
             self.scene.update_mesh_vertices(state.mesh_id, torch_vertices_to_rayd(vertices, ad=True))
+            updated_states.append(
+                replace(
+                    state,
+                    eps_r=float(mesh_data.eps_r),
+                    dynamic=bool(mesh_data.dynamic),
+                )
+            )
+        self.mesh_states = updated_states
         if self.mesh_states:
             self.scene.sync()
 

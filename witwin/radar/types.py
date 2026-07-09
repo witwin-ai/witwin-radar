@@ -13,8 +13,6 @@ import torch
 
 
 class SolverBackend(StrEnum):
-    PYTORCH = "pytorch"
-    SLANG = "slang"
     DIRICHLET = "dirichlet"
 
 

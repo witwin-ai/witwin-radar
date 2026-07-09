@@ -31,11 +31,11 @@ class TestStaticTarget:
 
     @pytest.mark.parametrize("distance", [1.5, 3.0, 5.0, 8.0])
     def test_range_accuracy(self, distance):
-        """Detected range should match target distance within ±1 range bin."""
+        """Detected range should match target distance within +/-1 range bin."""
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -distance])
         frame = r.mimo(interp)
 
@@ -48,18 +48,18 @@ class TestStaticTarget:
         best_idx = np.argmin(np.abs(ranges - distance))
         detected_range = ranges[best_idx]
 
-        tol = r.range_resolution * 2  # allow ±2 bins
+        tol = r.range_resolution * 2  # allow +/-2 bins
         assert abs(detected_range - distance) < tol, (
             f"distance={distance}m: detected {detected_range:.3f}m, "
             f"tolerance={tol:.3f}m"
         )
 
     def test_broadside_target_angle(self):
-        """Target directly in front -> x≈0, z≈0 in point cloud."""
+        """Target directly in front should keep x and z near zero in point cloud."""
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -3.0])
         frame = r.mimo(interp)
 
@@ -82,7 +82,7 @@ class TestStaticTarget:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         distance = 3.0
         interp = make_static_interpolator([0, 0, -distance])
         frame = r.mimo(interp)
@@ -105,7 +105,7 @@ class TestStaticTarget:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -3.0])
         frame = r.mimo(interp)
 
@@ -131,7 +131,7 @@ class TestMovingTarget:
 
         # Need enough chirps for Doppler resolution
         cfg = _VFULL  # 128 chirps for good Doppler
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         speed = 1.5  # m/s approaching
         interp = make_moving_interpolator(
@@ -152,7 +152,7 @@ class TestMovingTarget:
             best = velocities[np.argmin(np.abs(velocities - speed))]
             tol = r.doppler_resolution * 3
             assert abs(best - speed) < tol, (
-                f"Expected |v|≈{speed} m/s, best detected: {best:.3f} m/s"
+                f"Expected |v| ~= {speed} m/s, best detected: {best:.3f} m/s"
             )
 
     def test_rd_map_shows_doppler_shift(self):
@@ -160,7 +160,7 @@ class TestMovingTarget:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFULL
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         speed = 2.0
         interp = make_moving_interpolator(
@@ -204,7 +204,7 @@ class TestSNRScale:
     def test_snr_scale_cfar_path(self):
         """CFAR path SNR values should be in dB (20*log10) scale."""
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         low = self._peak_snr(r, detector="cfar", sigma=1.0)
         high = self._peak_snr(r, detector="cfar", sigma=100.0)
         if low is not None and high is not None:
@@ -215,7 +215,7 @@ class TestSNRScale:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -3.0], sigma=1.0)
         frame = r.mimo(interp)
 
@@ -227,14 +227,14 @@ class TestSNRScale:
             # and of order 10-100 dB, not 0.x-3 (which would be log10 scale)
             # A strong target in dB should be > 10
             assert snr_values.max() > 5.0, (
-                f"SNR max={snr_values.max():.2f} — too small for dB scale, "
+                f"SNR max={snr_values.max():.2f} is too small for dB scale, "
                 "might be using log10 instead of 20*log10"
             )
 
     def test_snr_scale_topk_path(self):
         """topk path SNR values should also be in dB scale."""
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         low = self._peak_snr(r, detector="topk", sigma=1.0)
         high = self._peak_snr(r, detector="topk", sigma=100.0)
         if low is not None and high is not None:
@@ -245,7 +245,7 @@ class TestSNRScale:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -3.0], sigma=1.0)
         frame = r.mimo(interp)
 
@@ -254,7 +254,7 @@ class TestSNRScale:
         if pc.shape[0] > 0:
             snr_values = pc[:, 4]
             assert snr_values.max() > 5.0, (
-                f"SNR max={snr_values.max():.2f} — too small for dB scale"
+                f"SNR max={snr_values.max():.2f} is too small for dB scale"
             )
 
     def test_snr_consistent_between_detectors(self):
@@ -262,7 +262,7 @@ class TestSNRScale:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_static_interpolator([0, 0, -3.0], sigma=1.0)
         frame = r.mimo(interp)
 
@@ -290,7 +290,7 @@ class TestTDMCompensationInTopk:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFULL
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = make_moving_interpolator(
             pos0=[0, 0, -3.0], velocity=[0, 0, 1.0], sigma=1.0
         )
@@ -308,6 +308,6 @@ class TestTDMCompensationInTopk:
                 x_topk = np.median(pc_topk[mask_t, 0])
                 # Should be in similar ballpark (both near 0 for broadside)
                 assert abs(x_cfar - x_topk) < 1.0, (
-                    f"x_cfar={x_cfar:.3f}, x_topk={x_topk:.3f} — "
+                    f"x_cfar={x_cfar:.3f}, x_topk={x_topk:.3f}; "
                     "TDM compensation may be missing in topk"
                 )

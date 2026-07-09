@@ -33,7 +33,7 @@ GRADIENT_CONFIG = {
     "rx_loc": [[0, 0, 0]],
 }
 
-BACKENDS = ("pytorch", "dirichlet", "slang")
+BACKENDS = ("dirichlet",)
 SAMPLINGS = ("pixel", "triangle")
 MESH_COMPONENT = (0, 2)
 
@@ -61,7 +61,7 @@ def _make_sensor(wr):
     }
 
 
-def _make_radar(wr, *, backend: str = "pytorch"):
+def _make_radar(wr, *, backend: str = "dirichlet"):
     sensor = _make_sensor(wr)
     return wr.Radar(
         GRADIENT_CONFIG,
@@ -176,7 +176,7 @@ def _run_trace(scene, *, sampling: str):
     import witwin.radar as wr
 
     try:
-        radar = _make_radar(wr, backend="pytorch")
+        radar = _make_radar(wr, backend="dirichlet")
         return wr.Tracer(scene, radar, resolution=24, sampling=sampling).trace()
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"tracer unavailable: {exc}")
@@ -458,7 +458,7 @@ def test_simulation_accepts_scene_module_and_backpropagates(sampling):
             return _make_smpl_scene(self.pose, self.shape)
 
     scene_module = TrainableHumanScene()
-    result = _run_simulation(scene_module, backend="pytorch", sampling=sampling)
+    result = _run_simulation(scene_module, backend="dirichlet", sampling=sampling)
 
     _signal_loss(result).backward()
     assert scene_module.pose.grad is not None and scene_module.pose.grad.abs().sum() > 0

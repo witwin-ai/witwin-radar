@@ -44,7 +44,7 @@ def _scene() -> Scene:
 
 
 def test_tracer_multipath_smoke_returns_rich_trace():
-    radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
+    radar = Radar(CONFIG, backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
     try:
         trace = Tracer(
             _scene(),
@@ -65,7 +65,7 @@ def test_tracer_multipath_smoke_returns_rich_trace():
     assert torch.all(trace.depths >= 0)
 
 
-@pytest.mark.parametrize("backend", ["pytorch", "dirichlet", "slang"])
+@pytest.mark.parametrize("backend", ["dirichlet"])
 def test_radar_multipath_smoke_runs_for_all_backends(backend):
     radar = Radar(CONFIG, backend=backend, device="cuda", target=(0, 0, -5), fov=60)
     try:
@@ -88,7 +88,7 @@ def test_radar_multipath_smoke_runs_for_all_backends(backend):
 def test_process_rd_runs_on_multipath_signal():
     from witwin.radar.sigproc import process_rd
 
-    radar = Radar(CONFIG, backend="pytorch", device="cuda", target=(0, 0, -5), fov=60)
+    radar = Radar(CONFIG, backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
     try:
         signal = radar.simulate(
             _scene(),

@@ -6,6 +6,11 @@ import pytest
 import torch
 
 from witwin.radar import Radar, RadarConfig
+from witwin.radar.solvers.common import (
+    compute_path_amplitudes,
+    compute_total_path_lengths,
+    normalize_interpolated_sample,
+)
 
 
 def _base_config() -> dict:
@@ -34,7 +39,7 @@ def _make_radar(*, antenna_pattern=None) -> Radar:
     config = _base_config()
     if antenna_pattern is not None:
         config["antenna_pattern"] = antenna_pattern
-    return Radar(RadarConfig.from_dict(config), backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
@@ -52,14 +57,15 @@ def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.T
 
 def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
     position = _target_position(x_deg, y_deg, radius).to(device=radar.device)
-
-    def interp(_t):
-        return (
+    sample = normalize_interpolated_sample(
+        (
             torch.tensor([1.0], dtype=torch.float32, device=radar.device),
             position.unsqueeze(0),
-        )
-
-    return radar.mimo(interp).abs().max()
+        ),
+        device=radar.device,
+    )
+    total_lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos)
+    return compute_path_amplitudes(radar, sample, total_lengths).abs().max()
 
 
 def _half_wave_dipole_power(angle_deg: float) -> float:

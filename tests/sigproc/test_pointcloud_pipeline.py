@@ -30,7 +30,7 @@ CPU_SIGPROC_CONFIG = {
 
 
 def _make_cpu_radar() -> Radar:
-    return Radar(RadarConfig.from_dict(CPU_SIGPROC_CONFIG), backend="pytorch", device="cpu")
+    return Radar(RadarConfig.from_dict(CPU_SIGPROC_CONFIG), backend="dirichlet", device="cpu")
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):
@@ -43,9 +43,25 @@ def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0)
     return interp
 
 
+def _synthetic_frame(radar: Radar) -> torch.Tensor:
+    adc = radar.config.adc_samples
+    chirps = radar.config.chirp_per_frame
+    samples = torch.arange(adc, dtype=torch.float32, device=radar.device)
+    slow_time = torch.arange(chirps, dtype=torch.float32, device=radar.device)
+    range_tone = torch.exp(2j * torch.pi * 5.0 * samples / adc)
+    doppler_tone = torch.exp(2j * torch.pi * 2.0 * slow_time / chirps)
+    frame = doppler_tone[:, None] * range_tone[None, :]
+    return frame.to(torch.complex64).reshape(1, 1, chirps, adc).repeat(
+        radar.config.num_tx,
+        radar.config.num_rx,
+        1,
+        1,
+    )
+
+
 def test_frame2pointcloud_requires_radar():
     radar = _make_cpu_radar()
-    frame = radar.mimo(_static_interpolator(radar))
+    frame = _synthetic_frame(radar)
     cfg = PointCloudProcessConfig(radar)
 
     with pytest.raises(ValueError, match="requires a radar instance"):
@@ -93,7 +109,7 @@ def test_ca_cfar_fast_detects_injected_peak():
 @pytest.mark.parametrize("static_clutter_removal", [False, True])
 def test_process_rd_returns_expected_shapes(static_clutter_removal):
     radar = _make_cpu_radar()
-    frame = radar.mimo(_static_interpolator(radar))
+    frame = _synthetic_frame(radar)
 
     rd_mag, rd_map, ranges, velocities = process_rd(
         radar,
@@ -109,7 +125,7 @@ def test_process_rd_returns_expected_shapes(static_clutter_removal):
 @pytest.mark.parametrize("detector", ["cfar", "topk"])
 def test_process_pc_returns_numpy(detector):
     radar = _make_cpu_radar()
-    frame = radar.mimo(_static_interpolator(radar))
+    frame = _synthetic_frame(radar)
 
     pc = process_pc(
         radar,

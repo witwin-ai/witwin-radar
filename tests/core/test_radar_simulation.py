@@ -53,6 +53,22 @@ def _trace():
     )
 
 
+def _fake_signal(radar: Radar, trace) -> torch.Tensor:
+    shape = (
+        radar.config.num_tx,
+        radar.config.num_rx,
+        radar.config.chirp_per_frame,
+        radar.config.adc_samples,
+    )
+    value = float(trace.points.sum().item()) + float(radar.position.sum().item())
+    return torch.full(shape, complex(value, 0.0), dtype=torch.complex64, device=radar.device)
+
+
+def _attach_fake_solver(radar: Radar) -> Radar:
+    radar.solver = SimpleNamespace(mimo_from_trace=lambda trace, t0=0, **options: _fake_signal(radar, trace))
+    return radar
+
+
 def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch):
     trace = _trace()
 
@@ -84,12 +100,13 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
 
     radar = Radar(
         RadarConfig.from_dict(_config()),
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
         position=(0.0, 0.0, 0.0),
         target=(0.0, 0.0, -5.0),
         fov=60.0,
     )
+    _attach_fake_solver(radar)
     signal = radar.simulate(_scene(), resolution=32, sampling="pixel")
 
     assert signal.shape == (1, 1, 2, 8)
@@ -99,19 +116,19 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
 
 
 def test_radar_simulate_rejects_unknown_sampling_mode():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
     with pytest.raises(ValueError, match="not a valid SamplingMode"):
         radar.simulate(_scene(), sampling="unknown")
 
 
 def test_radar_simulate_rejects_multipath_for_triangle():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
     with pytest.raises(ValueError, match="multipath=True requires sampling='pixel'"):
         radar.simulate(_scene(), sampling="triangle", multipath=True)
 
 
 def test_tracer_rejects_multipath_for_triangle():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="pytorch", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
     with pytest.raises(ValueError, match="multipath=True requires sampling='pixel'"):
         Tracer(_scene(), radar, sampling="triangle", multipath=True)
 
@@ -129,15 +146,15 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
 
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
-    front = Radar(_config(), name="front", backend="pytorch", device="cpu")
-    side = Radar(
+    front = _attach_fake_solver(Radar(_config(), name="front", backend="dirichlet", device="cpu"))
+    side = _attach_fake_solver(Radar(
         _config(),
         name="side",
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
         position=(2.0, 0.0, 0.0),
         target=(2.0, 0.0, -1.0),
-    )
+    ))
 
     result = Radar.simulate_group(_scene(), radars=[front, side])
 
@@ -148,13 +165,13 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
 
 
 def test_radar_simulate_group_requires_names_for_sequences():
-    radar = Radar(_config(), backend="pytorch", device="cpu")
+    radar = Radar(_config(), backend="dirichlet", device="cpu")
     with pytest.raises(ValueError, match="requires names"):
         Radar.simulate_group(_scene(), radars=[radar])
 
 
 def test_radar_simulate_group_rejects_duplicate_names():
-    radar_a = Radar(_config(), name="dup", backend="pytorch", device="cpu")
-    radar_b = Radar(_config(), name="dup", backend="pytorch", device="cpu")
+    radar_a = Radar(_config(), name="dup", backend="dirichlet", device="cpu")
+    radar_b = Radar(_config(), name="dup", backend="dirichlet", device="cpu")
     with pytest.raises(ValueError, match="unique"):
         Radar.simulate_group(_scene(), radars=[radar_a, radar_b])

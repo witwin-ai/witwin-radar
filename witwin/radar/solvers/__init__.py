@@ -1,18 +1,10 @@
-"""
-Solver base class and backend implementations for radar signal computation.
-
-Available solvers:
-- PytorchSolver: pure PyTorch, fully differentiable via autograd
-- SlangSolver: Slang CUDA kernels for high-throughput time-domain computation
-- DirichletSolver: direct frequency-domain spectrum via Dirichlet kernel
-"""
+"""Solver base class and Dirichlet implementation for radar signal computation."""
 
 
 class Solver:
     """Abstract base class for radar chirp/frame/MIMO computation.
 
-    Subclasses implement the actual signal generation using different backends
-    (pure PyTorch, Slang CUDA kernels, Dirichlet kernel).
+    Subclasses implement the actual signal generation.
     """
 
     def __init__(self, radar):
@@ -68,13 +60,9 @@ class Solver:
 
 
 # Import after Solver is defined to avoid circular imports
-from .solver_pytorch import PytorchSolver
-from .solver_slang import SlangSolver
 from .solver_dirichlet import DirichletSolver
 
 __all__ = [
     'Solver',
-    'PytorchSolver',
-    'SlangSolver',
     'DirichletSolver',
 ]

@@ -1,4 +1,4 @@
-"""Unified FMCW radar with selectable compute backend."""
+"""Unified FMCW radar using the native Dirichlet CUDA solver."""
 
 from __future__ import annotations
 
@@ -229,7 +229,7 @@ class Radar:
     def __init__(
         self,
         config: RadarConfig | Mapping[str, Any],
-        backend: SolverBackend = "dirichlet",
+        backend: SolverBackend | str = SolverBackend.DIRICHLET,
         pad_factor: int = 16,
         device: str | torch.device = "cuda",
         *,
@@ -242,9 +242,9 @@ class Radar:
         """
         Args:
             config: ``RadarConfig`` or a raw mapping accepted by ``RadarConfig.from_dict``.
-            backend: "dirichlet" | "slang" | "pytorch"
+            backend: only "dirichlet" is supported
             pad_factor: FFT zero-padding factor for the Dirichlet backend
-            device: compute device for public tensors and PyTorch execution
+            device: CUDA compute device
             position: radar origin in world coordinates
             target: look-at target in world coordinates. Defaults to one meter along -Z from position.
             up: world-space up vector
@@ -252,10 +252,8 @@ class Radar:
             name: optional identifier used by ``Radar.simulate_group``
         """
         self.c0 = 299792458
-        self.backend = SolverBackend(backend)
-        self.device: torch.device = self._resolve_device(
-            device=torch.device(device), backend=self.backend
-        )
+        self.backend = self._coerce_backend(backend)
+        self.device: torch.device = self._resolve_device(device=torch.device(device))
         self.name = None if name is None else str(name)
         self._set_pose_fields(position=position, target=target, up=up, fov=fov)
 
@@ -356,27 +354,24 @@ class Radar:
         )
 
     def _make_solver(self, pad_factor: int):
-        if self.backend == SolverBackend.PYTORCH:
-            from .solvers.solver_pytorch import PytorchSolver
-
-            return PytorchSolver(self)
-        if self.backend == SolverBackend.SLANG:
-            from .solvers.solver_slang import SlangSolver
-
-            return SlangSolver(self)
         from .solvers.solver_dirichlet import DirichletSolver
 
         return DirichletSolver(self, pad_factor)
 
     @staticmethod
-    def _resolve_device(*, device: torch.device, backend: SolverBackend) -> torch.device:
+    def _coerce_backend(backend: SolverBackend | str) -> SolverBackend:
+        try:
+            return SolverBackend(backend)
+        except ValueError as exc:
+            raise ValueError("Only the 'dirichlet' backend is supported.") from exc
+
+    @staticmethod
+    def _resolve_device(*, device: torch.device) -> torch.device:
         if device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
                 "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
-                "Pass device='cpu' only when using the PyTorch backend without CUDA."
+                "Install a CUDA-enabled PyTorch build and use device='cuda'."
             )
-        if device.type != "cuda" and backend in {SolverBackend.SLANG, SolverBackend.DIRICHLET}:
-            raise ValueError(f"Radar backend '{backend}' requires device='cuda'.")
         return device
 
     def _set_pose_fields(self, *, position, target, up, fov) -> None:

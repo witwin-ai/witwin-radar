@@ -68,12 +68,12 @@ def test_end_to_end_polarization_changes_measured_signal(sampling):
     scene = _slanted_plate_scene(device="cuda")
     hh_radar = Radar(
         _config(polarization={"tx": "horizontal", "rx": "horizontal"}),
-        backend="pytorch",
+        backend="dirichlet",
         device="cuda",
     )
     hv_radar = Radar(
         _config(polarization={"tx": "horizontal", "rx": "vertical"}),
-        backend="pytorch",
+        backend="dirichlet",
         device="cuda",
     )
     hh = hh_radar.simulate(
@@ -103,12 +103,12 @@ def test_process_rd_preserves_polarization_contrast():
     scene = _slanted_plate_scene(device="cuda")
     hh_radar = Radar(
         _config(polarization={"tx": "horizontal", "rx": "horizontal"}),
-        backend="pytorch",
+        backend="dirichlet",
         device="cuda",
     )
     hv_radar = Radar(
         _config(polarization={"tx": "horizontal", "rx": "vertical"}),
-        backend="pytorch",
+        backend="dirichlet",
         device="cuda",
     )
     hh = hh_radar.simulate(

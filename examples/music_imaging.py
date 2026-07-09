@@ -48,8 +48,10 @@ velocity = np.array([[0, 0, 0.01]], dtype=np.float32)
 
 
 def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    backend = "dirichlet" if device == "cuda" else "pytorch"
+    if not torch.cuda.is_available():
+        raise RuntimeError("This example requires CUDA for native Dirichlet radar simulation.")
+    device = "cuda"
+    backend = "dirichlet"
     radar = Radar(RadarConfig.from_dict(config), backend=backend, device=device)
 
     def location_function(t):

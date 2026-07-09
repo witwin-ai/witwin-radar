@@ -271,10 +271,10 @@ class TestConfigVariations:
         assert mock.max_doppler == pytest.approx(expected, rel=1e-10)
 
 
-def test_pytorch_radar_can_target_cpu_device(standard_config):
+def test_dirichlet_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_config):
     from witwin.radar import Radar
 
-    radar = Radar(standard_config, backend="pytorch", device="cpu")
+    radar = Radar(standard_config, backend="dirichlet", device="cpu")
     assert radar.device == torch.device("cpu")
     assert radar.tx_pos.device.type == "cpu"
     assert radar.ranges.device.type == "cpu"
@@ -283,7 +283,7 @@ def test_pytorch_radar_can_target_cpu_device(standard_config):
 def test_radar_rejects_unknown_backend(standard_config):
     from witwin.radar import Radar
 
-    with pytest.raises(ValueError, match="not a valid SolverBackend"):
+    with pytest.raises(ValueError, match="Only the 'dirichlet' backend is supported"):
         Radar(standard_config, backend="unknown")
 
 
@@ -300,7 +300,7 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
                 "y_values": [0.5, 1.0, 0.5],
             },
         }),
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
     )
     assert radar.antenna_pattern_kind == "separable"
@@ -317,7 +317,7 @@ def test_radar_builds_runtime_noise_model(standard_config):
                 "seed": 5,
             },
         }),
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
     )
     assert radar.noise_model_config is not None
@@ -335,7 +335,7 @@ def test_radar_builds_runtime_polarization(standard_config):
                 "rx": "vertical",
             },
         }),
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
     )
     assert radar.polarization_config is not None
@@ -355,7 +355,7 @@ def test_radar_builds_runtime_receiver_chain(standard_config):
                 "adc": {"bits": 10, "full_scale": 1.0},
             },
         }),
-        backend="pytorch",
+        backend="dirichlet",
         device="cpu",
     )
     assert radar.receiver_chain_config is not None
@@ -373,35 +373,34 @@ def test_radar_rejects_double_quantization(standard_config):
                 "noise_model": {"quantization": {"bits": 8, "full_scale": 1.0}},
                 "receiver_chain": {"adc": {"bits": 10, "full_scale": 1.0}},
             }),
-            backend="pytorch",
+            backend="dirichlet",
             device="cpu",
         )
 
 
 @pytest.mark.gpu
 class TestRadarConstruction:
-    def test_radar_creates_with_all_backends(self, standard_config):
+    def test_radar_creates_with_dirichlet_backend(self, standard_config):
         from witwin.radar import Radar
 
-        for backend in ("pytorch", "slang", "dirichlet"):
-            try:
-                radar = Radar(standard_config, backend=backend)
-            except (FileNotFoundError, OSError, RuntimeError) as exc:
-                pytest.skip(f"backend unavailable: {exc}")
-            assert radar.config.adc_samples == 256
-            assert radar.config.num_tx == 3
-            assert radar.config.num_rx == 4
+        try:
+            radar = Radar(standard_config, backend="dirichlet")
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            pytest.skip(f"backend unavailable: {exc}")
+        assert radar.config.adc_samples == 256
+        assert radar.config.num_tx == 3
+        assert radar.config.num_rx == 4
 
     def test_radar_accepts_schema_object(self, standard_config):
         from witwin.radar import Radar
 
-        radar = Radar(standard_config, backend="pytorch")
+        radar = Radar(standard_config, backend="dirichlet")
         assert radar.config is standard_config
 
     def test_radar_matches_formula(self, standard_config):
         from witwin.radar import Radar
 
-        radar = Radar(standard_config, backend="pytorch")
+        radar = Radar(standard_config, backend="dirichlet")
         mock = MockRadar(standard_config)
         assert radar.range_resolution == pytest.approx(mock.range_resolution, rel=1e-10)
         assert radar.doppler_resolution == pytest.approx(mock.doppler_resolution, rel=1e-10)
@@ -410,7 +409,7 @@ class TestRadarConstruction:
     def test_radar_axes_shapes(self, standard_config):
         from witwin.radar import Radar
 
-        radar = Radar(standard_config, backend="pytorch")
+        radar = Radar(standard_config, backend="dirichlet")
         assert radar.ranges.shape[0] == radar.config.num_range_bins // 2
         assert radar.velocities.shape[0] == radar.config.num_doppler_bins
 

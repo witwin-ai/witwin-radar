@@ -7,9 +7,6 @@ backend-specific state on the solver instance.
 
 from __future__ import annotations
 
-import os
-
-import slangtorch
 import torch
 
 from ..path_cache import MimoPathCache
@@ -18,21 +15,17 @@ from .common import (
     collect_interpolated_samples,
     compute_path_amplitudes,
     compute_total_path_lengths,
-    ensure_cuda_build_env,
-    ensure_current_env_on_path,
     normalize_interpolated_sample,
     pytorch_chirp_reference,
     pytorch_mimo_from_samples,
     samples_require_grad,
 )
 
-_SOLVERS_DIR = os.path.dirname(__file__)
-
 
 def _load_module():
-    ensure_current_env_on_path()
-    slang_path = os.path.join(_SOLVERS_DIR, "dirichlet.slang")
-    return slangtorch.loadModule(slang_path, includePaths=ensure_cuda_build_env())
+    from ..cuda import build
+
+    return build.build_extension()
 
 
 def _to_f32(solver: "DirichletSolver", value: torch.Tensor) -> torch.Tensor:
@@ -89,22 +82,19 @@ def spectrum(
     output_im = torch.zeros((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
 
     solver._module.forward_chunked(
-        d=d,
-        a=a,
-        output_re=output_re,
-        output_im=output_im,
-        n=solver.n,
-        k0_per_meter=k0_per_meter,
-        num_bins=num_bins,
-        N_fft=n_fft,
-        num_targets=num_targets,
-        targets_per_chunk=targets_per_chunk,
-        fc=cfg.fc,
-        slope=cfg.slope * 1e12,
-        t_start=cfg.adc_start_time * 1e-6,
-    ).launchRaw(
-        blockSize=(256, 1, 1),
-        gridSize=((num_bins + 255) // 256, num_chunks, 1),
+        d,
+        a,
+        output_re,
+        output_im,
+        solver.n,
+        k0_per_meter,
+        num_bins,
+        n_fft,
+        num_targets,
+        targets_per_chunk,
+        cfg.fc,
+        cfg.slope * 1e12,
+        cfg.adc_start_time * 1e-6,
     )
 
     return torch.complex(output_re.sum(dim=0), output_im.sum(dim=0))
@@ -123,23 +113,20 @@ def backward(solver: "DirichletSolver", distances, amplitudes, grad_output_re, g
     grad_a = torch.zeros(num_targets, dtype=torch.float32, device=solver.device)
 
     solver._module.backward(
-        d=d,
-        a=a,
-        grad_output_re=g_re,
-        grad_output_im=g_im,
-        grad_d=grad_d,
-        grad_a=grad_a,
-        n=solver.n,
-        k0_per_meter=solver.k0_per_meter,
-        num_bins=solver.num_bins,
-        N_fft=solver.N_fft,
-        num_targets=num_targets,
-        fc=cfg.fc,
-        slope=cfg.slope * 1e12,
-        t_start=cfg.adc_start_time * 1e-6,
-    ).launchRaw(
-        blockSize=(256, 1, 1),
-        gridSize=((num_targets + 255) // 256, 1, 1),
+        d,
+        a,
+        g_re,
+        g_im,
+        grad_d,
+        grad_a,
+        solver.n,
+        solver.k0_per_meter,
+        solver.num_bins,
+        solver.N_fft,
+        num_targets,
+        cfg.fc,
+        cfg.slope * 1e12,
+        cfg.adc_start_time * 1e-6,
     )
 
     return grad_d, grad_a
@@ -167,24 +154,21 @@ def backward_per_bin(
     grad_a = torch.zeros((num_chunks, num_targets), dtype=torch.float32, device=solver.device)
 
     solver._module.backward_per_bin(
-        d=d,
-        a=a,
-        grad_output_re=g_re,
-        grad_output_im=g_im,
-        grad_d=grad_d,
-        grad_a=grad_a,
-        n=solver.n,
-        k0_per_meter=solver.k0_per_meter,
-        num_bins=solver.num_bins,
-        N_fft=solver.N_fft,
-        num_targets=num_targets,
-        bins_per_chunk=bins_per_chunk,
-        fc=cfg.fc,
-        slope=cfg.slope * 1e12,
-        t_start=cfg.adc_start_time * 1e-6,
-    ).launchRaw(
-        blockSize=(bins_per_chunk, 1, 1),
-        gridSize=(num_chunks, 1, 1),
+        d,
+        a,
+        g_re,
+        g_im,
+        grad_d,
+        grad_a,
+        solver.n,
+        solver.k0_per_meter,
+        solver.num_bins,
+        solver.N_fft,
+        num_targets,
+        bins_per_chunk,
+        cfg.fc,
+        cfg.slope * 1e12,
+        cfg.adc_start_time * 1e-6,
     )
 
     return grad_d.sum(dim=0), grad_a.sum(dim=0)
@@ -195,7 +179,7 @@ class DirichletSolver(Solver):
 
     def __init__(self, radar, pad_factor: int = 16):
         super().__init__(radar)
-        self._module = _load_module()
+        self._cuda_module = None
 
         cfg = radar.config
         fs = cfg.sample_rate * 1e3
@@ -210,6 +194,14 @@ class DirichletSolver(Solver):
         self.mimo_N_fft = cfg.adc_samples
         self.mimo_num_bins = cfg.adc_samples
         self.mimo_k0_per_meter = (slope_hz * 2 / radar.c0) * self.mimo_N_fft / fs
+
+    @property
+    def _module(self):
+        if self.device.type != "cuda":
+            raise RuntimeError("The Dirichlet solver requires CUDA tensors; construct Radar with device='cuda'.")
+        if self._cuda_module is None:
+            self._cuda_module = _load_module()
+        return self._cuda_module
 
     def chirp(self, distances, amplitudes):
         """High-resolution Dirichlet spectrum (pad_factor bins)."""
@@ -287,22 +279,19 @@ class DirichletSolver(Solver):
             output_im = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
 
             self._module.forward_chunked(
-                d=all_d,
-                a=all_a,
-                output_re=output_re,
-                output_im=output_im,
-                n=self.n,
-                k0_per_meter=self.mimo_k0_per_meter,
-                num_bins=self.mimo_num_bins,
-                N_fft=self.mimo_N_fft,
-                num_targets=num_pairs * n_targets,
-                targets_per_chunk=n_targets,
-                fc=cfg.fc,
-                slope=cfg.slope * 1e12,
-                t_start=cfg.adc_start_time * 1e-6,
-            ).launchRaw(
-                blockSize=(256, 1, 1),
-                gridSize=((self.mimo_num_bins + 255) // 256, num_pairs, 1),
+                all_d,
+                all_a,
+                output_re,
+                output_im,
+                self.n,
+                self.mimo_k0_per_meter,
+                self.mimo_num_bins,
+                self.mimo_N_fft,
+                num_pairs * n_targets,
+                n_targets,
+                cfg.fc,
+                cfg.slope * 1e12,
+                cfg.adc_start_time * 1e-6,
             )
 
             spectra = torch.complex(output_re, output_im)
@@ -494,22 +483,19 @@ class DirichletSolver(Solver):
         output_re = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
         output_im = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
         self._module.forward_chunked(
-            d=all_d,
-            a=all_a,
-            output_re=output_re,
-            output_im=output_im,
-            n=self.n,
-            k0_per_meter=self.mimo_k0_per_meter,
-            num_bins=self.mimo_num_bins,
-            N_fft=self.mimo_N_fft,
-            num_targets=num_pairs * n_targets,
-            targets_per_chunk=n_targets,
-            fc=cfg.fc,
-            slope=cfg.slope * 1e12,
-            t_start=cfg.adc_start_time * 1e-6,
-        ).launchRaw(
-            blockSize=(256, 1, 1),
-            gridSize=((self.mimo_num_bins + 255) // 256, num_pairs, 1),
+            all_d,
+            all_a,
+            output_re,
+            output_im,
+            self.n,
+            self.mimo_k0_per_meter,
+            self.mimo_num_bins,
+            self.mimo_N_fft,
+            num_pairs * n_targets,
+            n_targets,
+            cfg.fc,
+            cfg.slope * 1e12,
+            cfg.adc_start_time * 1e-6,
         )
         return torch.complex(output_re, output_im)
 
@@ -533,30 +519,23 @@ class DirichletSolver(Solver):
         output_im = torch.zeros_like(output_re)
         chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
         self._module.forward_mimo_linear_chunked(
-            d0=distances.reshape(-1).contiguous(),
-            d_rate=rates.reshape(-1).contiguous(),
-            a0=amplitudes.reshape(-1).contiguous(),
-            output_re=output_re,
-            output_im=output_im,
-            n=self.n,
-            k0_per_meter=self.mimo_k0_per_meter,
-            num_bins=self.mimo_num_bins,
-            N_fft=self.mimo_N_fft,
-            targets_per_pair=n_targets,
-            chirp_per_frame=cfg.chirp_per_frame,
-            chirp_period=chirp_period,
-            num_tx=cfg.num_tx,
-            range_loss_update=1 if amplitude_update == "range_loss" else 0,
-            fc=cfg.fc,
-            slope=cfg.slope * 1e12,
-            t_start=cfg.adc_start_time * 1e-6,
-        ).launchRaw(
-            blockSize=(256, 1, 1),
-            gridSize=(
-                (self.mimo_num_bins + 255) // 256,
-                num_pairs,
-                cfg.chirp_per_frame,
-            ),
+            distances.reshape(-1).contiguous(),
+            rates.reshape(-1).contiguous(),
+            amplitudes.reshape(-1).contiguous(),
+            output_re,
+            output_im,
+            self.n,
+            self.mimo_k0_per_meter,
+            self.mimo_num_bins,
+            self.mimo_N_fft,
+            n_targets,
+            cfg.chirp_per_frame,
+            chirp_period,
+            cfg.num_tx,
+            1 if amplitude_update == "range_loss" else 0,
+            cfg.fc,
+            cfg.slope * 1e12,
+            cfg.adc_start_time * 1e-6,
         )
 
         spectra = torch.complex(output_re, output_im)

@@ -3,82 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
-import sys
 
 import math
 import torch
-
-
-def ensure_current_env_on_path() -> None:
-    """Prepend the active interpreter environment to PATH for subprocess tools."""
-    env_root = os.path.dirname(sys.executable)
-    candidates = [
-        env_root,
-        os.path.join(env_root, "Scripts"),
-        os.path.join(env_root, "Library", "bin"),
-    ]
-    path_entries = os.environ.get("PATH", "").split(os.pathsep)
-    prepend = [path for path in candidates if os.path.isdir(path) and path not in path_entries]
-    if prepend:
-        os.environ["PATH"] = os.pathsep.join(prepend + path_entries)
-
-
-def cuda_include_paths() -> list[str]:
-    """Return CUDA Toolkit include paths for SlangTorch's generated C++ build."""
-    cuda_root = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
-    if not cuda_root:
-        return []
-    include_dir = os.path.join(cuda_root, "include")
-    return [include_dir] if os.path.isdir(include_dir) else []
-
-
-def current_env_library_paths() -> list[str]:
-    """Return native library search paths for the active conda environment."""
-    env_root = os.path.dirname(sys.executable)
-    candidates = [
-        os.path.join(env_root, "Library", "lib"),
-    ]
-    return [path for path in candidates if os.path.isdir(path)]
-
-
-def _prepend_env_path(key: str, paths: list[str]) -> None:
-    if not paths:
-        return
-    current = os.environ.get(key, "")
-    entries = current.split(os.pathsep) if current else []
-    prepend = [path for path in paths if path not in entries]
-    if prepend:
-        os.environ[key] = os.pathsep.join(prepend + entries)
-
-
-def _cl_include_flag(path: str) -> str:
-    return f'/I"{path}"' if " " in path else f"/I{path}"
-
-
-def _link_libpath_flag(path: str) -> str:
-    return f'/LIBPATH:"{path}"' if " " in path else f"/LIBPATH:{path}"
-
-
-def ensure_cuda_build_env() -> list[str]:
-    """Expose CUDA headers to SlangTorch's generated MSVC compilation."""
-    include_paths = cuda_include_paths()
-    library_paths = current_env_library_paths()
-    _prepend_env_path("INCLUDE", include_paths)
-    _prepend_env_path("LIB", library_paths)
-
-    cl_flags = [_cl_include_flag(path) for path in include_paths]
-    current_cl = os.environ.get("CL", "")
-    prepend = [flag for flag in cl_flags if flag not in current_cl]
-    if prepend:
-        os.environ["CL"] = " ".join(prepend + ([current_cl] if current_cl else []))
-
-    link_flags = [_link_libpath_flag(path) for path in library_paths]
-    current_link = os.environ.get("LINK", "")
-    prepend_link = [flag for flag in link_flags if flag not in current_link]
-    if prepend_link:
-        os.environ["LINK"] = " ".join(prepend_link + ([current_link] if current_link else []))
-    return include_paths
 
 
 @dataclass(frozen=True)

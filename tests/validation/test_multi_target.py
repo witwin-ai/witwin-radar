@@ -41,7 +41,7 @@ class TestTwoTargetsDifferentRanges:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         d1, d2 = 2.0, 5.0
         interp = _multi_target_interp([
@@ -64,7 +64,7 @@ class TestTwoTargetsDifferentRanges:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         d1, d2 = 2.0, 4.5
         # Slight motion so targets survive process_rd DC removal
@@ -99,7 +99,7 @@ class TestTwoTargetsDifferentVelocities:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFULL  # need 128 chirps for Doppler resolution
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         d = 3.0
         v1, v2 = 1.0, -1.5  # approaching and receding
@@ -130,7 +130,7 @@ class TestRangeResolutionLimit:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         d_center = 3.0
         # Place two targets within half a range resolution of each other
@@ -158,7 +158,7 @@ class TestRangeResolutionLimit:
         from witwin.radar.sigproc import process_rd
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         d1 = 3.0
         d2 = 3.0 + r.range_resolution * 5  # well separated
@@ -193,7 +193,7 @@ class TestProcessPCOutputFormat:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
         interp = _multi_target_interp([
             ([0, 0, -2.0], [0, 0, 0], 1.0),
             ([0, 0, -4.0], [0, 0, 0], 1.0),
@@ -215,7 +215,7 @@ class TestProcessPCOutputFormat:
         from witwin.radar.sigproc import process_pc
 
         cfg = _VFAST
-        r = make_radar_or_skip(cfg, backend="slang")
+        r = make_radar_or_skip(cfg, backend="dirichlet")
 
         pos = torch.zeros((0, 3), device="cuda")
         sigma = torch.zeros(0, device="cuda")

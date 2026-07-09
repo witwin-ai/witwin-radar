@@ -2,7 +2,7 @@
 Tests for FMCW chirp waveform generation.
 
 Verifies mathematical properties of the radar waveform without needing
-a Radar object or GPU — uses torch on CPU.
+a Radar object or GPU; uses torch on CPU.
 """
 
 import torch
@@ -68,7 +68,7 @@ class TestWaveformMath:
         """A target at range d produces beat frequency = slope * 2d / c0."""
         d = 3.0  # meters
         f_beat = SLOPE * 2 * d / C0
-        # Should be ~1.2 MHz — well within sampling bandwidth
+        # Should be ~1.2 MHz, well within sampling bandwidth
         assert 1.0e6 < f_beat < 2.0e6
         # FFT bin (out of 256 at 4.4 MSPS)
         fs = 4400e3
@@ -83,7 +83,7 @@ class TestRadarWaveform:
     def test_waveform_unit_magnitude(self, standard_config):
         from witwin.radar import Radar
 
-        r = Radar(standard_config, backend="pytorch")
+        r = Radar(standard_config, backend="dirichlet")
         wf = r.waveform(r.t_sample)
         mag = torch.abs(wf)
         torch.testing.assert_close(
@@ -93,6 +93,6 @@ class TestRadarWaveform:
     def test_tx_waveform_shape(self, standard_config):
         from witwin.radar import Radar
 
-        r = Radar(standard_config, backend="pytorch")
+        r = Radar(standard_config, backend="dirichlet")
         assert r.tx_waveform.shape == (r.config.adc_samples,)
         assert r.t_sample.shape == (r.config.adc_samples,)

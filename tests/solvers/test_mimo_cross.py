@@ -69,77 +69,6 @@ def _trace_result(points, intensities):
 
 class TestMIMOCrossValidation:
 
-    @pytest.mark.parametrize(
-        ("backend_a", "backend_b"),
-        [
-            ("pytorch", "dirichlet"),
-            ("pytorch", "slang"),
-            ("slang", "dirichlet"),
-        ],
-    )
-    def test_backend_pairs_match_verify_metrics(self, backend_a, backend_b):
-        """All solver backends should agree on the same verify_mimo-style scene."""
-        from witwin.radar import Radar
-
-        cfg = _mimo_config()
-        interp = _random_static_scene(50)
-
-        try:
-            frame_a = Radar(cfg, backend=backend_a).mimo(interp).detach().cpu().numpy()
-            frame_b = Radar(cfg, backend=backend_b).mimo(interp).detach().cpu().numpy()
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            pytest.skip(f"backend unavailable: {exc}")
-
-        mag_corr = mag_correlation(frame_a, frame_b)
-        cx_corr = complex_correlation(frame_a, frame_b)
-        ratio = peak_ratio(frame_a, frame_b)
-        assert mag_corr > 0.99, f"{backend_a} vs {backend_b} magnitude correlation = {mag_corr:.4f}"
-        assert cx_corr > 0.99, f"{backend_a} vs {backend_b} complex correlation = {cx_corr:.4f}"
-        assert 0.98 < ratio < 1.02, f"{backend_a} vs {backend_b} peak ratio = {ratio:.4f}"
-
-    def test_slang_vs_dirichlet_per_chirp(self):
-        """Per-chirp TX0/RX0 agreement should remain high."""
-        from witwin.radar import Radar
-
-        cfg = _mimo_config()
-        interp = _random_static_scene(50)
-
-        try:
-            radar_slang = Radar(cfg, backend="slang")
-            radar_dirichlet = Radar(cfg, backend="dirichlet")
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            pytest.skip(f"backend unavailable: {exc}")
-
-        frame_slang = radar_slang.mimo(interp).detach().cpu().numpy()
-        frame_dirichlet = radar_dirichlet.mimo(interp).detach().cpu().numpy()
-
-        for chirp_id in range(cfg.chirp_per_frame):
-            mag_corr = mag_correlation(frame_slang[0, 0, chirp_id, :], frame_dirichlet[0, 0, chirp_id, :])
-            cx_corr = complex_correlation(frame_slang[0, 0, chirp_id, :], frame_dirichlet[0, 0, chirp_id, :])
-            assert mag_corr > 0.99, f"chirp {chirp_id} magnitude correlation = {mag_corr:.4f}"
-            assert cx_corr > 0.99, f"chirp {chirp_id} complex correlation = {cx_corr:.4f}"
-
-    def test_slang_vs_dirichlet_nonzero_adc_start(self):
-        """Non-zero adc_start_time should preserve verify_mimo-style agreement."""
-        from witwin.radar import Radar
-
-        cfg = _mimo_config(adc_start_time=6)
-        interp = _random_static_scene(30)
-
-        try:
-            radar_slang = Radar(cfg, backend="slang")
-            radar_dirichlet = Radar(cfg, backend="dirichlet")
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            pytest.skip(f"backend unavailable: {exc}")
-
-        frame_slang = radar_slang.mimo(interp).detach().cpu().numpy()
-        frame_dirichlet = radar_dirichlet.mimo(interp).detach().cpu().numpy()
-
-        mag_corr = mag_correlation(frame_slang, frame_dirichlet)
-        cx_corr = complex_correlation(frame_slang, frame_dirichlet)
-        assert mag_corr > 0.99, f"non-zero adc_start magnitude correlation = {mag_corr:.4f}"
-        assert cx_corr > 0.99, f"non-zero adc_start complex correlation = {cx_corr:.4f}"
-
     def test_dirichlet_mimo_from_static_trace_matches_legacy_path(self):
         """Static per-frame traces should be reusable without changing the generated MIMO frame."""
         from witwin.radar import Radar
@@ -253,18 +182,17 @@ class TestMIMOOutputShape:
         cfg = _mimo_config()
         interp = make_static_interpolator([0, 0, -3])
 
-        for backend in ("pytorch", "slang", "dirichlet"):
-            try:
-                radar = Radar(cfg, backend=backend)
-                frame = radar.mimo(interp)
-            except (FileNotFoundError, OSError, RuntimeError) as exc:
-                pytest.skip(f"backend unavailable: {exc}")
-            assert frame.shape == (
-                cfg.num_tx,
-                cfg.num_rx,
-                cfg.chirp_per_frame,
-                cfg.adc_samples,
-            ), f"backend={backend}: shape={frame.shape}"
+        try:
+            radar = Radar(cfg, backend="dirichlet")
+            frame = radar.mimo(interp)
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            pytest.skip(f"dirichlet backend unavailable: {exc}")
+        assert frame.shape == (
+            cfg.num_tx,
+            cfg.num_rx,
+            cfg.chirp_per_frame,
+            cfg.adc_samples,
+        )
 
     def test_output_not_all_zeros(self):
         """MIMO output with a target should contain non-zero values."""
@@ -273,13 +201,12 @@ class TestMIMOOutputShape:
         cfg = _mimo_config()
         interp = make_static_interpolator([0, 0, -3])
 
-        for backend in ("pytorch", "slang", "dirichlet"):
-            try:
-                radar = Radar(cfg, backend=backend)
-                frame = radar.mimo(interp)
-            except (FileNotFoundError, OSError, RuntimeError) as exc:
-                pytest.skip(f"backend unavailable: {exc}")
-            assert frame.abs().max().item() > 0, f"{backend}: all zeros"
+        try:
+            radar = Radar(cfg, backend="dirichlet")
+            frame = radar.mimo(interp)
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            pytest.skip(f"dirichlet backend unavailable: {exc}")
+        assert frame.abs().max().item() > 0
 
     def test_zero_targets_gives_zero_output(self):
         """Empty scene should produce all-zero frame."""
@@ -292,10 +219,9 @@ class TestMIMOOutputShape:
         def empty_interp(t):
             return intensities, positions
 
-        for backend in ("pytorch", "slang", "dirichlet"):
-            try:
-                radar = Radar(cfg, backend=backend)
-                frame = radar.mimo(empty_interp)
-            except (FileNotFoundError, OSError, RuntimeError) as exc:
-                pytest.skip(f"backend unavailable: {exc}")
-            assert frame.abs().max().item() == 0, f"{backend}: not zero for empty scene"
+        try:
+            radar = Radar(cfg, backend="dirichlet")
+            frame = radar.mimo(empty_interp)
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            pytest.skip(f"dirichlet backend unavailable: {exc}")
+        assert frame.abs().max().item() == 0

@@ -1,6 +1,5 @@
 torch
 numpy
-slangtorch
 tqdm
 matplotlib
 scipy

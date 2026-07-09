@@ -51,7 +51,7 @@ STANDARD_CONFIG = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=("dirichlet", "slang", "pytorch"), default="dirichlet")
+    parser.add_argument("--backend", choices=("dirichlet",), default="dirichlet")
     parser.add_argument("--targets", type=int, nargs="+", default=[256, 1024, 4096, 16384])
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
@@ -153,10 +153,10 @@ def benchmark(label: str, fn, *, warmup: int, runs: int, device: torch.device):
 
 def main() -> None:
     args = parse_args()
-    if args.backend != "pytorch" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for dirichlet/slang backends.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for the Dirichlet backend.")
 
-    device = torch.device("cuda" if args.backend != "pytorch" else ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device("cuda")
     radar = Radar(RadarConfig.from_dict(make_config(args)), backend=args.backend, device=device)
     cfg = radar.config
 

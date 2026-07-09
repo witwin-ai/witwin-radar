@@ -25,10 +25,10 @@
 
 ## Backend Execution
 
-- Three solver backends: `pytorch`, `slang`, `dirichlet`
-- Backend-specific runtime state lives on `radar.solver`, including Dirichlet FFT metadata such as `pad_factor` and `N_fft`
-- `Radar(device=...)` validates CUDA availability explicitly; `slang` and `dirichlet` require CUDA, while `pytorch` honors the selected device
-- Linux and Windows are supported targets. GPU tracing and Slang-backed solvers require a CUDA-enabled PyTorch build plus a working Slang/CUDA compilation toolchain; CPU-only operation is limited to the PyTorch backend and non-rendering workflows.
+- Single solver backend: `dirichlet`
+- Backend runtime state lives on `radar.solver`, including Dirichlet FFT metadata such as `pad_factor` and `N_fft`
+- `Radar(device="cuda")` validates CUDA availability explicitly. CPU construction is supported for configuration and helper workflows, but solver execution requires CUDA tensors.
+- Linux and Windows are supported targets. Release wheels include prebuilt native CUDA extensions for supported Python/platform combinations; source builds require a CUDA-enabled PyTorch build plus a working CUDA/C++ compilation toolchain.
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves `Radar.gain` onto an absolute transmit-voltage scale
 - `receiver_chain.adc` and `noise_model.quantization` are mutually exclusive so only one ADC quantizer is active
@@ -38,7 +38,7 @@
 - `Tracer.trace()` has a single public signature with no ignored `spp` parameter
 - `Scene.compile_renderables(time=...)` and `Tracer.trace(time=...)` expose time-dependent geometry for dynamic scenes
 - Multipath tracing is available for `sampling="pixel"` and uses radar-center path tracing with configurable maximum specular reflection depth
-- Solver backends consume generalized path samples and apply FSPL from the total `tx -> bounces -> scatter -> rx` distance
+- The Dirichlet solver consumes generalized path samples and applies FSPL from the total `tx -> bounces -> scatter -> rx` distance
 - When `polarization` is configured, traced path normals are propagated through the runtime and used for simplified reflection/projection coupling
 - Shared core geometry constructors default to `device=None`, while radar `Scene(...)` owns device placement and defaults to CUDA
 - `Timeline.from_motion()` uses the tracer result contract directly

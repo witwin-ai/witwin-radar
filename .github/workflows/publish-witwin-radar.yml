@@ -1,19 +1,23 @@
-name: Publish witwin-radar
+name: Build and publish witwin-radar
 
 on:
+  push:
+    branches:
+      - main
+      - master
+      - "codex/**"
+  pull_request:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
-  publish:
-    if: startsWith(github.event.release.tag_name, 'witwin-radar-v') && !github.event.release.prerelease
+  validate_release:
+    if: github.event_name != 'release' || (startsWith(github.event.release.tag_name, 'witwin-radar-v') && !github.event.release.prerelease)
+    name: Validate release
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    environment:
-      name: pypi
-      url: https://pypi.org/project/witwin-radar/
+    outputs:
+      package_dir: ${{ steps.package_dir.outputs.path }}
 
     steps:
       - name: Check out repository
@@ -38,6 +42,7 @@ jobs:
           fi
 
       - name: Validate release tag and package version
+        if: github.event_name == 'release'
         shell: bash
         env:
           PACKAGE_DIR: ${{ steps.package_dir.outputs.path }}
@@ -78,15 +83,200 @@ jobs:
           print(f"Validated {package_name} {package_version} from {pyproject_path}.")
           PY
 
+  build_cuda_wheels:
+    name: Build CUDA wheel / ${{ matrix.os }} / py${{ matrix.python_version }}
+    needs: validate_release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python_version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          echo "Disk after cleanup:"; df -h /
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.5.0"
+          method: local
+          log-file-suffix: "${{ runner.os }}-py${{ matrix.python_version }}"
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Export Windows CUDA_HOME
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cudaRoot = $env:CUDA_PATH
+          if (-not $cudaRoot) {
+            $nvcc = (Get-Command nvcc -ErrorAction Stop).Source
+            $cudaRoot = Split-Path (Split-Path $nvcc -Parent) -Parent
+          }
+          "CUDA_HOME=$cudaRoot" >> $env:GITHUB_ENV
+          "CUDA_PATH=$cudaRoot" >> $env:GITHUB_ENV
+          "CUDA_ROOT=$cudaRoot" >> $env:GITHUB_ENV
+          "CUDA_BIN_PATH=$cudaRoot" >> $env:GITHUB_ENV
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          python --version
+          nvcc --version
+          command -v cl || true
+
+      - name: Install CUDA extension build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel ninja numpy
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+          python -m pip install build
+
+      - name: Build packaged Dirichlet CUDA extension
+        env:
+          MAX_JOBS: "2"
+          TORCH_CUDA_ARCH_LIST: "7.0;8.0;8.6;8.9;9.0+PTX"
+          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/witwin_radar_dirichlet_cuda
+        run: |
+          python scripts/build_radar_cuda_prebuilt.py --verbose
+
+      - name: Build platform wheel
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+        run: |
+          python -m build --wheel "$PACKAGE_DIR"
+
+      - name: Normalize Linux wheel platform tag
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+        run: |
+          shopt -s nullglob
+          for whl in "$PACKAGE_DIR"/dist/*-linux_x86_64.whl; do
+            echo "Retagging $whl"
+            python -m wheel tags --platform-tag manylinux_2_35_x86_64 --remove "$whl"
+          done
+          ls -l "$PACKAGE_DIR"/dist
+
+      - name: Smoke install prebuilt wheel
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+          WITWIN_RADAR_DIRICHLET_CUDA_PREBUILT: "1"
+          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/missing_prebuilt_build_dir
+        run: |
+          python -m pip uninstall -y witwin-radar || true
+          python -m pip install --no-deps "$PACKAGE_DIR"/dist/*.whl
+          python - <<'PY'
+          import importlib.util
+          import site
+          from pathlib import Path
+
+          candidates = []
+          for root in site.getsitepackages() + [site.getusersitepackages()]:
+              candidates.append(Path(root) / "witwin" / "radar" / "cuda" / "build.py")
+          build_path = next((path for path in candidates if path.exists()), None)
+          assert build_path is not None, f"installed build.py not found in {candidates}"
+
+          spec = importlib.util.spec_from_file_location("witwin_radar_dirichlet_cuda_build", build_path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          path = module.prebuilt_extension_path()
+          assert path.exists(), f"missing packaged prebuilt extension: {path}"
+          extension = module.build_extension()
+          print(f"Loaded packaged radar Dirichlet CUDA extension from {extension.__file__}")
+          PY
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python_version }}
+          path: ${{ needs.validate_release.outputs.package_dir }}/dist/*.whl
+          if-no-files-found: error
+
+  build_sdist:
+    name: Build source distribution
+    needs: validate_release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Build distributions
         shell: bash
         env:
-          PACKAGE_DIR: ${{ steps.package_dir.outputs.path }}
+          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
         run: |
           python -m pip install --upgrade pip build
-          python -m build "$PACKAGE_DIR"
+          python -m build --sdist "$PACKAGE_DIR"
+
+      - name: Upload source distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: ${{ needs.validate_release.outputs.package_dir }}/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs:
+      - build_cuda_wheels
+      - build_sdist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/witwin-radar/
+
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download source distribution artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: ${{ steps.package_dir.outputs.path }}/dist
+          packages-dir: dist
+          skip-existing: true

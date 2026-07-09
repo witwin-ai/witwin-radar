@@ -6,10 +6,10 @@ This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
 
 ## Get Started
 
-Python 3.10+ is required. The PyTorch backend can run on CPU for non-rendering workflows; RayD tracing and the `slang`/`dirichlet` backends require an NVIDIA GPU with CUDA.
+Python 3.10+ is required. Radar simulation uses the native Dirichlet CUDA backend and requires an NVIDIA GPU with CUDA. CPU construction remains useful for configuration and non-rendering helper workflows.
 This package depends on the base `witwin` package.
 
-Linux and Windows are supported targets. On Linux, use a normal Python virtual environment or conda environment with a CUDA-enabled PyTorch build, NVIDIA driver, CUDA toolkit, and a working compiler toolchain for Slang kernel builds.
+Linux and Windows are supported targets. Release wheels include prebuilt native CUDA extensions for supported Python/platform combinations. Source builds require a CUDA-enabled PyTorch build, NVIDIA driver, CUDA toolkit, `ninja`, and a working C++ compiler.
 
 ```bash
 pip install witwin[radar]
@@ -126,7 +126,7 @@ Available mutating scene methods:
 
 ## Features
 
-- Recommended backend: `dirichlet`
+- Only solver backend: `dirichlet`, implemented by native CUDA kernels
 - Ray tracing through RayD/Dr.Jit with differentiable scene support
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
@@ -162,13 +162,13 @@ python -m examples.rgbd_range_doppler --input path/to/depths.npy
 
 ## Installation
 
-Python 3.10+ is required. Install a CUDA-enabled PyTorch build for GPU backends and tracing. Linux and Windows are supported; Linux users should ensure the NVIDIA driver, CUDA toolkit, `ninja`, and a C/C++ compiler are available on `PATH` before first Slang compilation.
+Python 3.10+ is required. Install a CUDA-enabled PyTorch build for simulation and tracing. Linux and Windows are supported; source builds require the NVIDIA driver, CUDA toolkit, `ninja`, and a C/C++ compiler on `PATH`.
 
 ```bash
 pip install witwin[radar]
 ```
 
-Core dependencies include `torch`, `numpy`, `slangtorch`, `drjit`, `rayd`, `tqdm`, `matplotlib`, and `scipy`.
+Core dependencies include `torch`, `numpy`, `drjit`, `rayd`, `tqdm`, `matplotlib`, and `scipy`.
 
 ## Citation
 

@@ -1,9 +1,11 @@
-"""Manual MIMO verification across radar solver backends."""
+"""Manual MIMO verification for native Dirichlet CUDA paths."""
+
+from __future__ import annotations
 
 import numpy as np
 import torch
 
-from witwin.radar import Radar, RadarConfig
+from witwin.radar import Radar, RadarConfig, TraceResult
 
 
 CONFIG = {
@@ -27,62 +29,43 @@ CONFIG = {
 }
 
 
-def main():
-    cfg = RadarConfig.from_dict(CONFIG)
-    print("Creating Slang radar...")
-    radar_slang = Radar(cfg, backend="slang")
-    print("Creating Dirichlet radar...")
-    radar_dirichlet = Radar(cfg, backend="dirichlet")
+def main() -> None:
+    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
 
     rng = np.random.RandomState(42)
     num_targets = 50
     positions = rng.randn(num_targets, 3).astype(np.float32)
     positions[:, 2] -= 3
     intensities = rng.uniform(0.5, 1.5, num_targets).astype(np.float32)
-
-    pos_t = torch.tensor(positions, dtype=torch.float32, device="cuda")
-    int_t = torch.tensor(intensities, dtype=torch.float32, device="cuda")
-
-    def interp(t):
-        return int_t, pos_t
-
-    print("Computing Slang MIMO...")
-    frame_slang = radar_slang.mimo(interp, t0=0)
-    print(f"  shape: {frame_slang.shape}")
-
-    print("Computing Dirichlet MIMO...")
-    frame_dirichlet = radar_dirichlet.mimo(interp, t0=0)
-    print(f"  shape: {frame_dirichlet.shape}")
-
-    slang_flat = frame_slang.cpu().numpy().ravel()
-    dirichlet_flat = frame_dirichlet.cpu().numpy().ravel()
-
-    mag_corr = np.corrcoef(np.abs(slang_flat), np.abs(dirichlet_flat))[0, 1]
-    complex_corr = np.abs(np.vdot(slang_flat, dirichlet_flat)) / (
-        np.linalg.norm(slang_flat) * np.linalg.norm(dirichlet_flat)
+    trace = TraceResult(
+        torch.tensor(positions, dtype=torch.float32, device="cuda"),
+        torch.tensor(intensities, dtype=torch.float32, device="cuda"),
     )
-    peak_ratio = np.abs(dirichlet_flat).max() / np.abs(slang_flat).max()
 
-    print("\n=== Overall MIMO Comparison ===")
+    def interp(_t):
+        return trace
+
+    print("Computing per-chirp Dirichlet MIMO...")
+    legacy = radar.mimo(interp, t0=0, fast=False)
+    print(f"  shape: {legacy.shape}")
+
+    print("Computing cached-path Dirichlet MIMO...")
+    fast = radar.mimo_from_trace(trace)
+    print(f"  shape: {fast.shape}")
+
+    legacy_flat = legacy.detach().cpu().numpy().ravel()
+    fast_flat = fast.detach().cpu().numpy().ravel()
+    mag_corr = np.corrcoef(np.abs(legacy_flat), np.abs(fast_flat))[0, 1]
+    complex_corr = np.abs(np.vdot(legacy_flat, fast_flat)) / (
+        np.linalg.norm(legacy_flat) * np.linalg.norm(fast_flat)
+    )
+    peak_ratio = np.abs(fast_flat).max() / np.abs(legacy_flat).max()
+
+    print("\n=== Native MIMO Comparison ===")
     print(f"Magnitude correlation: {mag_corr:.10f}")
     print(f"Complex correlation:   {complex_corr:.10f}")
-    print(f"Peak ratio (dir/slang): {peak_ratio:.6f}")
-
-    print("\n=== Per-chirp (TX0, RX0) ===")
-    for chirp_id in range(CONFIG["chirp_per_frame"]):
-        slang_chirp = frame_slang[0, 0, chirp_id].cpu().numpy()
-        dirichlet_chirp = frame_dirichlet[0, 0, chirp_id].cpu().numpy()
-        chirp_mag_corr = np.corrcoef(np.abs(slang_chirp), np.abs(dirichlet_chirp))[0, 1]
-        chirp_complex_corr = np.abs(np.vdot(slang_chirp, dirichlet_chirp)) / (
-            np.linalg.norm(slang_chirp) * np.linalg.norm(dirichlet_chirp)
-        )
-        print(
-            f"  Chirp {chirp_id}: mag_corr={chirp_mag_corr:.10f}  "
-            f"complex_corr={chirp_complex_corr:.10f}"
-        )
-
-    passed = mag_corr > 0.99 and complex_corr > 0.99
-    print(f"\n{'PASS' if passed else 'FAIL'}: mag_corr={mag_corr:.6f}, complex_corr={complex_corr:.6f}")
+    print(f"Peak ratio:            {peak_ratio:.6f}")
+    print(f"\n{'PASS' if mag_corr > 0.99 and complex_corr > 0.99 else 'FAIL'}")
 
 
 if __name__ == "__main__":
