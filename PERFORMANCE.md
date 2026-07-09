@@ -33,6 +33,22 @@ With Slang fast math disabled, native CUDA and legacy Slang produced identical f
 
 The practical read is that the native kernel matches legacy Slang forward performance at equivalent precision, while backward remains roughly comparable but is about 10% slower at the largest target count measured.
 
+## MIMO Frame Paths
+
+MIMO frame generation offers three paths with different speed/fidelity trade-offs (measured on an NVIDIA GeForce RTX 5080, 3TX x 4RX, 128 chirp loops, 256 ADC samples, CUDA-event medians):
+
+| Targets | `mimo(interpolator)` | `mimo_from_trace(velocities=...)` | `mimo_from_trace()` static |
+| ---: | ---: | ---: | ---: |
+| 1,024 | 21.9 ms | 5.7 ms | 2.2 ms |
+| 13,776 | 84.4 ms | 44.3 ms | 2.3 ms |
+| 131,072 | 863.8 ms | 402.3 ms | 4.5 ms |
+
+- `mimo(interpolator)` resamples the scene once per TDM chirp slot (`chirp_per_frame * num_tx` evaluations) and batches all slots into grouped `forward_chunked` launches. This is the highest-fidelity dynamic path.
+- `mimo_from_trace(velocities=...)` uses the fused `forward_mimo_linear_chunked` kernel with a first-order per-path range-rate model and per-TX slot timing.
+- The static path evaluates one chirp and expands it across the frame.
+
+Before the slot batching (per-chirp Python loop with one small kernel launch per chirp), the interpolator path took 348/885/6561 ms for the same target counts, so the batched path is roughly 8-16x faster while also simulating per-TX TDM timing.
+
 ## Method
 
 The native forward kernel evaluates the Dirichlet closed form directly in frequency space, avoiding the time-domain signal materialization and FFT used by the reference path. The native backward kernel applies the analytical gradients for the same expression and accumulates per-target distance/amplitude gradients.

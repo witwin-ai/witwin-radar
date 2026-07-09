@@ -31,6 +31,8 @@
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves `Radar.gain` onto an absolute transmit-voltage scale
 - `receiver_chain.adc` and `noise_model.quantization` are mutually exclusive so only one ADC quantizer is active
+- MIMO frames sample the scene once per TDM chirp slot (`chirp_per_frame * num_tx` evaluations), so the velocity-dependent per-TX phase removed by `_compensate_tdm_phase` is physically present; moving-target elevation is now correct instead of biased by radial velocity
+- `radar.mimo(interpolator, ...)` batches all TDM slots into grouped native kernel launches for roughly 8-16x faster dynamic-frame generation
 
 ## Rendering And Dynamics
 

@@ -158,7 +158,12 @@ __global__ void forward_mimo_linear_chunked_kernel(
     return;
   }
 
-  const float chirp_time = static_cast<float>(chirp_id) * chirp_period * static_cast<float>(num_tx);
+  // TDM-MIMO: TX antennas fire sequentially, so pair (tx, rx) samples the
+  // scene at slot chirp_id * num_tx + tx, one chirp_period per slot.
+  const int num_rx = num_pairs / num_tx;
+  const int tx_id = pair_id / num_rx;
+  const float slot = static_cast<float>(chirp_id) * static_cast<float>(num_tx) + static_cast<float>(tx_id);
+  const float chirp_time = slot * chirp_period;
   const int target_start = pair_id * targets_per_pair;
   float sum_re = 0.0f;
   float sum_im = 0.0f;
@@ -383,6 +388,7 @@ void forward_mimo_linear_chunked_cuda(
   const int update = checked_int(range_loss_update, "range_loss_update");
   const int pairs = checked_int(output_re.size(1), "num_pairs");
   TORCH_CHECK(per_pair > 0, "targets_per_pair must be positive.");
+  TORCH_CHECK(tx > 0 && pairs % tx == 0, "num_pairs must be a positive multiple of num_tx.");
 
   const c10::cuda::OptionalCUDAGuard device_guard(device_of(d0));
   constexpr int block_size = 256;

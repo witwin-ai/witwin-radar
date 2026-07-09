@@ -182,6 +182,38 @@ class TestMovingTarget:
         )
 
 
+class TestMovingTargetAngle:
+    """Regression: TDM phase must be simulated so compensation does not corrupt AoA.
+
+    Before the fix, a broadside target receding at 1.5 m/s showed ~0.8 m of
+    spurious elevation at 3 m range because _compensate_tdm_phase removed a
+    phase the solver never produced.
+    """
+
+    @pytest.mark.parametrize("velocity_z", [-1.5, 1.5])
+    def test_moving_broadside_target_stays_broadside(self, velocity_z):
+        from witwin.radar.sigproc import process_pc
+
+        cfg = _VFULL
+        r = make_radar_or_skip(cfg)
+        interp = make_moving_interpolator(
+            pos0=[0, 0, -3.0],
+            velocity=[0, 0, velocity_z],
+            sigma=1.0,
+        )
+        frame = r.mimo(interp)
+
+        pc = process_pc(r, frame, detector="cfar", positive_velocity_only=False,
+                        static_clutter_removal=False)
+        assert pc.shape[0] > 0, "No points detected"
+
+        mask = np.abs(pc[:, 5] - 3.0) < r.range_resolution * 4
+        assert mask.sum() > 0, "No points at target range"
+        strongest = pc[mask][np.argmax(pc[mask, 4])]
+        assert abs(strongest[0]) < 0.2, f"azimuth x={strongest[0]:.3f} m for broadside moving target"
+        assert abs(strongest[2]) < 0.2, f"elevation z={strongest[2]:.3f} m for broadside moving target"
+
+
 class TestSNRScale:
     """Regression (bug #7): SNR should be in 20*log10 (dB) scale."""
 

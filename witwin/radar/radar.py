@@ -504,7 +504,7 @@ class Radar:
         return self.apply_signal_models(signal)
 
     def frame(self, interpolator, t0=0):
-        """Single TX-RX frame. Returns: (chirps, adc_samples) complex."""
+        """Single TX-RX frame. Returns: (chirps, N_fft // 2) complex range spectra."""
         signal = self.solver.frame(interpolator, t0)
         return self.apply_signal_models(signal)
 

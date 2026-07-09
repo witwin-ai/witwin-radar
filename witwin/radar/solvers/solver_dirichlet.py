@@ -14,6 +14,7 @@ from . import Solver
 from .common import (
     collect_interpolated_samples,
     compute_path_amplitudes,
+    compute_slot_path_tensors,
     compute_total_path_lengths,
     normalize_interpolated_sample,
     pytorch_chirp_reference,
@@ -78,8 +79,8 @@ def spectrum(
     a = _to_f32(solver, amplitudes)
 
     num_chunks = (num_targets + targets_per_chunk - 1) // targets_per_chunk
-    output_re = torch.zeros((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
-    output_im = torch.zeros((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
+    output_re = torch.empty((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
+    output_im = torch.empty((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
 
     solver._module.forward_chunked(
         d,
@@ -243,61 +244,17 @@ class DirichletSolver(Solver):
         return torch.stack(result)
 
     def mimo(self, interpolator, t0=0, **options):
-        """Generate MIMO frame with batched TX/RX kernel launches."""
+        """Generate a MIMO frame; each TX samples the scene at its TDM slot time."""
         freq_domain = self._pop_bool_option(options, "freq_domain", False)
         fast = self._pop_bool_option(options, "fast", False)
         self._ensure_no_options(options)
 
         r = self.radar
-        cfg = r.config
         samples = collect_interpolated_samples(r, interpolator, t0)
         if fast and not samples_require_grad(samples) and _samples_share_storage(samples):
             return self._mimo_from_sample_static(samples[0], freq_domain=freq_domain)
 
-        tx_pos = r.tx_pos
-        rx_pos = r.rx_pos
-        num_pairs = cfg.num_tx * cfg.num_rx
-
-        frame = torch.zeros(
-            (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
-            dtype=torch.complex64,
-            device=self.device,
-        )
-
-        for chirp_id, sample in enumerate(samples):
-            n_targets = sample.points.shape[0]
-            if n_targets == 0:
-                continue
-
-            total_lengths = compute_total_path_lengths(sample, tx_pos, rx_pos)
-            one_way = total_lengths.reshape(num_pairs, n_targets) * 0.5
-            all_d = one_way.reshape(-1).contiguous()
-            amp = compute_path_amplitudes(r, sample, total_lengths, tx_pos=tx_pos, rx_pos=rx_pos)
-            all_a = amp.reshape(-1).contiguous()
-
-            output_re = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
-            output_im = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
-
-            self._module.forward_chunked(
-                all_d,
-                all_a,
-                output_re,
-                output_im,
-                self.n,
-                self.mimo_k0_per_meter,
-                self.mimo_num_bins,
-                self.mimo_N_fft,
-                num_pairs * n_targets,
-                n_targets,
-                cfg.fc,
-                cfg.slope * 1e12,
-                cfg.adc_start_time * 1e-6,
-            )
-
-            spectra = torch.complex(output_re, output_im)
-            if not freq_domain:
-                spectra = torch.fft.ifft(spectra, dim=-1)
-            frame[:, :, chirp_id, :] = spectra.view(cfg.num_tx, cfg.num_rx, cfg.adc_samples)
+        frame = self._mimo_from_slot_samples(samples, freq_domain=freq_domain)
 
         if samples_require_grad(samples):
             reference = pytorch_mimo_from_samples(r, samples)
@@ -306,6 +263,62 @@ class DirichletSolver(Solver):
             frame = frame.to(reference.dtype)
             return frame.detach() + (reference - reference.detach())
         return frame
+
+    # Slot-group size cap: bounds the (slots, N, RX, 3) geometry transients in
+    # compute_slot_path_tensors to roughly 256 MB of float32.
+    _SLOT_GROUP_ELEMENT_BUDGET = 1 << 26
+
+    def _mimo_from_slot_samples(self, samples, *, freq_domain: bool):
+        """One forward_chunked launch per slot group over padded per-slot paths."""
+        r = self.radar
+        cfg = r.config
+        num_rx = cfg.num_rx
+        num_slots = len(samples)
+        n_max = max(int(sample.points.shape[0]) for sample in samples)
+        if n_max == 0:
+            return torch.zeros(
+                (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
+                dtype=torch.complex64,
+                device=self.device,
+            )
+
+        output_re = torch.empty((num_slots * num_rx, self.mimo_num_bins), dtype=torch.float32, device=self.device)
+        output_im = torch.empty_like(output_re)
+
+        group = max(1, self._SLOT_GROUP_ELEMENT_BUDGET // max(1, n_max * num_rx * 3))
+        for start in range(0, num_slots, group):
+            stop = min(start + group, num_slots)
+            one_way, amplitudes = compute_slot_path_tensors(r, samples[start:stop], first_slot=start)
+            row_start, row_stop = start * num_rx, stop * num_rx
+            if one_way is None:
+                output_re[row_start:row_stop] = 0.0
+                output_im[row_start:row_stop] = 0.0
+                continue
+            group_slots, _, group_n = one_way.shape
+            self._module.forward_chunked(
+                one_way.reshape(-1),
+                amplitudes.reshape(-1),
+                output_re[row_start:row_stop],
+                output_im[row_start:row_stop],
+                self.n,
+                self.mimo_k0_per_meter,
+                self.mimo_num_bins,
+                self.mimo_N_fft,
+                group_slots * num_rx * group_n,
+                group_n,
+                cfg.fc,
+                cfg.slope * 1e12,
+                cfg.adc_start_time * 1e-6,
+            )
+
+        spectra = torch.complex(output_re, output_im)
+        if not freq_domain:
+            spectra = torch.fft.ifft(spectra, dim=-1)
+        return (
+            spectra.view(cfg.chirp_per_frame, cfg.num_tx, num_rx, cfg.adc_samples)
+            .permute(1, 2, 0, 3)
+            .contiguous()
+        )
 
     def mimo_from_trace(self, trace, *, velocities=None, t0=0.0, **options):
         """Generate a MIMO frame from one pre-traced frame.
@@ -478,10 +491,24 @@ class DirichletSolver(Solver):
         all_a: torch.Tensor,
         num_pairs: int,
         n_targets: int,
+        *,
+        targets_per_chunk: int = 256,
     ) -> torch.Tensor:
         cfg = self.radar.config
-        output_re = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
-        output_im = torch.zeros((num_pairs, self.mimo_num_bins), dtype=torch.float32, device=self.device)
+        chunks_per_pair = (n_targets + targets_per_chunk - 1) // targets_per_chunk
+        n_padded = chunks_per_pair * targets_per_chunk
+        if n_padded != n_targets:
+            d = torch.zeros((num_pairs, n_padded), dtype=torch.float32, device=self.device)
+            a = torch.zeros_like(d)
+            d[:, :n_targets] = all_d.view(num_pairs, n_targets)
+            a[:, :n_targets] = all_a.view(num_pairs, n_targets)
+            all_d = d.reshape(-1)
+            all_a = a.reshape(-1)
+
+        output_re = torch.empty(
+            (num_pairs * chunks_per_pair, self.mimo_num_bins), dtype=torch.float32, device=self.device
+        )
+        output_im = torch.empty_like(output_re)
         self._module.forward_chunked(
             all_d,
             all_a,
@@ -491,13 +518,14 @@ class DirichletSolver(Solver):
             self.mimo_k0_per_meter,
             self.mimo_num_bins,
             self.mimo_N_fft,
-            num_pairs * n_targets,
-            n_targets,
+            num_pairs * n_padded,
+            targets_per_chunk,
             cfg.fc,
             cfg.slope * 1e12,
             cfg.adc_start_time * 1e-6,
         )
-        return torch.complex(output_re, output_im)
+        spectra = torch.complex(output_re, output_im)
+        return spectra.view(num_pairs, chunks_per_pair, self.mimo_num_bins).sum(dim=1)
 
     def _mimo_from_path_tensors_linear(
         self,

@@ -51,13 +51,18 @@ def normalize_interpolated_sample(sample, *, device: str | torch.device) -> Path
 
 
 def collect_interpolated_samples(radar, interpolator, t0=0.0):
-    """Evaluate the scene interpolator once per chirp and keep tensors on-graph."""
+    """Evaluate the scene interpolator once per TDM chirp slot and keep tensors on-graph.
+
+    TDM-MIMO fires TX antennas sequentially: slot ``chirp_id * num_tx + tx_id``
+    starts ``slot * chirp_period`` into the frame. The returned list holds
+    ``chirp_per_frame * num_tx`` samples in slot order, so per-TX motion phase
+    (the phase ``_compensate_tdm_phase`` removes downstream) is simulated.
+    """
     cfg = radar.config
     chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
     samples = []
-    for chirp_id in range(cfg.chirp_per_frame):
-        time_in_frame = chirp_id * chirp_period * cfg.num_tx
-        sample = interpolator(t0 + time_in_frame)
+    for slot in range(cfg.chirp_per_frame * cfg.num_tx):
+        sample = interpolator(t0 + slot * chirp_period)
         samples.append(normalize_interpolated_sample(sample, device=radar.device))
     return samples
 
@@ -124,8 +129,13 @@ def compute_path_amplitudes(
     *,
     tx_pos: torch.Tensor | None = None,
     rx_pos: torch.Tensor | None = None,
+    tx_index: int | None = None,
 ) -> torch.Tensor:
-    """Convert power-domain material coefficients to amplitude-domain weights with FSPL."""
+    """Convert power-domain material coefficients to amplitude-domain weights with FSPL.
+
+    ``tx_index`` selects a single TX row of the polarization factors when
+    ``tx_pos`` holds only that antenna (per-TDM-slot evaluation).
+    """
     fspl_amp = radar._lambda / (4.0 * math.pi * torch.clamp(total_path_lengths, min=1e-6))
     scatter_power = torch.clamp(sample.intensities, min=0.0).view(1, 1, -1)
     if tx_pos is None:
@@ -138,6 +148,8 @@ def compute_path_amplitudes(
     amplitudes = radar.gain * torch.sqrt(scatter_power) * fspl_amp
     polarization_factor = compute_polarization_amplitudes(radar, sample)
     if polarization_factor is not None:
+        if tx_index is not None:
+            polarization_factor = polarization_factor[tx_index : tx_index + 1]
         amplitudes = amplitudes * polarization_factor
     return amplitudes
 
@@ -152,22 +164,139 @@ def pytorch_chirp_reference(radar, distances, amplitudes):
 
 
 def pytorch_mimo_from_samples(radar, samples):
+    """Float64 time-domain MIMO reference over per-TDM-slot samples.
+
+    Slot ``chirp_id * num_tx + tx_id`` contributes the (tx_id, :, chirp_id)
+    rows of the frame from its own scene state and TX antenna.
+    """
     cfg = radar.config
     frame = torch.zeros(
-        (cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples),
+        (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
         dtype=torch.complex128,
         device=radar.device,
     )
-    tx_pos = radar.tx_pos
     rx_pos = radar.rx_pos
 
-    for chirp_id, sample in enumerate(samples):
+    for slot, sample in enumerate(samples):
+        chirp_id, tx_id = divmod(slot, cfg.num_tx)
+        if sample.points.shape[0] == 0:
+            continue
+        tx_pos = radar.tx_pos[tx_id : tx_id + 1]
         distances = compute_total_path_lengths(sample, tx_pos, rx_pos).unsqueeze(-1)
         toa = distances / radar.c0
         rx = radar.waveform(radar.t_sample - toa)
-        amplitudes = compute_path_amplitudes(radar, sample, distances.squeeze(-1), tx_pos=tx_pos, rx_pos=rx_pos)
-        rx_weighted = rx * amplitudes.view(1, 1, -1, 1)
-        rx_combined = torch.sum(rx_weighted, dim=-2)
-        frame[chirp_id] = radar.tx_waveform * torch.conj(rx_combined)
+        amplitudes = compute_path_amplitudes(
+            radar,
+            sample,
+            distances.squeeze(-1),
+            tx_pos=tx_pos,
+            rx_pos=rx_pos,
+            tx_index=tx_id,
+        )
+        rx_combined = torch.sum(rx * amplitudes.unsqueeze(-1), dim=-2)
+        frame[tx_id, :, chirp_id] = radar.tx_waveform * torch.conj(rx_combined.squeeze(0))
 
-    return frame.permute(1, 2, 0, 3)
+    return frame
+
+
+def _stack_slot_samples(samples, *, with_normals: bool):
+    """Stack per-slot sample fields into zero-padded (slots, N_max, ...) tensors.
+
+    Padded rows keep zero intensity, so downstream amplitude math zeroes them.
+    Fields are detached: this feeds the native forward path only; gradients
+    flow through ``pytorch_mimo_from_samples``.
+    """
+    counts = [int(sample.points.shape[0]) for sample in samples]
+    n_max = max(counts)
+    if n_max == 0:
+        return None
+    num_slots = len(samples)
+    device = samples[0].points.device
+
+    fields = [
+        [sample.points.detach() for sample in samples],
+        [sample.entry_points.detach() for sample in samples],
+        [sample.fixed_path_lengths.detach() for sample in samples],
+        [sample.intensities.detach() for sample in samples],
+    ]
+    if with_normals:
+        if any(sample.normals is None for sample in samples):
+            raise ValueError("Radar polarization requires per-path surface normals in the interpolated sample.")
+        fields.append([sample.normals.detach() for sample in samples])
+
+    if all(count == n_max for count in counts):
+        stacked = [torch.stack(field) for field in fields]
+    else:
+        counts_t = torch.tensor(counts, device=device)
+        slot_ids = torch.repeat_interleave(torch.arange(num_slots, device=device), counts_t)
+        starts = torch.cumsum(counts_t, dim=0) - counts_t
+        within = torch.arange(int(counts_t.sum()), device=device) - starts[slot_ids]
+        flat_idx = slot_ids * n_max + within
+
+        stacked = []
+        for field in fields:
+            flat = torch.cat(field, dim=0)
+            out = torch.zeros((num_slots * n_max, *flat.shape[1:]), dtype=flat.dtype, device=device)
+            out[flat_idx] = flat
+            stacked.append(out.view(num_slots, n_max, *flat.shape[1:]))
+
+    if not with_normals:
+        stacked.append(None)
+    return stacked
+
+
+def _slot_polarization_factors(radar, normals: torch.Tensor, slot_tx: torch.Tensor) -> torch.Tensor:
+    """Per-slot polarization projection factors, shape (slots, N, RX)."""
+    polarization = radar.polarization
+    normals_n = _normalize_vectors(normals)
+    tx_world = _normalize_vectors(polarization.tx_world.to(device=normals.device, dtype=normals.dtype))
+    rx_world = _normalize_vectors(polarization.rx_world.to(device=normals.device, dtype=normals.dtype))
+
+    reflected_tx = tx_world[slot_tx].unsqueeze(1)
+    if polarization.reflection_flip:
+        reflected_tx = reflected_tx - 2.0 * (reflected_tx * normals_n).sum(dim=-1, keepdim=True) * normals_n
+    reflected_tx = _normalize_vectors(reflected_tx)
+    return (reflected_tx.unsqueeze(2) * rx_world.view(1, 1, -1, 3)).sum(dim=-1)
+
+
+def compute_slot_path_tensors(radar, samples, *, first_slot: int = 0):
+    """Batched per-slot path geometry for the native MIMO forward path.
+
+    Slot ``first_slot + s`` transmits from TX antenna ``(first_slot + s) % num_tx``.
+    Returns ``(one_way_distances, amplitudes)`` with shape (slots, RX, N_max),
+    or ``(None, None)`` when every slot is empty. Padded entries carry zero
+    amplitude, which the CUDA kernels skip.
+    """
+    cfg = radar.config
+    device = radar.device
+    num_slots = len(samples)
+    with_normals = radar.polarization is not None
+    packed = _stack_slot_samples(samples, with_normals=with_normals)
+    if packed is None:
+        return None, None
+    points, entry_points, fixed_path_lengths, intensities, normals = packed
+
+    slot_tx = (torch.arange(num_slots, device=device) + first_slot) % cfg.num_tx
+    tx_sel = radar.tx_pos[slot_tx]
+    rx_pos = radar.rx_pos
+
+    dist_tx = torch.cdist(entry_points, tx_sel.unsqueeze(1)).squeeze(-1)
+    dist_rx = torch.cdist(points, rx_pos.unsqueeze(0).expand(num_slots, -1, -1))
+    total = dist_tx.unsqueeze(-1) + fixed_path_lengths.unsqueeze(-1) + dist_rx
+
+    fspl_amp = radar._lambda / (4.0 * math.pi * torch.clamp(total, min=1e-6))
+    scatter_power = torch.clamp(intensities, min=0.0).unsqueeze(-1)
+
+    tx_vectors = radar.local_from_world_vectors(entry_points - tx_sel.unsqueeze(1))
+    rx_vectors = radar.local_from_world_vectors(points.unsqueeze(2) - rx_pos.view(1, 1, -1, 3))
+    tx_gains = radar.evaluate_antenna_pattern_vectors(tx_vectors)
+    rx_gains = radar.evaluate_antenna_pattern_vectors(rx_vectors)
+    scatter_power = scatter_power * torch.clamp(tx_gains.unsqueeze(-1) * rx_gains, min=0.0)
+
+    amplitudes = radar.gain * torch.sqrt(scatter_power) * fspl_amp
+    if with_normals:
+        amplitudes = amplitudes * _slot_polarization_factors(radar, normals, slot_tx)
+
+    one_way = (total * 0.5).transpose(1, 2).contiguous()
+    amplitudes = amplitudes.transpose(1, 2).contiguous()
+    return one_way, amplitudes
