@@ -17,6 +17,7 @@ from .common import (
     collect_interpolated_samples,
     compute_path_amplitudes,
     compute_total_path_lengths,
+    ensure_cuda_build_env,
     ensure_current_env_on_path,
     normalize_interpolated_sample,
     pytorch_chirp_reference,
@@ -32,7 +33,7 @@ def init():
     """Load the radar.slang module for the solver instance."""
     ensure_current_env_on_path()
     slang_path = os.path.join(_SOLVERS_DIR, 'radar.slang')
-    return slangtorch.loadModule(slang_path)
+    return slangtorch.loadModule(slang_path, includePaths=ensure_cuda_build_env())
 
 
 # ------------------------------------------------------------------

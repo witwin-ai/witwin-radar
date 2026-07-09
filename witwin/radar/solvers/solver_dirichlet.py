@@ -18,6 +18,7 @@ from .common import (
     collect_interpolated_samples,
     compute_path_amplitudes,
     compute_total_path_lengths,
+    ensure_cuda_build_env,
     ensure_current_env_on_path,
     normalize_interpolated_sample,
     pytorch_chirp_reference,
@@ -31,7 +32,7 @@ _SOLVERS_DIR = os.path.dirname(__file__)
 def _load_module():
     ensure_current_env_on_path()
     slang_path = os.path.join(_SOLVERS_DIR, "dirichlet.slang")
-    return slangtorch.loadModule(slang_path)
+    return slangtorch.loadModule(slang_path, includePaths=ensure_cuda_build_env())
 
 
 def _to_f32(solver: "DirichletSolver", value: torch.Tensor) -> torch.Tensor:
