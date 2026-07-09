@@ -46,7 +46,7 @@ def _compute_reference_fft(radar, distances, amplitudes, n_fft):
 class TestChirpCrossValidation:
     def test_dirichlet_matches_pytorch_fft_reference(self):
         distances, amplitudes = _make_verify_targets()
-        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG, backend="dirichlet")
+        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG)
 
         reference = _compute_reference_fft(radar, distances, amplitudes, radar.solver.N_fft)
         actual = radar.chirp(distances, amplitudes)
@@ -64,7 +64,7 @@ class TestChirpCrossValidation:
 class TestChirpPeakLocation:
     @pytest.mark.parametrize("distance", [1.0, 2.0, 3.0, 4.0, 5.0])
     def test_peak_bin_for_single_target(self, distance):
-        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG, backend="dirichlet")
+        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG)
         distances = torch.tensor([distance], dtype=torch.float32, device="cuda")
         amplitudes = torch.tensor([1.0], dtype=torch.float32, device="cuda")
 
@@ -80,7 +80,7 @@ class TestChirpPeakLocation:
         assert abs(peak_bin - expected_bin) <= 1
 
     def test_multiple_targets_produce_multiple_peaks(self):
-        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG, backend="dirichlet")
+        radar = make_radar_or_skip(VERIFY_CHIRP_CONFIG)
         distances = torch.tensor([1.5, 4.0], dtype=torch.float32, device="cuda")
         amplitudes = torch.tensor([1.0, 1.0], dtype=torch.float32, device="cuda")
 

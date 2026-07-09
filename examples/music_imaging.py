@@ -51,15 +51,14 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("This example requires CUDA for native Dirichlet radar simulation.")
     device = "cuda"
-    backend = "dirichlet"
-    radar = Radar(RadarConfig.from_dict(config), backend=backend, device=device)
+    radar = Radar(RadarConfig.from_dict(config), device=device)
 
     def location_function(t):
         pos = torch.tensor(points + velocity * t, dtype=torch.float32, device=radar.device)
         intensity = torch.ones(pos.shape[0], dtype=torch.float32, device=radar.device)
         return intensity, pos
 
-    print(f"Using backend={backend} device={device}")
+    print(f"Using device={device}")
     print("Generating radar frame (20x20 MIMO)...")
     frame = radar.mimo(location_function, t0=0)
     assert frame.shape == (20, 20, 8, 256), f"Unexpected frame shape: {frame.shape}"

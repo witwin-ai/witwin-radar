@@ -30,7 +30,7 @@ CONFIG = {
 
 
 def main() -> None:
-    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(CONFIG), device="cuda")
 
     rng = np.random.RandomState(42)
     num_targets = 50

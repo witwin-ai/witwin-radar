@@ -33,7 +33,6 @@ GRADIENT_CONFIG = {
     "rx_loc": [[0, 0, 0]],
 }
 
-BACKENDS = ("dirichlet",)
 SAMPLINGS = ("pixel", "triangle")
 MESH_COMPONENT = (0, 2)
 
@@ -61,11 +60,10 @@ def _make_sensor(wr):
     }
 
 
-def _make_radar(wr, *, backend: str = "dirichlet"):
+def _make_radar(wr):
     sensor = _make_sensor(wr)
     return wr.Radar(
         GRADIENT_CONFIG,
-        backend=backend,
         device="cuda",
         position=sensor["position"],
         target=sensor["target"],
@@ -158,25 +156,25 @@ def _default_shape():
     return shape
 
 
-def _run_simulation(scene, *, backend: str, sampling: str):
+def _run_simulation(scene, *, sampling: str):
     import witwin.radar as wr
 
     try:
-        radar = _make_radar(wr, backend=backend)
+        radar = _make_radar(wr)
         return radar.simulate(
             scene,
             resolution=24,
             sampling=sampling,
         )
     except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"{backend} backend unavailable: {exc}")
+        pytest.skip(f"radar runtime unavailable: {exc}")
 
 
 def _run_trace(scene, *, sampling: str):
     import witwin.radar as wr
 
     try:
-        radar = _make_radar(wr, backend="dirichlet")
+        radar = _make_radar(wr)
         return wr.Tracer(scene, radar, resolution=24, sampling=sampling).trace()
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"tracer unavailable: {exc}")
@@ -307,20 +305,18 @@ def test_trace_parametric_box_size_gradient_matches_fd_for_triangle():
     )
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("sampling", SAMPLINGS)
-def test_signal_mesh_vertex_gradients_exist_for_all_render_solver_pairs(backend, sampling):
+def test_signal_mesh_vertex_gradients_exist_for_dirichlet(sampling):
     vertices = _base_mesh_vertices().clone().requires_grad_(True)
-    result = _run_simulation(_make_mesh_scene(vertices), backend=backend, sampling=sampling)
+    result = _run_simulation(_make_mesh_scene(vertices), sampling=sampling)
     _signal_loss(result).backward()
     assert vertices.grad is not None and vertices.grad.abs().sum() > 0
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("sampling", SAMPLINGS)
-def test_signal_parametric_box_size_gradients_exist_for_all_render_solver_pairs(backend, sampling):
+def test_signal_parametric_box_size_gradients_exist_for_dirichlet(sampling):
     size = _base_box_size().clone().requires_grad_(True)
-    result = _run_simulation(_make_geometry_scene(size), backend=backend, sampling=sampling)
+    result = _run_simulation(_make_geometry_scene(size), sampling=sampling)
     _signal_loss(result).backward()
     assert size.grad is not None and size.grad.abs().sum() > 0
 
@@ -328,7 +324,7 @@ def test_signal_parametric_box_size_gradients_exist_for_all_render_solver_pairs(
 @pytest.mark.parametrize("sampling", SAMPLINGS)
 def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
     size = _base_box_size().clone().requires_grad_(True)
-    result = _run_simulation(_make_geometry_scene(size), backend="dirichlet", sampling=sampling)
+    result = _run_simulation(_make_geometry_scene(size), sampling=sampling)
     _signal_loss(result).backward()
     ad_grad = float(size.grad[0].item())
 
@@ -339,7 +335,6 @@ def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
         perturbed[0] += delta
         result_local = _run_simulation(
             _make_geometry_scene(perturbed),
-            backend="dirichlet",
             sampling=sampling,
         )
         return float(_signal_loss(result_local).item())
@@ -357,7 +352,7 @@ def test_signal_parametric_box_size_gradient_matches_fd_for_dirichlet(sampling):
 @pytest.mark.parametrize("sampling", SAMPLINGS)
 def test_signal_mesh_vertex_gradient_matches_fd_for_dirichlet(sampling):
     vertices = _base_mesh_vertices().clone().requires_grad_(True)
-    result = _run_simulation(_make_mesh_scene(vertices), backend="dirichlet", sampling=sampling)
+    result = _run_simulation(_make_mesh_scene(vertices), sampling=sampling)
     _signal_loss(result).backward()
     ad_grad = float(vertices.grad[MESH_COMPONENT].item())
 
@@ -366,7 +361,7 @@ def test_signal_mesh_vertex_gradient_matches_fd_for_dirichlet(sampling):
     def evaluate(delta: float) -> float:
         perturbed = base.clone()
         perturbed[MESH_COMPONENT] += delta
-        result_local = _run_simulation(_make_mesh_scene(perturbed), backend="dirichlet", sampling=sampling)
+        result_local = _run_simulation(_make_mesh_scene(perturbed), sampling=sampling)
         return float(_signal_loss(result_local).item())
 
     fd_grad = _centered_fd_scalar(evaluate, eps=2e-3)
@@ -380,13 +375,12 @@ def test_signal_mesh_vertex_gradient_matches_fd_for_dirichlet(sampling):
 
 
 @needs_smpl
-@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("sampling", SAMPLINGS)
-def test_signal_smpl_gradients_exist_for_all_render_solver_pairs(backend, sampling):
+def test_signal_smpl_gradients_exist_for_dirichlet(sampling):
     base_pose, base_shape, _, _ = _trace_case_params(sampling)
     pose = base_pose.clone().requires_grad_(True)
     shape = base_shape.clone().requires_grad_(True)
-    result = _run_simulation(_make_smpl_scene(pose, shape), backend=backend, sampling=sampling)
+    result = _run_simulation(_make_smpl_scene(pose, shape), sampling=sampling)
     _signal_loss(result).backward()
     assert pose.grad is not None and pose.grad.abs().sum() > 0
     assert shape.grad is not None and shape.grad.abs().sum() > 0
@@ -398,7 +392,7 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
     base_pose, base_shape, pose_index, shape_index = _trace_case_params(sampling)
     pose = base_pose.clone().requires_grad_(True)
     shape = base_shape.clone().requires_grad_(True)
-    result = _run_simulation(_make_smpl_scene(pose, shape), backend="dirichlet", sampling=sampling)
+    result = _run_simulation(_make_smpl_scene(pose, shape), sampling=sampling)
     _signal_loss(result).backward()
 
     ad_pose = float(pose.grad[pose_index].item())
@@ -409,7 +403,6 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
         perturbed_pose[pose_index] += delta
         result_local = _run_simulation(
             _make_smpl_scene(perturbed_pose, base_shape.clone()),
-            backend="dirichlet",
             sampling=sampling,
         )
         return float(_signal_loss(result_local).item())
@@ -419,7 +412,6 @@ def test_signal_smpl_gradients_match_fd_for_dirichlet(sampling):
         perturbed_shape[shape_index] += delta
         result_local = _run_simulation(
             _make_smpl_scene(base_pose.clone(), perturbed_shape),
-            backend="dirichlet",
             sampling=sampling,
         )
         return float(_signal_loss(result_local).item())
@@ -458,7 +450,7 @@ def test_simulation_accepts_scene_module_and_backpropagates(sampling):
             return _make_smpl_scene(self.pose, self.shape)
 
     scene_module = TrainableHumanScene()
-    result = _run_simulation(scene_module, backend="dirichlet", sampling=sampling)
+    result = _run_simulation(scene_module, sampling=sampling)
 
     _signal_loss(result).backward()
     assert scene_module.pose.grad is not None and scene_module.pose.grad.abs().sum() > 0

@@ -45,10 +45,9 @@ config = {
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
 
-# Use the recommended GPU backend.
+# Use the native CUDA solver.
 radar = Radar(
     RadarConfig.from_dict(config),
-    backend="dirichlet",
     device="cuda",
     position=(0.0, 0.0, 0.0),
     target=(0.0, 0.0, -5.0),
@@ -82,7 +81,6 @@ from witwin.radar import Radar, RadarConfig, Scene, TransformMotion
 
 radar = Radar(
     RadarConfig.from_dict(config),
-    backend="dirichlet",
     device="cuda",
     position=(0.0, 0.0, 0.0),
     target=(0.0, 0.0, -1.0),
@@ -126,7 +124,7 @@ Available mutating scene methods:
 
 ## Features
 
-- Only solver backend: `dirichlet`, implemented by native CUDA kernels
+- Native Dirichlet CUDA kernels for chirp, frame, and MIMO generation
 - Ray tracing through RayD/Dr.Jit with differentiable scene support
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`

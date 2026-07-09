@@ -39,7 +39,7 @@ def _make_radar(*, antenna_pattern=None) -> Radar:
     config = _base_config()
     if antenna_pattern is not None:
         config["antenna_pattern"] = antenna_pattern
-    return Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    return Radar(RadarConfig.from_dict(config), device="cpu")
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:

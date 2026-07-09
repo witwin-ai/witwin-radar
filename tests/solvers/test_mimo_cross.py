@@ -83,7 +83,7 @@ class TestMIMOCrossValidation:
             intensities=[0.7, 0.4, 1.1],
         )
 
-        radar = Radar(cfg, backend="dirichlet")
+        radar = Radar(cfg)
 
         def interp(_t):
             return trace
@@ -123,7 +123,7 @@ class TestMIMOCrossValidation:
         intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
         velocities = torch.tensor([[0.0, 0.0, -0.75]], dtype=torch.float32, device="cuda")
         trace = TraceResult(base_points, intensities)
-        radar = Radar(cfg, backend="dirichlet")
+        radar = Radar(cfg)
         t0 = 0.25
 
         def interp(t):
@@ -160,7 +160,7 @@ class TestMIMOCrossValidation:
         intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
         velocities = torch.tensor([[0.0, 0.0, -0.5]], dtype=torch.float32, device="cuda", requires_grad=True)
         trace = TraceResult(base_points, intensities)
-        radar = Radar(cfg, backend="dirichlet")
+        radar = Radar(cfg)
         t0 = 0.4
 
         def interp(t):
@@ -183,7 +183,7 @@ class TestMIMOOutputShape:
         interp = make_static_interpolator([0, 0, -3])
 
         try:
-            radar = Radar(cfg, backend="dirichlet")
+            radar = Radar(cfg)
             frame = radar.mimo(interp)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             pytest.skip(f"dirichlet backend unavailable: {exc}")
@@ -202,7 +202,7 @@ class TestMIMOOutputShape:
         interp = make_static_interpolator([0, 0, -3])
 
         try:
-            radar = Radar(cfg, backend="dirichlet")
+            radar = Radar(cfg)
             frame = radar.mimo(interp)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             pytest.skip(f"dirichlet backend unavailable: {exc}")
@@ -220,7 +220,7 @@ class TestMIMOOutputShape:
             return intensities, positions
 
         try:
-            radar = Radar(cfg, backend="dirichlet")
+            radar = Radar(cfg)
             frame = radar.mimo(empty_interp)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             pytest.skip(f"dirichlet backend unavailable: {exc}")

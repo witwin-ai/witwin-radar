@@ -237,7 +237,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
 
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
-    radar = _attach_fake_solver(Radar(config, backend="dirichlet", device="cpu"))
+    radar = _attach_fake_solver(Radar(config, device="cpu"))
     result = radar.simulate(
         scene,
         motion_sampling="per_chirp",
@@ -279,7 +279,7 @@ def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
     radar = _attach_fake_solver(
-        Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), backend="dirichlet", device="cpu")
+        Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), device="cpu")
     )
     radar.simulate(
         scene,
@@ -313,11 +313,10 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
     config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
-    front = _attach_fake_solver(Radar(config, name="front", backend="dirichlet", device="cpu"))
+    front = _attach_fake_solver(Radar(config, name="front", device="cpu"))
     side = _attach_fake_solver(Radar(
         config,
         name="side",
-        backend="dirichlet",
         device="cpu",
         position=(1.0, 0.0, 0.0),
         target=(1.0, 0.0, -1.0),
@@ -346,7 +345,7 @@ def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
 def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
     scene = _rotating_scene(device="cuda")
     config = RadarConfig.from_dict(_config(chirps=4, adc_samples=32))
-    radar = Radar(config, backend="dirichlet", device="cuda")
+    radar = Radar(config, device="cuda")
 
     result = radar.simulate(
         scene,

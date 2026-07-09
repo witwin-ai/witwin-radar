@@ -73,7 +73,6 @@ def _half_wave_dipole_power(angle_deg: float) -> float:
 def test_radar_transforms_local_points_and_vectors():
     radar = Radar(
         RadarConfig.from_dict(_config()),
-        backend="dirichlet",
         device="cpu",
         position=(1.0, 2.0, 3.0),
         target=(2.0, 2.0, 3.0),
@@ -113,7 +112,6 @@ def test_radar_world_positions_follow_pose():
             "num_tx": 2,
             "tx_loc": [[0, 0, 0], [2, 0, 0]],
         }),
-        backend="dirichlet",
         device="cpu",
         position=(1.0, 0.0, 0.0),
         target=(2.0, 0.0, 0.0),
@@ -132,10 +130,9 @@ def test_radar_world_positions_follow_pose():
 
 
 def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
-    radar_identity = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
+    radar_identity = Radar(RadarConfig.from_dict(_config()), device="cpu")
     radar_moved = Radar(
         RadarConfig.from_dict(_config()),
-        backend="dirichlet",
         device="cpu",
         position=(1.5, -0.25, 0.5),
         target=(2.5, -0.25, 0.5),
@@ -155,7 +152,6 @@ def test_rotated_and_translated_radar_matches_same_local_geometry_signal():
 def test_rotated_radar_pattern_is_evaluated_in_local_frame():
     radar = Radar(
         RadarConfig.from_dict(_config()),
-        backend="dirichlet",
         device="cpu",
         position=(0.0, 0.0, 0.0),
         target=(1.0, 0.0, 0.0),
@@ -178,7 +174,6 @@ def test_set_pose_updates_position_target_fov_and_antenna_positions():
             "num_tx": 2,
             "tx_loc": [[0, 0, 0], [2, 0, 0]],
         }),
-        backend="dirichlet",
         device="cpu",
     )
     radar.set_pose(position=(1.0, 0.0, 0.0), target=(2.0, 0.0, 0.0), fov=42.0)

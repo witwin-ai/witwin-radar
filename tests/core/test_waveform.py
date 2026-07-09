@@ -83,7 +83,7 @@ class TestRadarWaveform:
     def test_waveform_unit_magnitude(self, standard_config):
         from witwin.radar import Radar
 
-        r = Radar(standard_config, backend="dirichlet")
+        r = Radar(standard_config)
         wf = r.waveform(r.t_sample)
         mag = torch.abs(wf)
         torch.testing.assert_close(
@@ -93,6 +93,6 @@ class TestRadarWaveform:
     def test_tx_waveform_shape(self, standard_config):
         from witwin.radar import Radar
 
-        r = Radar(standard_config, backend="dirichlet")
+        r = Radar(standard_config)
         assert r.tx_waveform.shape == (r.config.adc_samples,)
         assert r.t_sample.shape == (r.config.adc_samples,)

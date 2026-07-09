@@ -80,7 +80,7 @@ def main():
     source_fps = float(pose_data["mocap_framerate"])
     print(f"Loaded {pose_files[0].name}: {all_poses.shape[0]} frames at {source_fps} fps, gender={gender}")
 
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=80)
+    radar = Radar(RadarConfig.from_dict(config), device="cuda", target=(0, 0, -5), fov=80)
 
     step = int(source_fps / config["frame_per_second"])
     num_frames = 30

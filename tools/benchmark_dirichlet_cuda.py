@@ -107,7 +107,7 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for the native Dirichlet benchmark.")
 
-    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(CONFIG), device="cuda")
     print(f"device: {torch.cuda.get_device_name(0)}")
     print(f"fft_bins: {radar.solver.N_fft // 2}, runs: {args.runs}, warmup: {args.warmup}")
     print()

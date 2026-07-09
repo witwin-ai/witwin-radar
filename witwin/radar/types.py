@@ -12,10 +12,6 @@ from typing import Callable, Protocol, TypeAlias, runtime_checkable
 import torch
 
 
-class SolverBackend(StrEnum):
-    DIRICHLET = "dirichlet"
-
-
 class DetectorType(StrEnum):
     CFAR = "cfar"
     TOPK = "topk"

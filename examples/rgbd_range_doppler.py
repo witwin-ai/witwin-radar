@@ -515,13 +515,13 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
 
     config = _load_config(args.config)
     device = args.device
-    if args.backend == "dirichlet" and device != "cuda":
-        raise ValueError("The default dirichlet backend requires --device cuda.")
+    if device != "cuda":
+        raise ValueError("Native Dirichlet radar simulation requires --device cuda.")
 
     sequence = load_rgbd_sequence(input_path, args)
     if args.mask is not None:
         sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
-    radar = Radar(RadarConfig.from_dict(config), backend=args.backend, device=device)
+    radar = Radar(RadarConfig.from_dict(config), device=device)
     interpolator, total_time, source_frames, source_fps = build_interpolator(sequence, args=args, device=radar.device)
 
     chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
@@ -538,7 +538,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
 
     print(f"Input: {input_path}")
     print(f"Source frames: {source_frames} at {source_fps:.3f} fps")
-    print(f"Radar: backend={args.backend} device={radar.device} start_frame={args.start_frame} output_frames={num_frames}")
+    print(f"Radar: device={radar.device} start_frame={args.start_frame} output_frames={num_frames}")
 
     rd_maps = []
     ranges = None
@@ -585,8 +585,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, help="Path to .npy, .npz, or Azure Kinect .mkv input.")
     parser.add_argument("--output-dir", default="output/rgbd_range_doppler", help="Directory for PNGs and .npy output.")
     parser.add_argument("--config", default=None, help="Optional radar config JSON. Defaults to TI1843-like config.")
-    parser.add_argument("--backend", default="dirichlet", choices=("dirichlet",))
-    parser.add_argument("--device", default="cuda", help="Torch device. Dirichlet simulation requires cuda.")
+    parser.add_argument("--device", default="cuda", help="Torch device. Native Dirichlet simulation requires cuda.")
     parser.add_argument("--num-frames", type=int, default=10, help="Number of radar frames to generate. Use 0 for all.")
     parser.add_argument("--start-frame", type=int, default=0, help="Source RGBD frame index to start from.")
     parser.add_argument("--source-fps", type=float, default=None, help="RGBD source frame rate; defaults to npz fps or 30.")

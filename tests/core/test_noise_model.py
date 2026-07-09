@@ -35,7 +35,7 @@ def _make_radar(*, noise_model=None) -> Radar:
     config = _base_config()
     if noise_model is not None:
         config["noise_model"] = noise_model
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    radar = Radar(RadarConfig.from_dict(config), device="cpu")
     radar.solver = SimpleNamespace(
         chirp=lambda distances, amplitudes: _deterministic_chirp(radar),
         frame=lambda interpolator, t0=0: _deterministic_frame(radar),

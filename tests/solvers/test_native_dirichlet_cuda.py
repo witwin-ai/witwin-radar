@@ -27,7 +27,7 @@ def _make_radar():
             "num_doppler_bins": 2,
         }
     )
-    return Radar(cfg, backend="dirichlet", device="cuda")
+    return Radar(cfg, device="cuda")
 
 
 def test_native_dirichlet_chirp_matches_pytorch_fft_reference():

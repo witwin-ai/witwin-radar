@@ -47,7 +47,7 @@ def require_cuda():
 
 def main():
     require_cuda()
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
+    radar = Radar(RadarConfig.from_dict(config), device="cuda", target=(0, 0, -5), fov=60)
 
     scene = Scene()
 

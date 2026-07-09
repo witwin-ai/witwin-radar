@@ -34,7 +34,7 @@ def _single_pair_config(*, adc_samples=256, slope=60.012, sample_rate=4400):
 class TestDirichletLargeADC:
     def test_dirichlet_mimo_512_samples(self):
         cfg = _single_pair_config(adc_samples=512)
-        r = make_radar_or_skip(cfg, backend="dirichlet")
+        r = make_radar_or_skip(cfg)
         frame = r.mimo(make_static_interpolator([0, 0, -3]))
 
         second_half = frame[0, 0, 0, 256:].abs().cpu()
@@ -42,7 +42,7 @@ class TestDirichletLargeADC:
 
     def test_dirichlet_mimo_640_samples(self):
         cfg = _single_pair_config(adc_samples=640, slope=128.0, sample_rate=12500)
-        r = make_radar_or_skip(cfg, backend="dirichlet")
+        r = make_radar_or_skip(cfg)
         frame = r.mimo(make_static_interpolator([0, 0, -3]))
 
         last_quarter = frame[0, 0, 0, 480:].abs().cpu()
@@ -50,7 +50,7 @@ class TestDirichletLargeADC:
 
     def test_dirichlet_512_produces_valid_spectrum(self):
         cfg = _single_pair_config(adc_samples=512, slope=128.0, sample_rate=12500)
-        r = make_radar_or_skip(cfg, backend="dirichlet")
+        r = make_radar_or_skip(cfg)
         frame = r.mimo(make_static_interpolator([0, 0, -2]))
         spectrum = torch.fft.fft(frame[0, 0, 0, :])
         mag = spectrum.abs().cpu().numpy()
@@ -59,7 +59,7 @@ class TestDirichletLargeADC:
 
 class TestChirpEdgeCases:
     def test_very_close_target(self):
-        r = make_radar_or_skip(_single_pair_config(), backend="dirichlet")
+        r = make_radar_or_skip(_single_pair_config())
         d = torch.tensor([0.1], dtype=torch.float32, device="cuda")
         a = torch.tensor([1.0], dtype=torch.float32, device="cuda")
         spectrum = r.chirp(d, a)
@@ -71,6 +71,6 @@ class TestChirpEdgeCases:
         d = torch.tensor(rng.uniform(0.5, 8, 4096), dtype=torch.float32, device="cuda")
         a = torch.tensor(rng.uniform(0.01, 1, 4096), dtype=torch.float32, device="cuda")
 
-        r = make_radar_or_skip(_single_pair_config(), backend="dirichlet")
+        r = make_radar_or_skip(_single_pair_config())
         result = r.chirp(d, a)
         assert not torch.isnan(result).any()

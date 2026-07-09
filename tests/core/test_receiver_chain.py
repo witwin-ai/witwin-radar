@@ -37,7 +37,7 @@ def _make_radar(*, receiver_chain=None, noise_model=None) -> Radar:
         config["receiver_chain"] = receiver_chain
     if noise_model is not None:
         config["noise_model"] = noise_model
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    radar = Radar(RadarConfig.from_dict(config), device="cpu")
     radar.solver = SimpleNamespace(mimo=lambda interpolator, t0=0, **options: _deterministic_mimo(radar))
     return radar
 

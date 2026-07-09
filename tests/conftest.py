@@ -248,13 +248,13 @@ def make_moving_interpolator(pos0, velocity, sigma=1.0):
     return interp
 
 
-def make_radar_or_skip(config, *, backend):
-    """Construct a Radar backend or skip when the local toolchain is missing."""
+def make_radar_or_skip(config):
+    """Construct a Radar or skip when the local runtime/toolchain is missing."""
     from witwin.radar import Radar, RadarConfig
 
     if not isinstance(config, RadarConfig):
         config = RadarConfig.from_dict(dict(config))
     try:
-        return Radar(config, backend=backend)
+        return Radar(config)
     except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"{backend} backend unavailable: {exc}")
+        pytest.skip(f"radar runtime unavailable: {exc}")

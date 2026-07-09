@@ -53,7 +53,7 @@ def main():
     if not MODEL_ROOT.exists():
         raise FileNotFoundError(f"SMPL models not found: {MODEL_ROOT}")
 
-    radar = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
+    radar = Radar(RadarConfig.from_dict(config), device="cuda", target=(0, 0, -5), fov=60)
 
     scene = Scene()
 

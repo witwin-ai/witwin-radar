@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from .types import MotionSampling, SamplingMode, SolverBackend
+from .types import MotionSampling, SamplingMode
 from .utils.antenna import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
 from .utils.vector import vec3_tensor
 
@@ -229,7 +229,6 @@ class Radar:
     def __init__(
         self,
         config: RadarConfig | Mapping[str, Any],
-        backend: SolverBackend | str = SolverBackend.DIRICHLET,
         pad_factor: int = 16,
         device: str | torch.device = "cuda",
         *,
@@ -242,7 +241,6 @@ class Radar:
         """
         Args:
             config: ``RadarConfig`` or a raw mapping accepted by ``RadarConfig.from_dict``.
-            backend: only "dirichlet" is supported
             pad_factor: FFT zero-padding factor for the Dirichlet backend
             device: CUDA compute device
             position: radar origin in world coordinates
@@ -252,7 +250,6 @@ class Radar:
             name: optional identifier used by ``Radar.simulate_group``
         """
         self.c0 = 299792458
-        self.backend = self._coerce_backend(backend)
         self.device: torch.device = self._resolve_device(device=torch.device(device))
         self.name = None if name is None else str(name)
         self._set_pose_fields(position=position, target=target, up=up, fov=fov)
@@ -357,13 +354,6 @@ class Radar:
         from .solvers.solver_dirichlet import DirichletSolver
 
         return DirichletSolver(self, pad_factor)
-
-    @staticmethod
-    def _coerce_backend(backend: SolverBackend | str) -> SolverBackend:
-        try:
-            return SolverBackend(backend)
-        except ValueError as exc:
-            raise ValueError("Only the 'dirichlet' backend is supported.") from exc
 
     @staticmethod
     def _resolve_device(*, device: torch.device) -> torch.device:

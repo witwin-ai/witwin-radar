@@ -8,21 +8,20 @@ from pathlib import Path
 import pytest
 
 
-def test_solver_backend_public_api_is_dirichlet_only():
-    from witwin.radar import SolverBackend
+def test_solver_backend_selector_is_not_public_api():
+    import inspect
 
-    assert [member.value for member in SolverBackend] == ["dirichlet"]
-    assert SolverBackend.DIRICHLET.value == "dirichlet"
-    assert not hasattr(SolverBackend, "PYTORCH")
-    assert not hasattr(SolverBackend, "SLANG")
+    import witwin.radar as wr
+
+    assert "SolverBackend" not in wr.__all__
+    assert "backend" not in inspect.signature(wr.Radar).parameters
 
 
-def test_radar_rejects_removed_backend_names(minimal_config):
+def test_radar_rejects_backend_keyword(minimal_config):
     from witwin.radar import Radar
 
-    for backend in ("pytorch", "slang"):
-        with pytest.raises(ValueError, match="Only the 'dirichlet' backend is supported"):
-            Radar(minimal_config, backend=backend, device="cpu")
+    with pytest.raises(TypeError, match="backend"):
+        Radar(minimal_config, backend="dirichlet", device="cpu")
 
 
 def test_runtime_dependencies_do_not_include_slangtorch():

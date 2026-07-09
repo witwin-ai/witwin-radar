@@ -30,7 +30,7 @@ CPU_SIGPROC_CONFIG = {
 
 
 def _make_cpu_radar() -> Radar:
-    return Radar(RadarConfig.from_dict(CPU_SIGPROC_CONFIG), backend="dirichlet", device="cpu")
+    return Radar(RadarConfig.from_dict(CPU_SIGPROC_CONFIG), device="cpu")
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

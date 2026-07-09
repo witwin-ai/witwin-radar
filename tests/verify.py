@@ -42,7 +42,7 @@ def main() -> None:
     num_targets = 1024
     rng = np.random.RandomState(42)
 
-    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda")
+    radar = Radar(RadarConfig.from_dict(CONFIG), device="cuda")
     fs = radar.config.sample_rate * 1e3
     slope = radar.config.slope * 1e12
     freq_axis = np.fft.fftfreq(radar.solver.N_fft, 1 / fs)[: radar.solver.N_fft // 2]

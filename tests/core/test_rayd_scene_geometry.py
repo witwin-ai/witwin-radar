@@ -134,7 +134,7 @@ def test_rayd_tracer_preserves_rotated_box_front_face_depth():
     scene = wr.Scene(device="cuda").add_structure(
         wr.Structure(name="target", geometry=geometry, material=wr.Material(eps_r=3.0))
     )
-    radar = wr.Radar(_config(), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
+    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
 
     trace = wr.Tracer(scene, radar, resolution=1, sampling="pixel").trace()
 
@@ -148,7 +148,7 @@ def test_rayd_tracer_preserves_rotated_box_front_face_depth():
 def test_rayd_tracer_matches_cylinder_axis_coordinate_convention():
     import witwin.radar as wr
 
-    radar = wr.Radar(_config(), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
+    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
     scene_z = wr.Scene(device="cuda").add_structure(
         wr.Structure(
             name="target",
@@ -184,7 +184,7 @@ def test_rayd_tracer_reuses_instance_after_material_update():
             material=wr.Material(eps_r=2.0),
         )
     )
-    radar = wr.Radar(_config(), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=60)
+    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
     tracer = wr.Tracer(scene, radar, resolution=1, sampling="pixel")
 
     first = tracer.trace()

@@ -7,7 +7,7 @@
 - Scene assembly uses `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
 - Multi-radar orchestration is available via `Radar.simulate_group(...)`, returning a `dict[str, torch.Tensor]`
 - Optional per-structure motion is available through `Scene.add_structure_motion(...)` and `Scene.update_structure(...)`. Callers pass `TransformMotion` instances directly.
-- Public string-literal API types: `SolverBackend`, `DetectorType`, `SamplingMode`, and `MotionSampling`
+- Public string-literal API types: `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
 - Ray-tracing entrypoint: `Tracer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, `depths`, and optional `normals` for generalized path tracing
 - `radar.simulate(...)` returns the radar data tensor directly. The most recent scene, trace, and tracer are available as `radar.last_scene`, `radar.last_trace`, and `radar.last_tracer` for debugging.
@@ -23,10 +23,9 @@
 - `Tracer(scene, radar, ...)` and `radar.simulate(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
 - `radar.simulate(...)` and `Radar.simulate_group(...)` accept `motion_sampling="per_frame" | "per_chirp"` for dynamic scenes
 
-## Backend Execution
+## Solver Execution
 
-- Single solver backend: `dirichlet`
-- Backend runtime state lives on `radar.solver`, including Dirichlet FFT metadata such as `pad_factor` and `N_fft`
+- Native Dirichlet runtime state lives on `radar.solver`, including FFT metadata such as `pad_factor` and `N_fft`
 - `Radar(device="cuda")` validates CUDA availability explicitly. CPU construction is supported for configuration and helper workflows, but solver execution requires CUDA tensors.
 - Linux and Windows are supported targets. Release wheels include prebuilt native CUDA extensions for supported Python/platform combinations; source builds require a CUDA-enabled PyTorch build plus a working CUDA/C++ compilation toolchain.
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection

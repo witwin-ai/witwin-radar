@@ -7,7 +7,7 @@ from .material import fresnel
 from .path_cache import MimoPathCache
 from .scene import Scene, SceneModule
 from .timeline import Timeline, TransformMotion
-from .types import DetectorType, MotionSampling, SamplingMode, SolverBackend
+from .types import DetectorType, MotionSampling, SamplingMode
 from witwin.core import (
     Box,
     Cone,
@@ -33,7 +33,6 @@ __all__ = [
     'Solver',
     'Tracer',
     'TraceResult',
-    'SolverBackend',
     'DetectorType',
     'MotionSampling',
     'SamplingMode',

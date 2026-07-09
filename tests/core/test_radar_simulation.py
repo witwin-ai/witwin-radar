@@ -100,7 +100,6 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
 
     radar = Radar(
         RadarConfig.from_dict(_config()),
-        backend="dirichlet",
         device="cpu",
         position=(0.0, 0.0, 0.0),
         target=(0.0, 0.0, -5.0),
@@ -116,19 +115,19 @@ def test_radar_simulate_returns_signal_tensor_and_records_last_trace(monkeypatch
 
 
 def test_radar_simulate_rejects_unknown_sampling_mode():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), device="cpu")
     with pytest.raises(ValueError, match="not a valid SamplingMode"):
         radar.simulate(_scene(), sampling="unknown")
 
 
 def test_radar_simulate_rejects_multipath_for_triangle():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), device="cpu")
     with pytest.raises(ValueError, match="multipath=True requires sampling='pixel'"):
         radar.simulate(_scene(), sampling="triangle", multipath=True)
 
 
 def test_tracer_rejects_multipath_for_triangle():
-    radar = Radar(RadarConfig.from_dict(_config()), backend="dirichlet", device="cpu")
+    radar = Radar(RadarConfig.from_dict(_config()), device="cpu")
     with pytest.raises(ValueError, match="multipath=True requires sampling='pixel'"):
         Tracer(_scene(), radar, sampling="triangle", multipath=True)
 
@@ -146,11 +145,10 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
 
     monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
 
-    front = _attach_fake_solver(Radar(_config(), name="front", backend="dirichlet", device="cpu"))
+    front = _attach_fake_solver(Radar(_config(), name="front", device="cpu"))
     side = _attach_fake_solver(Radar(
         _config(),
         name="side",
-        backend="dirichlet",
         device="cpu",
         position=(2.0, 0.0, 0.0),
         target=(2.0, 0.0, -1.0),
@@ -165,13 +163,13 @@ def test_radar_simulate_group_returns_named_results(monkeypatch):
 
 
 def test_radar_simulate_group_requires_names_for_sequences():
-    radar = Radar(_config(), backend="dirichlet", device="cpu")
+    radar = Radar(_config(), device="cpu")
     with pytest.raises(ValueError, match="requires names"):
         Radar.simulate_group(_scene(), radars=[radar])
 
 
 def test_radar_simulate_group_rejects_duplicate_names():
-    radar_a = Radar(_config(), name="dup", backend="dirichlet", device="cpu")
-    radar_b = Radar(_config(), name="dup", backend="dirichlet", device="cpu")
+    radar_a = Radar(_config(), name="dup", device="cpu")
+    radar_b = Radar(_config(), name="dup", device="cpu")
     with pytest.raises(ValueError, match="unique"):
         Radar.simulate_group(_scene(), radars=[radar_a, radar_b])

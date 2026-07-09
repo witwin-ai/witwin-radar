@@ -299,7 +299,7 @@ def main():
     require_cuda()
     ensure_inputs()
 
-    radar = Radar(RadarConfig.from_dict(CONFIG), backend="dirichlet", device="cuda", target=(0, 0, -5), fov=80)
+    radar = Radar(RadarConfig.from_dict(CONFIG), device="cuda", target=(0, 0, -5), fov=80)
     print(f"Generating {len(CLIPS)} clips x {NUM_FRAMES} frames each (CFAR pfa={CFAR_PFA})...")
 
     outputs = []

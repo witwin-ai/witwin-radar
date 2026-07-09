@@ -39,13 +39,13 @@ def _tiny_config_dict() -> dict:
 
 
 def _radar() -> Radar:
-    return Radar(RadarConfig.from_dict(_tiny_config_dict()), backend="dirichlet", device="cpu")
+    return Radar(RadarConfig.from_dict(_tiny_config_dict()), device="cpu")
 
 
 def _radar_with_pattern(pattern) -> Radar:
     config = _tiny_config_dict()
     config["antenna_pattern"] = pattern
-    return Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    return Radar(RadarConfig.from_dict(config), device="cpu")
 
 
 def test_normalize_interpolated_sample_accepts_legacy_tuple():
@@ -257,7 +257,6 @@ def test_path_amplitudes_apply_simplified_polarization_projection():
                 "rx": "vertical",
             },
         }),
-        backend="dirichlet",
         device="cpu",
     )
     sample = normalize_interpolated_sample(
@@ -282,11 +281,11 @@ def test_path_amplitudes_apply_simplified_polarization_projection():
 def test_path_amplitudes_respect_simplified_polarization_gain():
     config = _tiny_config_dict()
     config["polarization"] = {"tx": "horizontal", "rx": "horizontal"}
-    radar_hh = Radar(RadarConfig.from_dict(config), backend="dirichlet", device="cpu")
+    radar_hh = Radar(RadarConfig.from_dict(config), device="cpu")
 
     config_cross = dict(config)
     config_cross["polarization"] = {"tx": "horizontal", "rx": "vertical"}
-    radar_hv = Radar(RadarConfig.from_dict(config_cross), backend="dirichlet", device="cpu")
+    radar_hv = Radar(RadarConfig.from_dict(config_cross), device="cpu")
 
     position = torch.tensor([[0.0, 0.0, -2.0]], dtype=torch.float32)
     intensity = torch.tensor([1.0], dtype=torch.float32)
@@ -321,7 +320,6 @@ def test_polarization_requires_surface_normals():
                 "rx": "vertical",
             },
         }),
-        backend="dirichlet",
         device="cpu",
     )
 
@@ -366,7 +364,6 @@ def test_reference_mimo_supports_pattern_with_multi_tx_config():
                 "y_values": [0.5, 1.0, 0.5],
             },
         }),
-        backend="dirichlet",
         device="cpu",
     )
 
