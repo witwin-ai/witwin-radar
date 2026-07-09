@@ -79,8 +79,19 @@ def make_face_indices(faces: np.ndarray) -> tuple[object, object, object]:
 
 
 def torch_vertices_to_rayd(vertices: torch.Tensor, *, ad: bool):
-    values = vertices.detach().to(device="cpu", dtype=torch.float32).numpy()
     array_type = Point3f if ad else dr.cuda.Array3f
+    float_type = Float if ad else dr.cuda.Float
+    detached = vertices.detach()
+    if detached.is_cuda:
+        # Zero-copy interop: Dr.Jit wraps CUDA torch tensors via DLPack, so
+        # the per-iteration vertex sync never round-trips through the CPU.
+        columns = detached.to(dtype=torch.float32).transpose(0, 1).contiguous()
+        return array_type(
+            float_type(columns[0]),
+            float_type(columns[1]),
+            float_type(columns[2]),
+        )
+    values = detached.to(device="cpu", dtype=torch.float32).numpy()
     return array_type(
         values[:, 0].tolist(),
         values[:, 1].tolist(),
@@ -132,9 +143,15 @@ class RayDSceneCache:
             mark_clean()
             return False
 
-        signature = renderable_signature(renderables)
-        if self.scene is None or dirty_level >= dirty_full or signature != self.signature:
-            self._build(renderables)
+        # Topology changes always raise the scene to DIRTY_FULL, so the
+        # (expensive, CPU-side) signature hash only needs to run on full
+        # rebuild candidates; vertex-only updates take the refit path.
+        if self.scene is None or dirty_level >= dirty_full:
+            signature = renderable_signature(renderables)
+            if self.scene is None or signature != self.signature:
+                self._build(renderables)
+            else:
+                self.sync_vertices(renderables)
         else:
             self.sync_vertices(renderables)
         mark_clean()
