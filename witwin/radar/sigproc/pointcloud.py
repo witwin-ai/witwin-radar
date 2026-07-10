@@ -295,6 +295,33 @@ def process_pc(
     energy_top_k=128,
 ) -> np.ndarray:
     """Radar frame -> filtered point cloud (N, 6) as numpy."""
+    return process_pc_tensor(
+        radar,
+        frame,
+        static_clutter_removal=static_clutter_removal,
+        positive_velocity_only=positive_velocity_only,
+        detector=detector,
+        guard_cells=guard_cells,
+        training_cells=training_cells,
+        pfa=pfa,
+        max_points=max_points,
+        energy_top_k=energy_top_k,
+    ).detach().cpu().numpy()
+
+
+def process_pc_tensor(
+    radar,
+    frame: torch.Tensor,
+    static_clutter_removal=True,
+    positive_velocity_only=True,
+    detector: DetectorType = "cfar",
+    guard_cells=(2, 4),
+    training_cells=(4, 8),
+    pfa=1e-3,
+    max_points=512,
+    energy_top_k=128,
+) -> torch.Tensor:
+    """Radar frame -> filtered point cloud (N, 6) on the input device."""
     detector_kind = DetectorType(detector)
 
     if detector_kind == DetectorType.TOPK:
@@ -306,9 +333,9 @@ def process_pc(
         pc = frame2pointcloud(frame, cfg, radar=radar).transpose(0, 1)
         if positive_velocity_only and pc.shape[0] > 0:
             pc = pc[pc[:, 3] > 0]
-        return pc.detach().cpu().numpy()
+        return pc
 
-    return _process_pc_cfar(
+    return _process_pc_cfar_tensor(
         radar,
         frame,
         static_clutter_removal=static_clutter_removal,
@@ -320,7 +347,7 @@ def process_pc(
     )
 
 
-def _process_pc_cfar(
+def _process_pc_cfar_tensor(
     radar,
     frame: torch.Tensor,
     static_clutter_removal=True,
@@ -329,7 +356,7 @@ def _process_pc_cfar(
     training_cells=(4, 8),
     pfa=1e-3,
     max_points=512,
-) -> np.ndarray:
+) -> torch.Tensor:
     """Internal: point cloud extraction via CA-CFAR detection."""
     from .cfar import ca_cfar_2d_fast
 
@@ -351,7 +378,7 @@ def _process_pc_cfar(
 
     det_peaks = torch.argwhere(cfar_mask)
     if det_peaks.shape[0] == 0:
-        return np.zeros((0, 6), dtype=np.float64)
+        return torch.zeros((0, 6), dtype=torch.float64, device=frame.device)
 
     if det_peaks.shape[0] > max_points:
         energies = doppler_mag[det_peaks[:, 0], det_peaks[:, 1]]
@@ -378,7 +405,7 @@ def _process_pc_cfar(
     pc = pc[:, y_vec != 0].transpose(0, 1)
     if positive_velocity_only and pc.shape[0] > 0:
         pc = pc[pc[:, 3] > 0]
-    return pc.detach().cpu().numpy()
+    return pc
 
 
 def process_rd(radar, frame: torch.Tensor, tx: int = 0, rx: int = 0, *, static_clutter_removal: bool = False):
@@ -386,6 +413,30 @@ def process_rd(radar, frame: torch.Tensor, tx: int = 0, rx: int = 0, *, static_c
 
     Returns: (rd_mag, rd_map, ranges, velocities) as numpy arrays.
     """
+    rd_mag, rd_map, ranges, velocities = process_rd_tensor(
+        radar,
+        frame,
+        tx=tx,
+        rx=rx,
+        static_clutter_removal=static_clutter_removal,
+    )
+    return (
+        rd_mag.detach().cpu().numpy(),
+        rd_map.detach().cpu().numpy(),
+        ranges.detach().cpu().numpy(),
+        velocities.detach().cpu().numpy(),
+    )
+
+
+def process_rd_tensor(
+    radar,
+    frame: torch.Tensor,
+    tx: int = 0,
+    rx: int = 0,
+    *,
+    static_clutter_removal: bool = False,
+):
+    """Compute a Range-Doppler map and keep all outputs on the input device."""
     data = frame[tx, rx].clone()
     data = data - data.mean(dim=-1, keepdim=True)
     if static_clutter_removal:
@@ -398,12 +449,7 @@ def process_rd(radar, frame: torch.Tensor, tx: int = 0, rx: int = 0, *, static_c
     range_result = torch.fft.fft(data, dim=-1)
     rd_map = torch.fft.fftshift(torch.fft.fft(range_result, dim=-2), dim=-2)
     rd_mag = 20 * torch.log10(torch.abs(rd_map) + 1e-6)
-    return (
-        rd_mag.detach().cpu().numpy(),
-        rd_map.detach().cpu().numpy(),
-        radar.ranges.detach().cpu().numpy(),
-        radar.velocities.detach().cpu().numpy(),
-    )
+    return rd_mag, rd_map, radar.ranges, radar.velocities
 
 
 

@@ -646,10 +646,25 @@ class Radar:
         trace = tracer.trace(time=t0) if scene.has_motion else tracer.trace()
 
         if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
+            initial_trace_pending = True
+
             def interpolator(t):
+                nonlocal initial_trace_pending
+                if initial_trace_pending and float(t) == t0:
+                    initial_trace_pending = False
+                    return trace
                 return tracer.trace(time=t)
 
             signal = self.mimo(interpolator, t0)
+        elif scene.has_motion and motion_sampling == MotionSampling.LINEAR:
+            if sampling != SamplingMode.TRIANGLE:
+                raise ValueError("motion_sampling='linear' requires sampling='triangle' for stable path correspondence.")
+            chirp_period = (self.config.idle_time + self.config.ramp_end_time) * 1e-6
+            next_trace = tracer.trace(time=t0 + chirp_period)
+            first_indices, next_indices = tracer.match_indices(trace, next_trace)
+            matched_trace = trace.select(first_indices)
+            velocities = (next_trace.points[next_indices] - matched_trace.points) / chirp_period
+            signal = self.mimo_from_trace(matched_trace, velocities=velocities, t0=t0)
         else:
             signal = self.mimo_from_trace(trace, t0=t0)
         self.last_scene = scene

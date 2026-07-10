@@ -1,0 +1,21 @@
+name: Radar GPU regression
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gpu-tests:
+    runs-on: [self-hosted, windows, x64, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package and development tools
+        shell: pwsh
+        run: python -m pip install -e ".[dev]"
+      - name: Full GPU suite
+        shell: pwsh
+        run: |
+          coverage run -m pytest tests --gpu -q
+          coverage report --fail-under=75
+      - name: CUDA performance smoke benchmark
+        shell: pwsh
+        run: python tools/benchmark_dirichlet_cuda.py --targets 1024 16384 --warmup 3 --runs 10 --json

@@ -56,6 +56,39 @@ void backward_cuda(
     double slope,
     double t_start);
 
+void backward_batched_cuda(
+    const at::Tensor& d,
+    const at::Tensor& a,
+    const at::Tensor& grad_output_re,
+    const at::Tensor& grad_output_im,
+    at::Tensor grad_d,
+    at::Tensor grad_a,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t num_targets,
+    int64_t targets_per_spectrum,
+    double fc,
+    double slope,
+    double t_start);
+
+void backward_parallel_bins_cuda(
+    const at::Tensor& d,
+    const at::Tensor& a,
+    const at::Tensor& grad_output_re,
+    const at::Tensor& grad_output_im,
+    at::Tensor grad_d,
+    at::Tensor grad_a,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t num_targets,
+    double fc,
+    double slope,
+    double t_start);
+
 void backward_per_bin_cuda(
     const at::Tensor& d,
     const at::Tensor& a,
@@ -81,5 +114,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       &forward_mimo_linear_chunked_cuda,
       "Dirichlet MIMO forward with a linear per-path range model.");
   m.def("backward", &backward_cuda, "Dirichlet backward over targets.");
+  m.def("backward_batched", &backward_batched_cuda, "Batched Dirichlet backward over targets.");
+  m.def("backward_parallel_bins", &backward_parallel_bins_cuda, "Dirichlet backward with one block per target.");
   m.def("backward_per_bin", &backward_per_bin_cuda, "Dirichlet backward over bins.");
 }

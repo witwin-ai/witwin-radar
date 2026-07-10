@@ -203,8 +203,8 @@ def _stack_slot_samples(samples, *, with_normals: bool):
     """Stack per-slot sample fields into zero-padded (slots, N_max, ...) tensors.
 
     Padded rows keep zero intensity, so downstream amplitude math zeroes them.
-    Fields are detached: this feeds the native forward path only; gradients
-    flow through ``pytorch_mimo_from_samples``.
+    Fields remain on-graph so the native spectrum backward can propagate
+    distance and amplitude gradients into scene parameters.
     """
     counts = [int(sample.points.shape[0]) for sample in samples]
     n_max = max(counts)
@@ -214,15 +214,15 @@ def _stack_slot_samples(samples, *, with_normals: bool):
     device = samples[0].points.device
 
     fields = [
-        [sample.points.detach() for sample in samples],
-        [sample.entry_points.detach() for sample in samples],
-        [sample.fixed_path_lengths.detach() for sample in samples],
-        [sample.intensities.detach() for sample in samples],
+        [sample.points for sample in samples],
+        [sample.entry_points for sample in samples],
+        [sample.fixed_path_lengths for sample in samples],
+        [sample.intensities for sample in samples],
     ]
     if with_normals:
         if any(sample.normals is None for sample in samples):
             raise ValueError("Radar polarization requires per-path surface normals in the interpolated sample.")
-        fields.append([sample.normals.detach() for sample in samples])
+        fields.append([sample.normals for sample in samples])
 
     if all(count == n_max for count in counts):
         stacked = [torch.stack(field) for field in fields]

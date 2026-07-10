@@ -24,10 +24,13 @@ def test_radar_rejects_backend_keyword(minimal_config):
         Radar(minimal_config, backend="dirichlet", device="cpu")
 
 
-def test_runtime_dependencies_do_not_include_slangtorch():
+def test_runtime_and_optional_dependencies_do_not_include_slangtorch():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = pyproject["project"]["dependencies"]
-    assert not any(dependency.split("[", 1)[0].split(">=", 1)[0] == "slangtorch" for dependency in dependencies)
+    groups = [pyproject["project"]["dependencies"]]
+    groups.extend(pyproject["project"].get("optional-dependencies", {}).values())
+    assert not any(
+        dependency.split("[", 1)[0].split(">=", 1)[0] == "slangtorch" for group in groups for dependency in group
+    )
 
 
 def test_native_cuda_extension_sources_are_packaged():

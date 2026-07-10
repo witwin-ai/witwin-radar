@@ -48,6 +48,18 @@ class TraceResult:
     def __repr__(self):
         return f"TraceResult({self.points.shape[0]} points)"
 
+    def select(self, indices: torch.Tensor) -> "TraceResult":
+        """Select paths while preserving all generalized-path metadata."""
+        return TraceResult(
+            self.points[indices],
+            self.intensities[indices],
+            None if self._tri_indices is None else self._tri_indices[indices],
+            entry_points=self.entry_points[indices],
+            fixed_path_lengths=self.fixed_path_lengths[indices],
+            depths=self.depths[indices],
+            normals=None if self.normals is None else self.normals[indices],
+        )
+
 
 def empty_trace(device: torch.device, *, include_tri_indices: bool = False) -> TraceResult:
     tri_indices = None

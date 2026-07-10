@@ -9,7 +9,8 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from witwin.core import GeometryBase, Material, Mesh, SMPLBody, SceneBase, Structure
+from witwin.core import GeometryBase, GeometrySpec, Material, Mesh, Structure
+from .geometry import SMPLBody
 from .timeline import TransformMotion
 from .utils.geometry import (
     apply_transform_to_points,
@@ -126,7 +127,7 @@ class SceneModule(torch.nn.Module):
         raise NotImplementedError("SceneModule subclasses must implement to_scene().")
 
 
-class Scene(SceneBase):
+class Scene:
     """Radar scene built from shared core structures."""
 
     DIRTY_NONE = 0
@@ -143,15 +144,16 @@ class Scene(SceneBase):
         verbose: bool = False,
     ):
         resolved_device = resolve_scene_device(device)
-        super().__init__(
-            structures=structures,
-            metadata=metadata,
-            device=resolved_device,
-            verbose=verbose,
-        )
+        self.structures: list[Structure] = []
+        self.metadata = dict(metadata or {})
+        self.device = resolved_device
+        self.verbose = bool(verbose)
         self._structure_motions: dict[str, TransformMotion] = {}
         self._dirty_level = self.DIRTY_FULL
         self._last_compiled_joints: dict[str, torch.Tensor] = {}
+        self._compiled_static_cache: dict[str, CompiledMesh] = {}
+        for structure in structures or ():
+            self.add_structure(structure)
         if structure_motions:
             for name, motion in structure_motions.items():
                 if not isinstance(motion, TransformMotion):
@@ -176,14 +178,17 @@ class Scene(SceneBase):
 
     def _set_dirty(self, level: int) -> None:
         self._dirty_level = max(self._dirty_level, level)
+        cache = getattr(self, "_compiled_static_cache", None)
+        if cache is not None:
+            cache.clear()
 
     def add_structure(self, structure: Structure) -> "Scene":
         if not isinstance(structure, Structure):
             raise TypeError("Radar Scene structures must be witwin.core.Structure instances.")
         if structure.name is None:
             raise ValueError("Radar Scene structures must define a unique name.")
-        if not isinstance(structure.geometry, GeometryBase):
-            raise TypeError("Radar Scene structures must wrap a GeometryBase geometry.")
+        if not isinstance(structure.geometry, GeometrySpec):
+            raise TypeError("Radar Scene structures must wrap a GeometrySpec geometry.")
         if any(existing.name == structure.name for existing in self.structures):
             raise ValueError(f"Structure '{structure.name}' already exists.")
         self.structures.append(structure)
@@ -400,17 +405,13 @@ class Scene(SceneBase):
     ) -> torch.Tensor:
         dtype = torch.float32
         device = self.device
-        transform = identity_transform(device=device, dtype=dtype)
-        translation_delta = torch.zeros(3, device=device, dtype=dtype)
-
         translation_delta = self._resolve_translation_delta(
             geometry,
             motion,
             time=time,
             parent_transform=parent_transform,
         )
-        if bool(translation_delta.abs().sum().item() > 0.0):
-            transform = translation_transform(translation_delta, device=device, dtype=dtype)
+        transform = translation_transform(translation_delta, device=device, dtype=dtype)
 
         if motion.axis is None:
             return transform
@@ -438,7 +439,7 @@ class Scene(SceneBase):
         offset = motion.offset.to(device=self.device, dtype=dtype)
         velocity = motion.velocity.to(device=self.device, dtype=dtype)
         t_ref = motion.t_ref.to(device=self.device, dtype=dtype)
-        delta = offset + velocity * (torch.tensor(time, device=self.device, dtype=dtype) - t_ref)
+        delta = offset + velocity * (float(time) - t_ref)
         if motion.space == "world":
             return delta
         world_delta = geometry_local_to_world_vectors(geometry, delta.unsqueeze(0), device=self.device, dtype=dtype)[0]
@@ -475,7 +476,7 @@ class Scene(SceneBase):
         angle = motion.angle.to(device=device, dtype=dtype)
         angular_velocity = motion.angular_velocity.to(device=device, dtype=dtype)
         t_ref = motion.t_ref.to(device=device, dtype=dtype)
-        theta = angle + angular_velocity * (torch.tensor(time, device=device, dtype=dtype) - t_ref)
+        theta = angle + angular_velocity * (float(time) - t_ref)
         return rotation_about_origin_transform(origin_world, axis_world, theta, device=device, dtype=dtype)
 
     def compile_renderables(self, *, time: float | None = None) -> dict[str, CompiledMesh]:
@@ -486,6 +487,12 @@ class Scene(SceneBase):
         for structure in self.structures:
             if not structure.enabled:
                 continue
+            cached = self._compiled_static_cache.get(structure.name)
+            if cached is not None and structure.name not in self._structure_motions:
+                renderables[cached.name] = cached
+                if cached.joints is not None:
+                    joints[cached.name] = cached.joints
+                continue
             motion_transform = self._resolve_structure_transform(
                 structure.name,
                 time=time_value,
@@ -494,6 +501,8 @@ class Scene(SceneBase):
             )
             compiled = self._compile_structure(structure, motion_transform=motion_transform)
             renderables[compiled.name] = compiled
+            if not compiled.dynamic:
+                self._compiled_static_cache[compiled.name] = compiled
             if compiled.joints is not None:
                 joints[compiled.name] = compiled.joints
         self._last_compiled_joints = joints

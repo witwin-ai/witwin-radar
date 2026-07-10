@@ -22,7 +22,6 @@ def _multi_target_interp(targets):
     Args:
         targets: list of (pos, velocity, sigma) tuples
     """
-    n = len(targets)
     pos0 = torch.tensor([t[0] for t in targets], dtype=torch.float32, device="cuda")
     vel = torch.tensor([t[1] for t in targets], dtype=torch.float32, device="cuda")
     sigma = torch.tensor([t[2] for t in targets], dtype=torch.float32, device="cuda")
@@ -116,8 +115,6 @@ class TestTwoTargetsDifferentVelocities:
 
         # Extract Doppler slice at that range
         doppler_slice = rd_mag[:, range_bin]
-        velocities_np = np.asarray(velocities.cpu() if hasattr(velocities, 'cpu') else velocities)
-
         # Should see peaks at different Doppler bins
         noise_floor = np.median(doppler_slice)
         assert doppler_slice.max() > noise_floor + 3, "No Doppler peak found"

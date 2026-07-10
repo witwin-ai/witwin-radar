@@ -4,7 +4,6 @@ Tests for Range-Doppler DSP functions: range FFT, Doppler FFT, clutter removal.
 All DSP helpers are torch-only.
 """
 
-import numpy as np
 import torch
 
 from witwin.radar.sigproc.pointcloud import (

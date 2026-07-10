@@ -80,3 +80,27 @@ def test_mimo_reference_gradient_matches_finite_difference():
     assert ad_grad == pytest.approx(fd_grad, rel=0.03), (
         f"AD gradient {ad_grad:.6e} vs finite difference {fd_grad:.6e}"
     )
+
+
+def test_native_mimo_autograd_matches_float64_reference():
+    from witwin.radar.solvers.common import collect_interpolated_samples, pytorch_mimo_from_samples
+
+    radar = _make_radar()
+    base = torch.tensor([[0.0, 0.0, -3.0], [0.5, -0.2, -4.0]], device="cuda")
+    sigma = torch.tensor([1.0, 0.6], device="cuda")
+    weights_re = torch.linspace(0.1, 1.0, radar.config.adc_samples, device="cuda").view(1, 1, 1, -1)
+    weights_im = torch.linspace(-0.4, 0.3, radar.config.adc_samples, device="cuda").view(1, 1, 1, -1)
+
+    native_positions = base.clone().requires_grad_(True)
+    native_sigma = sigma.clone().requires_grad_(True)
+    native = radar.mimo(lambda _t: (native_sigma, native_positions))
+    (native.real * weights_re + native.imag * weights_im).sum().backward()
+
+    reference_positions = base.clone().requires_grad_(True)
+    reference_sigma = sigma.clone().requires_grad_(True)
+    samples = collect_interpolated_samples(radar, lambda _t: (reference_sigma, reference_positions))
+    reference = pytorch_mimo_from_samples(radar, samples)
+    (reference.real * weights_re + reference.imag * weights_im).sum().backward()
+
+    torch.testing.assert_close(native_positions.grad, reference_positions.grad, rtol=3e-2, atol=2e-4)
+    torch.testing.assert_close(native_sigma.grad, reference_sigma.grad, rtol=3e-2, atol=2e-5)

@@ -12,7 +12,9 @@ from witwin.radar.sigproc import (
     doppler_fft,
     frame2pointcloud,
     process_pc,
+    process_pc_tensor,
     process_rd,
+    process_rd_tensor,
     range_fft,
 )
 from witwin.radar.sigproc.cfar import ca_cfar_2d_fast
@@ -136,3 +138,32 @@ def test_process_pc_returns_numpy(detector):
     )
     assert isinstance(pc, np.ndarray)
     assert pc.ndim == 2 and pc.shape[1] == 6
+
+
+@pytest.mark.parametrize("detector", ["cfar", "topk"])
+def test_tensor_processing_apis_preserve_device_and_match_numpy(detector):
+    radar = _make_cpu_radar()
+    frame = _synthetic_frame(radar)
+
+    pc_tensor = process_pc_tensor(
+        radar,
+        frame,
+        detector=detector,
+        positive_velocity_only=False,
+        static_clutter_removal=False,
+    )
+    pc_numpy = process_pc(
+        radar,
+        frame,
+        detector=detector,
+        positive_velocity_only=False,
+        static_clutter_removal=False,
+    )
+    rd_tensors = process_rd_tensor(radar, frame)
+    rd_numpy = process_rd(radar, frame)
+
+    assert pc_tensor.device == frame.device
+    np.testing.assert_allclose(pc_tensor.detach().numpy(), pc_numpy)
+    for tensor_value, numpy_value in zip(rd_tensors, rd_numpy):
+        assert tensor_value.device == frame.device
+        np.testing.assert_allclose(tensor_value.detach().numpy(), numpy_value)

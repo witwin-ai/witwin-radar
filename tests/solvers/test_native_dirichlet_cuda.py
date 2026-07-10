@@ -88,3 +88,52 @@ def test_native_dirichlet_backward_matches_pytorch_reference_gradients():
 
     torch.testing.assert_close(actual_d.to(ref_d.grad.dtype), ref_d.grad, rtol=2e-3, atol=2e-2)
     torch.testing.assert_close(actual_a.to(ref_a.grad.dtype), ref_a.grad, rtol=1e-3, atol=2e-3)
+
+
+def test_public_chirp_autograd_uses_native_backward(monkeypatch):
+    _requires_cuda()
+    radar = _make_radar()
+    distances = torch.tensor([1.1, 2.4, 3.7], dtype=torch.float32, device="cuda", requires_grad=True)
+    amplitudes = torch.tensor([0.9, 0.6, 0.3], dtype=torch.float32, device="cuda", requires_grad=True)
+    calls = {"batched": 0, "parallel_bins": 0}
+    native_batched = radar.solver._module.backward_batched
+    native_parallel_bins = radar.solver._module.backward_parallel_bins
+
+    def tracked_batched(*args):
+        calls["batched"] += 1
+        return native_batched(*args)
+
+    def tracked_parallel_bins(*args):
+        calls["parallel_bins"] += 1
+        return native_parallel_bins(*args)
+
+    monkeypatch.setattr(radar.solver._module, "backward_batched", tracked_batched)
+    monkeypatch.setattr(radar.solver._module, "backward_parallel_bins", tracked_parallel_bins)
+    radar.chirp(distances, amplitudes).abs().square().sum().backward()
+
+    assert calls == {"batched": 0, "parallel_bins": 1}
+    assert distances.grad is not None and torch.isfinite(distances.grad).all()
+    assert amplitudes.grad is not None and torch.isfinite(amplitudes.grad).all()
+
+
+def test_public_chirp_autograd_matches_float64_reference():
+    _requires_cuda()
+    from witwin.radar.solvers.common import pytorch_chirp_reference
+
+    radar = _make_radar()
+    distances = torch.tensor([1.1, 2.4, 3.7], dtype=torch.float32, device="cuda", requires_grad=True)
+    amplitudes = torch.tensor([0.9, 0.6, 0.3], dtype=torch.float32, device="cuda", requires_grad=True)
+    grad_re = torch.linspace(0.2, 1.3, radar.solver.num_bins, dtype=torch.float32, device="cuda")
+    grad_im = torch.linspace(-0.7, 0.4, radar.solver.num_bins, dtype=torch.float32, device="cuda")
+
+    spectrum = radar.chirp(distances, amplitudes)
+    (spectrum.real * grad_re + spectrum.imag * grad_im).sum().backward()
+
+    ref_d = distances.detach().to(torch.float64).requires_grad_(True)
+    ref_a = amplitudes.detach().to(torch.float64).requires_grad_(True)
+    reference = pytorch_chirp_reference(radar, ref_d, ref_a)
+    reference = torch.fft.fft(reference, n=radar.solver.N_fft)[: radar.solver.N_fft // 2]
+    (reference.real * grad_re + reference.imag * grad_im).sum().backward()
+
+    torch.testing.assert_close(distances.grad.to(torch.float64), ref_d.grad, rtol=2e-3, atol=2e-2)
+    torch.testing.assert_close(amplitudes.grad.to(torch.float64), ref_a.grad, rtol=1e-3, atol=2e-3)

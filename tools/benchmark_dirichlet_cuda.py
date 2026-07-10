@@ -18,8 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers.common import pytorch_chirp_reference
+from witwin.radar import Radar, RadarConfig  # noqa: E402
+from witwin.radar.solvers.common import pytorch_chirp_reference  # noqa: E402
 
 
 CONFIG = {
@@ -96,6 +96,27 @@ def torch_reference_backward(
     return d.grad.to(torch.float32), a.grad.to(torch.float32)
 
 
+def native_autograd_step(
+    radar: Radar,
+    distances: torch.Tensor,
+    amplitudes: torch.Tensor,
+    grad_re: torch.Tensor,
+    grad_im: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    d = distances.detach().requires_grad_(True)
+    a = amplitudes.detach().requires_grad_(True)
+    spectrum = radar.chirp(d, a)
+    loss = (spectrum.real * grad_re + spectrum.imag * grad_im).sum()
+    return torch.autograd.grad(loss, (d, a))
+
+
+def peak_memory_mb(fn) -> float:
+    torch.cuda.reset_peak_memory_stats()
+    fn()
+    torch.cuda.synchronize()
+    return torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
+
+
 def maybe_speedup(reference_ms: float | None, native_ms: float) -> float | None:
     if reference_ms is None or native_ms <= 0:
         return None
@@ -113,9 +134,9 @@ def main() -> None:
     print()
     print(
         f"{'targets':>10}  {'native_fwd':>11}  {'torch_fwd':>11}  {'fwd_x':>7}  "
-        f"{'native_bwd':>11}  {'torch_bwd':>11}  {'bwd_x':>7}"
+        f"{'native_bwd':>11}  {'native_e2e':>11}  {'torch_e2e':>11}  {'e2e_x':>7}"
     )
-    print("-" * 82)
+    print("-" * 98)
 
     results = []
     for num_targets in args.targets:
@@ -129,23 +150,35 @@ def main() -> None:
             warmup=args.warmup,
             runs=args.runs,
         )
+        native_e2e_ms, _ = cuda_time(
+            lambda: native_autograd_step(radar, distances, amplitudes, grad_re, grad_im),
+            warmup=args.warmup,
+            runs=args.runs,
+        )
+        native_peak_mb = peak_memory_mb(
+            lambda: native_autograd_step(radar, distances, amplitudes, grad_re, grad_im)
+        )
 
         torch_fwd_ms = None
-        torch_bwd_ms = None
+        torch_e2e_ms = None
+        torch_peak_mb = None
         if num_targets <= args.max_reference_targets:
             torch_fwd_ms, _ = cuda_time(
                 lambda: torch_reference_forward(radar, distances, amplitudes),
                 warmup=args.warmup,
                 runs=args.runs,
             )
-            torch_bwd_ms, _ = cuda_time(
+            torch_e2e_ms, _ = cuda_time(
                 lambda: torch_reference_backward(radar, distances, amplitudes, grad_re, grad_im),
                 warmup=args.warmup,
                 runs=args.runs,
             )
+            torch_peak_mb = peak_memory_mb(
+                lambda: torch_reference_backward(radar, distances, amplitudes, grad_re, grad_im)
+            )
 
         fwd_x = maybe_speedup(torch_fwd_ms, native_fwd_ms)
-        bwd_x = maybe_speedup(torch_bwd_ms, native_bwd_ms)
+        e2e_x = maybe_speedup(torch_e2e_ms, native_e2e_ms)
         results.append(
             {
                 "targets": num_targets,
@@ -153,17 +186,20 @@ def main() -> None:
                 "torch_forward_ms": torch_fwd_ms,
                 "forward_speedup": fwd_x,
                 "native_backward_ms": native_bwd_ms,
-                "torch_backward_ms": torch_bwd_ms,
-                "backward_speedup": bwd_x,
+                "native_autograd_e2e_ms": native_e2e_ms,
+                "torch_autograd_e2e_ms": torch_e2e_ms,
+                "autograd_e2e_speedup": e2e_x,
+                "native_autograd_peak_mb": native_peak_mb,
+                "torch_autograd_peak_mb": torch_peak_mb,
             }
         )
         torch_fwd = f"{torch_fwd_ms:11.3f}" if torch_fwd_ms is not None else f"{'skip':>11}"
-        torch_bwd = f"{torch_bwd_ms:11.3f}" if torch_bwd_ms is not None else f"{'skip':>11}"
+        torch_e2e = f"{torch_e2e_ms:11.3f}" if torch_e2e_ms is not None else f"{'skip':>11}"
         fwd_speed = f"{fwd_x:7.2f}" if fwd_x is not None else f"{'n/a':>7}"
-        bwd_speed = f"{bwd_x:7.2f}" if bwd_x is not None else f"{'n/a':>7}"
+        e2e_speed = f"{e2e_x:7.2f}" if e2e_x is not None else f"{'n/a':>7}"
         print(
             f"{num_targets:10d}  {native_fwd_ms:11.3f}  {torch_fwd}  {fwd_speed}  "
-            f"{native_bwd_ms:11.3f}  {torch_bwd}  {bwd_speed}"
+            f"{native_bwd_ms:11.3f}  {native_e2e_ms:11.3f}  {torch_e2e}  {e2e_speed}"
         )
 
     if args.json:

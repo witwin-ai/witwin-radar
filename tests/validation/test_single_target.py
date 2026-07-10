@@ -5,7 +5,6 @@ Full pipeline: Radar.mimo() -> process_pc() / process_rd()
 Verifies that detected range, velocity, and angle match expected values.
 """
 
-import torch
 import numpy as np
 import pytest
 
@@ -70,7 +69,6 @@ class TestStaticTarget:
         # For broadside target, x and z should be small relative to y (range)
         x_vals = pc[:, 0]
         z_vals = pc[:, 2]
-        y_vals = pc[:, 1]
         # Find points with range close to 3m
         mask = np.abs(pc[:, 5] - 3.0) < r.range_resolution * 3
         if mask.sum() > 0:

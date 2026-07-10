@@ -25,6 +25,7 @@ class SamplingMode(StrEnum):
 class MotionSampling(StrEnum):
     PER_FRAME = "per_frame"
     PER_CHIRP = "per_chirp"
+    LINEAR = "linear"
 
 
 @runtime_checkable

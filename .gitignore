@@ -184,7 +184,6 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-.slangtorch_cache/
 .claude/
 
 # RadarTwin project data

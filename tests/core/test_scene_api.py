@@ -2,6 +2,8 @@ import witwin.radar as wr
 
 
 def test_scene_uses_set_and_add_mutators_without_with_aliases():
+    assert wr.Scene.__module__ == "witwin.radar.scene"
+    assert not hasattr(__import__("witwin.core", fromlist=["SceneBase"]), "SceneBase")
     scene = wr.Scene(device="cpu")
 
     structure = wr.Structure(
@@ -13,10 +15,13 @@ def test_scene_uses_set_and_add_mutators_without_with_aliases():
 
     assert scene.add_structure(structure) is scene
     assert scene.add_mesh(name="mesh", vertices=vertices, faces=faces) is scene
-    assert scene.add_structure_motion(
-        "target",
-        wr.TransformMotion(offset=(0.1, 0.0, 0.0)),
-    ) is scene
+    assert (
+        scene.add_structure_motion(
+            "target",
+            wr.TransformMotion(offset=(0.1, 0.0, 0.0)),
+        )
+        is scene
+    )
 
     assert [item.name for item in scene.structures] == ["target", "mesh"]
     assert "target" in scene._structure_motions

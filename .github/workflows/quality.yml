@@ -1,0 +1,25 @@
+name: Radar quality
+
+on:
+  push:
+    branches: [main, master, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cpu-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install package and development tools
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check witwin/radar tests tools
+      - name: CPU tests with coverage
+        run: |
+          coverage run -m pytest tests -q
+          coverage report --fail-under=50

@@ -109,6 +109,9 @@ def _load_vcvars64_environment() -> bool:
 def _ensure_windows_build_tools_on_path() -> None:
     if os.name != "nt":
         return
+    # Keep MSVC diagnostics ASCII/English so PyTorch's compiler-version probe
+    # does not fail to decode localized `cl` output under a different code page.
+    os.environ.setdefault("VSLANG", "1033")
     if shutil.which("cl") is None:
         _load_vcvars64_environment()
     if shutil.which("cl") is None:

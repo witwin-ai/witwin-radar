@@ -241,6 +241,130 @@ __global__ void backward_kernel(
   grad_a[i] = dL_da;
 }
 
+__global__ void backward_batched_kernel(
+    const float* __restrict__ d,
+    const float* __restrict__ a,
+    const float* __restrict__ grad_output_re,
+    const float* __restrict__ grad_output_im,
+    float* __restrict__ grad_d,
+    float* __restrict__ grad_a,
+    const float n,
+    const float k0_per_meter,
+    const int num_bins,
+    const int n_fft,
+    const int num_targets,
+    const int targets_per_spectrum,
+    const float fc,
+    const float slope,
+    const float t_start) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_targets) {
+    return;
+  }
+
+  const int spectrum_idx = i / targets_per_spectrum;
+  const int grad_offset = spectrum_idx * num_bins;
+  const float dist = d[i];
+  const float amp = a[i];
+  const float k0 = dist * k0_per_meter;
+  const float tau = 2.0f * dist / kC0;
+  const float phi0 = kTwoPi * (fc * tau + slope * tau * (t_start - 0.5f * tau));
+  const Complex phase_corr = cexp_f(phi0);
+  const float dphi0_dd = kTwoPi * 2.0f / kC0 * (fc + slope * t_start - slope * tau);
+  const float dx_dd = -kTwoPi * k0_per_meter / static_cast<float>(n_fft);
+
+  float dL_dd = 0.0f;
+  float dL_da = 0.0f;
+  for (int bin = 0; bin < num_bins; ++bin) {
+    const float gout_re = grad_output_re[grad_offset + bin];
+    const float gout_im = grad_output_im[grad_offset + bin];
+    const float x = kTwoPi * (static_cast<float>(bin) - k0) / static_cast<float>(n_fft);
+    const Complex result = cmul(dirichlet_kernel(x, n), phase_corr);
+    const Complex result_grad = cmul(dirichlet_kernel_grad(x, n), phase_corr);
+
+    dL_da += gout_re * result.re + gout_im * result.im;
+    dL_dd += amp * (gout_re * result_grad.re + gout_im * result_grad.im) * dx_dd;
+    dL_dd += amp * (-gout_re * result.im + gout_im * result.re) * dphi0_dd;
+  }
+
+  grad_d[i] = dL_dd;
+  grad_a[i] = dL_da;
+}
+
+__device__ __forceinline__ float warp_sum(float value) {
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  return value;
+}
+
+__global__ void backward_parallel_bins_kernel(
+    const float* __restrict__ d,
+    const float* __restrict__ a,
+    const float* __restrict__ grad_output_re,
+    const float* __restrict__ grad_output_im,
+    float* __restrict__ grad_d,
+    float* __restrict__ grad_a,
+    const float n,
+    const float k0_per_meter,
+    const int num_bins,
+    const int n_fft,
+    const int num_targets,
+    const float fc,
+    const float slope,
+    const float t_start) {
+  const int target = blockIdx.x;
+  if (target >= num_targets) {
+    return;
+  }
+
+  const float dist = d[target];
+  const float amp = a[target];
+  const float k0 = dist * k0_per_meter;
+  const float tau = 2.0f * dist / kC0;
+  const float phi0 = kTwoPi * (fc * tau + slope * tau * (t_start - 0.5f * tau));
+  const Complex phase_corr = cexp_f(phi0);
+  const float dphi0_dd = kTwoPi * 2.0f / kC0 * (fc + slope * t_start - slope * tau);
+  const float dx_dd = -kTwoPi * k0_per_meter / static_cast<float>(n_fft);
+
+  float dL_dd = 0.0f;
+  float dL_da = 0.0f;
+  for (int bin = threadIdx.x; bin < num_bins; bin += blockDim.x) {
+    const float gout_re = grad_output_re[bin];
+    const float gout_im = grad_output_im[bin];
+    const float x = kTwoPi * (static_cast<float>(bin) - k0) / static_cast<float>(n_fft);
+    const Complex result = cmul(dirichlet_kernel(x, n), phase_corr);
+    const Complex result_grad = cmul(dirichlet_kernel_grad(x, n), phase_corr);
+
+    dL_da += gout_re * result.re + gout_im * result.im;
+    dL_dd += amp * (gout_re * result_grad.re + gout_im * result_grad.im) * dx_dd;
+    dL_dd += amp * (-gout_re * result.im + gout_im * result.re) * dphi0_dd;
+  }
+
+  dL_dd = warp_sum(dL_dd);
+  dL_da = warp_sum(dL_da);
+  __shared__ float warp_grad_d[8];
+  __shared__ float warp_grad_a[8];
+  const int lane = threadIdx.x & 31;
+  const int warp = threadIdx.x >> 5;
+  if (lane == 0) {
+    warp_grad_d[warp] = dL_dd;
+    warp_grad_a[warp] = dL_da;
+  }
+  __syncthreads();
+
+  if (warp == 0) {
+    dL_dd = lane < 8 ? warp_grad_d[lane] : 0.0f;
+    dL_da = lane < 8 ? warp_grad_a[lane] : 0.0f;
+    dL_dd = warp_sum(dL_dd);
+    dL_da = warp_sum(dL_da);
+    if (lane == 0) {
+      grad_d[target] = dL_dd;
+      grad_a[target] = dL_da;
+    }
+  }
+}
+
 __global__ void backward_per_bin_kernel(
     const float* __restrict__ d,
     const float* __restrict__ a,
@@ -437,16 +561,129 @@ void backward_cuda(
   check_cuda_float(grad_output_im, "grad_output_im");
   check_cuda_float(grad_d, "grad_d");
   check_cuda_float(grad_a, "grad_a");
+  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
+  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
+  TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
 
   const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
   constexpr int block_size = 256;
   const dim3 block(block_size, 1, 1);
   const dim3 grid((targets + block_size - 1) / block_size, 1, 1);
   backward_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+      d.data_ptr<float>(),
+      a.data_ptr<float>(),
+      grad_output_re.data_ptr<float>(),
+      grad_output_im.data_ptr<float>(),
+      grad_d.data_ptr<float>(),
+      grad_a.data_ptr<float>(),
+      static_cast<float>(n),
+      static_cast<float>(k0_per_meter),
+      bins,
+      fft,
+      targets,
+      static_cast<float>(fc),
+      static_cast<float>(slope),
+      static_cast<float>(t_start));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void backward_batched_cuda(
+    const at::Tensor& d,
+    const at::Tensor& a,
+    const at::Tensor& grad_output_re,
+    const at::Tensor& grad_output_im,
+    at::Tensor grad_d,
+    at::Tensor grad_a,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t num_targets,
+    int64_t targets_per_spectrum,
+    double fc,
+    double slope,
+    double t_start) {
+  check_cuda_float(d, "d");
+  check_cuda_float(a, "a");
+  check_cuda_float(grad_output_re, "grad_output_re");
+  check_cuda_float(grad_output_im, "grad_output_im");
+  check_cuda_float(grad_d, "grad_d");
+  check_cuda_float(grad_a, "grad_a");
+  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
+  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
+  TORCH_CHECK(grad_output_re.sizes() == grad_output_im.sizes(), "complex gradient components must have the same shape.");
+  TORCH_CHECK(grad_output_re.dim() == 2, "gradient tensors must have shape (spectra, bins).");
+
+  const int bins = checked_int(num_bins, "num_bins");
+  const int fft = checked_int(n_fft, "n_fft");
+  const int targets = checked_int(num_targets, "num_targets");
+  const int per_spectrum = checked_int(targets_per_spectrum, "targets_per_spectrum");
+  TORCH_CHECK(per_spectrum > 0, "targets_per_spectrum must be positive.");
+  TORCH_CHECK(
+      grad_output_re.size(0) == (targets + per_spectrum - 1) / per_spectrum,
+      "gradient spectrum count does not match num_targets and targets_per_spectrum.");
+  TORCH_CHECK(grad_output_re.size(1) == bins, "gradient bin count does not match num_bins.");
+
+  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  constexpr int block_size = 256;
+  const dim3 block(block_size, 1, 1);
+  const dim3 grid((targets + block_size - 1) / block_size, 1, 1);
+  backward_batched_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+      d.data_ptr<float>(),
+      a.data_ptr<float>(),
+      grad_output_re.data_ptr<float>(),
+      grad_output_im.data_ptr<float>(),
+      grad_d.data_ptr<float>(),
+      grad_a.data_ptr<float>(),
+      static_cast<float>(n),
+      static_cast<float>(k0_per_meter),
+      bins,
+      fft,
+      targets,
+      per_spectrum,
+      static_cast<float>(fc),
+      static_cast<float>(slope),
+      static_cast<float>(t_start));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void backward_parallel_bins_cuda(
+    const at::Tensor& d,
+    const at::Tensor& a,
+    const at::Tensor& grad_output_re,
+    const at::Tensor& grad_output_im,
+    at::Tensor grad_d,
+    at::Tensor grad_a,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t num_targets,
+    double fc,
+    double slope,
+    double t_start) {
+  check_cuda_float(d, "d");
+  check_cuda_float(a, "a");
+  check_cuda_float(grad_output_re, "grad_output_re");
+  check_cuda_float(grad_output_im, "grad_output_im");
+  check_cuda_float(grad_d, "grad_d");
+  check_cuda_float(grad_a, "grad_a");
+  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
+  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
+
+  const int bins = checked_int(num_bins, "num_bins");
+  const int fft = checked_int(n_fft, "n_fft");
+  const int targets = checked_int(num_targets, "num_targets");
+  TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
+  TORCH_CHECK(grad_output_re.numel() == bins && grad_output_im.numel() == bins, "gradient bin count mismatch.");
+
+  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  constexpr int block_size = 256;
+  backward_parallel_bins_kernel<<<targets, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
       d.data_ptr<float>(),
       a.data_ptr<float>(),
       grad_output_re.data_ptr<float>(),

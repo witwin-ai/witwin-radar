@@ -16,7 +16,7 @@ generation.
 - Added `MimoPathCache` so static path distances, amplitudes, and optional
   range rates can be precomputed once and reused across repeated frame
   generation.
-- Added a Dirichlet Slang kernel for linear path motion across chirps.
+- Added a native CUDA Dirichlet kernel for linear path motion across chirps.
 - Updated `Radar.simulate(...)` so non-moving scenes, or moving scenes requested
   with `motion_sampling="per_frame"`, use the fixed-trace MIMO path.
 - Kept `Radar.mimo(interpolator, fast=False)` as the legacy per-chirp interface.
@@ -156,7 +156,7 @@ total_path_rate =
 d_rate = 0.5 * total_path_rate
 ```
 
-The Slang kernel then evaluates the Dirichlet FMCW phase per chirp from this
+The native CUDA kernel then evaluates the Dirichlet FMCW phase per chirp from this
 linear distance model. This gives Doppler from path phase evolution without
 calling the full per-chirp position, visibility, or material pipeline.
 

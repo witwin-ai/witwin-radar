@@ -250,7 +250,7 @@ def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
     assert torch.allclose(result, expected, atol=1e-6, rtol=1e-6)
 
     chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6 * radar.config.num_tx
-    assert observed_times == pytest.approx([0.0, 0.0, chirp_period, 2.0 * chirp_period], rel=0.0, abs=1e-12)
+    assert observed_times == pytest.approx([0.0, chirp_period, 2.0 * chirp_period], rel=0.0, abs=1e-12)
 
 
 def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
@@ -287,6 +287,53 @@ def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
     )
 
     assert observed_times == [0.0]
+
+
+def test_radar_motion_sampling_linear_uses_two_matched_traces(monkeypatch):
+    scene = _rotating_scene(device="cpu")
+    observed_times: list[float | None] = []
+
+    class FakeRenderer:
+        def __init__(self, scene, radar, **_options):
+            self.scene = scene
+            self.radar = radar
+
+        def trace(self, *, time=None):
+            observed_times.append(time)
+            traced = _centroid_trace(self.scene, time=0.0 if time is None else float(time))
+            tri_indices = torch.arange(traced.points.shape[0], dtype=torch.int64, device=traced.points.device)
+            return TraceResult(traced.points, traced.intensities, tri_indices)
+
+        def match_indices(self, first, second):
+            count = min(first.points.shape[0], second.points.shape[0])
+            indices = torch.arange(count, dtype=torch.int64, device=first.points.device)
+            return indices, indices
+
+    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
+    radar = _attach_fake_solver(Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), device="cpu"))
+
+    result = radar.simulate(scene, sampling="triangle", motion_sampling="linear")
+
+    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
+    assert observed_times == pytest.approx([0.0, chirp_period], rel=0.0, abs=1e-12)
+    assert result.shape == (radar.config.num_tx, radar.config.num_rx, 4, 16)
+
+
+def test_radar_motion_sampling_linear_rejects_pixel_correspondence(monkeypatch):
+    scene = _rotating_scene(device="cpu")
+
+    class FakeRenderer:
+        def __init__(self, scene, radar, **_options):
+            self.scene = scene
+
+        def trace(self, *, time=None):
+            return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
+
+    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
+    radar = _attach_fake_solver(Radar(RadarConfig.from_dict(_config()), device="cpu"))
+
+    with pytest.raises(ValueError, match="requires sampling='triangle'"):
+        radar.simulate(scene, sampling="pixel", motion_sampling="linear")
 
 
 def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):

@@ -91,7 +91,6 @@ def test_scene_accepts_shared_structure_directly():
 
 def test_add_smpl_builds_shared_structure_and_dynamic_metadata():
     import witwin.radar as wr
-    import witwin.core as wc
 
     scene = wr.Scene(device="cpu").add_smpl(
         name="human",
@@ -101,7 +100,7 @@ def test_add_smpl_builds_shared_structure_and_dynamic_metadata():
 
     structure = scene.structures[0]
     assert isinstance(structure, wr.Structure)
-    assert isinstance(structure.geometry, wc.SMPLBody)
+    assert isinstance(structure.geometry, wr.SMPLBody)
     assert bool(structure.metadata["dynamic"]) is True
 
 

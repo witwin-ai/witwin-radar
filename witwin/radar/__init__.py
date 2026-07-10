@@ -13,18 +13,20 @@ from witwin.core import (
     Cone,
     Cylinder,
     Ellipsoid,
-    Geometry,
+    Geometry as CoreGeometry,
     GeometryBase,
     HollowBox,
     Material,
     Mesh,
     Prism,
     Pyramid,
-    SMPLBody,
     Sphere,
     Structure,
     Torus,
 )
+from .geometry import SMPLBody
+
+Geometry = CoreGeometry | SMPLBody
 
 __all__ = [
     'Radar',

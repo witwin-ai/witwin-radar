@@ -133,12 +133,14 @@ class RayDSceneCache:
         self.device = device
         self.scene = None
         self.mesh_states: list[RayDMeshState] = []
+        self.vertex_tensors: list[torch.Tensor] = []
         self.signature = None
 
     def prepare(self, renderables, *, dirty_level: int, dirty_full: int, mark_clean) -> bool:
         if not renderables:
             self.scene = None
             self.mesh_states = []
+            self.vertex_tensors = []
             self.signature = None
             mark_clean()
             return False
@@ -152,8 +154,10 @@ class RayDSceneCache:
                 self._build(renderables)
             else:
                 self.sync_vertices(renderables)
-        else:
+        elif dirty_level > 0:
             self.sync_vertices(renderables)
+        else:
+            self.sync_vertices(renderables, dynamic_only=True)
         mark_clean()
         return bool(self.mesh_states)
 
@@ -161,6 +165,7 @@ class RayDSceneCache:
         require_cuda(self.device)
         scene = rd.Scene()
         mesh_states: list[RayDMeshState] = []
+        vertex_tensors: list[torch.Tensor] = []
         for name, mesh_data in renderables.items():
             vertices = as_cuda_vertices(mesh_data.vertices, self.device)
             faces = faces_array(mesh_data.faces)
@@ -179,19 +184,28 @@ class RayDSceneCache:
                     face_indices=make_face_indices(faces),
                 )
             )
+            vertex_tensors.append(vertices)
         scene.build()
         self.scene = scene
         self.mesh_states = mesh_states
+        self.vertex_tensors = vertex_tensors
         self.signature = renderable_signature(renderables)
 
-    def sync_vertices(self, renderables) -> None:
+    def sync_vertices(self, renderables, *, dynamic_only: bool = False) -> None:
         if self.scene is None:
             return
         updated_states: list[RayDMeshState] = []
-        for state in self.mesh_states:
+        updated_vertices: list[torch.Tensor] = []
+        updated_any = False
+        for state, cached_vertices in zip(self.mesh_states, self.vertex_tensors):
             mesh_data = renderables[state.name]
-            vertices = as_cuda_vertices(mesh_data.vertices, self.device)
-            self.scene.update_mesh_vertices(state.mesh_id, torch_vertices_to_rayd(vertices, ad=True))
+            should_update = not dynamic_only or state.dynamic or bool(mesh_data.dynamic)
+            if should_update:
+                vertices = as_cuda_vertices(mesh_data.vertices, self.device)
+                self.scene.update_mesh_vertices(state.mesh_id, torch_vertices_to_rayd(vertices, ad=True))
+                updated_any = True
+            else:
+                vertices = cached_vertices
             updated_states.append(
                 replace(
                     state,
@@ -199,21 +213,32 @@ class RayDSceneCache:
                     dynamic=bool(mesh_data.dynamic),
                 )
             )
+            updated_vertices.append(vertices)
         self.mesh_states = updated_states
-        if self.mesh_states:
+        self.vertex_tensors = updated_vertices
+        if updated_any:
             self.scene.sync()
 
-    def update_from_wrapped_inputs(self, vertex_inputs) -> None:
-        for state, vertices in zip(self.mesh_states, vertex_inputs):
+    def update_from_wrapped_inputs(self, vertex_inputs, differentiable) -> None:
+        updated_any = False
+        for state, vertices, should_update in zip(self.mesh_states, vertex_inputs, differentiable):
+            if not should_update:
+                continue
             self.scene.update_mesh_vertices(
                 state.mesh_id,
                 wrapped_vertices_to_point3f(vertices, state.num_vertices),
             )
-        if self.mesh_states:
+            updated_any = True
+        if updated_any:
             self.scene.sync()
 
     def vertex_inputs(self, renderables) -> list[torch.Tensor]:
-        return [as_cuda_vertices(renderables[state.name].vertices, self.device) for state in self.mesh_states]
+        return [
+            as_cuda_vertices(renderables[state.name].vertices, self.device)
+            if renderables[state.name].vertices.requires_grad
+            else cached
+            for state, cached in zip(self.mesh_states, self.vertex_tensors)
+        ]
 
     def dynamic_meshes(self) -> list[RayDMeshState]:
         return [state for state in self.mesh_states if state.dynamic]

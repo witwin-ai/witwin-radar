@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import drjit as dr
-import numpy as np
 import rayd as rd
 import torch
 
@@ -92,15 +91,25 @@ class Tracer:
         raise AssertionError(f"Unsupported sampling mode '{self.sampling}'.")
 
     def match(self, a, b):
+        idx_a, idx_b = self.match_indices(a, b)
+        return a.points[idx_a], b.points[idx_b], a.intensities[idx_a]
+
+    def match_indices(self, a, b):
+        """Return device-resident corresponding path indices for two traces."""
         if a._tri_indices is not None and b._tri_indices is not None:
-            _, idx_a, idx_b = np.intersect1d(
-                a._tri_indices.detach().cpu().numpy(),
-                b._tri_indices.detach().cpu().numpy(),
-                return_indices=True,
-            )
-            return a.points[idx_a], b.points[idx_b], a.intensities[idx_a]
+            if a._tri_indices.numel() == 0 or b._tri_indices.numel() == 0:
+                empty = torch.empty(0, dtype=torch.int64, device=a.points.device)
+                return empty, empty
+            positions = torch.searchsorted(b._tri_indices, a._tri_indices)
+            in_bounds = positions < b._tri_indices.numel()
+            safe_positions = positions.clamp_max(b._tri_indices.numel() - 1)
+            matched = in_bounds & (b._tri_indices[safe_positions] == a._tri_indices)
+            idx_a = matched.nonzero(as_tuple=True)[0]
+            idx_b = positions[matched]
+            return idx_a, idx_b
         n = min(a.points.shape[0], b.points.shape[0])
-        return a.points[:n], b.points[:n], a.intensities[:n]
+        indices = torch.arange(n, dtype=torch.int64, device=a.points.device)
+        return indices, indices
 
     def render_image(self, *, time: float | None = None):
         renderables = self.scene.compile_renderables(time=time)
@@ -127,7 +136,7 @@ class Tracer:
 
         @dr.wrap(source="torch", target="drjit")
         def _primary(*vertices):
-            self._cache.update_from_wrapped_inputs(vertices)
+            self._cache.update_from_wrapped_inputs(vertices, differentiable)
             its = scene.intersect(rays, flags=rd.RayFlags.Geometric)
             normals = its.geo_n
             cos_i = dr.abs(dr.dot(-rays.d, normals))
@@ -138,6 +147,7 @@ class Tracer:
                 return TensorXf(reflectance, shape=(count,))
             return _pack_primary_trace(its.p, normals, reflectance, valid_float, count)
 
+        differentiable = tuple(vertex.requires_grad for vertex in vertex_inputs)
         return _primary(*vertex_inputs)
 
     def _trace_triangles(self, renderables):

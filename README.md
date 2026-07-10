@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.sigproc import process_pc, process_rd
+from witwin.radar.sigproc import process_pc, process_pc_tensor, process_rd, process_rd_tensor
 
 # FMCW radar configuration.
 config = {
@@ -69,6 +69,10 @@ def interp(t):
 frame = radar.mimo(interp, t0=0)
 pc = process_pc(radar, frame)
 rd, _, ranges, vels = process_rd(radar, frame)
+
+# Tensor-first variants keep outputs on the frame device for real-time pipelines.
+pc_gpu = process_pc_tensor(radar, frame)
+rd_gpu, _, ranges_gpu, vels_gpu = process_rd_tensor(radar, frame)
 ```
 
 ## Scene API
@@ -113,6 +117,12 @@ frame = radar.simulate(
 )
 ```
 
+For moving triangle scenes, `motion_sampling="linear"` traces two adjacent TDM
+slots, matches triangle IDs, and uses a first-order path-velocity model. It is
+much faster than strict `"per_chirp"` tracing while freezing within-frame
+visibility and material terms. Use `"per_chirp"` when those effects must be
+re-evaluated for every TDM slot.
+
 Available mutating scene methods:
 
 - `Scene.add_structure(...)`
@@ -125,12 +135,14 @@ Available mutating scene methods:
 ## Features
 
 - Native Dirichlet CUDA kernels for chirp, frame, and MIMO generation
+- Native CUDA autograd kernels for distance and amplitude gradients
 - Ray tracing through RayD/Dr.Jit with differentiable scene support
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
 - Optional per-structure rigid motion with parent inheritance
 - Multi-radar orchestration through `Radar.simulate_group(...)`
 - Torch-native DSP pipeline for range/Doppler processing and point-cloud extraction
+- Tensor-first DSP outputs with backwards-compatible NumPy wrappers
 - Optional antenna pattern, polarization, noise-model, and receiver-chain configuration
 
 ## Running Tests

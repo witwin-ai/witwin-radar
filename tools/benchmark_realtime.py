@@ -24,8 +24,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from witwin.radar import Box, Material, Radar, RadarConfig, Scene, Structure, TraceResult, Tracer
-from witwin.radar.sigproc import process_pc, process_rd
+from witwin.radar import (  # noqa: E402
+    Box,
+    Material,
+    Radar,
+    RadarConfig,
+    Scene,
+    Structure,
+    TraceResult,
+    Tracer,
+    TransformMotion,
+)
+from witwin.radar.sigproc import process_pc, process_pc_tensor, process_rd, process_rd_tensor  # noqa: E402
 
 
 STANDARD_CONFIG = {
@@ -61,7 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--freq-domain", action="store_true", help="Keep Dirichlet MIMO output in frequency domain.")
     parser.add_argument("--with-rd", action="store_true", help="Also benchmark process_rd on the generated frame.")
     parser.add_argument("--with-pc", action="store_true", help="Also benchmark process_pc on the generated frame.")
+    parser.add_argument("--tensor-dsp", action="store_true", help="Keep DSP benchmark outputs on the torch device.")
+    parser.add_argument("--with-autograd", action="store_true", help="Benchmark static MIMO forward and backward.")
     parser.add_argument("--with-trace", action="store_true", help="Also benchmark a small pixel-ray traced scene.")
+    parser.add_argument("--with-dynamic-trace", action="store_true", help="Benchmark full moving-scene trace and MIMO.")
+    parser.add_argument("--dynamic-sampling", choices=("pixel", "triangle"), default="triangle")
+    parser.add_argument("--dynamic-motion-sampling", choices=("per_chirp", "linear"), default="linear")
     parser.add_argument("--trace-resolution", type=int, default=128)
     return parser.parse_args()
 
@@ -150,6 +165,14 @@ def benchmark(label: str, fn, *, warmup: int, runs: int, device: torch.device):
     return result, times
 
 
+def mimo_autograd_step(radar: Radar, trace: TraceResult):
+    points = trace.points.detach().requires_grad_(True)
+    intensities = trace.intensities.detach().requires_grad_(True)
+    differentiable_trace = TraceResult(points, intensities, normals=trace.normals)
+    frame = radar.mimo_from_trace(differentiable_trace)
+    return torch.autograd.grad(frame.abs().square().sum(), (points, intensities))
+
+
 def main() -> None:
     args = parse_args()
     if not torch.cuda.is_available():
@@ -180,13 +203,31 @@ def main() -> None:
         print(f"  traced reflection points: {trace.points.shape[0]}")
         print()
 
+    if args.with_dynamic_trace:
+        dynamic_scene = make_box_scene(device=str(device))
+        dynamic_scene.add_structure_motion("box_a", TransformMotion(velocity=(0.2, 0.0, 0.0)))
+        dynamic_frame, _ = benchmark(
+            f"dynamic {args.dynamic_sampling}/{args.dynamic_motion_sampling}",
+            lambda: radar.simulate(
+                dynamic_scene,
+                resolution=args.trace_resolution,
+                sampling=args.dynamic_sampling,
+                motion_sampling=args.dynamic_motion_sampling,
+            ),
+            warmup=args.warmup,
+            runs=args.runs,
+            device=device,
+        )
+        print(f"  dynamic frame shape: {tuple(dynamic_frame.shape)}")
+        print()
+
     for num_targets in args.targets:
         trace = make_preprocessed_trace(num_targets, device=device)
         mimo_options = {"freq_domain": True} if args.freq_domain else {}
 
         print(f"targets: {num_targets}")
         frame, _ = benchmark(
-            "trace -> mimo",
+            "cached trace -> mimo",
             lambda: radar.mimo_from_trace(trace, **mimo_options),
             warmup=args.warmup,
             runs=args.runs,
@@ -195,17 +236,27 @@ def main() -> None:
         print(f"  frame shape: {tuple(frame.shape)}")
 
         if args.with_rd and not args.freq_domain:
+            rd_fn = process_rd_tensor if args.tensor_dsp else process_rd
             benchmark(
-                "process_rd",
-                lambda: process_rd(radar, frame),
+                "process_rd tensor" if args.tensor_dsp else "process_rd numpy",
+                lambda: rd_fn(radar, frame),
                 warmup=args.warmup,
                 runs=args.runs,
                 device=device,
             )
         if args.with_pc and not args.freq_domain:
+            pc_fn = process_pc_tensor if args.tensor_dsp else process_pc
             benchmark(
-                "process_pc",
-                lambda: process_pc(radar, frame),
+                "process_pc tensor" if args.tensor_dsp else "process_pc numpy",
+                lambda: pc_fn(radar, frame),
+                warmup=args.warmup,
+                runs=args.runs,
+                device=device,
+            )
+        if args.with_autograd and not args.freq_domain:
+            benchmark(
+                "mimo autograd e2e",
+                lambda: mimo_autograd_step(radar, trace),
                 warmup=args.warmup,
                 runs=args.runs,
                 device=device,

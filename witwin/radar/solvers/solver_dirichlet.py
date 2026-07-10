@@ -8,6 +8,7 @@ backend-specific state on the solver instance.
 from __future__ import annotations
 
 import torch
+from torch.autograd.function import once_differentiable
 
 from ..path_cache import MimoPathCache
 from . import Solver
@@ -17,8 +18,6 @@ from .common import (
     compute_slot_path_tensors,
     compute_total_path_lengths,
     normalize_interpolated_sample,
-    pytorch_chirp_reference,
-    pytorch_mimo_from_samples,
     samples_require_grad,
 )
 
@@ -58,6 +57,176 @@ def _reshape_pair_targets(value: torch.Tensor, num_pairs: int, n_targets: int) -
     return value.reshape(num_pairs, n_targets).contiguous()
 
 
+class _NativeChunkedSpectrum(torch.autograd.Function):
+    """Autograd bridge for chunked native Dirichlet spectra."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        solver,
+        distances: torch.Tensor,
+        amplitudes: torch.Tensor,
+        targets_per_spectrum: int,
+        num_bins: int,
+        n_fft: int,
+        k0_per_meter: float,
+        shared_gradient: bool,
+    ) -> torch.Tensor:
+        d = _to_f32(solver, distances.reshape(-1))
+        a = _to_f32(solver, amplitudes.reshape(-1))
+        if d.shape != a.shape:
+            raise ValueError("distances and amplitudes must have the same shape.")
+        if targets_per_spectrum <= 0:
+            raise ValueError("targets_per_spectrum must be positive.")
+
+        num_targets = d.numel()
+        num_spectra = (num_targets + targets_per_spectrum - 1) // targets_per_spectrum
+        output_re = torch.empty((num_spectra, num_bins), dtype=torch.float32, device=solver.device)
+        output_im = torch.empty_like(output_re)
+        if num_targets:
+            cfg = solver.radar.config
+            solver._module.forward_chunked(
+                d,
+                a,
+                output_re,
+                output_im,
+                solver.n,
+                k0_per_meter,
+                num_bins,
+                n_fft,
+                num_targets,
+                targets_per_spectrum,
+                cfg.fc,
+                cfg.slope * 1e12,
+                cfg.adc_start_time * 1e-6,
+            )
+
+        ctx.solver = solver
+        ctx.targets_per_spectrum = targets_per_spectrum
+        ctx.num_bins = num_bins
+        ctx.n_fft = n_fft
+        ctx.k0_per_meter = k0_per_meter
+        ctx.shared_gradient = shared_gradient
+        ctx.distance_dtype = distances.dtype
+        ctx.amplitude_dtype = amplitudes.dtype
+        ctx.distance_shape = distances.shape
+        ctx.amplitude_shape = amplitudes.shape
+        ctx.save_for_backward(d, a)
+        return torch.complex(output_re, output_im)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_output: torch.Tensor):
+        d, a = ctx.saved_tensors
+        needs_d = ctx.needs_input_grad[1]
+        needs_a = ctx.needs_input_grad[2]
+        grad_d = grad_a = None
+        if (needs_d or needs_a) and d.numel():
+            solver = ctx.solver
+            cfg = solver.radar.config
+            gout_re = grad_output.real.to(dtype=torch.float32, device=solver.device).contiguous()
+            gout_im = grad_output.imag.to(dtype=torch.float32, device=solver.device).contiguous()
+            if ctx.shared_gradient:
+                native_grad_d = torch.empty_like(d)
+                native_grad_a = torch.empty_like(a)
+                solver._module.backward_parallel_bins(
+                    d,
+                    a,
+                    gout_re[0],
+                    gout_im[0],
+                    native_grad_d,
+                    native_grad_a,
+                    solver.n,
+                    ctx.k0_per_meter,
+                    ctx.num_bins,
+                    ctx.n_fft,
+                    d.numel(),
+                    cfg.fc,
+                    cfg.slope * 1e12,
+                    cfg.adc_start_time * 1e-6,
+                )
+            else:
+                native_grad_d = torch.empty_like(d)
+                native_grad_a = torch.empty_like(a)
+                solver._module.backward_batched(
+                    d,
+                    a,
+                    gout_re,
+                    gout_im,
+                    native_grad_d,
+                    native_grad_a,
+                    solver.n,
+                    ctx.k0_per_meter,
+                    ctx.num_bins,
+                    ctx.n_fft,
+                    d.numel(),
+                    ctx.targets_per_spectrum,
+                    cfg.fc,
+                    cfg.slope * 1e12,
+                    cfg.adc_start_time * 1e-6,
+                )
+            if needs_d:
+                grad_d = native_grad_d.to(ctx.distance_dtype).reshape(ctx.distance_shape)
+            if needs_a:
+                grad_a = native_grad_a.to(ctx.amplitude_dtype).reshape(ctx.amplitude_shape)
+        else:
+            if needs_d:
+                grad_d = torch.empty(ctx.distance_shape, dtype=ctx.distance_dtype, device=d.device)
+            if needs_a:
+                grad_a = torch.empty(ctx.amplitude_shape, dtype=ctx.amplitude_dtype, device=a.device)
+        return None, grad_d, grad_a, None, None, None, None, None
+
+
+def _native_chunked_spectra(
+    solver: "DirichletSolver",
+    distances: torch.Tensor,
+    amplitudes: torch.Tensor,
+    *,
+    targets_per_spectrum: int,
+    num_bins: int,
+    n_fft: int,
+    k0_per_meter: float,
+    shared_gradient: bool = False,
+) -> torch.Tensor:
+    if not (torch.is_grad_enabled() and (distances.requires_grad or amplitudes.requires_grad)):
+        d = _to_f32(solver, distances.reshape(-1))
+        a = _to_f32(solver, amplitudes.reshape(-1))
+        if d.shape != a.shape:
+            raise ValueError("distances and amplitudes must have the same shape.")
+        num_targets = d.numel()
+        num_spectra = (num_targets + targets_per_spectrum - 1) // targets_per_spectrum
+        output_re = torch.empty((num_spectra, num_bins), dtype=torch.float32, device=solver.device)
+        output_im = torch.empty_like(output_re)
+        if num_targets:
+            cfg = solver.radar.config
+            solver._module.forward_chunked(
+                d,
+                a,
+                output_re,
+                output_im,
+                solver.n,
+                k0_per_meter,
+                num_bins,
+                n_fft,
+                num_targets,
+                targets_per_spectrum,
+                cfg.fc,
+                cfg.slope * 1e12,
+                cfg.adc_start_time * 1e-6,
+            )
+        return torch.complex(output_re, output_im)
+    return _NativeChunkedSpectrum.apply(
+        solver,
+        distances,
+        amplitudes,
+        targets_per_spectrum,
+        num_bins,
+        n_fft,
+        k0_per_meter,
+        shared_gradient,
+    )
+
+
 def spectrum(
     solver: "DirichletSolver",
     distances,
@@ -69,7 +238,6 @@ def spectrum(
     k0_per_meter: float | None = None,
 ):
     """Dirichlet spectrum with optional overrides for MIMO-mode calls."""
-    cfg = solver.radar.config
     num_bins = solver.num_bins if num_bins is None else num_bins
     n_fft = solver.N_fft if n_fft is None else n_fft
     k0_per_meter = solver.k0_per_meter if k0_per_meter is None else k0_per_meter
@@ -78,31 +246,23 @@ def spectrum(
     d = _to_f32(solver, distances)
     a = _to_f32(solver, amplitudes)
 
-    num_chunks = (num_targets + targets_per_chunk - 1) // targets_per_chunk
-    output_re = torch.empty((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
-    output_im = torch.empty((num_chunks, num_bins), dtype=torch.float32, device=solver.device)
-
-    solver._module.forward_chunked(
+    if num_targets == 0:
+        return torch.zeros(num_bins, dtype=torch.complex64, device=solver.device)
+    chunks = _native_chunked_spectra(
+        solver,
         d,
         a,
-        output_re,
-        output_im,
-        solver.n,
-        k0_per_meter,
-        num_bins,
-        n_fft,
-        num_targets,
-        targets_per_chunk,
-        cfg.fc,
-        cfg.slope * 1e12,
-        cfg.adc_start_time * 1e-6,
+        targets_per_spectrum=targets_per_chunk,
+        num_bins=num_bins,
+        n_fft=n_fft,
+        k0_per_meter=k0_per_meter,
+        shared_gradient=True,
     )
-
-    return torch.complex(output_re.sum(dim=0), output_im.sum(dim=0))
+    return chunks.sum(dim=0)
 
 
 def backward(solver: "DirichletSolver", distances, amplitudes, grad_output_re, grad_output_im):
-    """Backward pass with one thread per target."""
+    """Backward pass with one block per target and parallel bin reduction."""
     cfg = solver.radar.config
     num_targets = distances.shape[0]
     d = _to_f32(solver, distances)
@@ -110,10 +270,10 @@ def backward(solver: "DirichletSolver", distances, amplitudes, grad_output_re, g
     g_re = grad_output_re.to(dtype=torch.float32, device=solver.device).contiguous()
     g_im = grad_output_im.to(dtype=torch.float32, device=solver.device).contiguous()
 
-    grad_d = torch.zeros(num_targets, dtype=torch.float32, device=solver.device)
-    grad_a = torch.zeros(num_targets, dtype=torch.float32, device=solver.device)
+    grad_d = torch.empty(num_targets, dtype=torch.float32, device=solver.device)
+    grad_a = torch.empty(num_targets, dtype=torch.float32, device=solver.device)
 
-    solver._module.backward(
+    solver._module.backward_parallel_bins(
         d,
         a,
         g_re,
@@ -206,13 +366,7 @@ class DirichletSolver(Solver):
 
     def chirp(self, distances, amplitudes):
         """High-resolution Dirichlet spectrum (pad_factor bins)."""
-        signal = spectrum(self, distances, amplitudes)
-        if distances.requires_grad or amplitudes.requires_grad:
-            reference = pytorch_chirp_reference(self.radar, distances, amplitudes)
-            reference = torch.fft.fft(reference, n=self.N_fft)[: self.N_fft // 2]
-            signal = signal.to(reference.dtype)
-            return signal.detach() + (reference - reference.detach())
-        return signal
+        return spectrum(self, distances, amplitudes)
 
     def chirp_mimo(self, distances, amplitudes):
         """Dirichlet spectrum at adc_samples resolution for MIMO output."""
@@ -255,13 +409,6 @@ class DirichletSolver(Solver):
             return self._mimo_from_sample_static(samples[0], freq_domain=freq_domain)
 
         frame = self._mimo_from_slot_samples(samples, freq_domain=freq_domain)
-
-        if samples_require_grad(samples):
-            reference = pytorch_mimo_from_samples(r, samples)
-            if freq_domain:
-                reference = torch.fft.fft(reference, dim=-1)
-            frame = frame.to(reference.dtype)
-            return frame.detach() + (reference - reference.detach())
         return frame
 
     # Slot-group size cap: bounds the (slots, N, RX, 3) geometry transients in
@@ -282,36 +429,34 @@ class DirichletSolver(Solver):
                 device=self.device,
             )
 
-        output_re = torch.empty((num_slots * num_rx, self.mimo_num_bins), dtype=torch.float32, device=self.device)
-        output_im = torch.empty_like(output_re)
-
+        spectrum_groups = []
         group = max(1, self._SLOT_GROUP_ELEMENT_BUDGET // max(1, n_max * num_rx * 3))
         for start in range(0, num_slots, group):
             stop = min(start + group, num_slots)
             one_way, amplitudes = compute_slot_path_tensors(r, samples[start:stop], first_slot=start)
-            row_start, row_stop = start * num_rx, stop * num_rx
             if one_way is None:
-                output_re[row_start:row_stop] = 0.0
-                output_im[row_start:row_stop] = 0.0
+                spectrum_groups.append(
+                    torch.zeros(
+                        ((stop - start) * num_rx, self.mimo_num_bins),
+                        dtype=torch.complex64,
+                        device=self.device,
+                    )
+                )
                 continue
-            group_slots, _, group_n = one_way.shape
-            self._module.forward_chunked(
-                one_way.reshape(-1),
-                amplitudes.reshape(-1),
-                output_re[row_start:row_stop],
-                output_im[row_start:row_stop],
-                self.n,
-                self.mimo_k0_per_meter,
-                self.mimo_num_bins,
-                self.mimo_N_fft,
-                group_slots * num_rx * group_n,
-                group_n,
-                cfg.fc,
-                cfg.slope * 1e12,
-                cfg.adc_start_time * 1e-6,
+            _, _, group_n = one_way.shape
+            spectrum_groups.append(
+                _native_chunked_spectra(
+                    self,
+                    one_way.reshape(-1),
+                    amplitudes.reshape(-1),
+                    targets_per_spectrum=group_n,
+                    num_bins=self.mimo_num_bins,
+                    n_fft=self.mimo_N_fft,
+                    k0_per_meter=self.mimo_k0_per_meter,
+                )
             )
 
-        spectra = torch.complex(output_re, output_im)
+        spectra = torch.cat(spectrum_groups, dim=0)
         if not freq_domain:
             spectra = torch.fft.ifft(spectra, dim=-1)
         return (
@@ -331,8 +476,6 @@ class DirichletSolver(Solver):
         self._ensure_no_options(options)
         sample = normalize_interpolated_sample(trace, device=self.device)
         if velocities is None:
-            if samples_require_grad([sample]):
-                return self.mimo(lambda _t: trace, t0=t0, fast=False, freq_domain=freq_domain)
             cache = self._path_cache_from_sample(sample)
             return self.mimo_from_paths(cache, freq_domain=freq_domain, amplitude_update=amplitude_update)
 
@@ -341,13 +484,6 @@ class DirichletSolver(Solver):
             raise ValueError(
                 "velocities must have shape (N, 3), matching trace.points; "
                 f"got {tuple(velocity_t.shape)} for {tuple(sample.points.shape)}."
-            )
-        if samples_require_grad([sample]) or velocity_t.requires_grad:
-            return self._mimo_from_trace_linear_reference(
-                trace,
-                velocity_t,
-                t0=t0,
-                freq_domain=freq_domain,
             )
         cache = self._path_cache_from_sample(sample, velocity_t.contiguous())
         return self.mimo_from_paths(cache, freq_domain=freq_domain, amplitude_update=amplitude_update)
@@ -441,25 +577,6 @@ class DirichletSolver(Solver):
             amplitude_update=amplitude_update,
         )
 
-    def _mimo_from_trace_linear_reference(self, trace, velocities: torch.Tensor, *, t0: float, freq_domain: bool):
-        from ..trace_result import TraceResult
-
-        base_points = trace.points.to(dtype=torch.float32, device=self.device)
-        base_entry_points = trace.entry_points.to(dtype=torch.float32, device=self.device)
-
-        def interpolator(t):
-            dt = float(t) - float(t0)
-            return TraceResult(
-                base_points + velocities * dt,
-                trace.intensities,
-                entry_points=base_entry_points + velocities * dt,
-                fixed_path_lengths=trace.fixed_path_lengths,
-                depths=trace.depths,
-                normals=trace.normals,
-            )
-
-        return self.mimo(interpolator, t0=t0, fast=False, freq_domain=freq_domain)
-
     def _mimo_from_sample_static(self, sample, *, freq_domain: bool):
         r = self.radar
         cfg = r.config
@@ -494,7 +611,6 @@ class DirichletSolver(Solver):
         *,
         targets_per_chunk: int = 256,
     ) -> torch.Tensor:
-        cfg = self.radar.config
         chunks_per_pair = (n_targets + targets_per_chunk - 1) // targets_per_chunk
         n_padded = chunks_per_pair * targets_per_chunk
         if n_padded != n_targets:
@@ -505,26 +621,15 @@ class DirichletSolver(Solver):
             all_d = d.reshape(-1)
             all_a = a.reshape(-1)
 
-        output_re = torch.empty(
-            (num_pairs * chunks_per_pair, self.mimo_num_bins), dtype=torch.float32, device=self.device
-        )
-        output_im = torch.empty_like(output_re)
-        self._module.forward_chunked(
+        spectra = _native_chunked_spectra(
+            self,
             all_d,
             all_a,
-            output_re,
-            output_im,
-            self.n,
-            self.mimo_k0_per_meter,
-            self.mimo_num_bins,
-            self.mimo_N_fft,
-            num_pairs * n_padded,
-            targets_per_chunk,
-            cfg.fc,
-            cfg.slope * 1e12,
-            cfg.adc_start_time * 1e-6,
+            targets_per_spectrum=targets_per_chunk,
+            num_bins=self.mimo_num_bins,
+            n_fft=self.mimo_N_fft,
+            k0_per_meter=self.mimo_k0_per_meter,
         )
-        spectra = torch.complex(output_re, output_im)
         return spectra.view(num_pairs, chunks_per_pair, self.mimo_num_bins).sum(dim=1)
 
     def _mimo_from_path_tensors_linear(
@@ -536,6 +641,14 @@ class DirichletSolver(Solver):
         freq_domain: bool,
         amplitude_update: str,
     ):
+        if distances.requires_grad or amplitudes.requires_grad or rates.requires_grad:
+            return self._mimo_from_path_tensors_linear_autograd(
+                distances,
+                amplitudes,
+                rates,
+                freq_domain=freq_domain,
+                amplitude_update=amplitude_update,
+            )
         cfg = self.radar.config
         num_pairs = cfg.num_tx * cfg.num_rx
         n_targets = distances.shape[2]
@@ -570,6 +683,50 @@ class DirichletSolver(Solver):
         if not freq_domain:
             spectra = torch.fft.ifft(spectra, dim=-1)
         return spectra.view(cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples).permute(1, 2, 0, 3).contiguous()
+
+    def _mimo_from_path_tensors_linear_autograd(
+        self,
+        distances: torch.Tensor,
+        amplitudes: torch.Tensor,
+        rates: torch.Tensor,
+        *,
+        freq_domain: bool,
+        amplitude_update: str,
+    ):
+        cfg = self.radar.config
+        num_pairs = cfg.num_tx * cfg.num_rx
+        n_targets = distances.shape[2]
+        chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        chirp_ids = torch.arange(
+            cfg.chirp_per_frame,
+            dtype=distances.dtype,
+            device=self.device,
+        ).view(-1, 1)
+        tx_ids = torch.arange(cfg.num_tx, dtype=distances.dtype, device=self.device).repeat_interleave(
+            cfg.num_rx
+        ).view(1, -1)
+        times = (chirp_ids * cfg.num_tx + tx_ids) * chirp_period
+        base_distances = distances.reshape(1, num_pairs, n_targets)
+        frame_distances = base_distances + rates.reshape(1, num_pairs, n_targets) * times.unsqueeze(-1)
+        frame_amplitudes = amplitudes.reshape(1, num_pairs, n_targets).expand_as(frame_distances)
+        if amplitude_update == "range_loss":
+            frame_amplitudes = frame_amplitudes * base_distances / torch.clamp(frame_distances, min=1e-6)
+        spectra = _native_chunked_spectra(
+            self,
+            frame_distances.reshape(-1),
+            frame_amplitudes.reshape(-1),
+            targets_per_spectrum=n_targets,
+            num_bins=self.mimo_num_bins,
+            n_fft=self.mimo_N_fft,
+            k0_per_meter=self.mimo_k0_per_meter,
+        )
+        if not freq_domain:
+            spectra = torch.fft.ifft(spectra, dim=-1)
+        return (
+            spectra.view(cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples)
+            .permute(1, 2, 0, 3)
+            .contiguous()
+        )
 
     def _total_path_length_rates(self, sample, velocities: torch.Tensor, *, tx_pos, rx_pos):
         entry_vectors = sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1)

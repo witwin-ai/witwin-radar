@@ -60,7 +60,7 @@ class Solver:
 
 
 # Import after Solver is defined to avoid circular imports
-from .solver_dirichlet import DirichletSolver
+from .solver_dirichlet import DirichletSolver  # noqa: E402
 
 __all__ = [
     'Solver',

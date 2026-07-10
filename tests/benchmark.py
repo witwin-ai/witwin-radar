@@ -10,7 +10,7 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from benchmark_dirichlet_cuda import main
+from benchmark_dirichlet_cuda import main  # noqa: E402
 
 
 if __name__ == "__main__":

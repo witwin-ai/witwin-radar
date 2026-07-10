@@ -39,7 +39,7 @@ MESH_COMPONENT = (0, 2)
 
 def _smpl_available():
     try:
-        from witwin.core.geometry.smpl import SMPLBody  # noqa: F401
+        from witwin.radar.geometry import SMPLBody  # noqa: F401
         from smplpytorch.pytorch.smpl_layer import SMPL_Layer  # noqa: F401
 
         return True
