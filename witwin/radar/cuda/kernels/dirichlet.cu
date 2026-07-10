@@ -1,6 +1,10 @@
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/extension.h>
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/c/shim.h>
+#include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/macros.h>
+#include <torch/csrc/stable/tensor.h>
+#include <torch/headeronly/core/ScalarType.h>
+#include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
 
@@ -416,24 +420,37 @@ __global__ void backward_per_bin_kernel(
   }
 }
 
-void check_cuda_float(const at::Tensor& tensor, const char* name) {
-  TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  TORCH_CHECK(tensor.scalar_type() == at::ScalarType::Float, name, " must have dtype torch.float32.");
-  TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
+void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
+  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
+  STD_TORCH_CHECK(
+      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
+      name,
+      " must have dtype torch.float32.");
+  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
 }
 
 int checked_int(int64_t value, const char* name) {
-  TORCH_CHECK(value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()), name, " is out of int32 range.");
+  STD_TORCH_CHECK(
+      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
+      name,
+      " is out of int32 range.");
   return static_cast<int>(value);
+}
+
+cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
+  void* stream_ptr = nullptr;
+  TORCH_ERROR_CODE_CHECK(
+      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
+  return static_cast<cudaStream_t>(stream_ptr);
 }
 
 }  // namespace
 
 void forward_chunked_cuda(
-    const at::Tensor& d,
-    const at::Tensor& a,
-    at::Tensor output_re,
-    at::Tensor output_im,
+    const torch::stable::Tensor& d,
+    const torch::stable::Tensor& a,
+    torch::stable::Tensor& output_re,
+    torch::stable::Tensor& output_im,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -447,24 +464,26 @@ void forward_chunked_cuda(
   check_cuda_float(a, "a");
   check_cuda_float(output_re, "output_re");
   check_cuda_float(output_im, "output_im");
-  TORCH_CHECK(output_re.sizes() == output_im.sizes(), "output_re and output_im must have the same shape.");
-  TORCH_CHECK(output_re.dim() == 2, "output tensors must have shape (chunks, bins).");
+  STD_TORCH_CHECK(
+      output_re.sizes().equals(output_im.sizes()),
+      "output_re and output_im must have the same shape.");
+  STD_TORCH_CHECK(output_re.dim() == 2, "output tensors must have shape (chunks, bins).");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
   const int chunk_size = checked_int(targets_per_chunk, "targets_per_chunk");
-  TORCH_CHECK(chunk_size > 0, "targets_per_chunk must be positive.");
+  STD_TORCH_CHECK(chunk_size > 0, "targets_per_chunk must be positive.");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  const torch::stable::accelerator::DeviceGuard device_guard(d.get_device_index());
   constexpr int block_size = 256;
   const dim3 block(block_size, 1, 1);
   const dim3 grid((bins + block_size - 1) / block_size, output_re.size(0), 1);
-  forward_chunked_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d.data_ptr<float>(),
-      a.data_ptr<float>(),
-      output_re.data_ptr<float>(),
-      output_im.data_ptr<float>(),
+  forward_chunked_kernel<<<grid, block, 0, current_cuda_stream(d)>>>(
+      d.const_data_ptr<float>(),
+      a.const_data_ptr<float>(),
+      output_re.mutable_data_ptr<float>(),
+      output_im.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -474,15 +493,15 @@ void forward_chunked_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void forward_mimo_linear_chunked_cuda(
-    const at::Tensor& d0,
-    const at::Tensor& d_rate,
-    const at::Tensor& a0,
-    at::Tensor output_re,
-    at::Tensor output_im,
+    const torch::stable::Tensor& d0,
+    const torch::stable::Tensor& d_rate,
+    const torch::stable::Tensor& a0,
+    torch::stable::Tensor& output_re,
+    torch::stable::Tensor& output_im,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -500,9 +519,13 @@ void forward_mimo_linear_chunked_cuda(
   check_cuda_float(a0, "a0");
   check_cuda_float(output_re, "output_re");
   check_cuda_float(output_im, "output_im");
-  TORCH_CHECK(d0.sizes() == d_rate.sizes() && d0.sizes() == a0.sizes(), "d0, d_rate, and a0 must have the same shape.");
-  TORCH_CHECK(output_re.sizes() == output_im.sizes(), "output_re and output_im must have the same shape.");
-  TORCH_CHECK(output_re.dim() == 3, "output tensors must have shape (chirps, pairs, bins).");
+  STD_TORCH_CHECK(
+      d0.sizes().equals(d_rate.sizes()) && d0.sizes().equals(a0.sizes()),
+      "d0, d_rate, and a0 must have the same shape.");
+  STD_TORCH_CHECK(
+      output_re.sizes().equals(output_im.sizes()),
+      "output_re and output_im must have the same shape.");
+  STD_TORCH_CHECK(output_re.dim() == 3, "output tensors must have shape (chirps, pairs, bins).");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
@@ -511,19 +534,19 @@ void forward_mimo_linear_chunked_cuda(
   const int tx = checked_int(num_tx, "num_tx");
   const int update = checked_int(range_loss_update, "range_loss_update");
   const int pairs = checked_int(output_re.size(1), "num_pairs");
-  TORCH_CHECK(per_pair > 0, "targets_per_pair must be positive.");
-  TORCH_CHECK(tx > 0 && pairs % tx == 0, "num_pairs must be a positive multiple of num_tx.");
+  STD_TORCH_CHECK(per_pair > 0, "targets_per_pair must be positive.");
+  STD_TORCH_CHECK(tx > 0 && pairs % tx == 0, "num_pairs must be a positive multiple of num_tx.");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d0));
+  const torch::stable::accelerator::DeviceGuard device_guard(d0.get_device_index());
   constexpr int block_size = 256;
   const dim3 block(block_size, 1, 1);
   const dim3 grid((bins + block_size - 1) / block_size, pairs, chirps);
-  forward_mimo_linear_chunked_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d0.data_ptr<float>(),
-      d_rate.data_ptr<float>(),
-      a0.data_ptr<float>(),
-      output_re.data_ptr<float>(),
-      output_im.data_ptr<float>(),
+  forward_mimo_linear_chunked_kernel<<<grid, block, 0, current_cuda_stream(d0)>>>(
+      d0.const_data_ptr<float>(),
+      d_rate.const_data_ptr<float>(),
+      a0.const_data_ptr<float>(),
+      output_re.mutable_data_ptr<float>(),
+      output_im.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -537,16 +560,16 @@ void forward_mimo_linear_chunked_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void backward_cuda(
-    const at::Tensor& d,
-    const at::Tensor& a,
-    const at::Tensor& grad_output_re,
-    const at::Tensor& grad_output_im,
-    at::Tensor grad_d,
-    at::Tensor grad_a,
+    const torch::stable::Tensor& d,
+    const torch::stable::Tensor& a,
+    const torch::stable::Tensor& grad_output_re,
+    const torch::stable::Tensor& grad_output_im,
+    torch::stable::Tensor& grad_d,
+    torch::stable::Tensor& grad_a,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -561,25 +584,27 @@ void backward_cuda(
   check_cuda_float(grad_output_im, "grad_output_im");
   check_cuda_float(grad_d, "grad_d");
   check_cuda_float(grad_a, "grad_a");
-  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
-  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
+  STD_TORCH_CHECK(d.sizes().equals(a.sizes()), "d and a must have the same shape.");
+  STD_TORCH_CHECK(
+      grad_d.sizes().equals(d.sizes()) && grad_a.sizes().equals(d.sizes()),
+      "gradient outputs must match d.");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
-  TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
+  STD_TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  const torch::stable::accelerator::DeviceGuard device_guard(d.get_device_index());
   constexpr int block_size = 256;
   const dim3 block(block_size, 1, 1);
   const dim3 grid((targets + block_size - 1) / block_size, 1, 1);
-  backward_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d.data_ptr<float>(),
-      a.data_ptr<float>(),
-      grad_output_re.data_ptr<float>(),
-      grad_output_im.data_ptr<float>(),
-      grad_d.data_ptr<float>(),
-      grad_a.data_ptr<float>(),
+  backward_kernel<<<grid, block, 0, current_cuda_stream(d)>>>(
+      d.const_data_ptr<float>(),
+      a.const_data_ptr<float>(),
+      grad_output_re.const_data_ptr<float>(),
+      grad_output_im.const_data_ptr<float>(),
+      grad_d.mutable_data_ptr<float>(),
+      grad_a.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -588,16 +613,16 @@ void backward_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void backward_batched_cuda(
-    const at::Tensor& d,
-    const at::Tensor& a,
-    const at::Tensor& grad_output_re,
-    const at::Tensor& grad_output_im,
-    at::Tensor grad_d,
-    at::Tensor grad_a,
+    const torch::stable::Tensor& d,
+    const torch::stable::Tensor& a,
+    const torch::stable::Tensor& grad_output_re,
+    const torch::stable::Tensor& grad_output_im,
+    torch::stable::Tensor& grad_d,
+    torch::stable::Tensor& grad_a,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -613,32 +638,36 @@ void backward_batched_cuda(
   check_cuda_float(grad_output_im, "grad_output_im");
   check_cuda_float(grad_d, "grad_d");
   check_cuda_float(grad_a, "grad_a");
-  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
-  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
-  TORCH_CHECK(grad_output_re.sizes() == grad_output_im.sizes(), "complex gradient components must have the same shape.");
-  TORCH_CHECK(grad_output_re.dim() == 2, "gradient tensors must have shape (spectra, bins).");
+  STD_TORCH_CHECK(d.sizes().equals(a.sizes()), "d and a must have the same shape.");
+  STD_TORCH_CHECK(
+      grad_d.sizes().equals(d.sizes()) && grad_a.sizes().equals(d.sizes()),
+      "gradient outputs must match d.");
+  STD_TORCH_CHECK(
+      grad_output_re.sizes().equals(grad_output_im.sizes()),
+      "complex gradient components must have the same shape.");
+  STD_TORCH_CHECK(grad_output_re.dim() == 2, "gradient tensors must have shape (spectra, bins).");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
   const int per_spectrum = checked_int(targets_per_spectrum, "targets_per_spectrum");
-  TORCH_CHECK(per_spectrum > 0, "targets_per_spectrum must be positive.");
-  TORCH_CHECK(
+  STD_TORCH_CHECK(per_spectrum > 0, "targets_per_spectrum must be positive.");
+  STD_TORCH_CHECK(
       grad_output_re.size(0) == (targets + per_spectrum - 1) / per_spectrum,
       "gradient spectrum count does not match num_targets and targets_per_spectrum.");
-  TORCH_CHECK(grad_output_re.size(1) == bins, "gradient bin count does not match num_bins.");
+  STD_TORCH_CHECK(grad_output_re.size(1) == bins, "gradient bin count does not match num_bins.");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  const torch::stable::accelerator::DeviceGuard device_guard(d.get_device_index());
   constexpr int block_size = 256;
   const dim3 block(block_size, 1, 1);
   const dim3 grid((targets + block_size - 1) / block_size, 1, 1);
-  backward_batched_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d.data_ptr<float>(),
-      a.data_ptr<float>(),
-      grad_output_re.data_ptr<float>(),
-      grad_output_im.data_ptr<float>(),
-      grad_d.data_ptr<float>(),
-      grad_a.data_ptr<float>(),
+  backward_batched_kernel<<<grid, block, 0, current_cuda_stream(d)>>>(
+      d.const_data_ptr<float>(),
+      a.const_data_ptr<float>(),
+      grad_output_re.const_data_ptr<float>(),
+      grad_output_im.const_data_ptr<float>(),
+      grad_d.mutable_data_ptr<float>(),
+      grad_a.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -648,16 +677,16 @@ void backward_batched_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void backward_parallel_bins_cuda(
-    const at::Tensor& d,
-    const at::Tensor& a,
-    const at::Tensor& grad_output_re,
-    const at::Tensor& grad_output_im,
-    at::Tensor grad_d,
-    at::Tensor grad_a,
+    const torch::stable::Tensor& d,
+    const torch::stable::Tensor& a,
+    const torch::stable::Tensor& grad_output_re,
+    const torch::stable::Tensor& grad_output_im,
+    torch::stable::Tensor& grad_d,
+    torch::stable::Tensor& grad_a,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -672,24 +701,28 @@ void backward_parallel_bins_cuda(
   check_cuda_float(grad_output_im, "grad_output_im");
   check_cuda_float(grad_d, "grad_d");
   check_cuda_float(grad_a, "grad_a");
-  TORCH_CHECK(d.sizes() == a.sizes(), "d and a must have the same shape.");
-  TORCH_CHECK(grad_d.sizes() == d.sizes() && grad_a.sizes() == d.sizes(), "gradient outputs must match d.");
+  STD_TORCH_CHECK(d.sizes().equals(a.sizes()), "d and a must have the same shape.");
+  STD_TORCH_CHECK(
+      grad_d.sizes().equals(d.sizes()) && grad_a.sizes().equals(d.sizes()),
+      "gradient outputs must match d.");
 
   const int bins = checked_int(num_bins, "num_bins");
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
-  TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
-  TORCH_CHECK(grad_output_re.numel() == bins && grad_output_im.numel() == bins, "gradient bin count mismatch.");
+  STD_TORCH_CHECK(d.numel() == targets, "num_targets must match d.numel().");
+  STD_TORCH_CHECK(
+      grad_output_re.numel() == bins && grad_output_im.numel() == bins,
+      "gradient bin count mismatch.");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  const torch::stable::accelerator::DeviceGuard device_guard(d.get_device_index());
   constexpr int block_size = 256;
-  backward_parallel_bins_kernel<<<targets, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d.data_ptr<float>(),
-      a.data_ptr<float>(),
-      grad_output_re.data_ptr<float>(),
-      grad_output_im.data_ptr<float>(),
-      grad_d.data_ptr<float>(),
-      grad_a.data_ptr<float>(),
+  backward_parallel_bins_kernel<<<targets, block_size, 0, current_cuda_stream(d)>>>(
+      d.const_data_ptr<float>(),
+      a.const_data_ptr<float>(),
+      grad_output_re.const_data_ptr<float>(),
+      grad_output_im.const_data_ptr<float>(),
+      grad_d.mutable_data_ptr<float>(),
+      grad_a.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -698,16 +731,16 @@ void backward_parallel_bins_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void backward_per_bin_cuda(
-    const at::Tensor& d,
-    const at::Tensor& a,
-    const at::Tensor& grad_output_re,
-    const at::Tensor& grad_output_im,
-    at::Tensor grad_d,
-    at::Tensor grad_a,
+    const torch::stable::Tensor& d,
+    const torch::stable::Tensor& a,
+    const torch::stable::Tensor& grad_output_re,
+    const torch::stable::Tensor& grad_output_im,
+    torch::stable::Tensor& grad_d,
+    torch::stable::Tensor& grad_a,
     double n,
     double k0_per_meter,
     int64_t num_bins,
@@ -728,18 +761,18 @@ void backward_per_bin_cuda(
   const int fft = checked_int(n_fft, "n_fft");
   const int targets = checked_int(num_targets, "num_targets");
   const int chunk = checked_int(bins_per_chunk, "bins_per_chunk");
-  TORCH_CHECK(chunk > 0, "bins_per_chunk must be positive.");
+  STD_TORCH_CHECK(chunk > 0, "bins_per_chunk must be positive.");
 
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(d));
+  const torch::stable::accelerator::DeviceGuard device_guard(d.get_device_index());
   const dim3 block(chunk, 1, 1);
   const dim3 grid((bins + chunk - 1) / chunk, 1, 1);
-  backward_per_bin_kernel<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-      d.data_ptr<float>(),
-      a.data_ptr<float>(),
-      grad_output_re.data_ptr<float>(),
-      grad_output_im.data_ptr<float>(),
-      grad_d.data_ptr<float>(),
-      grad_a.data_ptr<float>(),
+  backward_per_bin_kernel<<<grid, block, 0, current_cuda_stream(d)>>>(
+      d.const_data_ptr<float>(),
+      a.const_data_ptr<float>(),
+      grad_output_re.const_data_ptr<float>(),
+      grad_output_im.const_data_ptr<float>(),
+      grad_d.mutable_data_ptr<float>(),
+      grad_a.mutable_data_ptr<float>(),
       static_cast<float>(n),
       static_cast<float>(k0_per_meter),
       bins,
@@ -749,5 +782,14 @@ void backward_per_bin_cuda(
       static_cast<float>(fc),
       static_cast<float>(slope),
       static_cast<float>(t_start));
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+  m.impl("forward_chunked", TORCH_BOX(&forward_chunked_cuda));
+  m.impl("forward_mimo_linear_chunked", TORCH_BOX(&forward_mimo_linear_chunked_cuda));
+  m.impl("backward", TORCH_BOX(&backward_cuda));
+  m.impl("backward_batched", TORCH_BOX(&backward_batched_cuda));
+  m.impl("backward_parallel_bins", TORCH_BOX(&backward_parallel_bins_cuda));
+  m.impl("backward_per_bin", TORCH_BOX(&backward_per_bin_cuda));
 }

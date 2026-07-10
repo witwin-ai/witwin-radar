@@ -1,5 +1,12 @@
 # Radar Feature List
 
+## Packaging And Platform Support
+
+- Prebuilt CUDA 12.8 wheels for CPython 3.10-3.14 on Linux x86_64 and Windows x86_64.
+- Each wheel includes one Python-independent LibTorch Stable ABI Dirichlet library targeting PyTorch 2.10 or newer; the same binary is CI load-tested with PyTorch 2.10, 2.11, and 2.12 across CPython 3.10-3.14.
+- Native CUDA images cover compute capabilities 7.0, 7.5, 8.0, 8.6, 8.9, 9.0, 10.0, 10.1, and 12.0, with compute 12.0 PTX retained for forward-compatible Blackwell execution.
+- Linux release wheels are repaired and validated as `manylinux_2_35_x86_64` artifacts before publication.
+
 ## Public API
 
 - Declarative simulation flow: `Radar -> Scene -> torch.Tensor` via `radar.simulate(scene, ...)`
