@@ -204,7 +204,9 @@ If this module or its original RF-Genesis work is relevant to your research, ple
 
 ## License
 
-BSD-3-Clause
+Witwin Radar is available under a dual-license model for academic and
+non-commercial research use or commercial and enterprise use. See the
+[Witwin licensing page](https://witwin.ai/license) for the applicable terms.
 
 ## Developer
 
