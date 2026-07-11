@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import drjit as dr
-import rayd as rd
+import rayd.drjit as rd
 import torch
 
 from ._rayd_bridge import (

@@ -7,7 +7,7 @@ import math
 
 import drjit as dr
 import numpy as np
-import rayd as rd
+import rayd.drjit as rd
 import torch
 
 
