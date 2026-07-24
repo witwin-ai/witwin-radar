@@ -70,8 +70,8 @@ owner。它不是 Radar consumer API 的设计文档，也不是要求后续消�
 - [ADR-032 controlled compact cardinality boundary](../../../../channel/docs/dev/standards/adr-032-controlled-compact-cardinality-boundary.md)；
 - [ADR-033 Channel replacement product identity](../../../../channel/docs/dev/standards/adr-033-channel-replacement-product-identity.md)。
 
-ADR-029 已被 ADR-032 取代为 production 决策；ADR-030 只保留 dormant experiment；
-ADR-031 仍为 rejected/proposed candidate。三者可以作为历史测量和反例材料保留在 Channel
+ADR-029 已被 ADR-032 取代（Superseded）；ADR-030 是 Dormant experiment；
+ADR-031 已 Rejected。三者可以作为历史测量和反例材料保留在 Channel
 仓库，但不属于本文的 implementation dependency、public contract、release gate 或 Stage-I
 验收要求。本文不激活 `SourceLane` reducer，不要求公开 C/M/Qr，也不以已被拒绝的
 pair-major capacity pipeline 阻塞 Radar 集成。
