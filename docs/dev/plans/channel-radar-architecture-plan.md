@@ -1,6 +1,7 @@
 # Radar 消费 `witwin.channel` 传播核心架构与实施计划
 
-状态：Draft；已按 Channel 0.4、ADR-023～028、ADR-032/033 重新基线化；实施前仍需 Phase 0 ADR 批准
+状态：Draft；已按 Channel 0.4、已完成的 Plan 13、ADR-023～028、ADR-032/033
+重新基线化；实施前需锁定 RayD 0.7.0 并批准 Phase 0 ADR
 适用仓库：`witwin-platform` monorepo
 涉及包：`witwin`（`witwin.core`）、`witwin-channel`、`witwin-radar`
 目标版本：待 Phase 0 决策
@@ -31,10 +32,11 @@ Radar 不是 Channel 的第五个 solver，也不调用 `path.solve()`、`determ
 
 Channel
 [`Plan 13`](../../../../channel/docs/dev/plans/13-direct-rayd-integration-and-rf-runtime-ownership-plan.md)
-完成的是 Channel 与 RayD 之间的 typed native integration 和 RF numerical-owner 迁移：
+已经完成 Channel 与 RayD 之间的 typed native integration 和 RF numerical-owner 迁移：
 删除历史 `RayDN/raydn`、整数 scene handle、getter/extern-C bridge，使 `_channel` 直接
 source-link 锁定的 RayD typed target，并按 operation family 冻结 RayD 与 Channel 的 numerical
-owner。它不是 Radar consumer API 的设计文档，也不是要求后续消费者激活其全部实验分支。
+owner。Plan 13 不再是本计划的开放实施项或证据关闭项；它不是 Radar consumer API 的设计文档，
+也不要求后续消费者激活其历史实验分支。
 
 本文只继承当前生产实际使用并已接受的 ADR-023～028、ADR-032 和 ADR-033：
 
@@ -76,10 +78,12 @@ ADR-031 已 Rejected。三者可以作为历史测量和反例材料保留在 Ch
 验收要求。本文不激活 `SourceLane` reducer，不要求公开 C/M/Qr，也不以已被拒绝的
 pair-major capacity pipeline 阻塞 Radar 集成。
 
-本文保留不可跳过的 **Phase 0A**，但其目标改为冻结当前 Channel production baseline：
-最终 RayD lock、`rayd/torch/integration.h` identity、`witwin.channel/_channel` binding/owner
-manifests、ADR-032 compact 性能预算和当前 wheel/release evidence。Plan 13 尚未关闭的历史
-实验比较证据不阻塞本文；只有当前 production route 的 evidence 缺失或失败才阻塞 Stage I。
+本文保留轻量且不可跳过的 **Phase 0A**，但它只负责把已完成的 Plan 13 production
+architecture 重新绑定到 RayD/`rayd-torch` 0.7.0 稳定发布：冻结最终 release SHA、
+`rayd/torch/integration.h` identity/API/hash、Channel lock、source manifest、build fingerprint
+和当前 compact owner。历史 P→E/E→M 比较不再作为待补 evidence debt，也不触发 Plan 13
+重验收；Phase 0A 只验证 0.7.0 dependency/build/ABI compatibility，完整四 solver、AD、性能和
+release 验收集中在后续大模块 checkpoint。
 
 ### 1.2 Hard-guardrail audit 结论
 
@@ -236,7 +240,7 @@ dispatch这些 typed RayD entries；不得因 Core owner move 将 numerical sour
 ```text
 witwin.core.Scene / SceneSnapshot
         ↓
-witwin.channel.scene.compile(...)
+witwin.channel.scene.compile(..., reference_frequency_hz=...)
         ↓
 witwin.channel.CompiledScene
 ```
@@ -433,10 +437,17 @@ PhysicalMaterial(
     layers=...,
     roughness=...,
     dispersion=...,
+    gain=...,
+    scattering_coefficient=...,
+    xpd_coefficient=...,
 )
 ```
 
-它拥有传播相关的电磁参数，不拥有 RCS。
+它拥有传播相关的、solver-neutral 的电磁与表面响应参数，不拥有 RCS。Channel 当前 exact
+行为使用的 `gain`、`scattering_coefficient` 和 `xpd_coefficient` 必须进入 Core logical
+specification，不能在 Phase 2 删除旧 material owner 时丢失，也不能变成 Channel 私有默认值。
+`PhaseScreen` 的逻辑 descriptor、height/correlation 和 surface-assignment identity同样由Core
+表达；其CUDA layout、resident texture/table、cache和evaluation façade仍由Channel拥有。
 
 Radar target response 可以读取 physical material，但必须是额外的 Radar 模型：
 
@@ -472,11 +483,18 @@ class RCSModel:
 Current core Structure + Radar Scene + Channel Scene
         ↓ establish final Core Scene contracts
 witwin.core.Scene / SceneSnapshot
-        ↓ witwin.channel.scene.compile
+        ↓ witwin.channel.scene.compile(..., reference_frequency_hz=...)
 witwin.channel.CompiledScene
         ├── Channel propagation/solvers
         └── Radar propagation consumer
 ```
+
+Core Scene/Snapshot 不拥有 carrier/reference frequency。Channel compile boundary显式接收
+`reference_frequency_hz`，并以 snapshot versions、material specification versions和该频率共同
+形成cache key；`CompiledScene`冻结该primal reference frequency及其frequency-dependent material
+records。`PropagationRequest.reference_frequency_hz`必须与CompiledScene一致，否则在compute前
+fail loudly。`frequency_offsets_hz`仅在capability明确支持时使用；Stage I不以隐式重编译或
+host-side material replay伪装wideband dispersive支持。
 
 迁移要求：
 
@@ -529,10 +547,11 @@ Phase 1 启动前仍必须执行 maturity audit，确认：
 - Channel 四 solver 对 Scene internals 的 import edges；
 - 当前 runtime tests、performance baselines 和 missing contract coverage。
 
-Maturity audit 还必须确认 Plan 13 最终状态：live source 中 `RayDN/raydn`、integer handle、
-legacy extern-C/getter bridge 和 compatibility aliases 为零；RayD lock、integration header
-identity、binding manifest 与 current-owner inventory 一致。若任一项未满足，停止本文 Phase 1，
-不得围绕过渡边界设计 consumer API。
+Maturity audit 还必须确认已完成的 Plan 13 production architecture在RayD 0.7.0 final上保持：
+live source 中 `RayDN/raydn`、integer handle、legacy extern-C/getter bridge和compatibility
+aliases为零；0.7.0 lock、integration header identity/API/hash、binding manifest与
+current-owner inventory一致。若任一项未满足，停止本文Phase 1，不得围绕过渡边界设计
+consumer API，也不得把问题描述为“继续完成Plan 13”。
 
 若 audit 发现 runtime owner 与上述现状不符，必须先更新 ADR 和 Phase 2 scope；不得基于 `scene.__init__` 是否导出符号来推断底层能力。
 
@@ -1078,7 +1097,10 @@ SynthesisPathBatch(
 
 ```python
 snapshot = dynamic_scene.at(time_s)
-compiled = propagation.compile(snapshot)
+compiled = propagation.compile(
+    snapshot,
+    reference_frequency_hz=radar_config.reference_frequency_hz,
+)
 sites = target_sampler.sample(snapshot, radar_config.targets)
 legs = radar_leg_evaluator.evaluate(compiled, radar, sites)
 paths = two_way_composer.compose(legs, target_models)
@@ -1345,7 +1367,7 @@ internal runtime、复制 internal failure state，或为了跨包桥接再增�
 本计划严格拆成两个不交错的宏阶段：
 
 ```text
-前置门禁：当前 Channel production baseline freeze（Phase 0A）
+前置门禁：RayD 0.7.0 / Channel production dependency pin（Phase 0A）
         ↓ immutable dependency baseline
 大阶段 I：Core + Channel 基础调整（Phase 0-3）
         ↓ 独立 release/exit gate
@@ -1354,41 +1376,60 @@ internal runtime、复制 internal failure state，或为了跨包桥接再增�
 
 大阶段 I 不切换 Radar caller、不新增 `_radar_native` symbol，也不要求 Radar import 未发布的 Channel 工作树。它交付可独立安装、由 Channel 四 solver 完整验证的 Core/Channel 版本。大阶段 II 只能依赖这个已发布并冻结的版本开始；若 Radar 适配发现上游 contract 缺口，必须作为独立的 Stage-I maintenance change 修改、验收并重新发布上游版本，然后再恢复 Radar 适配，不能在同一 Radar PR 中跨层补丁。
 
+Stage-I 执行采用低频集中验收：每个Phase必须形成独立、可回滚的最终提交，开发期间只运行
+受影响的targeted tests和静态门禁；不为每个小提交重复执行`quick`/`cuda`/`nightly`/`release`。
+完整对抗审计和模块级验收只在三个大模块完成后执行：
+
+1. Phase 1：Core Scene/Material/Dynamics/Snapshot contracts；
+2. Phase 2：Channel compiler、single CompiledScene和四solver caller switch；
+3. Phase 3：compact propagation consumer、transport/AD和Stage-I release。
+
+审计发现进入当前模块scope的问题立即修复；跨模块建议登记到下一Phase，不以高频全量验收打断
+主实现路径。
+
 ### 大阶段 I：Core 与 Channel 基础调整
 
-#### Phase 0A：当前 Channel production baseline freeze
+#### Phase 0A：锁定 RayD 0.7.0 与 Channel production dependency baseline
 
-目标：冻结本计划真正依赖的当前 Channel production route，避免在 RayD typed boundary、
-ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner move。Plan 13 未闭合的
-历史 P→E/E→M comparative evidence作为 Channel 独立 evidence debt记录，不是本阶段门禁。
+目标：在 Plan 13 production architecture 已完成的前提下，将 Stage I 依赖原子绑定到最终
+RayD/`rayd-torch` 0.7.0 release。Phase 0A 不重新实施或重新验收 Plan 13，不追补历史
+P→E/E→M comparative evidence，只确认 0.7.0 没有破坏 Channel 已接受的 typed boundary、
+numerical ownership、ADR-032 compact owner和产品 identity。
 
 工作项：
 
-1. 固定已推送 RayD commit、`rayd/torch/integration.h` identity/numeric API version、Channel lock、
-   compiler/CUDA/Torch/SM flags和packaged extension fingerprint。
-2. 冻结 final binding/coverage manifest、current numerical-owner inventory、public API snapshot、
-   launch/resource ledger和migration docs。
-3. 记录 ADR-032 owning compact boundaries 的 count D2H bytes、sync/copy/launch位置、E2E
-   latency、steady throughput、peak memory和并发预算。
-4. 证明 live production source中 `RayDN/raydn`、raw integer scene handle、legacy extern-C/getter
+1. 等待并固定最终 RayD/`rayd-torch==0.7.0` release tag/SHA、source manifest、distribution
+   identity和干净 release artifact；不得以 release-prep dirty worktree或中间 commit作为冻结基线。
+2. 固定 `rayd/torch/integration.h` identity/numeric API/hash、Channel lock、compiler/CUDA/Torch/SM
+   flags和packaged extension fingerprint。
+3. 确认 0.7.0 相对 Plan 13 最终 production boundary 的 owner/ABI/numerical delta；任何
+   geometry/RF owner、launch、result schema或compact behavior变化必须先独立 ADR，不得混入本计划。
+4. 冻结 final binding/coverage manifest、current numerical-owner inventory、public API snapshot、
+   ADR-032 compact/sync ledger和migration docs。
+5. 证明 live production source中 `RayDN/raydn`、raw integer scene handle、legacy extern-C/getter
    bridge、旧 `channel_native/_channel_native` identity和compatibility aliases为零。
-5. 在同一 clean locked checkout运行当前 production route相关的 Channel `quick`/`cuda`、
-   applicable `nightly`/`release`、RayD direct、compact exactness和wheel/fingerprint gates。
-6. 单独登记 Plan 13 P→E/E→M comparative evidence debt；不得把superseded/dormant
-   experiment伪装为当前 production requirement。
+6. 只运行 dependency-pin 所需的定向 gates：lock/header/source-manifest validation、Channel
+   configure/build/import、RayD direct ABI contract、packaged wheel/fingerprint smoke和compact
+   owner静态检查。Phase 0A 不重复执行完整 `cuda`/`nightly`/`release`矩阵。
+7. 将历史 Plan 13 comparative reports标记为archived evidence；不得把它们恢复为Stage-I
+   implementation、test或release requirement。
 
 验收标准：
 
-- 当前 `witwin-channel`、`witwin.channel/_channel`、RayD lock/header/fingerprint/manifests和
-  ADR-032 performance ledger指向同一clean locked checkout；
-- Channel `quick`/`cuda`/applicable `nightly`/`release`、RayD direct和compact production suites通过；
+- `witwin-channel`、`witwin.channel/_channel`、RayD 0.7.0 release SHA、lock/header/source
+  manifest/fingerprint和owner manifests形成一个可复现的clean locked dependency baseline；
+- dependency-pin定向 gates全部通过；0.7.0 不改变已接受的numerical owner、compact K-row
+  behavior、受控count D2H/sync位置或public solver schema；
 - Phase 0A 不修改 Radar production，也不引入consumer API、Core Scene move或新numerical change；
-- 当前 production route任一 gate失败均停止本计划；历史 dormant/proposed experiment的开放
-  evidence不阻塞 Stage I。
+- Phase 0A 形成一个独立提交；RayD 0.7.0 final SHA未确定前不得伪造immutable baseline；
+- Plan 13 保持完成状态；历史 superseded/dormant/rejected experiment和comparative reports
+  不阻塞 Stage I。
 
-#### Phase 0：架构冻结、全量基线与执行门禁
+#### Phase 0：Stage-I 架构冻结、基线登记与执行门禁
 
-目标：冻结最终所有权、数据语义、现有行为和完整验收矩阵，使后续每个 phase 都可独立判定成功或失败。
+目标：冻结 Core/Channel 最终所有权、数据语义、现有行为和 Stage-I 验收矩阵，使后续每个
+phase 都可独立判定成功或失败。Phase 0 只做 ADR、inventory、baseline登记和必要的静态/
+定向 smoke，不重复运行完整数值/release矩阵。
 
 工作项：
 
@@ -1412,6 +1453,12 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
      observation owner；consumer projection不得新增第二次 count D2H/sync；
    - internal failure transaction在Channel boundary内终结且不进入consumer contract；
    - coefficient、delay、phase reference、units 与 polarization basis；
+   - Core Scene/Snapshot不拥有frequency；Channel
+     `compile(..., reference_frequency_hz=...)`冻结frequency-specific material records，
+     consumer request必须匹配compiled reference frequency；
+   - Core PhysicalMaterial/assignment完整表达layer、roughness、dispersion、gain、
+     scattering coefficient、XPD和logical phase-screen；Channel只拥有ABI encoding、
+     resident resources和numerical façade；
    - Dynamics/Snapshot versioning 和 invalidation；
    - AD capability/topology/compact-row boundary和compiled material frequency-AD限制；
    - `_channel`、locked RayD typed integration和`_radar_native` owner；明确本计划不建立
@@ -1419,23 +1466,15 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    - Core world-contract modules与既有mesh-SDF CUDA runtime的隔离边界；
    - Core/Channel 的 Python/Torch/CUDA/SM/wheel release matrix；
    - public API breaking migration policy。
-6. 从 Phase 0A artifacts冻结 Channel全量基线：四solver、各propagation components、
-   compact row identity/order、受控 D2H/sync ledger、AD、性能、native ABI和wheel。
-7. 以只读方式冻结 Radar 全量基线，不切换 Radar dependency、source 或 backend：
-   - static/moving single target；
-   - multi target 和 extended mesh；
-   - TDM MIMO phase/AoA；
-   - triangle/pixel sampling；
-   - multipath；
-   - noise/receiver/ADC；
-   - Range、Range-Doppler、point cloud、CFAR；
-   - gradients；
-   - latency、launch ledger、peak memory 和 target scaling。
-8. 为 Radar direct path 冻结 factor-level intermediates：sites、visibility、leg lengths、intensity/Fresnel、antenna、polarization、amplitude、phase、Dirichlet output 和 processing output。
-9. 记录 current public APIs、import graph、scene/material ownership、duplicate native/resource inventory。
-10. 建立 phase evidence 模板：功能、contract、AD、performance、packaging、migration notes。
-11. 以只读方式建立 Radar compute inventory，将每个 production op 分类为未来的 Channel native、`_radar_native`、allowed structural Torch、approved vendor DSP 或 forbidden Dr.Jit/Torch physics；覆盖 `trace.py`、`_rayd_bridge.py`、`material.py`、`solvers/common.py`、Dirichlet、frontend 和 `sigproc`。replacement implementation 延后到大阶段 II。
-12. 用 Nsight Systems/CUDA events 冻结当前 pixel/triangle direct、multipath、Dirichlet 和 processing 的 launch/sync/copy/latency/peak-memory baseline；必要时用 Nsight Compute 记录关键 kernel 的 occupancy、register、memory traffic 和 divergence。
+6. 登记现有已接受的 Channel四solver、propagation components、compact row identity/order、
+   受控D2H/sync、AD、性能、native ABI和wheel evidence。没有production delta的baseline只引用
+   原SHA，不为Phase 0重复采集。
+7. 记录 Core/Channel current public APIs、import graph、scene/material ownership和duplicate
+   native/resource inventory。
+8. 建立按大模块使用的evidence模板：功能、contract、AD、performance、packaging、migration
+   notes和adversarial findings。
+9. Radar全量baseline、factor traces、compute inventory和Nsight采集移到大阶段II的Phase 4
+   entry，在任何Radar production修改之前完成；它们不再阻塞Core/Channel Stage I。
 
 验收标准：
 
@@ -1443,18 +1482,17 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 - Phase 0A immutable dependency baseline完整，后续Phase不能静默更新RayD lock、header identity、
   compact boundary或owner inventory；确需更新时先独立重跑Phase 0A；
 - Channel `AGENTS.md` 与 `CLAUDE.md` 对任何已批准的新 guardrail 保持逐字一致，未批准前不修改当前规则；
-- Channel 与 Radar 基线在 locked environment 可重复；
+- Core/Channel baseline在locked environment可重复；
 - 所有 performance/memory/cold-start gates 有稳定采集协议和 variance threshold；
 - 若原仓库缺少 launch/memory harness，新增 harness 已先在旧代码上验证，而不是在迁移代码上自证；
 - Channel Scene maturity report 证明哪些能力可复用、哪些是 façade/API 缺口、哪些确实需要新建；
 - 最终 Python/Torch/RayD/wheel matrix 有 build/import/native smoke 证据；
-- Radar direct path factor-level baseline 完整可读取；
 - 所有生产 public/native symbols 有 inventory；
-- 所有 `drjit`/`rayd.drjit` imports、`@dr.wrap` sites 和 Torch physics hot paths 有 caller、replacement owner 和 deletion phase；
 - architecture migration、approved numerical change、Physics v2 使用不同 baseline；
 - release runtime matrix 已决定，不留到 packaging phase 临时处理；
 - 后续任何 phase 都不能通过更新原 baseline 来掩盖回归。
-- Phase 0 没有 Radar production source、dependency 或 backend 变更；Radar 内容仅为 immutable baseline/inventory。
+- Phase 0 没有 Radar source、dependency、backend、baseline或inventory变更；Radar准备工作延后到
+  Phase 4 entry。
 
 #### Phase 1：将逻辑 Scene、Materials 与 Dynamics 提取到 Core
 
@@ -1465,7 +1503,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 1. 在 `witwin.core` 建立最终 contracts：
    - `Scene`、`Structure`、`StructureId`；
    - geometry/primitive identity；
-   - `PhysicalMaterial`、layer、roughness、dispersion 和 assignment；
+   - `PhysicalMaterial`、layer、roughness、dispersion、gain、scattering coefficient、XPD、
+     logical phase-screen和assignment；
    - logical TX/RX/antenna state；
    - `Trajectory`、rigid motion、deformation state；
    - `DynamicScene.at(time_s) -> SceneSnapshot`；
@@ -1475,7 +1514,10 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    Channel/Radar production caller。
 3. 保证 tensor-facing continuous leaves 保持 PyTorch identity、device 和 gradient state。
 4. 将 Radar Target/RCS 保留为通过 `structure_id` 关联的 Radar-owned data。
-5. 为 Core 添加纯 contract、snapshot、versioning 和 device-placement tests。
+5. 移除Core中旧`witwin-channel-native` optional dependency/identity；world-contract modules不
+   依赖任何Channel distribution，既有mesh-SDF build依赖保持独立。
+6. 为 Core 添加纯 contract、snapshot、versioning 和 device-placement tests。
+7. 完成Core大模块后执行一次集中对抗审计和Core contract/native验收，然后形成Phase 1最终提交。
 
 验收标准：
 
@@ -1489,16 +1531,21 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 - Snapshot 对相同 time/version 输入确定性一致；
 - vertices/material continuous tensors 不 clone、不 detach、不搬到 CPU；
 - world-contract tests 在不加载 native extensions 的情况下通过，既有mesh-SDF native tests仍通过；
-- RadarTarget/RCS 字段没有进入 Core Scene 或 PhysicalMaterial。
+- RadarTarget/RCS 字段没有进入 Core Scene 或 PhysicalMaterial；
+- Phase 1有独立最终提交和绑定该SHA的模块审计记录，不要求运行Channel全量suite。
 
 #### Phase 2：Channel Scene Compiler 切换到 Core Scene
 
-目标：使 `witwin.channel.scene.compile(core_scene_or_snapshot)` 成为唯一 production RayD/BVH/CompiledScene 构建路径。
+目标：使
+`witwin.channel.scene.compile(core_scene_or_snapshot, reference_frequency_hz=...)`
+成为唯一 production RayD/BVH/CompiledScene 构建路径。
 
 工作项：
 
 1. Channel loader/compiler 直接消费 Core Scene/Snapshot contracts。
 2. 将 material ABI encoding、geometry/material/assignment GPU stores 映射到 Core IDs。
+   Compile显式接收`reference_frequency_hz`，并用该频率与Core version tokens构造cache key；
+   request/compiled frequency mismatch在任何native compute前失败。
 3. 保持 `CompiledScene`、RayD scene/BVH、typed `RayDSceneResource` holder和caches在Channel；
    Core只持有逻辑identity/version，不持有或编码native resource。
 4. 建立 topology/geometry/material/assignment granular invalidation。
@@ -1509,6 +1556,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    compiler删除属于大阶段II。
 8. 原子更新Channel root `Scene` identity、public API snapshot、migration note和guardrails；
    不保留指向旧Channel logical implementation的compatibility façade。
+9. 完成compiler/caller-switch大模块后集中执行一次对抗审计、四solver exact/AD/performance
+   验收和clean wheel smoke，然后形成Phase 2最终提交。
 
 验收标准：
 
@@ -1520,7 +1569,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 - CompiledScene/cache/`RayDSceneResource` 未进入Core contracts或public Results；
 - Core+Channel只剩一个logical Scene/PhysicalMaterial source owner；Channel内部重复owner已删除，
   root public identity直接指向批准的Core contract；
-- Radar package 和现有 backend 在本 phase 保持不变，Radar duplicate scene/tracer 被明确记录为大阶段 II migration debt，而不是被宣称已经删除。
+- Radar package 和现有 backend 在本 phase 保持不变，Radar duplicate scene/tracer 被明确记录为大阶段 II migration debt，而不是被宣称已经删除；
+- Phase 2有独立最终提交和绑定该SHA的集中模块验收记录。
 
 #### Phase 3：建立稳定、完整的 Propagation Consumer API
 
@@ -1540,12 +1590,16 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    公共`PropagationPathBatch`发布实际compact K rows、stable pair index/offsets和host
    `path_count == K`，不公开internal defining modules或failure object。
 3. 提供 scalar、Complex3 和 Jones/polarimetric transport，不依赖 Channel RX result projection。
+   Jones capability必须是完整的source-basis到sink-basis 2×2 transport operator，不把现有
+   sidecar或endpoint-projected scalar重新命名为Jones。
 4. 入口支持LoS、reflection、transmission、diffraction、scattering/rough components和显式
    endpoint batches；`max_paths`保持显式selection policy，不公开实验性capacity参数。
 5. 将consumer projection并入或复用ADR-032 owning compact stage：同义字段可alias，新增字段由
    唯一native producer一次生成；禁止Torch gather/compaction/recompute，不增加第二次count
    D2H/sync。Path/Deterministic继续直接使用internal contracts，不要求经consumer API绕行；
    MC/BDPT只使用ADR-008批准边界。
+   当前legacy-result路径中的Torch `nonzero/index_select/contiguous`不得成为consumer实现；
+   compact projection、`pair_index`和`pair_offsets`由单一owning native producer一次生成。
 6. Channel在consumer boundary内终结错误和internal fixed-capacity transaction；consumer result
    不暴露failure state、raw bit、native handle或terminal observer ownership。
 7. 更新public API snapshot、import graph、capabilities、binding/current numerical ownership、
@@ -1556,7 +1610,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    scalar/Complex3/Jones、fixed-row JVP/VJP、capability failure和no-partial-result；
    probe不含Radar语义。
 10. 构建并发布Core+Channel Stage-I release candidate、wheel、API/ABI/failure/owner
-    manifests和迁移说明，作为大阶段II唯一允许上游基线。
+     manifests和迁移说明，作为大阶段II唯一允许上游基线。
+11. 完成consumer大模块后执行一次集中对抗审计与Stage-I全量验收，然后形成Phase 3最终提交。
 
 验收标准：
 
@@ -1578,7 +1633,9 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
   ADR-032 compact baseline预算；
 - Core/Channel release candidate 可在 clean environment 独立安装，Channel 四 solver 与 consumer conformance 全绿；
 - 大阶段 I 的 Git SHA、wheels、contract version、build fingerprint 和 evidence manifest 已冻结；
-- Phase 0-3 没有 Radar production source/dependency/backend 变更。未达到上述 Stage-I exit gate 时不得启动 Phase 4。
+- Phase 0-3 没有 Radar production source/dependency/backend 变更。未达到上述 Stage-I exit gate 时不得启动 Phase 4；
+- Phase 3有独立最终提交；完整`quick`/`cuda`/applicable `nightly`/`release`只在该Stage-I
+  checkpoint集中运行，不在consumer开发的每个小提交重复运行。
 
 ### 大阶段 II：Radar 消费 Channel 并完成传感器适配
 
@@ -1591,7 +1648,11 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 工作项：
 
 1. Pin 大阶段 I 的 Core/Channel wheels、contract version 和 build fingerprint；完成 clean-install、import、CompiledScene、consumer evaluation 和 no-solver-import smoke。
-2. 接受并冻结 Radar-side ADR：
+2. 在修改任何Radar production source前，冻结Radar全量baseline、direct factor traces、
+   compute-owner inventory和Nsight launch/sync/copy/latency/peak-memory evidence；覆盖
+   static/moving、multi/extended target、TDM、pixel/triangle、multipath、frontend、processing、
+   gradients以及所有Dr.Jit/Torch physics replacement/deletion owners。
+3. 接受并冻结 Radar-side ADR：
    - Radar general multipath service 与 ADR-008 enumerated oracle 的边界；
    - scatter-site、leg 和 round-trip path identity；
    - monostatic reciprocity optimization；
@@ -1602,8 +1663,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
      no-partial-result error boundary；
    - Radar single production compute backend、Dr.Jit prohibition、Torch/DSP 例外和 native dispatch；
    - Radar dependency、Python/Torch/CUDA/SM/wheel matrix。
-3. 实现 Radar propagation adapter，只导入 Stage-I consumer API，不导入 Channel solver、internal contracts、`propagation.enumerated.*` 或 raw `_channel`。
-4. 在扩展功能广度前完成纵向 native AD spike：
+4. 实现 Radar propagation adapter，只导入 Stage-I consumer API，不导入 Channel solver、internal contracts、`propagation.enumerated.*` 或 raw `_channel`。
+5. 在扩展功能广度前完成纵向 native AD spike：
    - one Core endpoint/one differentiable scatter site；
    - direct LoS propagation/fixed topology；
    - scalar differentiable target response；
@@ -1611,13 +1672,13 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    - one reusable `_radar_native` complex FMCW synthesis primitive；
    - scalar Radar loss；
    - endpoint/site/material/target-response 的 JVP 与 VJP。
-5. AD spike 只允许 `tests/support` 中的最薄 orchestration，数值 primitive 必须成为后续正式 owner 的基础，不创建待废弃的第二套生产实现。
-6. 实现 `RadarTarget`、`TargetState`、target grouping 和 `ScatterSiteBatch`。
-7. 支持 point target、triangle/mesh extended target、SMPL/deforming mesh 和 rigid assemblies。
-8. 建立稳定 `target_id/site_id/structure_id/primitive_id`。
-9. 实现target sampling、visibility request generation和native compact site packing：发布实际
+6. AD spike 只允许 `tests/support` 中的最薄 orchestration，数值 primitive 必须成为后续正式 owner 的基础，不创建待废弃的第二套生产实现。
+7. 实现 `RadarTarget`、`TargetState`、target grouping 和 `ScatterSiteBatch`。
+8. 支持 point target、triangle/mesh extended target、SMPL/deforming mesh 和 rigid assemblies。
+9. 建立稳定 `target_id/site_id/structure_id/primitive_id`。
+10. 实现target sampling、visibility request generation和native compact site packing：发布实际
    K sites，允许owning boundary执行受控整数count D2H/sync，不在Python/Torch二次compact；
-10. 实现 Radar scattering hierarchy：
+11. 实现 Radar scattering hierarchy：
    - scalar RCS；
    - aspect-dependent RCS；
    - material-informed response；
@@ -1625,8 +1686,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
    - target-specific phase；
    - clutter classification/response；
    - parameter capability 和 AD metadata。
-11. 建立现有 Radar intensity/amplitude 的 compatibility scattering model，仅用于迁移基线。
-12. 将 production target sampling、aspect/polarization evaluation 和 scattering primal/JVP/VJP 实现在 `_radar_native` owning facades；Python/Torch 实现只保留为 `tests/reference` oracle。
+12. 建立现有 Radar intensity/amplitude 的 compatibility scattering model，仅用于迁移基线。
+13. 将 production target sampling、aspect/polarization evaluation 和 scattering primal/JVP/VJP 实现在 `_radar_native` owning facades；Python/Torch 实现只保留为 `tests/reference` oracle。
 
 验收标准：
 
@@ -1895,7 +1956,8 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 
 验收标准：
 
-- Phase 0A immutable dependency与Phase 0定义的全量矩阵在最终SHA/release wheels上全部通过；
+- Phase 0A immutable dependency、Phase 0定义的Stage-I矩阵和Phase 4冻结的Radar baseline在
+  最终SHA/release wheels上全部通过；
 - Channel solver 结果、path identity、AD 和性能没有未批准回归；
 - Radar 的 monostatic/bistatic/multistatic、三类 waveform、Dynamics、Doppler、micro-Doppler、clutter、processing 和 AD 全部通过；
 - Windows/Linux 和完整 runtime matrix 通过；
@@ -1911,14 +1973,12 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 
 | PR | 内容 | 数值策略 |
 |---|---|---|
-| **前置** | **当前 Channel/RayD lock、header、fingerprint、ADR-032 compact performance baseline freeze** | **不得与本文改动混合** |
+| **Phase 0A** | **pin RayD/`rayd-torch` 0.7.0 final SHA、header、source manifest、Channel lock与fingerprint** | **dependency-only；独立最终提交** |
 | **大阶段 I** | **Core + Channel；不修改 Radar production** | **独立 release gate** |
-| 1 | Phase 0 ADR、current-production immutable baseline、API/ABI/owner/sync inventory | 无生产变化 |
-| 2-4 | Core Scene/Structure/PhysicalMaterial/Dynamics contracts | contract-only |
-| 5-7 | Channel compiler 消费 Core Scene 并迁移 GPU stores | exact |
-| 8 | 删除重复 logical Scene/Material owners | exact/architecture gate |
-| 9-11 | compact consumer Request/Evaluation/Convention/Capabilities；ADR-003/007/008/032/033 gates | contract/native-compact gate |
-| 12-14 | K-row identity/segmentation、scalar/Complex3/Jones、fixed-row AD、Stage-I wheels | exact + capability + release gate |
+| **Phase 0** | ADR、maturity、API/ABI/owner/sync inventory与Stage-I门禁 | 无生产变化；独立最终提交 |
+| **Phase 1** | Core Scene/Structure/PhysicalMaterial/Dynamics/Snapshot contracts | contract-only；模块审计后独立最终提交 |
+| **Phase 2** | Channel compiler消费Core Scene、迁移stores、切四solver并删除重复logical owners | exact；模块审计后独立最终提交 |
+| **Phase 3** | compact consumer、K-row segmentation、scalar/Complex3/Jones、fixed-row AD、Stage-I wheels | native compact + capability + release；独立最终提交 |
 | **大阶段 II** | **Radar pin Stage-I release 后开始适配** | **不得跨包工作树联动** |
 | 15-17 | Radar adapter、纵向native AD spike、compact ScatterSite、target response | dependency + compact + AD stop/go |
 | 18-21 | typed-tensor direct/general legs、compact two-way join、multipath、Dr.Jit removal | path/physics/performance gate |
@@ -1933,10 +1993,10 @@ ADR-032 compact owner或产品 identity仍变化时启动第二次跨包 owner m
 
 纯架构、数值变化、性能 fusion 和 public breaking change 不应混在同一 PR。
 
-Phase 0A current-production baseline未冻结时不启动PR 1。PR 1-14合并并发布前不启动PR 15。PR 15-41只能
-依赖PR 12-14产生的版本化artifacts。Radar发现上游缺口时，先单独回到大阶段I maintenance
-branch完成新版本并重新发布；若缺口涉及RayD lock、ADR-032 compact owner或当前production
-ADR set，则先重跑Phase 0A。不能在
+RayD 0.7.0 final baseline未冻结时不提交Phase 0。Phase 0-3合并并发布前不启动Radar PR。
+Radar PR只能依赖Phase 3产生的版本化artifacts。Radar发现上游缺口时，先单独回到大阶段I
+maintenance branch完成新版本并重新发布；若缺口涉及RayD release lock、
+`rayd/torch/integration.h`、ADR-032 compact owner或production ADR set，则先重跑Phase 0A。不能在
 一个PR中同时修改Channel internal contract和Radar caller。
 
 ### 14.1 单主力开发者 sizing
@@ -1945,8 +2005,8 @@ ADR set，则先重跑Phase 0A。不能在
 
 | Phase | Size | 初始日历范围 | 关键不确定性 |
 |---|---|---|---|
-| 0A | S/M | 取决于当前production evidence | clean release、wheel/fingerprint、compact performance freeze |
-| 0 | M | 1-2 周 | measurement harness、wheel feasibility |
+| 0A | S | 取决于RayD 0.7.0 final release | final SHA/header/source manifest、Channel lock和wheel fingerprint |
+| 0 | S/M | 约1周 | maturity、frequency/material contracts、wheel feasibility |
 | 1 | L | 3-5 周 | Core material/scene contract 合并 |
 | 2 | L/XL | 3-6 周 | 四 solver exact、cache/invalidation |
 | 3 | L/XL | 3-6 周 | consumer API boundary、Complex3/Jones、Stage-I release |
@@ -1983,7 +2043,7 @@ Scene owner、propagation SPI、AD tape、two-way contract 和 phase convention 
 - Channel Config/Result 无 waveform、ADC、CFAR 字段；
 - `_channel` manifest 无 waveform/IQ/ADC symbols；
 - 每个 native symbol 有唯一 owner 和 end-to-end caller；
-- current-production RayD lock/header/fingerprint与Stage-I dependency一致；live production无
+- RayD 0.7.0 final lock/header/source manifest/fingerprint与Stage-I dependency一致；live production无
   `RayDN/raydn`、legacy bridge或第二RayD registry；
 - `_radar_native`不链接RayD scene/RF numerical source或Channel private kernels；无shared
   RF/geometry static library；
@@ -2227,13 +2287,15 @@ compact owners。Static cardinality-observation/sync ledger、non-default-stream
 failure/no-partial-result和E2E performance tests作为合并门禁。任何raw failure bit跨包、未具名
 count read或Python/Torch二次compaction立即停止review。
 
-### 17.12 当前 Channel production 基线继续漂移
+### 17.12 RayD 0.7.0 final dependency baseline 漂移
 
-风险：Stage-I开发期间RayD lock、integration header、compact ABI或owner inventory继续变化，
+风险：Stage-I开发期间已冻结的RayD 0.7.0 lock、integration header、compact ABI或owner
+inventory继续变化，
 使consumer release与Radar pin不可复现。
 
-缓解：Phase 0A artifacts immutable。任何当前production ADR set、ADR-032 compact owner、
-RayD lock/header或binding owner变化先在独立maintenance line完成evidence并重跑Phase 0A，
+缓解：Phase 0A artifacts immutable。任何production ADR set、ADR-032 compact owner、
+RayD 0.7.0 lock/header/source manifest或binding owner变化先在独立maintenance line完成
+evidence并重跑Phase 0A，
 然后显式更新Stage-I dependency；不得用相邻worktree或dirty checkout联动开发。
 
 ## 18. Phase 执行与合并规则
@@ -2245,13 +2307,14 @@ RayD lock/header或binding owner变化先在独立maintenance line完成evidence
 
 | 大阶段 | Phase | 允许修改 | 明确禁止 | Exit artifact |
 |---|---|---|---|---|
-| 前置 | 0A | current Channel production evidence/docs/locked dependency；不修改本文目标架构 | Core Scene move、consumer API、Radar production | immutable RayD/Channel release baseline |
+| 前置 | 0A | RayD 0.7.0 final pin、Channel dependency evidence/docs；不修改目标架构 | Core Scene move、consumer API、Radar production | immutable RayD 0.7.0/Channel dependency baseline |
 | I：Core + Channel | 0-3 | Core contracts；Channel scene/compiler/material runtime/consumer API；Channel tests/docs/build | Radar production source、Radar dependency/backend、`_radar_native` symbols、Radar caller switch | 独立可安装的 Core/Channel wheels、contract/API/ABI manifest、四 solver evidence |
 | II：Radar adaptation | 4-12 | Radar adapter、targets、paths、native kernels、synthesis、processing、AD、packaging | Radar import Channel solver/internal modules；把 Radar policy加入 Channel；同 PR 修改冻结的上游 contract | Radar release 与全系统 evidence |
 
 执行规则：
 
-1. 大阶段 I 的 Radar 工作仅限只读 baseline、inventory 和冻结 fixtures；不得改变 Radar production 行为。
+1. 大阶段 I 不修改Radar source/dependency/backend，也不要求冻结Radar baseline；Radar只在Phase 4
+   entry、任何production修改之前完成只读baseline/inventory。
 2. Phase 3 exit 后先发布并冻结 Core/Channel artifacts，再创建 Radar integration branch。
 3. 大阶段 II 通过正常 package dependency pin 消费 Stage-I artifacts，不使用 monorepo 相邻源码路径掩盖 packaging/API 缺口。
 4. Radar 发现上游缺口时暂停当前 phase，提交独立 Stage-I maintenance change，重新跑四 solver 和 Stage-I release gate并发布新版本，然后更新 Radar pin。
@@ -2261,8 +2324,10 @@ RayD lock/header或binding owner变化先在独立maintenance line完成evidence
 
 | Checkpoint | 完成范围 | 可交付价值 | Go/stop decision |
 |---|---|---|---|
-| 0A：Current Baseline | final RayD lock/header/fingerprint、ADR-032 compact release/performance evidence | 为本文提供可复现的唯一native/compact baseline | 当前production gate失败则不启动Phase 0 |
+| 0A：RayD 0.7.0 Pin | final release SHA、lock/header/source manifest/fingerprint、ADR-032 compact owner continuity | 为本文提供可复现的唯一native dependency baseline | dependency/ABI gate失败则不启动Phase 0 |
 | A：Phase 0 | baselines、maturity、Core/Channel feasibility/owner ADR | 证明大阶段 I 可执行，补齐测量基础设施 | packaging 或 scene owner 不成立则停止 Phase 1 |
+| A1：Phase 1 | Core Scene/Material/Dynamics/Snapshot contracts与集中模块审计 | 可独立发布Core world contracts | identity/import/device-placement不通过则停止Phase 2 |
+| A2：Phase 2 | single Channel compiler、四solver switch与集中模块审计 | Core+Channel共享一个logical Scene/CompiledScene owner | exact/AD/performance不通过则停止Phase 3 |
 | B：Phase 3 / Stage-I Exit | Core Scene + single CompiledScene + compact K-row consumer + Complex3/Jones | 独立发布Core/Channel，四solver完整可用 | row identity、sync budget、exact/AD/performance/release不通过则禁止Radar适配 |
 | C：Phase 4 / Stage-II Entry | Radar adapter + vertical AD spike + compact site/target contracts | 证明上游contract足够且tape/error边界可组合 | spike或compact site contract失败则暂停Radar |
 | D：Phase 6 | direct/multipath/hybrid two-way + targets + FMCW/OFDM/Pulsed synthesis/frontend | 新 Radar backend 已能生成完整接收信号，现有 direct 快速路径保留 | compatibility/performance 不通过则不切 production default |
@@ -2283,7 +2348,7 @@ Checkpoint B、D 可以独立发布，不需要等待 Phase 12 才获得价值�
 4. Phase-only adapters 只存在于 feature/integration branch；checkpoint release 不包含未列入 owner inventory 的 shadow production path。
 5. Stop conditions：
    - Python/Torch/RayD matrix 无法达到批准目标；
-   - current Channel lock/header/fingerprint、ADR-032 compact release evidence无法形成immutable baseline；
+   - RayD 0.7.0 final lock/header/source manifest/fingerprint无法形成immutable dependency baseline；
    - single CompiledScene 引入无法接受的 Channel exact/performance 回归；
    - vertical AD spike 不能在无 detach/fallback 下成立；
    - direct evaluator 无法达到相对现有 direct path 的批准性能预算；
@@ -2301,12 +2366,16 @@ Checkpoint B、D 可以独立发布，不需要等待 Phase 12 才获得价值�
 2. **完整 owner move。** 一个 phase 内可以存在短期 adapter/shadow harness，但 phase exit 前必须完成 caller switch 和明确删除项。
    RayD/Channel owner split以当前已接受的ADR-023～028、ADR-032/033为基线，不得把RayD numerical source迁回Channel或
    复制到Radar。
-3. **提交可回滚。** 纯移动、caller switch、native numerical change、performance fusion、public breaking change、dead deletion 和 docs 分开提交。
-4. **验收证据绑定 SHA。** 功能、contract、AD、performance、packaging evidence 必须对应该 phase 的最终提交。
-5. **不以 fallback 过门禁。** Missing capability、native error、topology invalidation 或 ABI mismatch 必须 fail loudly。
-6. **不降低门禁。** 不放宽 tolerance、performance budget、import allowlist 或 test coverage 来接受迁移。
-7. **数值变化独立审批。** Architecture migration 默认保持现有数值；确需 Physics v2 变化时使用独立 ADR、baseline 和 PR。
-8. **跨仓库同步。** Core、Channel 和 Radar 的依赖版本、API snapshot、migration notes 和 CI matrix 在相关 phase 同步更新。
+3. **每Phase独立提交。** Phase 0A、0、1、2、3分别形成一个明确的最终提交；phase内部可有
+   纯移动、caller switch、dead deletion、docs等小提交，但不能跨Phase混合。
+4. **低频集中验收。** 小提交只跑targeted tests和静态门禁；完整对抗审计/模块验收只在
+   Phase 1、2、3大模块完成后运行，`nightly`/`release`只在明确的release checkpoint运行。
+5. **验收证据绑定 SHA。** 功能、contract、AD、performance、packaging evidence必须对应
+   大模块的Phase最终提交，不绑定尚在变化的小提交。
+6. **不以 fallback 过门禁。** Missing capability、native error、topology invalidation 或 ABI mismatch 必须 fail loudly。
+7. **不降低门禁。** 不放宽 tolerance、performance budget、import allowlist 或 test coverage 来接受迁移。
+8. **数值变化独立审批。** Architecture migration 默认保持现有数值；确需 Physics v2 变化时使用独立 ADR、baseline 和 PR。
+9. **跨仓库同步。** Core、Channel 和 Radar 的依赖版本、API snapshot、migration notes 和 CI matrix 在相关 phase 同步更新。
 
 Phase 12 之前不得宣布架构迁移完成；Phase 12 release acceptance 是唯一最终完成门禁。
 
@@ -2314,8 +2383,8 @@ Phase 12 之前不得宣布架构迁移完成；Phase 12 release acceptance 是�
 
 整个计划只有在以下条件全部成立时完成：
 
-- Phase 0A已完成，current Channel clean release、RayD lock/header/fingerprint、ADR-032/033
-  manifests/evidence构成immutable baseline；
+- Phase 0A已完成，RayD/`rayd-torch` 0.7.0 final release SHA、Channel clean lock、
+  integration header/source manifest/fingerprint和ADR-032/033 manifests构成immutable baseline；
 - 大阶段 I 已先以独立 Core/Channel release、四 solver evidence 和 immutable manifest 完成；Radar adaptation 只依赖该版本化产物开始；
 - 大阶段 I 没有 Radar production change，大阶段 II 没有把 Radar policy 或临时 consumer patch 回灌到 Channel internal owners；
 - `witwin.channel` 与 `witwin.radar` 仍是独立 Python 包和独立领域；
