@@ -1,10 +1,11 @@
 # Radar 消费 `witwin.channel` 传播核心架构与实施计划
 
-状态：Draft；已按 Channel 0.4、已完成的 Plan 13、ADR-023～028、ADR-032/033
-重新基线化；实施前需锁定 RayD 0.7.0 并批准 Phase 0 ADR
+状态：大阶段 I 的 Core/Channel production 实现与本地集中验收已完成；Windows RC 已通过
+Core+Channel 双 wheel 隔离 smoke；真实 manylinux_2_28 发布门禁待 GitHub Actions 执行；
+大阶段 II 尚未开始
 适用仓库：`witwin-platform` monorepo
 涉及包：`witwin`（`witwin.core`）、`witwin-channel`、`witwin-radar`
-目标版本：待 Phase 0 决策
+目标版本：Core 0.4.0 / Channel 0.4.0 Stage-I RC；Radar 版本由大阶段 II 决定
 
 ## 1. 摘要
 
@@ -632,7 +633,7 @@ hot path 不得重复 compile。
 class PropagationPathBatch:
     pair_count: int
     path_count: int
-    pair_index: torch.Tensor  # CUDA int64 [K], stable pair-major order
+    pair_index: torch.Tensor  # CUDA int64 [K], stable sink-major/source-minor
     pair_offsets: torch.Tensor  # CUDA int64 [pair_count + 1]
     topology: PropagationTopology
     geometry: PropagationGeometry
@@ -648,7 +649,8 @@ class PropagationEvaluation:
 
 K 等于所有公开 row tensors 的真实第一维；公开 batch 中不存在 padding/invalid row。
 `path_count` 等于 K，并由 owning compact boundary 已经观察到的 host count构造，不触发新的
-device read。`pair_index` 和 `pair_offsets` 给出稳定 pair-major segmentation；它们不得通过
+device read。`pair_index` 和 `pair_offsets` 给出稳定 sink-major/source-minor segmentation，
+其中 `pair_index = sink_index * source_count + source_index`；它们不得通过
 Python host loop从 physics payload 重建。所有 topology、geometry 和 transport fields 按同一 K
 对齐，保持 row identity、tensor storage/stride、device 和 gradient state。
 
@@ -884,7 +886,8 @@ class RadarPathBatch:
 
 `RadarLegBatch` 和 `RadarPathBatch` 采用与 propagation consumer相同的 compact `O(K)`
 discipline，但它们是 Radar-owned contracts。所有 topology/geometry/transport fields 与实际 K
-rows 对齐；stable pair-major order由 `sensor_pair_index/pair_offsets` 表达。Radar不复用或篡改
+rows 对齐；stable sink-major/source-minor order由 `sensor_pair_index/pair_offsets` 表达。
+Radar不复用或篡改
 Channel internal capacity experiment。
 
 ### 7.5 Monostatic reciprocity
@@ -1389,6 +1392,40 @@ Stage-I 执行采用低频集中验收：每个Phase必须形成独立、可回�
 
 ### 大阶段 I：Core 与 Channel 基础调整
 
+#### Stage-I 执行记录（2026-07-24）
+
+大阶段 I 已在独立 Core/Channel worktree 中完成，且没有修改 Radar production source、
+dependency 或 backend。执行结果如下：
+
+| Phase | 状态 | 最终提交/证据 |
+|---|---|---|
+| 0A | 完成 | Channel `74a28e1`；RayD 0.7.0 final SHA `49c58c4cb8212f6babb920cc88fb937509826cc5` |
+| 0 | 完成 | Channel `8d37bf7`；ADR、owner、failure、compact/sync、public/native inventory 已冻结 |
+| 1 | 完成 | Core `fb24efe`、contract gap closure `0d6c6b5`、Stage-I Python baseline `42b7b067b4512ebe05c462b79a75577458010b48`；91 tests passed |
+| 2 | 完成 | Channel `c2356dc`；四 solver 已切换 Core world contracts；2486 tests、0 failures |
+| 3 | production 实现与本地 Stage-I gate 完成 | Channel `88f8a35`；isolated-wheel audit `6a60e2f`；evidence closure `6e805c2`；2515 passed、10 skipped、1 xfailed、0 failed；对抗审计 P0/P1 为零 |
+
+Phase 3 的本地 Windows RC 为
+`witwin_channel-0.4.0-cp311-cp311-win_amd64.whl`，SHA-256
+`295adc07b82bae8472128cd8d378908fd2db32015b83a6be911f0aa698c965a5`。
+它与 Core wheel
+`24677c4902ca44e36bcef6933398d2e9afd3ec74fa9a246fbbacdf54e8ba1f62`
+安装到同一 disposable target 后完成 package/native import、九个 Phase-3 native symbols、
+build identity、PE dependency/export closure 和 license/RECORD/source closure smoke。
+
+本地性能记录为：32×32 general discovery median 3.533 ms、P95 3.837 ms、
+289,810 paths/s；fixed LoS reevaluation median 0.748 ms、P95 0.868 ms、
+1,369,541 paths/s。general canonical owner 对非空候选执行一次 8-byte D2H 和一次
+current-stream sync；LoS exact metadata 为零；fixed LoS validation 对非空 rows 执行一次
+4-byte D2H 和一次 current-stream sync。生产 general compact 为稳定 radix
+sort 后的 `O(K + P)`。
+
+Stage-I source implementation 已冻结。真实 manylinux_2_28 wheel、完整
+SM70/75/80/86/87/89/90/100/101/120 SASS 与 compute_120 PTX 仍必须由已提交的 release
+workflow 在 GitHub Actions 中生成和验收；在这些 artifacts 发布并被 Radar 正常 dependency
+pin 之前，不启动 Phase 4。完整证据见 Channel
+`docs/dev/audit/stage1-phase3-consumer-evidence.md`。
+
 #### Phase 0A：锁定 RayD 0.7.0 与 Channel production dependency baseline
 
 目标：在 Plan 13 production architecture 已完成的前提下，将 Stage I 依赖原子绑定到最终
@@ -1591,9 +1628,13 @@ phase 都可独立判定成功或失败。Phase 0 只做 ADR、inventory、basel
    `path_count == K`，不公开internal defining modules或failure object。
 3. 提供 scalar、Complex3 和 Jones/polarimetric transport，不依赖 Channel RX result projection。
    Jones capability必须是完整的source-basis到sink-basis 2×2 transport operator，不把现有
-   sidecar或endpoint-projected scalar重新命名为Jones。
-4. 入口支持LoS、reflection、transmission、diffraction、scattering/rough components和显式
+   sidecar或endpoint-projected scalar重新命名为Jones。v1 Jones capability限定为有真实
+   native 2×2 owner的LoS；其他component在有独立coherent contract前必须fail loudly。
+4. v1入口的component集合严格限定为LoS、reflection、transmission和diffraction及显式
    endpoint batches；`max_paths`保持显式selection policy，不公开实验性capacity参数。
+   现有scattering/rough结果是incoherent power且使用非canonical append，不得伪装成consumer
+   field transport；它不属于v1 capability，未来只有在独立coherent contract、single compact
+   owner和AD evidence完成后才能加入。
 5. 将consumer projection并入或复用ADR-032 owning compact stage：同义字段可alias，新增字段由
    唯一native producer一次生成；禁止Torch gather/compaction/recompute，不增加第二次count
    D2H/sync。Path/Deterministic继续直接使用internal contracts，不要求经consumer API绕行；
@@ -1618,9 +1659,10 @@ phase 都可独立判定成功或失败。Phase 0 只做 ADR、inventory、basel
 - package-neutral probe 可只导入 consumer API，不导入任何 Channel solver 或 internal contract defining module；
 - Path/Deterministic结果和existing internal row semantics不回退；superseded/dormant
   experiments仍为caller-free；
-- scalar/Complex3/Jones capability 均有直接 contract 和 end-to-end tests；
+- scalar/Complex3 对已批准component、LoS Jones 2×2 capability均有直接contract和
+  end-to-end tests；未批准的component/transport组合在native partial execution前失败；
 - coefficient、delay、field basis、source excitation 和 sink projection 无歧义；
-- compact K、pair-major order/segmentation、row identity、dtype/device/requires-grad和field
+- compact K、sink-major/source-minor order/segmentation、row identity、dtype/device/requires-grad和field
   provenance符合contract；同义aliases保持object/storage/stride exact；
 - 无Python/Torch clone/compact/gather/recompute；consumer projection复用single owning native
   compact boundary且不增加count observation；
