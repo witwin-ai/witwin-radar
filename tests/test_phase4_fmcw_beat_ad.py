@@ -21,6 +21,11 @@ from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows  # noqa: E402
 pytestmark = pytest.mark.gpu
 
 
+# The PRODUCTION carrier placement: the absolute carrier phase lives in the
+# Channel weight, and carrier_rate_hz supplies the intra-frame Doppler term the
+# frozen weight cannot carry. Deriving the operator AD against this setting is
+# deliberate - carrier_rate_hz makes d(phi)/d(tau_rate) differ from
+# d(phi)/d(tau_rt) * t_c, and a spec with it zeroed would never exercise that.
 SPEC = FmcwBeatSpec(
     num_samples=32,
     num_chirps=3,
@@ -29,6 +34,7 @@ SPEC = FmcwBeatSpec(
     slope_hz_per_s=60.012e12,
     t_start_s=6.0e-6,
     carrier_hz=0.0,
+    carrier_rate_hz=geo.REFERENCE_FREQUENCY_HZ,
 )
 
 DELAYS = (geo.round_trip_delay_s(), 2.4e-8)

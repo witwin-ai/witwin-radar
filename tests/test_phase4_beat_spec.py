@@ -36,11 +36,33 @@ def test_units_are_converted_to_si(spec):
 
 def test_carrier_placement_defaults_to_the_weight(spec):
     # The Channel coefficient already carries exp(-j 2 pi f tau), so the
-    # default asks the kernel not to apply the carrier a second time.
+    # default asks the kernel not to apply the ABSOLUTE carrier a second time.
     assert spec.carrier_hz == 0.0
+    # ... but that weight is frozen at the per-frame tau_rt and cannot express
+    # intra-frame Doppler, so the factory pairs it with the rate-only carrier.
+    # A default of zero here would silently understate Doppler by up to 215x.
+    assert spec.carrier_rate_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
+
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
     explicit = FmcwBeatSpec.from_radar_config(config, carrier_hz=config.fc)
     assert explicit.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
+    # The kernel owns the whole carrier here, so the rate term must NOT be
+    # applied as well; that would double count it.
+    assert explicit.carrier_rate_hz == 0.0
+
+
+def test_the_two_carrier_homes_are_mutually_exclusive(spec):
+    from dataclasses import replace
+
+    # Overriding only carrier_hz on a production spec is the double count, and
+    # it is refused rather than silently keeping both terms.
+    with pytest.raises(ValueError, match="double counts"):
+        replace(spec, carrier_hz=geo.REFERENCE_FREQUENCY_HZ)
+    # Stating both halves of the pair is how a caller switches placement.
+    switched = replace(
+        spec, carrier_hz=geo.REFERENCE_FREQUENCY_HZ, carrier_rate_hz=0.0
+    )
+    assert switched.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
 
 
 def test_beat_frequency_has_no_factor_of_two(spec):

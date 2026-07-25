@@ -8,12 +8,24 @@
 // Convention, taken from `dirichlet.cu` `path_response` and NOT re-derived:
 //
 //   cycles(tau, t_c, t_m) = carrier_hz * tau
+//                         + carrier_rate_hz * (tau - tau_rt)
 //                         + slope * tau * (t_start - 0.5 * tau)
 //                         + slope * tau * t_m
 //   tau(t_c)              = tau_rt + tau_rate * t_c
 //   s[c][p][m]            = sum_k w[k] * exp(+j * 2 * pi * cycles)
 //
-// Three rules this file encodes, each pinned by a test:
+// `carrier_rate_hz` exists because the carrier has two homes and only one of
+// them can express intra-frame Doppler. When the weight carries the carrier
+// phase (a Channel coefficient, `carrier_hz = 0`), that phase was formed at the
+// FROZEN per-frame `tau_rt` and is constant across chirps, so the slow-time
+// phase walk loses its dominant term `f_c * tau_rate * t_c` and understates
+// Doppler by 21x to 215x over the fixture's fast-time axis. Applying
+// `carrier_rate_hz` to the delay CHANGE `(tau - tau_rt) = tau_rate * t_c`
+// restores exactly that term without re-applying the absolute carrier phase the
+// weight already holds. Setting both to `fc` would double count and is refused
+// by the Python contract.
+//
+// Four rules this file encodes, each pinned by a test:
 //
 //  1. `tau_rt` is the ROUND-TRIP delay and is consumed directly. The existing
 //     Dirichlet path computes `tau = 2 * distance / c0`, which is a monostatic
@@ -46,8 +58,13 @@ constexpr double kTwoPiD = 6.283185307179586476925286766559;
 struct BeatPhase {
   float sin_phi;
   float cos_phi;
-  // d(phi) / d(tau) in radians per second.
-  double dphi_dtau;
+  // d(phi) / d(tau_rt) in radians per second, at fixed t_c.
+  double dphi_dtau_rt;
+  // d(phi) / d(tau_rate) in radians, at fixed t_c. This is NOT simply
+  // `dphi_dtau_rt * t_c`: `carrier_rate_hz` multiplies `(tau - tau_rt)`, which
+  // depends on `tau_rate` but not on `tau_rt`, so the rate derivative carries
+  // an extra `carrier_rate_hz * t_c` the base-delay derivative does not.
+  double dphi_dtau_rate;
 };
 
 // Phase of one path at one (chirp, sample) grid point. The cycle count is a
@@ -56,20 +73,26 @@ struct BeatPhase {
 // trigonometric unit.
 __device__ __forceinline__ BeatPhase beat_phase(
     const double tau,
+    const double tau_drift,
+    const double t_c,
     const double t_m,
     const double slope,
     const double carrier_hz,
+    const double carrier_rate_hz,
     const double t_start) {
-  const double cycles = carrier_hz * tau + slope * tau * (t_start - 0.5 * tau) +
-      slope * tau * t_m;
+  const double cycles = carrier_hz * tau + carrier_rate_hz * tau_drift +
+      slope * tau * (t_start - 0.5 * tau) + slope * tau * t_m;
   const double frac = cycles - floor(cycles);
   float sin_phi;
   float cos_phi;
   sincosf(static_cast<float>(kTwoPiD * frac), &sin_phi, &cos_phi);
+  const double dphi_dtau_rt =
+      kTwoPiD * (carrier_hz + slope * t_start - slope * tau + slope * t_m);
   return {
       sin_phi,
       cos_phi,
-      kTwoPiD * (carrier_hz + slope * t_start - slope * tau + slope * t_m)};
+      dphi_dtau_rt,
+      t_c * (dphi_dtau_rt + kTwoPiD * carrier_rate_hz)};
 }
 
 __global__ void fmcw_beat_forward_kernel(
@@ -87,6 +110,7 @@ __global__ void fmcw_beat_forward_kernel(
     const double chirp_period_s,
     const double slope,
     const double carrier_hz,
+    const double carrier_rate_hz,
     const double t_start) {
   const int sample = blockIdx.x * blockDim.x + threadIdx.x;
   const int segment = blockIdx.y;
@@ -108,10 +132,10 @@ __global__ void fmcw_beat_forward_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double tau =
-        static_cast<double>(tau_rt[k]) + static_cast<double>(tau_rate[k]) * t_c;
-    const BeatPhase phase =
-        beat_phase(tau, t_m, slope, carrier_hz, t_start);
+    const double drift = static_cast<double>(tau_rate[k]) * t_c;
+    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const BeatPhase phase = beat_phase(
+        tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     acc_re += w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -144,6 +168,7 @@ __global__ void fmcw_beat_jvp_kernel(
     const double chirp_period_s,
     const double slope,
     const double carrier_hz,
+    const double carrier_rate_hz,
     const double t_start) {
   const int sample = blockIdx.x * blockDim.x + threadIdx.x;
   const int segment = blockIdx.y;
@@ -163,18 +188,18 @@ __global__ void fmcw_beat_jvp_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double tau =
-        static_cast<double>(tau_rt[k]) + static_cast<double>(tau_rate[k]) * t_c;
-    const BeatPhase phase =
-        beat_phase(tau, t_m, slope, carrier_hz, t_start);
+    const double drift = static_cast<double>(tau_rate[k]) * t_c;
+    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const BeatPhase phase = beat_phase(
+        tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
     const float im = w_re * phase.sin_phi + w_im * phase.cos_phi;
 
-    const double dtau = static_cast<double>(tan_tau_rt[k]) +
-        static_cast<double>(tan_tau_rate[k]) * t_c;
-    const float dphi = static_cast<float>(phase.dphi_dtau * dtau);
+    const double dphi_d = phase.dphi_dtau_rt * static_cast<double>(tan_tau_rt[k]) +
+        phase.dphi_dtau_rate * static_cast<double>(tan_tau_rate[k]);
+    const float dphi = static_cast<float>(dphi_d);
     const float tw_re = tan_weight_re[k];
     const float tw_im = tan_weight_im[k];
     acc_re += tw_re * phase.cos_phi - tw_im * phase.sin_phi - dphi * im;
@@ -211,6 +236,7 @@ __global__ void fmcw_beat_backward_kernel(
     const double chirp_period_s,
     const double slope,
     const double carrier_hz,
+    const double carrier_rate_hz,
     const double t_start) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_paths) {
@@ -233,13 +259,14 @@ __global__ void fmcw_beat_backward_kernel(
 
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
     const double t_c = static_cast<double>(chirp) * chirp_period_s;
-    const double tau = base_tau + rate * t_c;
+    const double drift = rate * t_c;
+    const double tau = base_tau + drift;
     const int64_t row_base =
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_samples;
     for (int sample = 0; sample < num_samples; ++sample) {
       const double t_m = static_cast<double>(sample) * sample_period_s;
-      const BeatPhase phase =
-          beat_phase(tau, t_m, slope, carrier_hz, t_start);
+      const BeatPhase phase = beat_phase(
+          tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
       const float g_re = grad_out_re[row_base + sample];
       const float g_im = grad_out_im[row_base + sample];
       const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -252,9 +279,8 @@ __global__ void fmcw_beat_backward_kernel(
 
       const double d_phi = -static_cast<double>(g_re) * im +
           static_cast<double>(g_im) * re;
-      const double d_tau = d_phi * phase.dphi_dtau;
-      d_tau_rt += d_tau;
-      d_tau_rate += d_tau * t_c;
+      d_tau_rt += d_phi * phase.dphi_dtau_rt;
+      d_tau_rate += d_phi * phase.dphi_dtau_rate;
     }
   }
 
@@ -357,6 +383,7 @@ void fmcw_beat_forward_cuda(
     double chirp_period_s,
     double slope_hz_per_s,
     double carrier_hz,
+    double carrier_rate_hz,
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
@@ -394,6 +421,7 @@ void fmcw_beat_forward_cuda(
       chirp_period_s,
       slope_hz_per_s,
       carrier_hz,
+      carrier_rate_hz,
       t_start_s);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -418,6 +446,7 @@ void fmcw_beat_jvp_cuda(
     double chirp_period_s,
     double slope_hz_per_s,
     double carrier_hz,
+    double carrier_rate_hz,
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
@@ -468,6 +497,7 @@ void fmcw_beat_jvp_cuda(
       chirp_period_s,
       slope_hz_per_s,
       carrier_hz,
+      carrier_rate_hz,
       t_start_s);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -492,6 +522,7 @@ void fmcw_beat_backward_cuda(
     double chirp_period_s,
     double slope_hz_per_s,
     double carrier_hz,
+    double carrier_rate_hz,
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
@@ -547,6 +578,7 @@ void fmcw_beat_backward_cuda(
       chirp_period_s,
       slope_hz_per_s,
       carrier_hz,
+      carrier_rate_hz,
       t_start_s);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }

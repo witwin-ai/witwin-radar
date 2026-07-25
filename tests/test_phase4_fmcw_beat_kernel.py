@@ -25,10 +25,20 @@ pytestmark = pytest.mark.gpu
 
 
 def _spec(**overrides) -> FmcwBeatSpec:
+    """Fixture spec.
+
+    ``carrier_hz`` goes through ``from_radar_config`` rather than ``replace``
+    because the two carrier parameters are a pair: the factory derives
+    ``carrier_rate_hz`` from the carrier placement, and replacing only
+    ``carrier_hz`` on a production spec is the both-nonzero double count the
+    contract refuses.
+    """
+
     from witwin.radar import RadarConfig
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwBeatSpec.from_radar_config(config)
+    carrier_hz = overrides.pop("carrier_hz", 0.0)
+    spec = FmcwBeatSpec.from_radar_config(config, carrier_hz=carrier_hz)
     if overrides:
         from dataclasses import replace
 
@@ -191,6 +201,89 @@ def test_multi_chirp_slow_time_phase_slope_carries_doppler():
 
     carrier_only = 2.0 * math.pi * carrier * rate_value * spec.chirp_period_s
     assert abs(measured - carrier_only) > 1e-3  # the ramp terms are really there
+
+
+def test_production_carrier_placement_carries_the_same_doppler():
+    """The two carrier homes must agree on the slow-time phase walk.
+
+    This is the regression for a silent 215x Doppler understatement. On the
+    production path the Channel weight holds ``exp(+j 2 pi fc tau_rt)`` at the
+    FROZEN per-frame delay, so that phase does not advance across chirps. With
+    ``carrier_rate_hz = 0`` the kernel would then keep only the ramp's
+    contribution ``slope * (t_start - tau + t_m) * tau_rate``, which is 1/215 of
+    the true slope at sample 0 and 1/21 at the last sample - a plausible,
+    silently wrong Doppler cube. ``carrier_rate_hz = fc`` restores exactly the
+    missing ``fc * tau_rate * t_c``.
+
+    Both placements are compared against the SAME analytic slope, so neither one
+    is the other's oracle.
+    """
+
+    carrier = geo.REFERENCE_FREQUENCY_HZ
+    tau_rt = geo.round_trip_delay_s()
+    rate_value = 2.385e-8
+
+    kernel_carrier = _spec(num_chirps=16, carrier_hz=carrier)
+    production = _spec(num_chirps=16)
+    assert kernel_carrier.carrier_rate_hz == 0.0
+    assert production.carrier_hz == 0.0
+    assert production.carrier_rate_hz == pytest.approx(carrier)
+
+    def slow_time_slope(spec, weight_value):
+        tau, rate, weight, offsets = _rows(
+            [tau_rt], [weight_value], rates=[rate_value]
+        )
+        iq = synthesize_beat_rows(tau, rate, weight, offsets, spec).cpu()
+        slow = iq[:, 0, 0].to(torch.complex128)
+        steps = slow[1:] * torch.conj(slow[:-1])
+        return float(torch.angle(steps).mean())
+
+    # A Channel-sourced beat weight: the conjugated exp(-j 2 pi fc tau_rt),
+    # frozen at the per-frame delay and therefore constant across chirps.
+    frozen_carrier_phase = 2.0 * math.pi * carrier * tau_rt
+    weight = complex(math.cos(frozen_carrier_phase), math.sin(frozen_carrier_phase))
+
+    expected = (
+        2.0
+        * math.pi
+        * (carrier + production.slope_hz_per_s * (production.t_start_s - tau_rt))
+        * rate_value
+        * production.chirp_period_s
+    )
+    measured_kernel = slow_time_slope(kernel_carrier, 1.0 + 0.0j)
+    measured_production = slow_time_slope(production, weight)
+
+    assert abs(math.remainder(measured_kernel - expected, 2.0 * math.pi)) < 1e-4
+    assert abs(math.remainder(measured_production - expected, 2.0 * math.pi)) < 1e-4
+
+    # And the term really is dominant: dropping it loses more than 99% of the
+    # slope. Without this assertion the test would still pass against a kernel
+    # that ignored carrier_rate_hz if the tolerance were ever loosened.
+    ramp_only = (
+        2.0
+        * math.pi
+        * production.slope_hz_per_s
+        * (production.t_start_s - tau_rt)
+        * rate_value
+        * production.chirp_period_s
+    )
+    assert abs(expected / ramp_only) > 200.0
+
+
+def test_the_two_carrier_homes_cannot_both_be_used():
+    """Both nonzero double counts the carrier, so the contract refuses it."""
+
+    with pytest.raises(ValueError, match="double counts"):
+        FmcwBeatSpec(
+            num_samples=8,
+            num_chirps=2,
+            sample_period_s=1.0 / 4.4e6,
+            chirp_period_s=65.0e-6,
+            slope_hz_per_s=60.012e12,
+            t_start_s=0.0,
+            carrier_hz=geo.REFERENCE_FREQUENCY_HZ,
+            carrier_rate_hz=geo.REFERENCE_FREQUENCY_HZ,
+        )
 
 
 def test_segments_are_independent_and_offsets_partition_the_rows():

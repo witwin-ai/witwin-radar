@@ -115,6 +115,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             spec.chirp_period_s,
             spec.slope_hz_per_s,
             spec.carrier_hz,
+            spec.carrier_rate_hz,
             spec.t_start_s,
         )
         return out_re, out_im
@@ -156,6 +157,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             spec.chirp_period_s,
             spec.slope_hz_per_s,
             spec.carrier_hz,
+            spec.carrier_rate_hz,
             spec.t_start_s,
         )
         return (
@@ -212,6 +214,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             spec.chirp_period_s,
             spec.slope_hz_per_s,
             spec.carrier_hz,
+            spec.carrier_rate_hz,
             spec.t_start_s,
         )
         return tan_out_re, tan_out_im

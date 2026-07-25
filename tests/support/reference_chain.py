@@ -111,8 +111,13 @@ def beat_samples(
 
     Mirrors ``fmcw_beat.cu`` exactly:
 
-        cycles = carrier * tau + slope * tau * (t_start - 0.5 * tau)
+        cycles = carrier * tau + carrier_rate * (tau - tau_rt)
+               + slope * tau * (t_start - 0.5 * tau)
                + slope * tau * t_m,        tau = tau_rt + tau_rate * t_c
+
+    ``carrier_rate`` applies the carrier to the intra-frame delay CHANGE only.
+    On the production path the absolute carrier phase lives in the weight,
+    frozen at ``tau_rt``, and this term is the Doppler the weight cannot carry.
     """
 
     offsets = [int(v) for v in pair_offsets.tolist()]
@@ -127,11 +132,11 @@ def beat_samples(
     )
     for segment in range(num_segments):
         for row in range(offsets[segment], offsets[segment + 1]):
-            tau = total_delay_s[row].to(torch.float64) + delay_rate[row].to(
-                torch.float64
-            ) * t_c.reshape(-1, 1)
+            drift = delay_rate[row].to(torch.float64) * t_c.reshape(-1, 1)
+            tau = total_delay_s[row].to(torch.float64) + drift
             cycles = (
                 spec.carrier_hz * tau
+                + spec.carrier_rate_hz * drift
                 + spec.slope_hz_per_s * tau * (spec.t_start_s - 0.5 * tau)
                 + spec.slope_hz_per_s * tau * t_m.reshape(1, -1)
             )
