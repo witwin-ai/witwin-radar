@@ -1,11 +1,13 @@
 """Radar's adapter onto the stable Channel propagation consumer.
 
 This is the ONLY Radar module that imports ``witwin.channel``, and it imports
-exactly two things from it: the solver-neutral consumer facade and the scene
-compile facade. It never touches a Channel solver, the enumerated engine, the
-internal propagation contracts, or the native extension. R-ADR-001 records why:
-Radar is a consumer of the published contract, not a second enumerated
-exception to ADR-008.
+exactly one thing from it: the solver-neutral consumer facade
+``witwin.channel.propagation.consumer``. Scene compilation goes through
+``witwin.channel.scene.compile``, which the spike calls from ``tests/support``
+rather than from any Radar module. Nothing here touches a Channel solver, the
+enumerated engine, the internal propagation contracts, or the native extension.
+R-ADR-001 records why: Radar is a consumer of the published contract, not a
+second enumerated exception to ADR-008.
 
 The adapter owns three things and nothing else:
 

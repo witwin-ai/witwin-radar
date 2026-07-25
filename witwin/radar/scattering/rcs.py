@@ -66,12 +66,21 @@ class ScalarRcsResponse:
         return False
 
     def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
-        """Broadcast the response across ``row_count`` composed rows."""
+        """Broadcast the response across ``row_count`` composed rows.
+
+        ``device`` is honoured, not decorative. The composer passes the device
+        its composed rows live on, and a CPU-authored response used to be
+        accepted here and then fail with a device-mismatch error several frames
+        of stack away from the parameter that caused it. ``Tensor.to`` is
+        autograd-aware, so a response whose parameters carry gradients keeps
+        them across the move.
+        """
 
         if row_count < 0:
             raise ValueError("row_count must be non-negative")
-        phasor = torch.exp(-1j * self.phase_rad.to(torch.complex64))
-        return (self.amplitude.to(torch.complex64) * phasor).expand(row_count)
+        amplitude = self.amplitude.to(device=device, dtype=torch.complex64)
+        phase = self.phase_rad.to(device=device, dtype=torch.complex64)
+        return (amplitude * torch.exp(-1j * phase)).expand(row_count)
 
 
 __all__ = ["ScalarRcsResponse"]
