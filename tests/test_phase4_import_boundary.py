@@ -78,6 +78,8 @@ SPIKE_MODULES = (
     "witwin/radar/propagation/channel_consumer.py",
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
+    "witwin/radar/paths/_identity.py",
+    "witwin/radar/paths/direct.py",
     "witwin/radar/paths/two_way.py",
     "witwin/radar/scattering/__init__.py",
     "witwin/radar/scattering/base.py",
@@ -325,10 +327,13 @@ def test_only_the_adapter_crosses_the_channel_boundary():
 
 HOST_OBSERVATION_METHODS = frozenset({"cpu", "numpy", "tolist", "item"})
 
-# two_way.py builds the identity join once at freeze time, where the consumer
-# has already synchronized. That is the sanctioned host observation, and it is
-# named here rather than hidden behind a blanket exemption.
-HOST_OBSERVATION_OWNERS = {"witwin/radar/paths/two_way.py": frozenset({"tolist"})}
+# paths/_identity.py reads frozen leg row identity to the host once, at freeze
+# time, where the consumer has already synchronized. That is the sanctioned
+# host observation, and naming ONE owner is what keeps it that way: neither
+# composer may grow its own read.
+HOST_OBSERVATION_OWNERS = {
+    "witwin/radar/paths/_identity.py": frozenset({"tolist"}),
+}
 
 
 def _host_observation_calls(path: pathlib.Path) -> list[str]:

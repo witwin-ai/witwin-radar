@@ -335,13 +335,16 @@ def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
     assert offsets == sorted(offsets)
     assert len(offsets) == composer.sensor_pair_count + 1
 
-    # And the check is a real gate, not a comment: a table that failed either
-    # condition would raise rather than reach the kernel.
-    from witwin.radar.paths import two_way
+    # And the check is a real gate, exercised rather than grepped for: a table
+    # that failed either condition raises instead of reaching the kernel.
+    from witwin.radar.paths import _identity
 
-    source = pathlib.Path(two_way.__file__).read_text(encoding="utf-8")
-    assert "must partition all" in source
-    assert "must be non-decreasing" in source
+    with pytest.raises(ValueError, match="would not partition all composed rows"):
+        _identity.pair_offsets([0, 0, 1], pair_count=1)
+    with pytest.raises(ValueError, match="pair_count must be positive"):
+        _identity.pair_offsets([], pair_count=0)
+    # Empty segments are legal; only an out-of-range pair rank is not.
+    assert _identity.pair_offsets([0, 0, 3], pair_count=4) == [0, 2, 2, 2, 3]
 
 
 def test_a_site_without_a_leg_is_refused_rather_than_dropped():

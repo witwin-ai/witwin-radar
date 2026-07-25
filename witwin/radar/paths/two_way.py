@@ -44,6 +44,8 @@ import torch.autograd.forward_ad as forward_ad
 from torch.autograd.function import once_differentiable
 
 from ..propagation.contracts import RadarLegBatch
+from . import _identity
+from ._identity import LegKey
 from .contracts import RadarPathBatch, RadarPathTopology
 
 
@@ -64,112 +66,6 @@ def _ops():
 
         _OPS = build.build_extension()
     return _OPS
-
-
-LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
-
-
-def _stable_ids(values, name: str) -> list[int]:
-    """Normalize a stable-ID sequence to a host list of distinct ints."""
-
-    if isinstance(values, torch.Tensor):
-        if values.ndim != 1:
-            raise ValueError(f"{name} must be a 1-D sequence of stable IDs")
-        listed = [int(value) for value in values.tolist()]
-    else:
-        listed = [int(value) for value in values]
-    if not listed:
-        raise ValueError(f"{name} must not be empty")
-    if len(set(listed)) != len(listed):
-        raise ValueError(f"{name} must not repeat a stable ID, got {listed}")
-    return listed
-
-
-def _leg_identity(frozen, name: str) -> tuple[list[int], list[int], list[LegKey]]:
-    """Read one frozen leg's row identity to the host, once.
-
-    The key is everything that distinguishes two rows of the SAME leg: which
-    multipath component, how deep, and which primitives and materials it
-    interacted with. It is frame invariant, so the composed order it induces is
-    frame invariant too.
-    """
-
-    source = [int(value) for value in frozen.source_id.tolist()]
-    sink = [int(value) for value in frozen.sink_id.tolist()]
-    component = [int(value) for value in frozen.component_id.tolist()]
-    depth = [int(value) for value in frozen.depth.tolist()]
-    primitive = [
-        tuple(int(value) for value in row)
-        for row in frozen.primitive_sequence.tolist()
-    ]
-    material = [
-        tuple(int(value) for value in row)
-        for row in frozen.material_sequence.tolist()
-    ]
-    rows = len(source)
-    for label, column in (
-        ("sink_id", sink),
-        ("component_id", component),
-        ("depth", depth),
-        ("primitive_sequence", primitive),
-        ("material_sequence", material),
-    ):
-        if len(column) != rows:
-            raise ValueError(
-                f"{name} leg {label} has {len(column)} rows, expected {rows}"
-            )
-    keys: list[LegKey] = [
-        (component[row], depth[row], primitive[row], material[row])
-        for row in range(rows)
-    ]
-    return source, sink, keys
-
-
-def _group_rows(
-    source: list[int], sink: list[int], keys: list[LegKey], name: str
-) -> dict[tuple[int, int], list[int]]:
-    """Index a leg's rows by its ``(source_id, sink_id)`` endpoint pair.
-
-    Also enforces that the identity key is UNIQUE inside each endpoint pair. A
-    collision would make the canonical composed order ambiguous and would
-    silently turn the permutation test vacuous, so it is refused here rather
-    than tie-broken on row position - which is exactly the positional
-    dependence this module exists to remove.
-    """
-
-    groups: dict[tuple[int, int], list[int]] = {}
-    seen: dict[tuple[int, int], dict[LegKey, int]] = {}
-    for row, endpoints in enumerate(zip(source, sink, strict=True)):
-        groups.setdefault(endpoints, []).append(row)
-        claimed = seen.setdefault(endpoints, {})
-        if keys[row] in claimed:
-            raise ValueError(
-                f"{name} leg rows {claimed[keys[row]]} and {row} share the "
-                f"identity key {keys[row]} within endpoint pair {endpoints}; "
-                "the composed order would be ambiguous"
-            )
-        claimed[keys[row]] = row
-    return groups
-
-
-def _csr(owner_of_row: list[int], owner_count: int) -> tuple[list[int], list[int]]:
-    """Group composed rows by an owner index, as a CSR offsets/rows pair.
-
-    The VJP needs this: one thread owns one gradient slot and loops its own
-    segment, so the reduction needs no atomics and its summation order is fixed
-    by the frozen join. That is what makes a bit-identical gradient comparison
-    across a leg permutation a legitimate assertion rather than a lucky one.
-    """
-
-    buckets: list[list[int]] = [[] for _ in range(owner_count)]
-    for composed_row, owner in enumerate(owner_of_row):
-        buckets[owner].append(composed_row)
-    offsets = [0]
-    rows: list[int] = []
-    for bucket in buckets:
-        rows.extend(bucket)
-        offsets.append(len(rows))
-    return offsets, rows
 
 
 def _primal_rate(
@@ -519,25 +415,24 @@ class TwoWayComposer:
         """
 
         device = inbound.sink_id.device
-        sources = _stable_ids(radar_source_ids, "radar_source_ids")
-        sinks = _stable_ids(radar_sink_ids, "radar_sink_ids")
-        sites = _stable_ids(site_ids, "site_ids")
+        sources = _identity.stable_ids(radar_source_ids, "radar_source_ids")
+        sinks = _identity.stable_ids(radar_sink_ids, "radar_sink_ids")
+        sites = _identity.stable_ids(site_ids, "site_ids")
         sites.sort()
 
-        source_rank = {value: rank for rank, value in enumerate(sources)}
-        sink_rank = {value: rank for rank, value in enumerate(sinks)}
-
-        inbound_source, inbound_sink, inbound_keys = _leg_identity(inbound, "inbound")
-        outbound_source, outbound_sink, outbound_keys = _leg_identity(
+        inbound_source, inbound_sink, inbound_keys = _identity.leg_identity(
+            inbound, "inbound"
+        )
+        outbound_source, outbound_sink, outbound_keys = _identity.leg_identity(
             outbound, "outbound"
         )
-        arriving = _group_rows(inbound_source, inbound_sink, inbound_keys, "inbound")
-        leaving = _group_rows(outbound_source, outbound_sink, outbound_keys, "outbound")
-
-        # Sink-major, mirroring the Channel consumer's own pair index so one
-        # convention crosses the boundary rather than two.
-        def pair_rank(source: int, sink: int) -> int:
-            return sink_rank[sink] * len(sources) + source_rank[source]
+        arriving = _identity.group_rows(
+            inbound_source, inbound_sink, inbound_keys, "inbound"
+        )
+        leaving = _identity.group_rows(
+            outbound_source, outbound_sink, outbound_keys, "outbound"
+        )
+        pair_rank = _identity.sink_major_rank(sources, sinks)
 
         # (pair_rank, site_rank, source, site, sink, inbound_row, outbound_row,
         #  inbound_key, outbound_key)
@@ -606,35 +501,13 @@ class TwoWayComposer:
             )
 
         pair_count = len(sources) * len(sinks)
-        counts = [0] * pair_count
-        for row in rows:
-            counts[row[0]] += 1
-        offsets = [0]
-        for count in counts:
-            offsets.append(offsets[-1] + count)
-
-        # The offsets table is the only piece of synthesis metadata whose VALUES
-        # the native kernel cannot validate: reading them on the host per frame
-        # would be exactly the transfer the fixed-topology capability exists to
-        # avoid, so the kernel clamps instead of failing. Clamping turns a
-        # malformed table into a plausible wrong answer rather than an error.
-        #
-        # Validating here costs nothing -- the table is still a Python list, at
-        # freeze time, on the host -- and it is what makes the production route
-        # provably unable to hand the kernel a table it would have to clamp.
-        if offsets[0] != 0 or offsets[-1] != len(rows):
-            raise ValueError(
-                f"pair offsets must partition all {len(rows)} composed rows, "
-                f"got {offsets}"
-            )
-        if any(b < a for a, b in zip(offsets[:-1], offsets[1:], strict=True)):
-            raise ValueError(f"pair offsets must be non-decreasing, got {offsets}")
+        offsets = _identity.pair_offsets([row[0] for row in rows], pair_count)
 
         inbound_count = len(inbound_source)
         outbound_count = len(outbound_source)
-        by_inbound = _csr([row[5] for row in rows], inbound_count)
-        by_outbound = _csr([row[6] for row in rows], outbound_count)
-        by_response = _csr([row[1] for row in rows], len(sites))
+        by_inbound = _identity.csr([row[5] for row in rows], inbound_count)
+        by_outbound = _identity.csr([row[6] for row in rows], outbound_count)
+        by_response = _identity.csr([row[1] for row in rows], len(sites))
 
         def table(values: list[int]) -> torch.Tensor:
             return torch.tensor(values, dtype=torch.int64, device=device)
@@ -743,6 +616,7 @@ class TwoWayComposer:
             reference_frequency_hz=self.reference_frequency_hz,
             row_valid=row_valid,
             topology=self.topology,
+            join_mode="multipath",
         )
 
     def _row_validity(

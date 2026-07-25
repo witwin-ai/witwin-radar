@@ -193,6 +193,64 @@ class Phase4Spike:
         return radar_loss(iq, reference_iq)
 
 
+class DirectSpike:
+    """One compiled scene, one frozen TX->RX leg, one frozen direct composer.
+
+    The direct path is the leakage/through path a real front end sees, and it
+    is evaluated on exactly the same frozen-topology contract as a round-trip
+    leg. It is NOT a Radar-owned native direct evaluator; that is separate
+    future work and nothing here short-cuts it.
+    """
+
+    def __init__(
+        self,
+        *,
+        device: str = "cuda",
+        components: frozenset[str] = frozenset({"los"}),
+        max_depth: int = 0,
+        compiled=None,
+    ) -> None:
+        from witwin.radar.paths import DirectComposer
+        from witwin.radar.propagation.channel_consumer import (
+            ChannelPropagationAdapter,
+        )
+
+        self.device = device
+        self.compiled = world.compile_fixture_scene() if compiled is None else compiled
+        self.adapter = ChannelPropagationAdapter(
+            self.compiled,
+            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+            components=components,
+            max_depth=max_depth,
+        )
+        self.leg = self.adapter.freeze(
+            world.endpoint_spec(
+                geo.TX_POSITION_M,
+                geo.TX_STABLE_ID,
+                power_w=geo.TX_POWER_W,
+                device=device,
+            ),
+            world.endpoint_spec(geo.RX_POSITION_M, geo.RX_STABLE_ID, device=device),
+        )
+        self.composer = DirectComposer.freeze(
+            self.leg,
+            radar_source_ids=[geo.TX_STABLE_ID],
+            radar_sink_ids=[geo.RX_STABLE_ID],
+            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+        )
+
+    def paths(self, tx: torch.Tensor, rx: torch.Tensor, *, ad_mode: str = "none"):
+        leg = self.adapter.reevaluate(
+            self.leg,
+            world.endpoint_spec(
+                tx, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=self.device
+            ),
+            world.endpoint_spec(rx, geo.RX_STABLE_ID, device=self.device),
+            ad_mode=ad_mode,
+        )
+        return self.composer.compose(leg), leg
+
+
 def radar_loss(iq: torch.Tensor, reference_iq: torch.Tensor) -> torch.Tensor:
     """Phase-sensitive squared-error loss, accumulated in float64.
 
@@ -245,6 +303,7 @@ def oracle_positions() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
 
 __all__ = [
+    "DirectSpike",
     "Phase4Spike",
     "SPIKE_AMPLITUDE",
     "SPIKE_PHASE_RAD",

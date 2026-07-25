@@ -10,8 +10,14 @@ row payload; the composition itself belongs to
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
+
+
+JoinMode = Literal["direct", "multipath"]
+
+JOIN_MODES: frozenset[str] = frozenset({"direct", "multipath"})
 
 
 def _require_tensor(
@@ -38,6 +44,12 @@ class RadarPathTopology:
     identity and is stable across a frozen sequence. ``inbound_row`` and
     ``outbound_row`` record which frozen leg rows were joined, so a composed
     result can always be traced back to the two legs that produced it.
+
+    A DIRECT row - radar source straight to radar sink, with no scatter site -
+    uses ``site_id = -1`` and ``outbound_row = -1``. Those are sentinels, not
+    missing data: a direct path has exactly one leg, and giving it a fabricated
+    second one would make it indistinguishable from a round trip through a
+    target with unit response.
 
     Identity is what the join uses. Joining by array position instead would be
     silently wrong the moment a leg publishes its rows in a different order,
@@ -84,6 +96,12 @@ class RadarPathBatch:
     ``row_valid`` is the sole authority on whether a row means anything. A
     dead row is a complete answer contributing exactly zero, never an error,
     and validity is never inferred from a zero payload.
+
+    ``join_mode`` records which composer produced these rows. It is stored
+    rather than inferred so that "which paths am I looking at" is a checkable
+    property of the result and never a guess from its shape. Both modes publish
+    THIS contract, so a consumer downstream of it - synthesis, in particular -
+    needs no branch; the choice is made once, by the caller, upstream.
     """
 
     sensor_pair_count: int
@@ -96,8 +114,14 @@ class RadarPathBatch:
     reference_frequency_hz: float
     row_valid: torch.Tensor | None
     topology: RadarPathTopology
+    join_mode: JoinMode
 
     def __post_init__(self) -> None:
+        if self.join_mode not in JOIN_MODES:
+            raise ValueError(
+                f"join_mode must be one of {sorted(JOIN_MODES)}, got "
+                f"{self.join_mode!r}"
+            )
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
             raise ValueError("sensor_pair_count must be a positive int")
         if type(self.path_count) is not int or self.path_count < 0:
@@ -137,4 +161,4 @@ class RadarPathBatch:
         return self.total_delay_s.device
 
 
-__all__ = ["RadarPathBatch", "RadarPathTopology"]
+__all__ = ["JOIN_MODES", "JoinMode", "RadarPathBatch", "RadarPathTopology"]
