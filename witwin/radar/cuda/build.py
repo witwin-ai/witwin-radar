@@ -168,6 +168,7 @@ def extension_sources() -> list[Path]:
     return [
         root / "extension.cpp",
         root / "kernels" / "dirichlet.cu",
+        root / "kernels" / "fmcw_beat.cu",
     ]
 
 
@@ -213,11 +214,39 @@ class _StableOpsModule:
         return getattr(torch.ops.witwin_radar_dirichlet_cuda, name)
 
 
+# Every operator family the library is required to register. A stale binary
+# that predates a family loads fine and then fails deep inside a kernel call,
+# so the presence check names one operator per family and fails at load.
+_REQUIRED_OPERATORS = ("forward_chunked", "fmcw_beat_forward")
+
+
+def _require_operators(library_path: Path) -> _StableOpsModule:
+    """Reject a library that does not register every required family.
+
+    Applied to EVERY load route, including the just-in-time build. A JIT build
+    can hand back a stale library too: `torch.utils.cpp_extension.load` reuses
+    whatever is already linked in its build directory, so if another checkout of
+    this package compiled a different source list into the same directory, the
+    operators this process needs may simply not be there. Skipping the check on
+    the JIT route turns that into a failure deep inside a kernel call.
+    """
+
+    missing = [
+        name
+        for name in _REQUIRED_OPERATORS
+        if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, name)
+    ]
+    if missing:
+        raise ImportError(
+            f"{library_path} does not register the Stable ABI radar operators "
+            f"{missing}; the binary is stale."
+        )
+    return _StableOpsModule(library_path)
+
+
 def _load_extension_file(library_path: Path) -> _StableOpsModule:
     torch.ops.load_library(str(library_path))
-    if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, "forward_chunked"):
-        raise ImportError(f"{library_path} does not register the Stable ABI radar operators.")
-    return _StableOpsModule(library_path)
+    return _require_operators(library_path)
 
 
 def _load_packaged_prebuilt_extension():
@@ -237,10 +266,70 @@ def _load_prebuilt_extension(build_directory: Path):
     return _load_extension_file(module_path)
 
 
+# The loaded library, cached for the process.
+#
+# Loading is idempotent in effect but NOT in side effects: on Windows,
+# _ensure_windows_build_tools_on_path() prepends the MSVC tool directories to
+# PATH every time it runs, and _load_vcvars64_environment() copies the whole
+# vcvars environment over os.environ. Calling build_extension() in a loop
+# therefore grows PATH without bound until Windows rejects it with
+# "the environment variable is longer than 32767 characters", which surfaces
+# far away from the cause -- as unrelated CUDA tests failing partway through a
+# long session. Caching the module makes the second and later calls free and
+# side-effect free.
+_LOADED_MODULE = None
+
+
 def build_extension(*, verbose: bool = False):
+    global _LOADED_MODULE
+    if _LOADED_MODULE is not None:
+        return _LOADED_MODULE
+    _LOADED_MODULE = _build_extension(verbose=verbose)
+    return _LOADED_MODULE
+
+
+def source_fingerprint() -> str:
+    """Short digest of the source set: which files, and what is in them.
+
+    The JIT build directory is keyed by this. Two checkouts of this package that
+    compile different sources - or the same sources at different revisions - into
+    one shared directory make ninja relink on every alternating run, and the
+    binary that happens to be on disk is whichever checkout ran last. That is a
+    silent wrong-numerics path, not just wasted work: a stale link only fails
+    loudly when the missing operator is missing entirely, and two revisions of
+    the SAME operator set register the same names with different kernel code.
+
+    File CONTENT, not just paths, because two worktrees of one branch have
+    different absolute paths but should share a build, while one path with an
+    edited kernel must not.
+    """
+
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path in extension_sources():
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def default_build_directory() -> Path:
+    return (
+        Path(tempfile.gettempdir())
+        / "witwin_radar_dirichlet_cuda"
+        / f"stable_abi_v1_{source_fingerprint()}"
+    )
+
+
+def _build_extension(*, verbose: bool = False):
     root = source_root()
-    default_build_directory = Path(tempfile.gettempdir()) / "witwin_radar_dirichlet_cuda" / "stable_abi_v1"
-    build_directory = Path(os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory))
+    build_directory = Path(
+        os.environ.get(
+            "WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory()
+        )
+    )
     if os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_SKIP_PREBUILT") != "1":
         try:
             module = _load_packaged_prebuilt_extension()
@@ -274,4 +363,4 @@ def build_extension(*, verbose: bool = False):
         is_python_module=False,
         verbose=verbose,
     )
-    return _StableOpsModule(Path(library_path))
+    return _require_operators(Path(library_path))

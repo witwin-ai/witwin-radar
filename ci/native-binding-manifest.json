@@ -1,0 +1,85 @@
+{
+  "comment": [
+    "Every supported native ABI symbol has exactly one Python owner and at",
+    "least one production caller. A symbol without a caller is cleanup debt,",
+    "not a feature: it creates no coverage or release requirement.",
+    "",
+    "The library name is witwin_radar_dirichlet_cuda for packaging reasons -",
+    "pyproject wheel artifacts, scripts/verify_cuda_binary_arches.py, and the",
+    "publish workflow all assume a single native stem. _radar_native is the",
+    "logical owner name for Phase 4; the physical rename is Phase-10 work.",
+    "R-ADR-004 records this as a decision rather than drift."
+  ],
+  "library": "witwin_radar_dirichlet_cuda",
+  "logical_owner": "_radar_native",
+  "sources": [
+    "witwin/radar/cuda/extension.cpp",
+    "witwin/radar/cuda/kernels/dirichlet.cu",
+    "witwin/radar/cuda/kernels/fmcw_beat.cu"
+  ],
+  "operators": [
+    {
+      "symbol": "forward_chunked",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.chirp"
+    },
+    {
+      "symbol": "forward_mimo_linear_chunked",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
+    },
+    {
+      "symbol": "backward",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward"
+    },
+    {
+      "symbol": "backward_batched",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_mimo_grad.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet._NativeChunkedSpectrum.backward"
+    },
+    {
+      "symbol": "backward_parallel_bins",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet._NativeChunkedSpectrum.backward"
+    },
+    {
+      "symbol": "backward_per_bin",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
+      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward_per_bin"
+    },
+    {
+      "symbol": "fmcw_beat_forward",
+      "family": "fmcw_beat_synthesis",
+      "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
+      "contract_test": "tests/test_phase4_fmcw_beat_kernel.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat.synthesize_fmcw_beat"
+    },
+    {
+      "symbol": "fmcw_beat_backward",
+      "family": "fmcw_beat_synthesis",
+      "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
+      "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.backward"
+    },
+    {
+      "symbol": "fmcw_beat_jvp",
+      "family": "fmcw_beat_synthesis",
+      "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
+      "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.jvp"
+    }
+  ]
+}
