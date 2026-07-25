@@ -69,7 +69,9 @@ def test_freeze_discovers_one_los_row_and_reports_prepare_cost(frozen_inbound):
     # frozen topology, and must never be paid inside a per-frame loop.
     assert frozen_inbound.prepare_d2h_copies == 3
     assert frozen_inbound.prepare_synchronizations == 3
-    assert frozen_inbound.prepare_d2h_bytes > 0
+    # The exact figure, not just "some": a budget asserted as `> 0` cannot
+    # detect the copy growing, which is the only thing the budget is for.
+    assert frozen_inbound.prepare_d2h_bytes == 17
     assert frozen_inbound.source_id.tolist() == [geo.TX_STABLE_ID]
     assert frozen_inbound.sink_id.tolist() == [geo.SITE_STABLE_ID]
 
@@ -104,12 +106,22 @@ def test_reevaluate_publishes_radar_leg_aliasing_consumer_storage(
     )
     # Same values, and within one call the adapter hands back the very objects
     # the consumer produced.
-    torch.testing.assert_close(legs.delay_s, reference.paths.geometry.delay_s)
+    # Bit-identical: two calls with identical endpoints run identical kernels.
+    # Default float32 tolerances mean nothing at nanosecond delay magnitudes.
+    torch.testing.assert_close(
+        legs.delay_s, reference.paths.geometry.delay_s, rtol=0.0, atol=0.0
+    )
     assert legs.leg_count == reference.paths.path_count
     assert legs.pair_count == reference.paths.pair_count
 
+    # A second frame publishes its OWN rows rather than mutating the first
+    # result in place. That matters for any loop that keeps earlier frames: the
+    # previous result is still alive here, so the allocator cannot legitimately
+    # hand back its storage. (The previous assertion here was `data_ptr() != 0`,
+    # which is true of every allocated tensor and tested nothing.)
     again = adapter.reevaluate(frozen_inbound, sources, sinks, ad_mode="none")
-    assert again.delay_s.data_ptr() != 0
+    assert again.delay_s.data_ptr() != legs.delay_s.data_ptr()
+    torch.testing.assert_close(again.delay_s, legs.delay_s, rtol=0.0, atol=0.0)
     assert again.delay_rate is None
 
 
@@ -276,15 +288,42 @@ def test_differentiable_polarization_is_rejected(adapter, frozen_inbound):
         adapter.reevaluate(frozen_inbound, _tx(), sinks, ad_mode="vjp")
 
 
-def test_frequency_mismatch_fails_before_native_compute(compiled_scene, frozen_inbound):
+def test_frequency_mismatch_is_refused_with_the_contract_error(
+    compiled_scene, frozen_inbound
+):
+    """A request frequency that is not the compiled reference is refused.
+
+    "Before native compute" is a Channel-side guarantee that Radar cannot
+    instrument from here - there is no launch counter at this boundary. What
+    Radar CAN pin, and does, is that the refusal is the specific contract error
+    rather than any exception at all, and that it leaves nothing behind: the
+    same frozen topology still reevaluates correctly afterwards. A test that
+    accepted three exception types with no message match would pass for an
+    unrelated import error or a typo in the call.
+    """
+
     mismatched = ChannelPropagationAdapter(
         compiled_scene,
         reference_frequency_hz=24.0e9,
         components=frozenset({"los"}),
         max_depth=0,
     )
-    with pytest.raises((ValueError, NotImplementedError, RuntimeError)):
+    with pytest.raises(
+        ValueError, match="reference_frequency_hz does not exactly match"
+    ):
         mismatched.reevaluate(frozen_inbound, _tx(), _site_sink(), ad_mode="none")
+
+    # No partial result, no corrupted handle: the refusal happened before
+    # anything observable was produced.
+    survivor = ChannelPropagationAdapter(
+        compiled_scene,
+        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+        components=frozenset({"los"}),
+        max_depth=0,
+    )
+    legs = survivor.reevaluate(frozen_inbound, _tx(), _site_sink(), ad_mode="none")
+    assert legs.leg_count == 1
+    assert torch.isfinite(legs.delay_s).all()
 
 
 def test_adapter_rejects_unfreezable_components(compiled_scene):

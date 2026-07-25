@@ -62,11 +62,22 @@ def test_delay_is_additive_and_transfer_factorizes():
 
     assert composed.path_count == 1
     assert composed.sensor_pair_count == 1
+    # Explicit relative tolerance with atol=0. torch.testing's float32 default
+    # atol is 1e-5, which dwarfs a nanosecond-scale delay: with defaults these
+    # two assertions pass for ANY delay value, including one that dropped the
+    # outbound leg entirely. They were vacuous, and a mutation that removed
+    # tau_out survived this whole file.
     torch.testing.assert_close(
-        composed.total_delay_s, torch.tensor([3.0e-8], dtype=torch.float32)
+        composed.total_delay_s,
+        torch.tensor([3.0e-8], dtype=torch.float32),
+        rtol=1e-6,
+        atol=0.0,
     )
     torch.testing.assert_close(
-        composed.delay_rate, torch.tensor([2.0e-9], dtype=torch.float32)
+        composed.delay_rate,
+        torch.tensor([2.0e-9], dtype=torch.float32),
+        rtol=1e-6,
+        atol=0.0,
     )
     expected = (
         outbound.coefficient
@@ -111,9 +122,17 @@ def test_join_is_by_identity_not_by_array_position():
         _response(),
     )
 
-    torch.testing.assert_close(straight.total_delay_s, permuted.total_delay_s)
+    # Bit-identical, not merely close: the same rows in the same order do the
+    # same arithmetic. Default float32 tolerances would hide a wrong pairing at
+    # these delay magnitudes entirely.
     torch.testing.assert_close(
-        straight.complex_transfer_ref, permuted.complex_transfer_ref
+        straight.total_delay_s, permuted.total_delay_s, rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(
+        straight.complex_transfer_ref,
+        permuted.complex_transfer_ref,
+        rtol=0.0,
+        atol=0.0,
     )
     assert straight.topology.site_id.tolist() == permuted.topology.site_id.tolist()
     # The join really did have to reorder: the outbound row indices differ.
@@ -231,6 +250,30 @@ def test_scalar_response_is_a_broadcast_parameter_scale():
     expected = 3.0 * complex(torch.cos(torch.tensor(-0.25)), torch.sin(torch.tensor(-0.25)))
     assert abs(complex(values[0]) - expected) < 1e-6
     assert all(complex(v) == complex(values[0]) for v in values)
+
+
+def test_scalar_response_moves_to_the_device_it_is_asked_for():
+    """``device`` was accepted and ignored.
+
+    ``TwoWayComposer.compose`` passes the device its composed rows live on, so a
+    CPU-authored response used to be accepted here and then fail with a device
+    mismatch several frames away from the parameter that caused it. The move is
+    autograd-aware, so a differentiable response keeps its tape across it.
+    """
+
+    response = ScalarRcsResponse.from_values(2.0, 0.3, requires_grad=True)
+    values = response.evaluate(2, torch.device("cpu"))
+    assert values.device.type == "cpu"
+    assert values.requires_grad and values.grad_fn is not None
+
+    if not torch.cuda.is_available():
+        pytest.skip("device move across accelerators needs CUDA")
+    moved = response.evaluate(2, torch.device("cuda"))
+    assert moved.device.type == "cuda"
+    # The gradient survives the move and reaches the CPU-authored parameters.
+    moved.real.sum().backward()
+    assert response.amplitude.grad is not None
+    assert float(response.amplitude.grad) != 0.0
 
 
 def test_scalar_response_rejects_malformed_parameters():

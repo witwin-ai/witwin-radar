@@ -306,6 +306,53 @@ def test_segments_are_independent_and_offsets_partition_the_rows():
     torch.testing.assert_close(both[:, 0:1, :], first)
 
 
+def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
+    """An ABSOLUTE anchor for the Channel-to-beat conjugation.
+
+    The existing conjugation coverage is pairwise: production and the oracle
+    each make the same ``conj`` choice independently, so a coordinated inversion
+    of both would agree with itself. The Dirichlet equivalence test uses a real
+    weight, where conjugation is invisible.
+
+    Here the expected value is written out by hand from the two published
+    conventions, with a deliberately complex weight and a delay chosen so the
+    beat phase is a known fraction of a cycle. Nothing in the package is
+    consulted for the expected number.
+    """
+
+    # One row, one chirp, zero rate, no ramp contribution at sample 0 because
+    # t_start is zero: the whole phase is the carrier term, 0.25 of a cycle.
+    carrier = 1.0e9
+    tau_rt = 0.25 / carrier
+    spec = FmcwBeatSpec(
+        num_samples=1,
+        num_chirps=1,
+        sample_period_s=1.0 / 4.4e6,
+        chirp_period_s=65.0e-6,
+        slope_hz_per_s=0.0,
+        t_start_s=0.0,
+        carrier_hz=carrier,
+    )
+
+    # A Channel-convention coefficient with a distinctly signed imaginary part.
+    channel = torch.tensor([0.0 + 1.0j], dtype=torch.complex64, device="cuda")
+    beat = channel_phasor_to_beat_weight(channel)
+    tau = torch.tensor([tau_rt], dtype=torch.float32, device="cuda")
+    rate = torch.zeros_like(tau)
+    offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
+    measured = complex(
+        synthesize_beat_rows(tau, rate, beat, offsets, spec)[0, 0, 0].cpu()
+    )
+
+    # By hand: conj(0 + 1j) = -1j, and exp(+j 2 pi * 0.25) = +1j.
+    # (-1j) * (+1j) = +1. An inverted conjugation would give -1 instead.
+    expected = complex(1.0, 0.0)
+    assert abs(measured - expected) < 1e-5, (measured, expected)
+    # State the failure mode explicitly so the anchor cannot be read as a
+    # magnitude check: the inverted convention has the same magnitude.
+    assert abs(measured - (-expected)) > 1.0
+
+
 def test_conjugation_is_the_only_channel_to_beat_conversion():
     coefficient = torch.tensor([0.25 - 0.5j], dtype=torch.complex64, device="cuda")
     beat = channel_phasor_to_beat_weight(coefficient)

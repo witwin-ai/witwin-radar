@@ -167,7 +167,10 @@ def test_reverse_mode_loss_gradients_match_the_oracle(spike, spec, reference_iq)
     loss.backward()
 
     oracle = _oracle_gradients(reference_iq, spec)
-    assert fd.relative_error(float(loss), oracle["loss"], floor=ZERO_FLOOR) < 1e-4
+    assert (
+        fd.relative_error(float(loss.detach()), oracle["loss"], floor=ZERO_FLOOR)
+        < 1e-4
+    )
 
     measured = {
         "tx": tx.grad.reshape(3),

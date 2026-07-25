@@ -161,6 +161,100 @@ def test_native_vjp_matches_the_oracle(target_iq):
         ) < 1e-3
 
 
+MULTI_DELAYS = (geo.round_trip_delay_s(), 2.4e-8, 1.7e-8, 3.1e-8, 9.0e-9)
+MULTI_RATES = (2.385e-8, -1.1e-8, 4.0e-9, -2.2e-8, 7.5e-9)
+MULTI_WEIGHTS = (0.6 - 0.3j, -0.2 + 0.45j, 0.15 + 0.8j, -0.5 - 0.1j, 0.33 + 0.22j)
+# Three segments with different row counts. Row 2 sits exactly on a boundary,
+# which is the index where the half-open partition is decided.
+MULTI_OFFSETS = (0, 2, 5, 5)
+
+
+@pytest.fixture(scope="module")
+def multi_target_iq():
+    torch.manual_seed(20260725)
+    return torch.randn(
+        (SPEC.num_chirps, len(MULTI_OFFSETS) - 1, SPEC.num_samples),
+        dtype=torch.complex128,
+    )
+
+
+def test_multi_segment_vjp_matches_the_oracle(multi_target_iq):
+    """The backward kernel's per-path segment mapping, under gradient.
+
+    ``_segment_of_each_path`` feeds ONLY the backward kernel; forward and JVP
+    read ``path_offsets`` directly. Every other gradient test in this suite is
+    single-segment, where the mapping is the constant zero and cannot be wrong.
+    That left the one deviation the implementation actually made -
+    ``bucketize(..., right=True)`` - verified by hand and by nothing else: the
+    mutation ``right=True -> right=False`` passed all 32 kernel, AD, composition
+    and end-to-end tests.
+
+    Three segments of unequal size, including an EMPTY trailing segment and a
+    row whose index equals a boundary, which is precisely where ``right``
+    changes the answer.
+    """
+
+    tau = torch.tensor(MULTI_DELAYS, dtype=torch.float32, device="cuda")
+    rate = torch.tensor(MULTI_RATES, dtype=torch.float32, device="cuda")
+    weight = torch.tensor(MULTI_WEIGHTS, dtype=torch.complex64, device="cuda")
+    offsets = torch.tensor(MULTI_OFFSETS, dtype=torch.int64, device="cuda")
+
+    tau = tau.clone().requires_grad_(True)
+    rate = rate.clone().requires_grad_(True)
+    weight = weight.clone().requires_grad_(True)
+    iq = synthesize_beat_rows(tau, rate, weight, offsets, SPEC)
+    ref.radar_loss(iq.cpu(), multi_target_iq).backward()
+
+    o_tau = torch.tensor(MULTI_DELAYS, dtype=torch.float64).requires_grad_(True)
+    o_rate = torch.tensor(MULTI_RATES, dtype=torch.float64).requires_grad_(True)
+    o_weight = torch.tensor(
+        MULTI_WEIGHTS, dtype=torch.complex128
+    ).requires_grad_(True)
+    o_offsets = torch.tensor(MULTI_OFFSETS, dtype=torch.int64)
+    o_iq = ref.beat_samples(o_tau, o_rate, o_weight, o_offsets, SPEC)
+    ref.radar_loss(o_iq, multi_target_iq).backward()
+
+    for index in range(len(MULTI_DELAYS)):
+        assert fd.relative_error(
+            float(tau.grad[index]), float(o_tau.grad[index]), floor=1e-6
+        ) < 1e-3, index
+        assert fd.relative_error(
+            float(rate.grad[index]), float(o_rate.grad[index]), floor=1e-6
+        ) < 1e-3, index
+        assert fd.relative_error(
+            float(weight.grad[index].real),
+            float(o_weight.grad[index].real),
+            floor=1e-9,
+        ) < 1e-3, index
+        assert fd.relative_error(
+            float(weight.grad[index].imag),
+            float(o_weight.grad[index].imag),
+            floor=1e-9,
+        ) < 1e-3, index
+
+    # Every row must actually be carrying signal, or the comparison above is
+    # satisfied by zeros on both sides.
+    assert float(tau.grad.abs().min()) > 1e-6
+    assert float(weight.grad.abs().min()) > 1e-9
+
+
+def test_the_segment_mapping_is_the_half_open_partition():
+    """The mapping itself, stated directly rather than only through gradients.
+
+    An offsets table is a half-open partition ``[start, end)``, so a row whose
+    index equals a boundary belongs to the NEXT segment. ``right=False`` puts it
+    in the previous one.
+    """
+
+    from witwin.radar.synthesis.fmcw_beat import _segment_of_each_path
+
+    offsets = torch.tensor(MULTI_OFFSETS, dtype=torch.int64, device="cuda")
+    mapping = _segment_of_each_path(offsets, len(MULTI_DELAYS))
+    assert mapping.tolist() == [0, 0, 1, 1, 1]
+    # An empty trailing segment claims no rows.
+    assert 2 not in mapping.tolist()
+
+
 def test_native_jvp_matches_the_oracle(target_iq):
     tau, rate, weight, offsets = _cuda_inputs()
     d_tau = torch.tensor([1.0e-9, -3.0e-10], dtype=torch.float32, device="cuda")
