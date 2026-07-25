@@ -1,6 +1,6 @@
 # R-ADR-007: Single production backend, Dr.Jit prohibition, Torch/DSP exception
 
-Status: Accepted (Phase 4)
+Status: Accepted (Phase 4), amended (Phase 5)
 
 ## Context
 
@@ -18,6 +18,13 @@ Per-path, per-sample waveform evaluation runs in a CUDA kernel. The FMCW beat
 sum is the Phase-4 instance: `witwin/radar/cuda/kernels/fmcw_beat.cu` owns it,
 and the Python facade contains no loop, no comprehension, and no
 `torch.exp`/`sin`/`cos` over paths.
+
+The per-frame two-way join is the Phase-5 instance:
+`witwin/radar/cuda/kernels/two_way_join.cu` owns it. The AST scan for that one
+is scoped to the `compose` FUNCTION rather than to the module, because `freeze`
+legitimately iterates - once per frozen topology, on the host, after the
+consumer has already synchronized. Scanning the whole file would either forbid
+that or force a blanket exemption that stops meaning anything.
 
 ### The Torch allowlist
 
@@ -38,19 +45,53 @@ carries `is_geometry_dependent` so the distinction is a checked property rather
 than a comment, and `TwoWayComposer.compose` refuses a geometry-dependent
 response outright.
 
-### Dr.Jit
+### Dr.Jit is gone (Phase 5)
 
-No new production path may reference Dr.Jit. The legacy edge
-`witwin/radar/__init__.py -> trace.py -> drjit` still exists and is scheduled for
-deletion; it is measured, not tolerated silently.
+The promise made in the Phase-4 revision of this ADR is kept. `trace.py`,
+`material.py`, and `_rayd_bridge.py` - the only three production files that
+imported Dr.Jit, on five lines - are deleted, and the gate is now the strict
+PROCESS-GLOBAL form: after `import witwin.radar`, neither `drjit` nor `rayd`
+appears in `sys.modules` by any route. The static AST closure is retained as a
+second layer and no longer has to exclude the package root by name. The
+baseline-delta assertion that was written to fail loudly at this moment did
+exactly that, and was converted rather than deleted.
 
-Because that edge makes a strict process-global `sys.modules` assertion
-unachievable today, the Phase-4 gate is the STATIC AST CLOSURE form: no module
-added by this spike names Dr.Jit, directly or transitively, excluding exactly the
-one package-root edge, which is named. The strict process-global form is promised
-at Phase-5 exit, when `trace.py` is deleted, and the baseline-delta test carries
-an assertion that fails loudly at that point telling the next author to tighten
-it.
+`render_depth` was deleted with `trace.py` per owner directive: no port, no
+preservation, no deprecation shim.
+
+The removal is hard, not a deprecation window. `Tracer`, `fresnel`,
+`Radar.simulate`, and `Radar.simulate_group` raise with a message naming their
+replacement, and a module-level `__getattr__` makes
+`from witwin.radar import Tracer` produce that message rather than a bare
+`ImportError`. Nothing falls back, because the replacement is a different
+contract rather than a drop-in: a shim returning numbers under the old name
+would be returning numbers from a different model. `pyproject.toml` drops the
+`drjit` and `rayd-drjit` pins in the same change, since leaving them would keep
+forcing Dr.Jit into every install after the modules are gone.
+
+### Recorded deviation: `solvers/common.py` path physics stays (Phase 5)
+
+Per-path geometry and amplitude math in `witwin/radar/solvers/common.py` is
+Torch, is production, and is NOT removed here. The reason is not convenience.
+`solver_dirichlet.py` consumes six of its helpers, and six of the nine
+manifested native symbols are the `dirichlet_spectrum` family whose
+`end_to_end_caller` is in every case a `DirichletSolver` method reached through
+`Radar.mimo` / `chirp` / `frame` / `mimo_from_paths` / `path_cache_from_trace`.
+Deleting the only production owner of that math while its native replacement is
+explicitly out of scope would orphan six ABI symbols and force the binding
+manifest and the CUDA sources into an architecture-cleanup commit. That is not
+a scope reduction; it is a contradiction.
+
+What did move is the pair of helpers with ZERO production callers,
+`pytorch_chirp_reference` and `pytorch_mimo_from_samples`. A CPU/Torch reference
+oracle belongs under `tests/`, and those two were shipping inside the wheel;
+they are now `tests/reference/dsp_oracles.py`, unchanged, so every comparison
+that used them still means the same thing.
+
+The residual surface is FROZEN by test. `test_the_residual_torch_path_surface_is_frozen`
+enumerates exactly the nine names `solvers/common.py` may define, so "recorded
+deviation" cannot quietly become "growing exception". The owner of its removal
+is the native path evaluator, which is separate work.
 
 ### No finite differences in production
 
@@ -66,7 +107,13 @@ pass, which is exactly the wrong direction.
 
 ## Acceptance evidence
 
+- `tests/test_phase4_import_boundary.py::test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar`
+  (the strict process-global assertion)
 - `tests/test_phase4_import_boundary.py::test_the_synthesis_hot_loop_is_native_not_torch`
+- `tests/test_phase4_import_boundary.py::test_the_two_way_join_hot_loop_is_native_not_torch`
 - `tests/test_phase4_import_boundary.py::test_no_drjit_reference_of_any_kind_in_the_new_modules`
-- `tests/test_phase4_import_boundary.py::test_the_spike_adds_no_drjit_or_rayd_over_the_radar_baseline`
+- `tests/test_phase4_import_boundary.py::test_the_spike_adds_no_drjit_rayd_or_channel_internals`
 - `tests/test_phase4_two_way.py::test_a_geometry_dependent_response_is_refused`
+- `tests/test_phase5_removed_entry_points.py` (removed names raise and name
+  their replacement; the residual Torch surface is frozen; the packaging
+  metadata no longer pulls in Dr.Jit)

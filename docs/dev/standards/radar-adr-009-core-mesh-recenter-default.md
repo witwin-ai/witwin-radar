@@ -61,3 +61,22 @@ error.
 
 None yet. This is Proposed. `tests/support/phase4_world.py` carries the Radar-side
 assertion; nothing upstream has changed.
+
+## Appendix: a second Core footgun, observed in Phase 5
+
+`Box(...).to_mesh()` returns a `(vertices, faces)` tuple with BOTH tensors on
+the CPU. Promoting only `vertices` to CUDA - the natural thing to write, since
+`faces` is an index table - trips `_resolve_device` in
+`core/witwin/core/geometry/base.py` with
+
+```
+ValueError: Geometry tensor device cpu conflicts with resolved device cuda:0.
+```
+
+which names neither tensor, so the reader looks at the one they just moved.
+Measured here rather than quoted from a survey.
+
+This is recorded, not patched: Core is read-only from here. It matters because
+it will resurface in any new fixture built from a Core primitive, and because
+the error message sends the reader looking at the wrong tensor. Any fixture that
+promotes a `to_mesh()` result must move `faces` as well as `vertices`.

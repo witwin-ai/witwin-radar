@@ -1,6 +1,6 @@
 # R-ADR-004: The `_radar_native` source and ABI boundary
 
-Status: Accepted (Phase 4)
+Status: Accepted (Phase 4), extended (Phase 5)
 
 ## Context
 
@@ -114,6 +114,69 @@ Cycle counts accumulate in `double` and wrap to `[0, 1)` before `sincosf`. Fast
 math stays off. At the fixture's ~47 cycles of `f_beat * t_m`, a naive float32
 phase costs about 1e-2 rad, which is the magnitude of the gradients being
 measured.
+
+### The two-way join family (Phase 5)
+
+`two_way_join_forward`, `two_way_join_backward`, and `two_way_join_jvp` are the
+second family in the binary. Their Python owner is
+`witwin/radar/paths/two_way.py`.
+
+Why a kernel, from measurement rather than assumption: the Torch composition
+they replace issued roughly 17-19 device-side aten ops per frame - 8
+`index_select`, 4 `mul`, 2 `add`, 1 `exp`, 1 `bitwise_and`, 2 `_to_copy`, 1
+`fill_` - and measured a flat 0.2-0.6 ms from `K = 4` to `K = 24000`. It was
+launch bound, not bandwidth bound, so one fused launch is the entire win.
+
+Fusion and launch contract:
+
+- Forward and JVP: one thread per composed row, one launch each.
+- Backward: ONE launch. The three owner families - inbound rows, outbound rows,
+  sites - are laid end to end on a single grid, and each thread walks only its
+  own CSR segment of composed rows. There are no atomics, so the summation order
+  is a property of the FROZEN JOIN rather than of the schedule. That is what
+  makes "a permuted leg order produces bit-identical gradients" a legitimate
+  assertion rather than a lucky one, and it is asserted.
+- The CSR tables (`by_inbound`, `by_outbound`, `by_response`) are built once at
+  freeze time, on the host, alongside the join itself.
+
+Numerical rules:
+
+- The association is `(C_out * S) * C_in`, copied verbatim from the Torch
+  composer. Re-associating a complex product changes the last bits and would
+  need its own ADR, not a rewrite.
+- Sums accumulate in `double` and store `float32`, matching the beat family.
+  Nothing depends on it for the delay - the two mixed combined paths in the
+  Phase-5 fixture are 20 ps apart, about 1e4 float32 ULPs - but it costs
+  nothing.
+- Complex values cross as separate real and imaginary tensors, as in the beat
+  family, so no complex tensor crosses the autograd boundary.
+
+`rate_rt` carries a structurally ZERO tangent and the two rate inputs take no
+gradient. `delay_rate` arrives already unpacked from a forward-only dual and is
+published as a primal, which deliberately severs `d(delay_rate)/dx`. Discarding
+the incoming `grad_rate_rt` is exact rather than lossy: `rate_rt` depends only
+on the two primal rate inputs, so every row of its Jacobian against a
+differentiable input is structurally zero. Because "returns None" and "silently
+dropped it" look identical from outside, the facade REFUSES a rate input that
+carries `requires_grad` or a forward tangent. That refusal lives at the facade,
+not in the `jvp` callback: autograd hands the callback a zero-filled tangent for
+an input that carries none, so a check there could not tell the two apart and
+would be a comment with a `raise` attached.
+
+Row validity is formed in Torch, as the conjunction of two gathered per-leg
+masks, and enters as an `int32` mask. That is row selection and metadata, which
+the Python boundary owns. Putting it in the kernel would need either a `bool`
+ABI that Torch's stable `data_ptr` does not instantiate - the
+`AT_FORALL_SCALAR_TYPES_WITH_COMPLEX` instantiation list excludes `Bool` - or
+two extra dtype conversions, plus a non-differentiable output whose JVP contract
+is pure noise.
+
+The DIRECT composer has no kernel and needs none. A direct path has one leg, so
+`compose` is a gather with no arithmetic in it and there is nothing for a kernel
+to own. Expressing it as a two-way join with a fabricated second leg and a unit
+response would put a `has_outbound` branch in the join kernel to pay for a
+disguise that also makes it indistinguishable from a real unit-response round
+trip.
 
 ### Manifest
 
