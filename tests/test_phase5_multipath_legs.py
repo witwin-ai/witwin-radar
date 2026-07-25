@@ -20,6 +20,8 @@ sorted-set comparison could not tell them apart.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
@@ -28,6 +30,7 @@ pytest.importorskip("witwin.channel")
 
 from support import phase4_geometry as geo  # noqa: E402
 from support import phase4_world as world  # noqa: E402
+from support import reference_chain as ref  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
 
 
@@ -280,6 +283,142 @@ def test_a_site_behind_the_wall_kills_every_row_and_the_frame_is_still_valid():
 
     iq = synthesize_fmcw_beat(composed, drv.make_spec(num_chirps=2))
     assert torch.count_nonzero(iq) == 0
+
+
+# --------------------------------------------------------------------------
+# The multipath frame through synthesis
+# --------------------------------------------------------------------------
+
+
+def _moving_frame(spike):
+    """A four-row multipath frame whose rows all carry a live Doppler rate."""
+
+    velocity = torch.tensor(
+        [geo.SITE_VELOCITY_M_PER_S], dtype=torch.float32, device="cuda"
+    )
+    tx, site, rx = drv.positions()
+    with forward_ad.dual_level():
+        composed, _, _ = spike.paths(
+            tx,
+            forward_ad.make_dual(site, velocity),
+            rx,
+            drv.make_response(),
+            ad_mode="jvp",
+        )
+        # Out of the dual level with primal payloads: the rate is a PRIMAL
+        # Doppler value by contract, and synthesis consumes it as one.
+        return (
+            composed.total_delay_s.detach().clone(),
+            composed.delay_rate.detach().clone(),
+            composed.complex_transfer_ref.detach().clone(),
+            composed,
+        )
+
+
+def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipath):
+    """Phase sensitive, four rows, through the conjugation and the kernel.
+
+    Every other multipath assertion on the IQ cube checks shape, finiteness, or
+    zeros, none of which can see the sign of the Channel-to-beat conjugation.
+    The oracle in ``support.reference_chain`` conjugates independently and sums
+    the four phasors in float64, so inverting the conversion - or dropping it -
+    fails here at the Phase-5 fixture rather than only at the Phase-4 one.
+    """
+
+    from dataclasses import replace
+
+    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+
+    spec = drv.make_spec(num_chirps=4)
+    delay, rate, transfer, composed = _moving_frame(multipath)
+    frame = replace(
+        composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer
+    )
+    assert frame.path_count == 4
+    assert bool(frame.row_valid.all())
+
+    measured = synthesize_fmcw_beat(frame, spec)
+    expected = ref.beat_samples(
+        delay.cpu(),
+        rate.cpu(),
+        ref.channel_to_beat(transfer.cpu().to(torch.complex128)),
+        frame.pair_offsets.cpu(),
+        spec,
+    )
+    # Not vacuous: the four rows interfere, so the cube is not one path's
+    # magnitude and its phase is the thing being compared.
+    assert float(expected.abs().max()) > 0.0
+    torch.testing.assert_close(
+        measured.cpu().to(torch.complex128), expected, rtol=2e-5, atol=2e-5
+    )
+
+    # And the conjugation is load bearing here, not merely present: the same
+    # cube built from the UNCONJUGATED transfer disagrees grossly.
+    inverted = ref.beat_samples(
+        delay.cpu(),
+        rate.cpu(),
+        transfer.cpu().to(torch.complex128),
+        frame.pair_offsets.cpu(),
+        spec,
+    )
+    assert float((inverted - expected).abs().max()) > 0.1 * float(expected.abs().max())
+
+
+def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
+    """The ``carrier_rate_hz`` law, re-verified at the multipath geometry.
+
+    A frozen Channel coefficient holds the carrier phase at THIS frame's
+    ``tau_rt``, so the carrier does not advance across chirps on its own and
+    ``carrier_rate_hz`` supplies exactly that missing term. The four combined
+    rows have four different delays and four different rates, so checking one
+    row - as the Phase-4 line-of-sight test does - cannot see a term that
+    happens to cancel at a single delay.
+
+    Rows are isolated through ``row_valid`` rather than by rebuilding the
+    batch: a dead row's weight is zeroed, which is the contract's own way of
+    saying a row contributes nothing.
+    """
+
+    from dataclasses import replace
+
+    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+
+    spec = drv.make_spec(num_chirps=8)
+    assert spec.carrier_hz == 0.0
+    assert spec.carrier_rate_hz == geo.REFERENCE_FREQUENCY_HZ
+    delay, rate, transfer, composed = _moving_frame(multipath)
+    frame = replace(
+        composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer
+    )
+
+    seen = set()
+    for row in range(frame.path_count):
+        alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
+        alone[row] = True
+        iq = synthesize_fmcw_beat(replace(frame, row_valid=alone), spec)
+        chirps = iq[:, 0, 0].cpu().to(torch.complex128)
+        measured = float(
+            torch.angle(chirps[1:] * torch.conj(chirps[:-1])).mean()
+        )
+        tau = float(delay[row])
+        expected = (
+            2.0
+            * math.pi
+            * (spec.carrier_rate_hz + spec.slope_hz_per_s * (spec.t_start_s - tau))
+            * float(rate[row])
+            * spec.chirp_period_s
+        )
+        assert measured == pytest.approx(expected, abs=1e-4), (
+            _combined_key(multipath, frame, row),
+            measured,
+            expected,
+        )
+        # A receding site advances the slow-time phase. Asserted per row so a
+        # sign that flips for one path cannot hide behind three that do not.
+        assert measured > 0.0
+        seen.add(round(measured, 6))
+    # Four genuinely different slopes, so this is four measurements.
+    assert len(seen) == frame.path_count
 
 
 # --------------------------------------------------------------------------

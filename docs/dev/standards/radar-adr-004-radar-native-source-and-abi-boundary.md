@@ -240,5 +240,16 @@ Rejected: one extra `double` on three operators buys both.
 - `tests/test_phase4_fmcw_beat_kernel.py::test_tau_is_the_round_trip_delay_and_is_never_doubled`
 - `tests/test_phase4_fmcw_beat_kernel.py::test_conjugation_is_the_only_channel_to_beat_conversion`
 - `tests/test_phase4_fmcw_beat_ad.py` (VJP and JVP against the float64 oracle)
+- `tests/test_phase5_two_way_join_ad.py::test_each_coefficient_gradient_family_matches_a_hand_derived_reduction`
+  (one independent check per backward gradient slot family, derived from the
+  composition rather than from the retained Torch composer, so zeroing a single
+  family is not caught by exactly one test)
+- `tests/test_phase5_multipath_legs.py::test_the_multipath_cube_matches_the_independent_float64_beat_oracle`
+  (four interfering rows through the conjugation and the beat kernel, phase
+  sensitive; the Channel-to-beat conversion had been guarded only by Phase-4
+  fixtures)
+- `tests/test_phase5_multipath_legs.py::test_each_combined_row_carries_its_own_analytic_slow_time_slope`
+  (the `carrier_rate_hz` law re-verified at the multipath geometry, per row,
+  across four different delays and four different rates)
 - `tests/test_phase4_binding_manifest.py` (declared, implemented, and manifested
   operators agree; every operator has an owner, a test, and a caller)

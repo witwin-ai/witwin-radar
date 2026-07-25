@@ -283,6 +283,97 @@ def test_reverse_mode_join_gradients_match_the_oracle():
                 ), (name, index)
 
 
+def test_each_coefficient_gradient_family_matches_a_hand_derived_reduction():
+    """One independent check per native VJP gradient slot family.
+
+    ``test_reverse_mode_join_gradients_match_the_oracle`` compares against the
+    retained Torch composition differentiated by autograd. That is the right
+    primary guard, but it is a SINGLE guard: zeroing one family's store in the
+    backward kernel is caught by that test and nothing else, and the
+    permutation test - which compares gradients to gradients - happily compares
+    zeros to zeros.
+
+    So this derives the three reductions by hand instead, from the definition
+    of the composition and Torch's real-pair convention for a complex
+    parameter (``grad.real = dL/dRe(z)``, ``grad.imag = dL/dIm(z)``):
+
+        C_rt[k] = C_out[o] * S[s] * C_in[i],  L includes Re(conj(g) . C_rt)
+
+        grad_C_out[j] = sum over live rows with o == j of g . conj(S . C_in)
+        grad_C_in[j]  = sum over live rows with i == j of g . conj(C_out . S)
+        grad_S[j]     = sum over live rows with s == j of g . conj(C_out . C_in)
+
+    A dead row is excluded, so the mask is part of the derivation rather than a
+    separate assertion. The delay terms of the loss touch no coefficient and
+    drop out.
+    """
+
+    composer = _composer()
+    base = _parameters(composer)
+    weights = _loss_weights(composer)
+
+    valid_in = torch.ones(composer.inbound_row_count, dtype=torch.bool, device="cuda")
+    valid_in[1] = False
+    valid_out = torch.ones(
+        composer.outbound_row_count, dtype=torch.bool, device="cuda"
+    )
+    valid_out[0] = False
+
+    live, inbound, outbound, response = _production_batch(
+        composer, base, row_valid=(valid_in, valid_out), requires_grad=True
+    )
+    composed = composer.compose(inbound, outbound, response)
+    _scalar_loss(
+        composed.total_delay_s, composed.complex_transfer_ref, weights
+    ).backward()
+
+    # The join tables and the mask, read on the host: this is a test, and the
+    # tables are freeze-time values the production path never reads back.
+    idx_in = composer.inbound_row.tolist()
+    idx_out = composer.outbound_row.tolist()
+    idx_s = composer.response_slot.tolist()
+    alive_in = valid_in.tolist()
+    alive_out = valid_out.tolist()
+    g = weights["transfer"].to(torch.complex128).cpu()
+    c_in = base["c_in"].to(torch.complex128).cpu()
+    c_out = base["c_out"].to(torch.complex128).cpu()
+    site = base["response"].to(torch.complex128).cpu()
+
+    expected = {
+        "c_in": torch.zeros(composer.inbound_row_count, dtype=torch.complex128),
+        "c_out": torch.zeros(composer.outbound_row_count, dtype=torch.complex128),
+        "response": torch.zeros(composer.site_count, dtype=torch.complex128),
+    }
+    live_rows = 0
+    for row, (i, o, s) in enumerate(zip(idx_in, idx_out, idx_s, strict=True)):
+        if not (alive_in[i] and alive_out[o]):
+            continue
+        live_rows += 1
+        expected["c_out"][o] += g[row] * torch.conj(site[s] * c_in[i])
+        expected["c_in"][i] += g[row] * torch.conj(c_out[o] * site[s])
+        expected["response"][s] += g[row] * torch.conj(c_out[o] * c_in[i])
+    # The mask is doing something and the sums are not empty.
+    assert 0 < live_rows < composer.path_count
+
+    for name, reference in expected.items():
+        measured = live[name].grad
+        assert measured is not None, name
+        for index in range(int(reference.shape[0])):
+            for part in ("real", "imag"):
+                target = float(getattr(reference[index], part))
+                assert (
+                    fd.relative_error(
+                        float(getattr(measured[index], part)),
+                        target,
+                        floor=ZERO_FLOOR,
+                    )
+                    < 1e-4
+                ), (name, index, part)
+        # Every family must carry real signal somewhere, or "matches" would be
+        # a comparison of zeros.
+        assert float(reference.abs().max()) > 1.0e-3, name
+
+
 def test_a_dead_row_carries_no_gradient_back_to_either_leg():
     """Dead rows are data, and data with a zero derivative.
 
@@ -416,6 +507,11 @@ def test_the_composed_rate_tangent_is_structurally_zero():
     The contract severs ``d(delay_rate)/dx`` deliberately. Publishing a nonzero
     tangent there would resurrect a second-order term nothing else in the chain
     claims.
+
+    "Present and exactly zero" is asserted rather than "zero or missing". The
+    kernel writes the rate tangent unconditionally, so autograd does attach
+    one; accepting ``None`` as well would mean this test could not tell a zero
+    the kernel computed from a tangent autograd dropped on the way out.
     """
 
     composer = _composer()
@@ -432,4 +528,6 @@ def test_the_composed_rate_tangent_is_structurally_zero():
         rate_tangent = forward_ad.unpack_dual(composed.delay_rate).tangent
         assert delay_tangent is not None
         assert float(delay_tangent.abs().sum()) > 0.0
-        assert rate_tangent is None or float(rate_tangent.abs().sum()) == 0.0
+        assert rate_tangent is not None, "the rate tangent was dropped, not zeroed"
+        assert rate_tangent.shape == composed.delay_rate.shape
+        assert float(rate_tangent.abs().sum()) == 0.0
