@@ -222,6 +222,28 @@ def test_conjugation_is_the_only_channel_to_beat_conversion():
         channel_phasor_to_beat_weight(torch.ones(1, device="cuda"))
 
 
+def test_loading_the_extension_is_free_and_side_effect_free_after_the_first_call():
+    """Regression: the loader must be called once per process, not per launch.
+
+    On Windows the loader prepends the MSVC tool directories to PATH every time
+    it runs. Calling it per synthesis launch grew PATH until Windows rejected it
+    with "the environment variable is longer than 32767 characters", which
+    surfaced as 25 unrelated CUDA tests failing partway through a full session.
+    """
+
+    import os
+
+    from witwin.radar.cuda import build
+    from witwin.radar.synthesis import fmcw_beat
+
+    first = build.build_extension()
+    path_length = len(os.environ.get("PATH", ""))
+    for _ in range(8):
+        assert build.build_extension() is first
+        assert fmcw_beat._ops() is first
+    assert len(os.environ.get("PATH", "")) == path_length
+
+
 def test_zero_weight_row_contributes_exactly_zero():
     spec = _spec(num_chirps=2)
     tau, rate, weight, offsets = _rows(

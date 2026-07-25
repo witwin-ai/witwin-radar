@@ -31,10 +31,23 @@ from ..paths.contracts import RadarPathBatch
 from .contracts import FmcwBeatSpec
 
 
-def _ops():
-    from ..cuda import build
+_OPS = None
 
-    return build.build_extension()
+
+def _ops():
+    """The native operator table, resolved once per process.
+
+    Held here as well as in the build module because this runs on every
+    synthesis call, forward and backward: a per-launch import plus function call
+    is pure overhead on the hot path.
+    """
+
+    global _OPS
+    if _OPS is None:
+        from ..cuda import build
+
+        _OPS = build.build_extension()
+    return _OPS
 
 
 def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:

@@ -252,7 +252,29 @@ def _load_prebuilt_extension(build_directory: Path):
     return _load_extension_file(module_path)
 
 
+# The loaded library, cached for the process.
+#
+# Loading is idempotent in effect but NOT in side effects: on Windows,
+# _ensure_windows_build_tools_on_path() prepends the MSVC tool directories to
+# PATH every time it runs, and _load_vcvars64_environment() copies the whole
+# vcvars environment over os.environ. Calling build_extension() in a loop
+# therefore grows PATH without bound until Windows rejects it with
+# "the environment variable is longer than 32767 characters", which surfaces
+# far away from the cause -- as unrelated CUDA tests failing partway through a
+# long session. Caching the module makes the second and later calls free and
+# side-effect free.
+_LOADED_MODULE = None
+
+
 def build_extension(*, verbose: bool = False):
+    global _LOADED_MODULE
+    if _LOADED_MODULE is not None:
+        return _LOADED_MODULE
+    _LOADED_MODULE = _build_extension(verbose=verbose)
+    return _LOADED_MODULE
+
+
+def _build_extension(*, verbose: bool = False):
     root = source_root()
     default_build_directory = Path(tempfile.gettempdir()) / "witwin_radar_dirichlet_cuda" / "stable_abi_v1"
     build_directory = Path(os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory))
