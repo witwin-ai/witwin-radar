@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from witwin.core import Material, Mesh, Structure
+from witwin.core import Mesh, PhysicalMaterial as Material, Structure
 from witwin.radar import (
     Radar,
     RadarConfig,

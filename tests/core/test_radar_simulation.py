@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from witwin.core import Box, Material, Structure
+from witwin.core import Box, PhysicalMaterial as Material, Structure
 from witwin.radar import Radar, RadarConfig, Tracer
 from witwin.radar.scene import Scene
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.core import Box, Material, Structure
+from witwin.core import Box, PhysicalMaterial as Material, Structure
 from witwin.radar import Radar, Tracer
 from witwin.radar.scene import Scene
 

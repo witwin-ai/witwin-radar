@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import pytest
 
-from witwin.core import Material
+from witwin.core import PhysicalMaterial as Material
 from witwin.radar import Radar, Scene
 
 
