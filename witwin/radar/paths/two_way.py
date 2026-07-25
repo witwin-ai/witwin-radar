@@ -31,8 +31,13 @@ and this module mirrors its sink-major pair index exactly.
 The join is built ONCE, at freeze time, from the frozen topologies. Host
 observation is permitted there because ``prepare_fixed_topology`` has already
 synchronized; a per-frame join would reintroduce exactly the host traffic the
-fixed-topology capability exists to avoid. Per frame, :meth:`compose` performs
-device gathers and arithmetic only.
+fixed-topology capability exists to avoid.
+
+Per frame, :meth:`compose` launches ONE native kernel. The arithmetic it
+replaced was roughly 17-19 device-side aten ops measuring a flat 0.2-0.6 ms
+from four composed rows to twenty-four thousand: launch bound, not bandwidth
+bound. Everything left in Python around that launch is validation, row
+selection, and result assembly, and it performs no host observation at all.
 """
 
 from __future__ import annotations

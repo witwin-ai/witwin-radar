@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from witwin.radar import Radar, RadarConfig
-from reference.dsp_oracles import pytorch_chirp_reference
+# This runs as a standalone script as well as under pytest, so the tests
+# directory is put on the path explicitly rather than relied on.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from witwin.radar import Radar, RadarConfig  # noqa: E402
+
+from reference.dsp_oracles import pytorch_chirp_reference  # noqa: E402
 
 
 CONFIG = {
