@@ -137,6 +137,13 @@ class RadarLegBatch:
     forward-only dual and published as a PRIMAL value. It is the Doppler
     primitive; consuming it as a primal deliberately severs the second-order
     ``d(delay_rate)/dx`` term, which this contract does not claim.
+
+    ``source_id``, ``sink_id``, ``primitive_sequence``, ``material_sequence``
+    and ``interaction_type`` are the row's stable IDENTITY. They come straight
+    off the frozen topology, so they are the same tensor objects on every frame
+    of a frozen sequence and cost nothing to publish. A two-way composer joins
+    on them; the sequences in particular are ADR-037 frozen labels rather than
+    re-validated hits, which is exactly what makes them a stable key.
     """
 
     leg_count: int
@@ -147,6 +154,11 @@ class RadarLegBatch:
     sink_index: torch.Tensor
     depth: torch.Tensor
     component_id: torch.Tensor
+    source_id: torch.Tensor
+    sink_id: torch.Tensor
+    primitive_sequence: torch.Tensor
+    material_sequence: torch.Tensor
+    interaction_type: torch.Tensor
     delay_s: torch.Tensor
     coefficient: torch.Tensor
     delay_rate: torch.Tensor | None
@@ -169,6 +181,27 @@ class RadarLegBatch:
         for name in ("source_index", "sink_index", "depth", "component_id"):
             _require_tensor(
                 name, getattr(self, name), dtype=torch.int32, shape=rows
+            )
+        for name in ("source_id", "sink_id"):
+            _require_tensor(
+                name, getattr(self, name), dtype=torch.int64, shape=rows
+            )
+        width = int(self.primitive_sequence.shape[1]) if (
+            isinstance(self.primitive_sequence, torch.Tensor)
+            and self.primitive_sequence.ndim == 2
+        ) else -1
+        if width < 0:
+            raise ValueError("primitive_sequence must have shape (rows, width)")
+        for name in (
+            "primitive_sequence",
+            "material_sequence",
+            "interaction_type",
+        ):
+            _require_tensor(
+                name,
+                getattr(self, name),
+                dtype=torch.int32,
+                shape=(self.leg_count, width),
             )
         _require_tensor("delay_s", self.delay_s, dtype=torch.float32, shape=rows)
         _require_tensor(

@@ -20,10 +20,32 @@ from witwin.radar.propagation import RadarLegBatch
 from witwin.radar.scattering import ScalarRcsResponse
 
 
-def _frozen(source_ids, sink_ids):
+def _frozen(source_ids, sink_ids, *, components=None, depths=None, primitives=None):
+    """A duck-typed frozen leg topology with full row identity.
+
+    ``components``/``depths``/``primitives`` default to distinct per-row values
+    so that a fabricated leg with several rows per endpoint pair has a unique
+    identity key, exactly as a real multipath leg does. Passing them explicitly
+    is how a test builds two rows that DO collide.
+    """
+
+    rows = len(source_ids)
+    components = list(range(rows)) if components is None else list(components)
+    depths = list(components) if depths is None else list(depths)
+    primitives = (
+        [[value] for value in components] if primitives is None else list(primitives)
+    )
     return SimpleNamespace(
         source_id=torch.tensor(source_ids, dtype=torch.int64),
         sink_id=torch.tensor(sink_ids, dtype=torch.int64),
+        component_id=torch.tensor(components, dtype=torch.int32),
+        depth=torch.tensor(depths, dtype=torch.int32),
+        primitive_sequence=torch.tensor(primitives, dtype=torch.int32).reshape(
+            rows, -1
+        ),
+        material_sequence=torch.tensor(primitives, dtype=torch.int32).reshape(
+            rows, -1
+        ),
     )
 
 
@@ -38,6 +60,11 @@ def _legs(delays, coefficients, *, rates=None, valid=None):
         sink_index=torch.zeros(rows, dtype=torch.int32),
         depth=torch.zeros(rows, dtype=torch.int32),
         component_id=torch.zeros(rows, dtype=torch.int32),
+        source_id=torch.zeros(rows, dtype=torch.int64),
+        sink_id=torch.zeros(rows, dtype=torch.int64),
+        primitive_sequence=torch.zeros((rows, 1), dtype=torch.int32),
+        material_sequence=torch.zeros((rows, 1), dtype=torch.int32),
+        interaction_type=torch.zeros((rows, 1), dtype=torch.int32),
         delay_s=torch.tensor(delays, dtype=torch.float32),
         coefficient=torch.tensor(coefficients, dtype=torch.complex64),
         delay_rate=None if rates is None else torch.tensor(rates, dtype=torch.float32),
@@ -50,13 +77,19 @@ def _response(amplitude=2.0, phase=0.3):
     return ScalarRcsResponse.from_values(amplitude, phase)
 
 
-def test_delay_is_additive_and_transfer_factorizes():
-    composer = TwoWayComposer.freeze(
+def _one_site_composer():
+    return TwoWayComposer.freeze(
         _frozen([10], [20]),
         _frozen([20], [30]),
         torch.tensor([20], dtype=torch.int64),
+        radar_source_ids=[10],
+        radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     )
+
+
+def test_delay_is_additive_and_transfer_factorizes():
+    composer = _one_site_composer()
     inbound = _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9])
     outbound = _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9])
     composed = composer.compose(inbound, outbound, _response())
@@ -97,7 +130,10 @@ def test_freeze_host_reads_are_counted_and_compose_has_none(monkeypatch):
     ``TwoWayComposer.freeze`` reads leg identity to the host to build the join.
     That is sanctioned and one-time, but Channel never sees those reads, so no
     Channel diagnostic counts them and the one-time total was implied rather
-    than measured. Five reads: both legs' source_id and sink_id, plus site_ids.
+    than measured. Thirteen reads: six identity columns per leg (source_id,
+    sink_id, component_id, depth, primitive_sequence, material_sequence) plus
+    site_ids. The front-end endpoint IDs are passed as Python lists here, so
+    they add none.
 
     The assertion that matters is the second one: ``compose`` runs per frame and
     must do none.
@@ -112,13 +148,8 @@ def test_freeze_host_reads_are_counted_and_compose_has_none(monkeypatch):
 
     monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
 
-    composer = TwoWayComposer.freeze(
-        _frozen([10], [20]),
-        _frozen([20], [30]),
-        torch.tensor([20], dtype=torch.int64),
-        reference_frequency_hz=77.0e9,
-    )
-    assert calls["n"] == 5, calls["n"]
+    composer = _one_site_composer()
+    assert calls["n"] == 13, calls["n"]
 
     calls["n"] = 0
     composer.compose(
@@ -137,13 +168,15 @@ def test_join_is_by_identity_not_by_array_position():
     """
 
     sites = torch.tensor([20, 21], dtype=torch.int64)
-    inbound_frozen = _frozen([10, 10], [20, 21])
+    inbound_frozen = _frozen([10, 10], [20, 21], components=[0, 0])
     inbound = _legs([1.0e-8, 4.0e-8], [0.5 + 0.0j, 0.1 + 0.2j])
 
     straight = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([20, 21], [30, 30]),
+        _frozen([20, 21], [30, 30], components=[0, 0]),
         sites,
+        radar_source_ids=[10],
+        radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     ).compose(
         inbound,
@@ -152,8 +185,10 @@ def test_join_is_by_identity_not_by_array_position():
     )
     permuted = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([21, 20], [30, 30]),
+        _frozen([21, 20], [30, 30], components=[0, 0]),
         sites,
+        radar_source_ids=[10],
+        radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     ).compose(
         inbound,
@@ -181,13 +216,19 @@ def test_join_is_by_identity_not_by_array_position():
     )
 
 
-def test_rows_are_sorted_into_a_valid_pair_partition():
-    composer = TwoWayComposer.freeze(
-        _frozen([10, 11], [20, 20]),
-        _frozen([20, 20], [30, 31]),
+def _two_by_two_composer():
+    return TwoWayComposer.freeze(
+        _frozen([10, 11], [20, 20], components=[0, 0]),
+        _frozen([20, 20], [30, 31], components=[0, 0]),
         torch.tensor([20], dtype=torch.int64),
+        radar_source_ids=[10, 11],
+        radar_sink_ids=[30, 31],
         reference_frequency_hz=77.0e9,
     )
+
+
+def test_rows_are_sorted_into_a_valid_pair_partition():
+    composer = _two_by_two_composer()
     # Two radar sources x two radar sinks through one site: four sensor pairs.
     assert composer.sensor_pair_count == 4
     assert composer.path_count == 4
@@ -196,6 +237,10 @@ def test_rows_are_sorted_into_a_valid_pair_partition():
     assert composer.sensor_pair_index.tolist() == sorted(
         composer.sensor_pair_index.tolist()
     )
+    # SINK-MAJOR, mirroring the Channel consumer's own pair index
+    # (``sink_row_index * source_count + source_row_index``). One convention
+    # crosses the boundary rather than two; a source-major order here would be
+    # a second, silently different, virtual-array numbering.
     pairs = list(
         zip(
             composer.topology.radar_source_id.tolist(),
@@ -203,7 +248,31 @@ def test_rows_are_sorted_into_a_valid_pair_partition():
             strict=True,
         )
     )
-    assert pairs == sorted(pairs)
+    assert pairs == [(10, 30), (11, 30), (10, 31), (11, 31)]
+
+
+def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows():
+    """A pair that discovered nothing still owns an (empty) segment.
+
+    ``synthesize_fmcw_beat`` shapes its output ``[chirps, sensor_pair_count,
+    samples]``. Deriving the pair set from surviving composed rows would
+    renumber and reshape the IQ cube whenever a site failed discovery for one
+    TX/RX pair, which is a silent wrong answer rather than a missing one.
+    """
+
+    composer = TwoWayComposer.freeze(
+        _frozen([10], [20]),
+        _frozen([20], [30]),
+        torch.tensor([20], dtype=torch.int64),
+        radar_source_ids=[10, 11],
+        radar_sink_ids=[30, 31],
+        reference_frequency_hz=77.0e9,
+    )
+    # Only the (10, 30) pair has legs; the other three are empty but present.
+    assert composer.sensor_pair_count == 4
+    assert composer.path_count == 1
+    assert composer.pair_offsets.tolist() == [0, 1, 1, 1, 1]
+    assert composer.sensor_pair_index.tolist() == [0]
 
 
 def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
@@ -217,12 +286,7 @@ def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
     production route unable to reach the clamp at all.
     """
 
-    composer = TwoWayComposer.freeze(
-        _frozen([10, 11], [20, 20]),
-        _frozen([20, 20], [30, 31]),
-        torch.tensor([20], dtype=torch.int64),
-        reference_frequency_hz=77.0e9,
-    )
+    composer = _two_by_two_composer()
     offsets = composer.pair_offsets.tolist()
     assert offsets[0] == 0
     assert offsets[-1] == composer.path_count
@@ -244,6 +308,8 @@ def test_a_site_without_a_leg_is_refused_rather_than_dropped():
             _frozen([10], [20]),
             _frozen([21], [30]),
             torch.tensor([20], dtype=torch.int64),
+            radar_source_ids=[10],
+            radar_sink_ids=[30],
             reference_frequency_hz=77.0e9,
         )
     with pytest.raises(ValueError, match="no inbound leg row"):
@@ -251,15 +317,67 @@ def test_a_site_without_a_leg_is_refused_rather_than_dropped():
             _frozen([10], [21]),
             _frozen([20], [30]),
             torch.tensor([20], dtype=torch.int64),
+            radar_source_ids=[10],
+            radar_sink_ids=[30],
+            reference_frequency_hz=77.0e9,
+        )
+
+
+def test_a_leg_endpoint_outside_the_declared_front_end_is_refused():
+    """A stray radar endpoint is a silent drop, not an empty segment.
+
+    The empty-segment rule covers a pair that discovered nothing. A leg row
+    whose radar endpoint is not in the declared front end is the opposite
+    problem: it exists and would simply never be visited.
+    """
+
+    with pytest.raises(ValueError, match="not in radar_source_ids"):
+        TwoWayComposer.freeze(
+            _frozen([11], [20]),
+            _frozen([20], [30]),
+            torch.tensor([20], dtype=torch.int64),
+            radar_source_ids=[10],
+            radar_sink_ids=[30],
+            reference_frequency_hz=77.0e9,
+        )
+    with pytest.raises(ValueError, match="not in radar_sink_ids"):
+        TwoWayComposer.freeze(
+            _frozen([10], [20]),
+            _frozen([20], [31]),
+            torch.tensor([20], dtype=torch.int64),
+            radar_source_ids=[10],
+            radar_sink_ids=[30],
+            reference_frequency_hz=77.0e9,
+        )
+
+
+def test_two_leg_rows_that_share_an_identity_key_are_refused():
+    """An ambiguous canonical order is refused, not tie-broken on position.
+
+    Two rows of one leg with the same component, depth, and interaction
+    sequence cannot be ordered by identity. Falling back on row position for
+    the tie would reintroduce exactly the positional dependence the identity
+    join exists to remove, and it would make the permutation test vacuous.
+    """
+
+    with pytest.raises(ValueError, match="share the identity key"):
+        TwoWayComposer.freeze(
+            _frozen([10, 10], [20, 20], components=[1, 1]),
+            _frozen([20], [30]),
+            torch.tensor([20], dtype=torch.int64),
+            radar_source_ids=[10],
+            radar_sink_ids=[30],
             reference_frequency_hz=77.0e9,
         )
 
 
 def test_row_validity_is_the_conjunction_of_both_legs():
     composer = TwoWayComposer.freeze(
-        _frozen([10, 10], [20, 21]),
-        _frozen([20, 21], [30, 30]),
+        _frozen([10, 10], [20, 21], components=[0, 0]),
+        _frozen([20, 21], [30, 30], components=[0, 0]),
         torch.tensor([20, 21], dtype=torch.int64),
+        radar_source_ids=[10],
+        radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     )
     composed = composer.compose(
@@ -268,15 +386,16 @@ def test_row_validity_is_the_conjunction_of_both_legs():
         _response(),
     )
     assert composed.row_valid.tolist() == [True, False]
+    # A dead row's payload is exactly zero, not a partial composition. It used
+    # to publish ``0 + tau_out``, a plausible number that no consumer should
+    # ever read; validity is the authority, and the payload agrees with it.
+    assert float(composed.total_delay_s[0]) == pytest.approx(2.0e-8, rel=1e-6)
+    assert float(composed.total_delay_s[1]) == 0.0
+    assert complex(composed.complex_transfer_ref[1]) == 0j
 
 
 def test_delay_rate_is_only_composed_when_both_legs_have_one():
-    composer = TwoWayComposer.freeze(
-        _frozen([10], [20]),
-        _frozen([20], [30]),
-        torch.tensor([20], dtype=torch.int64),
-        reference_frequency_hz=77.0e9,
-    )
+    composer = _one_site_composer()
     with_rate = _legs([1.0e-8], [1.0 + 0j], rates=[1.0e-9])
     without = _legs([1.0e-8], [1.0 + 0j])
     assert composer.compose(with_rate, without, _response()).delay_rate is None
@@ -298,12 +417,7 @@ def test_a_geometry_dependent_response_is_refused():
         def evaluate(self, row_count, device):
             raise AssertionError("must not be reached")
 
-    composer = TwoWayComposer.freeze(
-        _frozen([10], [20]),
-        _frozen([20], [30]),
-        torch.tensor([20], dtype=torch.int64),
-        reference_frequency_hz=77.0e9,
-    )
+    composer = _one_site_composer()
     with pytest.raises(NotImplementedError, match="native kernel"):
         composer.compose(
             _legs([1.0e-8], [1.0 + 0j]),

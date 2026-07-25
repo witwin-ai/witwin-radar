@@ -52,11 +52,22 @@ class FrozenLegTopology:
     are what a downstream composer joins on. Joining by array position instead
     would be silently wrong the moment a leg publishes its rows in a different
     order.
+
+    ``component_id``, ``depth``, ``primitive_sequence`` and
+    ``material_sequence`` complete that identity. With more than one multipath
+    component per endpoint pair, the endpoint IDs alone no longer distinguish
+    two rows of the same leg, and a composer that fell back on row position for
+    the tie would reintroduce exactly the positional dependence the identity
+    join exists to remove.
     """
 
     prepared: object
     source_id: torch.Tensor
     sink_id: torch.Tensor
+    component_id: torch.Tensor
+    depth: torch.Tensor
+    primitive_sequence: torch.Tensor
+    material_sequence: torch.Tensor
     components: tuple[str, ...]
     row_count: int
     prepare_d2h_copies: int
@@ -167,6 +178,10 @@ class ChannelPropagationAdapter:
             prepared=prepared,
             source_id=topology.source_id,
             sink_id=topology.sink_id,
+            component_id=topology.component_id,
+            depth=topology.depth,
+            primitive_sequence=topology.primitive_sequence,
+            material_sequence=topology.material_sequence,
             components=components,
             row_count=evaluation.paths.path_count,
             prepare_d2h_copies=prepared.prepare_d2h_copies,
@@ -215,6 +230,11 @@ class ChannelPropagationAdapter:
             sink_index=paths.topology.sink_index,
             depth=paths.topology.depth,
             component_id=paths.topology.component_id,
+            source_id=paths.topology.source_id,
+            sink_id=paths.topology.sink_id,
+            primitive_sequence=paths.topology.primitive_sequence,
+            material_sequence=paths.topology.material_sequence,
+            interaction_type=paths.topology.interaction_type,
             delay_s=geometry.delay_s,
             coefficient=paths.transport.coefficient,
             delay_rate=_delay_rate(geometry.delay_s, ad_mode),

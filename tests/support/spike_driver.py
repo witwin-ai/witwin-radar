@@ -80,6 +80,12 @@ class Phase4Spike:
             self.inbound,
             self.outbound,
             torch.tensor([geo.SITE_STABLE_ID], dtype=torch.int64, device=device),
+            radar_source_ids=torch.tensor(
+                [geo.TX_STABLE_ID], dtype=torch.int64, device=device
+            ),
+            radar_sink_ids=torch.tensor(
+                [geo.RX_STABLE_ID], dtype=torch.int64, device=device
+            ),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         )
 

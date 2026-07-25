@@ -139,6 +139,11 @@ def _leg(**overrides) -> RadarLegBatch:
         "sink_index": torch.zeros(rows, dtype=torch.int32),
         "depth": torch.zeros(rows, dtype=torch.int32),
         "component_id": torch.zeros(rows, dtype=torch.int32),
+        "source_id": torch.zeros(rows, dtype=torch.int64),
+        "sink_id": torch.zeros(rows, dtype=torch.int64),
+        "primitive_sequence": torch.zeros((rows, 1), dtype=torch.int32),
+        "material_sequence": torch.zeros((rows, 1), dtype=torch.int32),
+        "interaction_type": torch.zeros((rows, 1), dtype=torch.int32),
         "delay_s": torch.zeros(rows, dtype=torch.float32),
         "coefficient": torch.zeros(rows, dtype=torch.complex64),
         "delay_rate": None,
@@ -167,3 +172,24 @@ def test_leg_batch_rejects_inconsistent_rows():
         _leg(leg_count=-1)
     with pytest.raises(ValueError, match="pair_count must be a non-negative int"):
         _leg(pair_count=-1)
+    with pytest.raises(TypeError, match="source_id must use"):
+        _leg(source_id=torch.zeros(2, dtype=torch.int32))
+    with pytest.raises(ValueError, match="material_sequence must have shape"):
+        _leg(material_sequence=torch.zeros((2, 2), dtype=torch.int32))
+
+
+def test_leg_batch_accepts_a_zero_width_interaction_sequence():
+    """A pure line-of-sight leg has no interactions at all.
+
+    Channel publishes ``int32[K, 0]`` sequences for it, and the width is the
+    frozen topology's, not a per-row property. Rejecting width zero would make
+    the identity columns unusable on exactly the simplest leg.
+    """
+
+    zero_width = torch.zeros((2, 0), dtype=torch.int32)
+    leg = _leg(
+        primitive_sequence=zero_width,
+        material_sequence=zero_width,
+        interaction_type=zero_width,
+    )
+    assert leg.primitive_sequence.shape == (2, 0)
