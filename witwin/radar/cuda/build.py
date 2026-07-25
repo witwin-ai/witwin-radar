@@ -220,8 +220,17 @@ class _StableOpsModule:
 _REQUIRED_OPERATORS = ("forward_chunked", "fmcw_beat_forward")
 
 
-def _load_extension_file(library_path: Path) -> _StableOpsModule:
-    torch.ops.load_library(str(library_path))
+def _require_operators(library_path: Path) -> _StableOpsModule:
+    """Reject a library that does not register every required family.
+
+    Applied to EVERY load route, including the just-in-time build. A JIT build
+    can hand back a stale library too: `torch.utils.cpp_extension.load` reuses
+    whatever is already linked in its build directory, so if another checkout of
+    this package compiled a different source list into the same directory, the
+    operators this process needs may simply not be there. Skipping the check on
+    the JIT route turns that into a failure deep inside a kernel call.
+    """
+
     missing = [
         name
         for name in _REQUIRED_OPERATORS
@@ -233,6 +242,11 @@ def _load_extension_file(library_path: Path) -> _StableOpsModule:
             f"{missing}; the binary is stale."
         )
     return _StableOpsModule(library_path)
+
+
+def _load_extension_file(library_path: Path) -> _StableOpsModule:
+    torch.ops.load_library(str(library_path))
+    return _require_operators(library_path)
 
 
 def _load_packaged_prebuilt_extension():
@@ -274,10 +288,48 @@ def build_extension(*, verbose: bool = False):
     return _LOADED_MODULE
 
 
+def source_fingerprint() -> str:
+    """Short digest of the source set: which files, and what is in them.
+
+    The JIT build directory is keyed by this. Two checkouts of this package that
+    compile different sources - or the same sources at different revisions - into
+    one shared directory make ninja relink on every alternating run, and the
+    binary that happens to be on disk is whichever checkout ran last. That is a
+    silent wrong-numerics path, not just wasted work: a stale link only fails
+    loudly when the missing operator is missing entirely, and two revisions of
+    the SAME operator set register the same names with different kernel code.
+
+    File CONTENT, not just paths, because two worktrees of one branch have
+    different absolute paths but should share a build, while one path with an
+    edited kernel must not.
+    """
+
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path in extension_sources():
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def default_build_directory() -> Path:
+    return (
+        Path(tempfile.gettempdir())
+        / "witwin_radar_dirichlet_cuda"
+        / f"stable_abi_v1_{source_fingerprint()}"
+    )
+
+
 def _build_extension(*, verbose: bool = False):
     root = source_root()
-    default_build_directory = Path(tempfile.gettempdir()) / "witwin_radar_dirichlet_cuda" / "stable_abi_v1"
-    build_directory = Path(os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory))
+    build_directory = Path(
+        os.environ.get(
+            "WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory()
+        )
+    )
     if os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_SKIP_PREBUILT") != "1":
         try:
             module = _load_packaged_prebuilt_extension()
@@ -311,4 +363,4 @@ def _build_extension(*, verbose: bool = False):
         is_python_module=False,
         verbose=verbose,
     )
-    return _StableOpsModule(Path(library_path))
+    return _require_operators(Path(library_path))

@@ -121,12 +121,36 @@ measured.
 end-to-end caller. It is seeded with the six Dirichlet operators plus the three
 new ones. A symbol without a production caller is cleanup debt, not a feature.
 
+### The JIT build directory is keyed by the source set
+
+The just-in-time build directory is
+`<temp>/witwin_radar_dirichlet_cuda/stable_abi_v1_<digest>`, where the digest
+covers the names and CONTENT of every file in `extension_sources()`.
+
+A single unkeyed directory is shared by every checkout of this package. The main
+radar checkout compiles two sources and this one compiles three, so ninja
+relinked on every alternating run and the binary on disk was whichever checkout
+ran last. This was observed live: two distinct link command hashes in one
+`.ninja_log`, and a `fmcw_beat_forward` attribute error that passed on an
+identical rerun. The loud failure is the good case. Two revisions of the SAME
+operator set register the same names with different kernel code, and that loads
+without complaint.
+
+Content rather than paths alone, so two worktrees of one revision still share a
+build while one path with an edited kernel does not.
+
+The required-operator check runs on EVERY load route, including the JIT build.
+`load` reuses whatever is already linked in its build directory, so a JIT result
+is not self-evidently fresh.
+
 ## Consequences
 
-The load-time presence check now names one operator per family, so a stale binary
-fails at load instead of deep inside a kernel call. Adding a family without
-updating the check is caught by
-`tests/test_phase4_binding_manifest.py::test_the_load_check_covers_every_operator_family`.
+The load-time presence check names one operator per family and gates every load
+route, so a stale binary fails at load instead of deep inside a kernel call.
+Adding a family without updating the check is caught by
+`tests/test_phase4_binding_manifest.py::test_the_load_check_covers_every_operator_family`;
+routing around the check is caught by
+`tests/test_phase4_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
 
 ## Alternatives rejected
 

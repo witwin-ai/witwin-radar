@@ -79,3 +79,61 @@ def test_the_load_check_covers_every_operator_family(manifest):
         if entry["symbol"] in build._REQUIRED_OPERATORS
     }
     assert checked_families == families, sorted(families - checked_families)
+
+
+def test_the_jit_build_directory_is_keyed_by_the_source_set():
+    """Two checkouts with different sources must not share a build directory.
+
+    They used to. The main radar checkout compiles two sources and this one
+    compiles three into the same `stable_abi_v1` directory, so ninja relinked on
+    every alternating run and the binary on disk was whichever checkout ran last.
+    Observed live: two distinct link command hashes in one `.ninja_log`, and a
+    `fmcw_beat_forward` attribute error that passed on an identical rerun.
+    """
+
+    from witwin.radar.cuda import build
+
+    fingerprint = build.source_fingerprint()
+    assert len(fingerprint) == 16
+    assert fingerprint in build.default_build_directory().name
+    # Deterministic: the same sources always key the same directory.
+    assert build.source_fingerprint() == fingerprint
+
+    # Content, not just the file list: an edited kernel keys a new directory.
+    original = build.extension_sources
+    kernel = REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels" / "fmcw_beat.cu"
+    edited = pathlib.Path(__file__).parent / "support" / "__init__.py"
+    build.extension_sources = lambda: [kernel, edited]
+    try:
+        assert build.source_fingerprint() != fingerprint
+    finally:
+        build.extension_sources = original
+    assert build.source_fingerprint() == fingerprint
+
+
+def test_every_load_route_validates_the_required_operators(monkeypatch):
+    """Including the JIT route, which used to return an unvalidated module.
+
+    A just-in-time build can hand back a stale library: `load` reuses whatever is
+    already linked in its build directory. Returning that without checking turns
+    a missing operator family into a failure deep inside a kernel call.
+    """
+
+    import torch
+
+    from witwin.radar.cuda import build
+
+    class Empty:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    monkeypatch.setattr(torch.ops, "witwin_radar_dirichlet_cuda", Empty())
+    with pytest.raises(ImportError, match="stale"):
+        build._require_operators(pathlib.Path("fake.pyd"))
+
+    # And the JIT route goes through that same gate rather than around it.
+    source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "build.py").read_text(
+        encoding="utf-8"
+    )
+    assert "return _require_operators(Path(library_path))" in source
+    assert "return _StableOpsModule(Path(library_path))" not in source
