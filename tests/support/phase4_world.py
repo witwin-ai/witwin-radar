@@ -13,8 +13,14 @@ import torch
 from . import phase4_geometry as geo
 
 
-def make_scene():
+def make_scene(*, rough: bool = False):
     """A single concrete wall plus one registered antenna endpoint.
+
+    ``rough=True`` gives the wall a Gaussian surface roughness. That is not a
+    variant anyone simulates here; it exists so a test can prove that the
+    consumer's refusal to reevaluate a frozen reflection topology on a rough
+    scene reaches the caller instead of being swallowed into a quietly smooth
+    answer.
 
     ``Mesh`` defaults ``recenter=True`` and silently subtracts the bounding-box
     centre from authored vertices, so a caller that writes world coordinates and
@@ -26,6 +32,7 @@ def make_scene():
 
     from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure
     from witwin.core.identity import reserve_antenna_id
+    from witwin.core.material import SurfaceRoughness
 
     mesh = Mesh(
         vertices=torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32),
@@ -34,10 +41,22 @@ def make_scene():
         fill_mode="surface",
         topology_diagnostics=False,
     )
+    roughness = (
+        SurfaceRoughness(
+            rms_height_m=1.0e-3,
+            correlation_length_x_m=1.0e-2,
+            correlation_length_y_m=1.0e-2,
+        )
+        if rough
+        else None
+    )
     wall = Structure(
         geometry=mesh,
         material=PhysicalMaterial(
-            name="concrete", eps_r=geo.WALL_EPS_R, sigma_e=geo.WALL_SIGMA_E
+            name="concrete",
+            eps_r=geo.WALL_EPS_R,
+            sigma_e=geo.WALL_SIGMA_E,
+            roughness_front=roughness,
         ),
         structure_id=1,
         material_id=1,
@@ -73,12 +92,12 @@ def assert_world_coordinates_survived(mesh) -> None:
         )
 
 
-def compile_fixture_scene():
+def compile_fixture_scene(*, rough: bool = False):
     """Compile the fixture world at the fixture reference frequency."""
 
     from witwin.channel.scene import compile as compile_scene
 
-    scene, mesh = make_scene()
+    scene, mesh = make_scene(rough=rough)
     assert_world_coordinates_survived(mesh)
     return compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
 

@@ -51,21 +51,41 @@ def make_response(*, requires_grad: bool = False, device: str = "cuda"):
 
 
 class Phase4Spike:
-    """One compiled scene, two frozen legs, one frozen two-way join."""
+    """One compiled scene, two frozen legs, one frozen two-way join.
 
-    def __init__(self, *, device: str = "cuda") -> None:
+    ``components`` and ``max_depth`` default to the Phase-4 line-of-sight
+    values so every Phase-4 expectation keeps its numbers. Passing
+    ``frozenset({"los", "reflection"}), max_depth=1`` turns the SAME fixture
+    into the multipath case: no adapter change and no new fixture geometry are
+    needed, because the consumer already accepts both components for fixed
+    topology and the fixture wall was authored for exactly this.
+
+    A multipath leg cannot take the raw-topology fast path - the consumer
+    rejects a raw ``PropagationTopology`` whose interaction sequence is
+    non-empty - so it necessarily goes through the prepared handle. The adapter
+    already does; this is recorded rather than branched on.
+    """
+
+    def __init__(
+        self,
+        *,
+        device: str = "cuda",
+        components: frozenset[str] = frozenset({"los"}),
+        max_depth: int = 0,
+        compiled=None,
+    ) -> None:
         from witwin.radar.paths import TwoWayComposer
         from witwin.radar.propagation.channel_consumer import (
             ChannelPropagationAdapter,
         )
 
         self.device = device
-        self.compiled = world.compile_fixture_scene()
+        self.compiled = world.compile_fixture_scene() if compiled is None else compiled
         self.adapter = ChannelPropagationAdapter(
             self.compiled,
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-            components=frozenset({"los"}),
-            max_depth=0,
+            components=components,
+            max_depth=max_depth,
         )
         # Freeze once, outside every loop.
         self.inbound = self.adapter.freeze(
