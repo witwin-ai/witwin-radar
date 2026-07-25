@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers.common import pytorch_chirp_reference
+from reference.dsp_oracles import pytorch_chirp_reference
 
 
 CONFIG = {

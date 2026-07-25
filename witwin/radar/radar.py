@@ -246,8 +246,8 @@ class Radar:
             position: radar origin in world coordinates
             target: look-at target in world coordinates. Defaults to one meter along -Z from position.
             up: world-space up vector
-            fov: perspective field of view in degrees for ray tracing
-            name: optional identifier used by ``Radar.simulate_group``
+            fov: perspective field of view in degrees
+            name: optional identifier for this radar
         """
         self.c0 = 299792458
         self.device: torch.device = self._resolve_device(device=torch.device(device))
@@ -601,124 +601,29 @@ class Radar:
         signal = self.solver.mimo_from_paths(cache, **options)
         return self.apply_signal_models(signal)
 
-    def simulate(
-        self,
-        scene,
-        *,
-        resolution: int = 128,
-        epsilon_r: float = 5.0,
-        sampling: SamplingMode = "triangle",
-        multipath: bool = False,
-        max_reflections: int = 0,
-        ray_batch_size: int = 65536,
-        t0: float = 0.0,
-        motion_sampling: MotionSampling = "per_chirp",
-    ):
-        """Run ray tracing plus MIMO signal generation for one scene."""
-        from .trace import Tracer
-        from .scene import Scene, SceneModule
+    # The Dr.Jit ray tracer that backed simulate() and simulate_group() has
+    # been removed, and so has the scene-driven entry that wrapped it. There is
+    # no in-scope replacement with the same signature: propagation is now a
+    # frozen-topology contract with the Channel consumer rather than a
+    # per-frame retrace, so a shim that quietly picked some other route would
+    # return numbers from a different model under the old name.
+    _SIMULATE_REPLACEMENT = (
+        "Radar.simulate and Radar.simulate_group have been removed with the "
+        "Dr.Jit ray tracer. Propagation now goes through the Channel "
+        "consumer: build a "
+        "witwin.radar.propagation.ChannelPropagationAdapter, freeze each leg "
+        "once, reevaluate it per frame, compose the legs with "
+        "witwin.radar.paths.TwoWayComposer or DirectComposer, and synthesize "
+        "with witwin.radar.synthesis.synthesize_fmcw_beat. A scene-driven "
+        "entry point that assembles those steps for a whole Scene is separate "
+        "work and does not exist yet; Radar.mimo, mimo_from_trace, "
+        "mimo_from_paths, path_cache_from_trace, chirp and frame are "
+        "unaffected."
+    )
 
-        if isinstance(scene, SceneModule):
-            scene = scene.to_scene()
-        if not isinstance(scene, Scene):
-            raise TypeError("scene must be a radar.Scene or radar.SceneModule.")
-
-        sampling = SamplingMode(sampling)
-        motion_sampling = MotionSampling(motion_sampling)
-        if max_reflections < 0:
-            raise ValueError("max_reflections must be >= 0.")
-        if ray_batch_size <= 0:
-            raise ValueError("ray_batch_size must be > 0.")
-        if multipath and sampling != SamplingMode.PIXEL:
-            raise ValueError("multipath=True requires sampling='pixel'.")
-
-        tracer = Tracer(
-            scene,
-            self,
-            resolution=resolution,
-            epsilon_r=epsilon_r,
-            sampling=sampling,
-            multipath=multipath,
-            max_reflections=max_reflections,
-            ray_batch_size=ray_batch_size,
-        )
-        t0 = float(t0)
-        trace = tracer.trace(time=t0) if scene.has_motion else tracer.trace()
-
-        if scene.has_motion and motion_sampling == MotionSampling.PER_CHIRP:
-            initial_trace_pending = True
-
-            def interpolator(t):
-                nonlocal initial_trace_pending
-                if initial_trace_pending and float(t) == t0:
-                    initial_trace_pending = False
-                    return trace
-                return tracer.trace(time=t)
-
-            signal = self.mimo(interpolator, t0)
-        elif scene.has_motion and motion_sampling == MotionSampling.LINEAR:
-            if sampling != SamplingMode.TRIANGLE:
-                raise ValueError("motion_sampling='linear' requires sampling='triangle' for stable path correspondence.")
-            chirp_period = (self.config.idle_time + self.config.ramp_end_time) * 1e-6
-            next_trace = tracer.trace(time=t0 + chirp_period)
-            first_indices, next_indices = tracer.match_indices(trace, next_trace)
-            matched_trace = trace.select(first_indices)
-            velocities = (next_trace.points[next_indices] - matched_trace.points) / chirp_period
-            signal = self.mimo_from_trace(matched_trace, velocities=velocities, t0=t0)
-        else:
-            signal = self.mimo_from_trace(trace, t0=t0)
-        self.last_scene = scene
-        self.last_tracer = tracer
-        self.last_trace = trace
-        return signal
+    def simulate(self, *args, **kwargs):
+        raise NotImplementedError(self._SIMULATE_REPLACEMENT)
 
     @classmethod
-    def simulate_group(
-        cls,
-        scene,
-        *,
-        radars: Mapping[str, "Radar"] | Sequence["Radar"],
-        resolution: int = 128,
-        epsilon_r: float = 5.0,
-        sampling: SamplingMode = "triangle",
-        multipath: bool = False,
-        max_reflections: int = 0,
-        ray_batch_size: int = 65536,
-        t0: float = 0.0,
-        motion_sampling: MotionSampling = "per_chirp",
-    ) -> dict[str, torch.Tensor]:
-        """Run the same scene for multiple named Radar instances."""
-        if isinstance(radars, Mapping):
-            items = tuple((str(name), radar) for name, radar in radars.items())
-        else:
-            items = tuple((radar.name, radar) for radar in radars)
-            missing = [index for index, (name, _) in enumerate(items) if not name]
-            if missing:
-                raise ValueError(
-                    "Radar.simulate_group requires names for sequence entries; "
-                    "pass a mapping or set Radar(name=...)."
-                )
-
-        if not items:
-            raise ValueError("Radar.simulate_group requires at least one radar.")
-        names = [name for name, _ in items]
-        if len(names) != len(set(names)):
-            raise ValueError("Radar.simulate_group radar names must be unique.")
-        for name, radar in items:
-            if not isinstance(radar, cls):
-                raise TypeError(f"radars['{name}'] must be a Radar instance.")
-
-        return {
-            name: radar.simulate(
-                scene,
-                resolution=resolution,
-                epsilon_r=epsilon_r,
-                sampling=sampling,
-                multipath=multipath,
-                max_reflections=max_reflections,
-                ray_batch_size=ray_batch_size,
-                t0=t0,
-                motion_sampling=motion_sampling,
-            )
-            for name, radar in items
-        }
+    def simulate_group(cls, *args, **kwargs):
+        raise NotImplementedError(cls._SIMULATE_REPLACEMENT)

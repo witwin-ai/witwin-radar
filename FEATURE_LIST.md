@@ -9,16 +9,15 @@
 
 ## Public API
 
-- Declarative simulation flow: `Radar -> Scene -> torch.Tensor` via `radar.simulate(scene, ...)`
+- Propagation flow: compile the scene, freeze each leg once with `witwin.radar.propagation.ChannelPropagationAdapter`, reevaluate per frame, compose with `witwin.radar.paths.TwoWayComposer` or `DirectComposer`, and synthesize with `witwin.radar.synthesis.synthesize_fmcw_beat`
 - Radar pose is controlled directly with `Radar(position=..., target=..., up=..., fov=...)` or `radar.set_pose(...)`
 - Scene assembly uses `Scene.add_structure(...)`, `Scene.add_mesh(...)`, `Scene.add_smpl(...)`, and `Scene.add_structure_motion(...)`
 - `SMPLBody` is owned by `witwin.radar.geometry` and remains exported through `witwin.radar`; shared core stays free of radar-only body-model dependencies.
-- Multi-radar orchestration is available via `Radar.simulate_group(...)`, returning a `dict[str, torch.Tensor]`
 - Optional per-structure motion is available through `Scene.add_structure_motion(...)` and `Scene.update_structure(...)`. Callers pass `TransformMotion` instances directly.
 - Public string-literal API types: `DetectorType`, `SamplingMode`, and `MotionSampling`
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
-- Ray-tracing entrypoint: `Tracer.trace()` returns `TraceResult(points, intensities)` and also carries `entry_points`, `fixed_path_lengths`, `depths`, and optional `normals` for generalized path tracing
-- `radar.simulate(...)` returns the radar data tensor directly. The most recent scene, trace, and tracer are available as `radar.last_scene`, `radar.last_trace`, and `radar.last_tracer` for debugging.
+- REMOVED with the Dr.Jit ray tracer: `Tracer`, `fresnel`, `Radar.simulate(...)`, `Radar.simulate_group(...)`, and `radar.last_scene` / `last_trace` / `last_tracer`. Each removed name raises with a pointer to its replacement; none of them falls back silently. `TraceResult` survives and is exported from `witwin.radar.trace_result`.
+- Composed round-trip rows record `join_mode` (`"direct"` or `"multipath"`), so which paths a result contains is a checked property rather than an inference from its shape
 
 ## Configuration
 
@@ -28,8 +27,13 @@
 - Optional `polarization` config supports simplified TX/RX polarization vectors with alias strings (`horizontal` / `vertical`) or per-element 3D vectors
 - Optional `receiver_chain` config supports `lna`, `agc`, and `adc` stages plus absolute TX-power scaling via `config["power"]`
 - `Radar` accepts `RadarConfig` or raw config dictionaries
-- `Tracer(scene, radar, ...)` and `radar.simulate(...)` accept `multipath`, `max_reflections`, and `ray_batch_size`
-- `radar.simulate(...)` and `Radar.simulate_group(...)` accept `motion_sampling="per_frame" | "linear" | "per_chirp"` for dynamic scenes
+- `ChannelPropagationAdapter(compiled_scene, reference_frequency_hz=..., components=..., max_depth=...)` accepts `components={"los", "reflection"}` with `max_depth=1` for single-bounce multipath legs
+
+## Native Kernels
+
+- `two_way_join_forward` / `_backward` / `_jvp`: the inbound-by-outbound round-trip join, fused into one launch. The VJP reduces over frozen CSR segments with one thread per gradient slot, so it uses no atomics and its summation order is a property of the frozen join rather than of the schedule.
+- `fmcw_beat_forward` / `_backward` / `_jvp`: FMCW beat synthesis over a chirp's fast-time axis.
+- Every registered operator has exactly one Python owner, a direct contract test, and a production end-to-end caller, recorded in `ci/native-binding-manifest.json`.
 
 ## Solver Execution
 
@@ -50,13 +54,12 @@
 
 ## Rendering And Dynamics
 
-- `Tracer.trace()` has a single public signature with no ignored `spp` parameter
-- `Scene.compile_renderables(time=...)` and `Tracer.trace(time=...)` expose time-dependent geometry for dynamic scenes
-- Multipath tracing is available for `sampling="pixel"` and uses radar-center path tracing with configurable maximum specular reflection depth
+- `Scene.compile_renderables(time=...)` exposes time-dependent geometry for dynamic scenes
+- Multipath is discovered once per frozen topology and replayed per frame; a row that stops existing at new endpoint positions is published through `row_valid` with an exactly zero payload, as data rather than as an error
 - The Dirichlet solver consumes generalized path samples and applies FSPL from the total `tx -> bounces -> scatter -> rx` distance
 - When `polarization` is configured, traced path normals are propagated through the runtime and used for simplified reflection/projection coupling
 - Shared core geometry constructors default to `device=None`, while radar `Scene(...)` owns device placement and defaults to CUDA
-- `Timeline.from_motion()` uses the tracer result contract directly
+- `Timeline.from_motion()` uses the trace-result contract directly
 - Dynamic structure motion supports rigid `translation`, `rotation`, and `parent` inheritance so rotational Doppler can be modeled directly from the scene
 - `radar.mimo(..., freq_domain=True)` remains available for Dirichlet frequency-domain output
 

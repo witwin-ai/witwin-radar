@@ -32,7 +32,7 @@ def _make_radar():
 
 def test_native_dirichlet_chirp_matches_pytorch_fft_reference():
     _requires_cuda()
-    from witwin.radar.solvers.common import pytorch_chirp_reference
+    from reference.dsp_oracles import pytorch_chirp_reference
 
     radar = _make_radar()
     distances = torch.tensor([0.8, 1.7, 3.2, 4.5], dtype=torch.float32, device="cuda")
@@ -65,7 +65,7 @@ def test_native_dirichlet_mimo_from_paths_static_matches_mimo_reference():
 
 def test_native_dirichlet_backward_matches_pytorch_reference_gradients():
     _requires_cuda()
-    from witwin.radar.solvers.common import pytorch_chirp_reference
+    from reference.dsp_oracles import pytorch_chirp_reference
 
     radar = _make_radar()
     distances = torch.tensor([1.1, 2.4, 3.7], dtype=torch.float32, device="cuda")
@@ -118,7 +118,7 @@ def test_public_chirp_autograd_uses_native_backward(monkeypatch):
 
 def test_public_chirp_autograd_matches_float64_reference():
     _requires_cuda()
-    from witwin.radar.solvers.common import pytorch_chirp_reference
+    from reference.dsp_oracles import pytorch_chirp_reference
 
     radar = _make_radar()
     distances = torch.tensor([1.1, 2.4, 3.7], dtype=torch.float32, device="cuda", requires_grad=True)

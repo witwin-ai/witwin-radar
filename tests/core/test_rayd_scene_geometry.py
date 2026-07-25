@@ -1,4 +1,15 @@
-"""Coverage for radar scenes consumed by the RayD tracer."""
+"""Radar scene geometry: promotion, placement, and world coordinates.
+
+Three tracer tests were deleted with the Dr.Jit tracer they drove (rotated-box
+front-face depth, the cylinder axis convention, and instance reuse after a
+material update). They asserted properties of the tracer's intersection
+result, not of the scene, and the route that replaces it - Channel's compiled
+scene and RayD's own traversal - has its own coverage upstream. Restating them
+here against a different intersector would be a new test wearing an old name.
+
+What remains is the part Radar still owns: turning authored geometry into
+compiled world-space renderables.
+"""
 
 from __future__ import annotations
 
@@ -119,76 +130,3 @@ def test_update_structure_moves_box_geometry():
     compiled = scene.compile_renderables()["target"]
     center = compiled.vertices.mean(dim=0)
     np.testing.assert_allclose(center.detach().cpu().numpy(), np.array([1.0, 0.0, -3.0]), atol=1e-6)
-
-
-@pytest.mark.gpu
-def test_rayd_tracer_preserves_rotated_box_front_face_depth():
-    import witwin.radar as wr
-
-    geometry = wr.Box(
-        position=(0.0, 0.0, -3.0),
-        size=(2.0, 1.0, 0.5),
-        rotation=(0.0, np.pi / 2.0, 0.0),
-    )
-    scene = wr.Scene(device="cuda").add_structure(
-        wr.Structure(name="target", geometry=geometry, material=wr.Material(eps_r=3.0))
-    )
-    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
-
-    trace = wr.Tracer(scene, radar, resolution=1, sampling="pixel").trace()
-
-    assert trace.points.shape[0] == 1
-    assert abs(float(trace.points[0, 2]) - (-2.0)) < 1e-4
-    assert abs(float(trace.points[0, 0])) < 1e-4
-    assert abs(float(trace.points[0, 1])) < 1e-4
-
-
-@pytest.mark.gpu
-def test_rayd_tracer_matches_cylinder_axis_coordinate_convention():
-    import witwin.radar as wr
-
-    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
-    scene_z = wr.Scene(device="cuda").add_structure(
-        wr.Structure(
-            name="target",
-            geometry=wr.Cylinder(position=(0.0, 0.0, -3.0), radius=0.25, height=2.0, axis="z"),
-            material=wr.Material(eps_r=3.0),
-        )
-    )
-    scene_x = wr.Scene(device="cuda").add_structure(
-        wr.Structure(
-            name="target",
-            geometry=wr.Cylinder(position=(0.0, 0.0, -3.0), radius=0.25, height=2.0, axis="x"),
-            material=wr.Material(eps_r=3.0),
-        )
-    )
-
-    trace_z = wr.Tracer(scene_z, radar, resolution=1, sampling="pixel").trace()
-    trace_x = wr.Tracer(scene_x, radar, resolution=1, sampling="pixel").trace()
-
-    assert trace_z.points.shape[0] == 1
-    assert trace_x.points.shape[0] == 1
-    assert abs(float(trace_z.points[0, 2]) - (-2.0)) < 1e-4
-    assert abs(float(trace_x.points[0, 2]) - (-2.75)) < 1e-4
-
-
-@pytest.mark.gpu
-def test_rayd_tracer_reuses_instance_after_material_update():
-    import witwin.radar as wr
-
-    scene = wr.Scene(device="cuda").add_structure(
-        wr.Structure(
-            name="target",
-            geometry=wr.Box(position=(0.0, 0.0, -3.0), size=(1.0, 1.0, 1.0)),
-            material=wr.Material(eps_r=2.0),
-        )
-    )
-    radar = wr.Radar(_config(), device="cuda", target=(0, 0, -5), fov=60)
-    tracer = wr.Tracer(scene, radar, resolution=1, sampling="pixel")
-
-    first = tracer.trace()
-    scene.update_structure("target", material=wr.Material(eps_r=9.0))
-    second = tracer.trace()
-
-    assert first.points.shape == second.points.shape == (1, 3)
-    assert not torch.allclose(first.intensities, second.intensities)

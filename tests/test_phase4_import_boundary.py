@@ -4,28 +4,31 @@ Radar consumes the stable Channel propagation consumer and nothing else. It is
 not a second exception to ADR-008 and it does not reach a Channel solver, the
 enumerated engine, the internal propagation contracts, or the native extension.
 
-Two measured facts shape what these tests can honestly assert, and both are
-stated rather than worked around:
+One measured fact shapes what these tests can honestly assert, and it is
+stated rather than worked around: importing
+``witwin.channel.propagation.consumer`` ALONE already initializes a large part
+of the Channel package, including ``witwin.channel.runtime.*``. That is
+Channel's own package initialization; Radar names none of it. The assertion is
+therefore that Radar adds NOTHING to the facade's own closure, which is the
+real boundary property, together with an absolute assertion that no solver and
+no internal propagation module is ever loaded.
 
-* Importing ``witwin.channel.propagation.consumer`` ALONE already initializes a
-  large part of the Channel package, including ``witwin.channel.runtime.*``.
-  That is Channel's own package initialization; Radar names none of it. The
-  assertion is therefore that Radar adds NOTHING to the facade's own closure,
-  which is the real boundary property, together with an absolute assertion that
-  no solver and no internal propagation module is ever loaded.
-* Importing any ``witwin.radar.*`` submodule initializes ``witwin/radar/__init__.py``,
-  which imports ``trace.py``, which imports ``drjit``. That single legacy edge
-  makes a process-global "no Dr.Jit" assertion unachievable today. It is
-  measured by the baseline delta and excluded by name from the static closure,
-  and both convert to the strict form for free once it is deleted.
+The Dr.Jit assertion is now the strict, process-global one. It used to be
+unachievable: importing any ``witwin.radar.*`` submodule initialized
+``witwin/radar/__init__.py``, which imported ``trace.py``, which imported
+``drjit``. That edge is deleted, so the weaker baseline-delta form it forced,
+and the by-name exclusion of the package root from the static closure, are gone
+with it. This file predicted the conversion and failed loudly at exactly the
+right moment when the edge disappeared.
 
 The three layers do different jobs and all three are required:
 
 1. A SUBPROCESS ``sys.modules`` probe. In-process would prove nothing: by the
    time this test runs, the pytest session has already imported half the world.
-2. A BASELINE DELTA, ``modules(radar + spike) - modules(radar)``.
-3. A STATIC AST CLOSURE over the new modules, which is the only layer that can
-   prove "no Dr.Jit in anything new" while the package root still pulls it in.
+2. A PROCESS-GLOBAL assertion that importing the package pulls in neither
+   ``drjit`` nor ``rayd``, at all, by any route.
+3. A STATIC AST CLOSURE over the new modules, which proves that no NEW module
+   names anything forbidden even if some future edge reintroduces it elsewhere.
 """
 
 from __future__ import annotations
@@ -185,31 +188,38 @@ def test_synthesis_scattering_and_paths_do_not_require_channel():
 
 
 # --------------------------------------------------------------------------
-# Layer 2: baseline delta
+# Layer 2: the process-global Dr.Jit assertion
 # --------------------------------------------------------------------------
 
 
-def test_the_spike_adds_no_drjit_or_rayd_over_the_radar_baseline():
+def test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar():
+    """The strict form: not in the closure, not by any route, not at all.
+
+    This is a statement about the PROCESS, not about a delta. Importing the
+    package root is the widest thing a caller can do, and after it neither
+    ``drjit`` nor ``rayd`` is in ``sys.modules``. No lazy import is left that a
+    later call could trigger either: the three modules that imported them are
+    deleted, and the entry points that reached them raise.
+    """
+
+    modules = _subprocess_modules("import witwin.radar")
+    offenders = sorted(
+        name for name in modules if name.split(".")[0] in ("drjit", "rayd")
+    )
+    assert offenders == [], offenders
+
+
+def test_the_spike_adds_no_drjit_rayd_or_channel_internals():
     pytest.importorskip("witwin.channel")
     baseline = _subprocess_modules("import witwin.radar")
     with_spike = _subprocess_modules("import witwin.radar\n" + SPIKE_IMPORTS)
     added = with_spike - baseline
 
-    assert not any(name.split(".")[0] == "drjit" for name in added), sorted(
-        name for name in added if name.split(".")[0] == "drjit"
+    offenders = sorted(
+        name for name in with_spike if name.split(".")[0] in ("drjit", "rayd")
     )
-    assert not any(name.split(".")[0] == "rayd" for name in added), sorted(
-        name for name in added if name.split(".")[0] == "rayd"
-    )
+    assert offenders == [], offenders
     assert not any(_matches(name, SOLVER_AND_INTERNALS) for name in added)
-
-    # The legacy edge is measured, not tolerated silently: Dr.Jit is already in
-    # the baseline via witwin/radar/__init__.py -> trace.py. Once that is
-    # deleted this assertion flips to the strict process-global form.
-    assert any(name.split(".")[0] == "drjit" for name in baseline), (
-        "the legacy Dr.Jit edge is gone; tighten this test to a strict "
-        "process-global assertion"
-    )
 
 
 # --------------------------------------------------------------------------
@@ -263,10 +273,10 @@ def _imports_of(path: pathlib.Path, module_name: str) -> set[str]:
 def _static_closure() -> tuple[set[str], set[str]]:
     """Modules reachable from the spike files, and every import they name.
 
-    Descends only into ``witwin.radar.*`` and deliberately NOT into
-    ``witwin/radar/__init__.py``, which is the sole owner of the legacy Dr.Jit
-    edge. Following it would make this layer measure the package root instead
-    of the new code.
+    Descends only into ``witwin.radar.*``. It used to exclude the package root
+    by name, because that file owned the legacy Dr.Jit edge and following it
+    would have made this layer measure the root instead of the new code. The
+    edge is gone, so the exclusion is gone.
     """
 
     pending = [_module_name(relative) for relative in SPIKE_MODULES]
@@ -274,7 +284,7 @@ def _static_closure() -> tuple[set[str], set[str]]:
     every_import: set[str] = set()
     while pending:
         name = pending.pop()
-        if name in seen or name == "witwin.radar":
+        if name in seen:
             continue
         seen.add(name)
         path = _module_path(name)
@@ -297,11 +307,10 @@ def test_static_closure_of_the_new_modules_names_nothing_forbidden():
     channel = {name for name in imports if name.startswith("witwin.channel")}
     assert channel == ALLOWED_CHANNEL_IMPORTS, sorted(channel)
 
-    # The one excluded edge, named. Nothing new is on it.
-    assert "witwin.radar.trace" not in reachable
-    assert "witwin.radar" not in reachable
-    root_imports = _imports_of(RADAR_ROOT / "__init__.py", "witwin.radar")
-    assert any("trace" in name for name in root_imports), sorted(root_imports)
+    # The deleted modules are gone from the source tree, so no edge can lead
+    # back to them even by accident.
+    for removed in ("trace.py", "material.py", "_rayd_bridge.py"):
+        assert not (RADAR_ROOT / removed).exists(), removed
 
 
 def test_only_the_adapter_crosses_the_channel_boundary():

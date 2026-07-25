@@ -12,8 +12,9 @@ from witwin.radar.solvers.common import (
     compute_path_amplitudes,
     compute_total_path_lengths,
     normalize_interpolated_sample,
-    pytorch_mimo_from_samples,
 )
+
+from reference.dsp_oracles import pytorch_mimo_from_samples
 
 
 def _tiny_config_dict() -> dict:

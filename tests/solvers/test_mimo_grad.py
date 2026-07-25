@@ -58,7 +58,8 @@ def test_multi_target_mimo_backward_runs():
 
 def test_mimo_reference_gradient_matches_finite_difference():
     """AD gradient of the float64 reference (the MIMO autograd source) vs FD."""
-    from witwin.radar.solvers.common import collect_interpolated_samples, pytorch_mimo_from_samples
+    from reference.dsp_oracles import pytorch_mimo_from_samples
+    from witwin.radar.solvers.common import collect_interpolated_samples
 
     radar = _make_radar()
     base = torch.tensor([[0.0, 0.0, -3.0], [0.5, -0.2, -4.0]], device="cuda")
@@ -83,7 +84,8 @@ def test_mimo_reference_gradient_matches_finite_difference():
 
 
 def test_native_mimo_autograd_matches_float64_reference():
-    from witwin.radar.solvers.common import collect_interpolated_samples, pytorch_mimo_from_samples
+    from reference.dsp_oracles import pytorch_mimo_from_samples
+    from witwin.radar.solvers.common import collect_interpolated_samples
 
     radar = _make_radar()
     base = torch.tensor([[0.0, 0.0, -3.0], [0.5, -0.2, -4.0]], device="cuda")

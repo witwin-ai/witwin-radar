@@ -1,6 +1,6 @@
 # WiTwin Radar - Differentiable Radar Simulator
 
-A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. It combines RayD/Dr.Jit ray tracing with custom CUDA kernels for scene simulation, signal generation, and downstream radar processing.
+A GPU-accelerated, differentiable FMCW radar simulator for generating synthetic radar data from 3D scenes. Propagation is consumed from the Channel propagation consumer, and waveform synthesis, path composition, and signal generation run in Radar's own CUDA kernels.
 
 This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
 
@@ -114,18 +114,23 @@ scene.add_structure_motion(
     ),
 )
 
-frame = radar.simulate(
-    scene,
-    sampling="triangle",
-    motion_sampling="per_chirp",
-)
 ```
 
-For moving triangle scenes, `motion_sampling="linear"` traces two adjacent TDM
-slots, matches triangle IDs, and uses a first-order path-velocity model. It is
-much faster than strict `"per_chirp"` tracing while freezing within-frame
-visibility and material terms. Use `"per_chirp"` when those effects must be
-re-evaluated for every TDM slot.
+`Radar.simulate(scene, ...)` and `Radar.simulate_group(...)` have been REMOVED
+along with the Dr.Jit ray tracer that backed them. Propagation now goes through
+the Channel propagation consumer:
+
+1. compile the scene and build a
+   `witwin.radar.propagation.ChannelPropagationAdapter`;
+2. `freeze` each leg once, outside the per-frame loop;
+3. `reevaluate` it per frame at the new endpoint positions;
+4. compose the legs with `witwin.radar.paths.TwoWayComposer` (radar source ->
+   scatter site -> radar sink) or `DirectComposer` (source straight to sink);
+5. synthesize with `witwin.radar.synthesis.synthesize_fmcw_beat`.
+
+A scene-driven entry point that assembles those steps for a whole `Scene` does
+not exist yet. `Radar.mimo`, `mimo_from_trace`, `mimo_from_paths`,
+`path_cache_from_trace`, `chirp`, and `frame` are unaffected.
 
 Available mutating scene methods:
 
@@ -140,11 +145,10 @@ Available mutating scene methods:
 
 - Native Dirichlet CUDA kernels for chirp, frame, and MIMO generation
 - Native CUDA autograd kernels for distance and amplitude gradients
-- Ray tracing through RayD/Dr.Jit with differentiable scene support
+- Differentiable multipath propagation (line of sight and reflection) consumed from the Channel propagation consumer, with a fixed-topology freeze/reevaluate split
 - Shared-core geometry and structure primitives
 - SMPL body support through `Scene.add_smpl(...)`
 - Optional per-structure rigid motion with parent inheritance
-- Multi-radar orchestration through `Radar.simulate_group(...)`
 - Torch-native DSP pipeline for range/Doppler processing and point-cloud extraction
 - Tensor-first DSP outputs with backwards-compatible NumPy wrappers
 - Optional antenna pattern, polarization, noise-model, and receiver-chain configuration
@@ -182,7 +186,7 @@ Python 3.10+ is required. Install a CUDA-enabled PyTorch build for simulation an
 pip install witwin[radar]
 ```
 
-Core dependencies include `torch`, `numpy`, `drjit`, `rayd`, `tqdm`, `matplotlib`, and `scipy`.
+Core dependencies include `torch`, `numpy`, `scipy`, `tqdm`, and `matplotlib`. Propagation additionally requires `witwin-channel`; its release pin is provisional while the artifacts are being built, so it is consumed from a source checkout for now.
 
 ## Citation
 

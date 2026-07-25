@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from conftest import complex_correlation, mag_correlation, make_radar_or_skip, peak_ratio
-from witwin.radar.solvers.common import pytorch_chirp_reference
+from reference.dsp_oracles import pytorch_chirp_reference
 
 pytestmark = pytest.mark.gpu
 

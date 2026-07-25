@@ -153,7 +153,9 @@ class Timeline:
 
         Args:
             scene: Scene with an SMPL body named 'human'
-            tracer: Tracer bound to the scene
+            tracer: any object exposing ``trace(time=...) -> TraceResult``,
+                bound to the scene. Duck typed; the Dr.Jit tracer that used
+                to supply it has been removed and no replacement ships yet.
             motion_data: dict or .npz path with keys:
                 'pose': (F, 72) SMPL pose parameters
                 'shape': (10,) or (F, 10) shape parameters

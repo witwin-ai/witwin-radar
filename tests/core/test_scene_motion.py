@@ -1,42 +1,28 @@
+"""Scene motion, at the level Radar still owns it: compiled renderables.
+
+This file used to have eight tests. Six of them drove ``Radar.simulate`` or
+``Radar.simulate_group`` through a monkeypatched Dr.Jit ``Tracer`` and covered
+motion SAMPLING - per-chirp retracing, single-trace frames, linear
+correspondence between two traces, and the multi-radar group entry. All four of
+those behaviours belonged to the tracer-driven scene entry point, which no
+longer exists; there is nothing left for them to assert about, and rewriting
+them against a route that samples motion differently would be inventing
+coverage rather than preserving it. They are recorded as coverage debt for the
+scene-driven entry that replaces ``simulate``.
+
+The two that remain never touched the tracer. ``Scene.compile_renderables`` is
+Radar's own motion evaluation, and it is exactly as testable as it was.
+"""
+
 from __future__ import annotations
 
 import math
-from types import SimpleNamespace
 
-import pytest
 import torch
 
 from witwin.core import Mesh, PhysicalMaterial as Material, Structure
-from witwin.radar import (
-    Radar,
-    RadarConfig,
-    TransformMotion,
-)
-from witwin.radar.material import fresnel
-from witwin.radar.trace import TraceResult
+from witwin.radar import TransformMotion
 from witwin.radar.scene import Scene
-
-
-def _config(*, chirps: int = 4, adc_samples: int = 32) -> dict:
-    return {
-        "num_tx": 1,
-        "num_rx": 1,
-        "fc": 77e9,
-        "slope": 60.012,
-        "adc_samples": adc_samples,
-        "adc_start_time": 0,
-        "sample_rate": 4400,
-        "idle_time": 7,
-        "ramp_end_time": 58,
-        "chirp_per_frame": chirps,
-        "frame_per_second": 10,
-        "num_doppler_bins": chirps,
-        "num_range_bins": max(64, adc_samples),
-        "num_angle_bins": 8,
-        "power": 12,
-        "tx_loc": [[0, 0, 0]],
-        "rx_loc": [[0, 0, 0]],
-    }
 
 
 def _rotation_matrix(axis: tuple[float, float, float], angle: float) -> torch.Tensor:
@@ -96,66 +82,6 @@ def _rotating_scene(*, device: str) -> Scene:
     return scene
 
 
-def _centroid_trace(scene: Scene, *, time: float) -> TraceResult:
-    compiled = scene.compile_renderables(time=time)["rotor"]
-    centroid = compiled.vertices.mean(dim=0, keepdim=True)
-    intensities = torch.ones(1, dtype=torch.float32, device=compiled.vertices.device)
-    return TraceResult(centroid, intensities)
-
-
-def _trace_value(trace: TraceResult) -> float:
-    return float(trace.points.sum().item() + trace.intensities.sum().item())
-
-
-def _attach_fake_solver(radar: Radar) -> Radar:
-    def _mimo(interpolator, t0=0.0, **_options):
-        cfg = radar.config
-        chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6 * cfg.num_tx
-        frame = torch.zeros(
-            (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
-            dtype=torch.complex64,
-            device=radar.device,
-        )
-        for chirp_id in range(cfg.chirp_per_frame):
-            sample = interpolator(t0 + chirp_id * chirp_period)
-            frame[:, :, chirp_id, :] = complex(_trace_value(sample), 0.0)
-        return frame
-
-    def _mimo_from_trace(trace, t0=0.0, **_options):
-        cfg = radar.config
-        value = complex(_trace_value(trace), 0.0)
-        return torch.full(
-            (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
-            value,
-            dtype=torch.complex64,
-            device=radar.device,
-        )
-
-    radar.solver = SimpleNamespace(mimo=_mimo, mimo_from_trace=_mimo_from_trace)
-    return radar
-
-
-def _triangle_trace(scene: Scene, radar: Radar, *, time: float) -> TraceResult:
-    compiled = scene.compile_renderables(time=time)["rotor"]
-    vertices = compiled.vertices
-    v0, v1, v2 = vertices[0], vertices[1], vertices[2]
-    centroid = vertices.mean(dim=0, keepdim=True)
-    cross = torch.cross(v1 - v0, v2 - v0, dim=0)
-    area = 0.5 * torch.linalg.norm(cross)
-    normal = cross / torch.clamp(torch.linalg.norm(cross), min=1e-10)
-    origin = radar.position.to(dtype=vertices.dtype, device=vertices.device)
-    view_dir = origin - centroid[0]
-    view_dir = view_dir / torch.linalg.norm(view_dir)
-    if torch.dot(view_dir, normal) <= 0:
-        return TraceResult(
-            torch.empty((0, 3), dtype=vertices.dtype, device=vertices.device),
-            torch.empty((0,), dtype=torch.float32, device=vertices.device),
-        )
-    cos_i = torch.abs(torch.dot(view_dir, normal))
-    intensity = (area * fresnel(cos_i, compiled.eps_r)).reshape(1).to(dtype=torch.float32)
-    return TraceResult(centroid, intensity)
-
-
 def test_scene_compile_renderables_applies_local_rotation_over_time():
     scene = _rotating_scene(device="cpu")
 
@@ -209,204 +135,3 @@ def test_scene_parent_motion_carries_child_geometry():
         angle=math.pi / 2.0,
     )
     assert torch.allclose(child1, expected, atol=1e-6, rtol=1e-6)
-
-
-def test_radar_motion_sampling_chirp_matches_manual_interpolator(monkeypatch):
-    scene = _rotating_scene(device="cpu")
-    config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
-    observed_times: list[float | None] = []
-
-    class FakeRenderer:
-        def __init__(
-            self,
-            scene,
-            radar,
-            resolution=128,
-            epsilon_r=5.0,
-            sampling="triangle",
-            multipath=False,
-            max_reflections=0,
-            ray_batch_size=65536,
-        ):
-            self.scene = scene
-            self.radar = radar
-
-        def trace(self, *, time=None):
-            observed_times.append(time)
-            return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
-
-    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
-
-    radar = _attach_fake_solver(Radar(config, device="cpu"))
-    result = radar.simulate(
-        scene,
-        motion_sampling="per_chirp",
-    )
-
-    def interpolator(t):
-        return _centroid_trace(scene, time=float(t))
-
-    expected = radar.mimo(interpolator, 0.0)
-    assert torch.allclose(result, expected, atol=1e-6, rtol=1e-6)
-
-    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6 * radar.config.num_tx
-    assert observed_times == pytest.approx([0.0, chirp_period, 2.0 * chirp_period], rel=0.0, abs=1e-12)
-
-
-def test_radar_motion_sampling_frame_uses_single_trace(monkeypatch):
-    scene = _rotating_scene(device="cpu")
-    observed_times: list[float | None] = []
-
-    class FakeRenderer:
-        def __init__(
-            self,
-            scene,
-            radar,
-            resolution=128,
-            epsilon_r=5.0,
-            sampling="triangle",
-            multipath=False,
-            max_reflections=0,
-            ray_batch_size=65536,
-        ):
-            self.scene = scene
-            self.radar = radar
-
-        def trace(self, *, time=None):
-            observed_times.append(time)
-            return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
-
-    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
-
-    radar = _attach_fake_solver(
-        Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), device="cpu")
-    )
-    radar.simulate(
-        scene,
-        motion_sampling="per_frame",
-    )
-
-    assert observed_times == [0.0]
-
-
-def test_radar_motion_sampling_linear_uses_two_matched_traces(monkeypatch):
-    scene = _rotating_scene(device="cpu")
-    observed_times: list[float | None] = []
-
-    class FakeRenderer:
-        def __init__(self, scene, radar, **_options):
-            self.scene = scene
-            self.radar = radar
-
-        def trace(self, *, time=None):
-            observed_times.append(time)
-            traced = _centroid_trace(self.scene, time=0.0 if time is None else float(time))
-            tri_indices = torch.arange(traced.points.shape[0], dtype=torch.int64, device=traced.points.device)
-            return TraceResult(traced.points, traced.intensities, tri_indices)
-
-        def match_indices(self, first, second):
-            count = min(first.points.shape[0], second.points.shape[0])
-            indices = torch.arange(count, dtype=torch.int64, device=first.points.device)
-            return indices, indices
-
-    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
-    radar = _attach_fake_solver(Radar(RadarConfig.from_dict(_config(chirps=4, adc_samples=16)), device="cpu"))
-
-    result = radar.simulate(scene, sampling="triangle", motion_sampling="linear")
-
-    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
-    assert observed_times == pytest.approx([0.0, chirp_period], rel=0.0, abs=1e-12)
-    assert result.shape == (radar.config.num_tx, radar.config.num_rx, 4, 16)
-
-
-def test_radar_motion_sampling_linear_rejects_pixel_correspondence(monkeypatch):
-    scene = _rotating_scene(device="cpu")
-
-    class FakeRenderer:
-        def __init__(self, scene, radar, **_options):
-            self.scene = scene
-
-        def trace(self, *, time=None):
-            return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
-
-    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
-    radar = _attach_fake_solver(Radar(RadarConfig.from_dict(_config()), device="cpu"))
-
-    with pytest.raises(ValueError, match="requires sampling='triangle'"):
-        radar.simulate(scene, sampling="pixel", motion_sampling="linear")
-
-
-def test_mimo_group_with_motion_matches_individual_runs(monkeypatch):
-    scene = _rotating_scene(device="cpu")
-
-    class FakeRenderer:
-        def __init__(
-            self,
-            scene,
-            radar,
-            resolution=128,
-            epsilon_r=5.0,
-            sampling="triangle",
-            multipath=False,
-            max_reflections=0,
-            ray_batch_size=65536,
-        ):
-            self.scene = scene
-            self.radar = radar
-
-        def trace(self, *, time=None):
-            return _centroid_trace(self.scene, time=0.0 if time is None else float(time))
-
-    monkeypatch.setattr("witwin.radar.trace.Tracer", FakeRenderer)
-
-    config = RadarConfig.from_dict(_config(chirps=3, adc_samples=16))
-    front = _attach_fake_solver(Radar(config, name="front", device="cpu"))
-    side = _attach_fake_solver(Radar(
-        config,
-        name="side",
-        device="cpu",
-        position=(1.0, 0.0, 0.0),
-        target=(1.0, 0.0, -1.0),
-    ))
-
-    group = Radar.simulate_group(
-        scene,
-        radars=[front, side],
-        motion_sampling="per_chirp",
-    )
-
-    front_single = front.simulate(
-        scene,
-        motion_sampling="per_chirp",
-    )
-    side_single = side.simulate(
-        scene,
-        motion_sampling="per_chirp",
-    )
-
-    assert torch.allclose(group["front"], front_single, atol=1e-6, rtol=1e-6)
-    assert torch.allclose(group["side"], side_single, atol=1e-6, rtol=1e-6)
-
-
-@pytest.mark.gpu
-def test_triangle_renderer_rotation_motion_matches_manual_signal_gpu():
-    scene = _rotating_scene(device="cuda")
-    config = RadarConfig.from_dict(_config(chirps=4, adc_samples=32))
-    radar = Radar(config, device="cuda")
-
-    result = radar.simulate(
-        scene,
-        sampling="triangle",
-        motion_sampling="per_chirp",
-        resolution=32,
-    )
-
-    def interpolator(t):
-        return _triangle_trace(scene, radar, time=float(t))
-
-    expected = radar.mimo(interpolator, 0.0)
-    expected_trace = _triangle_trace(scene, radar, time=0.0)
-
-    assert torch.allclose(radar.last_trace.points, expected_trace.points, atol=5e-4, rtol=5e-4)
-    assert torch.allclose(radar.last_trace.intensities, expected_trace.intensities, atol=5e-4, rtol=5e-4)
-    assert torch.allclose(result, expected, atol=5e-4, rtol=5e-4)

@@ -18,8 +18,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+if str(REPO_ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "tests"))
+
 from witwin.radar import Radar, RadarConfig  # noqa: E402
-from witwin.radar.solvers.common import pytorch_chirp_reference  # noqa: E402
+
+# The Torch reference lives under tests/, where a CPU reference oracle belongs;
+# this benchmark exists to compare the native kernel against it.
+from reference.dsp_oracles import pytorch_chirp_reference  # noqa: E402
 
 
 CONFIG = {
