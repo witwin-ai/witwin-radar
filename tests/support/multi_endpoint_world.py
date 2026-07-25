@@ -1,0 +1,158 @@
+"""Build the multi-endpoint fixture world with witwin.core and compile it.
+
+Provisional dependency note (owner-approved deviation, R-ADR-008): like the
+Phase-4 fixture, this consumes ``witwin-channel`` and ``witwin`` from source
+checkouts rather than from pinned release wheels.
+
+This is a sibling of ``phase4_world`` rather than an extension of it. The
+Phase-4 ``endpoint_spec`` builds exactly ONE row (``positions.reshape(1, 3)``,
+a single stable ID) and every Phase-4/5 expectation depends on that; batching it
+would have meant changing a fixture whose numbers are frozen. The batched
+builder lives here instead.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from . import multi_endpoint_geometry as geo
+
+
+def make_scene(*, transmitter_positions=None):
+    """One narrow concrete wall plus one registered antenna endpoint.
+
+    ``Mesh`` defaults ``recenter=True`` and silently subtracts the bounding-box
+    centre from authored vertices, which would move the wall plane away from
+    ``x = 4`` and make every closed form in ``multi_endpoint_geometry`` wrong
+    without raising anything. ``recenter=False`` is therefore mandatory and
+    ``assert_world_coordinates_survived`` re-checks it. R-ADR-009 proposes
+    fixing that default upstream; this fixture does not patch another
+    repository to work around it.
+
+    ``transmitter_positions`` only affects the registered ``AntennaState``,
+    which is scene metadata; the legs are driven by the endpoint batches passed
+    to the adapter, not by this.
+    """
+
+    from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure
+    from witwin.core.identity import reserve_antenna_id
+
+    mesh = Mesh(
+        vertices=torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32),
+        faces=torch.tensor(geo.WALL_FACES, dtype=torch.int64),
+        recenter=False,
+        fill_mode="surface",
+        topology_diagnostics=False,
+    )
+    wall = Structure(
+        geometry=mesh,
+        material=PhysicalMaterial(
+            name="concrete",
+            eps_r=geo.WALL_EPS_R,
+            sigma_e=geo.WALL_SIGMA_E,
+        ),
+        structure_id=1,
+        material_id=1,
+        assignment_id=1,
+        surface_id=1,
+    )
+    anchor = (
+        geo.TX_A_POSITION_M
+        if transmitter_positions is None
+        else transmitter_positions[0]
+    )
+    scene = Scene(
+        structures=(wall,),
+        endpoints=[
+            AntennaState(
+                reserve_antenna_id(77101),
+                "tx",
+                torch.tensor(anchor, dtype=torch.float32),
+            )
+        ],
+    )
+    return scene, mesh
+
+
+def assert_world_coordinates_survived(mesh) -> None:
+    """Defensive check that authored world coordinates were not recentred."""
+
+    vertices = mesh.vertices.detach().to(dtype=torch.float64).cpu()
+    plane_x = float(vertices[:, 0].min())
+    if abs(plane_x - geo.WALL_PLANE_X_M) > 1e-6:
+        raise AssertionError(
+            f"authored wall plane x={geo.WALL_PLANE_X_M} was rewritten to "
+            f"{plane_x}; witwin.core.Mesh recentred the geometry"
+        )
+    half_y = float(vertices[:, 1].max())
+    if abs(half_y - geo.WALL_HALF_Y_M) > 1e-6:
+        raise AssertionError(
+            f"authored wall half-width y={geo.WALL_HALF_Y_M} was rewritten to "
+            f"{half_y}; the facet extent is this fixture's only design knob"
+        )
+
+
+def compile_fixture_scene():
+    """Compile the fixture world at the fixture reference frequency."""
+
+    from witwin.channel.scene import compile as compile_scene
+
+    scene, mesh = make_scene()
+    assert_world_coordinates_survived(mesh)
+    return compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
+
+
+def endpoint_batch(positions, stable_ids, *, power_w=None, device="cuda"):
+    """An N-row Radar endpoint spec.
+
+    ``positions`` is either a sequence of ``(x, y, z)`` tuples or a live
+    ``(N, 3)`` tensor. A tensor is passed through untouched so that a
+    ``requires_grad`` leaf or a forward-AD dual keeps its tape; this is what
+    lets ONE site tensor be the sink of the inbound leg and the source of the
+    outbound leg and accumulate gradient from both.
+    """
+
+    from witwin.radar.propagation import RadarEndpointSpec
+
+    ids = list(stable_ids)
+    if isinstance(positions, torch.Tensor):
+        values = positions
+    else:
+        values = torch.tensor(list(positions), dtype=torch.float32, device=device)
+    if values.ndim != 2 or int(values.shape[0]) != len(ids):
+        raise ValueError(
+            f"positions carries {tuple(values.shape)} but {len(ids)} stable IDs "
+            "were given; the endpoint batch order IS the array order and the "
+            "two must be permuted together"
+        )
+    rows = len(ids)
+    powers = (
+        None
+        if power_w is None
+        else torch.full((rows,), float(power_w), dtype=torch.float32, device=device)
+    )
+    return RadarEndpointSpec(
+        stable_ids=torch.tensor(ids, dtype=torch.int64, device=device),
+        positions_m=values,
+        polarizations=torch.tensor(
+            [geo.POLARIZATION] * rows, dtype=torch.float32, device=device
+        ),
+        powers_w=powers,
+    )
+
+
+def split(endpoints):
+    """Split a sequence of ``(stable_id, position)`` into ids and positions."""
+
+    ids = tuple(stable_id for stable_id, _ in endpoints)
+    positions = tuple(position for _, position in endpoints)
+    return ids, positions
+
+
+__all__ = [
+    "assert_world_coordinates_survived",
+    "compile_fixture_scene",
+    "endpoint_batch",
+    "make_scene",
+    "split",
+]
