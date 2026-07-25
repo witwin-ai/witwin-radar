@@ -168,6 +168,7 @@ def extension_sources() -> list[Path]:
     return [
         root / "extension.cpp",
         root / "kernels" / "dirichlet.cu",
+        root / "kernels" / "fmcw_beat.cu",
     ]
 
 
@@ -213,10 +214,24 @@ class _StableOpsModule:
         return getattr(torch.ops.witwin_radar_dirichlet_cuda, name)
 
 
+# Every operator family the library is required to register. A stale binary
+# that predates a family loads fine and then fails deep inside a kernel call,
+# so the presence check names one operator per family and fails at load.
+_REQUIRED_OPERATORS = ("forward_chunked", "fmcw_beat_forward")
+
+
 def _load_extension_file(library_path: Path) -> _StableOpsModule:
     torch.ops.load_library(str(library_path))
-    if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, "forward_chunked"):
-        raise ImportError(f"{library_path} does not register the Stable ABI radar operators.")
+    missing = [
+        name
+        for name in _REQUIRED_OPERATORS
+        if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, name)
+    ]
+    if missing:
+        raise ImportError(
+            f"{library_path} does not register the Stable ABI radar operators "
+            f"{missing}; the binary is stale."
+        )
     return _StableOpsModule(library_path)
 
 
