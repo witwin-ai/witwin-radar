@@ -62,6 +62,40 @@ coupling.
 **Read path rows from a solver `Result`.** Same coupling, one indirection later,
 and it additionally binds Radar to a solver's configuration and metadata schema.
 
+## Appendix: upstream consumer observations, recorded not patched
+
+Channel is read-only from here, and the boundary above is exactly why: what
+Radar can do with a consumer behaviour it disagrees with is describe it, not
+work around it. Each entry below was measured against the live extension from
+this worktree.
+
+**Degenerate reflection is zero-but-valid, and asymmetric by endpoint role.**
+With the fixture wall at `x = 4` and a site at distance `d` from it, the frozen
+reflection row's coefficient magnitude is smooth and converges to its grazing
+value as `d` shrinks -- until the leg where the site is the SOURCE snaps to
+exactly `0.0` at `d <= 1e-6 m` while `row_valid` stays `True`. The leg where the
+same site is the SINK keeps its finite coefficient at every `d`, including
+`d = 0`:
+
+```
+d_to_wall    site-as-sink  |c|            site-as-source  |c|
+3.0e-06      True          4.14433271e-05  True           4.30694963e-05
+1.0e-06      True          4.14433489e-05  True           0.00000000e+00
+0.0e+00      True          4.14433562e-05  True           0.00000000e+00
+```
+
+Two things are notable. A valid row with a discontinuously zeroed payload sits
+against the contract's own statement that `row_valid` is the sole authority on
+whether a payload means anything: a consumer that trusts the flag reads a zero
+as physics. And the source/sink asymmetry points at an epsilon inside the
+fixed-topology reflection reevaluation that treats the two endpoint roles
+differently, rather than at a shared geometric degeneracy.
+
+This is measure-zero geometry and the join propagates it consistently -- the
+products go to zero and nothing produces a NaN -- so Radar is not exposed today.
+It is recorded because a Radar-side guard would be exactly the compensating
+workaround this boundary exists to prevent.
+
 ## Acceptance evidence
 
 `tests/test_phase4_import_boundary.py`:
