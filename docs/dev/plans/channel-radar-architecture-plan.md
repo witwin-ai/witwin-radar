@@ -392,6 +392,10 @@ witwin-radar
 6. Phase 11 只有在 Channel 与最终 Radar matrix 完全一致时才能改为 mandatory dependency；
 7. 后续扩展 Torch minor versions 作为 packaging capability 工作，不与 Scene/propagation 架构迁移混合。
 
+> **执行结果（2026-07-25）**：Core 已扩至 `>=3.10,<3.15`（跟随 RayD 0.7.0，
+> Stable ABI 扩展）；Channel 维持 `>=3.11,<3.12`。Radar 无需收窄；其
+> `witwin` pin 提升至 `>=0.4,<0.5` 即可消费 Stage-I Core。
+
 这一路线保留 Radar 的用户支持目标，同时把 native ABI 风险限制在一个 Torch 版本。若全 Python matrix 的 feasibility gate 失败，计划会在写 Core contracts 前得到明确 stop/go 结论。
 
 ## 5. 共享 Scene 与材料模型
@@ -600,6 +604,11 @@ evaluation = propagation.evaluate(
     ),
 )
 ```
+
+> **状态（2026-07-25）**：contract v2 已删除 `frequency_offsets_hz` 字段
+> （窄带律由 convention 声明、`delay_s` 支撑调用者自施）；词汇表以
+> `Literal` 别名 + `capabilities()` 发布；请求在构造期自校验。以下 schema
+> 为规划期原文。
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1054,6 +1063,11 @@ f_D ≈ -f_ref · d tau_rt / dt
 
 生产实现不得使用有限差分作为 fallback。有限差分只允许存在于 tests 中作为独立 oracle。
 
+> **状态（2026-07-25）**：`propagation fixed-topology JVP` 路线已可用——
+> ADR-037 提供 `prepare_fixed_topology` + reflection reevaluation，ADR-038
+> 使 forward-only dual 直接携带 `delay_s` 切线（FD 对照通过）。Radar 端
+> `delay_rate` 可按每帧 `reevaluate(ad_mode='jvp')` 实现。
+
 ### 8.4 Micro-Doppler
 
 Micro-Doppler 属于 Radar target response 层：
@@ -1425,6 +1439,45 @@ SM70/75/80/86/87/89/90/100/101/120 SASS 与 compute_120 PTX 仍必须由已提�
 workflow 在 GitHub Actions 中生成和验收；在这些 artifacts 发布并被 Radar 正常 dependency
 pin 之前，不启动 Phase 4。完整证据见 Channel
 `docs/dev/audit/stage1-phase3-consumer-evidence.md`。
+
+#### Stage-I 后续维护与合并记录（2026-07-24/25）
+
+Stage-I 及其后续维护已合并进两仓库 main 并推送：Core main `7791ce2`，
+Channel main `fb23078`。要点如下，均在 Radar production 未改动的前提下完成：
+
+- **ADR-036（Accepted）模块与公共 API 标准化**：`witwin.channel.core` 与
+  `witwin.channel.physics` 解散入真实 domain owner；Channel root 不再 re-export
+  Core 世界类型，每个世界类型只有 `witwin.core` 一条导入路径；Core 删除
+  `Material` 别名（`PhysicalMaterial` 唯一公共名，Radar/Maxwell 导入点已修）。
+- **ADR-037（Accepted）consumer contract v2**：`prepare_fixed_topology` +
+  `PreparedFixedTopology` 冻结期分桶；fixed-topology reevaluation 支持
+  `{los, reflection}`；`polarimetric_transport` 经 `evaluate → reevaluate`
+  两步支持 reflection 2×2 Jones（双激励合成，零新增 native），且三种 AD 模式
+  全开；逐行 `row_valid`（设备驻留 bool[K]，无 host 读）。经 2026-07-25
+  修正案，`row_valid` 覆盖扩至 `{los, reflection}`：冻结 LoS 行用 discovery
+  同一原生可见性门复测，遮挡发布 `row_valid=False` + 精确零。
+- **ADR-038（Accepted）wrapper 层前向 AD liveness**：修复 `Function.apply`
+  在 `setup_context` 前解包 dual 导致 forward-only 切线被静默丢弃的缺陷。
+  `delay_s`/`path_length_m` 的前向切线现在对 forward-only dual 直接可用并有
+  FD 对照证据——Section 8.3 的 Doppler `delay_rate` 路线不再需要
+  requires_grad+dual 双重约定。
+- **频偏定论**：consumer 无频偏输入；窄带律
+  `H(f_ref+df)=C(f_ref)·exp(-j·2π·df·delay_s)` 以
+  `PropagationConvention.narrowband_frequency_offset_law` 声明，`delay_s`
+  逐行发布供调用者自施。色散逐频点重算留待独立 `CONTRACT_VERSION` 提版。
+- **Python matrix 决策（Section 4.3 执行）**：跟随 RayD 0.7.0
+  （`>=3.10,<3.15`）。Core 扩至 `>=3.10,<3.15`（其唯一扩展为 LibTorch
+  Stable ABI mesh-SDF）；Channel 维持 `>=3.11,<3.12`（versioned `_channel`
+  为真实约束所在）。Radar 的 `witwin>=0.3,<0.4` pin 需提升至 `>=0.4,<0.5`。
+- **性能**：Core scene version 遍历优化 ~6×（1024 structures 时热 compile
+  87→16.9 ms），并新增 `release.compile-scaling` 门禁（scaling/常数因子/
+  第二遍扫描三预算，已验证能捕获所修回归）；prepared replay 的场景静态表
+  改为 CompiledScene 拥有的惰性缓存（仅 primal 缓存，防跨帧 backward 复用）。
+- **Release 状态**：workflow 首跑暴露的 Core wheel 构建问题已修
+  （`0b98900`）；windows-smoke 于 `0b98900` 运行中。已发布的 0.4.0 artifacts
+  为 Stage-I Phase-0 内容（无 caller switch、无 consumer），将由新 main 的
+  下一次发布取代。manylinux_2_28 full 构建仍是 Phase 4 入口前置。
+
 
 #### Phase 0A：锁定 RayD 0.7.0 与 Channel production dependency baseline
 
