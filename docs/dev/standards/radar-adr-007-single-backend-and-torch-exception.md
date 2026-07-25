@@ -98,6 +98,31 @@ is the native path evaluator, which is separate work.
 Production derivatives come from registered native forward/JVP/VJP companions.
 Finite differences appear only in `tests/`, as oracles.
 
+### What the AD is verified against, per leg component (Phase 5)
+
+Stated by component, because "the chain is FD-verified" was true of the
+line-of-sight chain and was being read as a statement about all of it.
+
+- **The join's own AD**: float64 Torch oracle, itself validated by float64
+  central differences before anything is compared against it, then production
+  float32 in both modes. `tests/test_phase5_two_way_join_ad.py`.
+- **Line-of-sight legs, end to end**: against the independent float64 chain in
+  `tests/support/reference_chain.py`, both modes.
+  `tests/test_phase4_spike_e2e.py`.
+- **Reflection legs, end to end**: against a finite difference of the
+  PRODUCTION chain at perturbed positions, both modes, with the loss weighted
+  to zero on the one composed row that joins two line-of-sight legs so the
+  whole gradient is the reflection rows'. `tests/test_phase5_reflection_ad.py`.
+  A reimplemented oracle is not available here and should not be built: it
+  would duplicate Channel's lossy-dielectric Fresnel coefficient, which is a
+  Channel/RayD numerical owner.
+
+The remaining gap, stated so it is not read as covered: the transfer's site
+dependence is dominated by the specular-point propagation phase, so these tests
+verify the reflection TRANSPORT derivative rather than the Fresnel
+coefficient's own derivative in isolation. Separating the two needs an oracle
+for the coefficient, which is the duplication above.
+
 ## Consequences
 
 The scan that enforces this uses the AST, not text: every forbidden token also
@@ -117,3 +142,6 @@ pass, which is exactly the wrong direction.
 - `tests/test_phase5_removed_entry_points.py` (removed names raise and name
   their replacement; the residual Torch surface is frozen; the packaging
   metadata no longer pulls in Dr.Jit)
+- `tests/test_phase5_reflection_ad.py` (reverse and forward mode through a
+  reflection leg against finite differences of the production chain, with a
+  term-level control that isolates the transfer from the delay)
