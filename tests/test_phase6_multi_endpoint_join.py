@@ -70,6 +70,10 @@ pytestmark = pytest.mark.gpu
 
 DELAY_RTOL = 1.0e-6
 
+# tau_rt is nanosecond scale, so a delay loss enters through this scaling to put
+# its gradient at order one. The same 1e8 the Phase-5 AD tests use.
+DELAY_SCALE = 1.0e8
+
 # Two clearly different per-site values, indexed by SITE RANK - the rank in the
 # SORTED site ID list, which is the join's own site slot. ``ScalarRcsResponse``
 # broadcasts one number over every site and therefore cannot tell a correct
@@ -309,6 +313,54 @@ def test_the_swapped_batch_order_produces_bit_identical_gradients():
     # neither gradient may be a broadcast of the other.
     assert not torch.equal(site_grad[0], site_grad[1])
     assert complex(response_grad[0]) != complex(response_grad[1])
+
+
+def test_the_multi_site_delay_gradient_is_the_closed_form_one():
+    """Reverse mode checked by VALUE, not against a second run of itself.
+
+    The swap comparison above is bit identity between two runs, so a defect that
+    scales every gradient the same way - and in particular one that only appears
+    once the batch carries more than one site - cancels out of it. The join's own
+    VJP is value-checked at two sites in ``test_phase5_two_way_join_ad.py``
+    against a finite-difference-validated float64 oracle; what that leaves is the
+    CHANNEL leg gradient at multi-site width, which is value-checked only at one
+    site (``test_phase5_reflection_ad.py``).
+
+    A delay-only loss closes that: ``d(tau)/d(site position)`` is the unit vector
+    from the (mirrored) fixed endpoint to the site over ``c``, summed over both
+    legs of every row that reaches the site, which is the transpose of the rate
+    the Doppler test above already validates in forward mode. The transfer term
+    is deliberately left out - its geometry dependence has no comparably cheap
+    closed form, and a loss it dominated would hide the delay gradient.
+    """
+
+    run = drv.MultiEndpointSpike()
+    weights = torch.arange(1, 12, dtype=torch.float32, device="cuda")
+    positions = run.site_tensor(requires_grad=True)
+    composed, _, _ = run.frame(positions, ad_mode="vjp")
+
+    assert composed.path_count == 11
+    assert bool(composed.row_valid.all())
+    (weights * composed.total_delay_s * DELAY_SCALE).sum().backward()
+
+    expected = geo.combined_delay_gradient_s_per_m(
+        run.predicted_combined_rows(), weights.tolist()
+    )
+    measured = positions.grad.tolist()
+    assert len(measured) == 2
+    for row, stable_id in enumerate(run.site_ids):
+        for axis in range(3):
+            assert measured[row][axis] == pytest.approx(
+                DELAY_SCALE * expected[stable_id][axis], rel=1.0e-5, abs=1.0e-6
+            ), (stable_id, axis)
+
+    # Not vacuous, and not a broadcast: both sites carry an in-plane gradient of
+    # order ten, they differ, and the out-of-plane one is exactly zero because
+    # every path lies in z = 0.
+    for row in range(2):
+        assert abs(measured[row][0]) > 1.0 and abs(measured[row][1]) > 1.0
+        assert measured[row][2] == 0.0
+    assert measured[0] != measured[1]
 
 
 def test_each_site_response_reaches_that_sites_rows_and_no_others(spike):

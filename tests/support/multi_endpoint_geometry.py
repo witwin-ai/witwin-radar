@@ -505,6 +505,59 @@ def combined_doppler_hz(
     return shifts
 
 
+def combined_delay_gradient_s_per_m(
+    rows: list[CombinedRow],
+    weights: list[float],
+    transmitters: tuple[tuple[int, Point], ...] = TRANSMITTERS,
+    sites: tuple[tuple[int, Point], ...] = SITES,
+    receivers: tuple[tuple[int, Point], ...] = RECEIVERS,
+) -> dict[int, Point]:
+    """``d/d(site position)`` of ``sum_r weights[r] * tau_rt[r]``, per site ID.
+
+    The reverse-mode transpose of the rate in :func:`combined_doppler_hz`: each
+    leg contributes the unit vector from its (possibly mirrored) fixed endpoint
+    to the site, divided by ``c``, and a site accumulates over EVERY composed
+    row that reaches it - both legs of each. Evaluating the same rate function
+    along the three unit basis directions states that relationship rather than
+    restating the projection, and keeps this closed form tied to the one the
+    forward-mode Doppler test already validates against Channel.
+
+    Nothing here re-derives a specular point: by Fermat the derivative of a
+    single-bounce path length with respect to an ENDPOINT is the unit vector
+    along that endpoint's segment, so the moving stationary point contributes
+    no first-order term.
+    """
+
+    positions = {
+        stable_id: position
+        for stable_id, position in (*transmitters, *sites, *receivers)
+    }
+    gradient = {stable_id: [0.0, 0.0, 0.0] for stable_id, _ in sites}
+    for row, weight in zip(rows, weights, strict=True):
+        site = positions[row.site_id]
+        for axis in range(3):
+            direction = tuple(
+                1.0 if index == axis else 0.0 for index in range(3)
+            )
+            gradient[row.site_id][axis] += weight * (
+                _leg_delay_rate_s_per_s(
+                    site,
+                    positions[row.source_id],
+                    row.inbound.component,
+                    direction,
+                )
+                + _leg_delay_rate_s_per_s(
+                    site,
+                    positions[row.sink_id],
+                    row.outbound.component,
+                    direction,
+                )
+            )
+    return {
+        stable_id: tuple(value) for stable_id, value in gradient.items()
+    }
+
+
 __all__ = [
     "C0_M_PER_S",
     "CombinedRow",
@@ -546,6 +599,7 @@ __all__ = [
     "WALL_PLANE_X_M",
     "WALL_SIGMA_E",
     "WALL_VERTICES_M",
+    "combined_delay_gradient_s_per_m",
     "combined_doppler_hz",
     "combined_pair_offsets",
     "combined_rows",
