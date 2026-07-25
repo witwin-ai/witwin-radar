@@ -103,6 +103,23 @@ class TwoWayComposer:
                 offsets[-1] + sum(1 for row in rows if pair_of[(row[0], row[1])] == index)
             )
 
+        # The offsets table is the only piece of synthesis metadata whose VALUES
+        # the native kernel cannot validate: reading them on the host per frame
+        # would be exactly the transfer the fixed-topology capability exists to
+        # avoid, so the kernel clamps instead of failing. Clamping turns a
+        # malformed table into a plausible wrong answer rather than an error.
+        #
+        # Validating here costs nothing -- the table is still a Python list, at
+        # freeze time, on the host -- and it is what makes the production route
+        # provably unable to hand the kernel a table it would have to clamp.
+        if offsets[0] != 0 or offsets[-1] != len(rows):
+            raise ValueError(
+                f"pair offsets must partition all {len(rows)} composed rows, "
+                f"got {offsets}"
+            )
+        if any(b < a for a, b in zip(offsets[:-1], offsets[1:], strict=True)):
+            raise ValueError(f"pair offsets must be non-decreasing, got {offsets}")
+
         return cls(
             inbound_row=column(3),
             outbound_row=column(4),

@@ -24,10 +24,26 @@ to the host to build the join. That happens once per frozen topology, after
 
 ### The frozen-topology cost is paid once and reported separately
 
-`prepare_fixed_topology` costs 3 D2H copies and 3 synchronizations per frozen
-topology. It is called exactly once per leg, outside every loop, and its counters
-are published on `FrozenLegTopology` rather than folded into per-frame
+`prepare_fixed_topology` costs 3 D2H copies, 17 bytes, and 3 synchronizations per
+frozen topology. It is called exactly once per leg, outside every loop, and its
+counters are published on `FrozenLegTopology` rather than folded into per-frame
 diagnostics -- precisely so it cannot be mistaken for per-frame cost.
+
+`TwoWayComposer.freeze` adds 5 more host reads on top of that, one `.tolist()`
+per identity column: both legs' `source_id` and `sink_id`, plus `site_ids`. These
+are NOT counted by any Channel diagnostic, because Channel never sees them. They
+are recorded here so the one-time total is complete rather than implied:
+
+```
+one-time, per two-leg composer: 2 x (3 copies, 17 bytes) from prepare
+                              + 5 host reads from the identity join
+per frame:                      2 D2H copies, 8 bytes, 2 synchronizations
+```
+
+The per-frame figure is the one that matters and the one that is budgeted. The
+one-time figure is recorded so that a future composer which moved a `.tolist()`
+into `compose` would show up as a changed number rather than as unattributed
+host traffic.
 
 ### The measured per-frame budget
 

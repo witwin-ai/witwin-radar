@@ -119,8 +119,13 @@ __global__ void fmcw_beat_forward_kernel(
     return;
   }
 
-  // Clamped so a malformed offset table cannot walk off the path arrays. The
-  // table is validated for shape on the host; its VALUES are never read there.
+  // A memory-safety backstop, not a validation policy. The host wrapper checks
+  // the table's shape but never reads its VALUES -- doing so per frame would be
+  // the D2H the fixed-topology capability exists to avoid. Clamping keeps a
+  // malformed table from walking off the path arrays; it does NOT make the
+  // result meaningful. The production route cannot reach here with a bad table:
+  // TwoWayComposer.freeze validates the partition on the host at freeze time,
+  // where the table is still a Python list and checking it is free.
   int64_t start = path_offsets[segment];
   int64_t end = path_offsets[segment + 1];
   start = start < 0 ? 0 : start;
@@ -243,6 +248,8 @@ __global__ void fmcw_beat_backward_kernel(
     return;
   }
 
+  // Same backstop. On the production route path_segment is DERIVED from the
+  // same offsets table by _segment_of_each_path, so it cannot disagree with it.
   int64_t segment = path_segment[k];
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;

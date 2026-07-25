@@ -9,6 +9,7 @@ positional one.
 
 from __future__ import annotations
 
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -90,6 +91,44 @@ def test_delay_is_additive_and_transfer_factorizes():
     assert composed.topology.radar_sink_id.tolist() == [30]
 
 
+def test_freeze_host_reads_are_counted_and_compose_has_none(monkeypatch):
+    """The composer's freeze-time host traffic, quantified (R-ADR-006).
+
+    ``TwoWayComposer.freeze`` reads leg identity to the host to build the join.
+    That is sanctioned and one-time, but Channel never sees those reads, so no
+    Channel diagnostic counts them and the one-time total was implied rather
+    than measured. Five reads: both legs' source_id and sink_id, plus site_ids.
+
+    The assertion that matters is the second one: ``compose`` runs per frame and
+    must do none.
+    """
+
+    calls = {"n": 0}
+    original = torch.Tensor.tolist
+
+    def counting_tolist(self):
+        calls["n"] += 1
+        return original(self)
+
+    monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
+
+    composer = TwoWayComposer.freeze(
+        _frozen([10], [20]),
+        _frozen([20], [30]),
+        torch.tensor([20], dtype=torch.int64),
+        reference_frequency_hz=77.0e9,
+    )
+    assert calls["n"] == 5, calls["n"]
+
+    calls["n"] = 0
+    composer.compose(
+        _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9]),
+        _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9]),
+        _response(),
+    )
+    assert calls["n"] == 0
+
+
 def test_join_is_by_identity_not_by_array_position():
     """Permuting the outbound frozen rows must not change the result.
 
@@ -165,6 +204,38 @@ def test_rows_are_sorted_into_a_valid_pair_partition():
         )
     )
     assert pairs == sorted(pairs)
+
+
+def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
+    """The kernel clamps a malformed offsets table; the composer refuses one.
+
+    Clamping is a memory-safety backstop, not a validation policy: it turns a
+    malformed table into a plausible wrong answer rather than an error, and the
+    kernel cannot do better because reading the values per frame is exactly the
+    D2H the fixed-topology capability exists to avoid. Freeze time is where the
+    check is free, so that is where it lives, and it is what makes the
+    production route unable to reach the clamp at all.
+    """
+
+    composer = TwoWayComposer.freeze(
+        _frozen([10, 11], [20, 20]),
+        _frozen([20, 20], [30, 31]),
+        torch.tensor([20], dtype=torch.int64),
+        reference_frequency_hz=77.0e9,
+    )
+    offsets = composer.pair_offsets.tolist()
+    assert offsets[0] == 0
+    assert offsets[-1] == composer.path_count
+    assert offsets == sorted(offsets)
+    assert len(offsets) == composer.sensor_pair_count + 1
+
+    # And the check is a real gate, not a comment: a table that failed either
+    # condition would raise rather than reach the kernel.
+    from witwin.radar.paths import two_way
+
+    source = pathlib.Path(two_way.__file__).read_text(encoding="utf-8")
+    assert "must partition all" in source
+    assert "must be non-decreasing" in source
 
 
 def test_a_site_without_a_leg_is_refused_rather_than_dropped():
