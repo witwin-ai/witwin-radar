@@ -228,3 +228,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Repository-local agent and test scratch directories
+.codex_tmp/
+.codex-tmp/
+.test-tmp/
+.tmp/

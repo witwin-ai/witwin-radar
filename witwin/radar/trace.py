@@ -117,6 +117,19 @@ class Tracer:
             return torch.zeros((self.resolution, self.resolution), dtype=torch.float32, device=self.radar.device)
         return self._trace_primary_rays(renderables, image_only=True).reshape(self.resolution, self.resolution)
 
+    def render_depth(self, *, time: float | None = None):
+        """Render primary-ray distance in meters, using zero for misses."""
+        renderables = self.scene.compile_renderables(time=time)
+        if not self._prepare_scene(renderables):
+            return torch.zeros((self.resolution, self.resolution), dtype=torch.float32, device=self.radar.device)
+
+        result = self._trace_primary_rays(renderables, image_only=False)
+        valid = result[:, 4] > 0.5
+        depth = torch.zeros(result.shape[0], dtype=torch.float32, device=self.radar.device)
+        origin = self.radar.position.to(device=self.radar.device, dtype=torch.float32)
+        depth[valid] = torch.linalg.vector_norm(result[valid, :3] - origin, dim=-1)
+        return depth.reshape(self.resolution, self.resolution)
+
     def _trace_pixels(self, renderables):
         result = self._trace_primary_rays(renderables, image_only=False)
         valid_index = (result[:, 4] > 0.5).nonzero(as_tuple=True)[0]

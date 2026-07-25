@@ -35,7 +35,11 @@
 
 - Native Dirichlet runtime state lives on `radar.solver`, including FFT metadata such as `pad_factor` and `N_fft`
 - `Radar(device="cuda")` validates CUDA availability explicitly. CPU construction is supported for configuration and helper workflows, but solver execution requires CUDA tensors.
-- Linux and Windows are supported targets. Release wheels include prebuilt native CUDA extensions for supported Python/platform combinations; source builds require a CUDA-enabled PyTorch build plus a working CUDA/C++ compilation toolchain.
+- Linux and Windows are supported targets. GitHub Actions builds Linux wheels
+  inside manylinux_2_28 and Windows wheels on Windows Server 2022. Release
+  fatbins include native SM87 SASS alongside the maintained CUDA 12.8
+  architecture set; source builds require a CUDA-enabled PyTorch build plus a
+  working CUDA/C++ compilation toolchain.
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves `Radar.gain` onto an absolute transmit-voltage scale
 - `receiver_chain.adc` and `noise_model.quantization` are mutually exclusive so only one ADC quantizer is active
