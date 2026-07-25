@@ -18,6 +18,7 @@
 - Low-level radar solver entrypoint: `Radar.chirp()`, `Radar.frame()`, `Radar.mimo()`, and `Radar.apply_noise()`
 - REMOVED with the Dr.Jit ray tracer: `Tracer`, `fresnel`, `Radar.simulate(...)`, `Radar.simulate_group(...)`, and `radar.last_scene` / `last_trace` / `last_tracer`. Each removed name raises with a pointer to its replacement; none of them falls back silently. `TraceResult` survives and is exported from `witwin.radar.trace_result`.
 - Composed round-trip rows record `join_mode` (`"direct"` or `"multipath"`), so which paths a result contains is a checked property rather than an inference from its shape
+- `TwoWayComposer.compose(...)` and `DirectComposer.compose(...)` refuse a leg batch whose row count is not the frozen topology's, and `TwoWayComposer` refuses a `ScatterResponse` that evaluates to the wrong number of sites. A mismatched frame is a different topology, and the native join would otherwise gather past the end of its buffers and publish a plausible round trip.
 
 ## Configuration
 

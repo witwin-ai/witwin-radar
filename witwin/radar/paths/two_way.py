@@ -575,6 +575,7 @@ class TwoWayComposer:
                 "a geometry-dependent scatter response varies per path and must "
                 "be evaluated in a native kernel, not composed here"
             )
+        self._require_frame(inbound, outbound)
         rows = self.path_count
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
@@ -583,7 +584,7 @@ class TwoWayComposer:
             if row_valid is None
             else row_valid.to(torch.int32)
         )
-        site_response = response.evaluate(self.site_count, device)
+        site_response = self._site_response(response, device)
 
         # Torch-owned, autograd-aware accessors: the real pairs cross the
         # boundary, never the complex tensors.
@@ -623,6 +624,60 @@ class TwoWayComposer:
             topology=self.topology,
             join_mode="multipath",
         )
+
+    def _require_frame(
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch
+    ) -> None:
+        """Refuse a frame that is not the one this join was frozen against.
+
+        The index tables address the FROZEN leg rows, so a batch of a different
+        length is not a smaller frame - it is a different topology. This is the
+        only place that can see the mismatch: the forward and JVP entries are
+        never told the leg counts (the backward entry is), and their length
+        checks only tie the inputs to each other, so the kernel would gather
+        through raw pointers with no bound and publish a plausible round trip
+        built from whatever sat past the end of the buffer. Both counts are
+        already host ints, so this costs nothing and observes nothing.
+
+        The gap is not covered by the ``row_valid`` path either. That path
+        bounds-checks incidentally, through ``index_select``, and only when a
+        leg actually carries a mask - which makes it an inconsistent guard
+        rather than a guard.
+        """
+
+        for name, batch, expected in (
+            ("inbound", inbound, self.inbound_row_count),
+            ("outbound", outbound, self.outbound_row_count),
+        ):
+            if batch.leg_count != expected:
+                raise ValueError(
+                    f"{name} leg carries {batch.leg_count} rows but this join "
+                    f"was frozen against {expected}; the frame does not belong "
+                    "to this frozen topology"
+                )
+
+    def _site_response(self, response, device: torch.device) -> torch.Tensor:
+        """The per-site response, checked against the frozen site count.
+
+        ``ScatterResponse`` is an extension point, and ``evaluate`` returning
+        the wrong length is the same unbounded gather as a mismatched leg: the
+        forward kernel's only check on the response is against itself. The
+        protocol says ``complex[row_count]``, so holding it to that here is
+        enforcing the contract, not second-guessing the implementation.
+        """
+
+        value = response.evaluate(self.site_count, device)
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                "a scatter response must evaluate to a torch.Tensor, got "
+                f"{type(value).__name__}"
+            )
+        if value.numel() != self.site_count:
+            raise ValueError(
+                f"the scatter response evaluated to {value.numel()} values but "
+                f"this join was frozen against {self.site_count} sites"
+            )
+        return value
 
     def _row_validity(
         self,

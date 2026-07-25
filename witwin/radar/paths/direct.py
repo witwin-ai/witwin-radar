@@ -137,6 +137,17 @@ class DirectComposer:
         payload into a product that would otherwise be a plausible number.
         """
 
+        # freeze() orders every frozen row exactly once, so path_count IS the
+        # frozen leg's row count. A batch of a different length is a different
+        # topology: a longer one gathers in-range but wrong rows and publishes a
+        # plausible frame, a shorter one trips a device-side assert several
+        # launches later. Both are refused here, on host ints already in hand.
+        if leg.leg_count != self.path_count:
+            raise ValueError(
+                f"the leg carries {leg.leg_count} rows but this composer was "
+                f"frozen against {self.path_count}; the frame does not belong "
+                "to this frozen topology"
+            )
         rows = self.row_index
         row_valid = (
             None if leg.row_valid is None else leg.row_valid.index_select(0, rows)

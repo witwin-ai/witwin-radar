@@ -117,6 +117,36 @@ multipath therefore needs a two-response split in the adapter -
 polarization basis on both leg batches. That is not done here, and the boundary
 is pinned by test so it cannot be mistaken for support.
 
+### A frame belongs to its frozen topology, and that is checked (Phase 5)
+
+The composers' index tables address the FROZEN leg rows. A per-frame batch of a
+different length is therefore not a smaller frame; it is a different topology,
+and composing it is refused.
+
+The refusal has to live at the facade because nothing downstream can make it.
+The native join's forward and JVP entries are never told the leg counts, and
+their length checks only tie the inputs to each other, so a mismatched batch was
+gathered through raw pointers with no bound and published a full frame of
+plausible delays and transfers read from past the end of the buffer. The
+backward entry does receive the counts and does check them, which is what makes
+the forward gap an oversight rather than a design. `ScatterResponse.evaluate`
+gets the same treatment: it is an extension point, and the forward kernel's only
+check on the response compares it against itself.
+
+There was a partial guard before, and its shape is the reason this is now a
+rule rather than something left to the data. When a leg carried `row_valid`, the
+`index_select` that gathers the mask bounds-checked incidentally and raised.
+When neither leg carried one, nothing did. A guard that depends on whether the
+frame happens to have a mask is not a guard.
+
+`DirectComposer` is checked for the same reason with a different failure: its
+gather is bounds-checked by Torch, so a SHORT batch trips a device-side assert
+several launches away from the cause, and a LONG one silently gathers in-range
+but wrong rows.
+
+All the counts are host ints the freeze already published, so the check costs
+nothing and observes nothing.
+
 ### Where the join is built
 
 Once, at freeze time, from the frozen leg topologies. Host observation is
@@ -173,6 +203,9 @@ be Radar policy in someone else's contract.
 - `tests/test_phase5_multipath_legs.py::test_the_frozen_row_identity_is_the_same_storage_on_every_frame`
 - `tests/test_phase5_multipath_legs.py::test_polarimetric_multipath_discovery_is_still_refused_by_the_consumer`
 - `tests/test_phase5_join_modes.py` (direct sentinels, one contract, both modes)
+- `tests/test_phase5_frame_validation.py` (a leg batch, or a response, that does
+  not belong to the frozen topology is refused; the refusal does not depend on a
+  leg carrying `row_valid`; `DirectComposer` too)
 
 ## Acceptance evidence (Phase 4)
 
