@@ -19,23 +19,50 @@ import torch
 
 
 def frozen_leg(rows, *, device: str = "cuda"):
-    """A duck-typed frozen leg topology from ``(source, sink, component)`` rows."""
+    """A duck-typed frozen leg topology from fabricated rows.
+
+    A row is ``(source, sink, component)``, or
+    ``(source, sink, component, depth, primitive, material)`` where the last two
+    are equal-length tuples of interaction labels.
+
+    The short form ALIASES depth, primitive and material to the component,
+    which is what a test that varies only the component wants - and is exactly
+    why such a test cannot say which of the four identity-key columns the join
+    reads: ``component`` alone always disambiguates. The long form exists so
+    ``test_phase6_identity_key_columns.py`` can build two rows of one endpoint
+    pair that differ in a single tie-break column.
+    """
+
+    keyed = [
+        row
+        if len(row) == 6
+        else (row[0], row[1], row[2], row[2], (row[2],), (row[2],))
+        for row in rows
+    ]
+    widths = {(len(row[4]), len(row[5])) for row in keyed}
+    if len(widths) != 1:
+        raise ValueError(
+            "every fabricated row must carry the same interaction sequence "
+            f"width, got {sorted(widths)}"
+        )
 
     def column(index: int, dtype: torch.dtype) -> torch.Tensor:
         return torch.tensor(
-            [row[index] for row in rows], dtype=dtype, device=device
+            [row[index] for row in keyed], dtype=dtype, device=device
         )
 
-    sequence = torch.tensor(
-        [[row[2]] for row in rows], dtype=torch.int32, device=device
-    )
+    def sequence(index: int) -> torch.Tensor:
+        return torch.tensor(
+            [list(row[index]) for row in keyed], dtype=torch.int32, device=device
+        )
+
     return SimpleNamespace(
         source_id=column(0, torch.int64),
         sink_id=column(1, torch.int64),
         component_id=column(2, torch.int32),
-        depth=column(2, torch.int32),
-        primitive_sequence=sequence,
-        material_sequence=sequence,
+        depth=column(3, torch.int32),
+        primitive_sequence=sequence(4),
+        material_sequence=sequence(5),
     )
 
 

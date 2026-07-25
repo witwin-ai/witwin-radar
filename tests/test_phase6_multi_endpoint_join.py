@@ -36,11 +36,21 @@ gaps in the assertions:
   separate; the differing ``primitive_sequence == [1]`` row lives in a
   DIFFERENT pair, where ``component`` already separates it.
 
-Both are reachable only by publishing leg rows in an order, or with a key
-collision, that this producer does not produce. That is exactly what
-``test_phase5_join_identity.py`` and ``test_phase4_two_way.py`` do with
-fabricated legs, and it is why those tests are complemented here rather than
-replaced.
+Both are reachable only by publishing leg rows in an order, or with an identity
+key, that this producer does not produce, so both are covered by fabricated
+legs - but by DIFFERENT fabricated legs, and saying "the Phase-4/5 tests reach
+them" would have been wrong about the second one:
+
+* The row-position ordering is reached by ``test_phase5_join_identity.py``,
+  which permutes fabricated leg rows on purpose, and again by
+  ``test_phase6_identity_key_columns.py``.
+* The identity-key columns are reached ONLY by
+  ``test_phase6_identity_key_columns.py``. Every OTHER fabricated leg is built
+  from the short row form of ``support.join_fixture.frozen_leg``, which aliases
+  depth, primitive and material to the component - so ``component`` alone
+  disambiguates there exactly as it does here, and a mutation audit confirmed
+  that collapsing the key to the component alone passed the whole suite before
+  that file existed.
 """
 
 from __future__ import annotations
