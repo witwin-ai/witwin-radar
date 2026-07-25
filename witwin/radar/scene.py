@@ -9,7 +9,13 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from witwin.core import GeometryBase, GeometrySpec, Material, Mesh, Structure
+from witwin.core import (
+    GeometryBase,
+    GeometrySpec,
+    Mesh,
+    PhysicalMaterial as Material,
+    Structure,
+)
 from .geometry import SMPLBody
 from .timeline import TransformMotion
 from .utils.geometry import (

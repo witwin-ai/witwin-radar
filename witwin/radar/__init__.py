@@ -16,13 +16,13 @@ from witwin.core import (
     Geometry as CoreGeometry,
     GeometryBase,
     HollowBox,
-    Material,
     Mesh,
     Prism,
     Pyramid,
     Sphere,
     Structure,
     Torus,
+    PhysicalMaterial as Material,
 )
 from .geometry import SMPLBody
 
