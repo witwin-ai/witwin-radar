@@ -40,9 +40,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.autograd.forward_ad as forward_ad
+from torch.autograd.function import once_differentiable
 
 from ..propagation.contracts import RadarLegBatch
 from .contracts import RadarPathBatch, RadarPathTopology
+
+
+_OPS = None
+
+
+def _ops():
+    """The native operator table, resolved once per process.
+
+    Held here as well as in the build module because this runs on every frame,
+    forward and backward: a per-launch import plus function call is pure
+    overhead on the hot path.
+    """
+
+    global _OPS
+    if _OPS is None:
+        from ..cuda import build
+
+        _OPS = build.build_extension()
+    return _OPS
 
 
 LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
@@ -149,6 +170,300 @@ def _csr(owner_of_row: list[int], owner_count: int) -> tuple[list[int], list[int
         rows.extend(bucket)
         offsets.append(len(rows))
     return offsets, rows
+
+
+def _primal_rate(
+    delay_rate: torch.Tensor | None,
+    rows: int,
+    device: torch.device,
+    name: str,
+) -> torch.Tensor:
+    """The leg's delay rate as a strictly primal kernel input.
+
+    ``delay_rate`` is ``d(delay_s)/dt`` unpacked from a forward-only dual and
+    published as a PRIMAL value, which deliberately severs the second-order
+    ``d(delay_rate)/dx`` term the contract does not claim. The join therefore
+    returns ``None`` for its gradient and a zero tangent for the composed rate.
+
+    "Returns None" and "silently dropped a gradient" look identical from the
+    outside, so a rate that arrives carrying a tape is REFUSED here rather than
+    quietly zeroed.
+    """
+
+    if delay_rate is None:
+        return torch.zeros(rows, dtype=torch.float32, device=device)
+    if delay_rate.requires_grad:
+        raise ValueError(
+            f"{name} delay_rate carries requires_grad; it is a primal Doppler "
+            "rate by contract and the join would return None for its gradient"
+        )
+    if forward_ad.unpack_dual(delay_rate).tangent is not None:
+        raise ValueError(
+            f"{name} delay_rate carries a forward tangent; it is a primal "
+            "Doppler rate by contract and the join publishes a zero tangent "
+            "for the composed rate"
+        )
+    return delay_rate.contiguous()
+
+
+class _TwoWayJoin(torch.autograd.Function):
+    """Autograd bridge for the three native join operators.
+
+    Two structural contracts, each with a test, both inherited from the beat
+    family for the same reasons:
+
+    * The facade ALWAYS routes through ``Function.apply``. An ADR-038
+      forward-only dual has ``requires_grad == False``, so a ``requires_grad``
+      shortcut around autograd would silently swallow its tangent and return a
+      plain tensor.
+    * No complex tensor crosses the autograd boundary. The composer splits
+      every complex value into real and imaginary parts with Torch's own
+      autograd-aware accessors and recombines the output the same way, which
+      makes the conjugate-Wirtinger convention question structurally
+      impossible to get wrong.
+    """
+
+    @staticmethod
+    def forward(
+        tau_in,
+        tau_out,
+        rate_in,
+        rate_out,
+        c_in_re,
+        c_in_im,
+        c_out_re,
+        c_out_im,
+        s_re,
+        s_im,
+        row_valid,
+        idx_in,
+        idx_out,
+        idx_s,
+        join,
+    ):
+        rows = int(idx_in.shape[0])
+        empty = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
+        tau_rt = empty
+        rate_rt = torch.empty_like(empty)
+        c_rt_re = torch.empty_like(empty)
+        c_rt_im = torch.empty_like(empty)
+        _ops().two_way_join_forward(
+            tau_in,
+            tau_out,
+            rate_in,
+            rate_out,
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+            tau_rt,
+            rate_rt,
+            c_rt_re,
+            c_rt_im,
+            rows,
+        )
+        return tau_rt, rate_rt, c_rt_re, c_rt_im
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (
+            _tau_in,
+            _tau_out,
+            _rate_in,
+            _rate_out,
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+            join,
+        ) = inputs
+        ctx.join = join
+        saved = (
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+        )
+        ctx.save_for_backward(*saved)
+        ctx.save_for_forward(*saved)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_tau_rt, grad_rate_rt, grad_c_rt_re, grad_c_rt_im):
+        (
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+        ) = ctx.saved_tensors
+        join = ctx.join
+        # grad_rate_rt is discarded, and that is exact rather than lossy:
+        # rate_rt depends only on the two rate inputs, both of which are primal
+        # by contract, so every row of its Jacobian against a differentiable
+        # input is structurally zero.
+        grad_tau_in = torch.empty_like(c_in_re)
+        grad_c_in_re = torch.empty_like(c_in_re)
+        grad_c_in_im = torch.empty_like(c_in_re)
+        grad_tau_out = torch.empty_like(c_out_re)
+        grad_c_out_re = torch.empty_like(c_out_re)
+        grad_c_out_im = torch.empty_like(c_out_re)
+        grad_s_re = torch.empty_like(s_re)
+        grad_s_im = torch.empty_like(s_re)
+        _ops().two_way_join_backward(
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+            join.by_inbound_offsets,
+            join.by_inbound_rows,
+            join.by_outbound_offsets,
+            join.by_outbound_rows,
+            join.by_response_offsets,
+            join.by_response_rows,
+            grad_tau_rt.contiguous(),
+            grad_c_rt_re.contiguous(),
+            grad_c_rt_im.contiguous(),
+            grad_tau_in,
+            grad_tau_out,
+            grad_c_in_re,
+            grad_c_in_im,
+            grad_c_out_re,
+            grad_c_out_im,
+            grad_s_re,
+            grad_s_im,
+            int(idx_in.shape[0]),
+            join.inbound_row_count,
+            join.outbound_row_count,
+            join.site_count,
+        )
+        return (
+            grad_tau_in,
+            grad_tau_out,
+            None,
+            None,
+            grad_c_in_re,
+            grad_c_in_im,
+            grad_c_out_re,
+            grad_c_out_im,
+            grad_s_re,
+            grad_s_im,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    @staticmethod
+    def jvp(
+        ctx,
+        tan_tau_in,
+        tan_tau_out,
+        tan_rate_in,
+        tan_rate_out,
+        tan_c_in_re,
+        tan_c_in_im,
+        tan_c_out_re,
+        tan_c_out_im,
+        tan_s_re,
+        tan_s_im,
+        tan_row_valid,
+        tan_idx_in,
+        tan_idx_out,
+        tan_idx_s,
+        tan_join,
+    ):
+        (
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+        ) = ctx.saved_tensors
+        # tan_rate_in / tan_rate_out are ignored, and the refusal that makes
+        # that honest lives in _primal_rate, at the facade. Autograd hands this
+        # callback a zero-filled tangent for an input that carries none, so a
+        # check HERE could not tell "no tangent" from "a genuine zero" and
+        # would only be a comment with a raise attached. The facade refuses a
+        # rate input that is a dual at all, which is checkable.
+
+        def inbound(tangent):
+            return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
+
+        def outbound(tangent):
+            return (
+                torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
+            )
+
+        def site(tangent):
+            return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
+
+        rows = int(idx_in.shape[0])
+        tan_tau_rt = torch.empty(rows, dtype=torch.float32, device=c_in_re.device)
+        tan_rate_rt = torch.empty_like(tan_tau_rt)
+        tan_c_rt_re = torch.empty_like(tan_tau_rt)
+        tan_c_rt_im = torch.empty_like(tan_tau_rt)
+        _ops().two_way_join_jvp(
+            c_in_re,
+            c_in_im,
+            c_out_re,
+            c_out_im,
+            s_re,
+            s_im,
+            row_valid,
+            idx_in,
+            idx_out,
+            idx_s,
+            inbound(tan_tau_in),
+            outbound(tan_tau_out),
+            inbound(tan_c_in_re),
+            inbound(tan_c_in_im),
+            outbound(tan_c_out_re),
+            outbound(tan_c_out_im),
+            site(tan_s_re),
+            site(tan_s_im),
+            tan_tau_rt,
+            tan_rate_rt,
+            tan_c_rt_re,
+            tan_c_rt_im,
+            rows,
+        )
+        return tan_tau_rt, tan_rate_rt, tan_c_rt_re, tan_c_rt_im
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -383,49 +698,48 @@ class TwoWayComposer:
                 "be evaluated in a native kernel, not composed here"
             )
         rows = self.path_count
-        idx_in = self.inbound_row
-        idx_out = self.outbound_row
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
-
-        total_delay = inbound.delay_s.index_select(0, idx_in) + (
-            outbound.delay_s.index_select(0, idx_out)
+        flags = (
+            torch.ones(rows, dtype=torch.int32, device=device)
+            if row_valid is None
+            else row_valid.to(torch.int32)
         )
-        site_response = response.evaluate(self.site_count, device).contiguous()
-        transfer = (
-            outbound.coefficient.index_select(0, idx_out)
-            * site_response.index_select(0, self.response_slot)
-            * inbound.coefficient.index_select(0, idx_in)
+        site_response = response.evaluate(self.site_count, device)
+
+        # Torch-owned, autograd-aware accessors: the real pairs cross the
+        # boundary, never the complex tensors.
+        tau_rt, rate_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
+            inbound.delay_s.contiguous(),
+            outbound.delay_s.contiguous(),
+            _primal_rate(inbound.delay_rate, inbound.leg_count, device, "inbound"),
+            _primal_rate(outbound.delay_rate, outbound.leg_count, device, "outbound"),
+            inbound.coefficient.real.contiguous(),
+            inbound.coefficient.imag.contiguous(),
+            outbound.coefficient.real.contiguous(),
+            outbound.coefficient.imag.contiguous(),
+            site_response.real.contiguous(),
+            site_response.imag.contiguous(),
+            flags,
+            self.inbound_row,
+            self.outbound_row,
+            self.response_slot,
+            self,
         )
 
-        delay_rate = None
-        if (
+        publish_rate = (
             include_delay_rate
             and inbound.delay_rate is not None
             and outbound.delay_rate is not None
-        ):
-            delay_rate = inbound.delay_rate.index_select(0, idx_in) + (
-                outbound.delay_rate.index_select(0, idx_out)
-            )
-
-        if row_valid is not None:
-            total_delay = torch.where(
-                row_valid, total_delay, torch.zeros_like(total_delay)
-            )
-            transfer = torch.where(row_valid, transfer, torch.zeros_like(transfer))
-            if delay_rate is not None:
-                delay_rate = torch.where(
-                    row_valid, delay_rate, torch.zeros_like(delay_rate)
-                )
-
+        )
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
             path_count=rows,
             sensor_pair_index=self.sensor_pair_index,
             pair_offsets=self.pair_offsets,
-            total_delay_s=total_delay,
-            delay_rate=delay_rate,
-            complex_transfer_ref=transfer,
+            total_delay_s=tau_rt,
+            delay_rate=rate_rt if publish_rate else None,
+            complex_transfer_ref=torch.complex(transfer_re, transfer_im),
             reference_frequency_hz=self.reference_frequency_hz,
             row_valid=row_valid,
             topology=self.topology,

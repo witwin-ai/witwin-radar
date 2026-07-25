@@ -30,7 +30,7 @@ def _declared_operators() -> set[str]:
 
 def _implemented_operators() -> set[str]:
     found: set[str] = set()
-    for name in ("dirichlet.cu", "fmcw_beat.cu"):
+    for name in ("dirichlet.cu", "fmcw_beat.cu", "two_way_join.cu"):
         source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels" / name).read_text(
             encoding="utf-8"
         )

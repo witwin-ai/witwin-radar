@@ -417,6 +417,62 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
         assert symbol in kernel, symbol
 
 
+def test_the_two_way_join_hot_loop_is_native_not_torch():
+    """The per-frame join is a kernel; only ``freeze`` is Python.
+
+    The AST scan is scoped to ``compose`` rather than to the module, because
+    ``freeze`` legitimately iterates: it runs ONCE per frozen topology, on the
+    host, after the consumer has already synchronized. Scanning the whole file
+    would either forbid that or force a blanket exemption that stops meaning
+    anything.
+    """
+
+    facade = REPO_ROOT / "witwin/radar/paths/two_way.py"
+    tree = ast.parse(facade.read_text(encoding="utf-8"))
+    compose = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "compose"
+    )
+
+    loops = [
+        type(node).__name__
+        for node in ast.walk(compose)
+        if isinstance(
+            node,
+            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
+        )
+    ]
+    assert loops == [], loops
+
+    called = {
+        _dotted(node.func)
+        for node in ast.walk(compose)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for forbidden in ("torch.exp", "torch.sin", "torch.cos", "torch.where"):
+        assert forbidden not in called, forbidden
+
+    source = facade.read_text(encoding="utf-8")
+    assert "_TwoWayJoin.apply(" in source
+    for operator in (
+        "two_way_join_forward",
+        "two_way_join_backward",
+        "two_way_join_jvp",
+    ):
+        assert operator in source, operator
+
+    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/two_way_join.cu").read_text(
+        encoding="utf-8"
+    )
+    for symbol in (
+        "__global__ void two_way_join_forward_kernel",
+        "__global__ void two_way_join_backward_kernel",
+        "__global__ void two_way_join_jvp_kernel",
+    ):
+        assert symbol in kernel, symbol
+
+
 # --------------------------------------------------------------------------
 # Provenance
 # --------------------------------------------------------------------------

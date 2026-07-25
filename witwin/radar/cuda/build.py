@@ -169,6 +169,7 @@ def extension_sources() -> list[Path]:
         root / "extension.cpp",
         root / "kernels" / "dirichlet.cu",
         root / "kernels" / "fmcw_beat.cu",
+        root / "kernels" / "two_way_join.cu",
     ]
 
 
@@ -217,7 +218,11 @@ class _StableOpsModule:
 # Every operator family the library is required to register. A stale binary
 # that predates a family loads fine and then fails deep inside a kernel call,
 # so the presence check names one operator per family and fails at load.
-_REQUIRED_OPERATORS = ("forward_chunked", "fmcw_beat_forward")
+_REQUIRED_OPERATORS = (
+    "forward_chunked",
+    "fmcw_beat_forward",
+    "two_way_join_forward",
+)
 
 
 def _require_operators(library_path: Path) -> _StableOpsModule:

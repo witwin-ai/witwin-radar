@@ -1,8 +1,9 @@
 """Two-way composition: the identity join and the composed payload.
 
-Most of this runs on the CPU with fabricated legs. The composer is bookkeeping
-plus device arithmetic, and testing it against hand-built legs is what makes
-the permutation and multi-site cases reachable at all; the single real
+Freezing the join is host bookkeeping and runs on the CPU. Composing a frame is
+a native CUDA kernel, so every test that calls ``compose`` is marked ``gpu`` and
+builds its fabricated legs on the device. Fabricated legs are what make the
+permutation and multi-site cases reachable at all: the single real
 line-of-sight leg has one row and cannot distinguish a correct join from a
 positional one.
 """
@@ -20,7 +21,15 @@ from witwin.radar.propagation import RadarLegBatch
 from witwin.radar.scattering import ScalarRcsResponse
 
 
-def _frozen(source_ids, sink_ids, *, components=None, depths=None, primitives=None):
+def _frozen(
+    source_ids,
+    sink_ids,
+    *,
+    components=None,
+    depths=None,
+    primitives=None,
+    device="cpu",
+):
     """A duck-typed frozen leg topology with full row identity.
 
     ``components``/``depths``/``primitives`` default to distinct per-row values
@@ -35,40 +44,46 @@ def _frozen(source_ids, sink_ids, *, components=None, depths=None, primitives=No
     primitives = (
         [[value] for value in components] if primitives is None else list(primitives)
     )
+    def make(values, dtype):
+        return torch.tensor(values, dtype=dtype, device=device)
+
     return SimpleNamespace(
-        source_id=torch.tensor(source_ids, dtype=torch.int64),
-        sink_id=torch.tensor(sink_ids, dtype=torch.int64),
-        component_id=torch.tensor(components, dtype=torch.int32),
-        depth=torch.tensor(depths, dtype=torch.int32),
-        primitive_sequence=torch.tensor(primitives, dtype=torch.int32).reshape(
-            rows, -1
-        ),
-        material_sequence=torch.tensor(primitives, dtype=torch.int32).reshape(
-            rows, -1
-        ),
+        source_id=make(source_ids, torch.int64),
+        sink_id=make(sink_ids, torch.int64),
+        component_id=make(components, torch.int32),
+        depth=make(depths, torch.int32),
+        primitive_sequence=make(primitives, torch.int32).reshape(rows, -1),
+        material_sequence=make(primitives, torch.int32).reshape(rows, -1),
     )
 
 
-def _legs(delays, coefficients, *, rates=None, valid=None):
+def _legs(delays, coefficients, *, rates=None, valid=None, device="cpu"):
     rows = len(delays)
+
+    def zeros(dtype, shape=None):
+        return torch.zeros(shape or (rows,), dtype=dtype, device=device)
+
+    def make(values, dtype):
+        return torch.tensor(values, dtype=dtype, device=device)
+
     return RadarLegBatch(
         leg_count=rows,
         pair_count=1,
-        pair_index=torch.zeros(rows, dtype=torch.int64),
-        pair_offsets=torch.tensor([0, rows], dtype=torch.int64),
-        source_index=torch.zeros(rows, dtype=torch.int32),
-        sink_index=torch.zeros(rows, dtype=torch.int32),
-        depth=torch.zeros(rows, dtype=torch.int32),
-        component_id=torch.zeros(rows, dtype=torch.int32),
-        source_id=torch.zeros(rows, dtype=torch.int64),
-        sink_id=torch.zeros(rows, dtype=torch.int64),
-        primitive_sequence=torch.zeros((rows, 1), dtype=torch.int32),
-        material_sequence=torch.zeros((rows, 1), dtype=torch.int32),
-        interaction_type=torch.zeros((rows, 1), dtype=torch.int32),
-        delay_s=torch.tensor(delays, dtype=torch.float32),
-        coefficient=torch.tensor(coefficients, dtype=torch.complex64),
-        delay_rate=None if rates is None else torch.tensor(rates, dtype=torch.float32),
-        row_valid=None if valid is None else torch.tensor(valid, dtype=torch.bool),
+        pair_index=zeros(torch.int64),
+        pair_offsets=make([0, rows], torch.int64),
+        source_index=zeros(torch.int32),
+        sink_index=zeros(torch.int32),
+        depth=zeros(torch.int32),
+        component_id=zeros(torch.int32),
+        source_id=zeros(torch.int64),
+        sink_id=zeros(torch.int64),
+        primitive_sequence=zeros(torch.int32, (rows, 1)),
+        material_sequence=zeros(torch.int32, (rows, 1)),
+        interaction_type=zeros(torch.int32, (rows, 1)),
+        delay_s=make(delays, torch.float32),
+        coefficient=make(coefficients, torch.complex64),
+        delay_rate=None if rates is None else make(rates, torch.float32),
+        row_valid=None if valid is None else make(valid, torch.bool),
         diagnostics=None,
     )
 
@@ -77,21 +92,22 @@ def _response(amplitude=2.0, phase=0.3):
     return ScalarRcsResponse.from_values(amplitude, phase)
 
 
-def _one_site_composer():
+def _one_site_composer(device="cpu"):
     return TwoWayComposer.freeze(
-        _frozen([10], [20]),
-        _frozen([20], [30]),
-        torch.tensor([20], dtype=torch.int64),
+        _frozen([10], [20], device=device),
+        _frozen([20], [30], device=device),
+        torch.tensor([20], dtype=torch.int64, device=device),
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     )
 
 
+@pytest.mark.gpu
 def test_delay_is_additive_and_transfer_factorizes():
-    composer = _one_site_composer()
-    inbound = _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9])
-    outbound = _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9])
+    composer = _one_site_composer("cuda")
+    inbound = _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9], device="cuda")
+    outbound = _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9], device="cuda")
     composed = composer.compose(inbound, outbound, _response())
 
     assert composed.path_count == 1
@@ -102,29 +118,43 @@ def test_delay_is_additive_and_transfer_factorizes():
     # outbound leg entirely. They were vacuous, and a mutation that removed
     # tau_out survived this whole file.
     torch.testing.assert_close(
-        composed.total_delay_s,
+        composed.total_delay_s.cpu(),
         torch.tensor([3.0e-8], dtype=torch.float32),
         rtol=1e-6,
         atol=0.0,
     )
     torch.testing.assert_close(
-        composed.delay_rate,
+        composed.delay_rate.cpu(),
         torch.tensor([2.0e-9], dtype=torch.float32),
         rtol=1e-6,
         atol=0.0,
     )
     expected = (
         outbound.coefficient
-        * _response().evaluate(1, torch.device("cpu"))
+        * _response().evaluate(1, torch.device("cuda"))
         * inbound.coefficient
     )
-    torch.testing.assert_close(composed.complex_transfer_ref, expected)
+    torch.testing.assert_close(
+        composed.complex_transfer_ref, expected, rtol=1e-6, atol=0.0
+    )
     assert composed.topology.radar_source_id.tolist() == [10]
     assert composed.topology.site_id.tolist() == [20]
     assert composed.topology.radar_sink_id.tolist() == [30]
 
 
-def test_freeze_host_reads_are_counted_and_compose_has_none(monkeypatch):
+def _count_tolist(monkeypatch) -> dict[str, int]:
+    calls = {"n": 0}
+    original = torch.Tensor.tolist
+
+    def counting_tolist(self):
+        calls["n"] += 1
+        return original(self)
+
+    monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
+    return calls
+
+
+def test_freeze_host_reads_are_counted(monkeypatch):
     """The composer's freeze-time host traffic, quantified (R-ADR-006).
 
     ``TwoWayComposer.freeze`` reads leg identity to the host to build the join.
@@ -134,32 +164,44 @@ def test_freeze_host_reads_are_counted_and_compose_has_none(monkeypatch):
     sink_id, component_id, depth, primitive_sequence, material_sequence) plus
     site_ids. The front-end endpoint IDs are passed as Python lists here, so
     they add none.
-
-    The assertion that matters is the second one: ``compose`` runs per frame and
-    must do none.
     """
 
-    calls = {"n": 0}
-    original = torch.Tensor.tolist
-
-    def counting_tolist(self):
-        calls["n"] += 1
-        return original(self)
-
-    monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
-
-    composer = _one_site_composer()
+    calls = _count_tolist(monkeypatch)
+    _one_site_composer()
     assert calls["n"] == 13, calls["n"]
 
-    calls["n"] = 0
-    composer.compose(
-        _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9]),
-        _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9]),
-        _response(),
-    )
+
+@pytest.mark.gpu
+def test_compose_performs_no_host_observation_at_all(monkeypatch):
+    """The assertion that actually matters: per frame, nothing crosses back.
+
+    ``compose`` runs once per frame inside the loop the fixed-topology
+    capability exists to make cheap. A single host read here would undo it.
+    """
+
+    composer = _one_site_composer("cuda")
+    inbound = _legs([1.0e-8], [0.5 + 0.25j], rates=[3.0e-9], device="cuda")
+    outbound = _legs([2.0e-8], [-0.125 + 0.75j], rates=[-1.0e-9], device="cuda")
+    response = _response()
+    composer.compose(inbound, outbound, response)  # warm the operator table
+
+    calls = _count_tolist(monkeypatch)
+    observed: list[str] = []
+    for name in ("cpu", "item", "numpy"):
+        original = getattr(torch.Tensor, name)
+
+        def observing(self, *args, _name=name, _original=original, **kwargs):
+            observed.append(_name)
+            return _original(self, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, name, observing)
+
+    composer.compose(inbound, outbound, response)
     assert calls["n"] == 0
+    assert observed == []
 
 
+@pytest.mark.gpu
 def test_join_is_by_identity_not_by_array_position():
     """Permuting the outbound frozen rows must not change the result.
 
@@ -167,32 +209,32 @@ def test_join_is_by_identity_not_by_array_position():
     plausible-looking, wrong answer.
     """
 
-    sites = torch.tensor([20, 21], dtype=torch.int64)
-    inbound_frozen = _frozen([10, 10], [20, 21], components=[0, 0])
-    inbound = _legs([1.0e-8, 4.0e-8], [0.5 + 0.0j, 0.1 + 0.2j])
+    sites = torch.tensor([20, 21], dtype=torch.int64, device="cuda")
+    inbound_frozen = _frozen([10, 10], [20, 21], components=[0, 0], device="cuda")
+    inbound = _legs([1.0e-8, 4.0e-8], [0.5 + 0.0j, 0.1 + 0.2j], device="cuda")
 
     straight = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([20, 21], [30, 30], components=[0, 0]),
+        _frozen([20, 21], [30, 30], components=[0, 0], device="cuda"),
         sites,
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     ).compose(
         inbound,
-        _legs([2.0e-8, 8.0e-8], [1.0 + 0.0j, 0.0 + 1.0j]),
+        _legs([2.0e-8, 8.0e-8], [1.0 + 0.0j, 0.0 + 1.0j], device="cuda"),
         _response(),
     )
     permuted = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([21, 20], [30, 30], components=[0, 0]),
+        _frozen([21, 20], [30, 30], components=[0, 0], device="cuda"),
         sites,
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     ).compose(
         inbound,
-        _legs([8.0e-8, 2.0e-8], [0.0 + 1.0j, 1.0 + 0.0j]),
+        _legs([8.0e-8, 2.0e-8], [0.0 + 1.0j, 1.0 + 0.0j], device="cuda"),
         _response(),
     )
 
@@ -216,10 +258,10 @@ def test_join_is_by_identity_not_by_array_position():
     )
 
 
-def _two_by_two_composer():
+def _two_by_two_composer(device="cpu"):
     return TwoWayComposer.freeze(
-        _frozen([10, 11], [20, 20], components=[0, 0]),
-        _frozen([20, 20], [30, 31], components=[0, 0]),
+        _frozen([10, 11], [20, 20], components=[0, 0], device=device),
+        _frozen([20, 20], [30, 31], components=[0, 0], device=device),
         torch.tensor([20], dtype=torch.int64),
         radar_source_ids=[10, 11],
         radar_sink_ids=[30, 31],
@@ -371,18 +413,29 @@ def test_two_leg_rows_that_share_an_identity_key_are_refused():
         )
 
 
+@pytest.mark.gpu
 def test_row_validity_is_the_conjunction_of_both_legs():
     composer = TwoWayComposer.freeze(
-        _frozen([10, 10], [20, 21], components=[0, 0]),
-        _frozen([20, 21], [30, 30], components=[0, 0]),
-        torch.tensor([20, 21], dtype=torch.int64),
+        _frozen([10, 10], [20, 21], components=[0, 0], device="cuda"),
+        _frozen([20, 21], [30, 30], components=[0, 0], device="cuda"),
+        torch.tensor([20, 21], dtype=torch.int64, device="cuda"),
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
     )
     composed = composer.compose(
-        _legs([1.0e-8, 2.0e-8], [1.0 + 0j, 1.0 + 0j], valid=[True, False]),
-        _legs([1.0e-8, 2.0e-8], [1.0 + 0j, 1.0 + 0j], valid=[True, True]),
+        _legs(
+            [1.0e-8, 2.0e-8],
+            [1.0 + 0j, 1.0 + 0j],
+            valid=[True, False],
+            device="cuda",
+        ),
+        _legs(
+            [1.0e-8, 2.0e-8],
+            [1.0 + 0j, 1.0 + 0j],
+            valid=[True, True],
+            device="cuda",
+        ),
         _response(),
     )
     assert composed.row_valid.tolist() == [True, False]
@@ -394,10 +447,11 @@ def test_row_validity_is_the_conjunction_of_both_legs():
     assert complex(composed.complex_transfer_ref[1]) == 0j
 
 
+@pytest.mark.gpu
 def test_delay_rate_is_only_composed_when_both_legs_have_one():
-    composer = _one_site_composer()
-    with_rate = _legs([1.0e-8], [1.0 + 0j], rates=[1.0e-9])
-    without = _legs([1.0e-8], [1.0 + 0j])
+    composer = _one_site_composer("cuda")
+    with_rate = _legs([1.0e-8], [1.0 + 0j], rates=[1.0e-9], device="cuda")
+    without = _legs([1.0e-8], [1.0 + 0j], device="cuda")
     assert composer.compose(with_rate, without, _response()).delay_rate is None
     assert composer.compose(without, with_rate, _response()).delay_rate is None
     assert composer.compose(with_rate, with_rate, _response()).delay_rate is not None

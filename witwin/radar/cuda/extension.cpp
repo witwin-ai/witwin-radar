@@ -67,4 +67,48 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "int num_segments, int num_chirps, int num_samples, "
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
+
+  // Phase-5 two-way join: inbound leg x outbound leg -> radar round trip.
+  //
+  //   tau_rt  = tau_in + tau_out,  rate_rt = rate_in + rate_out
+  //   C_rt    = (C_out * S) * C_in
+  //
+  // Complex values cross as separate real and imaginary tensors, matching the
+  // beat family: no complex tensor crosses the autograd boundary, so the
+  // conjugate-Wirtinger convention cannot be got wrong at the seam.
+  //
+  // row_valid is int32 and is the sole authority on whether a composed row
+  // means anything. It is the conjunction of the two legs' masks, formed at
+  // the Python boundary as row selection rather than physics. A dead row's
+  // payload is exactly zero in every one of the three operators.
+  //
+  // The backward operator consumes the frozen CSR tables so each thread owns
+  // one gradient slot and needs no atomics; the summation order is therefore a
+  // property of the frozen join rather than of the schedule. See R-ADR-004.
+  m.def(
+      "two_way_join_forward(Tensor tau_in, Tensor tau_out, Tensor rate_in, "
+      "Tensor rate_out, Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
+      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor(a!) tau_rt, "
+      "Tensor(b!) rate_rt, Tensor(c!) c_rt_re, Tensor(d!) c_rt_im, "
+      "int num_rows) -> ()");
+  m.def(
+      "two_way_join_backward(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
+      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor by_in_offsets, "
+      "Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, "
+      "Tensor by_s_offsets, Tensor by_s_rows, Tensor grad_tau_rt, "
+      "Tensor grad_c_rt_re, Tensor grad_c_rt_im, Tensor(a!) grad_tau_in, "
+      "Tensor(b!) grad_tau_out, Tensor(c!) grad_c_in_re, "
+      "Tensor(d!) grad_c_in_im, Tensor(e!) grad_c_out_re, "
+      "Tensor(f!) grad_c_out_im, Tensor(g!) grad_s_re, Tensor(h!) grad_s_im, "
+      "int num_rows, int num_in, int num_out, int num_sites) -> ()");
+  m.def(
+      "two_way_join_jvp(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
+      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor tan_tau_in, "
+      "Tensor tan_tau_out, Tensor tan_c_in_re, Tensor tan_c_in_im, "
+      "Tensor tan_c_out_re, Tensor tan_c_out_im, Tensor tan_s_re, "
+      "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_rate_rt, "
+      "Tensor(c!) tan_c_rt_re, Tensor(d!) tan_c_rt_im, int num_rows) -> ()");
 }

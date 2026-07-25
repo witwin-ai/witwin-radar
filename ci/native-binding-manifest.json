@@ -15,7 +15,8 @@
   "sources": [
     "witwin/radar/cuda/extension.cpp",
     "witwin/radar/cuda/kernels/dirichlet.cu",
-    "witwin/radar/cuda/kernels/fmcw_beat.cu"
+    "witwin/radar/cuda/kernels/fmcw_beat.cu",
+    "witwin/radar/cuda/kernels/two_way_join.cu"
   ],
   "operators": [
     {
@@ -80,6 +81,27 @@
       "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
       "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.jvp"
+    },
+    {
+      "symbol": "two_way_join_forward",
+      "family": "two_way_join",
+      "python_owner": "witwin/radar/paths/two_way.py",
+      "contract_test": "tests/test_phase5_two_way_join_kernel.py",
+      "end_to_end_caller": "witwin.radar.paths.two_way.TwoWayComposer.compose"
+    },
+    {
+      "symbol": "two_way_join_backward",
+      "family": "two_way_join",
+      "python_owner": "witwin/radar/paths/two_way.py",
+      "contract_test": "tests/test_phase5_two_way_join_ad.py",
+      "end_to_end_caller": "witwin.radar.paths.two_way._TwoWayJoin.backward"
+    },
+    {
+      "symbol": "two_way_join_jvp",
+      "family": "two_way_join",
+      "python_owner": "witwin/radar/paths/two_way.py",
+      "contract_test": "tests/test_phase5_two_way_join_ad.py",
+      "end_to_end_caller": "witwin.radar.paths.two_way._TwoWayJoin.jvp"
     }
   ]
 }
