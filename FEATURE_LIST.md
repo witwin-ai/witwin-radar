@@ -22,6 +22,9 @@
 - `witwin.radar.synthesis` exports the shared waveform input contract - `SynthesisPathBatch`, `SlowTimeMode`, `WaveformSpecProtocol`, `require_compatible` - alongside `FmcwBeatSpec`, `channel_phasor_to_beat_weight`, `synthesize_beat_rows`, and `synthesize_fmcw_beat`.
 - `SynthesisPathBatch` carries the weight's PROVENANCE: whether it already contains the reference-frequency phase, free-space spreading, and transmit power, and whether it is frozen or refreshed across slow time. `require_compatible(batch, spec)` refuses any waveform spec that would apply one of those a second time, before any kernel launch. `SynthesisPathBatch.from_radar_paths(...)` maps a composed batch zero-copy with Channel's provenance; `SynthesisPathBatch.from_real_amplitudes(...)` embeds the legacy real-amplitude path as the complex special case and preserves a negative amplitude's sign as the 180-degree reflection flip it is.
 - `frequency_response` / `frequency_offsets_hz` are declared on that contract and REFUSED, so the Phase-6 narrowband assumption is explicit rather than silently applied.
+- `synthesize_fmcw_beat(batch, spec)` consumes a `SynthesisPathBatch` and calls `require_compatible` before any launch, so a weight and a spec that would count the carrier, the spreading, or the Doppler twice are refused rather than producing a plausible cube.
+- `FmcwBeatSpec` carries `reference_frequency_hz`, `num_tx`, and `num_rx`, and derives `slot_period_s` and `max_unambiguous_speed_mps`. TDM-MIMO is synthesized natively: the slow-time coordinate of a sensor pair is its slot `chirp * num_tx + tx`, one chirp period apart, and `num_tx = 1` reproduces the pre-TDM output bit for bit.
+- `witwin.radar.synthesis.assemble_frame_cube(cube, num_tx=..., num_rx=...)` packs the rank-3 `[chirp, sensor_pair, sample]` synthesis cube into the rank-4 `[TX, RX, chirp, sample]` layout every `sigproc` consumer indexes. The composed pair rank is SINK MAJOR (`pair = rx * num_tx + tx`, mirroring Channel's consumer) while the virtual antenna index is TX major, so the packing is a transpose; `pair_tx_index` / `pair_rx_index` invert the same numbering, and `validate_pair_ordering` checks it once at freeze time.
 
 ## Configuration
 
@@ -36,7 +39,7 @@
 ## Native Kernels
 
 - `two_way_join_forward` / `_backward` / `_jvp`: the inbound-by-outbound round-trip join, fused into one launch. The VJP reduces over frozen CSR segments with one thread per gradient slot, so it uses no atomics and its summation order is a property of the frozen join rather than of the schedule.
-- `fmcw_beat_forward` / `_backward` / `_jvp`: FMCW beat synthesis over a chirp's fast-time axis.
+- `fmcw_beat_forward` / `_backward` / `_jvp`: FMCW beat synthesis over a chirp's fast-time axis. `segment_tx_index` and `num_tx` carry TDM slow time as kernel ARGUMENTS, so a MIMO frame is still exactly one launch.
 - `forward_chunked` / `forward_mimo_linear_chunked` / `dirichlet_jvp` / `backward` / `backward_batched` / `backward_parallel_bins` / `backward_per_bin`: the Dirichlet range spectrum, owned in Python by `witwin/radar/synthesis/dirichlet_spectrum.py`. The path weight is COMPLEX, carried as two real tensors so no complex tensor crosses the autograd boundary; a real weight is the value `a_im = 0` and is bit-identical to what the family produced before it gained the component. `fc` selects the carrier home exactly as `carrier_hz` does in the beat family, and `tau_is_seconds` lets a caller pass a round-trip delay instead of a one-way distance.
 - Every registered operator has exactly one Python owner, a direct contract test, and a production end-to-end caller, recorded in `ci/native-binding-manifest.json`.
 
