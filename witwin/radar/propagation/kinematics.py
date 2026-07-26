@@ -47,6 +47,12 @@ are baked into this module:
 Every test that exercises this seam must carry a non-zero RADIAL component for
 the same reason. A purely transverse fixture cannot tell a dead tangent from a
 correct zero.
+
+The module is duck typed over Core's snapshot shape and imports no witwin
+package at module scope. The single Core reference is the ``DeformationState``
+constructor inside :meth:`LinearDeformation.at`, which exists so that ONE
+descriptor can be both the geometry a ``DynamicScene`` compiles and the tangent
+the sites riding it carry.
 """
 
 from __future__ import annotations
@@ -298,6 +304,75 @@ def deformation_kinematics(
     )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class LinearDeformation:
+    """Per-vertex constant velocity: the analytic hinge, rotor and limb.
+
+    ``vertices(t) = vertices_m + velocities_m_per_s * (t - reference_time_s)``,
+    which is exact rather than a linearisation, so ``velocity_at`` is the true
+    derivative at every instant and not just at the reference time.
+
+    Despite the name this is not restricted to a translation of the whole body.
+    The velocity is declared PER VERTEX, so a hinge is a velocity that grows
+    linearly along the limb, a rotor is a velocity that grows linearly along the
+    blade, and a rigidly translating body is the special case where every row is
+    equal. What the constant-velocity form cannot express is a velocity that
+    itself changes with time - a rotation over a large angle, for instance, is
+    only this over a short interval. For a rotation, use
+    :func:`rigid_site_velocities`, which carries the true ``omega x r`` at every
+    instant.
+
+    It satisfies two protocols at once and that is the whole point of it. As a
+    ``witwin.core.dynamics.Deformation`` (``at(t) -> DeformationState``) it
+    drives the geometry a ``DynamicScene`` compiles; as a
+    :class:`DeformationVelocity` (``velocity_at(t)``) it drives the forward-AD
+    tangent of the sites riding on it. One descriptor answering both is what
+    keeps the moving mesh and the Doppler it produces from being two
+    independent statements that can silently disagree.
+    """
+
+    vertices_m: torch.Tensor
+    velocities_m_per_s: torch.Tensor
+    reference_time_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        vertices = _require_positions("vertices_m", self.vertices_m)
+        velocities = _require_positions(
+            "velocities_m_per_s", self.velocities_m_per_s
+        )
+        if tuple(vertices.shape) != tuple(velocities.shape):
+            raise ValueError(
+                f"vertices_m has shape {tuple(vertices.shape)} and "
+                f"velocities_m_per_s has shape {tuple(velocities.shape)}; a "
+                "deformation states one velocity per authored vertex"
+            )
+        if vertices.device != velocities.device:
+            raise ValueError(
+                f"vertices_m is on {vertices.device} and velocities_m_per_s "
+                f"is on {velocities.device}"
+            )
+
+    def vertices_at(self, time_s: float) -> torch.Tensor:
+        elapsed = float(time_s) - float(self.reference_time_s)
+        return self.vertices_m + self.velocities_m_per_s * elapsed
+
+    def at(self, time_s: float):
+        """The ``witwin.core`` deformation descriptor at ``time_s``.
+
+        Absolute vertices rather than offsets, because this descriptor already
+        owns the authored positions and reconstructing an offset from them
+        would only invite the two to be authored against different meshes.
+        """
+
+        from witwin.core.dynamics import DeformationState
+
+        return DeformationState(vertices=self.vertices_at(time_s))
+
+    def velocity_at(self, time_s: float) -> torch.Tensor:
+        del time_s  # constant by construction; see the class docstring
+        return self.velocities_m_per_s
+
+
 def endpoint_kinematics(
     snapshot_or_states,
     antenna_ids: Sequence[int] | None = None,
@@ -473,6 +548,7 @@ def two_way_duals(
 __all__ = [
     "DeformationVelocity",
     "Kinematics",
+    "LinearDeformation",
     "TwoWayDuals",
     "deformation_kinematics",
     "endpoint_kinematics",

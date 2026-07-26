@@ -286,3 +286,135 @@ class SMPLBody(GeometryBase):
         resolved_device = _resolve_scene_device(device or self.position.device)
         _, _, joints = self._evaluate(device=resolved_device)
         return joints
+
+
+class SmplPoseDeformation:
+    """A posed SMPL body as a Core deformation with an analytic vertex velocity.
+
+    This is the bridge Phase 7 needs and it replaces nothing: the legacy radar
+    ``Scene`` treats an ``SMPLBody`` as a piece of geometry it re-poses and
+    re-meshes per frame on the host. Here the body is instead a
+    ``witwin.core.dynamics.Deformation`` over a fixed rest ``Mesh``, so the
+    structure's TOPOLOGY - face indexing, primitive IDs, material assignment -
+    is authored once and never moves, and only the vertices evolve. That is
+    exactly the condition under which a frozen propagation topology may be
+    replayed against the moved geometry: a deformation changes
+    ``geometry_version`` and leaves ``topology_version`` alone.
+
+    ``pose_rate`` is the pose derivative in radians per second, in the same
+    72-element axis-angle layout as the pose. The vertex velocity is obtained by
+    running the posing function itself under forward-mode AD with ``pose_rate``
+    as the tangent, so it is the exact derivative of the SAME linear blend
+    skinning the primal uses. It is deliberately NOT a difference of two posed
+    meshes: a finite difference would carry a truncation error that grows with
+    the step, and Core has no velocity descriptor on ``DeformationState``
+    (recorded as Phase-7 gap C2), which is why an analytic route has to exist
+    here at all.
+
+    The body must be authored at the identity transform if the rest ``Mesh``
+    is, because a deformation replaces the mesh's LOCAL vertices and the mesh's
+    own scale, rotation and position are applied afterwards. :meth:`rest_mesh`
+    builds a mesh that satisfies that by construction.
+    """
+
+    def __init__(
+        self,
+        body: "SMPLBody",
+        *,
+        pose_rate,
+        reference_time_s: float = 0.0,
+        device=None,
+    ) -> None:
+        if not isinstance(body, SMPLBody):
+            raise TypeError(
+                f"body must be an SMPLBody, got {type(body).__name__}"
+            )
+        self._device = _resolve_scene_device(device or body.position.device)
+        self._body = body
+        rate = _to_vertex_tensor(pose_rate, device=self._device).reshape(-1)
+        pose = body.pose.to(device=self._device, dtype=torch.float32).reshape(-1)
+        if rate.shape != pose.shape:
+            raise ValueError(
+                f"pose_rate has {tuple(rate.shape)} entries and the body's "
+                f"pose has {tuple(pose.shape)}; the rate must name the same "
+                "joints in the same order as the pose it differentiates"
+            )
+        self._pose = pose
+        self._pose_rate = rate
+        self.reference_time_s = float(reference_time_s)
+
+    @property
+    def pose_rate(self) -> torch.Tensor:
+        return self._pose_rate
+
+    def pose_at(self, time_s: float) -> torch.Tensor:
+        elapsed = float(time_s) - self.reference_time_s
+        return self._pose + self._pose_rate * elapsed
+
+    def body_at(self, time_s: float) -> "SMPLBody":
+        return self._body.updated(pose=self.pose_at(time_s), device=self._device)
+
+    def _vertices(self, pose: torch.Tensor) -> torch.Tensor:
+        """The posing function, as one differentiable expression of the pose.
+
+        Everything between the pose and the vertices is Torch, so a forward-AD
+        dual on ``pose`` reaches the vertices. Rebuilding the body from Python
+        values here would kill the tangent silently and publish a zero velocity,
+        which is indistinguishable from a body that is holding still.
+        """
+
+        vertices, _ = self._body.updated(
+            pose=pose, device=self._device
+        ).to_mesh(device=self._device)
+        return vertices
+
+    def vertices_at(self, time_s: float) -> torch.Tensor:
+        return self._vertices(self.pose_at(time_s))
+
+    def at(self, time_s: float):
+        """The ``witwin.core`` deformation descriptor at ``time_s``."""
+
+        from witwin.core.dynamics import DeformationState
+
+        return DeformationState(vertices=self.vertices_at(time_s))
+
+    def velocity_at(self, time_s: float) -> torch.Tensor:
+        """``d(vertices)/dt``, one row per SMPL vertex, in authored order."""
+
+        import torch.autograd.forward_ad as forward_ad
+
+        with forward_ad.dual_level():
+            pose = forward_ad.make_dual(self.pose_at(time_s), self._pose_rate)
+            vertices = self._vertices(pose)
+            tangent = forward_ad.unpack_dual(vertices).tangent
+            if tangent is None:
+                raise RuntimeError(
+                    "the SMPL posing function produced no vertex tangent; the "
+                    "pose stopped being a differentiable expression somewhere "
+                    "between make_dual and to_mesh"
+                )
+            return tangent.clone().contiguous()
+
+    def rest_mesh(self, **mesh_kwargs):
+        """The authored rest ``Mesh`` a ``Structure`` carries.
+
+        ``recenter=False`` is mandatory and is not a default:
+        ``witwin.core.Mesh`` otherwise subtracts the bounding-box centre from
+        the authored vertices, and Channel's compiler re-applies that same
+        recentring to the DEFORMED vertices with a different bounding box, so a
+        limb that moved would drag the whole body with it.
+        """
+
+        from witwin.core import Mesh
+
+        vertices, faces = self._body.updated(
+            pose=self._pose, device=self._device
+        ).to_mesh(device=self._device)
+        return Mesh(
+            vertices=vertices.detach(),
+            faces=faces.detach().to(dtype=torch.int64),
+            recenter=False,
+            fill_mode=mesh_kwargs.pop("fill_mode", "surface"),
+            topology_diagnostics=mesh_kwargs.pop("topology_diagnostics", False),
+            **mesh_kwargs,
+        )
