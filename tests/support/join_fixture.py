@@ -81,12 +81,18 @@ def leg_batch(
     *,
     rate: torch.Tensor | None = None,
     row_valid: torch.Tensor | None = None,
+    direction: torch.Tensor | None = None,
 ):
     """A ``RadarLegBatch`` around already-built payload tensors.
 
     The identity columns are zeros: the JOIN reads identity from the FROZEN
     topology, at freeze time, not from the per-frame batch. Filling them with
     anything meaningful here would suggest otherwise.
+
+    ``direction`` is the row's propagation direction and defaults to absent,
+    which is what a fabricated leg genuinely has: no geometry stands behind it.
+    An aspect-dependent response refuses such a leg by name, which is the point
+    - so a test that wants one passes it explicitly.
     """
 
     from witwin.radar.propagation import RadarLegBatch
@@ -116,6 +122,7 @@ def leg_batch(
         delay_rate=rate,
         row_valid=row_valid,
         diagnostics=None,
+        field_direction=direction,
     )
 
 

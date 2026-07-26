@@ -422,6 +422,11 @@ class ChannelPropagationAdapter:
             row_valid=result.row_valid,
             diagnostics=result.diagnostics,
             slot_count=slot_count,
+            # Aliased, like every other payload member: an aspect-dependent
+            # scatter response reads this straight out of the consumer's
+            # geometry, so copying it would break the zero-copy discipline for
+            # the one consumer that needs a gradient through a direction.
+            field_direction=geometry.field_direction,
         )
 
     def _require_current_epoch(self, frozen: FrozenLegTopology) -> None:

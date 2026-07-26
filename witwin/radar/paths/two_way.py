@@ -167,6 +167,7 @@ class _TwoWayJoin(torch.autograd.Function):
         idx_out,
         idx_s,
         join,
+        response_family,
     ):
         rows = int(idx_in.shape[0])
         empty = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
@@ -215,8 +216,15 @@ class _TwoWayJoin(torch.autograd.Function):
             idx_out,
             idx_s,
             join,
+            response_family,
         ) = inputs
         ctx.join = join
+        # The response's gradient owners: which CSR reduces it and how many
+        # slots it has. A per-site response uses the frozen site family; a
+        # per-row response uses the identity family. Everything else about the
+        # backward is identical, which is the whole point of routing a row
+        # response through the same kernel.
+        ctx.response_family = response_family
         saved = (
             c_in_re,
             c_in_im,
@@ -248,6 +256,7 @@ class _TwoWayJoin(torch.autograd.Function):
             idx_s,
         ) = ctx.saved_tensors
         join = ctx.join
+        response_offsets, response_rows, response_slots = ctx.response_family
         # grad_rate_rt is discarded, and that is exact rather than lossy:
         # rate_rt depends only on the two rate inputs, both of which are primal
         # by contract, so every row of its Jacobian against a differentiable
@@ -275,8 +284,8 @@ class _TwoWayJoin(torch.autograd.Function):
             join.by_inbound_rows,
             join.by_outbound_offsets,
             join.by_outbound_rows,
-            join.by_response_offsets,
-            join.by_response_rows,
+            response_offsets,
+            response_rows,
             grad_tau_rt.contiguous(),
             grad_c_rt_re.contiguous(),
             grad_c_rt_im.contiguous(),
@@ -291,7 +300,7 @@ class _TwoWayJoin(torch.autograd.Function):
             int(idx_in.shape[0]),
             join.inbound_row_count,
             join.outbound_row_count,
-            join.site_count,
+            response_slots,
         )
         return (
             grad_tau_in,
@@ -304,6 +313,7 @@ class _TwoWayJoin(torch.autograd.Function):
             grad_c_out_im,
             grad_s_re,
             grad_s_im,
+            None,
             None,
             None,
             None,
@@ -329,6 +339,7 @@ class _TwoWayJoin(torch.autograd.Function):
         tan_idx_out,
         tan_idx_s,
         tan_join,
+        tan_response_family,
     ):
         (
             c_in_re,
@@ -414,6 +425,23 @@ class TwoWayComposer:
     by_response_offsets: torch.Tensor
     by_response_rows: torch.Tensor
     reference_frequency_hz: float
+    # The identity site family, for a response that publishes one value per
+    # COMPOSED ROW rather than one per site. The join kernel indexes the
+    # response through ``idx_s`` and reduces its gradient through a CSR, so a
+    # per-row response is expressible with no kernel change at all: hand it an
+    # identity index and an identity CSR and the site family becomes the row
+    # family. Built at freeze because freeze is where every other table is
+    # built; three small int64 tensors, allocated once per topology rather than
+    # once per frame, so a row response costs no extra launch to set up.
+    row_slot: torch.Tensor
+    by_row_offsets: torch.Tensor
+    by_row_rows: torch.Tensor
+    # The deepest outbound row this join composes, read from the frozen leg
+    # identity on the host. An aspect-dependent response needs the DEPARTURE
+    # direction at the site and a leg publishes its final segment's direction,
+    # so it refuses anything but a line-of-sight outbound leg; the host int is
+    # what lets it refuse without reading a device column.
+    outbound_max_depth: int
 
     @classmethod
     def freeze(
@@ -574,6 +602,12 @@ class TwoWayComposer:
             by_response_offsets=table(by_response[0]),
             by_response_rows=table(by_response[1]),
             reference_frequency_hz=float(reference_frequency_hz),
+            row_slot=torch.arange(len(rows), dtype=torch.int64, device=device),
+            by_row_offsets=torch.arange(
+                len(rows) + 1, dtype=torch.int64, device=device
+            ),
+            by_row_rows=torch.arange(len(rows), dtype=torch.int64, device=device),
+            outbound_max_depth=max((row[8][1] for row in rows), default=0),
         )
 
     @property
@@ -613,11 +647,6 @@ class TwoWayComposer:
         plausible number that no consumer should ever read.
         """
 
-        if response.is_geometry_dependent:
-            raise NotImplementedError(
-                "a geometry-dependent scatter response varies per path and must "
-                "be evaluated in a native kernel, not composed here"
-            )
         self._require_frame(inbound, outbound)
         rows = self.path_count
         device = inbound.delay_s.device
@@ -627,7 +656,9 @@ class TwoWayComposer:
             if row_valid is None
             else row_valid.to(torch.int32)
         )
-        site_response = self._site_response(response, device)
+        response_re, response_im, response_index, response_family = self._response(
+            response, inbound, outbound, flags, device
+        )
 
         # Torch-owned, autograd-aware accessors: the real pairs cross the
         # boundary, never the complex tensors.
@@ -640,13 +671,14 @@ class TwoWayComposer:
             inbound.coefficient.imag.contiguous(),
             outbound.coefficient.real.contiguous(),
             outbound.coefficient.imag.contiguous(),
-            site_response.real.contiguous(),
-            site_response.imag.contiguous(),
+            response_re,
+            response_im,
             flags,
             self.inbound_row,
             self.outbound_row,
-            self.response_slot,
+            response_index,
             self,
+            response_family,
         )
 
         publish_rate = (
@@ -698,6 +730,52 @@ class TwoWayComposer:
                     f"was frozen against {expected}; the frame does not belong "
                     "to this frozen topology"
                 )
+
+    def _response(self, response, inbound, outbound, flags, device):
+        """The response as a real pair, its index, and its gradient family.
+
+        Two shapes, one join. A per-SITE response is broadcast across the rows
+        of its site through the frozen ``response_slot`` and its gradient is
+        reduced through the frozen site CSR. A per-ROW response is indexed by
+        the identity table and reduced through the identity CSR, which is the
+        same kernel with ``num_sites = path_count``.
+
+        The refusal narrows here and does not disappear. A geometry-dependent
+        response is per-path physics, and composing one in Torch is precisely
+        what ``NATIVE_ROW_RESPONSE_OWNERS`` is a whitelist against: the check is
+        against the response's OWN declared fully qualified name, not against a
+        protocol, because a protocol check can see a method's name and not what
+        runs behind it.
+        """
+
+        from ..scattering.base import NATIVE_ROW_RESPONSE_OWNERS
+
+        if not response.is_geometry_dependent:
+            value = self._site_response(response, device)
+            return (
+                value.real.contiguous(),
+                value.imag.contiguous(),
+                self.response_slot,
+                (self.by_response_offsets, self.by_response_rows, self.site_count),
+            )
+        if getattr(response, "native_row_owner", None) not in NATIVE_ROW_RESPONSE_OWNERS:
+            raise NotImplementedError(
+                "a geometry-dependent scatter response varies per path and must "
+                "be evaluated in a native kernel, not composed here"
+            )
+        rows_re, rows_im = response.evaluate_rows(self, inbound, outbound, flags)
+        for name, value in (("real", rows_re), ("imaginary", rows_im)):
+            if not isinstance(value, torch.Tensor) or value.numel() != self.path_count:
+                raise ValueError(
+                    f"a row-evaluated scatter response must publish one {name} "
+                    f"value per composed row; this join has {self.path_count}"
+                )
+        return (
+            rows_re,
+            rows_im,
+            self.row_slot,
+            (self.by_row_offsets, self.by_row_rows, self.path_count),
+        )
 
     def _site_response(self, response, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.

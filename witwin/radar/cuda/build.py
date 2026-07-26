@@ -172,6 +172,7 @@ def extension_sources() -> list[Path]:
         root / "kernels" / "frontend.cu",
         root / "kernels" / "ofdm_cfr.cu",
         root / "kernels" / "pulsed_echo.cu",
+        root / "kernels" / "scatter_response.cu",
         root / "kernels" / "sensor_weight.cu",
         root / "kernels" / "two_way_join.cu",
     ]
@@ -228,6 +229,7 @@ _REQUIRED_OPERATORS = (
     "frontend_noise_forward",
     "ofdm_cfr_forward",
     "pulsed_echo_forward",
+    "scatter_response_aspect_forward",
     "sensor_weight_forward",
     "two_way_join_forward",
 )

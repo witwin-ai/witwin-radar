@@ -57,6 +57,58 @@ CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
 #: reader inferring it from the waveform's name.
 BEAT_PHASOR = "conj(exp(-j*k*d))"
 
+#: How far the argument of an aspect-dependent scatter response may walk across
+#: one coherent interval before this package refuses the configuration.
+#:
+#: A response that varies with aspect contributes ``d(arg S)/dt`` to the target's
+#: Doppler, and the two-way join does not carry it: ``tan_rate_rt = 0`` is a
+#: policy statement that the WHOLE rate lives in ``tau_rt``. Phase 7 does not
+#: fold the aspect phase rate into ``delay_rate``; changing that is a numerical
+#: decision with its own ADR. Until then the only honest position is the one the
+#: pulsed spec already takes for range migration: refuse the configuration
+#: rather than approximate it.
+#:
+#: ``0.1 rad`` over the interval keeps the dropped term two orders of magnitude
+#: below one radian, where it cannot move a Doppler bin.
+ASPECT_PHASE_BUDGET_RAD = 0.1
+
+
+def require_aspect_phase_rate_bounded(
+    aspect_phase_rate_rad_per_s: float, coherent_interval_s: float
+) -> None:
+    """Refuse an aspect phase that walks further than the budget.
+
+    Called once per epoch, on the host, when an aspect-dependent response is
+    constructed - not per frame and never from a device reduction. The rate is
+    DECLARED by the caller exactly as ``PulsedEchoSpec.max_expected_delay_rate``
+    is: reducing over device rows to find a maximum is the hot-path
+    device-to-host transfer the fixed-topology capability exists to avoid.
+    """
+
+    rate = float(aspect_phase_rate_rad_per_s)
+    interval = float(coherent_interval_s)
+    if rate < 0.0:
+        raise ValueError(
+            "aspect_phase_rate_rad_per_s is a magnitude bound and cannot be "
+            f"negative, got {rate}"
+        )
+    if not interval > 0.0:
+        raise ValueError(
+            f"coherent_interval_s must be positive, got {interval}"
+        )
+    walk = rate * interval
+    if walk >= ASPECT_PHASE_BUDGET_RAD:
+        raise ValueError(
+            "unmodelled aspect Doppler: the scatter response's argument walks "
+            f"by |d(arg S)/dt| * T_frame = {walk} rad over the coherent "
+            f"interval, which is not below ASPECT_PHASE_BUDGET_RAD="
+            f"{ASPECT_PHASE_BUDGET_RAD}. The two-way join publishes "
+            "tan_rate_rt = 0 and carries the whole rate in tau_rt, so that "
+            "phase would simply be dropped and the target's Doppler would be "
+            "understated by an amount no output reports. Shorten the coherent "
+            "interval, slow the aspect change, or accept a response whose "
+            "argument is aspect independent - there is no approximated mode"
+        )
 
 
 def require_single_carrier_home(carrier_hz: float, carrier_rate_hz: float) -> None:
@@ -1502,6 +1554,7 @@ def require_pulsed_compatible(
 
 
 __all__ = [
+    "ASPECT_PHASE_BUDGET_RAD",
     "CHANNEL_PHASOR",
     "CHANNEL_TIME_DEPENDENCE",
     "PULSE_KINDS",
@@ -1521,6 +1574,7 @@ __all__ = [
     "SynthesisPathBatch",
     "SynthesisResult",
     "WaveformSpecProtocol",
+    "require_aspect_phase_rate_bounded",
     "require_compatible",
     "require_ofdm_compatible",
     "require_pulsed_compatible",

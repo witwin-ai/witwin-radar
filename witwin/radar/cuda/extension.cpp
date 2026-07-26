@@ -429,4 +429,49 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "Tensor tan_c_out_re, Tensor tan_c_out_im, Tensor tan_s_re, "
       "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_rate_rt, "
       "Tensor(c!) tan_c_rt_re, Tensor(d!) tan_c_rt_im, int num_rows) -> ()");
+
+  // Aspect-dependent scatter response, evaluated per COMPOSED row from the
+  // direction basis the two legs publish. This is what makes item 6b/6c of the
+  // Phase-7 plan expressible at all: TwoWayComposer.compose refuses to
+  // evaluate a geometry-dependent response in Torch, and this family is the
+  // route THROUGH that refusal rather than around it.
+  //
+  //   ci = -dot(dir_in[i], axis[s])   incidence cosine, negated because
+  //                                   dir_in propagates INTO the site
+  //   co =  dot(dir_out[o], axis[s])  scattering cosine
+  //   S  = amplitude[s] * clamp(ci)^n * clamp(co)^n * exp(-i phase[s])
+  //
+  // The output is exactly the per-row (s_re, s_im) pair the join already
+  // consumes, so two_way_join is unchanged and the join adds no launch: the
+  // composer hands the join an identity site index and an identity CSR when
+  // the response is row evaluated.
+  //
+  // exponent is a host scalar and takes no gradient - it selects the law. The
+  // three differentiable owner families are the inbound leg directions, the
+  // outbound leg directions, and the per-site (axis, amplitude, phase). The
+  // backward consumes the join's OWN frozen CSR tables, so one thread owns one
+  // gradient slot, there are no atomics, and the summation order is a property
+  // of the frozen composition. See R-ADR-013.
+  m.def(
+      "scatter_response_aspect_forward(Tensor dir_in, Tensor dir_out, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
+      "Tensor amplitude, Tensor phase_rad, Tensor row_valid, "
+      "Tensor(a!) s_re, Tensor(b!) s_im, float exponent, int num_rows) -> ()");
+  m.def(
+      "scatter_response_aspect_jvp(Tensor dir_in, Tensor dir_out, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
+      "Tensor amplitude, Tensor phase_rad, Tensor row_valid, "
+      "Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_axis, "
+      "Tensor tan_amplitude, Tensor tan_phase_rad, Tensor(a!) tan_s_re, "
+      "Tensor(b!) tan_s_im, float exponent, int num_rows) -> ()");
+  m.def(
+      "scatter_response_aspect_backward(Tensor dir_in, Tensor dir_out, "
+      "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
+      "Tensor amplitude, Tensor phase_rad, Tensor row_valid, "
+      "Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, "
+      "Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, "
+      "Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, "
+      "Tensor(b!) grad_dir_out, Tensor(c!) grad_axis, "
+      "Tensor(d!) grad_amplitude, Tensor(e!) grad_phase_rad, float exponent, "
+      "int num_rows, int num_in, int num_out, int num_sites) -> ()");
 }

@@ -145,6 +145,22 @@ class RadarLegBatch:
     on them; the sequences in particular are ADR-037 frozen labels rather than
     re-validated hits, which is exactly what makes them a stable key.
 
+    ``field_direction`` is the row's PROPAGATION direction, a unit vector in
+    world coordinates, aliased from the consumer's ``PropagationGeometry``. It
+    is the direction of the row's FINAL segment, so it is the direction the
+    field arrives at the sink travelling in - which for a line-of-sight row is
+    also the direction it left the source in, and for a higher-order row is
+    not. An aspect-dependent scatter response consumes it and is responsible
+    for saying which of the two meanings it needs; see
+    :mod:`witwin.radar.scattering.aspect`, which refuses an outbound leg whose
+    rows are not line of sight rather than reading a departure direction off a
+    row that does not carry one.
+
+    It is optional only because a fabricated leg row - a test that builds a
+    batch by hand to reach a validation path - has no geometry behind it. Every
+    batch the adapter publishes carries it, and a consumer that needs it
+    refuses a batch without it by name rather than inventing one.
+
     ``slot_count`` states how many time slots - TDM slots, OFDM symbols or
     pulses - this batch carries. The default ``1`` is one instant and is what
     every single-shot reevaluation publishes. A batch with ``slot_count > 1``
@@ -176,6 +192,7 @@ class RadarLegBatch:
     row_valid: torch.Tensor | None
     diagnostics: object
     slot_count: int = 1
+    field_direction: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
@@ -238,6 +255,13 @@ class RadarLegBatch:
         if self.row_valid is not None:
             _require_tensor(
                 "row_valid", self.row_valid, dtype=torch.bool, shape=rows
+            )
+        if self.field_direction is not None:
+            _require_tensor(
+                "field_direction",
+                self.field_direction,
+                dtype=torch.float32,
+                shape=(self.leg_count, 3),
             )
 
     @property
@@ -304,6 +328,7 @@ class RadarLegBatch:
             row_valid=narrow(self.row_valid),
             diagnostics=self.diagnostics,
             slot_count=1,
+            field_direction=narrow(self.field_direction),
         )
 
 
