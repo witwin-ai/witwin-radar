@@ -258,6 +258,118 @@ def test_a_pure_carrier_slot_phase_is_compensated_to_nothing():
 
 
 # --------------------------------------------------------------------------
+# T1.6b  the same statement at a GENERAL delay rate and every transmitter
+# --------------------------------------------------------------------------
+
+
+#: A round-trip delay rate that is NOT ``2 v / c`` for any tidy monostatic ``v``.
+#:
+#: Measured by the Phase-7 kinematics seam on the multi-endpoint fixture, for
+#: the genuinely bistatic round trip ``TX_A -> SITE_P -> RX_B`` with both sites,
+#: the transmitter and both receivers carrying different velocities. Quoted here
+#: rather than recomputed so that this file keeps no Channel dependency; what it
+#: buys is that the identity below is exercised at a rate no monostatic
+#: derivation could have produced.
+TAU_RATE_BISTATIC = -3.417386e-08
+
+
+def _n_transmitters(weight: complex, rate: float, num_tx: int):
+    """One row per sensor pair, same target, ``num_tx`` TX x 1 RX.
+
+    With one receiver the composed pair numbering ``pair = rx * num_tx + tx``
+    makes pair ``p`` transmitter ``p``, so the whole difference between the
+    output pairs is slot time.
+    """
+
+    tau = torch.full((num_tx,), TAU_RT_S, dtype=torch.float32, device="cuda")
+    tau_rate = torch.full((num_tx,), rate, dtype=torch.float32, device="cuda")
+    w = torch.full((num_tx,), weight, dtype=torch.complex64, device="cuda")
+    offsets = torch.arange(num_tx + 1, dtype=torch.int64, device="cuda")
+    tx_index = torch.arange(num_tx, dtype=torch.int32, device="cuda")
+    return tau, tau_rate, w, offsets, tx_index
+
+
+def _wrapped(value: float) -> float:
+    return math.atan2(math.sin(value), math.cos(value))
+
+
+@pytest.mark.parametrize("num_tx", [2, 3, 4])
+def test_tdm_phase_matches_downstream_compensation(num_tx):
+    """``2 pi f_ref tau_rate Tc tx_i`` IS ``4 pi v tx_i Tc / lambda`` at
+    ``tau_rate = 2 v / c``, for every transmitter and at a general rate.
+
+    The pin above checks ONE transmitter at a rate that was constructed as
+    ``2 v / c`` for a round radial speed, so it cannot distinguish the identity
+    from the construction. Two things are generalised here:
+
+    * every ``tx_i``, not only ``tx_i = 1``, because the compensation is linear
+      in the virtual-antenna block index and an off-by-one there is exactly the
+      kind of error that leaves block 1 correct;
+    * a bistatic ``tau_rate`` that no monostatic ``v`` produced. ``sigproc``
+      speaks in radial velocity because that is what a Doppler bin reports; the
+      kernel speaks in ``tau_rate`` because a bistatic round trip has no single
+      radial velocity. ``v = c tau_rate / 2`` is the whole translation between
+      the two vocabularies and it has to hold for a rate that was never a
+      monostatic ``v`` in the first place.
+
+    The ramp is switched off so the compensation is exact rather than leaving
+    the ramp residual the parametrised test above measures.
+    """
+
+    spec = _spec(
+        num_samples=4,
+        slope_hz_per_s=0.0,
+        t_start_s=0.0,
+        num_tx=num_tx,
+        num_rx=1,
+    )
+    tau, rate, weight, offsets, tx_index = _n_transmitters(
+        _frozen_channel_weight(), TAU_RATE_BISTATIC, num_tx
+    )
+    cube = synthesize_beat_rows(
+        tau, rate, weight, offsets, spec, segment_tx_index=tx_index
+    ).cpu()
+
+    wavelength = C0 / FC_HZ
+    radial_speed = C0 * TAU_RATE_BISTATIC / 2.0
+    reference = cube[:, 0, 0].to(torch.complex128)
+    walks = []
+
+    for tx_i in range(num_tx):
+        contract_phase = (
+            2.0 * math.pi * FC_HZ * TAU_RATE_BISTATIC * CHIRP_PERIOD_S * tx_i
+        )
+        sigproc_phase = (
+            4.0 * math.pi * radial_speed * tx_i * CHIRP_PERIOD_S / wavelength
+        )
+        assert abs(sigproc_phase - contract_phase) < 1e-4
+
+        measured = float(
+            torch.angle(
+                cube[:, tx_i, 0].to(torch.complex128) * torch.conj(reference)
+            ).mean()
+        )
+        walks.append(abs(measured))
+        assert abs(_wrapped(measured - contract_phase)) < 1e-4
+
+        # And the compensation removes it: the corrected block lands on top of
+        # block 0 with nothing left over.
+        corrected = cube[:, tx_i, 0].to(torch.complex128) * complex(
+            math.cos(-sigproc_phase), math.sin(-sigproc_phase)
+        )
+        residual = float(torch.angle(corrected * torch.conj(reference)).mean())
+        assert abs(residual) < 1e-4
+
+    # Non-vacuous: the blocks really are far apart before compensation, and the
+    # walk grows with the block index rather than being one constant offset.
+    assert walks[0] < 1e-9
+    assert all(
+        later > earlier + 0.5
+        for earlier, later in zip(walks[:-1], walks[1:], strict=True)
+    )
+
+
+# --------------------------------------------------------------------------
 # T1.8  the num_tx = 1 compatibility pin
 # --------------------------------------------------------------------------
 

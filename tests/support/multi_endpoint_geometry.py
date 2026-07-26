@@ -532,6 +532,44 @@ def _leg_delay_rate_s_per_s(
     return leg_delay_rate_s_per_s(site, other, component, velocity)
 
 
+ALL_ENDPOINTS: tuple[tuple[int, Point], ...] = (
+    *TRANSMITTERS,
+    *SITES,
+    *RECEIVERS,
+)
+
+
+def leg_delay_rates_s_per_s(
+    rows: list[LegRow],
+    velocities: dict[int, Point],
+    endpoints: tuple[tuple[int, Point], ...] = ALL_ENDPOINTS,
+) -> list[float]:
+    """``d(delay)/dt`` of each LEG row, in the same order as ``rows``.
+
+    One leg, both ends free to move. Stated separately from the composed rate
+    because the round trip being the SUM of two legs is a claim about the join
+    and would be untestable against an oracle that could only produce the sum.
+    """
+
+    positions = {stable_id: position for stable_id, position in endpoints}
+    rates: list[float] = []
+    for row in rows:
+        source = positions[row.source_id]
+        sink = positions[row.sink_id]
+        rates.append(
+            leg_delay_rate_s_per_s(
+                sink, source, row.component, velocities.get(row.sink_id, STATIONARY)
+            )
+            + leg_delay_rate_s_per_s(
+                source,
+                sink,
+                row.component,
+                velocities.get(row.source_id, STATIONARY),
+            )
+        )
+    return rates
+
+
 def combined_delay_rate_s_per_s(
     rows: list[CombinedRow],
     velocities: dict[int, Point],
@@ -653,6 +691,7 @@ def combined_delay_gradient_s_per_m(
 
 
 __all__ = [
+    "ALL_ENDPOINTS",
     "C0_M_PER_S",
     "CombinedRow",
     "FIXTURE_RADAR_CONFIG",
@@ -707,6 +746,7 @@ __all__ = [
     "face_containing",
     "image_position_m",
     "leg_delay_rate_s_per_s",
+    "leg_delay_rates_s_per_s",
     "leg_rows",
     "line_of_sight_is_blocked",
     "pair_offsets",
