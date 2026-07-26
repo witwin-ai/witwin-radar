@@ -20,8 +20,6 @@ import math
 import pytest
 import torch
 
-from support.reference_frontend import quantize  # noqa: F401  (import sanity)
-
 pytestmark = pytest.mark.gpu
 
 C0 = 299792458.0

@@ -30,8 +30,8 @@ converted there and nowhere else.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import ClassVar
 
 import torch
 
