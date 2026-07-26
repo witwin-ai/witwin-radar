@@ -92,6 +92,7 @@ SPIKE_MODULES = (
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
     "witwin/radar/paths/_identity.py",
+    "witwin/radar/paths/components.py",
     "witwin/radar/paths/direct.py",
     "witwin/radar/paths/two_way.py",
     "witwin/radar/scattering/__init__.py",
@@ -104,6 +105,13 @@ SPIKE_MODULES = (
     "witwin/radar/synthesis/fmcw_beat.py",
     "witwin/radar/synthesis/ofdm_cfr.py",
     "witwin/radar/synthesis/pulsed_echo.py",
+    "witwin/radar/synthesis/selection.py",
+    # The component combination laws. Post-synthesis Torch by owner directive,
+    # and in this list for the same reason ``matched_filter`` is: being on the
+    # Torch side of the processing exception is permission to add magnitudes,
+    # not permission to read a device tensor per frame.
+    "witwin/radar/processing/__init__.py",
+    "witwin/radar/processing/combination.py",
     "witwin/radar/sensors/__init__.py",
     "witwin/radar/sensors/contracts.py",
     "witwin/radar/sensors/pattern.py",
@@ -387,6 +395,13 @@ HOST_OBSERVATION_OWNERS = {
     # precisely so the per-frame path cannot inherit the read.
     # test_the_frame_assembly_path_reads_no_tensor_value pins that split.
     "witwin/radar/synthesis/assembly.py": frozenset({"tolist"}),
+    # paths/components.py classifies composed rows into scene components. It is
+    # the same freeze-time observation as _identity.py, made once per topology
+    # epoch from the frozen leg identity columns after the consumer has already
+    # synchronized, and the resulting class_id lives on the device. Per FRAME
+    # it reads nothing: ``mask`` is a device comparison and ``count`` returns a
+    # host int decided at build time.
+    "witwin/radar/paths/components.py": frozenset({"tolist"}),
 }
 
 
