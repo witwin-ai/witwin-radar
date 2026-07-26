@@ -2123,7 +2123,7 @@ Phase 8 验收矩阵（每行一条标准，一个测试，一个实测数）：
 | 2 | dispersive / multilayer / rough wideband fixtures 通过 | multilayer：`test_the_slab_reflection_follows_the_airy_stack_across_two_fringes`、`test_the_slab_fringes_land_where_the_analytic_period_says`；dispersive：`test_a_dispersive_scene_refuses_the_band_with_the_channel_message_intact` + `test_the_dispersive_refusal_is_justified_by_the_drift_it_would_hide`；rough：`test_a_rough_scene_refuses_the_band` | multilayer **数值通过**：Airy 栈 **9.60e-5**（界 2e-4），`\|r\|` 在扫频上跨越 **0.0439-0.6240**（14.2 倍），解析条纹周期 1.526 GHz，实测极小值落在同一网格 bin；半空间 **9.59e-5**，自由空间 **4.51e-5**。dispersive 与 rough 是**量化拒绝**：dispersive 的 `eps_r` 在扫频上漂移 **32.7%**，对照被接受路线自身的材料误差尺度 `df/df_fringe = 1.2`（见偏差 1，需 owner 确认） |
 | 3 | target/clutter 分量可独立导出并相干组合 | `test_phase8_clutter_components.py::test_every_component_export_shares_one_topology_object`、`test_the_component_cubes_sum_to_the_full_cube`、`test_a_masked_row_contributes_exactly_zero_and_no_gradient` | 划分 (4,7,0,0) / 11 行，每行恰属一类；相干重组残差 **3.2539e-11** 绝对、**8.665e-08** 相对，对照推导 `atol` **2.4797e-09**，余量 76x；被 mask 的行权重 bitwise 为零且梯度恰为 `0.0` |
 | 4 | FMCW / OFDM / Pulsed 的 range/Doppler 轴和解析目标一致 | `test_phase8_cross_waveform_axes.py::test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms`、`test_the_closing_target_is_positive_in_every_waveform`；`tests/processing/test_range_profile.py` | 同一 site 落在 FMCW bin 50/256、OFDM CIR sample 4/64、pulsed lag 4/128；三者读出同一距离 2.146521892 m，误差 **4.441e-16 m**；同一闭合速度读出 3.743662063 m/s，误差 **4.441e-16 m/s**，且三者 `velocity_bin_mps` 同为 1.871831031；FMCW 无窗旁瓣 **-136.5 dB** |
-| 5 | TDM AoA、2D FFT AoA、CFAR、point cloud、tracking handoff 测试通过 | `tests/processing/test_aoa.py`、`test_cfar.py`、`test_pointcloud.py`、`test_tracking.py`、`test_beamforming.py` | `--gpu` 全绿；TDM 补偿与旧式 Python 循环 **bitwise** 一致；两条 FFT AoA 路线各自命中自己的精确 bin，且同一波前在两种相位约定下给出同一角度（`test_a_conjugated_beat_cube_is_reconciled_rather_than_mirrored`）；CFAR 实测虚警率符合 `P_fa = (1+alpha/N)^-N`（`test_the_measured_false_alarm_rate_matches_the_analytic_one`）；point cloud 每次调用恰 **1** 次主机观测；constant-velocity 目标跨帧 track 连续 |
+| 5 | TDM AoA、2D FFT AoA、CFAR、point cloud、tracking handoff 测试通过 | `tests/processing/test_aoa.py`、`test_cfar.py`、`test_pointcloud.py`、`test_tracking.py`、`test_beamforming.py` | `--gpu` 全绿；TDM 补偿与旧式 Python 循环 **bitwise** 一致；两条 FFT AoA 路线各自命中自己的精确 bin，且同一波前在两种相位约定下给出同一角度（`test_a_conjugated_beat_cube_is_reconciled_rather_than_mirrored`）；CA 系实测虚警率符合 `P_fa = (1+alpha/N)^-N`（`test_the_measured_false_alarm_rate_matches_the_analytic_one`）；`os_cfar` 以同一 CA 常数标定 order statistic，**其 `pfa` 不是实测虚警率**，实际服从 Rohling `P_fa = prod_{i<k} (N-i)/(N-i+alpha)`，默认参数下为声明值的 **0.19x**（1e-2）与 **0.10x**（1e-3），偏保守方向，已由 `test_the_ordered_statistic_rate_follows_rohlings_law_and_not_its_pfa` 实测钉住并写入 docstring（remediation F1；常数不改，迁移 adapter 对旧行为 bitwise 冻结）；point cloud 每次调用恰 **1** 次主机观测；constant-velocity 目标跨帧 track 连续 |
 | 6 | processing 不改变 propagation row identity 或 AD contracts | `test_phase8_clutter_components.py::test_every_component_export_shares_one_topology_object`（`is`）、`test_composing_is_unaffected_by_building_an_index`（bitwise）；`tests/processing/test_cube.py::test_a_dead_row_reaches_the_cube_as_an_exact_zero` | 四个分类导出共享**同一** `RadarPathTopology` 对象；建立 index 前后合成帧 **bitwise** 相同；processing 包内不读 row identity、row order 或 `row_valid` |
 | 7 | Channel capability/API/ABI 中无 Radar processing 字段 | `test_phase8_frozen_dsp_surface.py::test_the_channel_capability_record_publishes_exactly_these_fields`（集合相等）、`test_no_processing_vocabulary_appears_anywhere_in_the_channel_capabilities`、`test_the_native_binding_manifest_carries_no_processing_symbol`；`test_phase6_config_boundary.py` 的 `REEVALUATION_KEYWORDS` 相等断言 | live record **25** 个字段，逐字相等；27 条 processing 词汇在 consumer record 与包级 `capabilities()` 的全部嵌套层级命中 **0** 次；`ci/native-binding-manifest.json` **未改动** |
 | 8 | full pipeline latency 和 memory 满足冻结预算 | `test_phase8_pipeline_budget.py` 六条 | latency **2.23 ms**，冻结于 `x1.30 = 2.90 ms`；峰值增量 **1.13 MB**，冻结于 `x1.25 = 1.41 MB`；主机观测恰 **1**（point cloud 的 `argwhere`）；`torch.fft` 分派恰 **7**；每帧仿真 **3.880 ms**（base commit `4bb059a` 同场测得 **3.911 ms**，比值 0.992）；wideband 每条 leg 恰 1 次 D2H、1 次 sync，`F in {1,8,64}` 不变；join launches `1 + F` |
@@ -2189,6 +2189,36 @@ Phase 8 记录的偏差、延后项与未付账（不在本 phase 修补）：
 15. **replay 是单调减的（Phase-7 偏差 4 的延续）。** clutter 的 `mobility` 是调用方
     声明而非推断；`replay` 下新出现的路径不会被发现，必须以声明的 cadence
     `rediscover`。测试在两个方向上都展示了这个边界。
+
+Phase 8 审计后的修补（三份独立审计：physics/AD、contract/policy、mutation）：
+
+- **MAJOR（mutation M5b）：`DetectionFrame.as_fixed_size` 的 `generator` 参数
+  形同虚设。** 把调用方的 generator 换成内部固定 seed，整套 radar suite 全绿——
+  旧测试只断言"同 seed 同结果"，固定 seed 也满足。已补
+  `test_the_generator_argument_actually_drives_the_draw`：不同 seed 必须给出不同
+  batch（padding 与 subset 两个分支各一次），共享 generator 必须推进状态，同 seed
+  仍复现。已用同一变异复验：修补前全绿，修补后该测试失败。生产代码未改。
+- **MINOR（physics F1）：`os_cfar` 的 `pfa` 不是实测虚警率。** 见验收矩阵第 5 行。
+  处置是**声明而非改数**：docstring 写出 Rohling 律与实测比值，新测试
+  `test_the_ordered_statistic_rate_follows_rohlings_law_and_not_its_pfa` 把实测率
+  钉在 Rohling 律上（5 sigma，iid 下界，四个 seed 实测偏差 -0.6..+2.5）。不改常数
+  的理由：它就是 cutover 前 `os_cfar_2d` 的行为，迁移 adapter 对其 bitwise 冻结，
+  改动属于需要自带证据与 golden 更新的数值变更。变异复验：把 rank 挪一格，新测试
+  两个参数化都失败。
+- **NOTE（mutation M10）：导向矢量的绝对空间相位符号此前只由
+  `test_pointcloud.py` 的链路测试钉住**（`test_beamforming.py` 两侧都出自
+  `conventional_steering`，全局共轭会抵消）。已补
+  `test_the_manifold_matches_a_wavefront_built_from_the_delay_convention`：波前由
+  `exp(-j k d)` 传播约定在测试内手工构造，并断言共轭波前**不**成形。变异复验：
+  共轭 `conventional_steering` 后该测试失败。
+- **NOTE（physics O1）：相位比较俯仰的量化偏置。** 方位走离修正用的是方位 FFT
+  峰值 **bin** 而非连续方位，`fft_size=64` 下实测约 0.009 的余弦偏置（cos_el=0.08）。
+  已写入 `phase_comparison_aoa` docstring 并指向 `fft2_aoa`。行为未改。
+- **NOTE（contract MINOR-1）：两条 wall-time 钉子在 GPU 争用下必失败**（独立复现：
+  并发 CUDA 负载 -> 恰好这两条失败，空闲 -> 全绿）。这是偏差 11 的设计意图，处置是
+  在预算测试 docstring 里写明"共享 GPU 的 runner 必须串行化"，预算数字不动。
+- **仍待 owner 确认（contract MINOR-2/3，未修补）：** 标准 2 的"量化拒绝"读法
+  （偏差 1）、0.1 rad 分辨率预算、R2/R3/R7 延后项。三份审计都已上浮，未隐藏。
 
 - 决策记录：Channel `docs/dev/standards/adr-042-wideband-frequency-offsets.md`；
   Radar `docs/dev/standards/radar-adr-015-wideband-band-consumption.md`、
