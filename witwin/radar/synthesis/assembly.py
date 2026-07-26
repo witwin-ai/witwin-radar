@@ -41,6 +41,30 @@ PAIR_RANK_LAYOUT = "sink_major: pair = rx_rank * num_tx + tx_rank"
 FRAME_CUBE_AXES = ("tx", "rx", "chirp", "sample")
 
 
+def segment_of_each_row(
+    pair_offsets: torch.Tensor, path_count: int
+) -> torch.Tensor:
+    """Map each compact row to its sensor-pair segment, as ``int64[K]``.
+
+    The inverse of the CSR partition: ``pair_offsets`` says where each segment
+    starts, and a backward kernel that owns one gradient slot per ROW needs the
+    other direction. Forward and JVP kernels read the offsets table directly and
+    never call this.
+
+    ``right=True`` is required. An offsets table is a half-open partition, so a
+    row whose index equals a boundary belongs to the NEXT segment; ``right=False``
+    puts it in the previous one, which is wrong for exactly one row per segment
+    boundary and therefore invisible in any single-segment test.
+
+    The output shape comes from ``path_count``, a host int the compact contract
+    already published, so this adds no cardinality observation and no
+    device-to-host transfer.
+    """
+
+    rows = torch.arange(path_count, device=pair_offsets.device, dtype=torch.int64)
+    return torch.bucketize(rows, pair_offsets[1:], right=True)
+
+
 def _require_array(num_tx: int, num_rx: int) -> int:
     if type(num_tx) is not int or num_tx < 1:
         raise ValueError(f"num_tx must be a positive int, got {num_tx!r}")
@@ -210,5 +234,6 @@ __all__ = [
     "assemble_frame_cube",
     "pair_rx_index",
     "pair_tx_index",
+    "segment_of_each_row",
     "validate_pair_ordering",
 ]

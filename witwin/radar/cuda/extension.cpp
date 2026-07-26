@@ -116,6 +116,47 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
 
+  // Phase-6 OFDM channel frequency response over the (symbol, subcarrier)
+  // grid. The cube is published in the CHANNEL phasor convention exp(-j k d),
+  // NOT conjugated: OFDM demodulation is per-subcarrier equalisation H = Y / X,
+  // which removes the transmitted symbol but not the carrier convention. With
+  // n = 0 pinned to the reference frequency, H[0][p][0] == C_rt exactly. The
+  // FMCW beat cube stays conjugated; the two are different products.
+  //
+  // The subcarrier term multiplies the FULL delay tau_k(l) while the
+  // carrier-rate term multiplies the drift only. That asymmetry is deliberate:
+  // a Channel coefficient carries exp(-j 2 pi f_ref tau_rt) and nothing else,
+  // so only the f_ref phase's slow-time CHANGE is missing, while the n * df
+  // phase is absent from the weight entirely.
+  //
+  // carrier_hz / carrier_rate_hz are the same two carrier homes as in the beat
+  // family and exactly one may be nonzero. Dropping the rate term leaves only
+  // the n * df slow-time phase and understates Doppler by f_ref / (n * df) -
+  // a factor of 1e4 at the top of a 64 x 120 kHz band at 77 GHz, and infinite
+  // at n = 0. See R-ADR-004.
+  m.def(
+      "ofdm_cfr_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, int num_paths, int num_segments, int num_symbols, "
+      "int num_subcarriers, float subcarrier_spacing_hz, float symbol_period_s, "
+      "float carrier_hz, float carrier_rate_hz) -> ()");
+  m.def(
+      "ofdm_cfr_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
+      "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
+      "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
+      "int num_segments, int num_symbols, int num_subcarriers, "
+      "float subcarrier_spacing_hz, float symbol_period_s, float carrier_hz, "
+      "float carrier_rate_hz) -> ()");
+  m.def(
+      "ofdm_cfr_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
+      "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
+      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
+      "int num_segments, int num_symbols, int num_subcarriers, "
+      "float subcarrier_spacing_hz, float symbol_period_s, float carrier_hz, "
+      "float carrier_rate_hz) -> ()");
+
   // Phase-5 two-way join: inbound leg x outbound leg -> radar round trip.
   //
   //   tau_rt  = tau_in + tau_out,  rate_rt = rate_in + rate_out

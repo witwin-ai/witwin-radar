@@ -26,6 +26,7 @@ impossible states, which is the difference between a rule and a comment.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
@@ -39,6 +40,32 @@ from ..paths.contracts import JOIN_MODES, JoinMode, RadarPathBatch, RadarPathTop
 #: derives its unambiguous-velocity bound from a wavelength and must agree with
 #: ``Radar.max_doppler`` to the last bit.
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
+
+
+def require_single_carrier_home(carrier_hz: float, carrier_rate_hz: float) -> None:
+    """Refuse a spec that names the absolute carrier in both of its homes.
+
+    Shared by every waveform spec, because it is one rule about one physical
+    quantity rather than a per-waveform convention: the absolute
+    reference-frequency phase either lives in the weight, in which case the
+    kernel applies it only to the delay CHANGE (``carrier_rate_hz``), or it
+    lives in the kernel, which applies it to the full delay (``carrier_hz``)
+    and therefore already walks across slow time. Naming both counts the
+    carrier twice.
+
+    This is a spec-INTERNAL consistency check. The batch-versus-spec checks are
+    rules R1-R4 of :func:`require_compatible`, and neither subsumes the other:
+    this one catches a self-contradictory spec before a batch is even in hand.
+    """
+
+    if carrier_hz != 0.0 and carrier_rate_hz != 0.0:
+        raise ValueError(
+            "carrier_hz and carrier_rate_hz name the same carrier in two "
+            "different homes; setting both double counts it. Use "
+            "carrier_hz=fc with carrier_rate_hz=0 when the kernel owns the "
+            "carrier phase, or carrier_hz=0 with carrier_rate_hz=fc when a "
+            "Channel-sourced weight already carries it."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,14 +143,7 @@ class FmcwBeatSpec:
             raise ValueError("num_tx must be positive")
         if self.num_rx < 1:
             raise ValueError("num_rx must be positive")
-        if self.carrier_hz != 0.0 and self.carrier_rate_hz != 0.0:
-            raise ValueError(
-                "carrier_hz and carrier_rate_hz name the same carrier in two "
-                "different homes; setting both double counts it. Use "
-                "carrier_hz=fc with carrier_rate_hz=0 when the kernel owns the "
-                "carrier phase, or carrier_hz=0 with carrier_rate_hz=fc when a "
-                "Channel-sourced weight already carries it."
-            )
+        require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
 
     @classmethod
     def from_radar_config(cls, config, *, carrier_hz: float = 0.0) -> "FmcwBeatSpec":
@@ -212,6 +232,220 @@ class FmcwBeatSpec:
             * self.num_samples
             / self.sample_rate_hz
         )
+
+
+#: The only supported OFDM subcarrier origin: ``f_n = f_ref + n * df`` with
+#: ``n`` running ``[0, N_sc)``, so subcarrier 0 sits exactly at the frequency
+#: the weight was evaluated at. Centring the band instead would put a
+#: half-band phase offset between ``H[0][p][0]`` and ``C_rt`` and force a phase
+#: correction into every cross-waveform amplitude comparison.
+SUBCARRIER_ORIGIN_F_REF_AT_N0 = "f_ref_at_n0"
+
+#: Channel's phasor convention, which the OFDM CFR cube is published in
+#: unchanged. Quoted verbatim from ``witwin.channel.constants.PHASOR``.
+CHANNEL_PHASOR = "exp(-j*k*d)"
+
+#: Channel's time-dependence convention, quoted verbatim from
+#: ``witwin.channel.constants.TIME_DEPENDENCE``.
+CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
+
+
+@dataclass(frozen=True, slots=True)
+class OfdmCfrSpec:
+    """One OFDM frame's subcarrier grid and symbol timing, in SI units.
+
+    The product is a channel frequency response cube
+    ``H[symbol, sensor_pair, subcarrier]``, not a time-domain waveform. A CFR is
+    the exact analogue of the FMCW beat cube: it is what per-subcarrier
+    equalisation ``H = Y / X`` leaves after the transmitted symbols are removed,
+    it needs no per-sample IFFT inside the kernel, and it is what the Phase-6
+    plan names. A time-domain OFDM waveform, if one is ever needed, is a
+    downstream IFFT plus cyclic-prefix insertion in DSP glue, not synthesis
+    physics.
+
+    **Phasor convention.** This cube is published in the CHANNEL convention
+    :data:`CHANNEL_PHASOR`, NOT conjugated. Equalisation removes the transmitted
+    symbol but not the carrier convention, so there is nothing to conjugate and
+    no conversion site anywhere in the OFDM family. The FMCW beat cube IS
+    conjugated, because de-chirping multiplies by the conjugate of the
+    transmitted chirp. The two are different products rather than an
+    inconsistency, and both carry their convention as data.
+
+    **Subcarrier origin.** ``n = 0`` is pinned to ``reference_frequency_hz``, so
+    ``f_n = f_ref + n * df``. With ``carrier_hz = 0``, ``carrier_rate_hz =
+    f_ref`` and a stationary row, ``H[0][p][0]`` is exactly the Channel
+    coefficient ``C_rt``. That identity is what pinning the origin buys.
+
+    **Narrowband, by construction and on purpose.** Channel's consumer has no
+    frequency-offset input: it publishes one coefficient per row at one
+    reference frequency plus the narrowband offset law
+    ``H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)``. Phase-6 OFDM applies
+    exactly that law, which means the material and antenna response is FROZEN at
+    ``f_ref`` across the whole band - only the propagation delay is
+    frequency-dependent. A per-subcarrier material response is Phase-8 work;
+    :class:`SynthesisPathBatch` declares ``frequency_response`` so that this
+    assumption is explicit and rule R8 refuses it so that it cannot be silently
+    ignored.
+
+    **Cyclic prefix.** ``max_expected_delay_s`` is a CONFIGURED bound - the
+    range window the radar is set up for - and never a measured maximum delay,
+    which would be a per-frame device-to-host transfer.
+    :func:`require_ofdm_compatible` refuses ``max_expected_delay_s >=
+    cyclic_prefix_s`` outright. There is no clamp, no warning, and no
+    reduced-accuracy mode, because outside the CP window the single-tap
+    per-subcarrier form gains an inter-symbol term this kernel does not have.
+
+    ``carrier_hz`` and ``carrier_rate_hz`` are the same two carrier homes as in
+    :class:`FmcwBeatSpec` and obey the same rule through the same helper: the
+    absolute phase either lives in the weight, and the kernel applies the
+    carrier to the delay CHANGE only, or it lives in the kernel, which applies
+    it to the full delay. Naming both counts it twice. Dropping the rate term on
+    a frozen Channel weight leaves only the ``n * df`` slow-time phase and
+    understates Doppler by ``f_ref / (n * df)`` - a factor of about 1e4 at the
+    top of a 64 x 120 kHz band at 77 GHz, and infinite at ``n = 0``.
+    """
+
+    #: The CFR kernel has no ``lambda / (4 pi d)`` term at all: free-space
+    #: spreading is Channel transport's, per leg, once. A statement about the
+    #: kernel rather than a setting, so a class attribute rather than a field.
+    applies_spreading: ClassVar[bool] = False
+
+    #: The convention the published cube is in, carried as data so that a
+    #: consumer never has to infer it from the waveform's name.
+    phasor: ClassVar[str] = CHANNEL_PHASOR
+    time_dependence: ClassVar[str] = CHANNEL_TIME_DEPENDENCE
+
+    num_subcarriers: int
+    num_symbols: int
+    subcarrier_spacing_hz: float
+    cyclic_prefix_s: float
+    reference_frequency_hz: float
+    max_expected_delay_s: float
+    carrier_hz: float = 0.0
+    carrier_rate_hz: float = 0.0
+    subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
+
+    def __post_init__(self) -> None:
+        if self.num_subcarriers < 1:
+            raise ValueError("num_subcarriers must be positive")
+        if self.num_symbols < 1:
+            raise ValueError("num_symbols must be positive")
+        if self.subcarrier_spacing_hz <= 0.0:
+            raise ValueError("subcarrier_spacing_hz must be positive")
+        if self.cyclic_prefix_s <= 0.0:
+            raise ValueError(
+                "cyclic_prefix_s must be positive; a zero-length cyclic prefix "
+                "cannot contain any echo, so the single-tap per-subcarrier form "
+                "this spec describes would never be valid"
+            )
+        if self.max_expected_delay_s < 0.0:
+            raise ValueError("max_expected_delay_s must be non-negative")
+        if not self.reference_frequency_hz > 0.0:
+            raise ValueError(
+                "reference_frequency_hz must be positive; it is the frequency "
+                "subcarrier 0 sits at and the frequency the weight this spec "
+                "will consume was evaluated at"
+            )
+        if self.subcarrier_origin != SUBCARRIER_ORIGIN_F_REF_AT_N0:
+            raise ValueError(
+                "subcarrier_origin must be "
+                f"{SUBCARRIER_ORIGIN_F_REF_AT_N0!r}; a centred band is a "
+                "different frequency grid and would need its own kernel term, "
+                "not a relabelling"
+            )
+        require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
+
+    @property
+    def useful_symbol_time_s(self) -> float:
+        """``T_u = 1 / df``, the FFT window one symbol is transformed over."""
+
+        return 1.0 / self.subcarrier_spacing_hz
+
+    @property
+    def symbol_period_s(self) -> float:
+        """``T_sym = T_u + T_cp``, the slow-time sampling period.
+
+        The cyclic prefix does not change the CFR closed form, but it does
+        lengthen the symbol, which is why it appears in the unambiguous-velocity
+        bound: slow time is sampled once per SYMBOL, prefix included.
+        """
+
+        return self.useful_symbol_time_s + self.cyclic_prefix_s
+
+    @property
+    def waveform_sample_period_s(self) -> float:
+        """``T_s = 1 / (N_sc * df)``, the time grid the CIR lands on."""
+
+        return 1.0 / (self.num_subcarriers * self.subcarrier_spacing_hz)
+
+    @property
+    def delay_resolution_s(self) -> float:
+        """One CIR sample: the delay resolution the whole band buys.
+
+        Identical to :attr:`waveform_sample_period_s` by construction; both
+        names exist because one is a property of the waveform's time grid and
+        the other is the estimator's resolution, and reading a range resolution
+        off a sample period is exactly the step where a factor of two goes
+        missing.
+        """
+
+        return self.waveform_sample_period_s
+
+    @property
+    def occupied_bandwidth_hz(self) -> float:
+        """``N_sc * df``, the band the delay resolution comes from."""
+
+        return self.num_subcarriers * self.subcarrier_spacing_hz
+
+    @property
+    def range_resolution_m(self) -> float:
+        """``c0 / (2 * N_sc * df)`` - the round trip halves the delay."""
+
+        return SPEED_OF_LIGHT_M_PER_S / (2.0 * self.occupied_bandwidth_hz)
+
+    @property
+    def max_unambiguous_delay_s(self) -> float:
+        """``1 / df``: beyond one useful symbol time the CIR wraps."""
+
+        return self.useful_symbol_time_s
+
+    @property
+    def wavelength_m(self) -> float:
+        return SPEED_OF_LIGHT_M_PER_S / self.reference_frequency_hz
+
+    @property
+    def max_unambiguous_speed_mps(self) -> float:
+        """``c0 / (4 * f_ref * T_sym)``, the aliasing bound on ``|v_r|``.
+
+        Equivalently ``lambda / (4 * T_sym)``. Half a wavelength of two-way path
+        change per slow-time sample is half a cycle of Doppler phase; beyond it
+        the sign of the velocity is not recoverable and a receding target reads
+        as an approaching one.
+        """
+
+        return SPEED_OF_LIGHT_M_PER_S / (
+            4.0 * self.reference_frequency_hz * self.symbol_period_s
+        )
+
+    def subcarrier_frequency_hz(self, subcarrier: int) -> float:
+        """``f_n = f_ref + n * df`` under the pinned origin."""
+
+        return self.reference_frequency_hz + subcarrier * self.subcarrier_spacing_hz
+
+    def subcarrier_phase_step_rad(self, round_trip_delay_s: float) -> float:
+        """``-2 pi df tau``, the phase step between adjacent subcarriers.
+
+        The sign is negative because the cube is in Channel's ``exp(-j k d)``
+        convention. This is the exact, bin-free delay statement a CFR carries;
+        an IDFT peak is the same information quantised to ``T_s``.
+        """
+
+        return -math.tau * self.subcarrier_spacing_hz * float(round_trip_delay_s)
+
+    def cir_peak_sample(self, round_trip_delay_s: float) -> float:
+        """``tau / T_s``, the fractional CIR sample the echo peaks at."""
+
+        return float(round_trip_delay_s) / self.waveform_sample_period_s
 
 
 class SlowTimeMode(str, Enum):
@@ -736,10 +970,65 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
         )
 
 
+def require_ofdm_compatible(
+    batch: SynthesisPathBatch, spec: OfdmCfrSpec
+) -> None:
+    """The shared provenance rules, plus OFDM's cyclic-prefix contract.
+
+    Called by :func:`~witwin.radar.synthesis.ofdm_cfr.synthesize_ofdm_cfr`
+    before any kernel launch. Two checks beyond :func:`require_compatible`, both
+    on CONFIGURED values and never on measured device delays - reading a
+    per-frame maximum delay to the host would be exactly the hot-path
+    device-to-host transfer the fixed-topology capability exists to avoid:
+
+    1. ``max_expected_delay_s < cyclic_prefix_s``. This is the standard
+       OFDM-radar assumption: there is no timing synchronisation to the echo, so
+       the whole echo has to land inside the cyclic-prefix window for ``Y / X``
+       to be exactly ``exp(-j 2 pi n df tau)``. Outside it the response gains an
+       inter-symbol term that the closed form does not have, and the cube would
+       be wrong in a way that looks like a slightly defocused range profile.
+
+    2. The delay SPREAD bound ``max_k(tau_k) - min_k(tau_k) < T_cp``, which the
+       single-tap-per-subcarrier form also requires. It is the same inequality:
+       every round-trip delay is non-negative and bounded above by
+       ``max_expected_delay_s``, so check 1 implies it. It is documented here
+       rather than checked separately because checking it for real would mean
+       reducing over the device delays.
+
+    Both refusals name ``cyclic_prefix_s``. There is no clamp and no
+    reduced-accuracy mode.
+    """
+
+    if not isinstance(spec, OfdmCfrSpec):
+        raise TypeError(
+            f"require_ofdm_compatible needs an OfdmCfrSpec, got "
+            f"{type(spec).__name__}"
+        )
+    require_compatible(batch, spec)
+    if spec.max_expected_delay_s >= spec.cyclic_prefix_s:
+        raise ValueError(
+            "the configured echo window does not fit inside the cyclic prefix: "
+            f"max_expected_delay_s={spec.max_expected_delay_s} is not less than "
+            f"cyclic_prefix_s={spec.cyclic_prefix_s}. The single-tap "
+            "per-subcarrier response H = Y/X is exactly "
+            "exp(-j*2*pi*n*df*tau) only while the whole echo lands inside the "
+            "cyclic-prefix window; beyond it there is an inter-symbol term this "
+            "kernel does not model. Shorten the range window or lengthen "
+            "cyclic_prefix_s - there is no clamped or reduced-accuracy mode"
+        )
+
+
 __all__ = [
+    "CHANNEL_PHASOR",
+    "CHANNEL_TIME_DEPENDENCE",
+    "SPEED_OF_LIGHT_M_PER_S",
+    "SUBCARRIER_ORIGIN_F_REF_AT_N0",
     "FmcwBeatSpec",
+    "OfdmCfrSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
     "WaveformSpecProtocol",
     "require_compatible",
+    "require_ofdm_compatible",
+    "require_single_carrier_home",
 ]

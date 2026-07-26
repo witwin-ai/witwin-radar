@@ -16,6 +16,7 @@
     "witwin/radar/cuda/extension.cpp",
     "witwin/radar/cuda/kernels/dirichlet.cu",
     "witwin/radar/cuda/kernels/fmcw_beat.cu",
+    "witwin/radar/cuda/kernels/ofdm_cfr.cu",
     "witwin/radar/cuda/kernels/two_way_join.cu"
   ],
   "operators": [
@@ -88,6 +89,27 @@
       "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
       "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.jvp"
+    },
+    {
+      "symbol": "ofdm_cfr_forward",
+      "family": "ofdm_cfr_synthesis",
+      "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
+      "contract_test": "tests/test_phase6_ofdm_kernel.py",
+      "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr.synthesize_ofdm_cfr"
+    },
+    {
+      "symbol": "ofdm_cfr_backward",
+      "family": "ofdm_cfr_synthesis",
+      "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
+      "contract_test": "tests/test_phase6_ofdm_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr._OfdmCfrSynthesis.backward"
+    },
+    {
+      "symbol": "ofdm_cfr_jvp",
+      "family": "ofdm_cfr_synthesis",
+      "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
+      "contract_test": "tests/test_phase6_ofdm_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr._OfdmCfrSynthesis.jvp"
     },
     {
       "symbol": "two_way_join_forward",

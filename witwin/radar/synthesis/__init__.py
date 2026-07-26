@@ -8,6 +8,12 @@ Python owners.
 A waveform kernel never asks where its weight came from; it asks the batch, and
 the batch refuses any spec that would apply a factor the weight already
 carries.
+
+The two waveform products published so far are in DIFFERENT phasor conventions,
+and each carries its own as data rather than by reputation. The FMCW beat cube
+is conjugated, because de-chirping multiplies the echo by the conjugate of the
+transmitted chirp. The OFDM CFR cube is not, because per-subcarrier equalisation
+removes the transmitted symbol but not the carrier convention.
 """
 
 from .assembly import (
@@ -16,25 +22,39 @@ from .assembly import (
     assemble_frame_cube,
     pair_rx_index,
     pair_tx_index,
+    segment_of_each_row,
     validate_pair_ordering,
 )
 from .contracts import (
+    CHANNEL_PHASOR,
+    CHANNEL_TIME_DEPENDENCE,
+    SPEED_OF_LIGHT_M_PER_S,
+    SUBCARRIER_ORIGIN_F_REF_AT_N0,
     FmcwBeatSpec,
+    OfdmCfrSpec,
     SlowTimeMode,
     SynthesisPathBatch,
     WaveformSpecProtocol,
     require_compatible,
+    require_ofdm_compatible,
+    require_single_carrier_home,
 )
 from .fmcw_beat import (
     channel_phasor_to_beat_weight,
     synthesize_beat_rows,
     synthesize_fmcw_beat,
 )
+from .ofdm_cfr import synthesize_cfr_rows, synthesize_ofdm_cfr
 
 __all__ = [
+    "CHANNEL_PHASOR",
+    "CHANNEL_TIME_DEPENDENCE",
     "FRAME_CUBE_AXES",
     "PAIR_RANK_LAYOUT",
+    "SPEED_OF_LIGHT_M_PER_S",
+    "SUBCARRIER_ORIGIN_F_REF_AT_N0",
     "FmcwBeatSpec",
+    "OfdmCfrSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
     "WaveformSpecProtocol",
@@ -43,6 +63,11 @@ __all__ = [
     "pair_rx_index",
     "pair_tx_index",
     "require_compatible",
+    "require_ofdm_compatible",
+    "require_single_carrier_home",
+    "segment_of_each_row",
     "synthesize_beat_rows",
+    "synthesize_cfr_rows",
     "synthesize_fmcw_beat",
+    "synthesize_ofdm_cfr",
 ]
