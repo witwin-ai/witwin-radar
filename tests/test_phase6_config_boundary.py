@@ -45,8 +45,22 @@ DISCOVERY_KEYWORDS = frozenset(
         "ad_mode",
     }
 )
+#: ``slot_count`` is how many stacked time slots the endpoint batches carry. It
+#: is a batch SHAPE, in the same family as the endpoint counts, and it says
+#: nothing about chirps, symbols or pulses: a caller that maps TDM slots onto it
+#: does that mapping in ``witwin.radar.synthesis``, and propagation never learns
+#: which waveform asked. That is why it may cross where ``chirp_period_s`` may
+#: not.
 REEVALUATION_KEYWORDS = frozenset(
-    {"sources", "sinks", "reference_frequency_hz", "topology", "response", "ad_mode"}
+    {
+        "sources",
+        "sinks",
+        "reference_frequency_hz",
+        "topology",
+        "response",
+        "ad_mode",
+        "slot_count",
+    }
 )
 
 #: Vocabulary that describes a waveform, an ADC, or a receive chain. None of it

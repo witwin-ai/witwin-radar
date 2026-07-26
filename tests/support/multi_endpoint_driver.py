@@ -228,6 +228,117 @@ class MultiEndpointSpike:
         )
         return composed, inbound, outbound
 
+    # -- a whole slot-major frame in one call per leg ------------------------
+
+    def stacked(self, positions, slot_count: int) -> torch.Tensor:
+        """Repeat one endpoint set once per slot, slot major.
+
+        ``Tensor.repeat`` and not a rebuild from Python values: a forward-AD
+        dual carried by ``positions`` survives a differentiable op and dies the
+        moment the caller reads it back into a list. A dead tangent publishes
+        ``delay_rate = 0``, which is indistinguishable from a correct
+        stationary answer, so the way the stack is built is load bearing.
+        """
+
+        values = (
+            positions
+            if isinstance(positions, torch.Tensor)
+            else torch.tensor(
+                list(positions), dtype=torch.float32, device=self.device
+            )
+        )
+        return values.repeat(int(slot_count), 1)
+
+    def slot_legs(
+        self,
+        site_positions,
+        *,
+        slot_count: int,
+        ad_mode: str = "none",
+        transmitter_positions=None,
+        receiver_positions=None,
+    ):
+        """Both legs of a whole frame, in exactly ONE consumer call each.
+
+        ``site_positions`` is the SLOT-MAJOR stack, ``(slot_count * sites, 3)``:
+        slot ``t`` owns rows ``[t * sites, (t + 1) * sites)``. The transmitters
+        and receivers default to the fixture's static positions repeated per
+        slot; passing a stack instead is how a moving-platform scenario is
+        driven.
+        """
+
+        sites = self.stacked(site_positions, 1)
+        transmitters = (
+            self.stacked(
+                [position for _, position in self.transmitters], slot_count
+            )
+            if transmitter_positions is None
+            else self.stacked(transmitter_positions, 1)
+        )
+        receivers = (
+            self.stacked([position for _, position in self.receivers], slot_count)
+            if receiver_positions is None
+            else self.stacked(receiver_positions, 1)
+        )
+        inbound = self.adapter.reevaluate_slots(
+            self.inbound,
+            self._stacked_ids(transmitters, self.transmitter_ids, geo.TX_POWER_W),
+            self._stacked_ids(sites, self.site_ids, None),
+            slot_count=slot_count,
+            ad_mode=ad_mode,
+        )
+        outbound = self.adapter.reevaluate_slots(
+            self.outbound,
+            self._stacked_ids(sites, self.site_ids, geo.SITE_POWER_W),
+            self._stacked_ids(receivers, self.receiver_ids, None),
+            slot_count=slot_count,
+            ad_mode=ad_mode,
+        )
+        return inbound, outbound
+
+    def _stacked_ids(self, positions: torch.Tensor, ids, power_w):
+        """An endpoint spec whose stable IDs repeat once per slot.
+
+        The frozen rows name their endpoints by stable IDENTITY, so every slot
+        has to carry the SAME IDs in the same order. A stack that renamed them
+        would be describing a different topology rather than a later instant,
+        and Channel's stable-ID validation refuses it.
+        """
+
+        rows = int(positions.shape[0])
+        listed = list(ids)
+        if rows % len(listed):
+            raise ValueError(
+                f"a stack of {rows} endpoints is not a whole number of "
+                f"{len(listed)}-endpoint slots"
+            )
+        slots = rows // len(listed)
+        return world.endpoint_batch(
+            positions, listed * slots, power_w=power_w, device=self.device
+        )
+
+    def slot_frames(self, inbound, outbound, response=None, *, include_delay_rate=True):
+        """Compose every slot of a slot-major pair of legs.
+
+        This is the REFRESHED-weight oracle and it is deliberately a test-side
+        loop. The production inner loop composes ONCE per frame from the frozen
+        weight and lets the waveform kernel own the slow-time carrier; this
+        instead re-composes per slot so the two can be compared. The propagation
+        replay it consumes is still a single batched call, so the loop adds no
+        propagation launch and no host observation of its own.
+        """
+
+        target = make_response() if response is None else response
+        return [
+            self.composer.compose(
+                inbound.slot(slot),
+                outbound.slot(slot),
+                target,
+                include_delay_rate=include_delay_rate,
+            )
+            for slot in range(inbound.slot_count)
+        ]
+
     # -- the single-pair comparison spike -----------------------------------
 
     def single_pair(self, transmitter, site, receiver) -> "MultiEndpointSpike":
@@ -288,6 +399,24 @@ def composed_keys(spike: MultiEndpointSpike, composed):
     ]
 
 
+def slot_site_stack(base: torch.Tensor, velocity, times_s) -> torch.Tensor:
+    """``base + v * t`` for every slot, stacked slot major.
+
+    Built as ONE differentiable expression over ``base`` so that a forward-AD
+    dual on ``base`` reaches every slot. ``velocity`` is the site kinematics in
+    metres per second and ``times_s`` are the slot times - the TDM slot table's
+    own values, not a second time axis invented here.
+    """
+
+    device = base.device
+    offsets = torch.as_tensor(times_s, dtype=torch.float32, device=device)
+    direction = torch.as_tensor(velocity, dtype=torch.float32, device=device)
+    if direction.ndim == 1:
+        direction = direction.reshape(1, 3).expand(base.shape[0], 3)
+    displacement = offsets.reshape(-1, 1, 1) * direction.reshape(1, -1, 3)
+    return (base.reshape(1, -1, 3) + displacement).reshape(-1, 3)
+
+
 __all__ = [
     "FIXTURE_AMPLITUDE",
     "FIXTURE_PHASE_RAD",
@@ -296,4 +425,5 @@ __all__ = [
     "composed_keys",
     "make_response",
     "make_spec",
+    "slot_site_stack",
 ]

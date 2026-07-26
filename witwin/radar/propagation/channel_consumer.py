@@ -9,11 +9,15 @@ enumerated engine, the internal propagation contracts, or the native extension.
 R-ADR-001 records why: Radar is a consumer of the published contract, not a
 second enumerated exception to ADR-008.
 
-The adapter owns three things and nothing else:
+The adapter owns four things and nothing else:
 
 * endpoint batching  -  turning Radar endpoint specs into consumer batches;
 * the freeze/reevaluate split  -  discovery happens once per frozen topology,
-  and every later frame replays it with exactly one consumer call;
+  and every later frame replays it with exactly one consumer call, whether that
+  frame is one instant or a whole slot-major TDM/symbol/pulse block;
+* the rediscovery cadence  -  ``rediscovery_required`` says when the world moved
+  out from under a frozen topology, and ``refreeze`` is the supported way to
+  rebind onto the new compiled scene and retire every stale handle;
 * publishing Radar-shaped leg results  -  delay, coefficient, delay rate.
 
 It owns no physics. Every number it publishes was produced by a native Channel
@@ -28,7 +32,7 @@ published as a host int, so nothing here calls ``.item()``, ``.cpu()``,
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.autograd.forward_ad as forward_ad
@@ -59,6 +63,21 @@ class FrozenLegTopology:
     two rows of the same leg, and a composer that fell back on row position for
     the tie would reintroduce exactly the positional dependence the identity
     join exists to remove.
+
+    ``epoch`` names the compiled scene this handle was frozen against. An
+    adapter that is rebound to a new compiled scene by
+    :meth:`ChannelPropagationAdapter.refreeze` advances its epoch, and every
+    handle from the previous epoch is retired. That is a host int comparison
+    and it is deliberately BROADER than the Channel-side world-provenance
+    check: provenance can only see version domains that actually moved, so a
+    caller that rebound to a differently-built compiled scene of an
+    identical-looking world would otherwise be answered rather than refused.
+
+    ``slot_topologies`` caches the block-diagonal replications of ``prepared``
+    keyed by ``(slot_count, source_count, sink_count)``. Replication is pure
+    index arithmetic, but it allocates, and doing it per frame would put an
+    avoidable allocation in the inner loop for a table that is a function of
+    the frozen topology alone.
     """
 
     prepared: object
@@ -73,6 +92,8 @@ class FrozenLegTopology:
     prepare_d2h_copies: int
     prepare_d2h_bytes: int
     prepare_synchronizations: int
+    epoch: int = 0
+    slot_topologies: dict = field(default_factory=dict, repr=False)
 
 
 def _endpoint_batch(spec: RadarEndpointSpec, role: str) -> consumer.EndpointBatch:
@@ -133,6 +154,7 @@ class ChannelPropagationAdapter:
         self._components = frozenset(components)
         self._max_depth = int(max_depth)
         self._capabilities = capabilities
+        self._epoch = 0
 
     @property
     def reference_frequency_hz(self) -> float:
@@ -141,6 +163,60 @@ class ChannelPropagationAdapter:
     @property
     def capabilities(self) -> object:
         return self._capabilities
+
+    @property
+    def compiled_scene(self) -> object:
+        """The compiled scene every replay is currently evaluated against."""
+
+        return self._compiled
+
+    @property
+    def epoch(self) -> int:
+        """How many times this adapter has been rebound to a new scene."""
+
+        return self._epoch
+
+    def refreeze(self, compiled_scene: object) -> None:
+        """Rebind to a new compiled scene and retire every frozen handle.
+
+        A moving structure, a deformed mesh or a new ``DynamicScene`` snapshot
+        produces a NEW ``CompiledScene``, and until this existed the adapter
+        held the scene it was constructed with for its whole lifetime - so a
+        moving-structure world replayed frozen rows against geometry that had
+        moved on, silently and at full strength.
+
+        This is the supported way through that. It does not rediscover: the
+        caller must call :meth:`freeze` again, because which paths exist is
+        exactly the question a moved world reopens. Every handle frozen before
+        this call is refused by name afterwards, which is the loud half of the
+        plan's rediscovery policy; :meth:`rediscovery_required` is the cheap
+        half that tells a caller when to make this call in the first place.
+        """
+
+        if compiled_scene is None:
+            raise ValueError("refreeze requires a compiled scene")
+        self._compiled = compiled_scene
+        self._epoch += 1
+
+    def rediscovery_required(
+        self, frozen: FrozenLegTopology, *, revalidate_source: bool = False
+    ) -> str | None:
+        """Name the world version domain that moved, or ``None``.
+
+        A host-only integer comparison against the versions the compiled scene
+        recorded: no device work, no allocation, no synchronization, so a
+        caller can poll it every frame for free. ``revalidate_source=True``
+        additionally rehashes the live world, which is ``O(scene)`` host work
+        and belongs on a motion-event cadence, never in a frame loop.
+
+        A handle from a retired epoch is reported against the scene this
+        adapter holds NOW, which is what a caller deciding whether to
+        rediscover actually wants to know.
+        """
+
+        return consumer.rediscovery_required(
+            self._compiled, frozen.prepared, revalidate_source=revalidate_source
+        )
 
     def freeze(
         self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec
@@ -187,6 +263,7 @@ class ChannelPropagationAdapter:
             prepare_d2h_copies=prepared.prepare_d2h_copies,
             prepare_d2h_bytes=prepared.prepare_d2h_bytes,
             prepare_synchronizations=prepared.prepare_synchronizations,
+            epoch=self._epoch,
         )
 
     def reevaluate(
@@ -203,20 +280,71 @@ class ChannelPropagationAdapter:
         no second cardinality observation.
         """
 
+        return self._replay(frozen, sources, sinks, ad_mode=ad_mode, slot_count=1)
+
+    def reevaluate_slots(
+        self,
+        frozen: FrozenLegTopology,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        *,
+        slot_count: int,
+        ad_mode: str,
+    ) -> RadarLegBatch:
+        """Replay a frozen leg over a whole frame, pulse train or symbol block.
+
+        ``sources`` and ``sinks`` are the SLOT-MAJOR STACKS: slot ``t`` owns
+        rows ``[t * n, (t + 1) * n)`` of each, where ``n`` is that end's
+        per-slot count. Every slot must repeat the same stable IDs in the same
+        order, because the frozen rows name endpoints by identity and a slot
+        that renamed them would be a different topology, not a later instant.
+
+        This is ONE consumer call for the whole set: one launch per bucket, one
+        validation copy, one synchronization, however many slots there are. A
+        Python loop over per-slot replays produces the same numbers and
+        multiplies the per-frame host-observation budget by the slot count,
+        which is exactly what the batched contract exists to forbid.
+
+        The pair partition is block diagonal, so the pair count grows LINEARLY
+        in ``slot_count``. Stacking both ends into a plain reevaluation instead
+        would take the full source-by-sink outer product across slots and cost
+        the square of it.
+        """
+
+        return self._replay(
+            frozen, sources, sinks, ad_mode=ad_mode, slot_count=slot_count
+        )
+
+    def _replay(
+        self,
+        frozen: FrozenLegTopology,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        *,
+        ad_mode: str,
+        slot_count: int,
+    ) -> RadarLegBatch:
         if ad_mode not in consumer.AD_MODES:
             raise NotImplementedError(
                 f"unsupported ad_mode {ad_mode!r}; supported values are "
                 f"{sorted(consumer.AD_MODES)}"
             )
+        if type(slot_count) is not int or slot_count < 1:
+            raise ValueError(
+                f"slot_count must be a positive int, got {slot_count!r}"
+            )
+        self._require_current_epoch(frozen)
+        topology = self._slot_topology(frozen, sources, sinks, slot_count)
         result = consumer.reevaluate(
             self._compiled,
             consumer.FixedTopologyRequest(
                 sources=_endpoint_batch(sources, "source"),
                 sinks=_endpoint_batch(sinks, "sink"),
                 reference_frequency_hz=self._reference_frequency_hz,
-                topology=frozen.prepared,
+                topology=topology,
                 response="scalar_transport",
                 ad_mode=ad_mode,
+                slot_count=slot_count,
             ),
         )
         paths = result.paths
@@ -240,7 +368,84 @@ class ChannelPropagationAdapter:
             delay_rate=_delay_rate(geometry.delay_s, ad_mode),
             row_valid=result.row_valid,
             diagnostics=result.diagnostics,
+            slot_count=slot_count,
         )
+
+    def _require_current_epoch(self, frozen: FrozenLegTopology) -> None:
+        """Refuse a handle frozen against a compiled scene this adapter dropped.
+
+        The message names the world version domain that moved when Channel can
+        see one, so a caller reads ``geometry_version`` for a moved wall rather
+        than a bare identity complaint. When no domain moved the handle is
+        still refused: the adapter was rebound on purpose, and answering out of
+        a scene the caller replaced is the stale answer this cadence exists to
+        prevent.
+        """
+
+        if frozen.epoch == self._epoch:
+            return
+        moved = consumer.rediscovery_required(self._compiled, frozen.prepared)
+        cause = (
+            f"{moved} changed"
+            if moved is not None
+            else "no world version domain moved, but the scene object did"
+        )
+        raise ValueError(
+            f"this frozen leg topology was frozen at adapter epoch "
+            f"{frozen.epoch} and the adapter is now at epoch {self._epoch} "
+            f"({cause}); refreeze() retires every frozen handle, so rediscover "
+            "with freeze() before replaying"
+        )
+
+    def _slot_topology(
+        self,
+        frozen: FrozenLegTopology,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        slot_count: int,
+    ) -> object:
+        """The block-diagonal replication of a frozen handle, built once.
+
+        The per-slot endpoint counts are passed explicitly because they cannot
+        be inferred: an endpoint that discovered no row never appears in the
+        frozen topology at all, so the largest index a topology carries is not
+        the endpoint count, and guessing it would shift every slot after the
+        first onto the wrong endpoints and still publish a full answer.
+        """
+
+        if slot_count == 1:
+            return frozen.prepared
+        source_count = _per_slot_count("sources", sources.count, slot_count)
+        sink_count = _per_slot_count("sinks", sinks.count, slot_count)
+        key = (slot_count, source_count, sink_count)
+        cached = frozen.slot_topologies.get(key)
+        if cached is None:
+            cached = consumer.replicate_over_slots(
+                frozen.prepared,
+                slot_count,
+                source_count=source_count,
+                sink_count=sink_count,
+            )
+            frozen.slot_topologies[key] = cached
+        return cached
+
+
+def _per_slot_count(name: str, stacked: int, slot_count: int) -> int:
+    """How many endpoints one slot owns, refusing a ragged stack.
+
+    A stack whose length is not a whole number of slots is not a short frame -
+    it is a caller that built its slots and its endpoints from two different
+    counts, and letting it through would silently reassign endpoints to slots
+    from the point of the mismatch onward.
+    """
+
+    if stacked % slot_count:
+        raise ValueError(
+            f"{name} carries {stacked} endpoints, which is not divisible by "
+            f"slot_count {slot_count}; a slot-major stack repeats the same "
+            "endpoint set once per slot"
+        )
+    return stacked // slot_count
 
 
 def _delay_rate(delay_s: torch.Tensor, ad_mode: str) -> torch.Tensor | None:

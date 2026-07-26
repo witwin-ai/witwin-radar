@@ -151,6 +151,70 @@ def test_multipath_costs_no_more_per_frame_than_line_of_sight(monkeypatch):
     assert measured["los"][1] == measured["multipath"][1], measured
 
 
+@pytest.fixture(scope="module")
+def slot_spike():
+    from support import multi_endpoint_driver
+
+    return multi_endpoint_driver.MultiEndpointSpike()
+
+
+def test_the_per_frame_host_budget_is_flat_in_slot_count(slot_spike, monkeypatch):
+    """A whole frame of slow-time slots costs what one instant costs.
+
+    This is the pin that forbids a Python per-slot loop. A loop publishes the
+    same numbers, so nothing downstream can tell the difference; what it cannot
+    hide is the budget, because it pays one validation copy and one
+    synchronization PER SLOT. Two host observations at T = 256 and two at
+    T = 1 is the whole statement.
+
+    The replication of the frozen topology is warmed first on purpose: it is a
+    function of the topology and the slot count alone, so it belongs to the
+    freeze, not to the frame, and the adapter caches it there. It is measured
+    separately below to make sure it is not secretly expensive.
+    """
+
+    from support import multi_endpoint_driver as multi
+
+    measured = {}
+    for slots in (1, 8, 64, 256):
+        times = [index * 1.0e-5 for index in range(slots)]
+        stack = multi.slot_site_stack(
+            slot_spike.site_tensor(), (0.0, 1.0, 0.0), times
+        )
+        cold = _Counter(monkeypatch)
+        slot_spike.slot_legs(stack, slot_count=slots)
+        cold_counts = dict(cold.counts)
+        monkeypatch.undo()
+
+        counter = _Counter(monkeypatch)
+        inbound, outbound = slot_spike.slot_legs(stack, slot_count=slots)
+        measured[slots] = dict(counter.counts)
+        monkeypatch.undo()
+
+        assert inbound.slot_count == slots
+        # Two legs, one validation copy each, whatever the slot count is.
+        assert measured[slots]["item"] == 2, (slots, measured[slots])
+        assert measured[slots]["cpu"] == 0, (slots, measured[slots])
+        assert measured[slots]["tolist"] == 0, (slots, measured[slots])
+        assert measured[slots]["numpy"] == 0, (slots, measured[slots])
+        assert measured[slots]["synchronize"] == 0, (slots, measured[slots])
+        # Building the block-diagonal replication is index arithmetic, so the
+        # first frame at a new slot count costs no more than a later one.
+        assert cold_counts == measured[slots], (slots, cold_counts)
+
+        copies = 0
+        syncs = 0
+        for legs in (inbound, outbound):
+            assert legs.diagnostics.compact_count_d2h_copies == 0
+            assert legs.diagnostics.discovery_launch_count == 0
+            copies += legs.diagnostics.validation_d2h_copies
+            syncs += legs.diagnostics.validation_sync_count
+        assert copies == 2, slots
+        assert syncs == 2, slots
+
+    assert len({tuple(sorted(value.items())) for value in measured.values()}) == 1
+
+
 def test_the_native_join_adds_no_host_observation_of_its_own(
     multipath, monkeypatch
 ):

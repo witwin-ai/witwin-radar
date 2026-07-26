@@ -155,6 +155,56 @@ def test_each_waveform_costs_exactly_one_forward_launch_per_frame(
             print(f"  {family:14s} {live}")
 
 
+def test_the_launch_count_is_flat_in_slot_count(spike, monkeypatch, capsys):
+    """Slots are free at the launch ledger (plan item 3).
+
+    Two counts, both independent of the slot count: the propagation replay is
+    ONE consumer call per leg for the whole frame, and the waveform is ONE
+    forward launch. A Python per-slot loop would multiply the first by the slot
+    count; a per-slot synthesis would multiply the second.
+    """
+
+    from witwin.channel.propagation import consumer
+    from witwin.radar.synthesis import synthesize_fmcw_beat
+
+    from test_phase6_cross_waveform import fmcw_spec
+
+    operators = _operators()
+    spec = fmcw_spec(4)
+    reported = {}
+    for slots in (1, 8, 64):
+        times = [index * 1.0e-5 for index in range(slots)]
+        stack = drv.slot_site_stack(spike.site_tensor(), (0.0, 1.0, 0.0), times)
+        spike.slot_legs(stack, slot_count=slots)  # warm the replication cache
+
+        replays = {"count": 0}
+        original = consumer.reevaluate
+
+        def counting(*args, _original=original, **kwargs):
+            replays["count"] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(consumer, "reevaluate", counting)
+        ledger = Ledger(monkeypatch, operators, SYNTHESIS_OPERATORS)
+        inbound, outbound = spike.slot_legs(stack, slot_count=slots)
+        composed = spike.composer.compose(
+            inbound.slot(0), outbound.slot(0), drv.make_response()
+        )
+        synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+        reported[slots] = (replays["count"], dict(ledger.launches))
+        monkeypatch.undo()
+
+        assert replays["count"] == 2, (slots, replays)
+        assert ledger.launches["fmcw_beat_forward"] == 1, (slots, ledger.launches)
+        assert sum(ledger.launches.values()) == 1, (slots, ledger.launches)
+
+    with capsys.disabled():
+        print("\nT7 slot launch ledger")
+        for slots, (replays_count, launches) in reported.items():
+            live = {name: value for name, value in launches.items() if value}
+            print(f"  T={slots:<5d} consumer.reevaluate={replays_count} {live}")
+
+
 def test_one_backward_launch_per_forward_launch(batch, monkeypatch):
     """R-ADR-004's shape, measured: one companion launch, not two, not zero."""
 
