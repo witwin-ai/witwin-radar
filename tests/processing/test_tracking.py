@@ -302,6 +302,57 @@ def test_the_fixed_size_batch_replaces_reg_datas_numpy_random_path():
         frame.as_fixed_size(0)
 
 
+def _spread_frame(count: int) -> DetectionFrame:
+    """``count`` distinct detections, so a reordering is visible in the values."""
+
+    index = torch.arange(count, dtype=torch.float64)
+    xyz = torch.stack((index, index + 10.0, index * 0.5), dim=1)
+    return DetectionFrame(
+        time_s=0.0,
+        xyz=xyz,
+        velocity_mps=index * 0.25,
+        energy=index + 5.0,
+        frame_index=0,
+    )
+
+
+def test_the_generator_argument_actually_drives_the_draw():
+    """Two different seeds must give two different batches.
+
+    Same-seed reproducibility alone is satisfied by a hard-wired internal seed,
+    which would make the ``generator`` argument decorative: the caller would
+    believe it controls the draw while every call returned the same rows. Both
+    branches are covered - fewer detections than slots (a permutation plus a
+    sampled remainder) and more detections than slots (a subset) - and a single
+    shared generator is asserted to ADVANCE, which is the property a caller
+    relies on when it batches frame after frame from one stream.
+    """
+
+    frame = _spread_frame(6)
+
+    padded_a = frame.as_fixed_size(16, generator=torch.Generator().manual_seed(3))
+    padded_b = frame.as_fixed_size(16, generator=torch.Generator().manual_seed(4))
+    assert not torch.equal(padded_a, padded_b)
+
+    subset_a = frame.as_fixed_size(3, generator=torch.Generator().manual_seed(3))
+    subset_b = frame.as_fixed_size(3, generator=torch.Generator().manual_seed(4))
+    assert not torch.equal(subset_a, subset_b)
+
+    shared = torch.Generator().manual_seed(11)
+    first = frame.as_fixed_size(16, generator=shared)
+    second = frame.as_fixed_size(16, generator=shared)
+    assert not torch.equal(first, second)
+
+    # And the same seed still reproduces, on both branches: the argument is
+    # live, not merely noisy.
+    assert torch.equal(
+        padded_a, frame.as_fixed_size(16, generator=torch.Generator().manual_seed(3))
+    )
+    assert torch.equal(
+        subset_a, frame.as_fixed_size(3, generator=torch.Generator().manual_seed(3))
+    )
+
+
 def test_the_batch_range_column_is_the_norm_of_its_own_position():
     frame = _frame(3)
     batch = frame.as_fixed_size(2, generator=torch.Generator().manual_seed(1))
