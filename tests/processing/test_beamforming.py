@@ -123,6 +123,51 @@ def test_normalized_weights_give_a_unit_response_to_a_matched_wavefront():
     )
 
 
+def test_the_manifold_matches_a_wavefront_built_from_the_delay_convention():
+    """The ABSOLUTE spatial phase sign, against a wavefront this test derives.
+
+    The test above cannot see a global conjugation: both of its sides come out
+    of :func:`conventional_steering`, so conjugating the manifold conjugates the
+    weights with it and the response stays one. Here the wavefront is built from
+    the propagation convention instead - a far-field source at ``u`` reaches the
+    element at ``r`` over ``d0 - <r, u>``, and Channel publishes ``exp(-j k d)``,
+    so the element carries ``exp(+j k <r, u>)`` relative to the origin - and the
+    unnormalised manifold must BE that wavefront for ``phase_sign = -1``.
+
+    The conjugate wavefront is asserted NOT to form, which is what makes this an
+    absolute statement: a steering vector that agreed with both would be saying
+    nothing about which way the array looks.
+    """
+
+    array = _array(phase_sign=-1)
+    direction = _direction(0.3)
+    wavenumber = 2.0 * math.pi / array.wavelength_m
+
+    hand_built = []
+    for position in array.element_positions_m.tolist():
+        projection = sum(p * d for p, d in zip(position, direction[0].tolist()))
+        # exp(-j k d) at d = -projection, the far-field path relative to origin.
+        phase = -wavenumber * (-projection)
+        hand_built.append(complex(math.cos(phase), math.sin(phase)))
+    wavefront = torch.tensor(hand_built, dtype=torch.complex128).reshape(-1, 1)
+
+    manifold = conventional_steering(
+        array, direction, normalize=False, dtype=torch.complex128
+    )
+    torch.testing.assert_close(manifold, wavefront, rtol=1e-9, atol=1e-9)
+
+    weights = conventional_steering(array, direction, dtype=torch.complex128)
+    matched = (weights.conj() * wavefront).sum(dim=0)
+    torch.testing.assert_close(
+        matched, torch.ones_like(matched), rtol=1e-9, atol=1e-9
+    )
+
+    # A conjugated array response is a DIFFERENT look direction, and this
+    # off-broadside one does not form: the sign is pinned, not free.
+    reversed_response = (weights.conj() * wavefront.conj()).sum(dim=0)
+    assert float(reversed_response.abs().max()) < 0.5
+
+
 def test_a_steering_grid_needs_three_components_and_an_array_record():
     array = _array()
     with pytest.raises(ValueError, match=r"\[\*beam, 3\]"):
