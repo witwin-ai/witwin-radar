@@ -66,6 +66,7 @@ from .fmcw_beat import (
 )
 from .ofdm_cfr import synthesize_cfr_rows, synthesize_ofdm_cfr
 from .pulsed_echo import synthesize_echo_rows, synthesize_pulsed_echo
+from .selection import select_component
 
 __all__ = [
     "BEAT_PHASOR",
@@ -99,6 +100,7 @@ __all__ = [
     "require_pulsed_compatible",
     "require_single_carrier_home",
     "segment_of_each_row",
+    "select_component",
     "tdm_slot_count",
     "tdm_slot_times_s",
     "synthesize_beat_rows",
