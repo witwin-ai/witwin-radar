@@ -112,6 +112,17 @@ SPIKE_MODULES = (
     # not permission to read a device tensor per frame.
     "witwin/radar/processing/__init__.py",
     "witwin/radar/processing/combination.py",
+    # The range / Doppler / beam chain and the metadata record all of them read.
+    # Same rule, and it has teeth here: the published window coherent gain is a
+    # host closed form rather than a ``float(w.mean())`` precisely so that a
+    # per-frame processing call adds no unattributed synchronization.
+    "witwin/radar/processing/axes.py",
+    "witwin/radar/processing/beam_cube.py",
+    "witwin/radar/processing/contracts.py",
+    "witwin/radar/processing/cube.py",
+    "witwin/radar/processing/doppler.py",
+    "witwin/radar/processing/primitives.py",
+    "witwin/radar/processing/range_profile.py",
     "witwin/radar/sensors/__init__.py",
     "witwin/radar/sensors/contracts.py",
     "witwin/radar/sensors/pattern.py",
