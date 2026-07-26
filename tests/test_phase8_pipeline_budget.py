@@ -17,6 +17,12 @@ hardware, the number in the failure message is the report, and the correct
 response is to record the new measurement on purpose - never to widen the
 factor so a run goes green.
 
+Device specific includes device OCCUPANCY. The medians were taken on an
+otherwise idle GPU, and a second CUDA process on the same device pushes exactly
+these two pins over their factor while every counting pin stays green -
+reproduced deliberately. A runner that shares a GPU between jobs must serialize
+them; the answer is never a wider factor.
+
 The counting pins - host observations, transform dispatches, D2H copies,
 synchronizations, join launches - are device INDEPENDENT and are the ones that
 catch an architectural regression. A stage that starts reading a device value to

@@ -188,6 +188,16 @@ def phase_comparison_aoa(
     ``wx = (2 pi / fft_size) * signed_k`` and ``x = wx / pi``, so on a
     half-wavelength array ``x = sin(theta_az)`` and bin ``k`` is exact when
     ``sin(theta_az) = 2 k / fft_size``.
+
+    Accuracy note for the ELEVATION row. The azimuth-walk correction is built
+    from ``wx``, which is the azimuth FFT PEAK BIN and not the continuous
+    azimuth, so a target between bins leaves a residual walk of
+    ``el_tx_dx`` times the azimuth quantization in the elevation phase. On a
+    noiseless off-bin scene at ``fft_size=64`` that measured as a cosine bias of
+    about 0.009 at an elevation cosine of 0.08 - inside any half-bin criterion,
+    and the reason this route is the coarse one. Precision elevation wants the
+    two-dimensional estimator, :func:`fft2_aoa`, which reads both angles off one
+    grid instead of correcting one with the other.
     """
 
     array = _require_array(array)
