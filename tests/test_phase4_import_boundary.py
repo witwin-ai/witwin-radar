@@ -823,10 +823,14 @@ def test_test_support_resolves_inside_this_worktree():
 
 
 def test_the_consumer_contract_is_the_version_this_spike_was_built_against():
+    # Version 3 = ADR-039: the transport carries the declared source amplitude
+    # sqrt(powers_w). The adapter was built against version 2 and version 3
+    # changes no shape, dtype or vocabulary - only the excitation the
+    # coefficient carries, which the cross-waveform radar-equation tests pin.
     pytest.importorskip("witwin.channel")
     from witwin.channel.propagation import consumer
 
-    assert consumer.CONTRACT_VERSION == 2
+    assert consumer.CONTRACT_VERSION == 3
     capabilities = consumer.capabilities()
     assert capabilities.fixed_topology_components == frozenset({"los", "reflection"})
     assert capabilities.supports_fixed_topology

@@ -792,17 +792,6 @@ def _radar_equation_power(power_w: float, d_in: float, d_out: float) -> float:
     )
 
 
-#: The transmit power the composed coefficient ACTUALLY carries, in watts.
-#:
-#: It is 1.0 regardless of what the source endpoint declares, and that is an
-#: UPSTREAM DEFECT rather than a convention: Channel's frozen-topology
-#: reevaluate publishes a coefficient with no ``sqrt(P_tx)`` in it at all.
-#: Measured directly below and pinned by
-#: ``test_channel_does_not_apply_the_declared_transmit_power``. Channel is
-#: read-only from this tree, so it is recorded, not patched.
-EFFECTIVE_TRANSMIT_POWER_W = 1.0
-
-
 def test_the_composed_coefficient_is_the_bistatic_radar_equation(spike):
     """``|C_rt|^2 == P_t lambda^2 sigma / ((4 pi)^3 d_in^2 d_out^2)``.
 
@@ -814,9 +803,9 @@ def test_the_composed_coefficient_is_the_bistatic_radar_equation(spike):
     * the site excited at exactly 1 W, so the site is a re-radiator rather than
       a second transmitter.
 
-    ``P_t`` here is :data:`EFFECTIVE_TRANSMIT_POWER_W`, the power the
-    coefficient actually carries, not the power the fixture declares. The gap
-    between the two is upstream and has its own test.
+    ``P_t`` is the power the fixture declares: under Channel ADR-039 the
+    consumer coefficient carries ``sqrt(powers_w)``, so the declared and the
+    effective transmit power are the same thing.
     """
 
     from witwin.radar.scattering import ScalarRcsResponse
@@ -828,29 +817,25 @@ def test_the_composed_coefficient_is_the_bistatic_radar_equation(spike):
     row, d_in, d_out = _los_row(spike, composed)
 
     measured = float(composed.complex_transfer_ref[row].abs().cpu()) ** 2
-    expected = _radar_equation_power(EFFECTIVE_TRANSMIT_POWER_W, d_in, d_out)
+    expected = _radar_equation_power(geo.TX_POWER_W, d_in, d_out)
     assert measured == pytest.approx(expected, rel=1e-4), (measured, expected)
 
 
-def test_channel_does_not_apply_the_declared_transmit_power(spike, monkeypatch):
-    """RECORDED UPSTREAM GAP, pinned so that fixing it cannot pass silently.
+def test_channel_applies_the_declared_transmit_power_once(spike, monkeypatch):
+    """The declared ``powers_w`` reaches the coefficient exactly once.
 
-    Channel publishes ``FREE_SPACE_AMPLITUDE =
-    "sqrt(tx_power)*wavelength/(4*pi*distance)"`` and its consumer requires a
-    source batch to carry ``powers_w``, and the Radar adapter forwards it. The
-    coefficient a frozen-topology ``reevaluate`` returns nevertheless does not
-    scale with it: a fourfold transmit power gives a ratio of exactly 1.0 where
-    the amplitude ratio should be 2.0.
+    Under Channel ADR-039 the consumer transport carries the declared source
+    amplitude ``sqrt(powers_w)``: a fourfold transmit power gives an amplitude
+    ratio of exactly 2.0, and the absolute level is the bistatic radar
+    equation at the DECLARED power. The second assertion is what makes this a
+    single-count pin: the site stays excited at exactly 1 W, so ``sqrt(P_tx)``
+    entering twice (Channel and the sensor weight, or Channel and the site
+    excitation) fails the absolute level by the power ratio.
 
-    Every earlier fixture ran at ``TX_POWER_W = 1.0``, which is why this was
-    invisible. It is visible now because Phase 6 moved the fixture off 1 W in
-    order to look for the OPPOSITE defect - the site power being counted a
-    second time - and found this one instead.
-
-    Channel is read-only from this tree, so this asserts the behaviour that
-    exists. When Channel starts applying the power, this test fails, and the
-    absolute-level test above and ``EFFECTIVE_TRANSMIT_POWER_W`` are what have
-    to change with it.
+    History: before ADR-039 the coefficient was unit-source-amplitude and this
+    test pinned that gap as an upstream defect (F-19). The fixture running at
+    ``TX_POWER_W = 0.01`` rather than 1 W is what made either behaviour
+    visible at all.
     """
 
     from witwin.radar.scattering import ScalarRcsResponse
@@ -867,12 +852,13 @@ def test_channel_does_not_apply_the_declared_transmit_power(spike, monkeypatch):
     high, _, _ = spike.frame(response=response)
     high_amplitude = float(high.complex_transfer_ref[row].abs().cpu())
 
-    assert high_amplitude / low_amplitude == pytest.approx(1.0, rel=1e-6)
-    # What it would be if the declared power reached the coefficient once:
-    # sqrt(0.04 / 0.01) = 2. And the level at 0.01 W would be a hundredth of
-    # the measured one, so the defect is a factor of 100 in power here.
+    # sqrt(0.04 / 0.01) = 2, the single-application amplitude ratio.
+    assert high_amplitude / low_amplitude == pytest.approx(2.0, rel=1e-6)
+    # And the absolute level at 0.01 W is the radar equation at 0.01 W: not
+    # 100x it (the pre-ADR-039 unit-amplitude value), not 0.01x it (a double
+    # count).
     would_be = _radar_equation_power(0.01, d_in, d_out)
-    assert low_amplitude**2 == pytest.approx(100.0 * would_be, rel=1e-4)
+    assert low_amplitude**2 == pytest.approx(would_be, rel=1e-4)
 
 
 def test_no_waveform_spec_may_reapply_the_spreading_the_weight_carries(frame):
