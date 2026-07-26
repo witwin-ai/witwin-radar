@@ -43,6 +43,69 @@ def _require_tensor(
     return value
 
 
+def require_wideband_pair(
+    frequency_response: object,
+    frequency_offsets_hz: object,
+    row_count: int,
+) -> int:
+    """Validate a ``[rows, F]`` response against its ``[F]`` grid, host only.
+
+    One statement in two tensors: a response without its grid names no
+    frequencies, and a grid without a response promises a band that is not
+    there. Both are refused rather than defaulted, because either default would
+    be a guess about which frequencies a caller meant.
+
+    This is the SAME rule ``SynthesisPathBatch`` already enforces on its own
+    pair, hoisted here so that the leg batch, the composed batch and the
+    synthesis batch cannot drift apart. It reads no tensor VALUE - only shapes,
+    dtypes, contiguity and device - so it costs no transfer and no
+    synchronization anywhere on the frame path.
+
+    Returns the band count, ``0`` when the pair is absent.
+    """
+
+    if (frequency_response is None) != (frequency_offsets_hz is None):
+        raise ValueError(
+            "frequency_response and frequency_offsets_hz are one statement and "
+            "must be supplied together; a response without its frequency grid "
+            "says nothing, and a grid without a response promises a band that "
+            "was never evaluated"
+        )
+    if frequency_response is None:
+        return 0
+    if not isinstance(frequency_offsets_hz, torch.Tensor):
+        raise TypeError(
+            "frequency_offsets_hz must be a torch.Tensor, got "
+            f"{type(frequency_offsets_hz).__name__}"
+        )
+    if frequency_offsets_hz.ndim != 1:
+        raise ValueError("frequency_offsets_hz must have shape (F,)")
+    bands = int(frequency_offsets_hz.shape[0])
+    if bands < 1:
+        raise ValueError(
+            "frequency_offsets_hz must declare at least one column; an empty "
+            "grid is a narrowband batch, which is spelled with both members None"
+        )
+    _require_tensor(
+        "frequency_response",
+        frequency_response,
+        dtype=torch.complex64,
+        shape=(row_count, bands),
+    )
+    _require_tensor(
+        "frequency_offsets_hz",
+        frequency_offsets_hz,
+        dtype=torch.float32,
+        shape=(bands,),
+    )
+    if frequency_response.device != frequency_offsets_hz.device:
+        raise ValueError(
+            f"frequency_response is on {frequency_response.device} but its grid "
+            f"is on {frequency_offsets_hz.device}; a band is single-device"
+        )
+    return bands
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class RadarEndpointSpec:
     """One batch of radar endpoints in world coordinates.
@@ -161,6 +224,23 @@ class RadarLegBatch:
     batch the adapter publishes carries it, and a consumer that needs it
     refuses a batch without it by name rather than inventing one.
 
+    ``frequency_response`` and ``frequency_offsets_hz`` are ONE statement and
+    are present or absent together. The response is ``[leg_count, F]``
+    complex64: column ``j`` is this row's transport evaluated at
+    ``reference_frequency_hz + frequency_offsets_hz[j]``, published by the
+    Channel consumer's ADR-042 wideband route. It is not a narrowband
+    coefficient shifted by the offset law - the material response, the
+    ``lambda/(4*pi*d)`` spreading and the layer-stack fringes are all evaluated
+    natively at the column's own frequency. Column ``j`` with
+    ``frequency_offsets_hz[j] == 0`` is BIT-IDENTICAL to ``coefficient``, which
+    is what makes a wideband batch a strict superset of a narrowband one.
+
+    The grid is a ``[F]`` float32 tensor on the batch device, aliased from the
+    adapter, which builds it once per declared grid rather than per frame. Row
+    validity is deliberately NOT widened: ``row_valid`` stays ``[leg_count]``
+    and is broadcast over the band, because whether a stationary point exists
+    is a geometric fact about the endpoints and cannot depend on frequency.
+
     ``slot_count`` states how many time slots - TDM slots, OFDM symbols or
     pulses - this batch carries. The default ``1`` is one instant and is what
     every single-shot reevaluation publishes. A batch with ``slot_count > 1``
@@ -193,6 +273,8 @@ class RadarLegBatch:
     diagnostics: object
     slot_count: int = 1
     field_direction: torch.Tensor | None = None
+    frequency_response: torch.Tensor | None = None
+    frequency_offsets_hz: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
@@ -263,10 +345,27 @@ class RadarLegBatch:
                 dtype=torch.float32,
                 shape=(self.leg_count, 3),
             )
+        require_wideband_pair(
+            self.frequency_response, self.frequency_offsets_hz, self.leg_count
+        )
 
     @property
     def device(self) -> torch.device:
         return self.delay_s.device
+
+    @property
+    def band_count(self) -> int:
+        """How many frequency columns this batch carries, ``0`` when narrowband.
+
+        A host int, so a consumer can size a loop over the band without
+        touching the device. ``0`` and ``1`` are deliberately different: one
+        column at ``df = 0`` is a declared single-frequency band, while ``0``
+        says no band was requested at all.
+        """
+
+        if self.frequency_offsets_hz is None:
+            return 0
+        return int(self.frequency_offsets_hz.shape[0])
 
     @property
     def rows_per_slot(self) -> int:
@@ -329,6 +428,10 @@ class RadarLegBatch:
             diagnostics=self.diagnostics,
             slot_count=1,
             field_direction=narrow(self.field_direction),
+            # Rows narrow, the band does not: the grid is a declaration shared
+            # by every slot, so it is aliased rather than sliced.
+            frequency_response=narrow(self.frequency_response),
+            frequency_offsets_hz=self.frequency_offsets_hz,
         )
 
 
@@ -337,4 +440,5 @@ __all__ = [
     "RadarEndpointSpec",
     "RadarLegBatch",
     "require_endpoint_role",
+    "require_wideband_pair",
 ]

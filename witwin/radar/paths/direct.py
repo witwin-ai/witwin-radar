@@ -163,6 +163,14 @@ class DirectComposer:
         row_valid = (
             None if leg.row_valid is None else leg.row_valid.index_select(0, rows)
         )
+        # A band reorders exactly like the reference column: `index_select` on
+        # dim 0 keeps the frequency axis intact, so a direct wideband batch
+        # needs no arithmetic here either.
+        frequency_response = (
+            None
+            if leg.frequency_response is None
+            else leg.frequency_response.index_select(0, rows)
+        )
         delay_rate = (
             leg.delay_rate.index_select(0, rows)
             if include_delay_rate and leg.delay_rate is not None
@@ -180,6 +188,10 @@ class DirectComposer:
             row_valid=row_valid,
             topology=self.topology,
             join_mode="direct",
+            frequency_response=frequency_response,
+            frequency_offsets_hz=(
+                None if frequency_response is None else leg.frequency_offsets_hz
+            ),
         )
 
 

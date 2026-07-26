@@ -67,6 +67,15 @@ REEVALUATION_KEYWORDS = frozenset(
         # vocabulary. It is what lets a moving structure be REPLAYED instead of
         # silently answered out of geometry that moved on.
         "world_motion",
+        # The FREQUENCIES at which the field is evaluated, as offsets from the
+        # reference in Hz. It is the second legitimate crossing and it is the
+        # same KIND of quantity as the first: ``reference_frequency_hz`` names
+        # one frequency, this names several. What it deliberately is not is a
+        # subcarrier count, a spacing, an FFT size, or a bandwidth. An OFDM
+        # caller converts its subcarrier grid to Hz on the SYNTHESIS side
+        # (``OfdmCfrSpec.frequency_offsets_hz``), so propagation still never
+        # learns which waveform asked - exactly the rule ``slot_count`` follows.
+        "frequency_offsets_hz",
     }
 )
 
@@ -293,9 +302,18 @@ def test_a_fully_populated_config_sends_exactly_the_allowed_keywords(monkeypatch
 def test_the_adapter_constructor_accepts_only_the_propagation_block():
     """Folding a waveform field into the adapter is not writable.
 
-    The constructor takes three scalars from ``PropagationConfig`` and nothing
-    that could carry a waveform, which is what makes the leak structurally
-    impossible rather than merely absent today.
+    The constructor takes propagation quantities and nothing that could carry a
+    waveform, which is what makes the leak structurally impossible rather than
+    merely absent today.
+
+    The set is asserted by EQUALITY on purpose: a new parameter has to be added
+    here deliberately, so it is reviewed rather than tolerated.
+    ``frequency_offsets_hz`` was added that way in Phase 8. It is a tuple of
+    FREQUENCIES in Hz - the frequencies at which the field is evaluated - and it
+    is not a subcarrier count, a spacing, an FFT size, or a bandwidth. The
+    waveform-to-Hz mapping lives on the waveform spec
+    (``OfdmCfrSpec.frequency_offsets_hz``), which is the side of the boundary
+    that knows what a subcarrier is.
     """
 
     import inspect
@@ -310,6 +328,7 @@ def test_the_adapter_constructor_accepts_only_the_propagation_block():
         "reference_frequency_hz",
         "components",
         "max_depth",
+        "frequency_offsets_hz",
     }, sorted(parameters)
 
 

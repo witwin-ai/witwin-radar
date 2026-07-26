@@ -35,6 +35,7 @@ published as a host int, so nothing here calls ``.item()``, ``.cpu()``,
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -43,6 +44,35 @@ import torch.autograd.forward_ad as forward_ad
 from witwin.channel.propagation import consumer
 
 from .contracts import RadarEndpointSpec, RadarLegBatch, require_endpoint_role
+
+
+#: How much per-column phase error the native float32 frequency grid may
+#: introduce across a frozen topology before this adapter refuses the band.
+#:
+#: Channel's native bridges take a double ``frequency_hz`` and cast it to float32
+#: at the launch, so the realisable frequency grid has a spacing of
+#: ``native_frequency_resolution_hz(f_ref)`` - 8192 Hz at 77 GHz. A requested
+#: offset is therefore evaluated at the nearest representable frequency, and the
+#: resulting delay phase is wrong by up to ``pi * resolution_hz * delay_s``
+#: radians per column, pseudo-randomly across the band. Channel publishes the
+#: resolution and the law but deliberately does not evaluate the bound: it needs
+#: ``max(delay_s)``, a device reduction plus a host read that the ADR-032
+#: per-call budget does not have. The caller owns the check, exactly as it owns
+#: ``ASPECT_PHASE_BUDGET_RAD`` for a declared aspect phase rate.
+#:
+#: ``0.1 rad`` matches that precedent, and the consequence is stated rather
+#: than implied: unmodelled phase of that size, spread pseudo-randomly across a
+#: band, raises the range-sidelobe floor of the profile a radar then transforms.
+#: At 77 GHz the bound binds at ``tau = 0.1 / (pi * 8192) = 3.9 us``, a 580 m
+#: round trip; a 150 m round trip (``tau = 1 us``) sits at 2.6e-2 rad, well
+#: inside it. A caller that needs a cleaner floor than the bound allows must
+#: shorten its range window - there is no clamped or reduced-accuracy mode.
+#:
+#: Named for the frequency RESOLUTION rather than for what a signal engineer
+#: would call it: the propagation layer is held to a vocabulary that excludes
+#: front-end terms, and ``resolution`` is also the word Channel's own capability
+#: record uses.
+WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD = 0.1
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -99,6 +129,59 @@ class FrozenLegTopology:
     slot_topologies: dict = field(default_factory=dict, repr=False)
 
 
+def _declared_offsets(
+    offsets: object, components: frozenset[str], capabilities: object
+) -> tuple[float, ...] | None:
+    """Normalise a declared band and hold it against the capability record.
+
+    Structural validation of the grid itself - a tensor, an empty tuple, a
+    non-finite entry, a duplicate, an unresolvable spacing - belongs to Channel
+    and stays there, because Channel owns the launch grid those rules describe.
+    What is checked HERE is the part Channel cannot see: whether the adapter's
+    declared COMPONENT set is inside the wideband cell. Channel refuses a
+    dispersive or rough scene, but the fixed-topology component set is a radar
+    declaration made before any scene is touched, so a component the wideband
+    cell does not cover has to be caught on this side or not at all.
+    """
+
+    if offsets is None:
+        return None
+    if isinstance(offsets, torch.Tensor):
+        raise TypeError(
+            "frequency_offsets_hz is a host declaration, not a differentiable "
+            "input; pass a tuple of floats. A per-offset tangent is the "
+            "reference-frequency tangent evaluated at that offset, which the "
+            "consumer already supports"
+        )
+    grid = tuple(float(value) for value in offsets)
+    if not capabilities.supports_wideband_offsets:
+        raise NotImplementedError(
+            "the propagation consumer does not support frequency offsets "
+            f"(contract version {capabilities.contract_version})"
+        )
+    if "scalar_transport" not in capabilities.wideband_responses:
+        raise NotImplementedError(
+            "the propagation consumer does not publish a wideband "
+            "scalar_transport; its wideband responses are "
+            f"{sorted(capabilities.wideband_responses)}"
+        )
+    outside = components - capabilities.wideband_components
+    if outside:
+        raise NotImplementedError(
+            f"components {sorted(outside)} are outside the consumer's wideband "
+            f"cell {sorted(capabilities.wideband_components)}; a band cannot be "
+            "declared for a component whose response is not evaluated per "
+            "frequency"
+        )
+    limit = capabilities.max_frequency_offset_count
+    if limit is not None and len(grid) > limit:
+        raise ValueError(
+            f"the declared band has {len(grid)} columns but the consumer "
+            f"publishes at most {limit}"
+        )
+    return grid
+
+
 def _endpoint_batch(spec: RadarEndpointSpec, role: str) -> consumer.EndpointBatch:
     """Build a consumer endpoint batch, preserving gradient state exactly."""
 
@@ -128,7 +211,23 @@ def _detached(spec: RadarEndpointSpec) -> RadarEndpointSpec:
 
 
 class ChannelPropagationAdapter:
-    """Radar-facing view of one compiled Channel scene at one frequency."""
+    """Radar-facing view of one compiled Channel scene at one frequency.
+
+    ``frequency_offsets_hz`` declares a BAND. It is a host tuple of offsets in
+    Hz relative to ``reference_frequency_hz``, and declaring it makes every
+    replay publish a ``[K, F]`` transport alongside the ``[K]`` one, evaluated
+    natively at ``f_ref + df_j``. It is a propagation input and nothing else: it
+    names frequencies at which a field is evaluated, and it is never a
+    subcarrier count, an FFT size, or a bandwidth. A waveform owner that wants
+    its own grid converts it to Hz first, which is what keeps waveform
+    configuration out of the propagation request.
+
+    ``None`` (the default) is exactly the pre-band behaviour, bit for bit.
+
+    Every refusal below quotes the Channel capability record rather than a local
+    copy of it, so a Channel that widens or narrows its wideband cell moves this
+    adapter with it instead of leaving a stale constant behind.
+    """
 
     def __init__(
         self,
@@ -137,6 +236,7 @@ class ChannelPropagationAdapter:
         reference_frequency_hz: float,
         components: frozenset[str],
         max_depth: int,
+        frequency_offsets_hz: tuple[float, ...] | None = None,
     ) -> None:
         capabilities = consumer.capabilities()
         unsupported = frozenset(components) - capabilities.components
@@ -159,10 +259,32 @@ class ChannelPropagationAdapter:
         self._capabilities = capabilities
         self._epoch = 0
         self._world_motion = "frozen_world"
+        self._offsets = _declared_offsets(
+            frequency_offsets_hz, self._components, capabilities
+        )
+        # Built once per device, never per frame. The grid is a declaration, so
+        # rebuilding it on the frame path would be an avoidable host-to-device
+        # copy in the inner loop for a table that never changes.
+        self._offset_grids: dict[torch.device, torch.Tensor] = {}
 
     @property
     def reference_frequency_hz(self) -> float:
         return self._reference_frequency_hz
+
+    @property
+    def frequency_offsets_hz(self) -> tuple[float, ...] | None:
+        """The declared band, or ``None`` for a single-frequency adapter."""
+
+        return self._offsets
+
+    def _offset_grid(self, device: torch.device) -> torch.Tensor | None:
+        if self._offsets is None:
+            return None
+        grid = self._offset_grids.get(device)
+        if grid is None:
+            grid = torch.tensor(self._offsets, dtype=torch.float32, device=device)
+            self._offset_grids[device] = grid
+        return grid
 
     @property
     def capabilities(self) -> object:
@@ -293,6 +415,7 @@ class ChannelPropagationAdapter:
                 ad_mode="none",
             ),
         )
+        self._require_frequency_resolution_budget(evaluation.paths.geometry.delay_s)
         topology = evaluation.paths.topology
         prepared = consumer.prepare_fixed_topology(topology)
         components = tuple(bucket.component for bucket in prepared.buckets)
@@ -398,10 +521,29 @@ class ChannelPropagationAdapter:
                 ad_mode=ad_mode,
                 slot_count=slot_count,
                 world_motion=self._world_motion,
+                frequency_offsets_hz=self._offsets,
             ),
         )
         paths = result.paths
         geometry = paths.geometry
+        transport = paths.transport
+        # A narrowband adapter never reads the band members at all, so this
+        # module stays usable against a transport that predates them.
+        response = None
+        if self._offsets is not None:
+            response = transport.coefficient_offsets
+            if response is None:
+                raise RuntimeError(
+                    f"the consumer answered a declared band {self._offsets!r} "
+                    "with no coefficient_offsets; the wideband payload and its "
+                    "grid are one statement"
+                )
+            if transport.frequency_offsets_hz != self._offsets:
+                raise RuntimeError(
+                    "the consumer echoed a frequency grid "
+                    f"{transport.frequency_offsets_hz!r} that is not the "
+                    f"declared {self._offsets!r}"
+                )
         return RadarLegBatch(
             leg_count=paths.path_count,
             pair_count=paths.pair_count,
@@ -417,7 +559,7 @@ class ChannelPropagationAdapter:
             material_sequence=paths.topology.material_sequence,
             interaction_type=paths.topology.interaction_type,
             delay_s=geometry.delay_s,
-            coefficient=paths.transport.coefficient,
+            coefficient=transport.coefficient,
             delay_rate=_delay_rate(geometry.delay_s, ad_mode),
             row_valid=result.row_valid,
             diagnostics=result.diagnostics,
@@ -427,7 +569,58 @@ class ChannelPropagationAdapter:
             # geometry, so copying it would break the zero-copy discipline for
             # the one consumer that needs a gradient through a direction.
             field_direction=geometry.field_direction,
+            # Aliased from the consumer, paired with the grid this adapter built
+            # once. Neither is copied, so a gradient reaches the endpoints
+            # through every column exactly as it does through the reference one.
+            frequency_response=response,
+            frequency_offsets_hz=(
+                None if response is None else self._offset_grid(geometry.delay_s.device)
+            ),
         )
+
+    def _require_frequency_resolution_budget(self, delay_s: torch.Tensor) -> None:
+        """Refuse a band whose float32 launch grid cannot resolve these delays.
+
+        Runs at FREEZE time and only when a band is declared. Freeze already
+        runs full discovery and already synchronizes, so the one host read this
+        costs is paid on a cadence that is once per frozen topology rather than
+        once per frame - which is the whole reason the check lives here and not
+        inside a replay.
+
+        The delay is the discovery-time maximum over the frozen rows. Replay
+        moves the endpoints, so a later frame's delay can exceed it; that is
+        what the rediscovery cadence is for, and a caller that walks a target
+        far past its frozen range window refreezes anyway.
+        """
+
+        if self._offsets is None:
+            return
+        if delay_s.numel() == 0:
+            return
+        resolution_hz = consumer.native_frequency_resolution_hz(
+            self._reference_frequency_hz
+        )
+        max_delay_s = float(delay_s.detach().max())
+        error_rad = math.pi * resolution_hz * max_delay_s
+        if error_rad > WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD:
+            raise ValueError(
+                "unresolvable wideband frequency grid: Channel evaluates each "
+                "column at float32 precision, whose grid spacing at "
+                f"{self._reference_frequency_hz} Hz is "
+                f"native_frequency_resolution_hz={resolution_hz} Hz "
+                f"({self._capabilities.native_frequency_resolution_law}). Over "
+                f"the frozen topology's longest delay {max_delay_s} s that "
+                "spacing leaves up to "
+                f"pi*resolution_hz*max(delay_s)={error_rad} rad of unmodelled "
+                "per-column phase, which is not within "
+                "WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD="
+                f"{WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD}. That phase "
+                "is pseudo-random across the band, so it raises the sidelobe "
+                "floor of any profile transformed from these columns rather "
+                "than shifting a peak. Shorten the range window or raise the "
+                "reference frequency - there is no clamped or reduced-accuracy "
+                "mode"
+            )
 
     def _require_current_epoch(self, frozen: FrozenLegTopology) -> None:
         """Refuse a handle frozen against a compiled scene this adapter dropped.
@@ -530,4 +723,8 @@ def _delay_rate(delay_s: torch.Tensor, ad_mode: str) -> torch.Tensor | None:
     return tangent.clone()
 
 
-__all__ = ["ChannelPropagationAdapter", "FrozenLegTopology"]
+__all__ = [
+    "WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD",
+    "ChannelPropagationAdapter",
+    "FrozenLegTopology",
+]

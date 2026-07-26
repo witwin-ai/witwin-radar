@@ -656,6 +656,7 @@ class TwoWayComposer:
             if row_valid is None
             else row_valid.to(torch.int32)
         )
+        band = self._band(inbound, outbound)
         response_re, response_im, response_index, response_family = self._response(
             response, inbound, outbound, flags, device
         )
@@ -681,6 +682,17 @@ class TwoWayComposer:
             response_family,
         )
 
+        frequency_response = self._compose_band(
+            band,
+            inbound,
+            outbound,
+            response_re,
+            response_im,
+            response_index,
+            response_family,
+            flags,
+        )
+
         publish_rate = (
             include_delay_rate
             and inbound.delay_rate is not None
@@ -698,7 +710,107 @@ class TwoWayComposer:
             row_valid=row_valid,
             topology=self.topology,
             join_mode="multipath",
+            frequency_response=frequency_response,
+            frequency_offsets_hz=(
+                None if band is None else inbound.frequency_offsets_hz
+            ),
         )
+
+    def _band(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> int | None:
+        """The two legs' agreed band width, or ``None`` when neither has one.
+
+        Both legs or neither. A round trip composed from one banded leg and one
+        narrowband leg would have to broadcast the narrowband leg's single
+        coefficient across the band, which is the narrowband approximation
+        reintroduced silently on exactly one half of the round trip - the
+        failure mode this whole capability exists to remove.
+        """
+
+        counts = (inbound.band_count, outbound.band_count)
+        if counts == (0, 0):
+            return None
+        if 0 in counts:
+            raise ValueError(
+                f"the inbound leg carries {counts[0]} frequency columns and the "
+                f"outbound leg carries {counts[1]}; a round trip is composed at "
+                "one frequency at a time, so both legs must be evaluated over "
+                "the same band or neither"
+            )
+        if counts[0] != counts[1]:
+            raise ValueError(
+                f"the two legs carry {counts[0]} and {counts[1]} frequency "
+                "columns; they must be evaluated over the same band"
+            )
+        if not torch.equal(
+            inbound.frequency_offsets_hz, outbound.frequency_offsets_hz
+        ):
+            raise ValueError(
+                "the two legs were evaluated over different frequency grids; a "
+                "composed column multiplies one leg's response at f by the "
+                "other's at the SAME f, so the grids must agree"
+            )
+        return counts[0]
+
+    def _compose_band(
+        self,
+        band,
+        inbound,
+        outbound,
+        response_re,
+        response_im,
+        response_index,
+        response_family,
+        flags,
+    ):
+        """Compose ``H_in(f_j) * S * H_out(f_j)`` for every column of the band.
+
+        The frequency axis is a PYTHON LOOP over the existing ``[K]`` join
+        primitive, not a strided ``[K, F]`` kernel. That is a deliberate Phase-8
+        boundary: widening ``two_way_join.cu`` means widening its primal, its
+        JVP and its VJP together, and it needs a measured reason first. The loop
+        costs one launch per column and reproduces the reference column exactly,
+        so the measurement can be made against something that already works.
+
+        ``tau_rt`` and ``rate_rt`` are recomputed by every column and discarded:
+        they are functions of the two delays alone and are identical across the
+        band. That redundancy is the price of not widening the kernel, and it is
+        recorded rather than hidden.
+
+        The scatter response is evaluated ONCE, above the loop, and the same
+        real pair is handed to every column. A response that varied across the
+        band would be a wideband TARGET model, which is a separate capability;
+        reusing one value here is the honest statement that the target's
+        response is frozen at the reference frequency while propagation is not.
+        """
+
+        if band is None:
+            return None
+        columns = []
+        for index in range(band):
+            _tau, _rate, column_re, column_im = _TwoWayJoin.apply(
+                inbound.delay_s.contiguous(),
+                outbound.delay_s.contiguous(),
+                _primal_rate(
+                    inbound.delay_rate, inbound.leg_count, flags.device, "inbound"
+                ),
+                _primal_rate(
+                    outbound.delay_rate, outbound.leg_count, flags.device, "outbound"
+                ),
+                inbound.frequency_response[:, index].real.contiguous(),
+                inbound.frequency_response[:, index].imag.contiguous(),
+                outbound.frequency_response[:, index].real.contiguous(),
+                outbound.frequency_response[:, index].imag.contiguous(),
+                response_re,
+                response_im,
+                flags,
+                self.inbound_row,
+                self.outbound_row,
+                response_index,
+                self,
+                response_family,
+            )
+            columns.append(torch.complex(column_re, column_im))
+        return torch.stack(columns, dim=1)
 
     def _require_frame(
         self, inbound: RadarLegBatch, outbound: RadarLegBatch

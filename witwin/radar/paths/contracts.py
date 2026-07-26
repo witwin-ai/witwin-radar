@@ -14,6 +14,8 @@ from typing import Literal
 
 import torch
 
+from ..propagation.contracts import require_wideband_pair
+
 
 JoinMode = Literal["direct", "multipath"]
 
@@ -109,6 +111,20 @@ class RadarPathBatch:
     dead row is a complete answer contributing exactly zero, never an error,
     and validity is never inferred from a zero payload.
 
+    ``frequency_response`` and ``frequency_offsets_hz`` are the composed band,
+    present or absent together and validated by the same host-only rule the leg
+    batch and the synthesis batch use. The response is ``[path_count, F]``
+    complex64 and column ``j`` is the round trip composed ENTIRELY at
+    ``reference_frequency_hz + frequency_offsets_hz[j]``: both legs' transport
+    at that frequency, multiplied by the scatter response.
+
+    What the band does NOT contain, stated so it is not assumed: the scatter
+    response is evaluated once and reused across the band. A wideband TARGET
+    response - an RCS that varies across the band - is a separate capability
+    with its own owner, and its absence here means a composed column is
+    ``H_in(f_j) * S(f_ref) * H_out(f_j)``. The propagation and material band
+    shape is exact; the target's is frozen.
+
     ``join_mode`` records which composer produced these rows. It is stored
     rather than inferred so that "which paths am I looking at" is a checkable
     property of the result and never a guess from its shape. Both modes publish
@@ -127,6 +143,8 @@ class RadarPathBatch:
     row_valid: torch.Tensor | None
     topology: RadarPathTopology
     join_mode: JoinMode
+    frequency_response: torch.Tensor | None = None
+    frequency_offsets_hz: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.join_mode not in JOIN_MODES:
@@ -167,10 +185,21 @@ class RadarPathBatch:
             )
         if self.topology.row_count != self.path_count:
             raise ValueError("topology must have exactly path_count rows")
+        require_wideband_pair(
+            self.frequency_response, self.frequency_offsets_hz, self.path_count
+        )
 
     @property
     def device(self) -> torch.device:
         return self.total_delay_s.device
+
+    @property
+    def band_count(self) -> int:
+        """How many frequency columns this batch carries, ``0`` when narrowband."""
+
+        if self.frequency_offsets_hz is None:
+            return 0
+        return int(self.frequency_offsets_hz.shape[0])
 
 
 __all__ = ["JOIN_MODES", "JoinMode", "RadarPathBatch", "RadarPathTopology"]
