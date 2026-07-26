@@ -191,13 +191,26 @@ the component mask still classifies it.
 ## Consequences
 
 - Exporting `n` components costs `n` synthesis launches. Measured on the
-  multi-endpoint fixture (11 rows, 8 chirps, 4 pairs, 256 samples), the FMCW
-  synthesis goes from 0.17-0.44 ms unseparated to 0.42-0.96 ms for the two
-  populated classes (2.6-2.7x) and 1.28-1.93 ms for all four (5.5-7.8x). The
-  spread is machine noise across runs at this fixture size; the RATIO is the
-  stable quantity. Propagation, composition, discovery and the frame's
-  host-observation budget are all unchanged: a component export reads no device
-  value and performs no synchronization, asserted with a counter.
+  multi-endpoint fixture (11 rows, 8 chirps, 4 pairs, 256 samples), median of
+  five runs of 200 iterations each after 20 warm-up calls:
+
+  | export | median | multiplier |
+  |---|---|---|
+  | unseparated | 0.1599 ms | 1.00x |
+  | the two populated classes | 0.3931 ms | 2.46x |
+  | all four classes | 0.7965 ms | 4.98x |
+
+  Against the whole frame this is small: two batched leg reevaluations plus one
+  composition measure 4.94 ms on the same machine and fixture, so a
+  target-plus-clutter export moves the frame by about 1.05x. Taking the
+  Phase-7 tier-2 figure of 2.30 ms/frame instead gives 1.10x. Handed to the
+  budget owner as a range rather than a single number, because which of the two
+  frame figures applies depends on whether synthesis is inside the pinned
+  budget.
+
+  Propagation, composition, discovery and the frame's host-observation budget
+  are all unchanged: a component export reads no device value and performs no
+  synchronization, asserted with a counter.
 - An empty component still launches and still allocates a full-size cube of
   zeros. A caller that wants only target and clutter should export those two
   rather than iterate the whole taxonomy.
