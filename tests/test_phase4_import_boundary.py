@@ -573,7 +573,18 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
 
     # The kernel's own sign: `cycles` is negated, which is what keeps the cube
     # in Channel's exp(-j k d) convention rather than the beat convention.
-    assert "-(f_sub * tau + carrier_rate_hz * tau_drift + carrier_hz * tau)" in kernel
+    #
+    # `sub_delay` is the Phase-8 wideband switch and it is asserted here rather
+    # than left implicit. A narrowband weight carries none of the n*df phase, so
+    # the subcarrier term multiplies the FULL delay; an ADR-042 wideband column
+    # already carries that whole phase at the frozen delay, so it multiplies the
+    # DRIFT. Indexing the weight per subcarrier without this switch would count
+    # the n*df*tau_rt phase twice and put every tap at twice its delay.
+    assert (
+        "-(f_sub * sub_delay + carrier_rate_hz * tau_drift + carrier_hz * tau)"
+        in kernel
+    )
+    assert "const double sub_delay = wideband ? tau_drift : tau;" in kernel
 
     # No TDM slot table: OFDM slow time is per symbol, shared by every pair.
     assert "segment_tx_index" not in kernel

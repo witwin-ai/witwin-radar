@@ -344,16 +344,42 @@ class OfdmCfrSpec:
     f_ref`` and a stationary row, ``H[0][p][0]`` is exactly the Channel
     coefficient ``C_rt``. That identity is what pinning the origin buys.
 
-    **Narrowband, by construction and on purpose.** Channel's consumer has no
-    frequency-offset input: it publishes one coefficient per row at one
-    reference frequency plus the narrowband offset law
-    ``H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)``. Phase-6 OFDM applies
-    exactly that law, which means the material and antenna response is FROZEN at
-    ``f_ref`` across the whole band - only the propagation delay is
-    frequency-dependent. A per-subcarrier material response is Phase-8 work;
-    :class:`SynthesisPathBatch` declares ``frequency_response`` so that this
-    assumption is explicit and rule R8 refuses it so that it cannot be silently
-    ignored.
+    **Narrowband and wideband, both available, and the difference quantified.**
+    A batch without a ``frequency_response`` is synthesized under the narrowband
+    offset law ``H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)``: one
+    coefficient per row, so the material and antenna response is FROZEN at
+    ``f_ref`` across the whole band and only the propagation delay is
+    frequency-dependent. Channel publishes what that costs, as data on
+    ``convention.narrowband_frequency_offset_error_law``:
+
+    * ``O(df / f_ref)`` in SPREADING. The ``lambda/(4*pi*d)`` factor gives an
+      exact ``f_ref/(f_ref + n*df)`` magnitude tilt with zero phase - 0.5% across
+      a 400 MHz band at 77 GHz, deterministic and closed form.
+    * ``O(df / df_fringe)`` in MATERIAL response, where
+      ``df_fringe = c / (2 * Re(sqrt(eps_r)) * thickness_m * cos(theta_t))`` is
+      the layer stack's Airy fringe. A 0.1 m concrete wall at ``eps_r = 4`` has a
+      750 MHz fringe, so a 400 MHz band spans half of one: under the narrowband
+      law every subcarrier gets the same wall reflectivity and the IDFT of one
+      tap is a clean sinc, while the true per-tap filter ``r_k(f)`` makes it
+      smeared and asymmetric. That asymmetry is the material-thickness signature
+      a wideband radar is actually measuring, and narrowband OFDM cannot express
+      it at all.
+    * ZEROTH order in dispersion. A ``DispersionSpec`` is evaluated once, at
+      compile, so neither route tracks ``d(eps_r)/df``; the wideband route
+      REFUSES a dispersive scene rather than approximating it.
+
+    A batch WITH a ``frequency_response`` replaces the first two terms exactly:
+    ``C[k]`` becomes ``C[k][n] = H_k(f_ref + n*df)``, evaluated natively at each
+    subcarrier's own frequency. :attr:`frequency_offsets_hz` is the grid to ask
+    Channel for, ``F`` must equal :attr:`num_subcarriers`, and the kernel then
+    applies only the subcarrier phase's SLOW-TIME CHANGE, because the column
+    already carries ``exp(-j 2 pi f_n tau_rt)`` at the frozen delay.
+
+    FMCW and pulsed LFM deliberately do not consume a band. Their instantaneous
+    transmit frequency is continuous in fast time, so a wideband beat needs
+    either one column per fast-time sample or a declared interpolation grid with
+    its own error term - a new approximation rather than a free consequence of
+    the OFDM contract. Rule R8 refuses a band at those owners by name.
 
     **Cyclic prefix.** ``max_expected_delay_s`` is a CONFIGURED bound - the
     range window the radar is set up for - and never a measured maximum delay,
@@ -382,6 +408,11 @@ class OfdmCfrSpec:
     #: consumer never has to infer it from the waveform's name.
     phasor: ClassVar[str] = CHANNEL_PHASOR
     time_dependence: ClassVar[str] = CHANNEL_TIME_DEPENDENCE
+
+    #: OFDM is the one waveform whose transmit grid IS a discrete set of
+    #: frequencies, so it is the one that can index a ``[K, F]`` band exactly.
+    #: Rule R8 reads this; FMCW and pulsed do not set it.
+    consumes_frequency_response: ClassVar[bool] = True
 
     num_subcarriers: int
     num_symbols: int
@@ -499,6 +530,28 @@ class OfdmCfrSpec:
         """``f_n = f_ref + n * df`` under the pinned origin."""
 
         return self.reference_frequency_hz + subcarrier * self.subcarrier_spacing_hz
+
+    @property
+    def frequency_offsets_hz(self) -> tuple[float, ...]:
+        """The band this spec needs, as offsets from ``f_ref``, in Hz.
+
+        ``(0, df, 2*df, ..., (N-1)*df)``. This is THE mapping from a subcarrier
+        index to a propagation frequency, and it lives here because the pinned
+        origin that defines it lives here. A caller hands this tuple to
+        :class:`~witwin.radar.propagation.channel_consumer.ChannelPropagationAdapter`,
+        which is how a wideband OFDM chain is wired correctly by construction
+        rather than by a caller re-deriving ``n * df`` at the far end.
+
+        Column ``0`` is ``df = 0``, which by Channel's reference identity is
+        BIT-IDENTICAL to the reference coefficient. That is what preserves the
+        anchor ``H[0][p][0] == C_rt`` when the wideband route is used.
+
+        Note what crosses the boundary: Hz. The adapter never sees a subcarrier
+        count, a spacing, or an FFT size.
+        """
+
+        spacing = self.subcarrier_spacing_hz
+        return tuple(index * spacing for index in range(self.num_subcarriers))
 
     def subcarrier_phase_step_rad(self, round_trip_delay_s: float) -> float:
         """``-2 pi df tau``, the phase step between adjacent subcarriers.
@@ -881,6 +934,14 @@ class WaveformSpecProtocol(Protocol):
     ``tx_power_mode`` is deliberately absent: it belongs to the sensor-weight
     owner rather than to a waveform, and :func:`require_compatible` reads it
     only when a spec chooses to declare it.
+
+    ``consumes_frequency_response`` is absent for the same reason and with a
+    sharper consequence. It is the opt-in by which a waveform declares that its
+    kernel INDEXES a ``[K, F]`` wideband response instead of one coefficient per
+    row, and :func:`require_compatible` reads it through ``getattr`` with a
+    ``False`` default. Declaring it here would make every spec answer the
+    question, and a spec that answered it wrongly by inheriting a default would
+    silently discard a whole evaluated band. Rule R8 is the check.
     """
 
     #: Absolute reference-frequency carrier the KERNEL applies, in Hz. Zero
@@ -1115,6 +1176,12 @@ class SynthesisPathBatch:
         the caller knows whether it froze the weight for the frame or refreshes
         it per slot. It has no default: defaulting it would make the Phase-7
         collision a silent wrong answer instead of a refusal.
+
+        A composed band passes through by reference like everything else. It
+        does not have to be consumed - rule R8 refuses it at the waveform owner
+        that cannot - but it is never dropped here, because a batch that
+        silently forgot its band would make a wideband request produce a
+        narrowband cube with nothing to say so.
         """
 
         if not isinstance(paths, RadarPathBatch):
@@ -1130,8 +1197,8 @@ class SynthesisPathBatch:
             delay_rate=paths.delay_rate,
             complex_transfer_ref=paths.complex_transfer_ref,
             reference_frequency_hz=float(paths.reference_frequency_hz),
-            frequency_response=None,
-            frequency_offsets_hz=None,
+            frequency_response=paths.frequency_response,
+            frequency_offsets_hz=paths.frequency_offsets_hz,
             topology=paths.topology,
             row_valid=paths.row_valid,
             join_mode=paths.join_mode,
@@ -1432,15 +1499,29 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
             "is not transferable between reference frequencies"
         )
 
-    # R8 - wideband material response is Phase 8.
+    # R8 - a band may only be handed to a waveform owner that consumes it.
     if batch.frequency_response is not None:
-        raise ValueError(
-            "wideband material response is Phase 8 work: this contract declares "
-            "frequency_response/frequency_offsets_hz so that the Phase-6 "
-            "narrowband assumption is explicit, and refuses a non-None value so "
-            "that it cannot be silently ignored by a kernel that only knows the "
-            "narrowband law H(f_ref+df) = C(f_ref)*exp(-j*2*pi*df*delay_s)"
-        )
+        if not bool(getattr(spec, "consumes_frequency_response", False)):
+            raise ValueError(
+                f"{type(spec).__name__} does not consume a wideband response: it "
+                "does not declare consumes_frequency_response=True, so its kernel "
+                "knows only the narrowband law "
+                "H(f_ref+df) = C(f_ref)*exp(-j*2*pi*df*delay_s) and would apply "
+                "it to the reference column while silently discarding the "
+                f"{batch.frequency_response.shape[1]} evaluated ones. A waveform "
+                "whose instantaneous transmit frequency is continuous in fast "
+                "time - FMCW and pulsed LFM - has no discrete frequency grid to "
+                "index, so consuming a band there needs a declared "
+                "interpolation grid with its own stated error term rather than "
+                "this contract"
+            )
+        if not batch.weight_includes_reference_phase:
+            raise ValueError(
+                "a wideband response carries the absolute phase of every column "
+                "it was evaluated at, so it is meaningless on a weight that "
+                "carries no reference phase; weight_includes_reference_phase is "
+                "False on this batch"
+            )
 
 
 def require_ofdm_compatible(
@@ -1470,6 +1551,17 @@ def require_ofdm_compatible(
 
     Both refusals name ``cyclic_prefix_s``. There is no clamp and no
     reduced-accuracy mode.
+
+    A third check applies only to a wideband batch: the response's column count
+    must equal ``num_subcarriers``, because the kernel pairs column ``n`` with
+    subcarrier ``n``. The column count is a host int already in hand, so the
+    check is free. The column VALUES are deliberately not checked: the grid is a
+    ``[F]`` device tensor and reading it here would be a per-frame
+    device-to-host transfer, for exactly the reason the cyclic-prefix bound is
+    configured rather than measured. The grid's correctness is owned at the
+    producing end instead - :attr:`OfdmCfrSpec.frequency_offsets_hz` is the one
+    place ``n * df`` is written, and a caller that asks Channel for that tuple
+    cannot get the mapping wrong.
     """
 
     if not isinstance(spec, OfdmCfrSpec):
@@ -1478,6 +1570,20 @@ def require_ofdm_compatible(
             f"{type(spec).__name__}"
         )
     require_compatible(batch, spec)
+    if (
+        batch.frequency_response is not None
+        and int(batch.frequency_response.shape[1]) != spec.num_subcarriers
+    ):
+        raise ValueError(
+            f"the batch carries a {int(batch.frequency_response.shape[1])}-column "
+            f"wideband response but this spec declares "
+            f"num_subcarriers={spec.num_subcarriers}. The CFR kernel indexes "
+            "column n with subcarrier n, so the two counts are the same number "
+            "and a mismatch would either read past the band or leave evaluated "
+            "columns unused. Request the band with "
+            "OfdmCfrSpec.frequency_offsets_hz, which is the grid this spec's "
+            "pinned origin defines"
+        )
     if spec.max_expected_delay_s >= spec.cyclic_prefix_s:
         raise ValueError(
             "the configured echo window does not fit inside the cyclic prefix: "

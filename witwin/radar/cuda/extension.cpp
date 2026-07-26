@@ -159,6 +159,14 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
   // so only the f_ref phase's slow-time CHANGE is missing, while the n * df
   // phase is absent from the weight entirely.
   //
+  // weight_columns selects the two weight layouts. 1 is the narrowband weight
+  // C[k]; num_subcarriers is the ADR-042 wideband weight C[k][n], row major,
+  // holding the response evaluated at f_ref + n * df. A wideband column already
+  // carries the whole subcarrier phase at the frozen delay, so in that mode the
+  // subcarrier term multiplies the DRIFT rather than the full delay - indexing
+  // alone would count the n * df tau_rt phase twice and put every tap at twice
+  // its delay. See the kernel header.
+  //
   // carrier_hz / carrier_rate_hz are the same two carrier homes as in the beat
   // family and exactly one may be nonzero. Dropping the rate term leaves only
   // the n * df slow-time phase and understates Doppler by f_ref / (n * df) -
@@ -168,24 +176,24 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "ofdm_cfr_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_symbols, "
-      "int num_subcarriers, float subcarrier_spacing_hz, float symbol_period_s, "
-      "float carrier_hz, float carrier_rate_hz) -> ()");
+      "int num_subcarriers, int weight_columns, float subcarrier_spacing_hz, "
+      "float symbol_period_s, float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
       "ofdm_cfr_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
       "int num_segments, int num_symbols, int num_subcarriers, "
-      "float subcarrier_spacing_hz, float symbol_period_s, float carrier_hz, "
-      "float carrier_rate_hz) -> ()");
+      "int weight_columns, float subcarrier_spacing_hz, float symbol_period_s, "
+      "float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
       "ofdm_cfr_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
       "int num_segments, int num_symbols, int num_subcarriers, "
-      "float subcarrier_spacing_hz, float symbol_period_s, float carrier_hz, "
-      "float carrier_rate_hz) -> ()");
+      "int weight_columns, float subcarrier_spacing_hz, float symbol_period_s, "
+      "float carrier_hz, float carrier_rate_hz) -> ()");
 
   // Phase-6 pulsed echo train over the (pulse, fast-time sample) grid. What
   // this family emits is the matched-filter INPUT: the received complex

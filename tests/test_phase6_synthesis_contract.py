@@ -49,6 +49,19 @@ class _Spec:
 
 
 @dataclass(frozen=True)
+class _BandSpec(_Spec):
+    """A spec that opts in to indexing a ``[K, F]`` band, as OFDM does.
+
+    Declared here rather than reusing ``OfdmCfrSpec`` for the same reason
+    ``_Spec`` exists: rule R8 is a statement about the opt-in, not about OFDM's
+    subcarrier grid, and testing it through the real spec would tie it to a
+    cyclic prefix it has nothing to do with.
+    """
+
+    consumes_frequency_response: bool = True
+
+
+@dataclass(frozen=True)
 class _SensorAwareSpec(_Spec):
     """A spec that also declares the sensor-weight owner's TX power mode."""
 
@@ -374,13 +387,48 @@ def test_r7_a_reference_frequency_mismatch_is_refused():
         require_compatible(_channel_batch(), _Spec(reference_frequency_hz=24.0e9))
 
 
-def test_r8_a_wideband_response_is_refused_and_names_phase_8():
+def test_r8_a_wideband_response_is_refused_by_a_spec_that_cannot_consume_it():
+    """Phase 8 flipped this from "refused always" to "refused where unusable".
+
+    A band handed to a waveform whose kernel indexes one coefficient per row is
+    silently discarded, and the cube that comes out is narrowband with nothing
+    to say so. That is why the opt-in is on the SPEC and defaults to absent:
+    consuming a band is a property of a kernel, and FMCW and pulsed LFM do not
+    have it, because their instantaneous transmit frequency is continuous in
+    fast time and there is no discrete grid to index.
+    """
+
     batch = _channel_batch(
         frequency_response=torch.zeros(3, 4, dtype=torch.complex64),
         frequency_offsets_hz=torch.zeros(4, dtype=torch.float32),
     )
-    with pytest.raises(ValueError, match="Phase 8"):
+    with pytest.raises(ValueError, match="does not consume a wideband response"):
         require_compatible(batch, _Spec())
+
+
+def test_r8_admits_a_spec_that_declares_it_consumes_the_band():
+    batch = _channel_batch(
+        frequency_response=torch.zeros(3, 4, dtype=torch.complex64),
+        frequency_offsets_hz=torch.zeros(4, dtype=torch.float32),
+    )
+    require_compatible(batch, _BandSpec())
+
+
+def test_r8_refuses_a_band_on_a_weight_that_carries_no_reference_phase():
+    """A column's value is meaningless without the phase it was evaluated with.
+
+    Every wideband column carries ``exp(-j 2 pi f_n tau_rt)`` by construction,
+    so a batch that declares its weight has no reference phase is stating two
+    contradictory things at once.
+    """
+
+    batch = _channel_batch(
+        frequency_response=torch.zeros(3, 4, dtype=torch.complex64),
+        frequency_offsets_hz=torch.zeros(4, dtype=torch.float32),
+        weight_includes_reference_phase=False,
+    )
+    with pytest.raises(ValueError, match="carries no reference phase"):
+        require_compatible(batch, _BandSpec(carrier_hz=F_REF, carrier_rate_hz=0.0))
 
 
 def test_a_spec_that_does_not_declare_the_protocol_is_refused():

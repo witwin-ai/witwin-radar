@@ -59,12 +59,36 @@
 // invisible in a magnitude-only range-Doppler map. The Python contract refuses
 // a spec that names the carrier in both homes.
 //
-// Narrowband by construction: the material and antenna response is frozen at
-// `f_ref` across the whole band, because Channel's consumer publishes one
-// coefficient per row and the narrowband offset law
-// `H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)` is the only frequency
-// dependence there is. A wideband per-subcarrier response is Phase-8 work and
-// the Python contract refuses it rather than ignoring it.
+// WIDEBAND, and the term that moves when the weight becomes per-subcarrier.
+//
+// `weight_columns` is 1 for a narrowband weight `C[k]` and `num_subcarriers`
+// for a wideband one `C[k][n] = H_k(f_ref + n*df)`, laid out row major so the
+// element is `weight[k * weight_columns + n]`. Indexing is NOT the whole change
+// and getting only the indexing right is the single most dangerous error
+// available here, because it produces a plausible cube:
+//
+//   narrowband: the weight holds exp(-j 2 pi f_ref tau_rt) and NOTHING at
+//     n * df, so the kernel owns the whole subcarrier phase and the subcarrier
+//     term multiplies the FULL delay tau_k(l).
+//   wideband:   column n holds exp(-j 2 pi (f_ref + n*df) tau_rt) - the whole
+//     subcarrier phase, already, at the FROZEN delay. What is missing is only
+//     its slow-time CHANGE, so the subcarrier term multiplies the DRIFT
+//     drift_k(l) instead.
+//
+// Applying `f_sub * tau` to a wideband weight counts the n * df tau_rt phase
+// twice, which puts every tap at twice its delay in the range profile. That is
+// why `sub_delay` below selects between `tau` and `tau_drift` rather than the
+// weight index alone changing.
+//
+// The derivative follows: d(phi)/d(tau_rt) loses its `f_sub` term in wideband
+// mode, because the whole tau_rt dependence of the subcarrier phase now lives
+// inside the weight, whose gradient this family already produces.
+// d(phi)/d(tau_rate) is unchanged in both modes.
+//
+// What the wideband route does NOT remove is dispersion: a Core DispersionSpec
+// is evaluated once at compile, so Channel refuses a dispersive scene with a
+// band rather than approximating it. See the Python contract for the quantified
+// narrowband error law.
 //
 // Cyclic prefix: the single-tap-per-subcarrier form above is exact only while
 // the whole echo lands inside the CP window. That is a host-side check on
@@ -117,17 +141,33 @@ __device__ __forceinline__ CfrPhase cfr_phase(
     const double t_l,
     const double f_sub,
     const double carrier_hz,
-    const double carrier_rate_hz) {
+    const double carrier_rate_hz,
+    const bool wideband) {
+  // The whole wideband difference, in two lines. A wideband weight already
+  // carries the subcarrier phase at the frozen delay, so only its drift is
+  // missing; a narrowband weight carries none of it, so the full delay is.
+  const double sub_delay = wideband ? tau_drift : tau;
+  const double sub_dtau_rt = wideband ? 0.0 : f_sub;
   const double cycles =
-      -(f_sub * tau + carrier_rate_hz * tau_drift + carrier_hz * tau);
+      -(f_sub * sub_delay + carrier_rate_hz * tau_drift + carrier_hz * tau);
   const double frac = cycles - floor(cycles);
   float sin_phi;
   float cos_phi;
   sincosf(static_cast<float>(kTwoPiD * frac), &sin_phi, &cos_phi);
-  const double dphi_dtau_rt = -kTwoPiD * (f_sub + carrier_hz);
+  const double dphi_dtau_rt = -kTwoPiD * (sub_dtau_rt + carrier_hz);
   const double dphi_dtau_rate =
       -kTwoPiD * t_l * (f_sub + carrier_hz + carrier_rate_hz);
   return {sin_phi, cos_phi, dphi_dtau_rt, dphi_dtau_rate};
+}
+
+// Where subcarrier `n` reads path `k`'s weight. `weight_columns == 1` collapses
+// to the narrowband `weight[k]` exactly, which is what keeps a narrowband cube
+// bit-identical to the pre-band one.
+__device__ __forceinline__ int64_t weight_index(
+    const int64_t k, const int subcarrier, const int weight_columns) {
+  return weight_columns > 1
+      ? k * static_cast<int64_t>(weight_columns) + subcarrier
+      : k;
 }
 
 __global__ void ofdm_cfr_forward_kernel(
@@ -141,6 +181,7 @@ __global__ void ofdm_cfr_forward_kernel(
     const int num_paths,
     const int num_segments,
     const int num_subcarriers,
+    const int weight_columns,
     const double subcarrier_spacing_hz,
     const double symbol_period_s,
     const double carrier_hz,
@@ -160,6 +201,7 @@ __global__ void ofdm_cfr_forward_kernel(
   start = start < 0 ? 0 : start;
   end = end > num_paths ? num_paths : end;
 
+  const bool wideband = weight_columns > 1;
   const double t_l = static_cast<double>(symbol) * symbol_period_s;
   const double f_sub = static_cast<double>(subcarrier) * subcarrier_spacing_hz;
 
@@ -168,10 +210,11 @@ __global__ void ofdm_cfr_forward_kernel(
   for (int64_t k = start; k < end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
-    const CfrPhase phase =
-        cfr_phase(tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz);
-    const float w_re = weight_re[k];
-    const float w_im = weight_im[k];
+    const CfrPhase phase = cfr_phase(
+        tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, wideband);
+    const int64_t w = weight_index(k, subcarrier, weight_columns);
+    const float w_re = weight_re[w];
+    const float w_im = weight_im[w];
     acc_re += w_re * phase.cos_phi - w_im * phase.sin_phi;
     acc_im += w_re * phase.sin_phi + w_im * phase.cos_phi;
   }
@@ -198,6 +241,7 @@ __global__ void ofdm_cfr_jvp_kernel(
     const int num_paths,
     const int num_segments,
     const int num_subcarriers,
+    const int weight_columns,
     const double subcarrier_spacing_hz,
     const double symbol_period_s,
     const double carrier_hz,
@@ -214,6 +258,7 @@ __global__ void ofdm_cfr_jvp_kernel(
   start = start < 0 ? 0 : start;
   end = end > num_paths ? num_paths : end;
 
+  const bool wideband = weight_columns > 1;
   const double t_l = static_cast<double>(symbol) * symbol_period_s;
   const double f_sub = static_cast<double>(subcarrier) * subcarrier_spacing_hz;
 
@@ -222,10 +267,11 @@ __global__ void ofdm_cfr_jvp_kernel(
   for (int64_t k = start; k < end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
-    const CfrPhase phase =
-        cfr_phase(tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz);
-    const float w_re = weight_re[k];
-    const float w_im = weight_im[k];
+    const CfrPhase phase = cfr_phase(
+        tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, wideband);
+    const int64_t w = weight_index(k, subcarrier, weight_columns);
+    const float w_re = weight_re[w];
+    const float w_im = weight_im[w];
     const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
     const float im = w_re * phase.sin_phi + w_im * phase.cos_phi;
 
@@ -233,8 +279,8 @@ __global__ void ofdm_cfr_jvp_kernel(
         phase.dphi_dtau_rt * static_cast<double>(tan_tau_rt[k]) +
         phase.dphi_dtau_rate * static_cast<double>(tan_tau_rate[k]);
     const float dphi = static_cast<float>(dphi_d);
-    const float tw_re = tan_weight_re[k];
-    const float tw_im = tan_weight_im[k];
+    const float tw_re = tan_weight_re[w];
+    const float tw_im = tan_weight_im[w];
     acc_re += tw_re * phase.cos_phi - tw_im * phase.sin_phi - dphi * im;
     acc_im += tw_re * phase.sin_phi + tw_im * phase.cos_phi + dphi * re;
   }
@@ -247,8 +293,18 @@ __global__ void ofdm_cfr_jvp_kernel(
 }
 
 // One thread per path, looping the whole (symbol, subcarrier) grid. Each path
-// owns exactly one output slot in each gradient array, so the reduction needs
-// no atomics and the summation order is fixed by the loop nest.
+// owns exactly one output slot per weight COLUMN in each gradient array, so the
+// reduction needs no atomics and the summation order is fixed by the loop nest.
+//
+// Two loop nests, not one. A narrowband weight has a single gradient slot per
+// path and accumulates over the whole grid in symbol-major order; a wideband
+// weight has one slot per subcarrier and must accumulate over symbols only, for
+// a fixed subcarrier. Reusing the symbol-major nest for both would mean either
+// an unbounded per-thread accumulator array or a changed narrowband summation
+// order. The narrowband nest below is therefore preserved VERBATIM, which is
+// what makes a narrowband gradient bit-identical to the pre-band one, and the
+// wideband nest is subcarrier major. `d_tau_rt` and `d_tau_rate` reduce over the
+// whole grid in both, in whatever order their own nest visits it.
 __global__ void ofdm_cfr_backward_kernel(
     const float* __restrict__ tau_rt,
     const float* __restrict__ tau_rate,
@@ -265,6 +321,7 @@ __global__ void ofdm_cfr_backward_kernel(
     const int num_segments,
     const int num_symbols,
     const int num_subcarriers,
+    const int weight_columns,
     const double subcarrier_spacing_hz,
     const double symbol_period_s,
     const double carrier_hz,
@@ -280,49 +337,92 @@ __global__ void ofdm_cfr_backward_kernel(
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;
 
+  const bool wideband = weight_columns > 1;
   const double base_tau = static_cast<double>(tau_rt[k]);
   const double rate = static_cast<double>(tau_rate[k]);
-  const float w_re = weight_re[k];
-  const float w_im = weight_im[k];
 
   double d_tau_rt = 0.0;
   double d_tau_rate = 0.0;
-  double d_w_re = 0.0;
-  double d_w_im = 0.0;
 
-  for (int symbol = 0; symbol < num_symbols; ++symbol) {
-    const double t_l = static_cast<double>(symbol) * symbol_period_s;
-    const double drift = rate * t_l;
-    const double tau = base_tau + drift;
-    const int64_t row_base =
-        (static_cast<int64_t>(symbol) * num_segments + segment) *
-        num_subcarriers;
+  if (!wideband) {
+    const float w_re = weight_re[k];
+    const float w_im = weight_im[k];
+    double d_w_re = 0.0;
+    double d_w_im = 0.0;
+
+    for (int symbol = 0; symbol < num_symbols; ++symbol) {
+      const double t_l = static_cast<double>(symbol) * symbol_period_s;
+      const double drift = rate * t_l;
+      const double tau = base_tau + drift;
+      const int64_t row_base =
+          (static_cast<int64_t>(symbol) * num_segments + segment) *
+          num_subcarriers;
+      for (int subcarrier = 0; subcarrier < num_subcarriers; ++subcarrier) {
+        const double f_sub =
+            static_cast<double>(subcarrier) * subcarrier_spacing_hz;
+        const CfrPhase phase = cfr_phase(
+            tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, false);
+        const float g_re = grad_out_re[row_base + subcarrier];
+        const float g_im = grad_out_im[row_base + subcarrier];
+        const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
+        const float im = w_re * phase.sin_phi + w_im * phase.cos_phi;
+
+        d_w_re += static_cast<double>(g_re) * phase.cos_phi +
+            static_cast<double>(g_im) * phase.sin_phi;
+        d_w_im += -static_cast<double>(g_re) * phase.sin_phi +
+            static_cast<double>(g_im) * phase.cos_phi;
+
+        const double d_phi =
+            -static_cast<double>(g_re) * im + static_cast<double>(g_im) * re;
+        d_tau_rt += d_phi * phase.dphi_dtau_rt;
+        d_tau_rate += d_phi * phase.dphi_dtau_rate;
+      }
+    }
+    grad_weight_re[k] = static_cast<float>(d_w_re);
+    grad_weight_im[k] = static_cast<float>(d_w_im);
+  } else {
     for (int subcarrier = 0; subcarrier < num_subcarriers; ++subcarrier) {
       const double f_sub =
           static_cast<double>(subcarrier) * subcarrier_spacing_hz;
-      const CfrPhase phase =
-          cfr_phase(tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz);
-      const float g_re = grad_out_re[row_base + subcarrier];
-      const float g_im = grad_out_im[row_base + subcarrier];
-      const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
-      const float im = w_re * phase.sin_phi + w_im * phase.cos_phi;
+      const int64_t w =
+          static_cast<int64_t>(k) * weight_columns + subcarrier;
+      const float w_re = weight_re[w];
+      const float w_im = weight_im[w];
+      double d_w_re = 0.0;
+      double d_w_im = 0.0;
 
-      d_w_re += static_cast<double>(g_re) * phase.cos_phi +
-          static_cast<double>(g_im) * phase.sin_phi;
-      d_w_im += -static_cast<double>(g_re) * phase.sin_phi +
-          static_cast<double>(g_im) * phase.cos_phi;
+      for (int symbol = 0; symbol < num_symbols; ++symbol) {
+        const double t_l = static_cast<double>(symbol) * symbol_period_s;
+        const double drift = rate * t_l;
+        const double tau = base_tau + drift;
+        const int64_t out_idx =
+            (static_cast<int64_t>(symbol) * num_segments + segment) *
+                num_subcarriers +
+            subcarrier;
+        const CfrPhase phase = cfr_phase(
+            tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, true);
+        const float g_re = grad_out_re[out_idx];
+        const float g_im = grad_out_im[out_idx];
+        const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
+        const float im = w_re * phase.sin_phi + w_im * phase.cos_phi;
 
-      const double d_phi =
-          -static_cast<double>(g_re) * im + static_cast<double>(g_im) * re;
-      d_tau_rt += d_phi * phase.dphi_dtau_rt;
-      d_tau_rate += d_phi * phase.dphi_dtau_rate;
+        d_w_re += static_cast<double>(g_re) * phase.cos_phi +
+            static_cast<double>(g_im) * phase.sin_phi;
+        d_w_im += -static_cast<double>(g_re) * phase.sin_phi +
+            static_cast<double>(g_im) * phase.cos_phi;
+
+        const double d_phi =
+            -static_cast<double>(g_re) * im + static_cast<double>(g_im) * re;
+        d_tau_rt += d_phi * phase.dphi_dtau_rt;
+        d_tau_rate += d_phi * phase.dphi_dtau_rate;
+      }
+      grad_weight_re[w] = static_cast<float>(d_w_re);
+      grad_weight_im[w] = static_cast<float>(d_w_im);
     }
   }
 
   grad_tau_rt[k] = static_cast<float>(d_tau_rt);
   grad_tau_rate[k] = static_cast<float>(d_tau_rate);
-  grad_weight_re[k] = static_cast<float>(d_w_re);
-  grad_weight_im[k] = static_cast<float>(d_w_im);
 }
 
 void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
@@ -363,15 +463,33 @@ void check_path_inputs(
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
-    int num_paths) {
+    int num_paths,
+    int weight_columns) {
   check_cuda_float(tau_rt, "tau_rt");
   check_cuda_float(tau_rate, "tau_rate");
   check_cuda_float(weight_re, "weight_re");
   check_cuda_float(weight_im, "weight_im");
   STD_TORCH_CHECK(
-      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths &&
-          weight_re.numel() == num_paths && weight_im.numel() == num_paths,
-      "tau_rt, tau_rate, weight_re, and weight_im must each hold num_paths values.");
+      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths,
+      "tau_rt and tau_rate must each hold num_paths values.");
+  const int64_t weights =
+      static_cast<int64_t>(num_paths) * static_cast<int64_t>(weight_columns);
+  STD_TORCH_CHECK(
+      weight_re.numel() == weights && weight_im.numel() == weights,
+      "weight_re and weight_im must each hold num_paths * weight_columns values.");
+}
+
+// `weight_columns` is 1 for a narrowband weight and num_subcarriers for a
+// wideband one. Nothing between the two is meaningful: the kernel pairs column
+// n with subcarrier n, so a partial band would either read past the weight or
+// leave subcarriers unpaired, and there is no interpolation here to fill a
+// coarser grid in.
+int checked_weight_columns(int64_t value, int num_subcarriers) {
+  const int columns = checked_int(value, "weight_columns");
+  STD_TORCH_CHECK(
+      columns == 1 || columns == num_subcarriers,
+      "weight_columns must be 1 (narrowband) or num_subcarriers (wideband).");
+  return columns;
 }
 
 void check_output(
@@ -419,6 +537,7 @@ void ofdm_cfr_forward_cuda(
     int64_t num_segments,
     int64_t num_symbols,
     int64_t num_subcarriers,
+    int64_t weight_columns,
     double subcarrier_spacing_hz,
     double symbol_period_s,
     double carrier_hz,
@@ -430,7 +549,8 @@ void ofdm_cfr_forward_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(symbols > 0, "num_symbols must be positive.");
   STD_TORCH_CHECK(subcarriers > 0, "num_subcarriers must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
+  const int columns = checked_weight_columns(weight_columns, subcarriers);
+  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths, columns);
   check_cuda_long(path_offsets, "path_offsets");
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
@@ -456,6 +576,7 @@ void ofdm_cfr_forward_cuda(
       paths,
       segments,
       subcarriers,
+      columns,
       subcarrier_spacing_hz,
       symbol_period_s,
       carrier_hz,
@@ -479,6 +600,7 @@ void ofdm_cfr_jvp_cuda(
     int64_t num_segments,
     int64_t num_symbols,
     int64_t num_subcarriers,
+    int64_t weight_columns,
     double subcarrier_spacing_hz,
     double symbol_period_s,
     double carrier_hz,
@@ -490,9 +612,10 @@ void ofdm_cfr_jvp_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(symbols > 0, "num_symbols must be positive.");
   STD_TORCH_CHECK(subcarriers > 0, "num_subcarriers must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
+  const int columns = checked_weight_columns(weight_columns, subcarriers);
+  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths, columns);
   check_path_inputs(
-      tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, paths);
+      tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, paths, columns);
   check_cuda_long(path_offsets, "path_offsets");
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
@@ -528,6 +651,7 @@ void ofdm_cfr_jvp_cuda(
       paths,
       segments,
       subcarriers,
+      columns,
       subcarrier_spacing_hz,
       symbol_period_s,
       carrier_hz,
@@ -551,6 +675,7 @@ void ofdm_cfr_backward_cuda(
     int64_t num_segments,
     int64_t num_symbols,
     int64_t num_subcarriers,
+    int64_t weight_columns,
     double subcarrier_spacing_hz,
     double symbol_period_s,
     double carrier_hz,
@@ -562,7 +687,8 @@ void ofdm_cfr_backward_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(symbols > 0, "num_symbols must be positive.");
   STD_TORCH_CHECK(subcarriers > 0, "num_subcarriers must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
+  const int columns = checked_weight_columns(weight_columns, subcarriers);
+  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths, columns);
   check_cuda_long(path_segment, "path_segment");
   STD_TORCH_CHECK(
       path_segment.numel() == static_cast<int64_t>(paths),
@@ -576,7 +702,7 @@ void ofdm_cfr_backward_cuda(
       "grad_out_re",
       "grad_out_im");
   check_path_inputs(
-      grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, paths);
+      grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, paths, columns);
 
   if (paths == 0) {
     return;
@@ -605,6 +731,7 @@ void ofdm_cfr_backward_cuda(
       segments,
       symbols,
       subcarriers,
+      columns,
       subcarrier_spacing_hz,
       symbol_period_s,
       carrier_hz,

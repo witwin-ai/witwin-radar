@@ -284,8 +284,13 @@ def test_there_is_no_clamping_path_in_the_ofdm_contract():
     assert not any(
         isinstance(node, ast.Assign | ast.AugAssign) for node in ast.walk(function)
     )
+    # Three refusals, counted rather than described, so that a fourth has to be
+    # added here deliberately: the foreign-spec TypeError, the wideband
+    # column-count mismatch, and the cyclic-prefix bound. The count went from
+    # two to three in Phase 8 when the band arrived; it is a count of REFUSALS,
+    # and every one of them is still all-or-nothing.
     raises = [node for node in ast.walk(function) if isinstance(node, ast.Raise)]
-    assert len(raises) == 2, len(raises)
+    assert len(raises) == 3, len(raises)
 
 
 def test_a_zero_length_cyclic_prefix_is_refused():
