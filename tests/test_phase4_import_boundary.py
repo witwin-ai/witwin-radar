@@ -79,11 +79,16 @@ SPIKE_MODULES = (
     "witwin/radar/propagation/__init__.py",
     "witwin/radar/propagation/contracts.py",
     "witwin/radar/propagation/channel_consumer.py",
-    # The Core-kinematics seam. It names no other witwin package at all - it is
-    # duck typed over Core's snapshot shape - and it is scanned here because it
-    # runs once per frame and is the natural place for a host read of a velocity
-    # to appear.
+    # The Core-kinematics seam. It names no witwin package at module scope - it
+    # is duck typed over Core's snapshot shape - and it is scanned here because
+    # it runs once per frame and is the natural place for a host read of a
+    # velocity to appear.
     "witwin/radar/propagation/kinematics.py",
+    # The scene-driven epoch loop. It decides when a moving world pays for a
+    # compile and a rediscovery, so it runs per frame and is scanned for the
+    # same reasons. It takes its scene compiler as an ARGUMENT precisely so
+    # that it does not become a second module naming ``witwin.channel``.
+    "witwin/radar/propagation/epochs.py",
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
     "witwin/radar/paths/_identity.py",

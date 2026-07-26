@@ -17,7 +17,10 @@ The adapter owns four things and nothing else:
   frame is one instant or a whole slot-major TDM/symbol/pulse block;
 * the rediscovery cadence  -  ``rediscovery_required`` says when the world moved
   out from under a frozen topology, and ``refreeze`` is the supported way to
-  rebind onto the new compiled scene and retire every stale handle;
+  rebind onto the new compiled scene, declaring either that every stale handle
+  is retired (``world_motion="frozen_world"``) or that the discrete winner set
+  is deliberately held fixed while the geometry moves
+  (``world_motion="fixed_winner_replay"``);
 * publishing Radar-shaped leg results  -  delay, coefficient, delay rate.
 
 It owns no physics. Every number it publishes was produced by a native Channel
@@ -155,6 +158,7 @@ class ChannelPropagationAdapter:
         self._max_depth = int(max_depth)
         self._capabilities = capabilities
         self._epoch = 0
+        self._world_motion = "frozen_world"
 
     @property
     def reference_frequency_hz(self) -> float:
@@ -176,8 +180,20 @@ class ChannelPropagationAdapter:
 
         return self._epoch
 
-    def refreeze(self, compiled_scene: object) -> None:
-        """Rebind to a new compiled scene and retire every frozen handle.
+    @property
+    def world_motion(self) -> str:
+        """What the last rebind declared happened to the world.
+
+        ``"frozen_world"`` until a caller says otherwise. It is the value every
+        replay forwards to Channel, so it is readable rather than implicit.
+        """
+
+        return self._world_motion
+
+    def refreeze(
+        self, compiled_scene: object, *, world_motion: str = "frozen_world"
+    ) -> None:
+        """Rebind to a new compiled scene, declaring what moved.
 
         A moving structure, a deformed mesh or a new ``DynamicScene`` snapshot
         produces a NEW ``CompiledScene``, and until this existed the adapter
@@ -185,18 +201,54 @@ class ChannelPropagationAdapter:
         moving-structure world replayed frozen rows against geometry that had
         moved on, silently and at full strength.
 
-        This is the supported way through that. It does not rediscover: the
-        caller must call :meth:`freeze` again, because which paths exist is
-        exactly the question a moved world reopens. Every handle frozen before
-        this call is refused by name afterwards, which is the loud half of the
-        plan's rediscovery policy; :meth:`rediscovery_required` is the cheap
-        half that tells a caller when to make this call in the first place.
+        ``world_motion`` is the caller's declaration, and it is forwarded
+        verbatim to every later Channel replay:
+
+        ``"frozen_world"`` (the default) says the caller intends to rediscover.
+        Every handle frozen before this call is RETIRED and refused by name
+        afterwards, and Channel additionally refuses any moved world version
+        domain. The caller must call :meth:`freeze` again, because which paths
+        exist is exactly the question a moved world reopens.
+
+        ``"fixed_winner_replay"`` says something specific and it is the whole
+        content of the declaration: *the discrete winner set is held fixed
+        while the geometry moves*. The frozen rows stay live and are replayed
+        against the new geometry, so every published row is the SAME
+        interaction sequence re-evaluated at the new vertex positions. Two
+        consequences the caller is asserting it accepts:
+
+        * a row that stops existing is published with ``row_valid=False`` and
+          an exactly zero payload - a complete answer, not an error;
+        * a row that STARTS existing is not published at all. Replay is
+          subtractive by construction, so a caller whose world can gain paths
+          must rediscover on a motion-event cadence
+          (:class:`witwin.radar.propagation.epochs.SceneEpochLoop` is that
+          cadence).
+
+        It never accepts a moved topology, material or assignment version:
+        those respecify the labels the frozen rows carry, and Channel refuses
+        them under either declaration.
+
+        :meth:`rediscovery_required` is the cheap half that tells a caller when
+        to make this call in the first place.
         """
 
         if compiled_scene is None:
             raise ValueError("refreeze requires a compiled scene")
+        # The vocabulary comes from the capability record rather than from a
+        # module constant: the consumer facade exports AD_MODES, RESPONSES and
+        # TOPOLOGY_MODES but not WORLD_MOTIONS, and capabilities.world_motions
+        # is the published route to the same frozen set.
+        supported = self._capabilities.world_motions
+        if world_motion not in supported:
+            raise ValueError(
+                f"unsupported world_motion {world_motion!r}; supported values "
+                f"are {sorted(supported)}"
+            )
         self._compiled = compiled_scene
-        self._epoch += 1
+        self._world_motion = world_motion
+        if world_motion == "frozen_world":
+            self._epoch += 1
 
     def rediscovery_required(
         self, frozen: FrozenLegTopology, *, revalidate_source: bool = False
@@ -345,6 +397,7 @@ class ChannelPropagationAdapter:
                 response="scalar_transport",
                 ad_mode=ad_mode,
                 slot_count=slot_count,
+                world_motion=self._world_motion,
             ),
         )
         paths = result.paths

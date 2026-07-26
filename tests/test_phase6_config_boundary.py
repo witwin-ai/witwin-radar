@@ -60,6 +60,13 @@ REEVALUATION_KEYWORDS = frozenset(
         "response",
         "ad_mode",
         "slot_count",
+        # What the caller declares happened to the WORLD between discovery and
+        # this replay - ``"frozen_world"`` or ``"fixed_winner_replay"``. It
+        # describes scene geometry, which is precisely what a propagation
+        # request is about, and it carries no waveform, ADC or receive-chain
+        # vocabulary. It is what lets a moving structure be REPLAYED instead of
+        # silently answered out of geometry that moved on.
+        "world_motion",
     }
 )
 
