@@ -785,6 +785,26 @@ class SlowTimeMode(str, Enum):
     applies Doppler twice and looks like a plausible radar cube while doing it.
     Phase 6 always uses the frozen mode; Phase 7 owns dynamics and is the reason
     the refreshed mode is named now.
+
+    **Phase-7 finding, and why the frozen mode stays the production inner
+    loop.** The frozen mode models the round-trip delay across a frame as
+    ``tau_rt + tau_rate * t_slot``, a first-order extrapolation from the frame
+    origin. That is exact for radial motion and second-order wrong for
+    TRANSVERSE motion, where the delay is quadratic in slow time. Nothing in
+    this contract bounds that error:
+    :attr:`FmcwBeatSpec.max_unambiguous_speed_mps` constrains the RADIAL speed,
+    and the coherent-interval walk guard exists only on the pulsed spec.
+    Measured on the multi-endpoint fixture at 77 GHz, over an eight-chirp
+    two-transmitter frame (975 us), for a target 2.1 m away crossing at
+    12 m/s: the frozen model accumulates about 0.1 rad of round-trip phase
+    error by the last slot while the implied radial speed stays inside the
+    aliasing bound. That is the named scenario the frozen mode cannot serve.
+    A caller in that regime must shorten the coherent interval or drive the
+    refreshed mode from a slot-batched propagation replay;
+    ``tests/support/refreshed_slow_time.py`` is that producer and
+    ``tests/test_phase7_slot_batching.py`` is the measurement. The refreshed
+    mode is NOT promoted to a default: it costs one synthesis launch per slot
+    against the frozen mode's one per frame.
     """
 
     #: The weight was computed once, at the frame's ``tau_rt``, and does not

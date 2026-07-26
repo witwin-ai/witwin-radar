@@ -144,6 +144,17 @@ class RadarLegBatch:
     of a frozen sequence and cost nothing to publish. A two-way composer joins
     on them; the sequences in particular are ADR-037 frozen labels rather than
     re-validated hits, which is exactly what makes them a stable key.
+
+    ``slot_count`` states how many time slots - TDM slots, OFDM symbols or
+    pulses - this batch carries. The default ``1`` is one instant and is what
+    every single-shot reevaluation publishes. A batch with ``slot_count > 1``
+    is SLOT MAJOR and FROZEN-ROW MINOR: row ``t * rows_per_slot + r`` is frozen
+    row ``r`` at slot ``t``, and the pair partition is block diagonal, so pair
+    ``t * pairs_per_slot + p`` is slot ``t``'s pair ``p``. That is the Channel
+    consumer's ``slot_pair_layout``, restated here rather than reinvented; the
+    whole point of the layout is that ``pair_count`` grows LINEARLY in the slot
+    count instead of quadratically. :meth:`slot` is the only supported way to
+    address one slot, so no consumer has to rederive the arithmetic.
     """
 
     leg_count: int
@@ -164,12 +175,25 @@ class RadarLegBatch:
     delay_rate: torch.Tensor | None
     row_valid: torch.Tensor | None
     diagnostics: object
+    slot_count: int = 1
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
             raise ValueError("leg_count must be a non-negative int")
         if type(self.pair_count) is not int or self.pair_count < 0:
             raise ValueError("pair_count must be a non-negative int")
+        if type(self.slot_count) is not int or self.slot_count < 1:
+            raise ValueError("slot_count must be a positive int")
+        for name, total in (
+            ("leg_count", self.leg_count),
+            ("pair_count", self.pair_count),
+        ):
+            if total % self.slot_count:
+                raise ValueError(
+                    f"{name} {total} is not divisible by slot_count "
+                    f"{self.slot_count}; a slot-major batch carries the same "
+                    "frozen rows and the same pair partition in every slot"
+                )
         rows = (self.leg_count,)
         _require_tensor("pair_index", self.pair_index, dtype=torch.int64, shape=rows)
         _require_tensor(
@@ -219,6 +243,68 @@ class RadarLegBatch:
     @property
     def device(self) -> torch.device:
         return self.delay_s.device
+
+    @property
+    def rows_per_slot(self) -> int:
+        return self.leg_count // self.slot_count
+
+    @property
+    def pairs_per_slot(self) -> int:
+        return self.pair_count // self.slot_count
+
+    def slot(self, index: int) -> "RadarLegBatch":
+        """One slot of a slot-major batch, as a single-slot batch.
+
+        The payload members are NARROWED, so ``delay_s``, ``coefficient``,
+        ``delay_rate`` and ``row_valid`` still alias the batched storage and a
+        gradient flows straight back through them. Only the two partition
+        tables are rebased, because a slot's pair ranks have to start at zero
+        for the slice to be a partition of that slot's rows; rebasing them is
+        int64 metadata arithmetic and reads no payload value.
+
+        This exists so that a consumer written against the single-slot contract
+        - the two-way join, in particular - can be driven per slot WITHOUT a
+        second statement of the block-diagonal layout living in the caller.
+        """
+
+        if type(index) is not int or not 0 <= index < self.slot_count:
+            raise ValueError(
+                f"slot index must be an int in [0, {self.slot_count}), "
+                f"got {index!r}"
+            )
+        rows = self.rows_per_slot
+        pairs = self.pairs_per_slot
+        start = index * rows
+        stop = start + rows
+        base = index * pairs
+
+        def narrow(value):
+            return None if value is None else value[start:stop]
+
+        return RadarLegBatch(
+            leg_count=rows,
+            pair_count=pairs,
+            pair_index=self.pair_index[start:stop] - base,
+            pair_offsets=(
+                self.pair_offsets[base : base + pairs + 1]
+                - self.pair_offsets[base]
+            ),
+            source_index=narrow(self.source_index),
+            sink_index=narrow(self.sink_index),
+            depth=narrow(self.depth),
+            component_id=narrow(self.component_id),
+            source_id=narrow(self.source_id),
+            sink_id=narrow(self.sink_id),
+            primitive_sequence=narrow(self.primitive_sequence),
+            material_sequence=narrow(self.material_sequence),
+            interaction_type=narrow(self.interaction_type),
+            delay_s=narrow(self.delay_s),
+            coefficient=narrow(self.coefficient),
+            delay_rate=narrow(self.delay_rate),
+            row_valid=narrow(self.row_valid),
+            diagnostics=self.diagnostics,
+            slot_count=1,
+        )
 
 
 __all__ = [

@@ -129,6 +129,85 @@ def pair_rx_index(
     return torch.div(ranks, num_tx, rounding_mode="floor")
 
 
+def tdm_slot_count(*, num_chirps: int, num_tx: int) -> int:
+    """How many TDM slots one frame occupies.
+
+    A frame is ``num_chirps`` chirp periods per transmitter and the
+    transmitters are time division multiplexed, so the frame is
+    ``num_chirps * num_tx`` slots long. This is the slot count a batched
+    propagation replay is given, and it is stated here, next to
+    :func:`pair_tx_index`, so the slow-time slot table has exactly one owner.
+    """
+
+    if type(num_chirps) is not int or num_chirps < 1:
+        raise ValueError(f"num_chirps must be a positive int, got {num_chirps!r}")
+    if type(num_tx) is not int or num_tx < 1:
+        raise ValueError(f"num_tx must be a positive int, got {num_tx!r}")
+    return num_chirps * num_tx
+
+
+def pair_slot_index(
+    *,
+    num_chirps: int,
+    num_tx: int,
+    num_rx: int,
+    sensor_pair_count: int,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Which TDM slot each ``(chirp, sensor pair)`` sits in, ``int64[C, P]``.
+
+    This is the Python statement of the slot index
+    ``witwin/radar/cuda/kernels/fmcw_beat.cu`` already computes:
+
+        ``slot(c, p) = c * num_tx + segment_tx_index[p]``
+
+    and it is built by CALLING :func:`pair_tx_index` rather than by rederiving
+    ``pair % num_tx``, so the beat kernel and a batched propagation replay
+    cannot drift onto two different slot tables. The kernel multiplies the same
+    index by the chirp period; :func:`tdm_slot_times_s` is that multiplication
+    for a caller who needs the times themselves.
+    """
+
+    slots = tdm_slot_count(num_chirps=num_chirps, num_tx=num_tx)
+    transmitter = pair_tx_index(
+        num_tx=num_tx,
+        num_rx=num_rx,
+        sensor_pair_count=sensor_pair_count,
+        device=device,
+    ).to(torch.int64)
+    chirp = torch.arange(num_chirps, device=device, dtype=torch.int64)
+    index = chirp.mul(num_tx).reshape(-1, 1) + transmitter.reshape(1, -1)
+    if int(index.max()) >= slots:
+        raise ValueError(
+            f"slot index {int(index.max())} escapes the {slots}-slot frame"
+        )
+    return index
+
+
+def tdm_slot_times_s(
+    *,
+    num_chirps: int,
+    num_tx: int,
+    chirp_period_s: float,
+    device: torch.device | str,
+    dtype: torch.dtype = torch.float64,
+) -> torch.Tensor:
+    """The world time of every TDM slot in one frame, slot major.
+
+    ``t[slot] = slot * chirp_period_s`` with ``slot`` numbered by
+    :func:`pair_slot_index`, so ``t[slot(c, p)]`` is exactly the
+    ``(c * num_tx + segment_tx_index[p]) * chirp_period`` the beat kernel uses.
+    Built in float64 because a frame is a long chain of small increments and a
+    world time is a coordinate, not a phase.
+    """
+
+    slots = tdm_slot_count(num_chirps=num_chirps, num_tx=num_tx)
+    period = float(chirp_period_s)
+    if not period > 0.0:
+        raise ValueError(f"chirp_period_s must be positive, got {chirp_period_s!r}")
+    return torch.arange(slots, device=device, dtype=dtype).mul(period)
+
+
 def assemble_frame_cube(
     cube: torch.Tensor, *, num_tx: int, num_rx: int
 ) -> torch.Tensor:
@@ -233,7 +312,10 @@ __all__ = [
     "PAIR_RANK_LAYOUT",
     "assemble_frame_cube",
     "pair_rx_index",
+    "pair_slot_index",
     "pair_tx_index",
     "segment_of_each_row",
+    "tdm_slot_count",
+    "tdm_slot_times_s",
     "validate_pair_ordering",
 ]
