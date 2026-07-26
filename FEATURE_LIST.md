@@ -44,7 +44,10 @@
 - `two_way_join_forward` / `_backward` / `_jvp`: the inbound-by-outbound round-trip join, fused into one launch. The VJP reduces over frozen CSR segments with one thread per gradient slot, so it uses no atomics and its summation order is a property of the frozen join rather than of the schedule.
 - `fmcw_beat_forward` / `_backward` / `_jvp`: FMCW beat synthesis over a chirp's fast-time axis. `segment_tx_index` and `num_tx` carry TDM slow time as kernel ARGUMENTS, so a MIMO frame is still exactly one launch.
 - `ofdm_cfr_forward` / `_backward` / `_jvp`: OFDM channel frequency response over the `(symbol, subcarrier)` grid, one launch per frame. The subcarrier term multiplies the FULL delay while `carrier_rate_hz` multiplies the drift only, because a Channel coefficient carries the reference-frequency phase and nothing else; the rate derivative is therefore `-2 pi t_l (n df + f_c + f_r)` and not the delay derivative scaled by slow time.
-- `forward_chunked` / `forward_mimo_linear_chunked` / `dirichlet_jvp` / `backward` / `backward_batched` / `backward_parallel_bins` / `backward_per_bin`: the Dirichlet range spectrum, owned in Python by `witwin/radar/synthesis/dirichlet_spectrum.py`. The path weight is COMPLEX, carried as two real tensors so no complex tensor crosses the autograd boundary; a real weight is the value `a_im = 0` and is bit-identical to what the family produced before it gained the component. `fc` selects the carrier home exactly as `carrier_hz` does in the beat family, and `tau_is_seconds` lets a caller pass a round-trip delay instead of a one-way distance.
+- `sensor_weight_forward` / `_backward` / `_jvp`: the Radar-owned map from array geometry to a path weight - round-trip length and delay, the delay rate, the interpolated antenna pattern, free-space spreading, transmit amplitude, and the legacy receive projection - in ONE launch per frame. The three mode flags come from the path batch's provenance, so a Channel-sourced weight physically cannot have spreading, transmit power, or a polarization projection applied a second time. The backward uses no atomics: the antenna gradient is reduced over ascending rows with explicit scratch.
+- `frontend_noise_forward` / `_backward` / `_jvp`, `frontend_agc_forward` / `_backward` / `_jvp`, `frontend_quantize_forward`: the receive chain in a fixed six-stage order with one ADC. Noise draws are counter-based Philox keyed by `(seed_base, stage_id, linear index)`, so the realisation is independent of block size and toggling one stage leaves every other stage bit-identical. `frontend_quantize_forward` is deliberately non-differentiable and raises on a grad-enabled or forward-dual input.
+- `mimo_linear_backward` / `mimo_linear_jvp`: the AD companions of `forward_mimo_linear_chunked`. With them the fused TDM-frame launch is the only implementation of the frame path in every AD mode; the Torch expression that used to serve a reverse-mode call is deleted.
+- `forward_chunked` / `forward_mimo_linear_chunked` / `dirichlet_jvp` / `mimo_linear_backward` / `mimo_linear_jvp` / `backward` / `backward_batched` / `backward_parallel_bins` / `backward_per_bin`: the Dirichlet range spectrum, owned in Python by `witwin/radar/synthesis/dirichlet_spectrum.py`. The path weight is COMPLEX, carried as two real tensors so no complex tensor crosses the autograd boundary; a real weight is the value `a_im = 0` and is bit-identical to what the family produced before it gained the component. `fc` selects the carrier home exactly as `carrier_hz` does in the beat family, and `tau_is_seconds` lets a caller pass a round-trip delay instead of a one-way distance.
 - Every registered operator has exactly one Python owner, a direct contract test, and a production end-to-end caller, recorded in `ci/native-binding-manifest.json`.
 
 ## Solver Execution
@@ -57,7 +60,7 @@
   architecture set; source builds require a CUDA-enabled PyTorch build plus a
   working CUDA/C++ compilation toolchain.
 - Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `noise_model` when configured; `radar.mimo(..., freq_domain=True)` rejects built-in noise injection
-- Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves `Radar.gain` onto an absolute transmit-voltage scale
+- Time-domain outputs from `Radar.chirp()`, `Radar.frame()`, and `Radar.mimo()` automatically apply `receiver_chain` when configured; enabling it also moves the transmit amplitude onto an absolute transmit-voltage scale. `Radar.gain` is REMOVED: the transmit amplitude reaches physics only through the native sensor-weight owner's `tx_power_mode`, and `Radar.transmit_amplitude` is the value it applies
 - `receiver_chain.adc` and `noise_model.quantization` are mutually exclusive so only one ADC quantizer is active
 - MIMO frames sample the scene once per TDM chirp slot (`chirp_per_frame * num_tx` evaluations), so the velocity-dependent per-TX phase removed by `_compensate_tdm_phase` is physically present; moving-target elevation is now correct instead of biased by radial velocity
 - `radar.mimo(interpolator, ...)` batches all TDM slots into grouped native kernel launches for roughly 8-16x faster dynamic-frame generation
@@ -68,12 +71,21 @@
 
 - `Scene.compile_renderables(time=...)` exposes time-dependent geometry for dynamic scenes
 - Multipath is discovered once per frozen topology and replayed per frame; a row that stops existing at new endpoint positions is published through `row_valid` with an exactly zero payload, as data rather than as an error
-- The Dirichlet solver consumes generalized path samples and applies FSPL from the total `tx -> bounces -> scatter -> rx` distance
+- The Dirichlet solver consumes generalized path samples; the total `tx -> bounces -> scatter -> rx` length, the antenna pattern, free-space spreading, and the polarization projection are evaluated in the native `sensor_weight` kernel rather than in Torch, and the solver carries a ROUND-TRIP DELAY in seconds rather than a halved distance
 - When `polarization` is configured, traced path normals are propagated through the runtime and used for simplified reflection/projection coupling
 - Shared core geometry constructors default to `device=None`, while radar `Scene(...)` owns device placement and defaults to CUDA
 - `Timeline.from_motion()` uses the trace-result contract directly
 - Dynamic structure motion supports rigid `translation`, `rotation`, and `parent` inheritance so rotational Doppler can be modeled directly from the scene
 - `radar.mimo(..., freq_domain=True)` remains available for Dirichlet frequency-domain output
+
+## Waveform Synthesis
+
+- Three waveform owners consume ONE `SynthesisPathBatch`: `synthesize_fmcw_beat` (beat cube, conjugated), `synthesize_ofdm_cfr` (channel frequency response, Channel convention), and `synthesize_pulsed_echo` (received pulse train, Channel convention). `Radar.synthesize(paths, slow_time_mode=...)` dispatches on the STORED `waveform.kind`; a kind with no owner is a hard error with no fallback.
+- `SynthesisPathBatch` carries the weight's PROVENANCE - whether it already contains the reference-frequency phase, free-space spreading, and transmit power - plus a `slow_time_mode` enum, and every waveform spec is validated against it before any kernel launch. Six documented double-count hazards become four unrepresentable states.
+- `witwin.radar.sensors` is the single owner of array geometry, antenna pattern, transmit power, and the legacy receive projection. Transmit power reaches physics through `RadarEndpointSpec.powers_w` on a Channel-sourced path and through the sensor-weight kernel's `tx_power_mode` on the legacy real-amplitude path, never both.
+- `witwin.radar.frontend.FrontendChain` is the single receive chain: port conversion, phase noise, input-referred thermal noise, LNA, AGC, and ADC, in a fixed order with one ADC and one seed base. It replaces the caller-ordered `noise_model` / `receiver_chain` pair.
+- `ScalarRcsResponse.from_rcs(sigma_m2, reference_frequency_hz=...)` builds the target strength through the pinned law `S = sqrt(4 pi sigma) / wavelength`, so `|C_rt|^2` is the bistatic radar equation rather than a relative level.
+- `MimoPathCache` publishes `total_delay_s` (round trip, seconds), a COMPLEX `amplitudes`, and `delay_rate`.
 
 ## Signal Processing
 

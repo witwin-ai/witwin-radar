@@ -1889,6 +1889,41 @@ phase 都可独立判定成功或失败。Phase 0 只做 ADR、inventory、basel
 - 不存在 Python per-path waveform synthesis 热循环；
 - 不存在 Torch physics replay、Dr.Jit AD 或 silent legacy synthesis fallback。
 
+完成记录（Phase 6）：
+
+- 工作项 1-8 全部实现。`SynthesisPathBatch` + 八条 provenance 规则（R1-R8）在任何
+  kernel launch 之前拒绝会重复计数 carrier、spreading、TX power 或 Doppler 的组合；
+  Dirichlet family 扩展为 complex weight 并新增 `dirichlet_jvp`、
+  `mimo_linear_backward`、`mimo_linear_jvp`；FMCW/OFDM/Pulsed 三个 native family
+  各自 primal+JVP+VJP；`witwin/radar/sensors/` 与 `witwin/radar/frontend/` 成为
+  antenna/array/TX power/RX projection 与 receive chain 的唯一 owner；五段式
+  `RadarSystemConfig` 带 stored waveform discriminator，并由 runtime + AST 双测试
+  保证 waveform/frontend 字段不进入 propagation request。
+- 工作项 8 的迁移已完成：`solvers/common.py` 只剩 `PathSample`、
+  `normalize_interpolated_sample`、`samples_require_grad`、`_stack_slot_samples`，
+  五个 Torch 几何/幅度表达式全部进入 `sensor_weight` kernel，`radar.gain` 删除。
+- 验收标准 A1、A2、A3、A5、A6、A7、A8、A9 均有对应测试；A4 见下列偏差。
+- 决策记录：`docs/dev/standards/radar-adr-010-waveform-synthesis-ownership.md`
+  与 `docs/dev/standards/radar-adr-011-shared-solver-surface.md`。
+
+Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
+
+1. **Channel 不应用 source `powers_w`。** frozen-topology `reevaluate` 发布的
+   coefficient 不随 `powers_w` 变化（四倍功率给出 1.0 的幅度比，应为 2.0）。此前
+   所有 fixture 都用 `TX_POWER_W = 1.0`，因此不可见。已由
+   `tests/test_phase6_cross_waveform.py::test_channel_does_not_apply_the_declared_transmit_power`
+   钉住，绝对电平测试因此以 1 W 的有效发射功率表述。
+2. **A4 的 real-compatibility 容差。** 迁移前后同一场景的 MIMO cube 相对偏差为
+   1.4e-3（幅度 1.2e-3），而不是设想的 1e-4。原因是路径长度从 `torch.cdist`
+   改由 kernel 显式求范数，1 ulp 的长度差在 77 GHz、`tau ~ 5e-8 s` 处即为
+   ~2.6e-3 rad 的相位差；这是 `dirichlet.cu` 的 float32 相位分辨率，不是迁移错误。
+3. **`dirichlet.cu` 的相位精度是记录在案的债务。** 修复方式是像 `fmcw_beat.cu`
+   一样用 double 累加 cycle 并在 `sincosf` 前 wrap 到 `[0,1)`。这是需要独立决策
+   的数值变更，未混入本次架构迁移。
+4. **legacy `noise_model` / `receiver_chain` runtime 仍然存在。** `FrontendChain`
+   已经是被 `apply_signal_models` 优先选择的 owner，且两者不能同时配置；物理删除
+   旧 runtime 及其测试是后续独立变更。
+
 #### Phase 7：集成 Dynamics、TDM、Doppler 与 Micro-Doppler
 
 目标：让 Core SceneSnapshot 驱动 Channel 和 Radar 的统一时间演化，并生成连续、可微的 round-trip phase dynamics。
