@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Iterable
 
-from .utils.antenna import DEFAULT_DIPOLE_ANGLES_DEG, DEFAULT_DIPOLE_VALUES
+from .sensors.pattern import DEFAULT_DIPOLE_ANGLES_DEG, DEFAULT_DIPOLE_VALUES
 
 if TYPE_CHECKING:
     from .radar import RadarConfig

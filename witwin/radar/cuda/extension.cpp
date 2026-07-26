@@ -208,6 +208,154 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "int pulse_kind, float pulse_width_s, float bandwidth_hz, "
       "float pulse_amplitude, float carrier_hz, float carrier_rate_hz) -> ()");
 
+  // Phase-6 sensor weight: array geometry, antenna pattern, transmit power,
+  // and the legacy receive projection, applied to a path weight exactly once
+  // each. This is the native owner of what `solvers/common.py` computes in
+  // Torch today.
+  //
+  // THE THREE MODE FLAGS ARE THE SINGLE-COUNT RULE, AS ARGUMENTS. They are
+  // driven directly by the batch's provenance booleans:
+  //
+  //   spreading_mode           1 applies wavelength/(4 pi L), 0 applies nothing.
+  //   tx_power_mode            1 applies tx_amplitude, 0 applies nothing.
+  //   legacy_real_polarization 1 applies the mirrored TX-onto-RX projection.
+  //
+  // A Channel-sourced weight already carries free-space spreading per leg,
+  // sqrt(tx_power) from the source endpoint's powers_w, and the endpoint
+  // polarization projection, so it arrives with all three set to 0 and CANNOT
+  // have any of them applied a second time. The legacy real-amplitude route
+  // carries none of them, passes 1 for all three, and reproduces the Torch
+  // expression it replaces.
+  //
+  // `row_kind` is 0 for a row that interacts at a site and 1 for a direct
+  // transmitter-to-receiver row, whose length is |rx - tx| with no site term.
+  //
+  // Outputs are the scaled complex weight, the ROUND-TRIP delay tau_rt in
+  // seconds, its rate d(tau_rt)/dt, and the POWER pattern product G_t * G_r as
+  // a diagnostic. The differentiable inputs are the four endpoint positions,
+  // the intensity, and the incoming weight; the velocities, normals,
+  // polarization vectors, local frame, and pattern table are constants.
+  //
+  // The backward operator takes two per-row scratch tensors and uses NO
+  // atomics. Many rows share one antenna, so the antenna-position gradient is a
+  // real reduction; doing it in a second kernel over ascending rows makes the
+  // summation order a property of the frozen row set rather than of the
+  // schedule, exactly as the two-way join does. See R-ADR-004.
+  m.def(
+      "sensor_weight_forward(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
+      "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
+      "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
+      "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
+      "Tensor weight_in_im, Tensor normals, Tensor pol_tx, Tensor pol_rx, "
+      "Tensor local_axes, Tensor pattern_x_axis, Tensor pattern_y_axis, "
+      "Tensor pattern_x_values, Tensor pattern_y_values, Tensor pattern_values, "
+      "Tensor(a!) out_re, Tensor(b!) out_im, Tensor(c!) tau_rt, "
+      "Tensor(d!) tau_rate, Tensor(e!) pattern_gain, int num_paths, int num_tx, "
+      "int num_rx, int pattern_kind, float c0, float wavelength_m, "
+      "float tx_amplitude, int spreading_mode, int tx_power_mode, "
+      "int legacy_real_polarization, int reflection_flip) -> ()");
+  m.def(
+      "sensor_weight_backward(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
+      "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
+      "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
+      "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
+      "Tensor weight_in_im, Tensor normals, Tensor pol_tx, Tensor pol_rx, "
+      "Tensor local_axes, Tensor pattern_x_axis, Tensor pattern_y_axis, "
+      "Tensor pattern_x_values, Tensor pattern_y_values, Tensor pattern_values, "
+      "Tensor grad_out_re, Tensor grad_out_im, Tensor grad_tau_rt, "
+      "Tensor grad_tau_rate, Tensor(a!) grad_tx_pos, Tensor(b!) grad_rx_pos, "
+      "Tensor(c!) grad_site_in, Tensor(d!) grad_site_out, "
+      "Tensor(e!) grad_intensity, Tensor(f!) grad_weight_re, "
+      "Tensor(g!) grad_weight_im, Tensor(h!) tx_row_scratch, "
+      "Tensor(i!) rx_row_scratch, int num_paths, int num_tx, int num_rx, "
+      "int pattern_kind, float c0, float wavelength_m, float tx_amplitude, "
+      "int spreading_mode, int tx_power_mode, int legacy_real_polarization, "
+      "int reflection_flip) -> ()");
+  m.def(
+      "sensor_weight_jvp(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
+      "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
+      "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
+      "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
+      "Tensor weight_in_im, Tensor normals, Tensor pol_tx, Tensor pol_rx, "
+      "Tensor local_axes, Tensor pattern_x_axis, Tensor pattern_y_axis, "
+      "Tensor pattern_x_values, Tensor pattern_y_values, Tensor pattern_values, "
+      "Tensor tan_tx_pos, Tensor tan_rx_pos, Tensor tan_site_in, "
+      "Tensor tan_site_out, Tensor tan_intensity, Tensor tan_weight_re, "
+      "Tensor tan_weight_im, Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, "
+      "Tensor(c!) tan_tau_rt, Tensor(d!) tan_tau_rate, int num_paths, "
+      "int num_tx, int num_rx, int pattern_kind, float c0, float wavelength_m, "
+      "float tx_amplitude, int spreading_mode, int tx_power_mode, "
+      "int legacy_real_polarization, int reflection_flip) -> ()");
+
+  // Phase-6 receiver frontend. Three families, ONE fixed order, and the order
+  // lives in the Python runtime rather than in a caller:
+  //
+  //   port -> phase -> thermal -> lna -> agc -> adc
+  //
+  // `frontend_noise` fuses stages 1 to 3 deliberately. Two independently
+  // callable runtimes let the caller decide whether thermal noise lands before
+  // or after the LNA, and that decision is worth a factor of g_lna^2 in output
+  // noise power. Thermal noise is INPUT-REFERRED: it is added before the gain.
+  //
+  //   y = ( x * exp(j theta) + n ) * g_lna,   n ~ CN(0, 2 thermal_sigma^2)
+  //
+  // The draws are counter-based Philox keyed by seed_base and countered by
+  // (stage_id, linear element index), so the realisation is independent of the
+  // block size and toggling one stage leaves every other stage bit-identical. A
+  // per-thread curand state would make both of those false. `block_size` is an
+  // argument precisely so a test can prove the independence.
+  //
+  // The accumulated Wiener phase is PUBLISHED. backward and jvp consume that
+  // saved phase rather than regenerating it, which is what makes the derivative
+  // exactly consistent with the realisation it was taken at.
+  //
+  // `frontend_agc` is data-dependent, so the frontend is not linear in the
+  // signal and the physics linearity invariant holds only with AGC off. The
+  // gain and the measured RMS are device tensors; reading either to the host
+  // would be a per-frame transfer. The signal is viewed as
+  // [dim0, num_groups, dim2] so a global AGC and a per-receiver one differ only
+  // in the group count, with no copy and no permute.
+  //
+  // `frontend_quantize_forward` has NO backward and NO jvp, on purpose: `round`
+  // is not differentiable and a straight-through surrogate is a Phase-9
+  // modelling decision. Its Python owner raises on a grad-enabled or
+  // forward-dual input rather than silently detaching. This is the one
+  // deliberate exception to R-ADR-004's three-per-family rule. See R-ADR-004.
+  m.def(
+      "frontend_noise_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, Tensor(c!) phase_rad, int num_outer, int num_phase, "
+      "float phase_sigma, float thermal_sigma, float lna_gain, int seed_base, "
+      "int phase_stage_id, int thermal_stage_id, int block_size) -> ()");
+  m.def(
+      "frontend_noise_backward(Tensor phase_rad, Tensor grad_out_re, "
+      "Tensor grad_out_im, Tensor(a!) grad_x_re, Tensor(b!) grad_x_im, "
+      "int num_outer, int num_phase, float lna_gain, int block_size) -> ()");
+  m.def(
+      "frontend_noise_jvp(Tensor phase_rad, Tensor tan_x_re, Tensor tan_x_im, "
+      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_outer, "
+      "int num_phase, float lna_gain, int block_size) -> ()");
+  m.def(
+      "frontend_agc_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, Tensor(c!) gain, Tensor(d!) rms, int dim0, "
+      "int num_groups, int dim2, float target_rms, float min_gain, "
+      "float max_gain, int block_size) -> ()");
+  m.def(
+      "frontend_agc_backward(Tensor x_re, Tensor x_im, Tensor gain, Tensor rms, "
+      "Tensor grad_out_re, Tensor grad_out_im, Tensor(a!) grad_x_re, "
+      "Tensor(b!) grad_x_im, Tensor(c!) inner, int dim0, int num_groups, "
+      "int dim2, float target_rms, float min_gain, float max_gain, "
+      "int block_size) -> ()");
+  m.def(
+      "frontend_agc_jvp(Tensor x_re, Tensor x_im, Tensor gain, Tensor rms, "
+      "Tensor tan_x_re, Tensor tan_x_im, Tensor(a!) tan_out_re, "
+      "Tensor(b!) tan_out_im, Tensor(c!) inner, int dim0, int num_groups, "
+      "int dim2, float target_rms, float min_gain, float max_gain, "
+      "int block_size) -> ()");
+  m.def(
+      "frontend_quantize_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, Tensor(c!) clipped_count, int num_elements, int bits, "
+      "float full_scale, int block_size) -> ()");
+
   // Phase-5 two-way join: inbound leg x outbound leg -> radar round trip.
   //
   //   tau_rt  = tau_in + tau_out,  rate_rt = rate_in + rate_out

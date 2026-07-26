@@ -1,4 +1,24 @@
-"""Antenna-pattern math helpers."""
+"""The antenna pattern, and the single owner of its interpolation.
+
+Work item 4's "single owner" lands here. These expressions used to live under
+``utils/`` next to unrelated tensor and geometry helpers, which is how a second
+copy of a pattern lookup gets written by someone who does not know the first one
+exists. They are a SENSOR property, so they live with the array geometry and the
+transmit power that share that description.
+
+The functions are unchanged by the move, deliberately. The native
+``sensor_weight`` family reproduces them term for term - including the two edge
+conventions that a rewrite would quietly lose: a query outside the axis returns
+zero rather than the nearest value, and a query that lands exactly on the first
+knot takes the degenerate ``left == right`` branch whose interpolation weight is
+zero. ``tests/test_phase6_sensor_weight.py`` pins the kernel against this file
+over random directions, so a change here without a change there is a test
+failure rather than a slow divergence.
+
+These stay Torch because they are the ORACLE and the freeze-time table builder,
+not a per-frame hot path. Production per-path evaluation goes through the
+kernel.
+"""
 
 from __future__ import annotations
 

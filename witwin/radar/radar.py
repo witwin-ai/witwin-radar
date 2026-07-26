@@ -12,7 +12,7 @@ from typing import Any
 import torch
 
 from .types import MotionSampling, SamplingMode
-from .utils.antenna import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
+from .sensors.pattern import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
 from .utils.vector import vec3_tensor
 
 
