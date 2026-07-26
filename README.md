@@ -150,6 +150,14 @@ Available mutating scene methods:
 - SMPL body support through `Scene.add_smpl(...)`
 - Optional per-structure rigid motion with parent inheritance
 - Torch-native DSP pipeline for range/Doppler processing and point-cloud extraction
+- One processing facade, `witwin.radar.processing`: range profile, Range-Doppler,
+  beam/range/velocity cube, AoA, beamforming, CFAR, point cloud and detection
+  handoff, all PyTorch, sharing one `ProcessingAxes` metadata/axes/units record
+  across FMCW, OFDM and pulsed. `witwin.radar.sigproc` keeps its public names as
+  migration adapters
+- The vendor DSP primitive surface is frozen and asserted by equality; the
+  native-DSP gate was measured and the recorded answer is no native DSP
+  (`tools/benchmark_processing.py`, `PERFORMANCE.md`)
 - Tensor-first DSP outputs with backwards-compatible NumPy wrappers
 - Optional antenna pattern, polarization, noise-model, and receiver-chain configuration
 

@@ -91,6 +91,165 @@ uses the fused linear range-rate kernel; the same scene measured 14.65 ms
 (62.6x faster). For a 32-chirp, 0.2 m/s translation check, complex-signal
 relative L2 error was `5.9e-4` and relative peak-magnitude error was `1.0e-3`.
 
+## Processing Chain (Phase 8)
+
+The maintained benchmark is:
+
+```bash
+python tools/benchmark_processing.py --runs 200 --warmup 20 --json
+```
+
+Same timing convention as the Dirichlet benchmark: CUDA events with an explicit
+`torch.cuda.synchronize`, medians, and a peak-allocation delta around a single
+call. Measured on an NVIDIA GeForce RTX 5080. Two sizes per stage: the frozen
+fixture (8 chirps, 2x2, 256 samples) and one realistic size (128 chirps, 3x4,
+256 samples).
+
+A caveat that must not be dropped: a synchronization inside cuFFT plan creation
+is invisible from Python. The `fft` and `host` columns count DISPATCHES and
+HOST-VISIBLE observations. Wall time is measured with CUDA events and is never
+inferred from a counter.
+
+### Transforms
+
+| Stage | fixture | realistic | fft | note |
+| --- | ---: | ---: | ---: | --- |
+| `range_profile` FMCW | 0.079 ms | 0.079 ms | 1 | |
+| `range_profile` OFDM | 0.103 ms | 0.084 ms | 1 | the CIR inversion |
+| `range_profile` pulsed | 0.196 ms | 0.210 ms | 4 | matched filter |
+| `range_doppler` | 0.142 ms | 0.145 ms | 2 | transform plus shift |
+| window multiply alone | 0.062 ms | 0.062 ms | 0 | |
+| transform alone | 0.019 ms | 0.020 ms | 1 | |
+| `matched_filter` float32 | 0.254 ms | 0.253 ms | 3 | |
+| `matched_filter` complex128 | 0.245 ms | 0.261 ms | 3 | the deleted upcast |
+| `fft2_aoa` | 0.396 ms | 0.393 ms | 1 | |
+| micro-Doppler framing copy | 0.022 ms | 0.015 ms | 0 | |
+| micro-Doppler transform | 0.021 ms | 0.036 ms | 1 | |
+
+Every stage is flat in problem size to within noise across a 48x larger cube, so
+the chain is dispatch bound rather than work bound. The **window multiply costs
+3.2x the transform it feeds** (0.062 against 0.019 ms) - the largest single
+finding in this table and a Torch-side fusion candidate, not a cuFFT one.
+
+The `complex128` upcast the cutover deleted bought **no measurable time** at
+either size (its cost is 2.2x the peak allocation: 13.5 MB against 6.25 MB); the
+deletion is a memory and precision-honesty change, not a speed change.
+
+### Detectors
+
+| Detector | shape | median | peak |
+| --- | --- | ---: | ---: |
+| `ca_cfar` | `[128, 256]` | 0.530 ms | 1.18 MB |
+| `ca_cfar_fast` | `[128, 256]` | 0.115 ms | 0.62 MB |
+| `os_cfar` | `[128, 256]` | 1.265 ms | **138.0 MB** |
+| `ca_cfar` | `[12, 128, 256]` | 0.544 ms | 10.76 MB |
+| `ca_cfar_fast` | `[12, 128, 256]` | 0.107 ms | 7.76 MB |
+| `os_cfar` | `[12, 128, 256]` | 14.53 ms | **1644 MB** |
+| `ca_cfar_1d` | `[12, 256]` | 0.207 ms | 0.08 MB |
+
+`os_cfar` is the memory outlier by a factor of 222 on one map and 212 on twelve:
+it materialises `[batch, D * R, n_outer]` training patches and sorts them. The
+number is pinned as a budget in `tests/test_phase8_pipeline_budget.py` rather
+than left to be discovered.
+
+The docstring claim that `ca_cfar_fast` is "~100x faster" was measured and is
+false; it is 4.6x on CUDA here, 4.1-6.1x in the separate cutover measurement,
+and SLOWER than `ca_cfar` on CPU (0.72x on one map, 0.38x on eight). The claim
+has been deleted from the source.
+
+### Angle of arrival
+
+| Stage | fixture | realistic | note |
+| --- | ---: | ---: | --- |
+| `tdm_compensate` | 0.085 ms | 0.093 ms | one broadcast multiply |
+| the deleted Python TX loop | 0.139 ms | 0.136 ms | 1.6x, and it cloned |
+| `phase_comparison_aoa` | 0.526 ms | 0.531 ms | two padded transforms |
+| `fft2_aoa` | 0.391 ms | 0.421 ms | one `fft2` |
+| `music_spectrum` | 0.704 ms | 0.711 ms | whole call |
+| MUSIC smoothing, `unfold` | 0.014 ms | 0.014 ms | |
+| the deleted `stack` comprehension | 0.100 ms | 0.081 ms | 5.9x |
+| MUSIC `eigh` | 0.231 ms | 0.251 ms | a third of the call |
+
+### Cube formation
+
+| Stage | fixture | realistic | note |
+| --- | ---: | ---: | --- |
+| `assemble_frame_cube` | 0.018 ms | 0.018 ms | permute/reshape/permute/contiguous |
+| `ProcessingCube.from_synthesis` | 0.019 ms | 0.019 ms | |
+| `conventional_steering` | 0.078 ms | 0.078 ms | scene static, cacheable |
+| `beam_cube` | 0.041 ms | 0.063 ms | the second full copy |
+
+The two full copies together are 0.081 ms against a 2.23 ms pipeline: 3.6 percent.
+
+### Full pipeline, and the frozen budgets
+
+`synthesize -> cube -> range profile -> Range-Doppler -> CFAR -> AoA -> point
+cloud`, one call, real Channel fixture at 3 TX x 4 RX.
+
+| Detector | median | peak delta | fft dispatches | host observations |
+| --- | ---: | ---: | ---: | ---: |
+| `ca_cfar_fast` | **2.23 ms** | **1.13 MB** | 7 | 1 |
+| `ca_cfar` | 2.68 ms | 1.13 MB | 7 | 1 |
+| `os_cfar` | 2.40 ms | 3.33 MB | 7 | 1 |
+
+Process-to-process medians spanned 2.19 to 2.34 ms over four independent runs.
+
+The frozen budgets, each asserted in `tests/test_phase8_pipeline_budget.py` with
+its measured number and headroom factor inline:
+
+| Budget | Measured | Frozen at |
+| --- | ---: | ---: |
+| full-pipeline latency | 2.23 ms | `x 1.30` = 2.90 ms |
+| full-pipeline peak allocation delta | 1.13 MB | `x 1.25` = 1.41 MB |
+| host observations per pipeline call | 1 | exactly 1 |
+| `torch.fft` dispatches per pipeline call | 7 | exactly 7 |
+| per-frame simulation cost | 3.88 ms | `x 1.30` = 5.04 ms |
+| `os_cfar` peak, one `[128, 256]` map | 138.0 MB | `x 1.25` = 172.5 MB |
+| wideband D2H copies / synchronizations per leg | 1 / 1 | exactly, for `F` in {1, 8, 64} |
+| two-way join launches | `1 + F` | exactly, for `F` in {1, 8, 64} |
+
+The single host observation is the `torch.argwhere` inside `point_cloud`, and it
+IS the stage: a point cloud has a data-dependent length. The seven dispatches are
+one range transform, two for the Doppler stage, two building the velocity axis,
+and two inside the phase comparison.
+
+**On the per-frame simulation cost.** The Phase-7 report recorded 2.30 ms/frame
+for two leg reevaluations plus one composition. That figure is not reproducible
+in this environment and the reason is not a Phase-8 regression: measured at the
+Phase-8 BASE commit `4bb059a` in the same session on the same fixture, the same
+call costs **3.911 ms**, against **3.880 ms** at HEAD - a ratio of 0.992. The
+2.30 ms figure describes a different machine state. The portable claim is the
+ratio, and it says nothing regressed.
+
+**Component export multiplier.** Exporting components costs one synthesis launch
+each and zero host observations. On the multi-endpoint fixture: unseparated
+0.160 ms, the two populated classes 0.393 ms (2.46x), all four classes 0.797 ms
+(4.98x). Against a 4.94 ms frame that is 1.05x.
+
+**Wideband `F`-loop join cost.** 2 TX x 2 sites x 2 RX, 11 composed rows:
+
+| `F` | leg reevaluation | compose | marginal join |
+| ---: | ---: | ---: | ---: |
+| none | 3.501 ms | 0.267 ms | - |
+| 1 | 5.683 ms | 0.449 ms | 0.182 ms/column |
+| 8 | 21.83 ms | 1.665 ms | 0.175 ms/column |
+| 16 | 38.52 ms | 3.304 ms | 0.190 ms/column |
+| 64 | 140.4 ms | 9.629 ms | 0.146 ms/column |
+
+The join loop is 6-8 percent of a wideband frame; the dominant term is Channel's
+`(1 + F)` native launches. A strided `[K, F]` native join is not justified by
+this table and would need its own decision record and a measurement that beats
+it, shipping primal, JVP and VJP in the same change.
+
+### The native-DSP gate
+
+Measured and recorded: **no native DSP in Phase 8.** Of the four criteria, only
+(a) dispatch-bound is tripped, and a cuFFT wrapper replaces one dispatch with
+another dispatch - it removes no launch. What the data argues for is fewer,
+larger launches or a captured CUDA graph, both Torch-side. The reasoning and the
+per-criterion numbers are in
+`docs/dev/standards/radar-adr-017-processing-facade-and-frozen-dsp-surface.md`.
+
 ## Method
 
 The native forward kernel evaluates the Dirichlet closed form directly in frequency space, avoiding the time-domain signal materialization and FFT used by the reference path. The native backward kernel applies the analytical gradients for the same expression and accumulates per-target distance/amplitude gradients.

@@ -2115,6 +2115,88 @@ Phase 7 记录的偏差与上游缺口（不在本 tree 修补）：
 - full pipeline latency 和 memory 满足冻结预算；
 - processing facade 外无散落的 production Torch DSP expression，DSP 例外清单没有扩张到 Radar physics/synthesis。
 
+Phase 8 验收矩阵（每行一条标准，一个测试，一个实测数）：
+
+| # | 标准 | 测试与断言 | 实测 |
+|---|---|---|---|
+| 1 | narrowband 与 frequency-dependent 的 capability 和数值差异可解释 | `test_phase8_wideband_ofdm.py::test_an_adapter_without_a_band_publishes_exactly_what_it_did_before` 与 `..._reproduces_the_reference_column_bitwise`（`torch.equal`）；`test_phase8_wideband_materials.py::test_the_narrowband_law_is_measurably_wrong_on_the_slab` | 无 band 时 **bitwise** 相同；column 0 **bitwise** 等于 `complex_transfer_ref`；同一 slab 网格上 narrowband offset law 偏离 **3.78x**；spreading tilt 对全部 16 个 subcarrier 符合 `f_ref/(f_ref+n df)`，`rtol 1e-5` |
+| 2 | dispersive / multilayer / rough wideband fixtures 通过 | multilayer：`test_the_slab_reflection_follows_the_airy_stack_across_two_fringes`、`test_the_slab_fringes_land_where_the_analytic_period_says`；dispersive：`test_a_dispersive_scene_refuses_the_band_with_the_channel_message_intact` + `test_the_dispersive_refusal_is_justified_by_the_drift_it_would_hide`；rough：`test_a_rough_scene_refuses_the_band` | multilayer **数值通过**：Airy 栈 **9.60e-5**（界 2e-4），`\|r\|` 在扫频上跨越 **0.0439-0.6240**（14.2 倍），解析条纹周期 1.526 GHz，实测极小值落在同一网格 bin；半空间 **9.59e-5**，自由空间 **4.51e-5**。dispersive 与 rough 是**量化拒绝**：dispersive 的 `eps_r` 在扫频上漂移 **32.7%**，对照被接受路线自身的材料误差尺度 `df/df_fringe = 1.2`（见偏差 1，需 owner 确认） |
+| 3 | target/clutter 分量可独立导出并相干组合 | `test_phase8_clutter_components.py::test_every_component_export_shares_one_topology_object`、`test_the_component_cubes_sum_to_the_full_cube`、`test_a_masked_row_contributes_exactly_zero_and_no_gradient` | 划分 (4,7,0,0) / 11 行，每行恰属一类；相干重组残差 **3.2539e-11** 绝对、**8.665e-08** 相对，对照推导 `atol` **2.4797e-09**，余量 76x；被 mask 的行权重 bitwise 为零且梯度恰为 `0.0` |
+| 4 | FMCW / OFDM / Pulsed 的 range/Doppler 轴和解析目标一致 | `test_phase8_cross_waveform_axes.py::test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms`、`test_the_closing_target_is_positive_in_every_waveform`；`tests/processing/test_range_profile.py` | 同一 site 落在 FMCW bin 50/256、OFDM CIR sample 4/64、pulsed lag 4/128；三者读出同一距离 2.146521892 m，误差 **4.441e-16 m**；同一闭合速度读出 3.743662063 m/s，误差 **4.441e-16 m/s**，且三者 `velocity_bin_mps` 同为 1.871831031；FMCW 无窗旁瓣 **-136.5 dB** |
+| 5 | TDM AoA、2D FFT AoA、CFAR、point cloud、tracking handoff 测试通过 | `tests/processing/test_aoa.py`、`test_cfar.py`、`test_pointcloud.py`、`test_tracking.py`、`test_beamforming.py` | `--gpu` 全绿；TDM 补偿与旧式 Python 循环 **bitwise** 一致；两条 FFT AoA 路线各自命中自己的精确 bin，且同一波前在两种相位约定下给出同一角度（`test_a_conjugated_beat_cube_is_reconciled_rather_than_mirrored`）；CFAR 实测虚警率符合 `P_fa = (1+alpha/N)^-N`（`test_the_measured_false_alarm_rate_matches_the_analytic_one`）；point cloud 每次调用恰 **1** 次主机观测；constant-velocity 目标跨帧 track 连续 |
+| 6 | processing 不改变 propagation row identity 或 AD contracts | `test_phase8_clutter_components.py::test_every_component_export_shares_one_topology_object`（`is`）、`test_composing_is_unaffected_by_building_an_index`（bitwise）；`tests/processing/test_cube.py::test_a_dead_row_reaches_the_cube_as_an_exact_zero` | 四个分类导出共享**同一** `RadarPathTopology` 对象；建立 index 前后合成帧 **bitwise** 相同；processing 包内不读 row identity、row order 或 `row_valid` |
+| 7 | Channel capability/API/ABI 中无 Radar processing 字段 | `test_phase8_frozen_dsp_surface.py::test_the_channel_capability_record_publishes_exactly_these_fields`（集合相等）、`test_no_processing_vocabulary_appears_anywhere_in_the_channel_capabilities`、`test_the_native_binding_manifest_carries_no_processing_symbol`；`test_phase6_config_boundary.py` 的 `REEVALUATION_KEYWORDS` 相等断言 | live record **25** 个字段，逐字相等；27 条 processing 词汇在 consumer record 与包级 `capabilities()` 的全部嵌套层级命中 **0** 次；`ci/native-binding-manifest.json` **未改动** |
+| 8 | full pipeline latency 和 memory 满足冻结预算 | `test_phase8_pipeline_budget.py` 六条 | latency **2.23 ms**，冻结于 `x1.30 = 2.90 ms`；峰值增量 **1.13 MB**，冻结于 `x1.25 = 1.41 MB`；主机观测恰 **1**（point cloud 的 `argwhere`）；`torch.fft` 分派恰 **7**；每帧仿真 **3.880 ms**（base commit `4bb059a` 同场测得 **3.911 ms**，比值 0.992）；wideband 每条 leg 恰 1 次 D2H、1 次 sync，`F in {1,8,64}` 不变；join launches `1 + F` |
+| 9 | processing facade 外无散落的 production Torch DSP，例外清单未扩张 | `tests/processing/test_cutover.py::test_no_dsp_expression_survives_outside_the_processing_facade`；`test_phase8_frozen_dsp_surface.py::test_the_dsp_exception_list_has_not_expanded_into_physics_or_synthesis` 与 `test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive` | facade 外 **0** 处；例外清单恰 **1** 项（`solvers/solver_dirichlet.py`，逆变换合成信号，且被断言仍在调用且不含正变换）；`RADAR_FACADE_TORCH_PHYSICS` 五项未增；冻结 vendor DSP 清单四格逐格相等 |
+
+Phase 8 记录的偏差、延后项与未付账（不在本 phase 修补）：
+
+1. **dispersive 与 rough 的"wideband fixtures 通过"是量化拒绝，不是数值通过。**
+   设计 R8 如此裁定，此处按 owner 要求显式上浮而非埋在文中。dispersive 记录被
+   冻结在编译频率（ADR-042 的 W1），rough/phase-screen 的常驻表以哈希了频率的
+   material cache token 为键（W4）；两者都是"在 `f_ref + df` 处使用 `f_ref` 构建
+   的量"这一类冻结近似。拒绝附带量化理由：dispersive 的 `eps_r` 在 fixture 扫频上
+   漂移 32.7%。**需要 owner 确认这满足标准 2。**
+2. **FMCW 与 pulsed 的 wideband 延后。** 设计 R2：只有 OFDM 有精确的离散频率
+   网格；FMCW/pulsed 需要在每个 fast-time 采样处取 `H_k(f(t))`，插值网格是一个
+   自带误差项的新近似，而不是 OFDM 契约的免费推论。R-ADR-015 记录。
+3. **wideband target response 延后。** 一个合成列是 `H_in(f_j) * S(f_ref) *
+   H_out(f_j)`：散射响应仍冻结在 `f_ref`。加宽它需要 `ScatterResponse.evaluate`
+   带频率参数，以及 `AspectScatterResponse` 的原生契约与 AD 家族。R-ADR-015 第 5 节。
+4. **两跳 join 的 `F` 循环。** 频率轴是对既有 native `two_way_join` 的 Python
+   循环，实测边际 0.146-0.190 ms/column，占一个 wideband frame 的 6-8%；主导项是
+   Channel 的 `(1 + F)` 次 native launch。strided `[K, F]` native join 需要自己的
+   R-ADR，并且要在同一次变更里给出 primal/JVP/VJP。
+5. **incoherent 的 per-realization 随机相位延后。** Phase 8 的
+   `combine_incoherent` 是 processing facade 里的功率域助手；物理上更诚实的做法
+   是在 native response 里按 frontend RNG seed 契约抽取每次实现的随机相位，那是
+   一次带 RNG/seed 契约的 native response 变更。R-ADR-016 决策 5。
+6. **legacy `Radar` 未多波形化。** 设计 R3 的范围裁定：`RadarSystemConfig.axes()`
+   对非 FMCW 抛异常、`Radar.__init__` 无条件调用 `_init_axes`、`from_radar_config`
+   硬编码 FMCW，三者合起来使非 FMCW 的 `Radar` 今天无法构造。`ProcessingAxes` 建在
+   `RadarSystemConfig`/`SynthesisResult` 一层，`Radar` 保留 FMCW-only adapter。
+7. **`(1 + F) * buckets * launches_per_bucket` 由 Channel 自己钉住。** Radar 侧
+   的预算测试断言它能观测的那一半（每条 leg 一次 consumer 调用、`1 D2H`/`1 sync`、
+   `frequency_column_count == F`、join `1 + F`）；native launch 计数在
+   `channel/tests/propagation/consumer/test_wideband_offsets.py::test_the_launch_count_follows_the_published_law`
+   处按 `F in {None,1,8,64}` 断言。不在 Radar 测试里复制 Channel 私有模块的补丁。
+8. **Phase-7 记录的 2.30 ms/frame 在本环境不可复现，且这不是 Phase-8 回归。**
+   同一 session、同一 fixture，Phase-8 base commit `4bb059a` 实测 **3.911 ms**，
+   HEAD 实测 **3.880 ms**，比值 0.992。2.30 ms 描述的是另一台机器状态；可移植的
+   陈述是比值。
+9. **native-DSP gate：四条判据只有 (a) dispatch-bound 命中，而它并不支持
+   cuFFT wrapper。** 每个 stage 在 48 倍大的 cube 上耗时不变，说明成本在每次
+   launch 而不在每个元素；wrapper 用一次分派换另一次分派，不减少 launch。数据支持
+   的是更少更大的 launch 或 CUDA graph，两者都是 Torch 侧改动。R-ADR-017 第 6 节。
+10. **两个 Torch 侧优化被记录并延后。** window 乘法 0.062 ms 对上它喂的 0.019 ms
+    变换（3.2 倍）；`os_cfar` 在 8 波束 `[128,256]` 上 1.64 GB。本 phase 只测量与
+    冻结，不优化——性能修复是后续独立变更，要带自己的证据。
+11. **两条 wall-time 预算钉子是设备相关的。** 这正是"冻结预算"的含义：在别的硬件
+    上失败时，失败信息里的数字就是报告，正确做法是有意地记录新测量，绝不是放宽
+    因子。计数类钉子（主机观测、分派数、D2H、sync、launch）与设备无关。
+12. **`ca_cfar_2d_fast` 的 "~100x faster" 文档声明经实测为假并已删除。** CUDA 上
+    4.1-6.1x，CPU 上 **更慢**（一张图 0.72x，八张图 0.38x）。~100x 与 CPU 上
+    `ca_cfar_fast`/`os_cfar` 的比值（96-112x）几乎相同——很可能是与错误的探测器
+    比较得来的。
+13. **cutover 修正了五个真实缺陷，且都是公共名上的行为变更。** sink-major 的
+    steering 表乘 tx-major 的 cube；FFT 角度估计从不调和 beat 共轭，把每个目标报在
+    镜像位置；相位比较的俯仰余弦指向 `-z`；`MUSICImager` 在共轭导向矢量处求二次型；
+    CFAR `max_points` 稀释按能量重排而角度按 mask 顺序读取。五处都以具名常量为
+    legacy 入口保留旧行为并断言。它们属于验收矩阵里的**修正**，不是回归。R-ADR-017。
+14. **`hybrid` join mode 的 Phase-5 欠账以 component index 偿付。**
+    `join_mode` 仍是 `{direct, multipath}`，`hybrid` 的拒绝测试保持绿且未被削弱；
+    分类能力以一个 sidecar index 落在 `multipath` join 之上。R-ADR-016 决策 2。
+15. **replay 是单调减的（Phase-7 偏差 4 的延续）。** clutter 的 `mobility` 是调用方
+    声明而非推断；`replay` 下新出现的路径不会被发现，必须以声明的 cadence
+    `rediscover`。测试在两个方向上都展示了这个边界。
+
+- 决策记录：Channel `docs/dev/standards/adr-042-wideband-frequency-offsets.md`；
+  Radar `docs/dev/standards/radar-adr-015-wideband-band-consumption.md`、
+  `radar-adr-016-scene-component-taxonomy.md`、
+  `radar-adr-017-processing-facade-and-frozen-dsp-surface.md`。
+- 预算实测：见 `PERFORMANCE.md` 的 "Processing Chain (Phase 8)" 一节，以及
+  `tools/benchmark_processing.py --json`。
+
 #### Phase 9：贯通完整 Fixed-Topology AD
 
 目标：完成 Core continuous leaves -> propagation -> target scattering -> two-way composition -> waveform/IQ -> Radar loss 的原生 AD 链。
