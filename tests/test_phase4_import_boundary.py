@@ -92,6 +92,7 @@ SPIKE_MODULES = (
     "witwin/radar/synthesis/contracts.py",
     "witwin/radar/synthesis/dirichlet_spectrum.py",
     "witwin/radar/synthesis/fmcw_beat.py",
+    "witwin/radar/synthesis/ofdm_cfr.py",
 )
 
 SPIKE_IMPORTS = textwrap.dedent(
@@ -100,6 +101,7 @@ SPIKE_IMPORTS = textwrap.dedent(
     import witwin.radar.paths.two_way
     import witwin.radar.scattering.rcs
     import witwin.radar.synthesis.fmcw_beat
+    import witwin.radar.synthesis.ofdm_cfr
     """
 ).strip()
 
@@ -182,6 +184,7 @@ def test_the_propagation_package_alone_does_not_require_channel():
 def test_synthesis_scattering_and_paths_do_not_require_channel():
     modules = _subprocess_modules(
         "import witwin.radar.synthesis.fmcw_beat\n"
+        "import witwin.radar.synthesis.ofdm_cfr\n"
         "import witwin.radar.scattering.rcs\n"
         "import witwin.radar.paths.two_way"
     )
@@ -462,6 +465,85 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
         "slot_time",
     ):
         assert symbol in kernel, symbol
+
+
+def test_the_ofdm_hot_loop_is_native_not_torch():
+    """The CFR sum is a kernel, and the OFDM family conjugates nothing.
+
+    The second half of that sentence is the part a shape test cannot see. OFDM
+    publishes the CHANNEL convention and FMCW publishes its conjugate, so a
+    single stray ``conj`` here would flip every Doppler sign and every target
+    phase while leaving all magnitudes, all shapes, and the delay slope
+    untouched.
+    """
+
+    facade = REPO_ROOT / "witwin/radar/synthesis/ofdm_cfr.py"
+    tree = ast.parse(facade.read_text(encoding="utf-8"))
+
+    loops = [
+        type(node).__name__
+        for node in ast.walk(tree)
+        if isinstance(
+            node,
+            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
+        )
+    ]
+    assert loops == [], loops
+
+    called = {
+        _dotted(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for forbidden in (
+        "torch.exp",
+        "torch.sin",
+        "torch.cos",
+        "torch.cdist",
+        "torch.conj",
+    ):
+        assert forbidden not in called, forbidden
+
+    source = facade.read_text(encoding="utf-8")
+    assert "_OfdmCfrSynthesis.apply(" in source
+    for operator in ("ofdm_cfr_forward", "ofdm_cfr_backward", "ofdm_cfr_jvp"):
+        assert operator in source, operator
+
+    # The conjugation site belongs to the FMCW owner and is never reached from
+    # here. Scanned with the AST, not with text: the docstring names both the
+    # function and the other waveform on purpose, to say what this module does
+    # NOT do, and a text scan would forbid the explanation along with the act.
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } | {
+        _dotted(node.func).rsplit(".", 1)[-1]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "channel_phasor_to_beat_weight" not in called_names
+    assert "conj" not in called_names
+    imported = _imports_of(facade, "witwin.radar.synthesis.ofdm_cfr")
+    assert not any("fmcw" in name for name in imported), sorted(imported)
+
+    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/ofdm_cfr.cu").read_text(
+        encoding="utf-8"
+    )
+    for symbol in (
+        "__global__ void ofdm_cfr_forward_kernel",
+        "__global__ void ofdm_cfr_backward_kernel",
+        "__global__ void ofdm_cfr_jvp_kernel",
+        "sincosf",
+    ):
+        assert symbol in kernel, symbol
+
+    # The kernel's own sign: `cycles` is negated, which is what keeps the cube
+    # in Channel's exp(-j k d) convention rather than the beat convention.
+    assert "-(f_sub * tau + carrier_rate_hz * tau_drift + carrier_hz * tau)" in kernel
+
+    # No TDM slot table: OFDM slow time is per symbol, shared by every pair.
+    assert "segment_tx_index" not in kernel
 
 
 def test_the_frame_assembly_path_reads_no_tensor_value():

@@ -29,12 +29,21 @@ def _declared_operators() -> set[str]:
 
 
 def _implemented_operators() -> set[str]:
+    """Every symbol implemented anywhere under ``kernels/``.
+
+    The directory is globbed rather than listed. A hard-coded list makes a NEW
+    translation unit invisible to this gate exactly when it is least reviewed -
+    the file would be a build input and a manifest entry while its ``m.impl``
+    registrations went unchecked - and the glob is strictly stronger: a kernel
+    file that is not a build input still has to appear in the manifest.
+    """
+
+    kernels = REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels"
     found: set[str] = set()
-    for name in ("dirichlet.cu", "fmcw_beat.cu", "two_way_join.cu"):
-        source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels" / name).read_text(
-            encoding="utf-8"
+    for path in sorted(kernels.glob("*.cu")):
+        found.update(
+            re.findall(r'm\.impl\(\s*"(\w+)"', path.read_text(encoding="utf-8"))
         )
-        found.update(re.findall(r'm\.impl\(\s*"(\w+)"', source))
     return found
 
 
