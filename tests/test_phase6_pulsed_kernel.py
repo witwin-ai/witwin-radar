@@ -318,7 +318,8 @@ def test_the_matched_filter_peak_is_exactly_the_coefficient(weight):
     # 1e-5 rad rather than 1e-6: the kernel wraps a cycle count that reaches a
     # hundred cycles of LFM phase and then rounds the [0, 2 pi) argument to
     # float32 before one sincosf, which costs up to 3.7e-7 rad per sample.
-    # Measured worst deviation across the three weights is 1.3e-6 rad.
+    # Measured worst deviation across the three weights is 3.2e-7 rad here, and
+    # 1.3e-6 rad at a 8 us delay where the pulse phase has further to run.
     assert abs(cmath.phase(peak / reference)) < 1.0e-5
 
 
