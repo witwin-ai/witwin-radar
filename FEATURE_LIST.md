@@ -99,6 +99,15 @@
 
 ## Signal Processing
 
+- `witwin.radar.processing` is the processing facade: everything in it is PyTorch by owner directive, it consumes synthesis results, and it never mutates a path batch or changes composed row identity
+- `ProcessingAxes.from_synthesis(result, spec, array)` is the ONE metadata / axes / units record all three waveforms share. It is built from the SI waveform specs, never from the flat engineering-unit `RadarConfig`, and it publishes `range_m` and `velocity_mps` as float64 SI axes plus a `units` mapping
+- The cross-waveform Doppler sign is fixed as data. `ProcessingAxes.doppler_sign` is DERIVED from the cube's published `phasor` (`+1` for the conjugated FMCW beat cube, `-1` for the OFDM and pulsed Channel-convention cubes) and is applied exactly once, inside `range_doppler`. The canonical convention is `PROCESSING_DOPPLER_CONVENTION`: a positive Doppler bin is a CLOSING target, in every waveform
+- `ProcessingAxes.as_fmcw_axes()` is the mechanical migration to the Phase-6 `RadarAxes`; it is refused for OFDM and pulsed, whose vocabulary that record cannot name
+- `ProcessingCube.from_synthesis(result, axes)` attaches the chain to `SynthesisResult` through the existing `assemble_frame_cube` sink-major to tx-major transpose; there is no second packer
+- `range_profile(cube, window=, remove_dc=)` is one entry with three backends selected by `axes.waveform`: an FMCW beat transform, an OFDM subcarrier INVERSE transform (the CIR, which did not exist before), and a pulsed matched filter without the legacy unconditional `complex128` upcast. It replaces three separate range FFTs that had three different windowing choices
+- The fast-time mean subtraction `process_rd_tensor` applied unconditionally is now the explicit `remove_dc` flag and DEFAULTS TO OFF, so a clutter component export is not silently altered
+- Every processing stage is amplitude normalised and rank generic: an isolated path row peaks at `|C_rt| * window_coherent_gain` in all three waveforms, and a `[TX, RX, C, S]` cube and a `[C, S]` slice give the same answer with no Python loop
+- `beam_cube(rd, steering, directions=)` forms the beam / velocity / range cube, and `conventional_steering(axes, directions)` builds the array manifold in the CUBE's own phasor convention, so a conjugated beat cube is not steered at the mirror-image angle
 - `process_pc(..., detector=...)` accepts the validated detector set `{"cfar", "topk"}`
 - `frame2pointcloud(...)` requires a `radar` argument so TDM-MIMO compensation is never skipped silently
 - `PointCloudProcessConfig` provides the normalized point-cloud extraction config surface
