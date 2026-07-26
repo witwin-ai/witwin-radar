@@ -209,7 +209,16 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
         # the multi-endpoint fixture also produces.
         pair_offsets = torch.tensor([0] * pairs + [rows], dtype=torch.int64)
         geometry = type(
-            "_Geometry", (), {"delay_s": torch.zeros(rows, dtype=torch.float32)}
+            "_Geometry",
+            (),
+            {
+                "delay_s": torch.zeros(rows, dtype=torch.float32),
+                # The consumer's geometry always publishes a propagation
+                # direction and the adapter always passes it through; a stub
+                # that omitted it would make this file the only place the
+                # adapter is exercised against a geometry that does not exist.
+                "field_direction": torch.zeros(rows, 3, dtype=torch.float32),
+            },
         )()
         transport = type(
             "_Transport",

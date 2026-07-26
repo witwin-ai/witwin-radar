@@ -1975,6 +1975,93 @@ Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
 - topology invalidation 不返回错误 primal 或 detached gradient；
 - slot batching、launch count、peak memory 和 realtime scaling 达标。
 
+完成记录（Phase 7）：
+
+- 工作项 1-8 全部实现，跨 Channel 与 Radar 两个 repo。Channel 侧：`CompiledScene`
+  携带 `SceneSnapshot.time_s`；`WorldProvenance` 在 discovery 时打戳、在
+  `reevaluate` 之前以四个主机整数比较（零 D2H、零 kernel）校验；
+  `FixedTopologyRequest` 新增 `slot_count`（block-diagonal pairing，pair 数随 T
+  线性而非平方增长）与 `world_motion`；`evaluate_time_varying` 作为 shared
+  dynamics 的第二消费者发布 `[T, K]` 形状的 time-varying CIR。Radar 侧：
+  `witwin/radar/propagation/kinematics.py` 是 Core snapshot 到
+  `(positions, velocities)` 与 forward-AD dual 的唯一 owner（`RigidMotion.velocity`
+  和 `angular_velocity` 的第一个消费者）；`epochs.py` 承载 motion-event cadence；
+  `scattering/aspect.py` + `cuda/kernels/scatter_response.cu` 提供 aspect-dependent
+  target response 的 primal/JVP/VJP；`sigproc/microdoppler.py` 提供 Torch 侧的
+  micro-Doppler 分析。
+- 八条验收标准与证明它们的测试的映射由
+  `tests/test_phase7_acceptance.py::ACCEPTANCE_MATRIX` 逐条记录，并由同文件的
+  测试对照代码树按名校验；重命名或删除任何一个 owner 测试都会使该校验失败。
+- 决策记录：Channel `docs/dev/standards/adr-040-*.md`、`adr-041-*.md`；Radar
+  `docs/dev/standards/radar-adr-012-kinematics-to-dual-seam.md`、
+  `radar-adr-013-aspect-dependent-native-scatter-response.md`、
+  `radar-adr-014-scene-driven-epoch-cadence.md`。
+- 预算实测：一个 frame 无论多少 slot 都是每条 leg 一次 consumer 调用、两次主机
+  观测、`synchronize == 0`、`validation_d2h_copies == 1`/leg、
+  `compact_count_d2h_copies == 0`；`T = 1024` 的峰值显存低于 64 MB 预算；每 slot
+  成本从 `T = 64` 到 `T = 1024` 是下降而非上升。一个 aspect response 使 compose
+  增加恰好一次 kernel launch，join 本身不变。
+
+Phase 7 记录的偏差与上游缺口（不在本 tree 修补）：
+
+1. **structure motion 到不了 `delay_rate`。** `delay_rate` 是 ENDPOINT tangent 的
+   JVP，墙的顶点不带 tangent，因此一堵以 4 m/s 移动的墙给出真实演化的 delay 和
+   **恰好为零** 的 `delay_rate`。这对 `delay_rate` 的定义是正确的，被当作"环境静止"
+   读则是严重缺陷，故由
+   `test_phase7_moving_structures.py::test_structure_motion_does_not_reach_the_endpoint_delay_rate`
+   按名钉住并写入 R-ADR-014。让环境运动进入 Doppler 谱需要一条穿过 native
+   reflection kernel 的 vertex-tangent 路径，属独立数值 ADR。
+2. **Core C1：endpoint 运动触发 BVH 重建。** `core/witwin/core/scene.py` 在
+   `_dynamic_revision is not None` 时把 `time_s` 与 endpoint 状态折进
+   `geometry_version`，因此一个墙完全静止、只有 endpoint 轨迹的 `DynamicScene`
+   在每个不同时刻都重建 RayD scene 和 BVH（4 个 snapshot = 4 次 build，约
+   2.41 ms/frame 纯浪费）。本阶段以构造绕开：endpoint 与 target 运动进入
+   endpoint TENSOR，从不触发 recompile。Core 只读，未修补。
+3. **Core C2：`DeformationState` 没有速度描述。** 变形速度在 Core 中没有解析来源，
+   而生产禁止有限差分。以 Radar 侧的 `DeformationVelocity` protocol
+   （`LinearDeformation`、`SmplPoseDeformation`）绕开；设计文档的开放问题 1
+   仍然开放——该 protocol 是可用的 owner，不是对永久归属的裁定。
+4. **fixed-topology replay 是单调减的。** 一行可以死亡并以 `row_valid=False` 发布，
+   但新出现的路径不会被发现，也没有 birth 信号（ADR-040）。缓解手段是
+   caller 侧的 cadence：`rediscovery_required` 加上调用方声明的
+   `motion_event_period_frames`。由
+   `test_phase7_invalidation.py::test_a_born_row_forces_an_explicit_rediscovery` 钉住。
+5. **持有一个未被改动世界的旧 `CompiledScene` 不可检测。** 四个 version domain
+   是内容哈希，旧 compiled scene 与它自己发现的行完全自洽，Channel 无从得知调用方
+   已经前进。ADR-040 记录了推理并由测试钉住；Radar 侧以 adapter epoch（比
+   provenance 更宽的主机 int 比较）额外覆盖 refreeze 后的陈旧 handle。
+6. **aspect-dependent 响应只接受 line-of-sight 的 outbound leg。** leg 发布的是
+   最后一段的方向，对 outbound leg 而言那是到达接收端的方向，只有 LoS 行才等于
+   从 site 出发的方向。更深的行按名拒绝（主机端 `outbound_max_depth`，不读设备
+   列）。承载真正的出射方向需要新的 consumer 字段或一个从 interaction position
+   重建它的 kernel，属独立变更。R-ADR-013。
+7. **aspect phase rate 被拒绝而非近似。** join 的 `tan_rate_rt = 0` 表示整个 rate
+   都在 `tau_rt` 里，因此 `d(arg S)/dt` 会被静默丢弃。
+   `require_aspect_phase_rate_bounded` 以 `ASPECT_PHASE_BUDGET_RAD = 0.1` 在构造时
+   按名拒绝，rate 由调用方声明（与 `PulsedEchoSpec.max_expected_delay_rate` 同例）。
+   本阶段发布的可分离 lobe 幅度为实非负、相位按 site 恒定，其自身的 aspect phase
+   rate 恒为零；该声明是为叠加了额外相位的调用方与后继定律准备的。把
+   `d(arg S)/dt` 并入 `delay_rate` 需要独立的数值 ADR。
+8. **`REFRESHED_WEIGHT_NO_RATE` 仍无生产 producer。** 设计的开放问题 2：frozen
+   模式满足本阶段列出的每一条验收标准，而唯一能击败 frozen 一阶模型的场景
+   （range migration / 大 aspect 变化）恰好是 pulsed spec 已经明确拒绝的场景。该
+   模式有测试覆盖（`test_phase7_slot_batching.py`）但没有生产调用方。
+9. **micro-Doppler 峰值频率的比较尺度。** 简报要求谱峰频率与闭式解相对一致到
+   2e-3；在 rotor 的 2942 Hz 处那是 5.9 Hz，而变换的 bin 是 78.1 Hz，argmax 在任何
+   容差下都做不到，加宽变换又会让叶片转过头而不再是单音。因此 2e-3 的比较落在
+   相位斜率估计（谱峰所估计的那个量）上，谱峰本身断言到一个 bin 以内。已写在
+   `tests/test_phase7_microdoppler.py` 的模块 docstring。
+10. **hinge 的 `1 - R^2 < 1e-6` 不是 hinge 的性质。** 位移投影在 2 m 距离上随
+    site index 弯曲（腿方向在根尖之间转过 23 度），实测残差 3.150387e-03；测试通过
+    从 float64 闭式解算出同一残差并断言两者一致到 1e-3 来证明它是几何而非误差。
+11. **legacy radar `Scene` / `TransformMotion` / `Timeline` 仍是第二个 kinematics
+    owner**，仍从 `witwin/radar/__init__.py` 导出。本阶段既未使用也未扩展它；退役
+    或围栏化仍然开放。
+12. **Phase-6 偏差 3（`dirichlet.cu` 的 float32 相位债务）未变**，
+    `tests/solvers/test_mimo_cross.py` 的 2e-3 容差因此保持不变，本阶段未再放宽。
+13. **`backward` native symbol 仍无生产调用方**，caller-free 上限仍是 1；本阶段新增
+    的三个 symbol 各自都有生产 end-to-end caller，没有抬高该上限。
+
 #### Phase 8：宽带传播、Clutter 与完整 Radar Processing 集成
 
 目标：补齐频率相关传播、杂波和 Radar 输出处理，使架构覆盖最终传感器能力而不止 IQ synthesis。
