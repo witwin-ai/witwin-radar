@@ -160,15 +160,23 @@ def test_freeze_host_reads_are_counted(monkeypatch):
     ``TwoWayComposer.freeze`` reads leg identity to the host to build the join.
     That is sanctioned and one-time, but Channel never sees those reads, so no
     Channel diagnostic counts them and the one-time total was implied rather
-    than measured. Thirteen reads: six identity columns per leg (source_id,
-    sink_id, component_id, depth, primitive_sequence, material_sequence) plus
-    site_ids. The front-end endpoint IDs are passed as Python lists here, so
-    they add none.
+    than measured. Fourteen reads: six identity columns per leg (source_id,
+    sink_id, component_id, depth, primitive_sequence, material_sequence), plus
+    site_ids, plus the composed pair index that
+    ``synthesis.assembly.validate_pair_ordering`` checks. The front-end
+    endpoint IDs are passed as Python lists here, so they add none.
+
+    The fourteenth read is Phase 7's. Wiring the layout gate is the plan's own
+    Phase-6 gap 5, and the gate reads its input on the host BY DESIGN - that is
+    why it is a freeze-time function and not part of ``assemble_frame_cube``.
+    It costs one one-time read and it is what makes the sink-major assertion
+    non-empty in production; the per-FRAME budget is untouched, which
+    ``test_compose_performs_no_host_observation_at_all`` still pins at zero.
     """
 
     calls = _count_tolist(monkeypatch)
     _one_site_composer()
-    assert calls["n"] == 13, calls["n"]
+    assert calls["n"] == 14, calls["n"]
 
 
 @pytest.mark.gpu

@@ -57,6 +57,32 @@ from .contracts import RadarPathBatch, RadarPathTopology
 _OPS = None
 
 
+def _validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_count):
+    """Run the synthesis layout check at freeze time, where a host read is free.
+
+    Until this call existed the check had no production caller at all (the
+    plan's Phase-6 gap 5): the frame path DEPENDS on the sink-major pair rank
+    that ``pair_tx_index`` and ``assemble_frame_cube`` assume, and nothing ever
+    asserted that a composed batch actually carried it. A composer that put a
+    second, silently different numbering on the same data would have produced a
+    cube that looked entirely reasonable and steered every angle wrongly.
+
+    The import is deferred because ``witwin.radar.synthesis.contracts`` imports
+    ``witwin.radar.paths.contracts``; a module-level import here would close
+    that loop. Freeze time runs once per topology, so the import lookup is not
+    on any hot path.
+    """
+
+    from ..synthesis.assembly import validate_pair_ordering
+
+    validate_pair_ordering(
+        sensor_pair_index,
+        num_tx=num_tx,
+        num_rx=num_rx,
+        sensor_pair_count=sensor_pair_count,
+    )
+
+
 def _ops():
     """The native operator table, resolved once per process.
 
@@ -506,6 +532,13 @@ class TwoWayComposer:
             )
 
         pair_count = len(sources) * len(sinks)
+        sensor_pair_index = column(0)
+        _validate_pair_ordering(
+            sensor_pair_index,
+            num_tx=len(sources),
+            num_rx=len(sinks),
+            sensor_pair_count=pair_count,
+        )
         offsets = _identity.pair_offsets([row[0] for row in rows], pair_count)
 
         inbound_count = len(inbound_source)
@@ -528,7 +561,7 @@ class TwoWayComposer:
                 inbound_row=column(5),
                 outbound_row=column(6),
             ),
-            sensor_pair_index=column(0),
+            sensor_pair_index=sensor_pair_index,
             pair_offsets=table(offsets),
             sensor_pair_count=pair_count,
             site_count=len(sites),

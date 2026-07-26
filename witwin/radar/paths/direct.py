@@ -28,6 +28,7 @@ from ..propagation.contracts import RadarLegBatch
 from . import _identity
 from ._identity import LegKey
 from .contracts import RadarPathBatch, RadarPathTopology
+from .two_way import _validate_pair_ordering
 
 
 # A direct row has no scatter site and no second leg. These sentinels say so
@@ -101,6 +102,16 @@ class DirectComposer:
             )
 
         pair_count = len(sources) * len(sinks)
+        sensor_pair_index = column(0)
+        # Same freeze-time layout gate as the two-way join. A direct batch feeds
+        # the same synthesis cube assembly, so it depends on the same sink-major
+        # pair rank and has to be held to it in the same place.
+        _validate_pair_ordering(
+            sensor_pair_index,
+            num_tx=len(sources),
+            num_rx=len(sinks),
+            sensor_pair_count=pair_count,
+        )
         offsets = _identity.pair_offsets([row[0] for row in rows], pair_count)
         return cls(
             row_index=column(3),
@@ -111,7 +122,7 @@ class DirectComposer:
                 inbound_row=column(3),
                 outbound_row=constant(NO_OUTBOUND_ROW),
             ),
-            sensor_pair_index=column(0),
+            sensor_pair_index=sensor_pair_index,
             pair_offsets=torch.tensor(offsets, dtype=torch.int64, device=device),
             sensor_pair_count=pair_count,
             reference_frequency_hz=float(reference_frequency_hz),

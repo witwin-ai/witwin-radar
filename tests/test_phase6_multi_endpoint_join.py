@@ -584,12 +584,15 @@ def test_two_sites_moving_apart_give_eleven_analytic_doppler_shifts(spike):
 
 
 def test_freeze_host_reads_are_counted_at_multi_pair_width(spike):
-    """Thirteen ``tolist`` calls: six identity columns per leg, plus the sites.
+    """Fourteen ``tolist`` calls: six identity columns per leg, the sites, and
+    the composed pair index the freeze-time layout gate reads.
 
-    The same thirteen the one-site Phase-4 join costs, at three and seven leg
+    The same fourteen the one-site Phase-4 join costs, at three and seven leg
     rows over four endpoint pairs. Freeze-time host traffic is a property of the
     number of COLUMNS read, not of the rows in them, and asserting it against a
-    real wide leg is what makes that a measurement.
+    real wide leg is what makes that a measurement. The fourteenth is Phase 7
+    wiring ``synthesis.assembly.validate_pair_ordering`` into production; it is
+    one-time, and the per-frame budget below is still exactly zero.
     """
 
     from witwin.radar.paths import TwoWayComposer
@@ -615,7 +618,7 @@ def test_freeze_host_reads_are_counted_at_multi_pair_width(spike):
         )
     finally:
         torch.Tensor.tolist = original
-    assert calls["n"] == 13, calls["n"]
+    assert calls["n"] == 14, calls["n"]
 
 
 def test_compose_performs_no_host_observation_at_eleven_rows(spike, monkeypatch):
