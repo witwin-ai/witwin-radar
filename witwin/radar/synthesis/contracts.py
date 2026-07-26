@@ -448,6 +448,318 @@ class OfdmCfrSpec:
         return float(round_trip_delay_s) / self.waveform_sample_period_s
 
 
+#: The two analytic pulse shapes. Both are closed-form functions of a
+#: CONTINUOUS argument, which is the constraint that matters: the kernel
+#: evaluates ``p(t - tau)`` at the exact fractional delay, so there is no
+#: lookup table, no gather, and no interpolation anywhere in the family. A
+#: sampled or tabulated pulse is a different design and needs its own decision.
+PULSE_KIND_RECT = "rect"
+PULSE_KIND_LFM = "lfm"
+PULSE_KINDS = frozenset({PULSE_KIND_RECT, PULSE_KIND_LFM})
+
+#: ``integral |p(t)|^2 dt = 1``. Named as an explicit field on the spec rather
+#: than left as a constant inside a kernel, because it is what makes the
+#: matched-filter peak exactly ``C_rt`` with no ``N``-dependent factor, and
+#: therefore what makes the cross-waveform amplitude invariant assertable
+#: without waveform-specific bookkeeping.
+PULSE_NORMALIZATION_UNIT_ENERGY = "unit_energy"
+
+
+@dataclass(frozen=True, slots=True)
+class PulsedEchoSpec:
+    """One pulsed frame's fast-time gate, pulse shape, and PRI, in SI units.
+
+    The product is the complex baseband received pulse train
+    ``y[pulse, sensor_pair, sample]``  -  the matched-filter INPUT, not its
+    output. The matched filter itself is a correlation and lives in DSP glue
+    (:mod:`witwin.radar.sigproc.matched_filter`), because synthesis owns the
+    received waveform and processing owns the filter. Putting the correlation
+    in the kernel would fuse a modelling decision (which replica, which window,
+    which oversampling) into the physics.
+
+    **The pulse is evaluated at the exact fractional delay.** ``u = t_g + m T_s
+    - tau_k(l)`` is a continuous number and ``p(u)`` is evaluated from its
+    analytic form there, never snapped to the nearest sample. Snapping would
+    quantise the delay by ``T_s / 2``, which at 50 MSPS is 10 ns, three metres
+    of range, and it would destroy the closed form that every assertion below
+    is written against. This is why both supported pulse kinds are analytic.
+
+    **Phasor convention.** Like the OFDM CFR cube and unlike the FMCW beat cube,
+    this train is published in the CHANNEL convention :data:`CHANNEL_PHASOR`.
+    There is no de-chirping here, so there is nothing to conjugate and no
+    conversion site anywhere in the family.
+
+    **Structural parallel.** The three waveforms differ only in one factor. FMCW
+    contributes ``exp(+j 2 pi S tau t_m)``, OFDM contributes
+    ``exp(-j 2 pi n df tau)``, and this family contributes ``p(t - tau)``. The
+    slow-time factor - the carrier applied to the delay CHANGE - is identical in
+    all three, which is the whole point of a shared input contract.
+
+    ``bandwidth_hz`` is the LFM sweep for ``pulse_kind = "lfm"`` and ``1 / T_p``
+    for ``pulse_kind = "rect"``, which is the rectangular pulse's own
+    matched-filter bandwidth. It is a declared field rather than an inferred one
+    because it sets the range cell, the range-migration bound, and (in Phase-6
+    stage S4) the receiver's noise bandwidth, and inferring it differently in
+    three places is how those three quietly disagree.
+
+    **The pulse support is half-open**, ``0 <= u < T_p``, and that is a contract
+    rather than an accident of writing the comparison one way. A closed support
+    puts exactly one extra sample inside the pulse whenever the delay lands on
+    the sample grid and not otherwise, so the received pulse would be
+    ``M_p + 1`` samples long at one delay and ``M_p`` at the next. The matched
+    filter's replica has a fixed length, so that one sample is a mismatched tap:
+    it costs about 0.2 percent of the peak magnitude and biases the estimated
+    delay by nearly two thousandths of a sample, at one delay in every ``M_p``.
+    Half-open makes the sampled pulse exactly :attr:`pulse_sample_count` samples
+    long at EVERY delay, and it leaves the continuous unit-energy integral
+    unchanged because a single point has measure zero.
+
+    ``max_expected_delay_rate`` is a CONFIGURED bound on ``|d(tau_rt)/dt|`` - the
+    velocity window the radar is set up for - and never a measured maximum,
+    which would be a per-frame device-to-host transfer.
+    :func:`require_pulsed_compatible` uses it for the range-migration check.
+    """
+
+    #: This kernel has no ``lambda / (4 pi d)`` term at all: free-space spreading
+    #: is Channel transport's, per leg, once. A statement about the kernel rather
+    #: than a setting, so a class attribute rather than a field.
+    applies_spreading: ClassVar[bool] = False
+
+    #: The convention the published train is in, carried as data so that a
+    #: consumer never has to infer it from the waveform's name.
+    phasor: ClassVar[str] = CHANNEL_PHASOR
+    time_dependence: ClassVar[str] = CHANNEL_TIME_DEPENDENCE
+
+    num_pulses: int
+    num_samples: int
+    sample_period_s: float
+    pri_s: float
+    range_gate_start_s: float
+    pulse_kind: str
+    pulse_width_s: float
+    bandwidth_hz: float
+    reference_frequency_hz: float
+    max_expected_delay_rate: float
+    carrier_hz: float = 0.0
+    carrier_rate_hz: float = 0.0
+    pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
+
+    def __post_init__(self) -> None:
+        if self.num_pulses < 1:
+            raise ValueError("num_pulses must be positive")
+        if self.num_samples < 1:
+            raise ValueError("num_samples must be positive")
+        if self.sample_period_s <= 0.0:
+            raise ValueError("sample_period_s must be positive")
+        if self.pri_s <= 0.0:
+            raise ValueError("pri_s must be positive")
+        if self.range_gate_start_s < 0.0:
+            raise ValueError("range_gate_start_s must be non-negative")
+        if self.pulse_width_s <= 0.0:
+            raise ValueError("pulse_width_s must be positive")
+        if self.bandwidth_hz <= 0.0:
+            raise ValueError("bandwidth_hz must be positive")
+        if self.max_expected_delay_rate < 0.0:
+            raise ValueError("max_expected_delay_rate must be non-negative")
+        if not self.reference_frequency_hz > 0.0:
+            raise ValueError(
+                "reference_frequency_hz must be positive; it is the frequency "
+                "the weight this spec will consume was evaluated at, and "
+                "require_compatible refuses a mismatch"
+            )
+        if self.pulse_kind not in PULSE_KINDS:
+            raise ValueError(
+                f"pulse_kind must be one of {sorted(PULSE_KINDS)}, got "
+                f"{self.pulse_kind!r}; both supported kinds are ANALYTIC, "
+                "because the kernel evaluates the pulse at a continuous "
+                "fractional delay. A sampled or tabulated pulse is a different "
+                "design and needs its own decision"
+            )
+        if self.pulse_normalization != PULSE_NORMALIZATION_UNIT_ENERGY:
+            raise ValueError(
+                "pulse_normalization must be "
+                f"{PULSE_NORMALIZATION_UNIT_ENERGY!r}; unit ENERGY is what makes "
+                "the matched-filter peak exactly C_rt with no N-dependent "
+                "factor. A unit-amplitude pulse would put a T_p / T_s factor in "
+                "the peak and force every amplitude comparison to carry it"
+            )
+        require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
+
+    @property
+    def sample_rate_hz(self) -> float:
+        return 1.0 / self.sample_period_s
+
+    @property
+    def wavelength_m(self) -> float:
+        return SPEED_OF_LIGHT_M_PER_S / self.reference_frequency_hz
+
+    @property
+    def is_linear_fm(self) -> bool:
+        return self.pulse_kind == PULSE_KIND_LFM
+
+    @property
+    def pulse_amplitude(self) -> float:
+        """``1 / sqrt(T_p)``, the unit-energy envelope height.
+
+        Both kinds share it: the LFM differs from the rectangle only by a phase,
+        and a phase does not change ``|p|``. Passed to the kernel as a scalar so
+        that the normalisation lives on this spec rather than inside the kernel.
+        """
+
+        return 1.0 / math.sqrt(self.pulse_width_s)
+
+    @property
+    def pulse_sample_count(self) -> int:
+        """How many fast-time samples the pulse spans, rounded to the grid.
+
+        Used by the matched-filter replica, not by the kernel: the kernel never
+        discretises the pulse. The discrete replica has EXACTLY unit energy when
+        ``T_p`` is a whole number of samples, which is what
+        :attr:`pulse_grid_is_commensurate` reports.
+        """
+
+        return int(round(self.pulse_width_s / self.sample_period_s))
+
+    @property
+    def pulse_grid_is_commensurate(self) -> bool:
+        """Whether ``T_p`` is an exact whole number of sample periods.
+
+        When it is, the sampled replica's discrete energy
+        ``sum_m |p[m]|^2 T_s`` is exactly 1 and the matched-filter peak is
+        exactly ``C_rt``. When it is not, the replica's energy is
+        ``round(T_p / T_s) * T_s / T_p`` and the peak carries that same factor -
+        a property of the DISCRETE replica, not of the kernel, which is why it is
+        reported rather than silently corrected.
+        """
+
+        return (
+            abs(self.pulse_sample_count * self.sample_period_s - self.pulse_width_s)
+            <= 1e-12 * self.pulse_width_s
+        )
+
+    @property
+    def range_gate_end_s(self) -> float:
+        """``t_g + M T_s``, the last fast-time instant the gate observes."""
+
+        return self.range_gate_start_s + self.num_samples * self.sample_period_s
+
+    @property
+    def duty_cycle(self) -> float:
+        """``T_p / T_pri``."""
+
+        return self.pulse_width_s / self.pri_s
+
+    @property
+    def range_resolution_m(self) -> float:
+        """``c0 / (2 B)`` for the LFM, ``c0 T_p / 2`` for the rectangle.
+
+        Two expressions rather than one because they are two different physical
+        statements: the LFM's resolution comes from its SWEEP and is independent
+        of its length, while the rectangle's comes from its length alone. The
+        two coincide only at ``B = 1 / T_p``, which is exactly the value this
+        spec requires a rectangular pulse to declare, so the branch is a
+        readability choice and not a numerical one.
+        """
+
+        if self.is_linear_fm:
+            return SPEED_OF_LIGHT_M_PER_S / (2.0 * self.bandwidth_hz)
+        return SPEED_OF_LIGHT_M_PER_S * self.pulse_width_s / 2.0
+
+    @property
+    def max_unambiguous_range_m(self) -> float:
+        """``c0 T_pri / 2``: beyond it an echo lands in the next PRI."""
+
+        return SPEED_OF_LIGHT_M_PER_S * self.pri_s / 2.0
+
+    @property
+    def max_unambiguous_speed_m_s(self) -> float:
+        """``c0 / (4 f_ref T_pri)``, equivalently ``lambda / (4 T_pri)``.
+
+        Half a wavelength of two-way path change per pulse is half a cycle of
+        Doppler phase; beyond it the sign of the velocity is not recoverable and
+        a receding target reads as an approaching one.
+        """
+
+        return SPEED_OF_LIGHT_M_PER_S / (
+            4.0 * self.reference_frequency_hz * self.pri_s
+        )
+
+    @property
+    def coherent_processing_interval_s(self) -> float:
+        """``L T_pri``, the span the slow-time transform is taken over."""
+
+        return self.num_pulses * self.pri_s
+
+    @property
+    def range_cell_delay_s(self) -> float:
+        """``1 / B``, one range cell expressed as a delay."""
+
+        return 1.0 / self.bandwidth_hz
+
+    @property
+    def range_migration_delay_s(self) -> float:
+        """How far the delay walks over one coherent processing interval.
+
+        ``max_expected_delay_rate * L * T_pri``. Compared against
+        :attr:`range_cell_delay_s` by :func:`require_pulsed_compatible`: if the
+        walk exceeds one range cell the peak smears across cells and the
+        single-cell closed form this family is written against stops holding.
+        """
+
+        return self.max_expected_delay_rate * self.coherent_processing_interval_s
+
+    def instantaneous_pulse_frequency_hz(self, envelope_time_s: float) -> float:
+        """``B u / T_p`` for the LFM, ``0`` for the rectangle.
+
+        The derivative of the pulse's own phase with respect to its argument,
+        expressed as a frequency. It is the pulsed analogue of the OFDM
+        subcarrier offset ``n df``: a small, envelope-position-dependent
+        addition to the carrier that the slow-time phase step carries and that a
+        constant-envelope model would miss.
+        """
+
+        if not self.is_linear_fm:
+            return 0.0
+        return self.bandwidth_hz * float(envelope_time_s) / self.pulse_width_s
+
+    def slow_time_phase_step_rad(
+        self, delay_rate: float, envelope_time_s: float = 0.0
+    ) -> float:
+        """Phase advance per pulse at a fixed fast-time sample, in radians.
+
+        ``-2 pi tau_rate T_pri (f_c + f_r + B u / T_p)``. The first two terms are
+        the carrier in whichever of its two homes it lives in - they enter the
+        same way because a kernel-owned carrier multiplies the full delay and
+        therefore already walks. The third is the LFM's own phase moving with the
+        drifting envelope position, which is a correction of relative size
+        ``B u / (T_p f_ref)``: about 1.3e-4 at the middle of a 20 MHz, 10 us
+        sweep at 77 GHz. Small, but larger than the tolerance the slow-time slope
+        is asserted to, so it is part of the closed form rather than noise.
+        """
+
+        return (
+            -math.tau
+            * float(delay_rate)
+            * self.pri_s
+            * (
+                self.carrier_hz
+                + self.carrier_rate_hz
+                + self.instantaneous_pulse_frequency_hz(envelope_time_s)
+            )
+        )
+
+    def doppler_frequency_hz(self, delay_rate: float) -> float:
+        """``-f_ref tau_rate``: the physical Doppler in Channel's convention.
+
+        Negative for a receding row. The published train is in that same
+        convention, so this IS the tone the slow-time transform shows - unlike
+        the FMCW beat cube, whose single conjugation puts its tone at ``+f_ref
+        tau_rate``.
+        """
+
+        return -self.reference_frequency_hz * float(delay_rate)
+
+
 class SlowTimeMode(str, Enum):
     """How the weight and the slow-time axis divide the Doppler phase.
 
@@ -1018,17 +1330,85 @@ def require_ofdm_compatible(
         )
 
 
+def require_pulsed_compatible(
+    batch: SynthesisPathBatch, spec: PulsedEchoSpec
+) -> None:
+    """The shared provenance rules, plus the pulsed timing and migration bounds.
+
+    Called by :func:`~witwin.radar.synthesis.pulsed_echo.synthesize_pulsed_echo`
+    before any kernel launch. Three checks beyond :func:`require_compatible`, all
+    on CONFIGURED values and never on measured device delays - reducing over the
+    device delays to find a maximum would be exactly the hot-path
+    device-to-host transfer the fixed-topology capability exists to avoid:
+
+    1. ``pulse_width_s < pri_s``. A pulse at least as long as the repetition
+       interval never stops transmitting, so there is no receive window at all.
+
+    2. ``range_gate_start_s + num_samples * sample_period_s <= pri_s``. The gate
+       must close before the next pulse fires; a gate that overruns is observing
+       the next transmission, not an echo.
+
+    3. ``max_expected_delay_rate * num_pulses * pri_s < 1 / bandwidth_hz``. Within
+       a coherent processing interval of ``L`` pulses the delay walks by
+       ``tau_rate L T_pri``. If that walk exceeds one range cell the echo migrates
+       between cells, the peak smears, and the single-cell closed form this
+       family is written against stops holding - quietly, as a loss of range
+       resolution that looks like a defocused target. A fixture must satisfy the
+       bound or assert the migration explicitly; there is no clamp and no
+       reduced-accuracy mode.
+    """
+
+    if not isinstance(spec, PulsedEchoSpec):
+        raise TypeError(
+            f"require_pulsed_compatible needs a PulsedEchoSpec, got "
+            f"{type(spec).__name__}"
+        )
+    require_compatible(batch, spec)
+    if spec.pulse_width_s >= spec.pri_s:
+        raise ValueError(
+            f"pulse_width_s={spec.pulse_width_s} is not shorter than "
+            f"pri_s={spec.pri_s}; a pulse at least as long as the repetition "
+            "interval leaves no receive window, so there is no echo to gate"
+        )
+    if spec.range_gate_end_s > spec.pri_s:
+        raise ValueError(
+            "the range gate overruns the pulse repetition interval: "
+            f"range_gate_start_s + num_samples * sample_period_s="
+            f"{spec.range_gate_end_s} exceeds pri_s={spec.pri_s}. The gate must "
+            "close before the next pulse fires; past that instant the samples "
+            "observe the next transmission rather than an echo"
+        )
+    if spec.range_migration_delay_s >= spec.range_cell_delay_s:
+        raise ValueError(
+            "range migration over the coherent processing interval: the delay "
+            f"walks by max_expected_delay_rate * num_pulses * pri_s="
+            f"{spec.range_migration_delay_s} s, which is not less than one range "
+            f"cell 1 / bandwidth_hz={spec.range_cell_delay_s} s. The echo then "
+            "moves between range cells within one coherent processing interval, "
+            "the matched-filter peak smears, and the single-cell closed form "
+            "this family is written against stops holding. Shorten the coherent "
+            "processing interval, narrow the velocity window, or widen the range "
+            "cell - there is no clamped or reduced-accuracy mode"
+        )
+
+
 __all__ = [
     "CHANNEL_PHASOR",
     "CHANNEL_TIME_DEPENDENCE",
+    "PULSE_KINDS",
+    "PULSE_KIND_LFM",
+    "PULSE_KIND_RECT",
+    "PULSE_NORMALIZATION_UNIT_ENERGY",
     "SPEED_OF_LIGHT_M_PER_S",
     "SUBCARRIER_ORIGIN_F_REF_AT_N0",
     "FmcwBeatSpec",
     "OfdmCfrSpec",
+    "PulsedEchoSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
     "WaveformSpecProtocol",
     "require_compatible",
     "require_ofdm_compatible",
+    "require_pulsed_compatible",
     "require_single_carrier_home",
 ]
