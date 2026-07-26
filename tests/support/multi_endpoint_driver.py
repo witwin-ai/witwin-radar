@@ -74,6 +74,7 @@ class MultiEndpointSpike:
         *,
         device: str = "cuda",
         compiled=None,
+        adapter=None,
         transmitters=geo.TRANSMITTERS,
         sites=geo.SITES,
         receivers=geo.RECEIVERS,
@@ -95,11 +96,19 @@ class MultiEndpointSpike:
         self.compiled = (
             world.compile_fixture_scene() if compiled is None else compiled
         )
-        self.adapter = ChannelPropagationAdapter(
-            self.compiled,
-            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-            components=components,
-            max_depth=max_depth,
+        # An epoch loop rebinds ONE adapter across compiled scenes rather than
+        # building a new one per epoch, because a frozen handle carries the
+        # epoch number of the adapter it came from and only that adapter can
+        # validate it. Passing the adapter in is how a re-freeze reuses it.
+        self.adapter = (
+            ChannelPropagationAdapter(
+                self.compiled,
+                reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+                components=components,
+                max_depth=max_depth,
+            )
+            if adapter is None
+            else adapter
         )
 
         self.transmitter_ids, transmitter_positions = world.split(self.transmitters)

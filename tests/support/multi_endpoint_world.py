@@ -102,6 +102,95 @@ def compile_fixture_scene():
     return compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
 
 
+WALL_STRUCTURE_ID = 1
+
+
+def make_dynamic_scene(
+    *,
+    wall_velocity=None,
+    wall_origin=None,
+    wall_rotation=None,
+    wall_angular_velocity=None,
+    wall_deformation=None,
+    endpoint_trajectories=None,
+):
+    """The fixture world with the wall put in motion.
+
+    ONE ``Scene`` under ONE ``DynamicScene``, never two independently built
+    scenes. The four Core version domains are content hashes that fold tensor
+    identity, so two separately constructed scenes of the same world differ in
+    ``topology_version`` as well as in ``geometry_version`` - and a test about
+    a moved wall would then be refused for the wrong reason and would pass
+    while proving nothing.
+
+    ``wall_deformation`` is any ``witwin.core.dynamics.Deformation``. It is how
+    a deforming mesh enters, and it moves ``geometry_version`` while leaving
+    the face indexing, the material and the assignment alone, which is exactly
+    the condition a fixed-winner replay needs.
+    """
+
+    from witwin.core.dynamics import DynamicScene, LinearTrajectory
+
+    scene, mesh = make_scene()
+    assert_world_coordinates_survived(mesh)
+    trajectories = {}
+    if any(
+        value is not None
+        for value in (
+            wall_velocity,
+            wall_origin,
+            wall_rotation,
+            wall_angular_velocity,
+        )
+    ):
+        trajectories[WALL_STRUCTURE_ID] = LinearTrajectory(
+            origin=torch.tensor(
+                (0.0, 0.0, 0.0) if wall_origin is None else wall_origin,
+                dtype=torch.float32,
+            ),
+            velocity=torch.tensor(
+                (0.0, 0.0, 0.0) if wall_velocity is None else wall_velocity,
+                dtype=torch.float32,
+            ),
+            rotation=(
+                None
+                if wall_rotation is None
+                else torch.tensor(wall_rotation, dtype=torch.float32)
+            ),
+            angular_velocity=(
+                None
+                if wall_angular_velocity is None
+                else torch.tensor(wall_angular_velocity, dtype=torch.float32)
+            ),
+        )
+    return DynamicScene(
+        scene,
+        structure_trajectories=trajectories or None,
+        structure_deformations=(
+            None
+            if wall_deformation is None
+            else {WALL_STRUCTURE_ID: wall_deformation}
+        ),
+        endpoint_trajectories=endpoint_trajectories,
+    )
+
+
+def compile_snapshot(
+    snapshot, *, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
+):
+    """Compile one ``SceneSnapshot`` at the fixture reference frequency.
+
+    The keyword is spelled out so that this function is directly usable as
+    ``SceneEpochLoop(compile_scene=...)``, which calls it exactly this way.
+    """
+
+    from witwin.channel.scene import compile as compile_scene
+
+    return compile_scene(
+        snapshot, reference_frequency_hz=reference_frequency_hz
+    )
+
+
 def endpoint_batch(positions, stable_ids, *, power_w=None, device="cuda"):
     """An N-row Radar endpoint spec.
 
@@ -150,8 +239,11 @@ def split(endpoints):
 
 
 __all__ = [
+    "WALL_STRUCTURE_ID",
     "assert_world_coordinates_survived",
     "compile_fixture_scene",
+    "compile_snapshot",
+    "make_dynamic_scene",
     "endpoint_batch",
     "make_scene",
     "split",

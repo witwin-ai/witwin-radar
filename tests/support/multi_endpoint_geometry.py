@@ -137,6 +137,67 @@ SITE_P_RADIAL_VELOCITY_M_PER_S: Point = (-12.0, 0.0, 0.0)
 TX_A_VELOCITY_M_PER_S: Point = (0.0, 3.0, 0.0)
 RX_A_VELOCITY_M_PER_S: Point = (0.0, -3.0, 0.0)
 
+#: A rotating rigid body: two sites on one rotor, symmetric about the TX/RX axis.
+#:
+#: ``TX_A`` and ``RX_A`` both sit on the ``x`` axis at ``y = z = 0``, so the
+#: whole geometry is symmetric under ``y -> -y``. Two sites placed at
+#: ``+/- ROTOR_RADIUS_M`` in ``y`` are therefore mirror images of each other,
+#: and a rotation about ``z`` gives them equal and opposite radial velocities.
+#: Their Doppler shifts must then be EXACTLY opposite - the blade-flash pair -
+#: which is a statement no single-site fixture can make.
+ROTOR_CENTRE_M: Point = (2.0, 0.0, 0.0)
+ROTOR_RADIUS_M = 0.6
+#: 10 rad/s over a 0.6 m blade is a 6 m/s tip speed, inside the fixture front
+#: end's ``max_unambiguous_speed_mps`` of 7.487 m/s, so the pair is a real
+#: measurable spread rather than an aliased one.
+ROTOR_OMEGA_RAD_PER_S = 10.0
+ROTOR_ANGULAR_VELOCITY: Point = (0.0, 0.0, ROTOR_OMEGA_RAD_PER_S)
+SITE_R_STABLE_ID = 22
+
+#: Three collinear sites on a hinge, root to tip, with velocity linear in index.
+#:
+#: The velocity is along ``-x``, which is the range direction for a front end at
+#: the origin, so every site's shift is dominated by its own speed rather than
+#: by its position. What is EXACTLY linear in the index is the velocity itself;
+#: the Doppler is linear only up to the leg direction, which turns by 23 degrees
+#: from root to tip at this range. See the deformation test for the measured
+#: value and why the residual is geometry rather than noise.
+HINGE_SITE_IDS: tuple[int, ...] = (24, 25, 26)
+HINGE_ROOT_SPEED_M_PER_S = 4.0
+HINGE_TIP_SPEED_M_PER_S = 12.0
+HINGE_SITES: tuple[tuple[int, Point], ...] = tuple(
+    (HINGE_SITE_IDS[k], (2.0, 0.2 + 0.4 * k, 0.0)) for k in range(3)
+)
+HINGE_VELOCITIES_M_PER_S: tuple[Point, ...] = tuple(
+    (
+        -(
+            HINGE_ROOT_SPEED_M_PER_S
+            + k * (HINGE_TIP_SPEED_M_PER_S - HINGE_ROOT_SPEED_M_PER_S) / 2.0
+        ),
+        0.0,
+        0.0,
+    )
+    for k in range(3)
+)
+
+#: The wall translating along its own normal, for the moving-environment case.
+#:
+#: 4 m/s along ``+x``. The endpoints do not move at all, so every line-of-sight
+#: row's delay is EXACTLY constant and only the reflection rows evolve - which
+#: is what makes this scenario able to say that the wall moved rather than that
+#: something moved.
+WALL_VELOCITY_M_PER_S: Point = (4.0, 0.0, 0.0)
+
+#: The wall parked out of the way, for the row-birth case.
+#:
+#: Translated by ``+2 m`` in ``y`` the facet spans ``y in [0.8, 3.2]``. Both
+#: ``TX_B`` lines of sight then cross the plane outside it and LIVE, while the
+#: ``TX_A -> SITE_P`` specular point at ``y = 0.4`` falls outside and that
+#: reflection does NOT exist. Letting the wall come back to the origin kills the
+#: two lines of sight and BIRTHS the reflection, which is the one invalidation
+#: class a fixed-topology replay cannot report.
+WALL_PARKED_OFFSET_M: Point = (0.0, 2.0, 0.0)
+
 TRANSMITTERS: tuple[tuple[int, Point], ...] = (
     (TX_A_STABLE_ID, TX_A_POSITION_M),
     (TX_B_STABLE_ID, TX_B_POSITION_M),
@@ -637,6 +698,104 @@ def combined_doppler_hz(
     ]
 
 
+def image_velocity_m_per_s(wall_velocity: Point = WALL_VELOCITY_M_PER_S) -> Point:
+    """How fast a mirrored point moves when the reflecting plane translates.
+
+    The plane ``x = P`` becomes ``x = P + u_x t``, and a point's mirror
+    ``(2P - a_x, a_y, a_z)`` therefore moves at ``2 u_x`` along ``x``. Only the
+    component of the wall velocity along the plane NORMAL appears: sliding a
+    plane inside itself moves no geometry, so the ``y`` and ``z`` components of
+    ``wall_velocity`` contribute exactly nothing and are dropped here rather
+    than being carried and cancelling later.
+    """
+
+    return (2.0 * wall_velocity[0], 0.0, 0.0)
+
+
+def wall_motion_leg_delay_rate_s_per_s(
+    source: Point,
+    sink: Point,
+    component: str,
+    wall_velocity: Point = WALL_VELOCITY_M_PER_S,
+) -> float:
+    """``d(delay)/dt`` of one leg when the WALL moves and the endpoints do not.
+
+    A line-of-sight leg never touches the wall, so its rate is exactly zero -
+    not small, zero - and that is the half of the moving-environment scenario
+    that can distinguish "the wall moved" from "something moved".
+
+    A reflection leg is the straight segment from the image source to the sink,
+    and the only thing moving is the image source. Its rate is therefore the
+    projection of the image velocity onto that segment, exactly as for a moving
+    endpoint, which is why no second formula is needed for this case.
+    """
+
+    if component == "los":
+        return 0.0
+    image = image_position_m(source)
+    offset = tuple(image[axis] - sink[axis] for axis in range(3))
+    length = sum(value**2 for value in offset) ** 0.5
+    velocity = image_velocity_m_per_s(wall_velocity)
+    projection = sum(offset[axis] * velocity[axis] for axis in range(3))
+    return projection / length / C0_M_PER_S
+
+
+def wall_motion_combined_delay_rate_s_per_s(
+    rows: list[CombinedRow],
+    wall_velocity: Point = WALL_VELOCITY_M_PER_S,
+    transmitters: tuple[tuple[int, Point], ...] = TRANSMITTERS,
+    sites: tuple[tuple[int, Point], ...] = SITES,
+    receivers: tuple[tuple[int, Point], ...] = RECEIVERS,
+) -> list[float]:
+    """``d(tau_rt)/dt`` of each composed row from wall motion alone."""
+
+    positions = {
+        stable_id: position
+        for stable_id, position in (*transmitters, *sites, *receivers)
+    }
+    return [
+        wall_motion_leg_delay_rate_s_per_s(
+            positions[row.source_id],
+            positions[row.site_id],
+            row.inbound.component,
+            wall_velocity,
+        )
+        + wall_motion_leg_delay_rate_s_per_s(
+            positions[row.site_id],
+            positions[row.sink_id],
+            row.outbound.component,
+            wall_velocity,
+        )
+        for row in rows
+    ]
+
+
+def rotor_site_velocities(
+    sites: tuple[tuple[int, Point], ...],
+    *,
+    centre: Point = ROTOR_CENTRE_M,
+    angular_velocity: Point = ROTOR_ANGULAR_VELOCITY,
+) -> dict[int, Point]:
+    """``v = omega x (p - c)`` per site, in float64, as an oracle.
+
+    Written out rather than delegated to
+    ``witwin.radar.propagation.kinematics.rigid_site_velocities`` on purpose:
+    the rotation test compares the production seam against this, so sharing the
+    cross product would make the comparison vacuous.
+    """
+
+    velocities: dict[int, Point] = {}
+    for stable_id, position in sites:
+        r = tuple(position[axis] - centre[axis] for axis in range(3))
+        w = angular_velocity
+        velocities[stable_id] = (
+            w[1] * r[2] - w[2] * r[1],
+            w[2] * r[0] - w[0] * r[2],
+            w[0] * r[1] - w[1] * r[0],
+        )
+    return velocities
+
+
 def combined_delay_gradient_s_per_m(
     rows: list[CombinedRow],
     weights: list[float],
@@ -695,6 +854,22 @@ __all__ = [
     "C0_M_PER_S",
     "CombinedRow",
     "FIXTURE_RADAR_CONFIG",
+    "HINGE_ROOT_SPEED_M_PER_S",
+    "HINGE_SITES",
+    "HINGE_SITE_IDS",
+    "HINGE_TIP_SPEED_M_PER_S",
+    "HINGE_VELOCITIES_M_PER_S",
+    "ROTOR_ANGULAR_VELOCITY",
+    "ROTOR_CENTRE_M",
+    "ROTOR_OMEGA_RAD_PER_S",
+    "ROTOR_RADIUS_M",
+    "SITE_R_STABLE_ID",
+    "WALL_PARKED_OFFSET_M",
+    "WALL_VELOCITY_M_PER_S",
+    "image_velocity_m_per_s",
+    "rotor_site_velocities",
+    "wall_motion_combined_delay_rate_s_per_s",
+    "wall_motion_leg_delay_rate_s_per_s",
     "LOS_COMPONENT_ID",
     "LOS_INTERACTION_TYPE",
     "LegRow",
