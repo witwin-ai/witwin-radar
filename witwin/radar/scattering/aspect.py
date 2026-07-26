@@ -319,9 +319,17 @@ class AspectScatterResponse:
 
     ``axis`` is required to be a unit vector and is NOT normalised here. A
     kernel-side normalisation would add a division to every row and a quotient
-    rule to both AD companions to hide a caller error that a host check catches
+    rule to both AD companions to hide a caller error that one check catches
     once, and a silently renormalised axis makes the gradient the caller reads
     back the gradient of a different parameterisation than the one it wrote.
+
+    That unit-norm test is the ONE device read in this module: reducing the
+    norms and testing them costs a device-to-host copy and a synchronization
+    when ``axis`` is a CUDA tensor. It is paid deliberately HERE - at
+    construction, which is freeze time, once per epoch - and never per frame,
+    which is why it is a constructor check and not a kernel precondition. The
+    per-frame host budget is asserted separately at zero. Everything else this
+    class refuses is host state only.
 
     ``coherent_interval_s`` and ``aspect_phase_rate_rad_per_s`` are the
     aspect-rate guard, checked here at construction - which is freeze time, once

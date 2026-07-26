@@ -1992,6 +1992,24 @@ Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
 - 八条验收标准与证明它们的测试的映射由
   `tests/test_phase7_acceptance.py::ACCEPTANCE_MATRIX` 逐条记录，并由同文件的
   测试对照代码树按名校验；重命名或删除任何一个 owner 测试都会使该校验失败。
+- 对抗审计后的补强（同一阶段内闭环，非新增能力）：
+  (a) `SceneEpochLoop` 在 motion-event tick 上以
+  `rediscovery_required(revalidate_source=True)` 重新哈希活动世界，就地修改
+  authored mesh 这一类"四个 version domain 都不动"的陈旧回放现在按名报
+  `SOURCE_MUTATION` 并 **重新编译**；`motion_event_period_frames=None` 因此同时
+  声明"不会有新路径"和"不会绕过 `DynamicScene` API 改世界"。每帧预算不变（该
+  哈希只在 tick 上付）。R-ADR-014 决策 3b。
+  (b) TDM 验收改为端到端：
+  `test_phase6_fmcw_tdm.py::test_the_production_slot_table_survives_the_downstream_compensation`
+  用生产 `pair_tx_index` 驱动 `synthesize_fmcw_beat -> assemble_frame_cube ->
+  sigproc._compensate_tdm_phase`，且 `num_rx > 1` 使 `pair % num_tx` 不再退化为
+  恒等映射；此前所有 TDM 测试都自建 tx 表，槽位表本身没有端到端 owner。
+  (c) 验收矩阵第 3 行补上 OFDM 与 pulsed 的 Doppler 符号/aliasing owner；
+  `frame(t)` 确实按 t 采样 `DynamicScene` 由
+  `test_each_frame_samples_the_dynamic_scene_at_its_own_instant` 直接钉住；
+  rotor 谱测试补一条断言，把它使用的 oracle 速度与生产
+  `rigid_site_velocities` 对齐。Channel 侧 `TimeVaryingRequest.times_s` 的
+  "标签从不与世界状态核对"写进 docstring 与 consumer README。
 - 决策记录：Channel `docs/dev/standards/adr-040-*.md`、`adr-041-*.md`；Radar
   `docs/dev/standards/radar-adr-012-kinematics-to-dual-seam.md`、
   `radar-adr-013-aspect-dependent-native-scatter-response.md`、
