@@ -88,6 +88,7 @@ SPIKE_MODULES = (
     "witwin/radar/scattering/base.py",
     "witwin/radar/scattering/rcs.py",
     "witwin/radar/synthesis/__init__.py",
+    "witwin/radar/synthesis/assembly.py",
     "witwin/radar/synthesis/contracts.py",
     "witwin/radar/synthesis/dirichlet_spectrum.py",
     "witwin/radar/synthesis/fmcw_beat.py",
@@ -343,6 +344,13 @@ HOST_OBSERVATION_METHODS = frozenset({"cpu", "numpy", "tolist", "item"})
 # composer may grow its own read.
 HOST_OBSERVATION_OWNERS = {
     "witwin/radar/paths/_identity.py": frozenset({"tolist"}),
+    # synthesis/assembly.py::validate_pair_ordering is the freeze-time check
+    # that a frozen pair partition really is this array's TX x RX grid. It
+    # reads the pair ranks on the host ONCE, where the topology is decided and
+    # the read is free, and it is a separate function from assemble_frame_cube
+    # precisely so the per-frame path cannot inherit the read.
+    # test_the_frame_assembly_path_reads_no_tensor_value pins that split.
+    "witwin/radar/synthesis/assembly.py": frozenset({"tolist"}),
 }
 
 
@@ -420,6 +428,28 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
     for operator in ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"):
         assert operator in source, operator
 
+    # TDM slot time is a KERNEL ARGUMENT, not a Torch expression. The facade
+    # passes the per-segment transmitter index across the boundary to all three
+    # operators and never forms a slot time itself: computing
+    # (chirp * num_tx + tx) * chirp_period in Torch would be a second, silently
+    # divergent copy of the slow-time axis, and broadcasting it over the sample
+    # axis would materialise the per-path-per-sample intermediate the kernel
+    # exists to avoid.
+    assert "segment_tx_index" in source
+    for operator in ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"):
+        call = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _dotted(node.func).endswith(operator)
+        )
+        passed = [
+            argument.id
+            for argument in call.args
+            if isinstance(argument, ast.Name)
+        ]
+        assert "tx_index" in passed, (operator, passed)
+
     kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/fmcw_beat.cu").read_text(
         encoding="utf-8"
     )
@@ -428,8 +458,40 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
         "__global__ void fmcw_beat_backward_kernel",
         "__global__ void fmcw_beat_jvp_kernel",
         "sincosf",
+        "segment_tx_index",
+        "slot_time",
     ):
         assert symbol in kernel, symbol
+
+
+def test_the_frame_assembly_path_reads_no_tensor_value():
+    """The per-frame half of ``assembly.py`` is pure structural packing.
+
+    ``validate_pair_ordering`` is allowed one host read because it runs at
+    freeze time. The point of splitting it into its own function is that the
+    ones the frame loop actually calls cannot inherit that read, so the scan is
+    scoped to those functions rather than to the module - a module-level
+    allowance that covered everything would stop meaning anything.
+    """
+
+    module = REPO_ROOT / "witwin/radar/synthesis/assembly.py"
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    per_frame = {"assemble_frame_cube", "pair_tx_index", "pair_rx_index"}
+    seen: set[str] = set()
+    offenders: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name not in per_frame:
+            continue
+        seen.add(node.name)
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in HOST_OBSERVATION_METHODS
+            ):
+                offenders.append((node.name, inner.func.attr))
+    assert seen == per_frame, seen
+    assert offenders == [], offenders
 
 
 def test_the_two_way_join_hot_loop_is_native_not_torch():
