@@ -15,6 +15,21 @@ the default suite - which is exactly where the compatibility criterion has to
 be checked, because it is the criterion most likely to be quietly broken by an
 unrelated change.
 
+THIS FILE IS ONE THIRD OF THE REAL-COMPATIBILITY GATE, and its name oversells
+it. It pins the closed-form identity and nothing else. A mutation audit deleted
+the round-trip doubling in ``SynthesisPathBatch.from_real_amplitudes`` and
+every test here still passed, because nothing here routes through that
+embedding. The other two thirds:
+
+* ``tests/test_phase6_synthesis_contract.py`` - the real-amplitude embedding
+  itself. ``test_real_amplitudes_become_round_trip_delay_once`` is the test
+  that kills that mutation.
+* ``tests/test_phase6_real_compat_accuracy.py`` - the migrated legacy MIMO cube
+  against a float64 oracle on the GPU, which is where criterion A4's numbers
+  come from.
+
+Run all three when a real-compatibility change is under review.
+
 The closed forms, verbatim:
 
     dirichlet_kernel(x, n) = [sin((n + 0.5) x) / sin(x/2)] * exp(-j n x)

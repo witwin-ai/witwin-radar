@@ -280,6 +280,16 @@ def synthesize_beat_rows(
     guessing it would put a whole chirp period of Doppler walk on the wrong
     channel and still produce a plausible cube. :func:`synthesize_fmcw_beat`
     derives it from the array layout.
+
+    This is the ROW-LEVEL entry, and what it does NOT check is part of its
+    contract. There is no :class:`SynthesisPathBatch` here, so the eight
+    provenance rules do not run: nothing verifies that this weight's spreading,
+    transmit power, and reference phase are absent from the spec's owners.
+    Spec-internal refusals still apply - a spec that puts the carrier in two
+    homes is refused here as well. The validated route is
+    :func:`synthesize_fmcw_beat`, which asks the batch first; use this one only
+    where the caller owns the single-count rule itself. R-ADR-010 records the
+    split.
     """
 
     path_count = int(total_delay_s.shape[0])

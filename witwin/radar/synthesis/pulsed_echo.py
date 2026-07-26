@@ -244,6 +244,15 @@ def synthesize_echo_rows(
     weight; the families deliberately do not share a weight type, so a
     coefficient cannot be conjugated on the way into the wrong one.
 
+    This is the ROW-LEVEL entry, and what it does NOT check is part of its
+    contract. There is no :class:`SynthesisPathBatch` here, so the eight
+    provenance rules do not run: nothing verifies that this weight's spreading,
+    transmit power, and reference phase are absent from the spec's owners.
+    Spec-internal refusals still apply. The validated route is
+    :func:`synthesize_pulsed_echo`, which asks the batch first; use this one
+    only where the caller owns the single-count rule itself. R-ADR-010 records
+    the split.
+
     Returns ``complex64[num_pulses, num_segments, num_samples]``.
     """
 

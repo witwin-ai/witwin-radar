@@ -1902,7 +1902,11 @@ phase 都可独立判定成功或失败。Phase 0 只做 ADR、inventory、basel
 - 工作项 8 的迁移已完成：`solvers/common.py` 只剩 `PathSample`、
   `normalize_interpolated_sample`、`samples_require_grad`、`_stack_slot_samples`，
   五个 Torch 几何/幅度表达式全部进入 `sensor_weight` kernel，`radar.gain` 删除。
-- 验收标准 A1、A2、A3、A5、A6、A7、A8、A9 均有对应测试；A4 见下列偏差。
+- 验收标准 A1-A9 均有对应测试。两处需要限定：A4 由
+  `tests/test_phase6_real_compat_accuracy.py` 以 float64 closed-form oracle 度量
+  （见偏差 2），A7 的 launch count 与 peak memory 由
+  `tests/test_phase6_launch_budget.py` 计量，但 **latency 本身未度量**，launch
+  count 只是此阶段的代理指标。
 - 决策记录：`docs/dev/standards/radar-adr-010-waveform-synthesis-ownership.md`
   与 `docs/dev/standards/radar-adr-011-shared-solver-surface.md`。
 
@@ -1917,12 +1921,33 @@ Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
    1.4e-3（幅度 1.2e-3），而不是设想的 1e-4。原因是路径长度从 `torch.cdist`
    改由 kernel 显式求范数，1 ulp 的长度差在 77 GHz、`tau ~ 5e-8 s` 处即为
    ~2.6e-3 rad 的相位差；这是 `dirichlet.cu` 的 float32 相位分辨率，不是迁移错误。
+   该判断已由 float64 closed-form oracle 独立证实（remediation，capture 场景
+   3 TX x 4 RX、40 path）：base 距精确值 1.88e-3，迁移后为 1.65e-3，两者之差
+   1.43e-3 小于任一方的误差本身，即迁移后的路径 **更接近** 精确值。因此 A4 的
+   有效表述是"real path 在 baseline 自身的数值精度内复现 baseline"，并由
+   `tests/test_phase6_real_compat_accuracy.py` 持续钉住（判据是推导出的
+   `2 pi fc tau eps` 相位下限，而非拟合容差）。唯一被放宽的既有容差是
+   `tests/solvers/test_mimo_cross.py`（5e-4 -> 2e-3，同一 float32 相位下限），
+   偏差 3 落地后必须调回。
 3. **`dirichlet.cu` 的相位精度是记录在案的债务。** 修复方式是像 `fmcw_beat.cu`
    一样用 double 累加 cycle 并在 `sincosf` 前 wrap 到 `[0,1)`。这是需要独立决策
    的数值变更，未混入本次架构迁移。
-4. **legacy `noise_model` / `receiver_chain` runtime 仍然存在。** `FrontendChain`
-   已经是被 `apply_signal_models` 优先选择的 owner，且两者不能同时配置；物理删除
-   旧 runtime 及其测试是后续独立变更。
+4. **`radar.py` 的 work item 8 残留。** legacy `noise_model` / `receiver_chain`
+   runtime 仍然存在（`FrontendChain` 已经是被 `apply_signal_models` 优先选择的
+   owner，且两者不能同时配置）；此外 `Radar.waveform`（`torch.exp` chirp 表达
+   式）、`tx_waveform`、`t_sample` 与 `_apply_phase_noise`（`torch.polar`）也仍
+   在 facade 中。`radar.waveform` 的删除被 `tests/reference/dsp_oracles.py` 的独
+   立时域 reference 阻塞。全部残留已由
+   `tests/test_phase6_no_torch_physics.py::test_the_radar_facade_carries_no_unrecorded_torch_physics`
+   按等值断言逐条记录，只能减少不能增加；物理删除是后续独立变更。
+5. **`synthesis.assembly.validate_pair_ordering` 尚无生产调用者。** 它是 frame
+   路径所依赖的 pair-rank layout 的 freeze-time 主机检查，目前只有测试调用。
+   Phase 7 给 `Radar.synthesize` 接上 scene-driven 生产路径时必须在 freeze time
+   接线，否则该 layout 断言在生产中是空的。
+6. **`backward` native symbol 无生产调用者。** `DirichletSolver.backward` 走的是
+   `backward_parallel_bins`；manifest 曾错误地把它记为 `backward` 的 end-to-end
+   caller，现已改为 `caller_status: test_only` 并由 manifest 测试把 caller-free
+   symbol 数量封顶为 1。删除该 ABI symbol 是需要独立决策的清理。
 
 #### Phase 7：集成 Dynamics、TDM、Doppler 与 Micro-Doppler
 
