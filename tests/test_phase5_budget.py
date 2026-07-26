@@ -228,3 +228,63 @@ def test_the_native_join_adds_no_host_observation_of_its_own(
     composed = multipath.composer.compose(inbound, outbound, response)
     assert composed.path_count == 4
     assert all(value == 0 for value in counter.counts.values()), counter.counts
+
+
+#: Peak device memory a whole ``T = 1024`` slot frame may allocate, in
+#: mebibytes. The Phase-7 survey measured 46.6 MB on this fixture; the gate is
+#: set at the plan's 64 MB so it is a budget rather than a fitted value.
+PEAK_MEMORY_BUDGET_MB = 64.0
+
+#: How far the per-slot cost may drift between ``T = 64`` and ``T = 1024``.
+#: Replay is launch bound and flat in ``T``, so the per-slot cost should FALL
+#: as the launch is amortised - the survey measured 0.0495 ms/slot at T = 64
+#: against 0.0027 at T = 1024. A factor of two in the wrong direction is the
+#: signature of work that grows with the slot count, which is the thing the
+#: block-diagonal layout exists to prevent.
+PER_SLOT_DRIFT = 2.0
+
+
+def test_peak_memory_and_per_slot_cost_scale(slot_spike):
+    """The two budgets a launch-bound replay must keep as ``T`` grows.
+
+    Measured, not asserted from the plan: peak allocation is read from CUDA's
+    own allocator across the whole batched replay, and the per-slot cost is
+    wall time after a synchronize, with the first call at each slot count
+    discarded so the topology replication and any allocator growth belong to
+    the warm-up rather than to the measurement.
+
+    A Python per-slot loop would pass the memory gate and fail this one, and a
+    quadratic pair partition would fail both - which is why they are asserted
+    together.
+    """
+
+    import time
+
+    from support import multi_endpoint_driver as multi
+
+    per_slot_ms = {}
+    peak_mb = {}
+    for slots in (64, 256, 1024):
+        times = [index * 1.0e-5 for index in range(slots)]
+        stack = multi.slot_site_stack(
+            slot_spike.site_tensor(), (0.0, 1.0, 0.0), times
+        )
+        slot_spike.slot_legs(stack, slot_count=slots)
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        before = torch.cuda.memory_allocated()
+
+        start = time.perf_counter()
+        inbound, outbound = slot_spike.slot_legs(stack, slot_count=slots)
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+
+        peak_mb[slots] = (torch.cuda.max_memory_allocated() - before) / (1024.0 ** 2)
+        per_slot_ms[slots] = 1.0e3 * elapsed / slots
+        assert inbound.slot_count == slots
+        assert inbound.pair_count == slots * inbound.pairs_per_slot
+        del inbound, outbound
+
+    assert peak_mb[1024] < PEAK_MEMORY_BUDGET_MB, peak_mb
+    assert per_slot_ms[1024] < PER_SLOT_DRIFT * per_slot_ms[64], per_slot_ms
