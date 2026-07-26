@@ -939,11 +939,17 @@ def test_the_forward_allocates_no_per_path_per_subcarrier_intermediate():
     torch.cuda.synchronize()
     peak = torch.cuda.max_memory_allocated() - before
 
+    # 2 * 4 * L * P * N_sc: the re/im float32 pair the kernel writes. The
+    # complex recombination copies it once more, which is where the factor of
+    # two goes; the only other per-call allocations are O(K), not O(K * N_sc).
     output_bytes = 2 * 4 * spec.num_symbols * 1 * spec.num_subcarriers
-    # The complex recombination doubles the output once, which is the whole of
-    # the allowed factor; the per-row inputs are already resident.
-    budget = 2.0 * (output_bytes + 2 * 4 * rows) + 2 * output_bytes
+    per_row_bytes = 8 * rows + 8 * rows + 8 * rows  # segment, re, im, headroom
+    budget = 2.0 * output_bytes + per_row_bytes
     assert tuple(cube.shape) == (32, 1, NUM_SUBCARRIERS)
     assert peak <= budget, (peak, budget)
-    # Non-vacuity: one K x L x N_sc float32 intermediate would be 4 MB.
-    assert 4 * rows * spec.num_symbols * spec.num_subcarriers > budget
+    # Measured 36864 bytes against a 16384-byte output, i.e. 2.25x - the
+    # re/im pair plus its complex copy plus the int64 row-to-segment table.
+    assert peak <= 2.5 * output_bytes + 8 * rows
+    # Non-vacuity: one K x L x N_sc float32 intermediate would be 4 MB, which
+    # is 93x this budget, so a Torch replay of the sum fails here immediately.
+    assert 4 * rows * spec.num_symbols * spec.num_subcarriers > 90.0 * budget
