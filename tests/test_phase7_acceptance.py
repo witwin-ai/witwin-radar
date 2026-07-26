@@ -68,6 +68,7 @@ ACCEPTANCE_MATRIX = {
     ),
     "TDM per-TX phase agrees with the downstream compensation": (
         "test_phase6_fmcw_tdm.py::test_the_sigproc_tdm_compensation_removes_exactly_the_carrier_slot_phase",
+        "test_phase6_fmcw_tdm.py::test_the_production_slot_table_survives_the_downstream_compensation",
         "test_phase7_slot_batching.py::test_tdm_slot_indices_come_from_the_phase6_owner",
     ),
     "FMCW/OFDM/Pulsed Doppler sign, dimension and aliasing limits are correct": (
@@ -75,6 +76,10 @@ ACCEPTANCE_MATRIX = {
         "test_phase7_doppler_scenarios.py::test_doppler_aliasing_folds_as_predicted",
         "test_phase6_fmcw_analytic.py::test_the_slow_time_slope_carries_the_whole_carrier_not_just_the_ramp",
         "test_phase7_acceptance.py::test_the_slow_time_slope_has_the_dimension_of_the_measured_rate",
+        "test_phase6_ofdm_kernel.py::test_a_receding_site_puts_the_cfr_tone_at_negative_doppler",
+        "test_phase6_ofdm_kernel.py::test_a_speed_past_the_unambiguous_bound_aliases",
+        "test_phase6_pulsed_kernel.py::test_a_receding_site_puts_the_slow_time_tone_at_negative_doppler",
+        "test_phase6_pulsed_kernel.py::test_a_speed_past_the_unambiguous_bound_aliases",
     ),
     "limb/rotor/deforming-mesh micro-Doppler agrees with an analytic or "
     "independent reference": (
@@ -97,6 +102,7 @@ ACCEPTANCE_MATRIX = {
         "test_phase7_invalidation.py::test_a_stale_compiled_scene_never_answers",
         "test_phase7_invalidation.py::test_invalidation_never_produces_a_detached_gradient",
         "test_phase7_invalidation.py::test_a_born_row_forces_an_explicit_rediscovery",
+        "test_phase7_invalidation.py::test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick",
         "test_phase7_rediscovery_cadence.py::test_a_retired_handle_is_refused_even_when_no_version_moved",
     ),
     "slot batching, launch count, peak memory and realtime scaling meet "

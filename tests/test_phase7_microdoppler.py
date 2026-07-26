@@ -203,6 +203,31 @@ def test_a_rotating_two_blade_target_gives_a_flash_spectrum(rotor):
     assert rows.shape == (2, SLOT_COUNT)
 
     velocities = geo.rotor_site_velocities(ROTOR_SITES)
+    # The oracle the reference is built from is the velocity PRODUCTION would
+    # have produced for this rotor. Without this line the whole chain "rotor ->
+    # kinematics -> spectrum" is only covered compositionally: the spectrum
+    # tests measure replayed positions and the production velocity owner is
+    # pinned in a different file, so a defect in that owner leaves every
+    # spectrum test green.
+    from witwin.radar.propagation import kinematics as kin
+
+    produced = kin.rigid_site_velocities(
+        torch.tensor(
+            [position for _, position in ROTOR_SITES], dtype=torch.float32
+        ),
+        angular_velocity=geo.ROTOR_ANGULAR_VELOCITY,
+        centre_m=geo.ROTOR_CENTRE_M,
+    )
+    assert torch.allclose(
+        produced.to(torch.float64),
+        torch.tensor(
+            [velocities[stable_id] for stable_id, _ in ROTOR_SITES],
+            dtype=torch.float64,
+        ),
+        rtol=0.0,
+        atol=1.0e-5,
+    ), produced
+
     reference = _closed_form_hz(rotor, velocities, ROTOR_SITES)
     keys = drv.composed_keys(rotor, frame)
 

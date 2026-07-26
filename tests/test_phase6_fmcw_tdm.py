@@ -370,6 +370,158 @@ def test_tdm_phase_matches_downstream_compensation(num_tx):
 
 
 # --------------------------------------------------------------------------
+# T1.7  the same statement through the PRODUCTION slot table
+# --------------------------------------------------------------------------
+
+
+def _identical_row_per_pair(*, num_tx: int, num_rx: int, rate: float):
+    """One physically identical row per sensor pair of a ``num_tx x num_rx``
+    array, as the batch ``synthesize_fmcw_beat`` consumes.
+
+    Every row carries the same delay, the same rate and the same weight, so any
+    difference between two pairs in the synthesized cube is slot time and
+    nothing else - and which slot a pair sits in is decided entirely by
+    ``assembly.pair_tx_index``, which this route calls rather than being told.
+
+    ``num_rx > 1`` is load bearing. With one receiver the sink-major rank makes
+    pair ``p`` transmitter ``p``, so ``pair % num_tx`` is the identity and every
+    hand-built table in this file happens to agree with the production one; the
+    table's arithmetic only becomes observable when the pair axis is longer
+    than the transmitter axis.
+    """
+
+    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.synthesis.contracts import SlowTimeMode, SynthesisPathBatch
+
+    pairs = num_tx * num_rx
+    rows = torch.arange(pairs, dtype=torch.int64, device="cuda")
+    weight = _frozen_channel_weight()
+    return SynthesisPathBatch(
+        sensor_pair_count=pairs,
+        path_count=pairs,
+        sensor_pair_index=rows,
+        pair_offsets=torch.arange(pairs + 1, dtype=torch.int64, device="cuda"),
+        total_delay_s=torch.full(
+            (pairs,), TAU_RT_S, dtype=torch.float32, device="cuda"
+        ),
+        delay_rate=torch.full(
+            (pairs,), rate, dtype=torch.float32, device="cuda"
+        ),
+        complex_transfer_ref=torch.full(
+            (pairs,), weight, dtype=torch.complex64, device="cuda"
+        ),
+        reference_frequency_hz=FC_HZ,
+        frequency_response=None,
+        frequency_offsets_hz=None,
+        topology=RadarPathTopology(
+            radar_source_id=torch.remainder(rows, num_tx),
+            site_id=torch.zeros(pairs, dtype=torch.int64, device="cuda"),
+            radar_sink_id=torch.div(rows, num_tx, rounding_mode="floor"),
+            inbound_row=rows,
+            outbound_row=rows,
+        ),
+        row_valid=None,
+        join_mode="multipath",
+        weight_includes_reference_phase=True,
+        weight_includes_spreading=True,
+        weight_includes_tx_power=True,
+        slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
+    )
+
+
+@pytest.mark.parametrize("num_tx", [2, 4])
+def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
+    """The acceptance criterion, driven by the table production actually uses.
+
+    Every other TDM test in this file hands the kernel a table it built itself
+    (``torch.tensor([0, 1])``, ``torch.arange(num_tx)``), so they pin the
+    kernel's phase LAW and are blind to the table that feeds it in production.
+    This one drives the whole chain instead - ``synthesize_fmcw_beat`` ->
+    ``assembly.pair_tx_index`` -> ``segment_tx_index`` -> the beat kernel ->
+    ``assemble_frame_cube`` -> ``sigproc.pointcloud._compensate_tdm_phase`` -
+    and asserts that the compensation lands every virtual-antenna block back on
+    top of block 0. A slot table off by one transmitter passes every other test
+    in this file and fails here, because the cube's TX axis comes from the
+    sink-major layout while the phase in it came from the table.
+
+    The compensation is called for real. Only the two scalars it reads off a
+    radar object are stubbed - the wavelength and the chirp period - because
+    building a ``RadarAxes`` would drag a whole processing configuration in to
+    supply two numbers this test already owns.
+
+    The ramp is switched off so the compensation is exact; its residual on a
+    real chirp is measured by
+    ``test_the_sigproc_tdm_compensation_removes_exactly_the_carrier_slot_phase``.
+    """
+
+    from types import SimpleNamespace
+
+    from witwin.radar.sigproc.pointcloud import _compensate_tdm_phase
+    from witwin.radar.synthesis.assembly import assemble_frame_cube
+    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+
+    num_rx = 2
+    num_chirps = 4
+    spec = _spec(
+        num_samples=4,
+        num_chirps=num_chirps,
+        slope_hz_per_s=0.0,
+        t_start_s=0.0,
+        num_tx=num_tx,
+        num_rx=num_rx,
+    )
+    batch = _identical_row_per_pair(
+        num_tx=num_tx, num_rx=num_rx, rate=TAU_RATE_BISTATIC
+    )
+    cube = synthesize_fmcw_beat(batch, spec)
+    frame = assemble_frame_cube(cube, num_tx=num_tx, num_rx=num_rx)
+    assert tuple(frame.shape) == (num_tx, num_rx, num_chirps, spec.num_samples)
+
+    # The sigproc layout: virtual antenna va = tx * num_rx + rx, one column per
+    # chirp, which is exactly what the AoA input carries per detection.
+    aoa_input = frame[:, :, :, 0].reshape(num_tx * num_rx, num_chirps)
+    radial_speed = C0 * TAU_RATE_BISTATIC / 2.0
+    velocities = torch.full(
+        (num_chirps,), radial_speed, dtype=torch.float64, device=frame.device
+    )
+    radar = SimpleNamespace(
+        axes=SimpleNamespace(
+            wavelength_m=C0 / FC_HZ, chirp_period_s=CHIRP_PERIOD_S
+        )
+    )
+    fc = SimpleNamespace(numTxAntennas=num_tx, numRxAntennas=num_rx)
+
+    raw = aoa_input.to(torch.complex128).cpu()
+    compensated = (
+        _compensate_tdm_phase(aoa_input, velocities, radar, fc)
+        .to(torch.complex128)
+        .cpu()
+    )
+
+    walks = []
+    for tx_i in range(num_tx):
+        for rx_i in range(num_rx):
+            va = tx_i * num_rx + rx_i
+            reference = raw[rx_i]  # va of (tx=0, rx=rx_i)
+            walks.append(
+                abs(float(torch.angle(raw[va] * torch.conj(reference)).mean()))
+            )
+            residual = float(
+                torch.angle(compensated[va] * torch.conj(reference)).mean()
+            )
+            assert abs(residual) < 1e-4, (tx_i, rx_i, residual)
+
+    # Non-vacuity: the blocks really were far apart before compensation, and the
+    # walk grows one slot per transmitter rather than being one constant offset.
+    per_tx = [walks[tx_i * num_rx] for tx_i in range(num_tx)]
+    assert per_tx[0] < 1e-9
+    assert all(
+        later > earlier + 0.5
+        for earlier, later in zip(per_tx[:-1], per_tx[1:], strict=True)
+    )
+
+
+# --------------------------------------------------------------------------
 # T1.8  the num_tx = 1 compatibility pin
 # --------------------------------------------------------------------------
 
