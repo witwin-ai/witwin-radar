@@ -17,6 +17,7 @@
     "witwin/radar/cuda/kernels/dirichlet.cu",
     "witwin/radar/cuda/kernels/fmcw_beat.cu",
     "witwin/radar/cuda/kernels/ofdm_cfr.cu",
+    "witwin/radar/cuda/kernels/pulsed_echo.cu",
     "witwin/radar/cuda/kernels/two_way_join.cu"
   ],
   "operators": [
@@ -110,6 +111,27 @@
       "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
       "contract_test": "tests/test_phase6_ofdm_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr._OfdmCfrSynthesis.jvp"
+    },
+    {
+      "symbol": "pulsed_echo_forward",
+      "family": "pulsed_echo_synthesis",
+      "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
+      "contract_test": "tests/test_phase6_pulsed_kernel.py",
+      "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo.synthesize_pulsed_echo"
+    },
+    {
+      "symbol": "pulsed_echo_backward",
+      "family": "pulsed_echo_synthesis",
+      "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
+      "contract_test": "tests/test_phase6_pulsed_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo._PulsedEchoSynthesis.backward"
+    },
+    {
+      "symbol": "pulsed_echo_jvp",
+      "family": "pulsed_echo_synthesis",
+      "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
+      "contract_test": "tests/test_phase6_pulsed_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo._PulsedEchoSynthesis.jvp"
     },
     {
       "symbol": "two_way_join_forward",

@@ -93,6 +93,12 @@ SPIKE_MODULES = (
     "witwin/radar/synthesis/dirichlet_spectrum.py",
     "witwin/radar/synthesis/fmcw_beat.py",
     "witwin/radar/synthesis/ofdm_cfr.py",
+    "witwin/radar/synthesis/pulsed_echo.py",
+    # DSP glue, and in this list on purpose. It is subjected to the same
+    # host-observation and Dr.Jit scans as the native owners because being on
+    # the Torch side of the processing exception is permission to use an FFT,
+    # not permission to read a device tensor to the host per frame.
+    "witwin/radar/sigproc/matched_filter.py",
 )
 
 SPIKE_IMPORTS = textwrap.dedent(
@@ -102,6 +108,8 @@ SPIKE_IMPORTS = textwrap.dedent(
     import witwin.radar.scattering.rcs
     import witwin.radar.synthesis.fmcw_beat
     import witwin.radar.synthesis.ofdm_cfr
+    import witwin.radar.synthesis.pulsed_echo
+    import witwin.radar.sigproc.matched_filter
     """
 ).strip()
 
@@ -185,6 +193,8 @@ def test_synthesis_scattering_and_paths_do_not_require_channel():
     modules = _subprocess_modules(
         "import witwin.radar.synthesis.fmcw_beat\n"
         "import witwin.radar.synthesis.ofdm_cfr\n"
+        "import witwin.radar.synthesis.pulsed_echo\n"
+        "import witwin.radar.sigproc.matched_filter\n"
         "import witwin.radar.scattering.rcs\n"
         "import witwin.radar.paths.two_way"
     )
@@ -544,6 +554,154 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
 
     # No TDM slot table: OFDM slow time is per symbol, shared by every pair.
     assert "segment_tx_index" not in kernel
+
+
+def test_the_pulsed_hot_loop_is_native_not_torch():
+    """The pulse train is a kernel, and the pulse is analytic in this family.
+
+    The second half is what a shape test cannot see. The whole design decision
+    of this waveform is that ``p(t - tau)`` is evaluated at a CONTINUOUS
+    fractional argument, so the facade must contain no indexing, no gather, no
+    interpolation, and no sampled pulse at all - the only sampled replica in the
+    package lives in the DSP matched filter, and that file must not be reachable
+    from here.
+    """
+
+    facade = REPO_ROOT / "witwin/radar/synthesis/pulsed_echo.py"
+    tree = ast.parse(facade.read_text(encoding="utf-8"))
+
+    loops = [
+        type(node).__name__
+        for node in ast.walk(tree)
+        if isinstance(
+            node,
+            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
+        )
+    ]
+    assert loops == [], loops
+
+    called = {
+        _dotted(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for forbidden in (
+        "torch.exp",
+        "torch.sin",
+        "torch.cos",
+        "torch.cdist",
+        "torch.conj",
+        "torch.gather",
+        "torch.searchsorted",
+        "torch.round",
+    ):
+        assert forbidden not in called, forbidden
+
+    source = facade.read_text(encoding="utf-8")
+    assert "_PulsedEchoSynthesis.apply(" in source
+    for operator in (
+        "pulsed_echo_forward",
+        "pulsed_echo_backward",
+        "pulsed_echo_jvp",
+    ):
+        assert operator in source, operator
+
+    # No conjugation site and no reach into either neighbouring waveform.
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } | {
+        _dotted(node.func).rsplit(".", 1)[-1]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "channel_phasor_to_beat_weight" not in called_names
+    assert "conj" not in called_names
+    imported = _imports_of(facade, "witwin.radar.synthesis.pulsed_echo")
+    assert not any("fmcw" in name for name in imported), sorted(imported)
+    assert not any("ofdm" in name for name in imported), sorted(imported)
+    # The matched filter is the CONSUMER of this module's output, never a
+    # dependency of it. An edge in this direction would put a sampled replica
+    # inside the synthesis owner.
+    assert not any("sigproc" in name for name in imported), sorted(imported)
+
+    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/pulsed_echo.cu").read_text(
+        encoding="utf-8"
+    )
+    for symbol in (
+        "__global__ void pulsed_echo_forward_kernel",
+        "__global__ void pulsed_echo_backward_kernel",
+        "__global__ void pulsed_echo_jvp_kernel",
+        "sincosf",
+    ):
+        assert symbol in kernel, symbol
+
+    # Scanned over the CODE, with the line comments stripped. The header
+    # explains at length what the kernel must not do, naming the very tokens
+    # this scan forbids, and a whole-file text scan would reject the
+    # explanation along with the act.
+    code = "\n".join(
+        line for line in kernel.splitlines() if not line.lstrip().startswith("//")
+    )
+
+    # The kernel's own sign: `cycles` is negated, which keeps the train in
+    # Channel's exp(-j k d) convention rather than the beat convention.
+    assert "-(carrier_rate_hz * tau_drift + carrier_hz * tau)" in code
+
+    # The envelope argument is formed from the CONTINUOUS delay and handed
+    # straight to the analytic pulse. `t_fast - tau` with a float tau is the
+    # fractional evaluation; a rounded or truncated sample index would be the
+    # snapping this family exists to avoid.
+    assert "t_fast - tau" in code
+    for snapped in ("lrint", "__float2int", "nearbyint", "round(", "tex1D"):
+        assert snapped not in code, snapped
+
+    # The support test is HALF-OPEN. A closed one puts an extra sample inside
+    # the pulse at exactly the delays that land on the grid, so the sampled
+    # pulse changes length with the delay and the matched filter sees a
+    # mismatched tap.
+    assert "u >= 0.0 && u < pulse_width_s" in code
+
+    # No TDM slot table: pulsed slow time is per pulse, shared by every pair.
+    assert "segment_tx_index" not in kernel
+
+
+def test_the_matched_filter_re_derives_no_geometry():
+    """The DSP side owns the filter and nothing else.
+
+    An FFT correlation is allowlisted; a delay, a carrier, or a Doppler term
+    computed here would be a second, silently divergent copy of physics that the
+    synthesis kernel already owns. Scanned by name because every one of these
+    would appear as an attribute read on the spec.
+    """
+
+    module = REPO_ROOT / "witwin/radar/sigproc/matched_filter.py"
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+
+    attributes = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for forbidden in (
+        "carrier_hz",
+        "carrier_rate_hz",
+        "reference_frequency_hz",
+        "total_delay_s",
+        "delay_rate",
+        "complex_transfer_ref",
+        "doppler_frequency_hz",
+        "slow_time_phase_step_rad",
+        "pri_s",
+        "num_pulses",
+    ):
+        assert forbidden not in attributes, forbidden
+
+    imported = _imports_of(module, "witwin.radar.sigproc.matched_filter")
+    assert not any(name.startswith("witwin") for name in imported), sorted(imported)
+
+    source = module.read_text(encoding="utf-8")
+    assert "torch.fft" in source
+    assert "torch.conj" in source
 
 
 def test_the_frame_assembly_path_reads_no_tensor_value():
