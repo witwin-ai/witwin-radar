@@ -79,6 +79,11 @@ SPIKE_MODULES = (
     "witwin/radar/propagation/__init__.py",
     "witwin/radar/propagation/contracts.py",
     "witwin/radar/propagation/channel_consumer.py",
+    # The Core-kinematics seam. It names no other witwin package at all - it is
+    # duck typed over Core's snapshot shape - and it is scanned here because it
+    # runs once per frame and is the natural place for a host read of a velocity
+    # to appear.
+    "witwin/radar/propagation/kinematics.py",
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
     "witwin/radar/paths/_identity.py",

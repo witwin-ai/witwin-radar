@@ -597,6 +597,16 @@ class TwoWayComposer:
         directional derivative and reusing it as a rate would silently mix two
         meanings. The caller states which it has.
 
+        The composed rate is ``rate_in + rate_out`` and BOTH legs are evaluated
+        at the same world instant. The exact two-way rate evaluates the outbound
+        leg at ``t + tau_in`` and carries a ``(1 - v_r/c)`` factor; the
+        same-instant form is wrong by ``O(v/c)``, about ``4e-8`` at 12 m/s and
+        far below the float32 delay quantisation. Stated here because it is the
+        one approximation in this composition that a velocity, rather than a
+        geometry, can make visible: driving the join at a relativistic velocity
+        measures it and has not found a defect. ``RadarPathBatch.delay_rate``
+        carries the same statement for the row that leaves here.
+
         A dead row's payload is exactly zero, not a partial composition. The
         row is a complete answer that this round trip does not exist at these
         endpoint positions; publishing ``tau_in + 0`` for it would be a

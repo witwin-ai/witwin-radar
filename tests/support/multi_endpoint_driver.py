@@ -181,45 +181,98 @@ class MultiEndpointSpike:
         tensor = torch.tensor(list(values), dtype=torch.float32, device=self.device)
         return tensor.requires_grad_(requires_grad)
 
+    def transmitter_tensor(self, positions=None):
+        """The transmitter positions as one ``(N, 3)`` float32 CUDA tensor."""
+
+        values = (
+            [position for _, position in self.transmitters]
+            if positions is None
+            else positions
+        )
+        return torch.tensor(list(values), dtype=torch.float32, device=self.device)
+
+    def receiver_tensor(self, positions=None):
+        """The receiver positions as one ``(N, 3)`` float32 CUDA tensor."""
+
+        values = (
+            [position for _, position in self.receivers]
+            if positions is None
+            else positions
+        )
+        return torch.tensor(list(values), dtype=torch.float32, device=self.device)
+
     # -- one frame ----------------------------------------------------------
 
-    def legs(self, sites=None, *, ad_mode: str = "none"):
+    def legs(
+        self,
+        sites=None,
+        *,
+        transmitters=None,
+        receivers=None,
+        ad_mode: str = "none",
+    ):
         """Reevaluate both frozen legs at ``sites``.
 
-        ``sites`` may be a live tensor: the SAME object is handed to the inbound
-        sink batch and the outbound source batch, which is what makes a reverse
-        gradient accumulate over both legs and a forward velocity dual produce a
-        two-way Doppler rate.
+        Each of the three endpoint sets may be a live ``(N, 3)`` tensor. For
+        the sites that has always been true and it is what makes a reverse
+        gradient accumulate over both legs: the SAME object is handed to the
+        inbound sink batch and the outbound source batch.
+
+        The transmitters and receivers used to be rebuilt from Python tuples on
+        every call, which silently made them undualisable - a forward-AD tangent
+        does not survive a rebuild from values, and the resulting
+        ``delay_rate`` contribution was a clean zero indistinguishable from a
+        static front end. Accepting a tensor here is the whole of the
+        moving-platform case; ``multi_endpoint_world.endpoint_batch`` already
+        passed a live tensor through untouched, so nothing below this changed.
         """
 
-        positions = self.site_positions if sites is None else sites
         inbound = self.adapter.reevaluate(
             self.inbound,
-            self._transmitter_batch(
-                [position for _, position in self.transmitters]
+            self._transmitter_batch(self._transmitter_positions(transmitters)),
+            self._site_batch(
+                self.site_positions if sites is None else sites, role="sink"
             ),
-            self._site_batch(positions, role="sink"),
             ad_mode=ad_mode,
         )
         outbound = self.adapter.reevaluate(
             self.outbound,
-            self._site_batch(positions, role="source"),
-            self._receiver_batch([position for _, position in self.receivers]),
+            self._site_batch(
+                self.site_positions if sites is None else sites, role="source"
+            ),
+            self._receiver_batch(self._receiver_positions(receivers)),
             ad_mode=ad_mode,
         )
         return inbound, outbound
+
+    def _transmitter_positions(self, override):
+        if override is None:
+            return [position for _, position in self.transmitters]
+        return override
+
+    def _receiver_positions(self, override):
+        if override is None:
+            return [position for _, position in self.receivers]
+        return override
 
     def frame(
         self,
         sites=None,
         response=None,
         *,
+        transmitters=None,
+        receivers=None,
         ad_mode: str = "none",
         include_delay_rate: bool = True,
     ):
         """One frame: two reevaluations and one composition."""
 
-        inbound, outbound = self.legs(sites, ad_mode=ad_mode)
+        inbound, outbound = self.legs(
+            sites,
+            transmitters=transmitters,
+            receivers=receivers,
+            ad_mode=ad_mode,
+        )
         composed = self.composer.compose(
             inbound,
             outbound,

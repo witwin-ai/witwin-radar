@@ -93,6 +93,18 @@ class RadarPathBatch:
     as an unpacked forward tangent, so consuming it here deliberately severs
     the second-order ``d(delay_rate)/dx`` term.
 
+    RETARDATION, stated so an absurd-velocity test cannot be misread as a bug.
+    ``delay_rate`` is ``rate_in + rate_out`` with BOTH legs evaluated at the
+    same world instant ``t``. The exact two-way rate evaluates the outbound leg
+    at ``t + tau_in``, where the target has moved on, and carries a
+    ``(1 - v_r/c)`` factor from the same retardation. The relative error of the
+    same-instant form is therefore ``O(v/c)``: about ``4e-8`` at 12 m/s, which
+    is five orders of magnitude below the float32 delay quantisation these rows
+    are published at. It is an approximation, it is named here rather than left
+    implicit, and it is not corrected because the correction is smaller than the
+    representation. A test driven at a relativistic velocity measures this
+    approximation; it has not found a defect.
+
     ``row_valid`` is the sole authority on whether a row means anything. A
     dead row is a complete answer contributing exactly zero, never an error,
     and validity is never inferred from a zero payload.

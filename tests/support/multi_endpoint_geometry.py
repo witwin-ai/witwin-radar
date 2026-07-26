@@ -117,6 +117,26 @@ SITE_P_MOVED_POSITION_M: Point = (2.0, 2.0, 0.0)
 SITE_P_VELOCITY_M_PER_S: Point = (0.0, 12.0, 0.0)
 SITE_Q_VELOCITY_M_PER_S: Point = (0.0, -5.0, 0.0)
 
+#: Site P closing on ``TX_A`` along ``-x`` at 12 m/s: a RADIAL velocity.
+#:
+#: The two velocities above are purely transverse to ``TX_A -> P``, and a
+#: transverse fixture cannot distinguish a correct near-zero rate from a DEAD
+#: forward-AD tangent, which also publishes zero. Every ADR-038 fixture in the
+#: dynamics phase therefore carries a radial component, and this is it. The
+#: implied radial closing speed is well inside the fixture front end's
+#: ``max_unambiguous_speed_mps``, so the same number is usable by the aliasing
+#: tests as the IN-LIMIT case.
+SITE_P_RADIAL_VELOCITY_M_PER_S: Point = (-12.0, 0.0, 0.0)
+
+#: A moving front end: ``TX_A`` and ``RX_A`` crossing in opposite directions.
+#:
+#: Chosen antisymmetric so that the moving-endpoint case has a clean Galilean
+#: partner - a static front end with the SITE carrying the negated relative
+#: velocity reproduces the same round-trip rate, which is the strongest
+#: available check that the seam dualised the tensors it claims to.
+TX_A_VELOCITY_M_PER_S: Point = (0.0, 3.0, 0.0)
+RX_A_VELOCITY_M_PER_S: Point = (0.0, -3.0, 0.0)
+
 TRANSMITTERS: tuple[tuple[int, Point], ...] = (
     (TX_A_STABLE_ID, TX_A_POSITION_M),
     (TX_B_STABLE_ID, TX_B_POSITION_M),
@@ -475,22 +495,87 @@ def combined_pair_offsets(
     return offsets
 
 
-def _leg_delay_rate_s_per_s(
-    site: Point, other: Point, component: str, velocity: Point
+STATIONARY: Point = (0.0, 0.0, 0.0)
+
+
+def leg_delay_rate_s_per_s(
+    moving: Point, fixed: Point, component: str, velocity: Point
 ) -> float:
-    """``d(delay)/dt`` of one leg for a moving SITE, the other endpoint static.
+    """``d(delay)/dt`` of one leg from ONE endpoint's motion, in float64.
 
     One formula covers both components, which is the point of the image source:
-    the rate is the projection of the site velocity onto the unit vector from
-    the (possibly mirrored) fixed endpoint to the site. It is symmetric in which
-    end of the leg the site is, because ``|image(a) - b| == |a - image(b)|``.
+    the rate is the projection of the moving endpoint's velocity onto the unit
+    vector from the (possibly mirrored) fixed endpoint to it. It is symmetric in
+    which end of the leg moves, because ``|image(a) - b| == |a - image(b)|``,
+    and that symmetry is what lets the SAME function answer for a moving site,
+    a moving transmitter and a moving receiver:
+
+        ``d|image(a) - b|/dt = (a - image(b)) . v_a / L  -  (image(a) - b) . v_b / L``
+
+    with ``M`` the mirror, ``M(image(a) - b) = a - image(b)``, and ``M`` its own
+    inverse. A leg with both ends moving is therefore the SUM of two calls, one
+    per end, and never a special case.
     """
 
-    origin = other if component == "los" else image_position_m(other)
-    offset = tuple(site[axis] - origin[axis] for axis in range(3))
+    origin = fixed if component == "los" else image_position_m(fixed)
+    offset = tuple(moving[axis] - origin[axis] for axis in range(3))
     length = sum(value**2 for value in offset) ** 0.5
     projection = sum(offset[axis] * velocity[axis] for axis in range(3))
     return projection / length / C0_M_PER_S
+
+
+def _leg_delay_rate_s_per_s(
+    site: Point, other: Point, component: str, velocity: Point
+) -> float:
+    """The moving-SITE spelling of :func:`leg_delay_rate_s_per_s`."""
+
+    return leg_delay_rate_s_per_s(site, other, component, velocity)
+
+
+def combined_delay_rate_s_per_s(
+    rows: list[CombinedRow],
+    velocities: dict[int, Point],
+    transmitters: tuple[tuple[int, Point], ...] = TRANSMITTERS,
+    sites: tuple[tuple[int, Point], ...] = SITES,
+    receivers: tuple[tuple[int, Point], ...] = RECEIVERS,
+) -> list[float]:
+    """``d(tau_rt)/dt`` of each composed row, in the same order as ``rows``.
+
+    ``velocities`` is keyed by stable ID and may name ANY endpoint - a
+    transmitter, a site, a receiver, or all three at once. An ID it does not
+    name is stationary. That generality is what makes the moving-platform and
+    Galilean-equivalence cases expressible against the same oracle as the
+    moving-target case: every leg is the sum of one term per moving end, so
+    nothing about the round trip needs a second closed form.
+    """
+
+    positions = {
+        stable_id: position
+        for stable_id, position in (*transmitters, *sites, *receivers)
+    }
+    rates: list[float] = []
+    for row in rows:
+        site = positions[row.site_id]
+        source = positions[row.source_id]
+        sink = positions[row.sink_id]
+        site_velocity = velocities.get(row.site_id, STATIONARY)
+        source_velocity = velocities.get(row.source_id, STATIONARY)
+        sink_velocity = velocities.get(row.sink_id, STATIONARY)
+        rates.append(
+            leg_delay_rate_s_per_s(
+                site, source, row.inbound.component, site_velocity
+            )
+            + leg_delay_rate_s_per_s(
+                source, site, row.inbound.component, source_velocity
+            )
+            + leg_delay_rate_s_per_s(
+                site, sink, row.outbound.component, site_velocity
+            )
+            + leg_delay_rate_s_per_s(
+                sink, site, row.outbound.component, sink_velocity
+            )
+        )
+    return rates
 
 
 def combined_doppler_hz(
@@ -503,24 +588,15 @@ def combined_doppler_hz(
     """Doppler shift of each composed row, in the same order as ``rows``.
 
     ``f_D = -f_c * d(tau_rt)/dt``: the sign follows Channel's ``exp(-j k d)``
-    phasor, so a receding site gives a negative shift.
+    phasor, so a receding row gives a negative shift.
     """
 
-    positions = {
-        stable_id: position
-        for stable_id, position in (*transmitters, *sites, *receivers)
-    }
-    shifts: list[float] = []
-    for row in rows:
-        site = positions[row.site_id]
-        velocity = velocities[row.site_id]
-        rate = _leg_delay_rate_s_per_s(
-            site, positions[row.source_id], row.inbound.component, velocity
-        ) + _leg_delay_rate_s_per_s(
-            site, positions[row.sink_id], row.outbound.component, velocity
+    return [
+        -REFERENCE_FREQUENCY_HZ * rate
+        for rate in combined_delay_rate_s_per_s(
+            rows, velocities, transmitters, sites, receivers
         )
-        shifts.append(-REFERENCE_FREQUENCY_HZ * rate)
-    return shifts
+    ]
 
 
 def combined_delay_gradient_s_per_m(
@@ -592,12 +668,15 @@ __all__ = [
     "REFLECTION_MATERIAL_SLOT",
     "RX_A_POSITION_M",
     "RX_A_STABLE_ID",
+    "RX_A_VELOCITY_M_PER_S",
     "RX_B_POSITION_M",
     "RX_B_STABLE_ID",
+    "STATIONARY",
     "SITES",
     "SITES_REVERSED",
     "SITE_P_MOVED_POSITION_M",
     "SITE_P_POSITION_M",
+    "SITE_P_RADIAL_VELOCITY_M_PER_S",
     "SITE_P_STABLE_ID",
     "SITE_P_VELOCITY_M_PER_S",
     "SITE_Q_POSITION_M",
@@ -606,6 +685,7 @@ __all__ = [
     "TRANSMITTERS",
     "TX_A_POSITION_M",
     "TX_A_STABLE_ID",
+    "TX_A_VELOCITY_M_PER_S",
     "TX_B_POSITION_M",
     "TX_B_STABLE_ID",
     "TX_B_UNOCCLUDED_POSITION_M",
@@ -619,12 +699,14 @@ __all__ = [
     "WALL_SIGMA_E",
     "WALL_VERTICES_M",
     "combined_delay_gradient_s_per_m",
+    "combined_delay_rate_s_per_s",
     "combined_doppler_hz",
     "combined_pair_offsets",
     "combined_rows",
     "distance_m",
     "face_containing",
     "image_position_m",
+    "leg_delay_rate_s_per_s",
     "leg_rows",
     "line_of_sight_is_blocked",
     "pair_offsets",
