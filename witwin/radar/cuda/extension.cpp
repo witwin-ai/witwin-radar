@@ -1,35 +1,72 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
+  // Dirichlet range spectrum. The path weight is COMPLEX, carried as the two
+  // real tensors (a, a_im) exactly like the beat and join families: no complex
+  // tensor crosses the autograd boundary. A real weight is a_im = 0 and is
+  // bit-identical to what this family produced before it gained the component.
+  //
+  // Two additive switches, both defaulting to the legacy meaning:
+  //
+  //   fc is the carrier home, mirroring carrier_hz in the beat family.
+  //     fc != 0  - the kernel owns the absolute phase 2 pi fc tau.
+  //     fc == 0  - the weight owns it and the kernel applies none.
+  //   A Channel coefficient already carries the reference-frequency phase, so
+  //   pairing one with fc != 0 double counts the carrier. The Python contract
+  //   (synthesis/contracts.py, rule R1) refuses that combination before any
+  //   launch; this comment records why the kernel does not need to.
+  //
+  //   tau_is_seconds says what the first tensor holds.
+  //     0 - a ONE-WAY distance in metres, round trip assumed monostatic,
+  //         tau = 2 d / c0, with k0_per_meter = (slope * 2 / c0) * n_fft / fs.
+  //     1 - a ROUND-TRIP delay in seconds, consumed directly, with the matching
+  //         scale k0_per_meter = slope * n_fft / fs.
+  //   The second form exists because every Phase-6 contract speaks round-trip
+  //   delay, and reconstructing a distance from one only to halve it again is
+  //   how a path becomes self-consistently 2x wrong.
+  //
+  // See R-ADR-004.
   m.def(
-      "forward_chunked(Tensor d, Tensor a, Tensor(a!) output_re, Tensor(b!) output_im, "
-      "float n, float k0_per_meter, int num_bins, int n_fft, int num_targets, "
-      "int targets_per_chunk, float fc, float slope, float t_start) -> ()");
+      "forward_chunked(Tensor d, Tensor a, Tensor a_im, Tensor(a!) output_re, "
+      "Tensor(b!) output_im, float n, float k0_per_meter, int num_bins, int n_fft, "
+      "int num_targets, int targets_per_chunk, float fc, float slope, float t_start, "
+      "int tau_is_seconds) -> ()");
   m.def(
-      "forward_mimo_linear_chunked(Tensor d0, Tensor d_rate, Tensor a0, "
+      "forward_mimo_linear_chunked(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
       "Tensor(a!) output_re, Tensor(b!) output_im, float n, float k0_per_meter, "
       "int num_bins, int n_fft, int targets_per_pair, int chirp_per_frame, "
       "float chirp_period, int num_tx, int range_loss_update, float fc, float slope, "
-      "float t_start) -> ()");
+      "float t_start, int tau_is_seconds) -> ()");
   m.def(
-      "backward(Tensor d, Tensor a, Tensor grad_output_re, Tensor grad_output_im, "
-      "Tensor(a!) grad_d, Tensor(b!) grad_a, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int num_targets, float fc, float slope, float t_start) -> ()");
-  m.def(
-      "backward_batched(Tensor d, Tensor a, Tensor grad_output_re, Tensor grad_output_im, "
-      "Tensor(a!) grad_d, Tensor(b!) grad_a, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int num_targets, int targets_per_spectrum, "
-      "float fc, float slope, float t_start) -> ()");
-  m.def(
-      "backward_parallel_bins(Tensor d, Tensor a, Tensor grad_output_re, "
-      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, float n, "
+      "dirichlet_jvp(Tensor d, Tensor a, Tensor a_im, Tensor tan_d, Tensor tan_a, "
+      "Tensor tan_a_im, Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, float n, "
       "float k0_per_meter, int num_bins, int n_fft, int num_targets, "
-      "float fc, float slope, float t_start) -> ()");
+      "int targets_per_chunk, float fc, float slope, float t_start, "
+      "int tau_is_seconds) -> ()");
   m.def(
-      "backward_per_bin(Tensor d, Tensor a, Tensor grad_output_re, Tensor grad_output_im, "
-      "Tensor(a!) grad_d, Tensor(b!) grad_a, float n, float k0_per_meter, "
+      "backward(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
+      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
+      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
+      "int num_bins, int n_fft, int num_targets, float fc, float slope, float t_start, "
+      "int tau_is_seconds) -> ()");
+  m.def(
+      "backward_batched(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
+      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
+      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
+      "int num_bins, int n_fft, int num_targets, int targets_per_spectrum, "
+      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
+  m.def(
+      "backward_parallel_bins(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
+      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
+      "Tensor(c!) grad_a_im, float n, "
+      "float k0_per_meter, int num_bins, int n_fft, int num_targets, "
+      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
+  m.def(
+      "backward_per_bin(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
+      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
+      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
       "int num_bins, int n_fft, int num_targets, int bins_per_chunk, "
-      "float fc, float slope, float t_start) -> ()");
+      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
 
   // Phase-4 FMCW beat synthesis over a chirp's fast-time axis. The carrier has
   // two homes and exactly one of the two parameters names it:

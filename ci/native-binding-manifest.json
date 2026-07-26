@@ -22,44 +22,51 @@
     {
       "symbol": "forward_chunked",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.chirp"
     },
     {
       "symbol": "forward_mimo_linear_chunked",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
     },
     {
       "symbol": "backward",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward"
     },
     {
       "symbol": "backward_batched",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_mimo_grad.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet._NativeChunkedSpectrum.backward"
+      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
     },
     {
       "symbol": "backward_parallel_bins",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet._NativeChunkedSpectrum.backward"
+      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
     },
     {
       "symbol": "backward_per_bin",
       "family": "dirichlet_spectrum",
-      "python_owner": "witwin/radar/solvers/solver_dirichlet.py",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward_per_bin"
+    },
+    {
+      "symbol": "dirichlet_jvp",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test": "tests/test_phase6_dirichlet_complex.py",
+      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.jvp"
     },
     {
       "symbol": "fmcw_beat_forward",

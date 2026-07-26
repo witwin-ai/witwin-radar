@@ -89,6 +89,7 @@ SPIKE_MODULES = (
     "witwin/radar/scattering/rcs.py",
     "witwin/radar/synthesis/__init__.py",
     "witwin/radar/synthesis/contracts.py",
+    "witwin/radar/synthesis/dirichlet_spectrum.py",
     "witwin/radar/synthesis/fmcw_beat.py",
 )
 
