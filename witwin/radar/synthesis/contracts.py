@@ -41,6 +41,23 @@ from ..paths.contracts import JOIN_MODES, JoinMode, RadarPathBatch, RadarPathTop
 #: ``Radar.max_doppler`` to the last bit.
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
+#: Channel's phasor convention, which the OFDM CFR cube is published in
+#: unchanged. Quoted verbatim from ``witwin.channel.constants.PHASOR``.
+CHANNEL_PHASOR = "exp(-j*k*d)"
+
+#: Channel's time-dependence convention, quoted verbatim from
+#: ``witwin.channel.constants.TIME_DEPENDENCE``.
+CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
+
+#: The FMCW beat cube's convention, which is the CONJUGATE of Channel's.
+#: De-chirping multiplies the echo by the conjugate of the transmitted chirp, so
+#: the beat-domain phasor advances with ``+j`` while a Channel transport advances
+#: with ``-j``. Both are correct and they are different products; naming the beat
+#: one here is what lets a result carry its convention as data instead of a
+#: reader inferring it from the waveform's name.
+BEAT_PHASOR = "conj(exp(-j*k*d))"
+
+
 
 def require_single_carrier_home(carrier_hz: float, carrier_rate_hz: float) -> None:
     """Refuse a spec that names the absolute carrier in both of its homes.
@@ -111,6 +128,13 @@ class FmcwBeatSpec:
     #: about the kernel and not a setting, so it is a class attribute rather
     #: than a field nobody may change.
     applies_spreading: ClassVar[bool] = False
+
+    #: The convention the published cube is in, carried as data so that a
+    #: consumer never has to infer it from the waveform's name. This is the ONE
+    #: waveform whose product is conjugated relative to Channel's, and stating
+    #: it here is what makes a cross-waveform phase comparison writable.
+    phasor: ClassVar[str] = BEAT_PHASOR
+    time_dependence: ClassVar[str] = CHANNEL_TIME_DEPENDENCE
 
     num_samples: int
     num_chirps: int
@@ -240,14 +264,6 @@ class FmcwBeatSpec:
 #: half-band phase offset between ``H[0][p][0]`` and ``C_rt`` and force a phase
 #: correction into every cross-waveform amplitude comparison.
 SUBCARRIER_ORIGIN_F_REF_AT_N0 = "f_ref_at_n0"
-
-#: Channel's phasor convention, which the OFDM CFR cube is published in
-#: unchanged. Quoted verbatim from ``witwin.channel.constants.PHASOR``.
-CHANNEL_PHASOR = "exp(-j*k*d)"
-
-#: Channel's time-dependence convention, quoted verbatim from
-#: ``witwin.channel.constants.TIME_DEPENDENCE``.
-CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1132,6 +1148,79 @@ class SynthesisPathBatch:
         )
 
 
+#: The axis names each waveform's rank-3 product is indexed by. Published as
+#: data because "the second axis is the sensor pair" is exactly the sort of
+#: shared assumption that a consumer eventually gets wrong in one place.
+FMCW_AXES = ("chirp", "sensor_pair", "sample")
+OFDM_AXES = ("symbol", "sensor_pair", "subcarrier")
+PULSED_AXES = ("pulse", "sensor_pair", "sample")
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisResult:
+    """What one synthesis call produced, with its conventions carried as data.
+
+    Data only. The waveform owner constructs it through one of the three
+    classmethods below, which is the repository's standing shape for a result:
+    the producer knows which product it made, and a consumer never has to infer
+    a phasor convention from a waveform's name.
+
+    ``phasor`` matters more here than it looks. The FMCW beat cube is
+    CONJUGATED relative to Channel's convention and the other two are not, so a
+    cross-waveform phase comparison that ignored this field would find a sign
+    error in two of the three and conclude that the physics disagreed.
+    """
+
+    cube: torch.Tensor
+    kind: str
+    axes: tuple[str, ...]
+    phasor: str
+    time_dependence: str
+    reference_frequency_hz: float
+
+    def __post_init__(self) -> None:
+        if self.cube.dim() != len(self.axes):
+            raise ValueError(
+                f"a {self.kind} cube has {len(self.axes)} axes {self.axes}, got "
+                f"shape {tuple(self.cube.shape)}"
+            )
+
+    @classmethod
+    def from_fmcw_beat(cls, cube: torch.Tensor, spec: FmcwBeatSpec) -> "SynthesisResult":
+        return cls(
+            cube=cube,
+            kind="fmcw",
+            axes=FMCW_AXES,
+            phasor=spec.phasor,
+            time_dependence=spec.time_dependence,
+            reference_frequency_hz=float(spec.reference_frequency_hz),
+        )
+
+    @classmethod
+    def from_ofdm_cfr(cls, cube: torch.Tensor, spec: OfdmCfrSpec) -> "SynthesisResult":
+        return cls(
+            cube=cube,
+            kind="ofdm",
+            axes=OFDM_AXES,
+            phasor=spec.phasor,
+            time_dependence=spec.time_dependence,
+            reference_frequency_hz=float(spec.reference_frequency_hz),
+        )
+
+    @classmethod
+    def from_pulsed_echo(
+        cls, cube: torch.Tensor, spec: PulsedEchoSpec
+    ) -> "SynthesisResult":
+        return cls(
+            cube=cube,
+            kind="pulsed",
+            axes=PULSED_AXES,
+            phasor=spec.phasor,
+            time_dependence=spec.time_dependence,
+            reference_frequency_hz=float(spec.reference_frequency_hz),
+        )
+
+
 def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) -> None:
     """Refuse any weight/spec pair that would count a factor twice.
 
@@ -1401,11 +1490,16 @@ __all__ = [
     "PULSE_NORMALIZATION_UNIT_ENERGY",
     "SPEED_OF_LIGHT_M_PER_S",
     "SUBCARRIER_ORIGIN_F_REF_AT_N0",
+    "BEAT_PHASOR",
+    "FMCW_AXES",
+    "OFDM_AXES",
+    "PULSED_AXES",
     "FmcwBeatSpec",
     "OfdmCfrSpec",
     "PulsedEchoSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
+    "SynthesisResult",
     "WaveformSpecProtocol",
     "require_compatible",
     "require_ofdm_compatible",

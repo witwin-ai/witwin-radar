@@ -32,8 +32,12 @@ from .assembly import (
     validate_pair_ordering,
 )
 from .contracts import (
+    BEAT_PHASOR,
     CHANNEL_PHASOR,
     CHANNEL_TIME_DEPENDENCE,
+    FMCW_AXES,
+    OFDM_AXES,
+    PULSED_AXES,
     PULSE_KIND_LFM,
     PULSE_KIND_RECT,
     PULSE_KINDS,
@@ -45,6 +49,7 @@ from .contracts import (
     PulsedEchoSpec,
     SlowTimeMode,
     SynthesisPathBatch,
+    SynthesisResult,
     WaveformSpecProtocol,
     require_compatible,
     require_ofdm_compatible,
@@ -60,9 +65,13 @@ from .ofdm_cfr import synthesize_cfr_rows, synthesize_ofdm_cfr
 from .pulsed_echo import synthesize_echo_rows, synthesize_pulsed_echo
 
 __all__ = [
+    "BEAT_PHASOR",
     "CHANNEL_PHASOR",
     "CHANNEL_TIME_DEPENDENCE",
+    "FMCW_AXES",
     "FRAME_CUBE_AXES",
+    "OFDM_AXES",
+    "PULSED_AXES",
     "PAIR_RANK_LAYOUT",
     "PULSE_KINDS",
     "PULSE_KIND_LFM",
@@ -75,6 +84,7 @@ __all__ = [
     "PulsedEchoSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
+    "SynthesisResult",
     "WaveformSpecProtocol",
     "assemble_frame_cube",
     "channel_phasor_to_beat_weight",

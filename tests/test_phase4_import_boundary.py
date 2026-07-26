@@ -94,6 +94,13 @@ SPIKE_MODULES = (
     "witwin/radar/synthesis/fmcw_beat.py",
     "witwin/radar/synthesis/ofdm_cfr.py",
     "witwin/radar/synthesis/pulsed_echo.py",
+    "witwin/radar/sensors/__init__.py",
+    "witwin/radar/sensors/contracts.py",
+    "witwin/radar/sensors/pattern.py",
+    "witwin/radar/sensors/weights.py",
+    "witwin/radar/frontend/__init__.py",
+    "witwin/radar/frontend/contracts.py",
+    "witwin/radar/frontend/chain.py",
     # DSP glue, and in this list on purpose. It is subjected to the same
     # host-observation and Dr.Jit scans as the native owners because being on
     # the Torch side of the processing exception is permission to use an FFT,
@@ -109,6 +116,8 @@ SPIKE_IMPORTS = textwrap.dedent(
     import witwin.radar.synthesis.fmcw_beat
     import witwin.radar.synthesis.ofdm_cfr
     import witwin.radar.synthesis.pulsed_echo
+    import witwin.radar.sensors.weights
+    import witwin.radar.frontend.chain
     import witwin.radar.sigproc.matched_filter
     """
 ).strip()
@@ -191,6 +200,8 @@ def test_the_propagation_package_alone_does_not_require_channel():
 
 def test_synthesis_scattering_and_paths_do_not_require_channel():
     modules = _subprocess_modules(
+        "import witwin.radar.sensors.weights\n"
+        "import witwin.radar.frontend.chain\n"
         "import witwin.radar.synthesis.fmcw_beat\n"
         "import witwin.radar.synthesis.ofdm_cfr\n"
         "import witwin.radar.synthesis.pulsed_echo\n"

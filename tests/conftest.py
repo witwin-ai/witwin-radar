@@ -104,21 +104,25 @@ class MockRadar:
             self.config = RadarConfig.from_dict(dict(config))
         cfg = self.config
 
+        from witwin.radar.config import RadarSystemConfig
+
         self._lambda = self.c0 / cfg.fc
         antenna_spacing = self._lambda / 2
         self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32) * antenna_spacing
         self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32) * antenna_spacing
 
-        fs = cfg.sample_rate * 1e3
-        S = cfg.slope * 1e12
-        self.range_resolution = self.c0 * fs / (2 * S * cfg.adc_samples)
-        self.max_range = self.c0 * fs / (2 * S)
-
-        T_chirp = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
-        T_eff = T_chirp * cfg.num_tx
-        Nd = cfg.chirp_per_frame
-        self.doppler_resolution = self._lambda / (2 * Nd * T_eff)
-        self.max_doppler = self._lambda / (4 * T_chirp * cfg.num_tx)
+        # The mock derives its axes from the SAME record the real radar does,
+        # rather than repeating six formulas that then drift apart. `sigproc`
+        # reads `radar.axes` and this is what makes the mock a real duck-type of
+        # that read rather than a lookalike.
+        self.system_config = RadarSystemConfig.from_radar_config(cfg)
+        self.axes = self.system_config.axes(device="cpu")
+        self.range_resolution = self.axes.range_resolution
+        self.max_range = self.axes.max_range
+        self.doppler_resolution = self.axes.doppler_resolution
+        self.max_doppler = self.axes.max_doppler
+        self.ranges = self.axes.ranges
+        self.velocities = self.axes.velocities
 
         self.gain = 1.0
 

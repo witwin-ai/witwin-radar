@@ -42,10 +42,14 @@ class FrameConfig:
         self.chirpLoopSize = self.chirpSize * self.numTxAntennas
         self.frameSize = self.chirpLoopSize * self.numLoopsPerFrame
 
-        self.range_resolution = radar.range_resolution
-        self.doppler_resolution = radar.doppler_resolution
+        # One record, not seven raw reads. `sigproc` does not know which
+        # waveform produced the cube it is processing, and reading a `slope` or
+        # an `idle_time` here is how it would find out.
+        axes = radar.axes
+        self.range_resolution = axes.range_resolution
+        self.doppler_resolution = axes.doppler_resolution
 
-        self.tx_loc_hw = radar.tx_loc / (radar._lambda / 2)
+        self.tx_loc_hw = radar.tx_loc / axes.element_spacing_m
 
 
 class PointCloudProcessConfig:
@@ -203,8 +207,9 @@ def _aoa_2d_fft(virtual_ant: torch.Tensor, num_tx, num_rx, fft_size):
 
 def _compensate_tdm_phase(aoa_input: torch.Tensor, velocities: torch.Tensor, radar, fc) -> torch.Tensor:
     """Remove the velocity-dependent TDM-MIMO phase offset."""
-    lam = radar._lambda
-    t_chirp = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
+    axes = radar.axes
+    lam = axes.wavelength_m
+    t_chirp = axes.chirp_period_s
     num_tx = fc.numTxAntennas
     num_rx = fc.numRxAntennas
 
@@ -449,7 +454,7 @@ def process_rd_tensor(
     range_result = torch.fft.fft(data, dim=-1)
     rd_map = torch.fft.fftshift(torch.fft.fft(range_result, dim=-2), dim=-2)
     rd_mag = 20 * torch.log10(torch.abs(rd_map) + 1e-6)
-    return rd_mag, rd_map, radar.ranges, radar.velocities
+    return rd_mag, rd_map, radar.axes.ranges, radar.axes.velocities
 
 
 

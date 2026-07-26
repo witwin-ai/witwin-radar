@@ -468,3 +468,399 @@ def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
         polarization=polarization,
         receiver_chain=receiver_chain,
     )
+
+
+# ---------------------------------------------------------------------------
+# Block configuration (work item 6)
+#
+# One validator per block, one ``_REQUIRED`` tuple per block. The flat
+# ``validate_radar_config`` above stays the file format; these build the
+# structural view of it, and they exist separately because a block is exactly
+# the unit a consumer is handed. ``PropagationConfig`` is the only block a
+# propagation adapter ever receives, which is what makes a waveform field
+# reaching a propagation request impossible to write rather than merely
+# discouraged.
+# ---------------------------------------------------------------------------
+
+_WAVEFORM_PREFIX = "Waveform config field"
+_SENSOR_PREFIX = "Sensor config field"
+_FRONTEND_PREFIX = "Frontend config field"
+_PROPAGATION_PREFIX = "Propagation config field"
+_PROCESSING_PREFIX = "Processing config field"
+
+_FMCW_REQUIRED = (
+    "slope",
+    "adc_samples",
+    "adc_start_time",
+    "sample_rate",
+    "idle_time",
+    "ramp_end_time",
+    "chirp_per_frame",
+)
+_OFDM_REQUIRED = (
+    "subcarrier_spacing_hz",
+    "num_subcarriers",
+    "cyclic_prefix_s",
+    "num_symbols",
+    "max_expected_delay_s",
+)
+_PULSED_REQUIRED = (
+    "pulse_kind",
+    "pulse_width_s",
+    "bandwidth_hz",
+    "pri_s",
+    "num_pulses",
+    "sample_rate_hz",
+    "num_samples",
+    "range_gate_start_s",
+)
+_PROPAGATION_REQUIRED = ("reference_frequency_hz",)
+_PROCESSING_REQUIRED = (
+    "frame_per_second",
+    "num_doppler_bins",
+    "num_range_bins",
+    "num_angle_bins",
+)
+_SENSOR_REQUIRED = ("num_tx", "num_rx", "fc", "tx_loc", "rx_loc", "power")
+
+
+def validate_waveform_config(config: dict[str, Any]):
+    """Build one waveform block from a mapping with a STORED ``kind``.
+
+    The kind is read, never inferred. Inferring "this is FMCW" from the
+    presence of a ``slope`` is exactly the habit that lets waveform vocabulary
+    leak into places with no business knowing the waveform, so an absent or
+    unknown ``kind`` is an error rather than a guess.
+    """
+
+    from .config import (
+        WAVEFORM_FMCW,
+        WAVEFORM_KINDS,
+        WAVEFORM_OFDM,
+        WAVEFORM_PULSED,
+        FmcwWaveformConfig,
+        OfdmWaveformConfig,
+        PulsedWaveformConfig,
+    )
+
+    kind = config.get("kind")
+    if kind not in WAVEFORM_KINDS:
+        raise ValueError(
+            f"{_WAVEFORM_PREFIX} 'kind' must be one of {list(WAVEFORM_KINDS)}; "
+            f"got {kind!r}. The waveform discriminator is stored, never inferred "
+            "from the presence of a slope or a subcarrier spacing."
+        )
+    if kind == WAVEFORM_FMCW:
+        _require_keys(config, _FMCW_REQUIRED, "FMCW waveform config")
+        return FmcwWaveformConfig(
+            slope=_finite_float("slope", config["slope"], _WAVEFORM_PREFIX),
+            adc_samples=_positive_int(
+                "adc_samples", config["adc_samples"], _WAVEFORM_PREFIX
+            ),
+            adc_start_time=_finite_float(
+                "adc_start_time", config["adc_start_time"], _WAVEFORM_PREFIX
+            ),
+            sample_rate=_positive_float(
+                "sample_rate", config["sample_rate"], _WAVEFORM_PREFIX
+            ),
+            idle_time=_non_negative_float(
+                "idle_time", config["idle_time"], _WAVEFORM_PREFIX
+            ),
+            ramp_end_time=_positive_float(
+                "ramp_end_time", config["ramp_end_time"], _WAVEFORM_PREFIX
+            ),
+            chirp_per_frame=_positive_int(
+                "chirp_per_frame", config["chirp_per_frame"], _WAVEFORM_PREFIX
+            ),
+        )
+    if kind == WAVEFORM_OFDM:
+        _require_keys(config, _OFDM_REQUIRED, "OFDM waveform config")
+        return OfdmWaveformConfig(
+            subcarrier_spacing_hz=_positive_float(
+                "subcarrier_spacing_hz",
+                config["subcarrier_spacing_hz"],
+                _WAVEFORM_PREFIX,
+            ),
+            num_subcarriers=_positive_int(
+                "num_subcarriers", config["num_subcarriers"], _WAVEFORM_PREFIX
+            ),
+            cyclic_prefix_s=_positive_float(
+                "cyclic_prefix_s", config["cyclic_prefix_s"], _WAVEFORM_PREFIX
+            ),
+            num_symbols=_positive_int(
+                "num_symbols", config["num_symbols"], _WAVEFORM_PREFIX
+            ),
+            max_expected_delay_s=_non_negative_float(
+                "max_expected_delay_s", config["max_expected_delay_s"], _WAVEFORM_PREFIX
+            ),
+        )
+    _require_keys(config, _PULSED_REQUIRED, "Pulsed waveform config")
+    return PulsedWaveformConfig(
+        pulse_kind=str(config["pulse_kind"]),
+        pulse_width_s=_positive_float(
+            "pulse_width_s", config["pulse_width_s"], _WAVEFORM_PREFIX
+        ),
+        bandwidth_hz=_positive_float(
+            "bandwidth_hz", config["bandwidth_hz"], _WAVEFORM_PREFIX
+        ),
+        pri_s=_positive_float("pri_s", config["pri_s"], _WAVEFORM_PREFIX),
+        num_pulses=_positive_int("num_pulses", config["num_pulses"], _WAVEFORM_PREFIX),
+        sample_rate_hz=_positive_float(
+            "sample_rate_hz", config["sample_rate_hz"], _WAVEFORM_PREFIX
+        ),
+        num_samples=_positive_int(
+            "num_samples", config["num_samples"], _WAVEFORM_PREFIX
+        ),
+        range_gate_start_s=_non_negative_float(
+            "range_gate_start_s", config["range_gate_start_s"], _WAVEFORM_PREFIX
+        ),
+        max_expected_delay_rate=_non_negative_float(
+            "max_expected_delay_rate",
+            config.get("max_expected_delay_rate", 0.0),
+            _WAVEFORM_PREFIX,
+        ),
+    )
+
+
+def validate_sensor_config(config: dict[str, Any]):
+    """Build the sensor block: array, pattern, transmit power, polarization.
+
+    ``power`` is in dBm and becomes ``powers_w`` on a source endpoint. There is
+    deliberately no transmit-gain output here: a Channel coefficient already
+    carries ``sqrt(P_tx)``, so a second one would count the power twice and mix
+    sqrt(W) with sqrt(W ohm).
+    """
+
+    from .config import SensorConfig
+    from .sensors.contracts import (
+        AntennaPatternSpec,
+        PolarizationSpec,
+        SensorArraySpec,
+        TxPowerSpec,
+    )
+
+    _require_keys(config, _SENSOR_REQUIRED, "Sensor config")
+    num_tx = _positive_int("num_tx", config["num_tx"], _SENSOR_PREFIX)
+    num_rx = _positive_int("num_rx", config["num_rx"], _SENSOR_PREFIX)
+    pattern = (
+        validate_antenna_pattern_config(config["antenna_pattern"])
+        if config.get("antenna_pattern") is not None
+        else None
+    )
+    polarization = (
+        validate_polarization_config(
+            config["polarization"], num_tx=num_tx, num_rx=num_rx
+        )
+        if config.get("polarization") is not None
+        else None
+    )
+    return SensorConfig(
+        array=SensorArraySpec(
+            num_tx=num_tx,
+            num_rx=num_rx,
+            tx_loc=tuple(_validate_antenna_locations("tx_loc", config["tx_loc"], num_tx)),
+            rx_loc=tuple(_validate_antenna_locations("rx_loc", config["rx_loc"], num_rx)),
+            reference_frequency_hz=_positive_float("fc", config["fc"], _SENSOR_PREFIX),
+        ),
+        pattern=AntennaPatternSpec.from_config(pattern),
+        tx_power=TxPowerSpec(
+            power_dbm=_finite_float("power", config["power"], _SENSOR_PREFIX)
+        ),
+        polarization=PolarizationSpec.from_config(polarization),
+    )
+
+
+def validate_propagation_config(config: dict[str, Any]):
+    """Build the propagation block, which is the ONLY block an adapter sees."""
+
+    from .config import PropagationConfig
+
+    _require_keys(config, _PROPAGATION_REQUIRED, "Propagation config")
+    components = config.get("components", ("los", "reflection"))
+    if isinstance(components, str):
+        raise ValueError(
+            f"{_PROPAGATION_PREFIX} 'components' must be a collection of "
+            "component names, not a single string"
+        )
+    return PropagationConfig(
+        reference_frequency_hz=_positive_float(
+            "reference_frequency_hz",
+            config["reference_frequency_hz"],
+            _PROPAGATION_PREFIX,
+        ),
+        components=frozenset(str(name) for name in components),
+        max_depth=_positive_int(
+            "max_depth", config.get("max_depth", 1), _PROPAGATION_PREFIX
+        ),
+    )
+
+
+def validate_processing_config(config: dict[str, Any]):
+    """Build the processing block: frame rate and the three bin counts."""
+
+    from .config import ProcessingConfig
+
+    _require_keys(config, _PROCESSING_REQUIRED, "Processing config")
+    return ProcessingConfig(
+        frame_per_second=_positive_float(
+            "frame_per_second", config["frame_per_second"], _PROCESSING_PREFIX
+        ),
+        num_doppler_bins=_positive_int(
+            "num_doppler_bins", config["num_doppler_bins"], _PROCESSING_PREFIX
+        ),
+        num_range_bins=_positive_int(
+            "num_range_bins", config["num_range_bins"], _PROCESSING_PREFIX
+        ),
+        num_angle_bins=_positive_int(
+            "num_angle_bins", config["num_angle_bins"], _PROCESSING_PREFIX
+        ),
+    )
+
+
+def validate_frontend_config(config: dict[str, Any]):
+    """Build the receive chain from a mapping. One chain, one ADC, one seed.
+
+    There is deliberately no way to say what order the stages run in. The order
+    is a property of the runtime, and the two runtimes this replaces left it to
+    whichever caller happened to compose them, which is a difference of
+    ``g_lna^2`` in output noise power.
+
+    ``bandwidth_hz`` is required whenever thermal noise is configured and is
+    never inferred from a waveform. It is the ADC sample rate for FMCW, the
+    matched-filter bandwidth for pulsed, and the subcarrier spacing (or the
+    whole occupied band) for OFDM, and inferring it in three places is how those
+    three quietly disagree.
+    """
+
+    from .frontend.contracts import (
+        AdcSpec,
+        AgcSpec,
+        FrontendSpec,
+        LnaSpec,
+        NoiseSpec,
+        PortSpec,
+        SeedSpec,
+    )
+
+    allowed = {"port", "noise", "lna", "agc", "adc", "seed"}
+    unknown = sorted(set(config) - allowed)
+    if unknown:
+        raise TypeError(f"Unsupported frontend config keys: {', '.join(unknown)}")
+
+    port_config = config.get("port") or {}
+    port = PortSpec(
+        reference_impedance_ohm=_positive_float(
+            "port.reference_impedance_ohm",
+            port_config.get("reference_impedance_ohm", 50.0),
+            _FRONTEND_PREFIX,
+        )
+    )
+
+    noise = None
+    if config.get("noise") is not None:
+        raw = config["noise"]
+        thermal = (
+            raw.get("noise_figure_db") is not None or raw.get("bandwidth_hz") is not None
+        )
+        if thermal and raw.get("bandwidth_hz") is None:
+            raise ValueError(
+                f"{_FRONTEND_PREFIX} 'noise.bandwidth_hz' is required when thermal "
+                "noise is configured; it is a per-waveform quantity and inferring "
+                "it is a pure SNR scale error"
+            )
+        noise = NoiseSpec(
+            noise_figure_db=_non_negative_float(
+                "noise.noise_figure_db",
+                raw.get("noise_figure_db", 0.0),
+                _FRONTEND_PREFIX,
+            ),
+            antenna_temperature_k=_non_negative_float(
+                "noise.antenna_temperature_k",
+                raw.get("antenna_temperature_k", 290.0),
+                _FRONTEND_PREFIX,
+            ),
+            bandwidth_hz=_non_negative_float(
+                "noise.bandwidth_hz", raw.get("bandwidth_hz", 0.0), _FRONTEND_PREFIX
+            ),
+            phase_noise_dbc_per_hz=(
+                None
+                if raw.get("phase_noise_dbc_per_hz") is None
+                else _finite_float(
+                    "noise.phase_noise_dbc_per_hz",
+                    raw["phase_noise_dbc_per_hz"],
+                    _FRONTEND_PREFIX,
+                )
+            ),
+            phase_offset_hz=_non_negative_float(
+                "noise.phase_offset_hz",
+                raw.get("phase_offset_hz", 0.0),
+                _FRONTEND_PREFIX,
+            ),
+            phase_sample_rate_hz=_non_negative_float(
+                "noise.phase_sample_rate_hz",
+                raw.get("phase_sample_rate_hz", 0.0),
+                _FRONTEND_PREFIX,
+            ),
+        )
+
+    lna = None
+    if config.get("lna") is not None:
+        lna = LnaSpec(
+            gain_db=_finite_float(
+                "lna.gain_db", config["lna"].get("gain_db", 0.0), _FRONTEND_PREFIX
+            )
+        )
+
+    agc = None
+    if config.get("agc") is not None:
+        raw = config["agc"]
+        agc = AgcSpec(
+            target_rms=_positive_float(
+                "agc.target_rms", raw.get("target_rms"), _FRONTEND_PREFIX
+            ),
+            mode=str(raw.get("mode", "per_rx")).lower(),
+            min_gain_db=_finite_float(
+                "agc.min_gain_db", raw.get("min_gain_db", -60.0), _FRONTEND_PREFIX
+            ),
+            max_gain_db=_finite_float(
+                "agc.max_gain_db", raw.get("max_gain_db", 60.0), _FRONTEND_PREFIX
+            ),
+        )
+
+    adc = None
+    if config.get("adc") is not None:
+        raw = config["adc"]
+        adc = AdcSpec(
+            bits=_positive_int("adc.bits", raw.get("bits"), _FRONTEND_PREFIX),
+            full_scale=_positive_float(
+                "adc.full_scale", raw.get("full_scale", 1.0), _FRONTEND_PREFIX
+            ),
+        )
+
+    seed = SeedSpec(
+        seed_base=_optional_seed(config.get("seed"), "seed", _FRONTEND_PREFIX) or 0
+    )
+    return FrontendSpec(port=port, noise=noise, lna=lna, agc=agc, adc=adc, seed=seed)
+
+
+def validate_radar_system_config(config: dict[str, Any]):
+    """Build all five blocks from a block-shaped mapping."""
+
+    from .config import RadarSystemConfig
+
+    _require_keys(
+        config,
+        ("waveform", "sensors", "propagation", "processing"),
+        "Radar system config",
+    )
+    return RadarSystemConfig(
+        waveform=validate_waveform_config(config["waveform"]),
+        sensors=validate_sensor_config(config["sensors"]),
+        propagation=validate_propagation_config(config["propagation"]),
+        processing=validate_processing_config(config["processing"]),
+        frontend=(
+            validate_frontend_config(config["frontend"])
+            if config.get("frontend") is not None
+            else None
+        ),
+    )

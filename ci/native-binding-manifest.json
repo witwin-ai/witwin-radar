@@ -16,8 +16,10 @@
     "witwin/radar/cuda/extension.cpp",
     "witwin/radar/cuda/kernels/dirichlet.cu",
     "witwin/radar/cuda/kernels/fmcw_beat.cu",
+    "witwin/radar/cuda/kernels/frontend.cu",
     "witwin/radar/cuda/kernels/ofdm_cfr.cu",
     "witwin/radar/cuda/kernels/pulsed_echo.cu",
+    "witwin/radar/cuda/kernels/sensor_weight.cu",
     "witwin/radar/cuda/kernels/two_way_join.cu"
   ],
   "operators": [
@@ -153,6 +155,76 @@
       "python_owner": "witwin/radar/paths/two_way.py",
       "contract_test": "tests/test_phase5_two_way_join_ad.py",
       "end_to_end_caller": "witwin.radar.paths.two_way._TwoWayJoin.jvp"
+    },
+    {
+      "symbol": "sensor_weight_forward",
+      "family": "sensor_weight",
+      "python_owner": "witwin/radar/sensors/weights.py",
+      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "end_to_end_caller": "witwin.radar.sensors.weights.evaluate_sensor_weights"
+    },
+    {
+      "symbol": "sensor_weight_backward",
+      "family": "sensor_weight",
+      "python_owner": "witwin/radar/sensors/weights.py",
+      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.backward"
+    },
+    {
+      "symbol": "sensor_weight_jvp",
+      "family": "sensor_weight",
+      "python_owner": "witwin/radar/sensors/weights.py",
+      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.jvp"
+    },
+    {
+      "symbol": "frontend_noise_forward",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain.apply"
+    },
+    {
+      "symbol": "frontend_noise_backward",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain._FrontendNoise.backward"
+    },
+    {
+      "symbol": "frontend_noise_jvp",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain._FrontendNoise.jvp"
+    },
+    {
+      "symbol": "frontend_agc_forward",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain.apply"
+    },
+    {
+      "symbol": "frontend_agc_backward",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain._FrontendAgc.backward"
+    },
+    {
+      "symbol": "frontend_agc_jvp",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain._FrontendAgc.jvp"
+    },
+    {
+      "symbol": "frontend_quantize_forward",
+      "family": "frontend_chain",
+      "python_owner": "witwin/radar/frontend/chain.py",
+      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain._quantize"
     }
   ]
 }

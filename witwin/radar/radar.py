@@ -7,13 +7,17 @@ import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from .types import MotionSampling, SamplingMode
 from .sensors.pattern import evaluate_antenna_pattern_vectors, evaluate_antenna_pattern_xy
 from .utils.vector import vec3_tensor
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .frontend import FrontendSpec
+    from .synthesis import SynthesisResult
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,13 @@ class RadarConfig:
     noise_model: dict[str, Any] | None = None
     polarization: dict[str, Any] | None = None
     receiver_chain: dict[str, Any] | None = None
+    #: The Phase-6 receive chain: ONE ordered chain with ONE ADC and ONE seed
+    #: base, replacing the ``noise_model`` / ``receiver_chain`` pair whose
+    #: composite order was the caller's to choose. It is ``None`` by default -
+    #: noise is optional and OFF unless a caller asks for it, and every physics
+    #: test runs without it. Setting it alongside either legacy block is
+    #: refused: two chains would be two answers about where the LNA sits.
+    frontend: "FrontendSpec | None" = None
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "RadarConfig":
@@ -258,6 +269,7 @@ class Radar:
         cfg = self.config
 
         self._validate_runtime_config(cfg)
+        self._init_system_config(cfg)
         self._init_antenna_locations(cfg)
         self._init_waveform_state(cfg)
         self._init_rf_state(cfg)
@@ -265,8 +277,33 @@ class Radar:
         self._init_axes(cfg)
         self.solver = self._make_solver(pad_factor)
 
+    def _init_system_config(self, cfg: RadarConfig) -> None:
+        """The five-block structural view of the flat configuration.
+
+        The flat form stays the file format and the public constructor; this is
+        what an adapter, a synthesis owner, or a signal processor is handed, so
+        each one sees only the block it owns. ``waveform.kind`` is a STORED
+        discriminator: nothing downstream infers "this is FMCW" by finding a
+        ``slope``.
+        """
+
+        from .config import RadarSystemConfig
+
+        self.system_config = RadarSystemConfig.from_radar_config(
+            cfg, frontend=cfg.frontend
+        )
+
     @staticmethod
     def _validate_runtime_config(cfg: RadarConfig) -> None:
+        if cfg.frontend is not None and (
+            cfg.noise_model is not None or cfg.receiver_chain is not None
+        ):
+            raise ValueError(
+                "Radar frontend replaces noise_model and receiver_chain; "
+                "configuring both leaves the order of the receive chain "
+                "ambiguous, which is the exact defect the frontend block "
+                "exists to remove. Use one of them."
+            )
         if (
             cfg.receiver_chain is not None
             and cfg.receiver_chain.get("adc") is not None
@@ -323,32 +360,35 @@ class Radar:
             if cfg.receiver_chain is not None
             else None
         )
+        self.frontend = self._make_frontend(cfg)
         self._noise_generator = self._make_noise_generator()
 
+    @staticmethod
+    def _make_frontend(cfg: RadarConfig):
+        if cfg.frontend is None:
+            return None
+        from .frontend import FrontendChain
+
+        return FrontendChain(cfg.frontend)
+
     def _init_axes(self, cfg: RadarConfig) -> None:
-        fs = cfg.sample_rate * 1e3
-        slope_hz = cfg.slope * 1e12
+        """Build the one axes record, and keep the flat reads as views of it.
 
-        self.range_resolution = self.c0 * fs / (2 * slope_hz * cfg.adc_samples)
-        self.max_range = self.c0 * fs / (2 * slope_hz)
-        self.ranges = (
-            torch.arange(0, cfg.num_range_bins // 2, dtype=torch.float64, device=self.device)
-            * self.range_resolution
-        )
+        ``sigproc`` used to read ``radar.range_resolution``, ``radar._lambda``,
+        ``radar.config.idle_time``, and four more raw scalars straight off the
+        radar, which is how a signal processor ends up knowing which waveform it
+        is looking at. There is now a single :class:`~witwin.radar.config.RadarAxes`
+        record and the flat attributes are reads of it, so the two cannot
+        disagree.
+        """
 
-        chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
-        effective_period = chirp_period * cfg.num_tx
-        self.doppler_resolution = self._lambda / (2 * cfg.num_doppler_bins * effective_period)
-        self.max_doppler = self._lambda / (4 * chirp_period * cfg.num_tx)
-        self.velocities = (
-            torch.arange(
-                -cfg.num_doppler_bins // 2,
-                cfg.num_doppler_bins // 2,
-                dtype=torch.float64,
-                device=self.device,
-            )
-            * self.doppler_resolution
-        )
+        self.axes = self.system_config.axes(device=self.device)
+        self.range_resolution = self.axes.range_resolution
+        self.max_range = self.axes.max_range
+        self.ranges = self.axes.ranges
+        self.doppler_resolution = self.axes.doppler_resolution
+        self.max_doppler = self.axes.max_doppler
+        self.velocities = self.axes.velocities
 
     def _make_solver(self, pad_factor: int):
         from .solvers.solver_dirichlet import DirichletSolver
@@ -494,9 +534,90 @@ class Radar:
         return self.receiver_chain.apply(signal)
 
     def apply_signal_models(self, signal: torch.Tensor) -> torch.Tensor:
+        """Run whichever receive chain is configured. There is only ever one.
+
+        ``_validate_runtime_config`` refuses a configuration that names both the
+        frontend block and either legacy runtime, so this is a choice between
+        two owners rather than a composition of them - which is precisely what
+        the legacy pair could not say about itself.
+        """
+
+        if self.frontend is not None:
+            return self.frontend.apply(signal).signal
         modeled = self.apply_noise(signal)
         modeled = self.apply_receiver_chain(modeled)
         return modeled
+
+    def _refuse_frequency_domain_signal_models(self, options: dict) -> None:
+        """One guard, in one place, for all three MIMO entry points.
+
+        It was three copy-pasted `if` statements, which is three chances for one
+        of them to fall out of step with a new receive-chain owner - and the
+        frontend block is exactly that new owner.
+        """
+
+        if not bool(options.get("freq_domain", False)):
+            return
+        if (
+            self.noise_model is None
+            and self.receiver_chain is None
+            and self.frontend is None
+        ):
+            return
+        raise ValueError(
+            "Radar noise_model, receiver_chain, and frontend only support "
+            "time-domain mimo output; omit freq_domain=True."
+        )
+
+    def synthesize(self, paths, *, slow_time_mode) -> "SynthesisResult":
+        """Synthesize one frame with whichever waveform this radar declares.
+
+        Dispatch is a dict lookup on the STORED ``waveform.kind``. It is not a
+        ``try``/``except``, not a capability probe, and not an inference from a
+        ``slope``: a kind with no owner is a hard error, because a waveform
+        without an owner has no physics and returning a plausible cube would be
+        worse than failing.
+
+        ``paths`` may be a composed :class:`~witwin.radar.paths.RadarPathBatch`
+        or an already-wrapped
+        :class:`~witwin.radar.synthesis.SynthesisPathBatch`. ``slow_time_mode``
+        has no default for the reason it has none anywhere else: only the caller
+        knows whether it froze the weight for the frame or refreshes it per
+        slot, and defaulting it makes the Phase-7 collision a silent wrong
+        answer instead of a refusal.
+        """
+
+        from .config import WAVEFORM_FMCW, WAVEFORM_OFDM, WAVEFORM_PULSED
+        from .synthesis import (
+            SynthesisPathBatch,
+            SynthesisResult,
+            synthesize_fmcw_beat,
+            synthesize_ofdm_cfr,
+            synthesize_pulsed_echo,
+        )
+
+        owners = {
+            WAVEFORM_FMCW: (synthesize_fmcw_beat, SynthesisResult.from_fmcw_beat),
+            WAVEFORM_OFDM: (synthesize_ofdm_cfr, SynthesisResult.from_ofdm_cfr),
+            WAVEFORM_PULSED: (synthesize_pulsed_echo, SynthesisResult.from_pulsed_echo),
+        }
+        kind = self.system_config.kind
+        if kind not in owners:
+            raise ValueError(
+                f"no synthesis owner for waveform kind {kind!r}; the supported "
+                f"kinds are {sorted(owners)}. This dispatch has no fallback: a "
+                "waveform without an owner has no physics."
+            )
+        batch = (
+            paths
+            if isinstance(paths, SynthesisPathBatch)
+            else SynthesisPathBatch.from_radar_paths(
+                paths, slow_time_mode=slow_time_mode
+            )
+        )
+        synthesize, build_result = owners[kind]
+        spec = self.system_config.waveform_spec()
+        return build_result(synthesize(batch, spec), spec)
 
     def chirp(self, distances, amplitudes):
         """Compute one chirp. distances/amplitudes: (N,) one-way range."""
@@ -510,13 +631,7 @@ class Radar:
 
     def mimo(self, interpolator, t0=0, **options):
         """Full MIMO data cube. Returns: (TX, RX, chirps, adc_samples) complex."""
-        if bool(options.get("freq_domain", False)) and (
-            self.noise_model is not None or self.receiver_chain is not None
-        ):
-            raise ValueError(
-                "Radar noise_model and receiver_chain only support time-domain mimo output; "
-                "omit freq_domain=True."
-            )
+        self._refuse_frequency_domain_signal_models(options)
         signal = self.solver.mimo(interpolator, t0, **options)
         return self.apply_signal_models(signal)
 
@@ -535,13 +650,7 @@ class Radar:
             t0: frame start time in seconds, used only by fallback backends.
             **options: backend options, including ``freq_domain=True`` for Dirichlet.
         """
-        if bool(options.get("freq_domain", False)) and (
-            self.noise_model is not None or self.receiver_chain is not None
-        ):
-            raise ValueError(
-                "Radar noise_model and receiver_chain only support time-domain mimo output; "
-                "omit freq_domain=True."
-            )
+        self._refuse_frequency_domain_signal_models(options)
         if hasattr(self.solver, "mimo_from_trace"):
             signal = self.solver.mimo_from_trace(
                 trace,
@@ -589,13 +698,7 @@ class Radar:
 
     def mimo_from_paths(self, cache, **options):
         """Full MIMO data cube from a ``MimoPathCache``."""
-        if bool(options.get("freq_domain", False)) and (
-            self.noise_model is not None or self.receiver_chain is not None
-        ):
-            raise ValueError(
-                "Radar noise_model and receiver_chain only support time-domain mimo output; "
-                "omit freq_domain=True."
-            )
+        self._refuse_frequency_domain_signal_models(options)
         if not hasattr(self.solver, "mimo_from_paths"):
             raise NotImplementedError("mimo_from_paths is currently implemented by the Dirichlet backend.")
         signal = self.solver.mimo_from_paths(cache, **options)
