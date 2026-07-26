@@ -157,6 +157,57 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "float subcarrier_spacing_hz, float symbol_period_s, float carrier_hz, "
       "float carrier_rate_hz) -> ()");
 
+  // Phase-6 pulsed echo train over the (pulse, fast-time sample) grid. What
+  // this family emits is the matched-filter INPUT: the received complex
+  // baseband pulse train. The matched filter itself is a correlation and lives
+  // in DSP glue, because synthesis owns the received waveform and processing
+  // owns the filter.
+  //
+  // The pulse is evaluated at the exact FRACTIONAL delay from its analytic
+  // form, never snapped to a sample. `pulse_kind` selects between the two
+  // analytic unit-energy shapes - 0 rectangular, 1 linear FM - and
+  // `pulse_amplitude` is 1/sqrt(pulse_width_s), passed in so the unit-ENERGY
+  // normalisation lives on the Python spec rather than inside the kernel. That
+  // normalisation is what makes the matched-filter peak exactly C_rt with no
+  // sample-count factor.
+  //
+  // The train is published in the CHANNEL phasor convention exp(-j k d), like
+  // the OFDM CFR cube and unlike the conjugated FMCW beat cube: there is no
+  // de-chirping here, so there is nothing to conjugate.
+  //
+  // carrier_hz / carrier_rate_hz are the same two carrier homes as in the other
+  // two families and exactly one may be nonzero. Dropping the rate term is
+  // worse here than anywhere else: the envelope carries no carrier, so what
+  // survives is only the LFM's own phase moving with the drifting envelope
+  // position, and for a rectangular pulse or at the pulse's leading edge that
+  // is EXACTLY ZERO - the Doppler disappears completely. See R-ADR-004.
+  m.def(
+      "pulsed_echo_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, int num_paths, int num_segments, int num_pulses, "
+      "int num_samples, float sample_period_s, float pri_s, "
+      "float range_gate_start_s, int pulse_kind, float pulse_width_s, "
+      "float bandwidth_hz, float pulse_amplitude, float carrier_hz, "
+      "float carrier_rate_hz) -> ()");
+  m.def(
+      "pulsed_echo_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
+      "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
+      "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
+      "int num_segments, int num_pulses, int num_samples, "
+      "float sample_period_s, float pri_s, float range_gate_start_s, "
+      "int pulse_kind, float pulse_width_s, float bandwidth_hz, "
+      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz) -> ()");
+  m.def(
+      "pulsed_echo_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
+      "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
+      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
+      "int num_segments, int num_pulses, int num_samples, "
+      "float sample_period_s, float pri_s, float range_gate_start_s, "
+      "int pulse_kind, float pulse_width_s, float bandwidth_hz, "
+      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz) -> ()");
+
   // Phase-5 two-way join: inbound leg x outbound leg -> radar round trip.
   //
   //   tau_rt  = tau_in + tau_out,  rate_rt = rate_in + rate_out

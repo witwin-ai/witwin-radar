@@ -170,6 +170,7 @@ def extension_sources() -> list[Path]:
         root / "kernels" / "dirichlet.cu",
         root / "kernels" / "fmcw_beat.cu",
         root / "kernels" / "ofdm_cfr.cu",
+        root / "kernels" / "pulsed_echo.cu",
         root / "kernels" / "two_way_join.cu",
     ]
 
@@ -223,6 +224,7 @@ _REQUIRED_OPERATORS = (
     "forward_chunked",
     "fmcw_beat_forward",
     "ofdm_cfr_forward",
+    "pulsed_echo_forward",
     "two_way_join_forward",
 )
 
