@@ -1,10 +1,32 @@
-"""Shared solver helpers used by all radar backends."""
+"""What is left of the shared solver helpers, and why so little is left.
+
+Plan work item 8 moved this module's hot path to a native owner. The five Torch
+expressions that used to live here - ``compute_total_path_lengths``,
+``compute_antenna_pattern_gains``, ``compute_polarization_amplitudes``,
+``compute_path_amplitudes``, and the batched ``compute_slot_path_tensors`` -
+evaluated distance fields, an antenna interpolation, free-space spreading, and a
+polarization projection once per frame in Torch. They are now one CUDA kernel,
+the ``sensor_weight`` family, whose Python owner is
+:mod:`witwin.radar.sensors.weights` and whose row assembly is
+:mod:`witwin.radar.sensors.legacy_paths`.
+
+What remains is not physics:
+
+* :class:`PathSample` is a contract.
+* :func:`normalize_interpolated_sample` is dtype and device glue.
+* :func:`samples_require_grad` is a predicate, and it must never gate a call to
+  ``Function.apply``: an ADR-038 forward-only dual has ``requires_grad ==
+  False``, so a route chosen by this predicate would swallow its tangent.
+* :func:`_stack_slot_samples` is structural packing - ``repeat_interleave``,
+  ``cumsum``, and a scatter - with no expression in it that has a unit.
+
+``tests/test_phase5_removed_entry_points.py`` freezes exactly that set.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import math
 import torch
 
 
@@ -50,23 +72,6 @@ def normalize_interpolated_sample(sample, *, device: str | torch.device) -> Path
     )
 
 
-def collect_interpolated_samples(radar, interpolator, t0=0.0):
-    """Evaluate the scene interpolator once per TDM chirp slot and keep tensors on-graph.
-
-    TDM-MIMO fires TX antennas sequentially: slot ``chirp_id * num_tx + tx_id``
-    starts ``slot * chirp_period`` into the frame. The returned list holds
-    ``chirp_per_frame * num_tx`` samples in slot order, so per-TX motion phase
-    (the phase ``_compensate_tdm_phase`` removes downstream) is simulated.
-    """
-    cfg = radar.config
-    chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
-    samples = []
-    for slot in range(cfg.chirp_per_frame * cfg.num_tx):
-        sample = interpolator(t0 + slot * chirp_period)
-        samples.append(normalize_interpolated_sample(sample, device=radar.device))
-    return samples
-
-
 def samples_require_grad(samples) -> bool:
     return any(
         sample.intensities.requires_grad
@@ -76,82 +81,6 @@ def samples_require_grad(samples) -> bool:
         or (sample.normals is not None and sample.normals.requires_grad)
         for sample in samples
     )
-
-
-def compute_total_path_lengths(sample: PathSample, tx_pos: torch.Tensor, rx_pos: torch.Tensor) -> torch.Tensor:
-    """Return total path lengths with shape (TX, RX, N)."""
-    dist_tx = torch.cdist(sample.entry_points, tx_pos).transpose(0, 1).unsqueeze(1)
-    dist_rx = torch.cdist(sample.points, rx_pos).transpose(0, 1).unsqueeze(0)
-    return dist_tx + sample.fixed_path_lengths.view(1, 1, -1) + dist_rx
-
-
-def compute_antenna_pattern_gains(
-    radar,
-    sample: PathSample,
-    tx_pos: torch.Tensor,
-    rx_pos: torch.Tensor,
-) -> torch.Tensor | None:
-    """Return per-path power gains from the configured TX/RX antenna pattern."""
-    tx_vectors = radar.local_from_world_vectors(sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
-    rx_vectors = radar.local_from_world_vectors(sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
-    tx_gains = radar.evaluate_antenna_pattern_vectors(tx_vectors).unsqueeze(1)
-    rx_gains = radar.evaluate_antenna_pattern_vectors(rx_vectors).unsqueeze(0)
-    return tx_gains * rx_gains
-
-
-def _normalize_vectors(vectors: torch.Tensor) -> torch.Tensor:
-    return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
-
-
-def compute_polarization_amplitudes(radar, sample: PathSample) -> torch.Tensor | None:
-    """Return signed TX/RX polarization projection factors for each path."""
-    polarization = radar.polarization
-    if polarization is None:
-        return None
-    if sample.normals is None:
-        raise ValueError("Radar polarization requires per-path surface normals in the interpolated sample.")
-
-    normals = _normalize_vectors(sample.normals)
-    tx_world = _normalize_vectors(polarization.tx_world.to(device=normals.device, dtype=normals.dtype))
-    rx_world = _normalize_vectors(polarization.rx_world.to(device=normals.device, dtype=normals.dtype))
-
-    reflected_tx = tx_world.unsqueeze(1)
-    if polarization.reflection_flip:
-        reflected_tx = reflected_tx - 2.0 * (reflected_tx * normals.unsqueeze(0)).sum(dim=-1, keepdim=True) * normals.unsqueeze(0)
-    reflected_tx = _normalize_vectors(reflected_tx)
-    return (reflected_tx.unsqueeze(1) * rx_world.view(1, rx_world.shape[0], 1, 3)).sum(dim=-1)
-
-
-def compute_path_amplitudes(
-    radar,
-    sample: PathSample,
-    total_path_lengths: torch.Tensor,
-    *,
-    tx_pos: torch.Tensor | None = None,
-    rx_pos: torch.Tensor | None = None,
-    tx_index: int | None = None,
-) -> torch.Tensor:
-    """Convert power-domain material coefficients to amplitude-domain weights with FSPL.
-
-    ``tx_index`` selects a single TX row of the polarization factors when
-    ``tx_pos`` holds only that antenna (per-TDM-slot evaluation).
-    """
-    fspl_amp = radar._lambda / (4.0 * math.pi * torch.clamp(total_path_lengths, min=1e-6))
-    scatter_power = torch.clamp(sample.intensities, min=0.0).view(1, 1, -1)
-    if tx_pos is None:
-        tx_pos = radar.tx_pos
-    if rx_pos is None:
-        rx_pos = radar.rx_pos
-    pattern_gains = compute_antenna_pattern_gains(radar, sample, tx_pos, rx_pos)
-    if pattern_gains is not None:
-        scatter_power = scatter_power * torch.clamp(pattern_gains, min=0.0)
-    amplitudes = radar.gain * torch.sqrt(scatter_power) * fspl_amp
-    polarization_factor = compute_polarization_amplitudes(radar, sample)
-    if polarization_factor is not None:
-        if tx_index is not None:
-            polarization_factor = polarization_factor[tx_index : tx_index + 1]
-        amplitudes = amplitudes * polarization_factor
-    return amplitudes
 
 
 def _stack_slot_samples(samples, *, with_normals: bool):
@@ -198,60 +127,3 @@ def _stack_slot_samples(samples, *, with_normals: bool):
     if not with_normals:
         stacked.append(None)
     return stacked
-
-
-def _slot_polarization_factors(radar, normals: torch.Tensor, slot_tx: torch.Tensor) -> torch.Tensor:
-    """Per-slot polarization projection factors, shape (slots, N, RX)."""
-    polarization = radar.polarization
-    normals_n = _normalize_vectors(normals)
-    tx_world = _normalize_vectors(polarization.tx_world.to(device=normals.device, dtype=normals.dtype))
-    rx_world = _normalize_vectors(polarization.rx_world.to(device=normals.device, dtype=normals.dtype))
-
-    reflected_tx = tx_world[slot_tx].unsqueeze(1)
-    if polarization.reflection_flip:
-        reflected_tx = reflected_tx - 2.0 * (reflected_tx * normals_n).sum(dim=-1, keepdim=True) * normals_n
-    reflected_tx = _normalize_vectors(reflected_tx)
-    return (reflected_tx.unsqueeze(2) * rx_world.view(1, 1, -1, 3)).sum(dim=-1)
-
-
-def compute_slot_path_tensors(radar, samples, *, first_slot: int = 0):
-    """Batched per-slot path geometry for the native MIMO forward path.
-
-    Slot ``first_slot + s`` transmits from TX antenna ``(first_slot + s) % num_tx``.
-    Returns ``(one_way_distances, amplitudes)`` with shape (slots, RX, N_max),
-    or ``(None, None)`` when every slot is empty. Padded entries carry zero
-    amplitude, which the CUDA kernels skip.
-    """
-    cfg = radar.config
-    device = radar.device
-    num_slots = len(samples)
-    with_normals = radar.polarization is not None
-    packed = _stack_slot_samples(samples, with_normals=with_normals)
-    if packed is None:
-        return None, None
-    points, entry_points, fixed_path_lengths, intensities, normals = packed
-
-    slot_tx = (torch.arange(num_slots, device=device) + first_slot) % cfg.num_tx
-    tx_sel = radar.tx_pos[slot_tx]
-    rx_pos = radar.rx_pos
-
-    dist_tx = torch.cdist(entry_points, tx_sel.unsqueeze(1)).squeeze(-1)
-    dist_rx = torch.cdist(points, rx_pos.unsqueeze(0).expand(num_slots, -1, -1))
-    total = dist_tx.unsqueeze(-1) + fixed_path_lengths.unsqueeze(-1) + dist_rx
-
-    fspl_amp = radar._lambda / (4.0 * math.pi * torch.clamp(total, min=1e-6))
-    scatter_power = torch.clamp(intensities, min=0.0).unsqueeze(-1)
-
-    tx_vectors = radar.local_from_world_vectors(entry_points - tx_sel.unsqueeze(1))
-    rx_vectors = radar.local_from_world_vectors(points.unsqueeze(2) - rx_pos.view(1, 1, -1, 3))
-    tx_gains = radar.evaluate_antenna_pattern_vectors(tx_vectors)
-    rx_gains = radar.evaluate_antenna_pattern_vectors(rx_vectors)
-    scatter_power = scatter_power * torch.clamp(tx_gains.unsqueeze(-1) * rx_gains, min=0.0)
-
-    amplitudes = radar.gain * torch.sqrt(scatter_power) * fspl_amp
-    if with_normals:
-        amplitudes = amplitudes * _slot_polarization_factors(radar, normals, slot_tx)
-
-    one_way = (total * 0.5).transpose(1, 2).contiguous()
-    amplitudes = amplitudes.transpose(1, 2).contiguous()
-    return one_way, amplitudes

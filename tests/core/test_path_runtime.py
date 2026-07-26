@@ -7,12 +7,13 @@ import pytest
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers.common import (
-    collect_interpolated_samples,
-    compute_path_amplitudes,
-    compute_total_path_lengths,
-    normalize_interpolated_sample,
-)
+from witwin.radar.solvers.common import normalize_interpolated_sample
+from witwin.radar.solvers.solver_dirichlet import collect_interpolated_samples
+
+# The two path expressions are the INDEPENDENT copy under tests/reference.
+# Phase 6 migrated the production ones into the native `sensor_weight` family;
+# this module keeps checking the Torch statement it always checked.
+from reference.path_math import compute_path_amplitudes, compute_total_path_lengths
 
 from reference.dsp_oracles import pytorch_mimo_from_samples
 
@@ -116,7 +117,7 @@ def test_path_amplitudes_include_fspl():
     total = torch.tensor([[[4.0]]], dtype=torch.float32)
 
     amplitudes = compute_path_amplitudes(radar, sample, total)
-    expected = radar.gain * torch.sqrt(torch.tensor(0.25)) * (radar._lambda / (4.0 * torch.pi * 4.0))
+    expected = torch.sqrt(torch.tensor(0.25)) * (radar._lambda / (4.0 * torch.pi * 4.0))
 
     assert amplitudes.shape == (1, 1, 1)
     assert torch.allclose(amplitudes.squeeze(), expected.to(dtype=torch.float32))
@@ -146,7 +147,7 @@ def test_path_amplitudes_apply_separable_antenna_pattern():
     total = torch.tensor([[[2.0, 2.0]]], dtype=torch.float32)
 
     amplitudes = compute_path_amplitudes(radar, sample, total).reshape(-1)
-    base = torch.tensor(radar.gain * (radar._lambda / (4.0 * torch.pi * 2.0)), dtype=torch.float32)
+    base = torch.tensor((radar._lambda / (4.0 * torch.pi * 2.0)), dtype=torch.float32)
 
     assert torch.allclose(amplitudes[0], base)
     assert torch.allclose(amplitudes[1], 0.5 * base, atol=1e-7, rtol=1e-6)
@@ -184,7 +185,7 @@ def test_path_amplitudes_apply_2d_antenna_pattern_map():
     total = torch.tensor([[[2.0]]], dtype=torch.float32)
 
     amplitudes = compute_path_amplitudes(radar, sample, total)
-    base = torch.tensor(radar.gain * (radar._lambda / (4.0 * torch.pi * 2.0)), dtype=torch.float32)
+    base = torch.tensor((radar._lambda / (4.0 * torch.pi * 2.0)), dtype=torch.float32)
 
     assert torch.allclose(amplitudes.squeeze(), 0.7 * base, atol=1e-7, rtol=1e-6)
 
@@ -274,7 +275,7 @@ def test_path_amplitudes_apply_simplified_polarization_projection():
     total = torch.tensor([[[4.0]]], dtype=torch.float32)
 
     amplitude = compute_path_amplitudes(radar, sample, total).squeeze()
-    base = radar.gain * (radar._lambda / (4.0 * torch.pi * 4.0))
+    base = (radar._lambda / (4.0 * torch.pi * 4.0))
 
     assert torch.allclose(amplitude, torch.tensor(-2.0 / 3.0 * base, dtype=torch.float32), atol=1e-6, rtol=1e-6)
 

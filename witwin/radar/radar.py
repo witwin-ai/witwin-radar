@@ -330,12 +330,28 @@ class Radar:
         self._lambda = self.c0 / cfg.fc
 
     def _init_rf_state(self, cfg: RadarConfig) -> None:
+        """Transmit power, and the ONE amplitude the legacy route may apply.
+
+        ``radar.gain`` is gone. It was ``sqrt(P R)`` whenever a receiver chain
+        was configured and ``1.0`` otherwise, and ``compute_path_amplitudes``
+        multiplied every weight by it - including, once Phase 6 gave the family
+        complex Channel weights, a weight that already carries ``sqrt(P_tx)``
+        from the source endpoint's ``powers_w``. That counts the transmit power
+        twice and mixes sqrt(W ohm) with sqrt(W).
+
+        What remains is ``transmit_amplitude``, and it reaches physics through
+        exactly one route: the ``tx_power_mode`` argument of the native
+        ``sensor_weight`` kernel, which the LEGACY real-amplitude path sets and
+        a Channel-sourced batch cannot set, because its provenance says the
+        weight already carries the power.
+        """
+
         self.transmit_power_watts = 1e-3 * (10.0 ** (cfg.power / 10.0))
         reference_impedance = (
             cfg.receiver_chain["reference_impedance_ohm"] if cfg.receiver_chain is not None else 50.0
         )
         self.tx_voltage_rms = math.sqrt(self.transmit_power_watts * reference_impedance)
-        self.gain = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
+        self.transmit_amplitude = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
 
     def _init_runtime_models(self, cfg: RadarConfig) -> None:
         from .validation import default_dipole_antenna_pattern

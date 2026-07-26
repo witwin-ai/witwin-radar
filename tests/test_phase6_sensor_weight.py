@@ -203,7 +203,7 @@ def test_the_kernel_pattern_gain_equals_the_torch_pattern_gain():
     """
 
     from witwin.radar.sensors import SensorWeightModes
-    from witwin.radar.solvers.common import compute_antenna_pattern_gains
+    from reference.path_math import compute_antenna_pattern_gains
 
     radar = _radar()
     sample = _sample(radar, 256, seed=11)
@@ -227,10 +227,10 @@ def test_the_kernel_pattern_gain_equals_the_torch_pattern_gain():
 
 def test_the_kernel_delay_and_rate_equal_the_torch_geometry():
     """``L`` and ``tau_rt`` against ``compute_total_path_lengths``, and
-    ``tau_rate`` against the solver's ``_total_path_length_rates``, both to
+    ``tau_rate`` against ``compute_total_path_length_rates``, both to
     ``rtol=1e-6``.
 
-    The rate is the one worth spelling out. ``_total_path_length_rates`` dots the
+    The rate is the one worth spelling out. That expression dots the
     INBOUND direction with the site velocity and the OUTBOUND one with its
     negative, because the outbound leg's length shrinks as the site moves toward
     the receiver. A kernel that used the same sign for both would agree on a
@@ -251,13 +251,16 @@ def test_the_kernel_delay_and_rate_equal_the_torch_geometry():
         velocities=velocities,
     )
 
-    from witwin.radar.solvers.common import compute_total_path_lengths
+    from reference.path_math import (
+        compute_total_path_length_rates,
+        compute_total_path_lengths,
+    )
 
     lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos).reshape(-1)
     assert torch.allclose(result.total_delay_s * C0, lengths, rtol=1e-6, atol=1e-5)
     assert torch.allclose(result.total_delay_s, lengths / C0, rtol=1e-6, atol=1e-14)
 
-    rates = radar.solver._total_path_length_rates(
+    rates = compute_total_path_length_rates(
         sample, velocities, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos
     ).reshape(-1)
     assert torch.allclose(result.delay_rate, rates / C0, rtol=1e-6, atol=1e-14)
@@ -273,23 +276,24 @@ def test_the_full_weight_equals_the_torch_amplitude_expression():
     """
 
     from witwin.radar.sensors import SensorWeightModes
-    from witwin.radar.solvers.common import (
+    from reference.path_math import (
         compute_path_amplitudes,
         compute_total_path_lengths,
     )
 
     radar = _radar()
-    radar.gain = 3.0
     sample = _sample(radar, 96, seed=7)
     lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos)
-    reference = compute_path_amplitudes(radar, sample, lengths).reshape(-1)
+    # `radar.gain` is gone; the transmit amplitude is now an argument of the
+    # oracle and of the kernel's plan, which is the whole point of the move.
+    reference = compute_path_amplitudes(radar, sample, lengths, gain=3.0).reshape(-1)
     result = _evaluate(
         radar,
         sample,
         modes=SensorWeightModes(
             spreading=True, tx_power=True, legacy_real_polarization=False
         ),
-        tx_amplitude=radar.gain,
+        tx_amplitude=3.0,
     )
     assert torch.allclose(result.weight.real, reference, rtol=1e-5, atol=1e-12)
     assert torch.equal(result.weight.imag, torch.zeros_like(result.weight.imag))
@@ -437,10 +441,10 @@ def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
 
 
 def test_the_polarization_projection_matches_the_torch_expression():
-    """Including its sign, over random normals, against ``common.py``."""
+    """Including its sign, over random normals, against the copied oracle."""
 
     from witwin.radar.sensors import SensorWeightModes
-    from witwin.radar.solvers.common import compute_polarization_amplitudes
+    from reference.path_math import compute_polarization_amplitudes
 
     radar = _radar(_polarized_config())
     sample = _sample(radar, 64, seed=23)

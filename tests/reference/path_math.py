@@ -11,11 +11,17 @@ shapes, and the order of the multiplications are reproduced exactly, so the
 oracle's numbers are bit-identical to what it produced before the split. A
 "cleaner" rewrite here would silently move the reference.
 
-The radar-facade calls (``_lambda``, ``gain``, ``polarization``,
+The radar-facade calls (``_lambda``, ``polarization``,
 ``local_from_world_vectors``, ``evaluate_antenna_pattern_vectors``) are NOT
 copied: they belong to ``witwin/radar/radar.py``, not to the module Phase-6
 work item 8 migrates, and duplicating a pattern interpolator would make the
 oracle test a different antenna than the production path does.
+
+One field IS no longer read off the radar: ``radar.gain``. Phase 6 deleted it,
+because it applied ``sqrt(P R)`` on top of a weight that already carries
+``sqrt(P_tx)``. The oracle keeps the factor as an explicit ``gain`` argument
+defaulting to ``1.0``, which is the value the deleted attribute had on every
+radar this oracle is used with, so every number it produces is unchanged.
 """
 
 from __future__ import annotations
@@ -77,6 +83,7 @@ def compute_path_amplitudes(
     tx_pos: torch.Tensor | None = None,
     rx_pos: torch.Tensor | None = None,
     tx_index: int | None = None,
+    gain: float = 1.0,
 ) -> torch.Tensor:
     """Convert power-domain material coefficients to amplitude-domain weights with FSPL.
 
@@ -92,7 +99,7 @@ def compute_path_amplitudes(
     pattern_gains = compute_antenna_pattern_gains(radar, sample, tx_pos, rx_pos)
     if pattern_gains is not None:
         scatter_power = scatter_power * torch.clamp(pattern_gains, min=0.0)
-    amplitudes = radar.gain * torch.sqrt(scatter_power) * fspl_amp
+    amplitudes = gain * torch.sqrt(scatter_power) * fspl_amp
     polarization_factor = compute_polarization_amplitudes(radar, sample)
     if polarization_factor is not None:
         if tx_index is not None:
@@ -100,10 +107,33 @@ def compute_path_amplitudes(
         amplitudes = amplitudes * polarization_factor
     return amplitudes
 
+def compute_total_path_length_rates(sample, velocities, *, tx_pos, rx_pos):
+    """Total path length rate with shape (TX, RX, N), verbatim from the solver.
+
+    Copied here for the same reason as the four expressions above: Phase 6
+    migrated the production statement into the native ``sensor_weight`` kernel,
+    and a kernel checked against nothing is checked against nothing.
+
+    The SIGNS are the content. The inbound leg's rate dots ``entry - tx`` with
+    the site velocity and the outbound leg's dots ``point - rx``, which is the
+    NEGATIVE of the propagation direction, because the outbound leg shortens as
+    the site moves toward the receiver. Using one sign for both agrees exactly
+    on a stationary scene and is wrong by up to a factor of two on a moving one.
+    """
+
+    entry_vectors = sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1)
+    point_vectors = sample.points.unsqueeze(0) - rx_pos.unsqueeze(1)
+    entry_dist = torch.clamp(torch.linalg.norm(entry_vectors, dim=-1), min=1e-6)
+    point_dist = torch.clamp(torch.linalg.norm(point_vectors, dim=-1), min=1e-6)
+    entry_rates = (entry_vectors * velocities.unsqueeze(0)).sum(dim=-1) / entry_dist
+    point_rates = (point_vectors * velocities.unsqueeze(0)).sum(dim=-1) / point_dist
+    return entry_rates.unsqueeze(1) + point_rates.unsqueeze(0)
+
 
 __all__ = [
     "compute_antenna_pattern_gains",
     "compute_path_amplitudes",
     "compute_polarization_amplitudes",
+    "compute_total_path_length_rates",
     "compute_total_path_lengths",
 ]

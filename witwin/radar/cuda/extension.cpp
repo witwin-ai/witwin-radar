@@ -37,6 +37,36 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
       "int num_bins, int n_fft, int targets_per_pair, int chirp_per_frame, "
       "float chirp_period, int num_tx, int range_loss_update, float fc, float slope, "
       "float t_start, int tau_is_seconds) -> ()");
+  // AD companions of forward_mimo_linear_chunked. They exist so that the frame
+  // path has ONE owner: the Torch expression that used to stand in for a
+  // reverse-mode call - `dist = d0 + rate * t` plus the `d0 / dist` range-loss
+  // update - was a second implementation of this kernel's physics, evaluated in
+  // a different dtype and a different order, and reachable only when an input
+  // happened to require grad.
+  //
+  //   d(dist)/d(d0) = 1, d(dist)/d(d_rate) = t_slot
+  //   with range_loss_update, d(amp)/d(d0)     =  a (dist - d0) / dist^2
+  //                           d(amp)/d(d_rate) = -a d0 t_slot   / dist^2
+  //
+  // The backward owns one gradient slot per target row and uses no atomics; the
+  // jvp keeps the forward's own grid, so a tangent costs one launch. See
+  // R-ADR-004.
+  m.def(
+      "mimo_linear_backward(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
+      "Tensor grad_output_re, Tensor grad_output_im, Tensor(a!) grad_d0, "
+      "Tensor(b!) grad_d_rate, Tensor(c!) grad_a0, Tensor(d!) grad_a0_im, "
+      "float n, float k0_per_meter, int num_bins, int n_fft, "
+      "int targets_per_pair, int chirp_per_frame, float chirp_period, "
+      "int num_tx, int range_loss_update, float fc, float slope, float t_start, "
+      "int tau_is_seconds) -> ()");
+  m.def(
+      "mimo_linear_jvp(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
+      "Tensor tan_d0, Tensor tan_d_rate, Tensor tan_a0, Tensor tan_a0_im, "
+      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, float n, "
+      "float k0_per_meter, int num_bins, int n_fft, int targets_per_pair, "
+      "int chirp_per_frame, float chirp_period, int num_tx, "
+      "int range_loss_update, float fc, float slope, float t_start, "
+      "int tau_is_seconds) -> ()");
   m.def(
       "dirichlet_jvp(Tensor d, Tensor a, Tensor a_im, Tensor tan_d, Tensor tan_a, "
       "Tensor tan_a_im, Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, float n, "

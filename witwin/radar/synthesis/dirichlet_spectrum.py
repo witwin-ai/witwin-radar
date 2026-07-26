@@ -1,9 +1,10 @@
 """The single Python owner of the ``dirichlet_spectrum`` native family.
 
-Seven registered operators - ``forward_chunked``,
-``forward_mimo_linear_chunked``, ``dirichlet_jvp``, ``backward``,
-``backward_batched``, ``backward_parallel_bins``, ``backward_per_bin`` - are
-named, dispatched, and buffered here and nowhere else.
+Nine registered operators - ``forward_chunked``,
+``forward_mimo_linear_chunked``, ``dirichlet_jvp``, ``mimo_linear_backward``,
+``mimo_linear_jvp``, ``backward``, ``backward_batched``,
+``backward_parallel_bins``, ``backward_per_bin`` - are named, dispatched, and
+buffered here and nowhere else.
 
 This module used to be half of ``solvers/solver_dirichlet.py``, which is the
 wrong home for two reasons. The first is ownership: the Dirichlet spectrum is
@@ -31,7 +32,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from torch.autograd import forward_ad
 from torch.autograd.function import once_differentiable
 
 
@@ -95,28 +95,6 @@ class DirichletSpectrumSpec:
 
 def _zeros_like_weight(weight: torch.Tensor) -> torch.Tensor:
     return torch.zeros_like(weight)
-
-
-def _require_no_forward_tangent(symbol: str, **tensors: torch.Tensor | None) -> None:
-    """Fail loudly rather than drop a forward-mode tangent on the floor.
-
-    Used by the routes that do not yet have a registered JVP companion. A
-    silently-dropped tangent is indistinguishable from a genuinely zero
-    derivative, which is the failure mode this whole family's AD work exists to
-    prevent.
-    """
-
-    carrying = [
-        name
-        for name, tensor in tensors.items()
-        if tensor is not None and forward_ad.unpack_dual(tensor).tangent is not None
-    ]
-    if carrying:
-        raise RuntimeError(
-            f"{symbol} has no registered forward-mode companion, and "
-            f"{sorted(carrying)} carry a forward tangent. Refusing rather than "
-            "returning a primal with the tangent silently dropped."
-        )
 
 
 class _DirichletSpectrum(torch.autograd.Function):
@@ -295,6 +273,153 @@ def chunked_spectra(
     return torch.complex(out_re, out_im)
 
 
+@dataclass(frozen=True, slots=True)
+class MimoLinearFramePlan:
+    """The TDM frame layout the fused MIMO launch and both companions share.
+
+    One record, because the primal, the backward, and the jvp must agree on
+    every one of these numbers exactly. Passing them separately three times is
+    how a backward ends up integrating over a different frame than the forward.
+    """
+
+    targets_per_pair: int
+    num_pairs: int
+    chirp_per_frame: int
+    chirp_period_s: float
+    num_tx: int
+    range_loss_update: bool
+
+    def kernel_tail(self) -> tuple:
+        return (
+            self.targets_per_pair,
+            self.chirp_per_frame,
+            self.chirp_period_s,
+            self.num_tx,
+            1 if self.range_loss_update else 0,
+        )
+
+
+class _MimoLinearSpectrum(torch.autograd.Function):
+    """Autograd bridge for the fused TDM-frame MIMO launch.
+
+    Every mode goes through the native family. The Torch expression that used
+    to serve the reverse-mode case - ``dist = d0 + rate * t`` with the
+    ``d0 / clamp(dist)`` range-loss update, followed by a chunked forward over
+    the expanded frame - was a second implementation of this kernel's physics.
+    It ran in a different dtype, expanded a ``chirps x pairs x targets``
+    intermediate the fused kernel never materialises, and was reachable only
+    when an input happened to require grad, so the gradient and the value came
+    from different code. It is deleted.
+    """
+
+    @staticmethod
+    def forward(d0, d_rate, a_re, a_im, plan, spec):
+        output_re = torch.zeros(
+            (plan.chirp_per_frame, plan.num_pairs, spec.num_bins),
+            dtype=torch.float32,
+            device=d0.device,
+        )
+        output_im = torch.zeros_like(output_re)
+        _ops().forward_mimo_linear_chunked(
+            d0,
+            d_rate,
+            a_re,
+            a_im,
+            output_re,
+            output_im,
+            spec.n,
+            spec.k0_per_meter,
+            spec.num_bins,
+            spec.n_fft,
+            *plan.kernel_tail(),
+            spec.fc,
+            spec.slope_hz_per_s,
+            spec.t_start_s,
+            spec.tau_is_seconds,
+        )
+        return output_re, output_im
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        d0, d_rate, a_re, a_im, plan, spec = inputs
+        ctx.plan = plan
+        ctx.spec = spec
+        ctx.save_for_backward(d0, d_rate, a_re, a_im)
+        ctx.save_for_forward(d0, d_rate, a_re, a_im)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_out_re, grad_out_im):
+        d0, d_rate, a_re, a_im = ctx.saved_tensors
+        plan = ctx.plan
+        spec = ctx.spec
+        grad_d0 = torch.empty_like(d0)
+        grad_d_rate = torch.empty_like(d_rate)
+        grad_a_re = torch.empty_like(a_re)
+        grad_a_im = torch.empty_like(a_im)
+        _ops().mimo_linear_backward(
+            d0,
+            d_rate,
+            a_re,
+            a_im,
+            grad_out_re.contiguous(),
+            grad_out_im.contiguous(),
+            grad_d0,
+            grad_d_rate,
+            grad_a_re,
+            grad_a_im,
+            spec.n,
+            spec.k0_per_meter,
+            spec.num_bins,
+            spec.n_fft,
+            *plan.kernel_tail(),
+            spec.fc,
+            spec.slope_hz_per_s,
+            spec.t_start_s,
+            spec.tau_is_seconds,
+        )
+        return grad_d0, grad_d_rate, grad_a_re, grad_a_im, None, None
+
+    @staticmethod
+    def jvp(ctx, tan_d0, tan_d_rate, tan_a_re, tan_a_im, tan_plan, tan_spec):
+        d0, d_rate, a_re, a_im = ctx.saved_tensors
+        plan = ctx.plan
+        spec = ctx.spec
+        zero = torch.zeros_like(d0)
+        tan_d0 = zero if tan_d0 is None else tan_d0.contiguous()
+        tan_d_rate = zero if tan_d_rate is None else tan_d_rate.contiguous()
+        tan_a_re = zero if tan_a_re is None else tan_a_re.contiguous()
+        tan_a_im = zero if tan_a_im is None else tan_a_im.contiguous()
+        tan_out_re = torch.zeros(
+            (plan.chirp_per_frame, plan.num_pairs, spec.num_bins),
+            dtype=torch.float32,
+            device=d0.device,
+        )
+        tan_out_im = torch.zeros_like(tan_out_re)
+        _ops().mimo_linear_jvp(
+            d0,
+            d_rate,
+            a_re,
+            a_im,
+            tan_d0,
+            tan_d_rate,
+            tan_a_re,
+            tan_a_im,
+            tan_out_re,
+            tan_out_im,
+            spec.n,
+            spec.k0_per_meter,
+            spec.num_bins,
+            spec.n_fft,
+            *plan.kernel_tail(),
+            spec.fc,
+            spec.slope_hz_per_s,
+            spec.t_start_s,
+            spec.tau_is_seconds,
+        )
+        return tan_out_re, tan_out_im
+
+
 def mimo_linear_spectra(
     path_values: torch.Tensor,
     path_rates: torch.Tensor,
@@ -302,60 +427,21 @@ def mimo_linear_spectra(
     weight_im: torch.Tensor | None = None,
     *,
     spec: DirichletSpectrumSpec,
-    targets_per_pair: int,
-    num_pairs: int,
-    chirp_per_frame: int,
-    chirp_period_s: float,
-    num_tx: int,
-    range_loss_update: bool,
+    plan: MimoLinearFramePlan,
 ) -> torch.Tensor:
     """One fused launch over the whole TDM frame, ``(chirps, pairs, bins)``.
 
-    This route has no registered backward or JVP companion yet - the design
-    assigns ``mimo_linear_backward`` and ``mimo_linear_jvp`` to the stage that
-    deletes the Torch replay standing in for them. Until then it refuses a
-    forward-mode dual rather than dropping its tangent, and the solver still
-    dispatches a reverse-mode call to the replay. That dispatch is recorded
-    debt, not a design.
+    Primal, VJP, and JVP all belong to the ``dirichlet_spectrum`` family. There
+    is no ``requires_grad`` branch here and no Torch replay behind one: the
+    route a gradient takes is the route the value took.
     """
 
-    _require_no_forward_tangent(
-        "forward_mimo_linear_chunked",
-        path_values=path_values,
-        path_rates=path_rates,
-        weight_re=weight_re,
-        weight_im=weight_im,
-    )
     if weight_im is None:
         weight_im = _zeros_like_weight(weight_re)
-    output_re = torch.zeros(
-        (chirp_per_frame, num_pairs, spec.num_bins),
-        dtype=torch.float32,
-        device=path_values.device,
+    out_re, out_im = _MimoLinearSpectrum.apply(
+        path_values, path_rates, weight_re, weight_im, plan, spec
     )
-    output_im = torch.zeros_like(output_re)
-    _ops().forward_mimo_linear_chunked(
-        path_values,
-        path_rates,
-        weight_re,
-        weight_im,
-        output_re,
-        output_im,
-        spec.n,
-        spec.k0_per_meter,
-        spec.num_bins,
-        spec.n_fft,
-        targets_per_pair,
-        chirp_per_frame,
-        chirp_period_s,
-        num_tx,
-        1 if range_loss_update else 0,
-        spec.fc,
-        spec.slope_hz_per_s,
-        spec.t_start_s,
-        spec.tau_is_seconds,
-    )
-    return torch.complex(output_re, output_im)
+    return torch.complex(out_re, out_im)
 
 
 def spectrum_vjp(
@@ -494,6 +580,7 @@ def spectrum_vjp_single_block(
 
 __all__ = [
     "DirichletSpectrumSpec",
+    "MimoLinearFramePlan",
     "chunked_spectra",
     "mimo_linear_spectra",
     "spectrum_vjp",

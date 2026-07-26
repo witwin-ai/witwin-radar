@@ -38,6 +38,20 @@
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
     },
     {
+      "symbol": "mimo_linear_backward",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test": "tests/test_phase6_mimo_linear_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.backward"
+    },
+    {
+      "symbol": "mimo_linear_jvp",
+      "family": "dirichlet_spectrum",
+      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test": "tests/test_phase6_mimo_linear_ad.py",
+      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.jvp"
+    },
+    {
       "symbol": "backward",
       "family": "dirichlet_spectrum",
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",

@@ -101,12 +101,19 @@ def test_the_torch_dsp_oracles_no_longer_ship_inside_the_package():
 def test_the_residual_torch_path_surface_is_frozen():
     """solvers/common.py is a recorded deviation, so it must not grow.
 
-    Its remaining helpers are per-path geometry and amplitude math in Torch,
-    consumed by the Dirichlet backend. They are NOT removed in this change: the
-    native evaluator that replaces them is out of scope, and deleting the only
-    production owner while its replacement does not exist would orphan six
-    manifested native symbols rather than reduce scope. Freezing the surface is
-    what stops "recorded deviation" from turning into "growing exception".
+    Phase 6 work item 8 SHRANK this set. When this test was written its
+    docstring said the six geometry and amplitude helpers were not removed
+    because "the native evaluator that replaces them is out of scope"; that
+    evaluator is the ``sensor_weight`` family and it now exists, so
+    ``compute_total_path_lengths``, ``compute_antenna_pattern_gains``,
+    ``compute_polarization_amplitudes``, ``compute_path_amplitudes``, and
+    ``compute_slot_path_tensors`` are gone, and ``collect_interpolated_samples``
+    moved to its single caller.
+
+    The set below is what is LEFT, and none of it is physics: a contract, dtype
+    and device glue, a predicate, and structural packing. The assertion is an
+    equality rather than a subset for the same reason it always was - a subset
+    check passes when something is added back.
     """
 
     from witwin.radar.solvers import common
@@ -121,15 +128,36 @@ def test_the_residual_torch_path_surface_is_frozen():
     }
     assert public == {
         "PathSample",
-        "collect_interpolated_samples",
-        "compute_antenna_pattern_gains",
-        "compute_path_amplitudes",
-        "compute_polarization_amplitudes",
-        "compute_slot_path_tensors",
-        "compute_total_path_lengths",
         "normalize_interpolated_sample",
         "samples_require_grad",
     }, sorted(public)
+    # `_stack_slot_samples` is private and therefore outside the set above, but
+    # it is the fourth survivor and it must still be here: it is the padding
+    # step the slot route hands to the native owner.
+    assert callable(common._stack_slot_samples)
+
+
+def test_the_migrated_helpers_are_gone_from_the_shared_module():
+    """Named one by one, because "the set shrank" is not the same statement.
+
+    A helper that came back under a new name would keep the set above at three
+    entries only by accident. These five are the Torch expressions plan work
+    item 8 migrated, and they must not exist here under any spelling.
+    """
+
+    from witwin.radar.solvers import common
+
+    for name in (
+        "compute_total_path_lengths",
+        "compute_antenna_pattern_gains",
+        "compute_polarization_amplitudes",
+        "compute_path_amplitudes",
+        "compute_slot_path_tensors",
+        "_slot_polarization_factors",
+        "_normalize_vectors",
+        "collect_interpolated_samples",
+    ):
+        assert not hasattr(common, name), name
 
 
 def test_the_packaging_metadata_no_longer_pulls_in_dr_jit():

@@ -72,6 +72,13 @@ __device__ __forceinline__ Complex cexp_f(const float phase) {
   return {c, s};
 }
 
+__device__ __forceinline__ float warp_sum(float value) {
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  return value;
+}
+
 __device__ __forceinline__ float dirichlet_kernel_real(const float x, const float n) {
   constexpr float eps = 1e-7f;
   float sin_half;
@@ -129,6 +136,20 @@ __device__ __forceinline__ float round_trip_delay(const float value, const int t
 // rather than as one scaled expression, for the same rounding reason.
 __device__ __forceinline__ float delay_phase_scale(const int tau_is_seconds) {
   return (tau_is_seconds != 0) ? kTwoPi : kTwoPi * 2.0f / kC0;
+}
+
+// The floor of the linear frame update's range-loss denominator, in whatever
+// unit the path value is expressed in. It is a MICROMETRE, and the seconds
+// branch is the same micrometre expressed as a round-trip delay.
+//
+// This has to follow the unit. The constant used to be the literal 1e-6f, which
+// is a sensible guard for a distance in metres and is LARGER than every delay a
+// radar ever sees: a 60 metre round trip is 4e-7 seconds, so a metres-scale
+// clamp applied to a delay clamps every single row and turns the range-loss
+// factor into `tau / 1e-6`, off by seven orders of magnitude. The legacy branch
+// keeps the literal so a tau_is_seconds = 0 caller is unchanged.
+__device__ __forceinline__ float min_path_value(const int tau_is_seconds) {
+  return (tau_is_seconds != 0) ? (2.0f * 1e-6f / kC0) : 1e-6f;
 }
 
 __device__ __forceinline__ Complex path_response(
@@ -324,7 +345,7 @@ __global__ void forward_mimo_linear_chunked_kernel(
       continue;
     }
     if (range_loss_update != 0) {
-      const float range_loss = dist0 / fmaxf(dist, 1e-6f);
+      const float range_loss = dist0 / fmaxf(dist, min_path_value(tau_is_seconds));
       amp *= range_loss;
       amp_im *= range_loss;
     }
@@ -340,6 +361,268 @@ __global__ void forward_mimo_linear_chunked_kernel(
   const int out_idx = (chirp_id * num_pairs + pair_id) * num_bins + bin;
   output_re[out_idx] = sum_re;
   output_im[out_idx] = sum_im;
+}
+
+// AD companions of forward_mimo_linear_chunked.
+//
+// The as-built forward, per target row i owned by pair p and per chirp c:
+//
+//   slot        = c * num_tx + tx(p)
+//   t_slot      = slot * chirp_period
+//   dist        = d0[i] + d_rate[i] * t_slot
+//   g           = range_loss_update ? d0[i] / max(dist, 1e-6) : 1
+//   out        += (a_re[i] + j a_im[i]) * g * R(dist)
+//
+// so, writing a = a_re + j a_im and R' = dR/d(dist),
+//
+//   d(dist)/d(d0)   = 1                d(dist)/d(d_rate) = t_slot
+//   dg/d(d0)        = (dist - d0)/dist^2      (range_loss_update, dist > 1e-6)
+//   dg/d(d_rate)    = -d0 t_slot / dist^2
+//   d(out)/d(d0)    = a (dg/d(d0)     R + g R')
+//   d(out)/d(d_rate)= a (dg/d(d_rate) R + g t_slot R')
+//   d(out)/d(a_re)  = g R             d(out)/d(a_im)     = j g R
+//
+// The forward's `amp == 0 && amp_im == 0` skip is a value-preserving shortcut,
+// not a branch of the function: d(out)/d(a_re) is g R whatever a is. Neither
+// companion reproduces that skip. The `dist <= 0` skip IS a branch - the row
+// contributes nothing at all there - and both companions do reproduce it.
+//
+// The backward owns one gradient slot per target row: a target belongs to
+// exactly one pair, so one block per row reducing over (chirp, bin) needs no
+// atomics and its summation order is a property of the frozen row set rather
+// than of the schedule. The jvp keeps the forward's own (bin, pair, chirp)
+// grid, so a tangent costs exactly one launch, like the primal.
+__global__ void mimo_linear_backward_kernel(
+    const float* __restrict__ d0,
+    const float* __restrict__ d_rate,
+    const float* __restrict__ a0,
+    const float* __restrict__ a0_im,
+    const float* __restrict__ grad_output_re,
+    const float* __restrict__ grad_output_im,
+    float* __restrict__ grad_d0,
+    float* __restrict__ grad_d_rate,
+    float* __restrict__ grad_a0,
+    float* __restrict__ grad_a0_im,
+    const float n,
+    const float k0_per_meter,
+    const int num_bins,
+    const int n_fft,
+    const int targets_per_pair,
+    const int chirp_per_frame,
+    const float chirp_period,
+    const int num_tx,
+    const int range_loss_update,
+    const int num_pairs,
+    const float fc,
+    const float slope,
+    const float t_start,
+    const int tau_is_seconds) {
+  const int target_idx = blockIdx.x;
+  if (target_idx >= num_pairs * targets_per_pair) {
+    return;
+  }
+
+  const int pair_id = target_idx / targets_per_pair;
+  const int num_rx = num_pairs / num_tx;
+  const int tx_id = pair_id / num_rx;
+  const float dist0 = d0[target_idx];
+  const float rate = d_rate[target_idx];
+  const float amp = a0[target_idx];
+  const float amp_im = a0_im[target_idx];
+  const float dx_dd = -kTwoPi * k0_per_meter / static_cast<float>(n_fft);
+
+  float dL_dd0 = 0.0f;
+  float dL_drate = 0.0f;
+  float dL_da = 0.0f;
+  float dL_da_im = 0.0f;
+
+  for (int chirp_id = 0; chirp_id < chirp_per_frame; ++chirp_id) {
+    const float slot =
+        static_cast<float>(chirp_id) * static_cast<float>(num_tx) + static_cast<float>(tx_id);
+    const float chirp_time = slot * chirp_period;
+    const float dist = dist0 + rate * chirp_time;
+    if (dist <= 0.0f) {
+      continue;
+    }
+
+    float scale = 1.0f;
+    float dscale_dd0 = 0.0f;
+    float dscale_drate = 0.0f;
+    if (range_loss_update != 0) {
+      const float floor_value = min_path_value(tau_is_seconds);
+      const float denom = fmaxf(dist, floor_value);
+      scale = dist0 / denom;
+      if (dist > floor_value) {
+        dscale_dd0 = (denom - dist0) / (denom * denom);
+        dscale_drate = -dist0 * chirp_time / (denom * denom);
+      } else {
+        // The clamp is active, so the denominator no longer moves with dist.
+        dscale_dd0 = 1.0f / denom;
+      }
+    }
+
+    const float k0 = dist * k0_per_meter;
+    const float tau = round_trip_delay(dist, tau_is_seconds);
+    const float phi0 = kTwoPi * (fc * tau + slope * tau * (t_start - 0.5f * tau));
+    const Complex phase_corr = cexp_f(phi0);
+    const float dphi0_dd = delay_phase_scale(tau_is_seconds) * (fc + slope * t_start - slope * tau);
+    const int grad_offset = (chirp_id * num_pairs + pair_id) * num_bins;
+
+    for (int bin = threadIdx.x; bin < num_bins; bin += blockDim.x) {
+      const float gout_re = grad_output_re[grad_offset + bin];
+      const float gout_im = grad_output_im[grad_offset + bin];
+      const float x = kTwoPi * (static_cast<float>(bin) - k0) / static_cast<float>(n_fft);
+      const Complex result = cmul(dirichlet_kernel(x, n), phase_corr);
+      const Complex result_grad = cmul(dirichlet_kernel_grad(x, n), phase_corr);
+
+      const float dot0_r = gout_re * result.re + gout_im * result.im;
+      const float dot1_r = -gout_re * result.im + gout_im * result.re;
+      const float dot0_g = gout_re * result_grad.re + gout_im * result_grad.im;
+      const float dot1_g = -gout_re * result_grad.im + gout_im * result_grad.re;
+      // <gout, R'> and <gout, j R'>, with R' = D'(x) e^{j phi0} dx/dd + j R dphi0/dd.
+      const float dot0_p = dot0_g * dx_dd + dot1_r * dphi0_dd;
+      const float dot1_p = dot1_g * dx_dd - dot0_r * dphi0_dd;
+
+      dL_da += scale * dot0_r;
+      dL_da_im += scale * dot1_r;
+      const float weighted_r = amp * dot0_r + amp_im * dot1_r;
+      const float weighted_p = amp * dot0_p + amp_im * dot1_p;
+      dL_dd0 += dscale_dd0 * weighted_r + scale * weighted_p;
+      dL_drate += dscale_drate * weighted_r + scale * chirp_time * weighted_p;
+    }
+  }
+
+  // Four independent tree reductions, so each gradient slot has its own order.
+  dL_dd0 = warp_sum(dL_dd0);
+  dL_drate = warp_sum(dL_drate);
+  dL_da = warp_sum(dL_da);
+  dL_da_im = warp_sum(dL_da_im);
+  __shared__ float warp_grad_d0[8];
+  __shared__ float warp_grad_rate[8];
+  __shared__ float warp_grad_a[8];
+  __shared__ float warp_grad_a_im[8];
+  const int lane = threadIdx.x & 31;
+  const int warp = threadIdx.x >> 5;
+  if (lane == 0) {
+    warp_grad_d0[warp] = dL_dd0;
+    warp_grad_rate[warp] = dL_drate;
+    warp_grad_a[warp] = dL_da;
+    warp_grad_a_im[warp] = dL_da_im;
+  }
+  __syncthreads();
+
+  if (warp == 0) {
+    dL_dd0 = lane < 8 ? warp_grad_d0[lane] : 0.0f;
+    dL_drate = lane < 8 ? warp_grad_rate[lane] : 0.0f;
+    dL_da = lane < 8 ? warp_grad_a[lane] : 0.0f;
+    dL_da_im = lane < 8 ? warp_grad_a_im[lane] : 0.0f;
+    dL_dd0 = warp_sum(dL_dd0);
+    dL_drate = warp_sum(dL_drate);
+    dL_da = warp_sum(dL_da);
+    dL_da_im = warp_sum(dL_da_im);
+    if (lane == 0) {
+      grad_d0[target_idx] = dL_dd0;
+      grad_d_rate[target_idx] = dL_drate;
+      grad_a0[target_idx] = dL_da;
+      grad_a0_im[target_idx] = dL_da_im;
+    }
+  }
+}
+
+__global__ void mimo_linear_jvp_kernel(
+    const float* __restrict__ d0,
+    const float* __restrict__ d_rate,
+    const float* __restrict__ a0,
+    const float* __restrict__ a0_im,
+    const float* __restrict__ tan_d0,
+    const float* __restrict__ tan_d_rate,
+    const float* __restrict__ tan_a0,
+    const float* __restrict__ tan_a0_im,
+    float* __restrict__ tan_out_re,
+    float* __restrict__ tan_out_im,
+    const float n,
+    const float k0_per_meter,
+    const int num_bins,
+    const int n_fft,
+    const int targets_per_pair,
+    const int chirp_per_frame,
+    const float chirp_period,
+    const int num_tx,
+    const int range_loss_update,
+    const int num_pairs,
+    const float fc,
+    const float slope,
+    const float t_start,
+    const int tau_is_seconds) {
+  const int bin = blockIdx.x * blockDim.x + threadIdx.x;
+  const int pair_id = blockIdx.y;
+  const int chirp_id = blockIdx.z;
+  if (bin >= num_bins || pair_id >= num_pairs || chirp_id >= chirp_per_frame) {
+    return;
+  }
+
+  const int num_rx = num_pairs / num_tx;
+  const int tx_id = pair_id / num_rx;
+  const float slot =
+      static_cast<float>(chirp_id) * static_cast<float>(num_tx) + static_cast<float>(tx_id);
+  const float chirp_time = slot * chirp_period;
+  const int target_start = pair_id * targets_per_pair;
+  const float dx_dd = -kTwoPi * k0_per_meter / static_cast<float>(n_fft);
+
+  float sum_re = 0.0f;
+  float sum_im = 0.0f;
+  for (int i = 0; i < targets_per_pair; ++i) {
+    const int target_idx = target_start + i;
+    const float dist0 = d0[target_idx];
+    const float dist = dist0 + d_rate[target_idx] * chirp_time;
+    if (dist <= 0.0f) {
+      continue;
+    }
+
+    const float amp = a0[target_idx];
+    const float amp_im = a0_im[target_idx];
+    const float t_d0 = tan_d0[target_idx];
+    const float t_rate = tan_d_rate[target_idx];
+    const float t_dist = t_d0 + chirp_time * t_rate;
+
+    float scale = 1.0f;
+    float tan_scale = 0.0f;
+    if (range_loss_update != 0) {
+      const float floor_value = min_path_value(tau_is_seconds);
+      const float denom = fmaxf(dist, floor_value);
+      scale = dist0 / denom;
+      if (dist > floor_value) {
+        tan_scale = ((denom - dist0) * t_d0 - dist0 * chirp_time * t_rate) / (denom * denom);
+      } else {
+        tan_scale = t_d0 / denom;
+      }
+    }
+
+    const float k0 = dist * k0_per_meter;
+    const float tau = round_trip_delay(dist, tau_is_seconds);
+    const float phi0 = kTwoPi * (fc * tau + slope * tau * (t_start - 0.5f * tau));
+    const Complex phase_corr = cexp_f(phi0);
+    const float dphi0_dd = delay_phase_scale(tau_is_seconds) * (fc + slope * t_start - slope * tau);
+    const float x = kTwoPi * (static_cast<float>(bin) - k0) / static_cast<float>(n_fft);
+    const Complex result = cmul(dirichlet_kernel(x, n), phase_corr);
+    const Complex result_grad = cmul(dirichlet_kernel_grad(x, n), phase_corr);
+    const Complex response_grad = {
+        result_grad.re * dx_dd - result.im * dphi0_dd,
+        result_grad.im * dx_dd + result.re * dphi0_dd};
+
+    const float weight_re = scale * tan_a0[target_idx] + tan_scale * amp;
+    const float weight_im = scale * tan_a0_im[target_idx] + tan_scale * amp_im;
+    sum_re += weight_re * result.re - weight_im * result.im;
+    sum_im += weight_re * result.im + weight_im * result.re;
+
+    const float moved = scale * t_dist;
+    sum_re += moved * (amp * response_grad.re - amp_im * response_grad.im);
+    sum_im += moved * (amp * response_grad.im + amp_im * response_grad.re);
+  }
+
+  const int out_idx = (chirp_id * num_pairs + pair_id) * num_bins + bin;
+  tan_out_re[out_idx] = sum_re;
+  tan_out_im[out_idx] = sum_im;
 }
 
 // The imaginary-weight terms are appended as separate accumulations in every
@@ -463,13 +746,6 @@ __global__ void backward_batched_kernel(
   grad_d[i] = dL_dd;
   grad_a[i] = dL_da;
   grad_a_im[i] = dL_da_im;
-}
-
-__device__ __forceinline__ float warp_sum(float value) {
-  for (int offset = 16; offset > 0; offset >>= 1) {
-    value += __shfl_down_sync(0xffffffff, value, offset);
-  }
-  return value;
 }
 
 __global__ void backward_parallel_bins_kernel(
@@ -843,6 +1119,192 @@ void forward_mimo_linear_chunked_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void mimo_linear_backward_cuda(
+    const torch::stable::Tensor& d0,
+    const torch::stable::Tensor& d_rate,
+    const torch::stable::Tensor& a0,
+    const torch::stable::Tensor& a0_im,
+    const torch::stable::Tensor& grad_output_re,
+    const torch::stable::Tensor& grad_output_im,
+    torch::stable::Tensor& grad_d0,
+    torch::stable::Tensor& grad_d_rate,
+    torch::stable::Tensor& grad_a0,
+    torch::stable::Tensor& grad_a0_im,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t targets_per_pair,
+    int64_t chirp_per_frame,
+    double chirp_period,
+    int64_t num_tx,
+    int64_t range_loss_update,
+    double fc,
+    double slope,
+    double t_start,
+    int64_t tau_is_seconds) {
+  check_cuda_float(d0, "d0");
+  check_cuda_float(d_rate, "d_rate");
+  check_cuda_float(a0, "a0");
+  check_cuda_float(a0_im, "a0_im");
+  check_cuda_float(grad_output_re, "grad_output_re");
+  check_cuda_float(grad_output_im, "grad_output_im");
+  check_cuda_float(grad_d0, "grad_d0");
+  check_cuda_float(grad_d_rate, "grad_d_rate");
+  check_cuda_float(grad_a0, "grad_a0");
+  check_cuda_float(grad_a0_im, "grad_a0_im");
+  STD_TORCH_CHECK(
+      d0.sizes().equals(d_rate.sizes()) && d0.sizes().equals(a0.sizes()) &&
+          d0.sizes().equals(a0_im.sizes()),
+      "d0, d_rate, a0, and a0_im must have the same shape.");
+  STD_TORCH_CHECK(
+      grad_d0.sizes().equals(d0.sizes()) && grad_d_rate.sizes().equals(d0.sizes()) &&
+          grad_a0.sizes().equals(d0.sizes()) && grad_a0_im.sizes().equals(d0.sizes()),
+      "gradient outputs must match d0.");
+  STD_TORCH_CHECK(
+      grad_output_re.sizes().equals(grad_output_im.sizes()),
+      "complex gradient components must have the same shape.");
+  STD_TORCH_CHECK(
+      grad_output_re.dim() == 3, "gradient tensors must have shape (chirps, pairs, bins).");
+
+  const int bins = checked_int(num_bins, "num_bins");
+  const int fft = checked_int(n_fft, "n_fft");
+  const int per_pair = checked_int(targets_per_pair, "targets_per_pair");
+  const int chirps = checked_int(chirp_per_frame, "chirp_per_frame");
+  const int tx = checked_int(num_tx, "num_tx");
+  const int update = checked_int(range_loss_update, "range_loss_update");
+  const int pairs = checked_int(grad_output_re.size(1), "num_pairs");
+  const int seconds = checked_int(tau_is_seconds, "tau_is_seconds");
+  STD_TORCH_CHECK(per_pair > 0, "targets_per_pair must be positive.");
+  STD_TORCH_CHECK(tx > 0 && pairs % tx == 0, "num_pairs must be a positive multiple of num_tx.");
+  STD_TORCH_CHECK(
+      grad_output_re.size(0) == chirps && grad_output_re.size(2) == bins,
+      "gradient tensor shape does not match chirp_per_frame and num_bins.");
+  STD_TORCH_CHECK(
+      d0.numel() == static_cast<int64_t>(pairs) * static_cast<int64_t>(per_pair),
+      "d0 must hold num_pairs * targets_per_pair rows.");
+
+  const torch::stable::accelerator::DeviceGuard device_guard(d0.get_device_index());
+  constexpr int block_size = 256;
+  mimo_linear_backward_kernel<<<pairs * per_pair, block_size, 0, current_cuda_stream(d0)>>>(
+      d0.const_data_ptr<float>(),
+      d_rate.const_data_ptr<float>(),
+      a0.const_data_ptr<float>(),
+      a0_im.const_data_ptr<float>(),
+      grad_output_re.const_data_ptr<float>(),
+      grad_output_im.const_data_ptr<float>(),
+      grad_d0.mutable_data_ptr<float>(),
+      grad_d_rate.mutable_data_ptr<float>(),
+      grad_a0.mutable_data_ptr<float>(),
+      grad_a0_im.mutable_data_ptr<float>(),
+      static_cast<float>(n),
+      static_cast<float>(k0_per_meter),
+      bins,
+      fft,
+      per_pair,
+      chirps,
+      static_cast<float>(chirp_period),
+      tx,
+      update,
+      pairs,
+      static_cast<float>(fc),
+      static_cast<float>(slope),
+      static_cast<float>(t_start),
+      seconds);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void mimo_linear_jvp_cuda(
+    const torch::stable::Tensor& d0,
+    const torch::stable::Tensor& d_rate,
+    const torch::stable::Tensor& a0,
+    const torch::stable::Tensor& a0_im,
+    const torch::stable::Tensor& tan_d0,
+    const torch::stable::Tensor& tan_d_rate,
+    const torch::stable::Tensor& tan_a0,
+    const torch::stable::Tensor& tan_a0_im,
+    torch::stable::Tensor& tan_out_re,
+    torch::stable::Tensor& tan_out_im,
+    double n,
+    double k0_per_meter,
+    int64_t num_bins,
+    int64_t n_fft,
+    int64_t targets_per_pair,
+    int64_t chirp_per_frame,
+    double chirp_period,
+    int64_t num_tx,
+    int64_t range_loss_update,
+    double fc,
+    double slope,
+    double t_start,
+    int64_t tau_is_seconds) {
+  check_cuda_float(d0, "d0");
+  check_cuda_float(d_rate, "d_rate");
+  check_cuda_float(a0, "a0");
+  check_cuda_float(a0_im, "a0_im");
+  check_cuda_float(tan_d0, "tan_d0");
+  check_cuda_float(tan_d_rate, "tan_d_rate");
+  check_cuda_float(tan_a0, "tan_a0");
+  check_cuda_float(tan_a0_im, "tan_a0_im");
+  check_cuda_float(tan_out_re, "tan_out_re");
+  check_cuda_float(tan_out_im, "tan_out_im");
+  STD_TORCH_CHECK(
+      d0.sizes().equals(d_rate.sizes()) && d0.sizes().equals(a0.sizes()) &&
+          d0.sizes().equals(a0_im.sizes()),
+      "d0, d_rate, a0, and a0_im must have the same shape.");
+  STD_TORCH_CHECK(
+      tan_d0.sizes().equals(d0.sizes()) && tan_d_rate.sizes().equals(d0.sizes()) &&
+          tan_a0.sizes().equals(d0.sizes()) && tan_a0_im.sizes().equals(d0.sizes()),
+      "tangent inputs must match the primal shape.");
+  STD_TORCH_CHECK(
+      tan_out_re.sizes().equals(tan_out_im.sizes()),
+      "tan_out_re and tan_out_im must have the same shape.");
+  STD_TORCH_CHECK(
+      tan_out_re.dim() == 3, "tangent outputs must have shape (chirps, pairs, bins).");
+
+  const int bins = checked_int(num_bins, "num_bins");
+  const int fft = checked_int(n_fft, "n_fft");
+  const int per_pair = checked_int(targets_per_pair, "targets_per_pair");
+  const int chirps = checked_int(chirp_per_frame, "chirp_per_frame");
+  const int tx = checked_int(num_tx, "num_tx");
+  const int update = checked_int(range_loss_update, "range_loss_update");
+  const int pairs = checked_int(tan_out_re.size(1), "num_pairs");
+  const int seconds = checked_int(tau_is_seconds, "tau_is_seconds");
+  STD_TORCH_CHECK(per_pair > 0, "targets_per_pair must be positive.");
+  STD_TORCH_CHECK(tx > 0 && pairs % tx == 0, "num_pairs must be a positive multiple of num_tx.");
+
+  const torch::stable::accelerator::DeviceGuard device_guard(d0.get_device_index());
+  constexpr int block_size = 256;
+  const dim3 block(block_size, 1, 1);
+  const dim3 grid((bins + block_size - 1) / block_size, pairs, chirps);
+  mimo_linear_jvp_kernel<<<grid, block, 0, current_cuda_stream(d0)>>>(
+      d0.const_data_ptr<float>(),
+      d_rate.const_data_ptr<float>(),
+      a0.const_data_ptr<float>(),
+      a0_im.const_data_ptr<float>(),
+      tan_d0.const_data_ptr<float>(),
+      tan_d_rate.const_data_ptr<float>(),
+      tan_a0.const_data_ptr<float>(),
+      tan_a0_im.const_data_ptr<float>(),
+      tan_out_re.mutable_data_ptr<float>(),
+      tan_out_im.mutable_data_ptr<float>(),
+      static_cast<float>(n),
+      static_cast<float>(k0_per_meter),
+      bins,
+      fft,
+      per_pair,
+      chirps,
+      static_cast<float>(chirp_period),
+      tx,
+      update,
+      pairs,
+      static_cast<float>(fc),
+      static_cast<float>(slope),
+      static_cast<float>(t_start),
+      seconds);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void backward_cuda(
     const torch::stable::Tensor& d,
     const torch::stable::Tensor& a,
@@ -1115,6 +1577,8 @@ void backward_per_bin_cuda(
 STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
   m.impl("forward_chunked", TORCH_BOX(&forward_chunked_cuda));
   m.impl("forward_mimo_linear_chunked", TORCH_BOX(&forward_mimo_linear_chunked_cuda));
+  m.impl("mimo_linear_backward", TORCH_BOX(&mimo_linear_backward_cuda));
+  m.impl("mimo_linear_jvp", TORCH_BOX(&mimo_linear_jvp_cuda));
   m.impl("dirichlet_jvp", TORCH_BOX(&dirichlet_jvp_cuda));
   m.impl("backward", TORCH_BOX(&backward_cuda));
   m.impl("backward_batched", TORCH_BOX(&backward_batched_cuda));

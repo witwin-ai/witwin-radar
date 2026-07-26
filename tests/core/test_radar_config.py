@@ -356,7 +356,12 @@ def test_radar_builds_runtime_receiver_chain(standard_config):
     )
     assert radar.receiver_chain_config is not None
     assert radar.receiver_chain is not None
-    assert radar.gain == pytest.approx(radar.tx_voltage_rms)
+    # `radar.gain` is gone (Phase 6, hazard F4): it multiplied every path weight
+    # by sqrt(P R), including a Channel weight that already carries sqrt(P_tx).
+    # The amplitude survives under a name that says where it may be applied -
+    # the native sensor-weight owner's tx_power_mode, and nowhere else.
+    assert not hasattr(radar, "gain")
+    assert radar.transmit_amplitude == pytest.approx(radar.tx_voltage_rms)
 
 
 def test_radar_rejects_double_quantization(standard_config):

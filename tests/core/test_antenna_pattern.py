@@ -6,11 +6,11 @@ import pytest
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers.common import (
-    compute_path_amplitudes,
-    compute_total_path_lengths,
-    normalize_interpolated_sample,
-)
+from witwin.radar.solvers.common import normalize_interpolated_sample
+
+# The two path expressions are the INDEPENDENT copy under tests/reference.
+# Phase 6 migrated the production ones into the native `sensor_weight` family.
+from reference.path_math import compute_path_amplitudes, compute_total_path_lengths
 
 
 def _base_config() -> dict:

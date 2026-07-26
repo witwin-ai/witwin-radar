@@ -51,7 +51,13 @@ def _deterministic_mimo(radar: Radar) -> torch.Tensor:
     )
     values = torch.arange(math.prod(shape), dtype=torch.float32, device=radar.device).reshape(shape)
     signal = torch.complex(0.01 * (values + 1.0), -0.004 * (values + 2.0))
-    return (signal * radar.gain).to(torch.complex64)
+    # This stub stands in for the whole solver, so it has to reproduce the one
+    # thing the solver does to the absolute level: apply the transmit
+    # amplitude. `radar.gain` is gone - the amplitude now reaches the weight
+    # through the native sensor-weight owner's tx_power_mode - and
+    # `transmit_amplitude` is the same number under the name that says where it
+    # is allowed to be applied.
+    return (signal * radar.transmit_amplitude).to(torch.complex64)
 
 
 def _static_interpolator(radar: Radar, position=(0.0, 0.0, -3.0), intensity=1.0):

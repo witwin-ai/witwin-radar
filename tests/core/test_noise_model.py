@@ -53,7 +53,11 @@ def _deterministic_mimo(radar: Radar) -> torch.Tensor:
     )
     values = torch.arange(int(np.prod(shape)), dtype=torch.float32, device=radar.device).reshape(shape)
     signal = torch.complex(0.01 * (values + 1.0), -0.004 * (values + 2.0))
-    return (signal * radar.gain).to(torch.complex64)
+    # This stub stands in for the whole solver, so it applies the transmit
+    # amplitude the solver's sensor-weight owner would. `radar.gain` is gone;
+    # `transmit_amplitude` is the same number, and it is 1.0 on a radar with no
+    # receiver chain.
+    return (signal * radar.transmit_amplitude).to(torch.complex64)
 
 
 def _deterministic_frame(radar: Radar) -> torch.Tensor:

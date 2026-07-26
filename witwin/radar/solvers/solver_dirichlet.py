@@ -18,8 +18,14 @@ from __future__ import annotations
 import torch
 
 from ..path_cache import MimoPathCache
+from ..sensors.legacy_paths import (
+    LegacySensorContext,
+    evaluate_pair_rows,
+    evaluate_slot_rows,
+)
 from ..synthesis.dirichlet_spectrum import (
     DirichletSpectrumSpec,
+    MimoLinearFramePlan,
     chunked_spectra,
     mimo_linear_spectra,
     spectrum_vjp,
@@ -27,10 +33,7 @@ from ..synthesis.dirichlet_spectrum import (
 )
 from . import Solver
 from .common import (
-    collect_interpolated_samples,
-    compute_path_amplitudes,
-    compute_slot_path_tensors,
-    compute_total_path_lengths,
+    _stack_slot_samples,
     normalize_interpolated_sample,
     samples_require_grad,
 )
@@ -40,6 +43,30 @@ def _load_module():
     from ..cuda import build
 
     return build.build_extension()
+
+
+def collect_interpolated_samples(radar, interpolator, t0=0.0):
+    """Evaluate the scene interpolator once per TDM chirp slot.
+
+    This is a HOST LOOP and it stays one: an interpolator call is scene
+    authoring, not path physics, and the loop runs over
+    ``chirp_per_frame * num_tx`` slots rather than over paths. It lives here
+    rather than in ``solvers/common.py`` because this solver is its only caller
+    and the shared module is no longer allowed to grow a per-frame routine.
+
+    TDM-MIMO fires TX antennas sequentially: slot ``chirp_id * num_tx + tx_id``
+    starts ``slot * chirp_period`` into the frame. The returned list holds
+    ``chirp_per_frame * num_tx`` samples in slot order, so per-TX motion phase
+    (the phase ``_compensate_tdm_phase`` removes downstream) is simulated.
+    """
+
+    cfg = radar.config
+    chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+    samples = []
+    for slot in range(cfg.chirp_per_frame * cfg.num_tx):
+        sample = interpolator(t0 + slot * chirp_period)
+        samples.append(normalize_interpolated_sample(sample, device=radar.device))
+    return samples
 
 
 def _to_f32(solver: "DirichletSolver", value: torch.Tensor) -> torch.Tensor:
@@ -77,6 +104,7 @@ def _spectrum_spec(
     num_bins: int,
     n_fft: int,
     k0_per_meter: float,
+    tau_is_seconds: int = 0,
 ) -> DirichletSpectrumSpec:
     """Snapshot the configuration scalars the kernels read, by value.
 
@@ -85,8 +113,12 @@ def _spectrum_spec(
     ``backward``, so a config mutated between the forward and the backward
     produced the gradient of a different function than the one evaluated.
 
-    ``tau_is_seconds=0``: every caller in this module supplies a ONE-WAY
-    distance in metres, which is the legacy Dirichlet input.
+    ``tau_is_seconds`` and ``k0_per_meter`` co-vary and must be taken from the
+    same pair. ``0`` is the legacy public surface - ``chirp`` and ``chirp_mimo``
+    take a ONE-WAY distance in metres. ``1`` is what every internal route uses,
+    because the sensor-weight owner publishes a ROUND-TRIP delay and turning one
+    back into a distance so the kernel can halve it again is how a path becomes
+    self-consistently 2x wrong.
     """
 
     cfg = solver.radar.config
@@ -98,7 +130,47 @@ def _spectrum_spec(
         fc=cfg.fc,
         slope_hz_per_s=cfg.slope * 1e12,
         t_start_s=cfg.adc_start_time * 1e-6,
-        tau_is_seconds=0,
+        tau_is_seconds=tau_is_seconds,
+    )
+
+
+def _delay_spectra(
+    solver: "DirichletSolver",
+    delays: torch.Tensor,
+    weights: torch.Tensor,
+    *,
+    targets_per_spectrum: int,
+    num_bins: int,
+    n_fft: int,
+    k0_per_second: float,
+    shared_gradient: bool = False,
+) -> torch.Tensor:
+    """Chunked spectra of a ROUND-TRIP delay row set with a COMPLEX weight.
+
+    Every internal route goes through here. The delay comes from the
+    ``sensor_weight`` kernel and the weight is complex because a Channel
+    coefficient is; a legacy real amplitude is the special case with a zero
+    imaginary part, which the family evaluates as a separate accumulation of
+    exactly zero.
+    """
+
+    tau = delays.reshape(-1)
+    weight = weights.reshape(-1)
+    if tau.shape != weight.shape:
+        raise ValueError("delays and weights must have the same shape.")
+    return chunked_spectra(
+        tau,
+        weight.real.contiguous(),
+        weight.imag.contiguous(),
+        spec=_spectrum_spec(
+            solver,
+            num_bins=num_bins,
+            n_fft=n_fft,
+            k0_per_meter=k0_per_second,
+            tau_is_seconds=1,
+        ),
+        targets_per_spectrum=targets_per_spectrum,
+        shared_gradient=shared_gradient,
     )
 
 
@@ -255,6 +327,14 @@ class DirichletSolver(Solver):
         self.mimo_num_bins = cfg.adc_samples
         self.mimo_k0_per_meter = (slope_hz * 2 / radar.c0) * self.mimo_N_fft / fs
 
+        # The same beat-bin scale expressed against a ROUND-TRIP DELAY rather
+        # than a one-way distance: k0 = f_beat * n_fft / fs with
+        # f_beat = slope * tau. It is the identical number
+        # (tau = 2 d / c0), written in the units the sensor-weight owner
+        # publishes so that no caller has to reconstruct a distance.
+        self.k0_per_second = slope_hz * self.N_fft / fs
+        self.mimo_k0_per_second = slope_hz * self.mimo_N_fft / fs
+
     @property
     def _module(self):
         if self.device.type != "cuda":
@@ -282,17 +362,29 @@ class DirichletSolver(Solver):
         r = self.radar
         cfg = r.config
         chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
-        tx0 = r.tx_pos[0:1].contiguous()
-        rx0 = r.rx_pos[0:1].contiguous()
+        context = LegacySensorContext.from_radar(r, tx_count=1, rx_count=1)
 
         result = []
         for chirp_id in range(cfg.chirp_per_frame):
             time_in_frame = chirp_id * chirp_period * cfg.num_tx
             sample = normalize_interpolated_sample(interpolator(t0 + time_in_frame), device=self.device)
-            total_lengths = compute_total_path_lengths(sample, tx0, rx0)
-            one_way = total_lengths.squeeze(0).squeeze(0) * 0.5
-            amp = compute_path_amplitudes(r, sample, total_lengths, tx_pos=tx0, rx_pos=rx0).squeeze(0).squeeze(0)
-            result.append(self.chirp(one_way, amp))
+            if sample.points.shape[0] == 0:
+                result.append(
+                    torch.zeros(self.num_bins, dtype=torch.complex64, device=self.device)
+                )
+                continue
+            weights = evaluate_pair_rows(context, sample)
+            chunks = _delay_spectra(
+                self,
+                weights.total_delay_s,
+                weights.weight,
+                targets_per_spectrum=256,
+                num_bins=self.num_bins,
+                n_fft=self.N_fft,
+                k0_per_second=self.k0_per_second,
+                shared_gradient=True,
+            )
+            result.append(chunks.sum(dim=0))
 
         return torch.stack(result)
 
@@ -310,12 +402,18 @@ class DirichletSolver(Solver):
         frame = self._mimo_from_slot_samples(samples, freq_domain=freq_domain)
         return frame
 
-    # Slot-group size cap: bounds the (slots, N, RX, 3) geometry transients in
-    # compute_slot_path_tensors to roughly 256 MB of float32.
+    # Slot-group size cap: bounds the (slots, RX, N, 3) row transients handed to
+    # the sensor-weight kernel to roughly 256 MB of float32.
     _SLOT_GROUP_ELEMENT_BUDGET = 1 << 26
 
     def _mimo_from_slot_samples(self, samples, *, freq_domain: bool):
-        """One forward_chunked launch per slot group over padded per-slot paths."""
+        """One sensor-weight launch and one spectrum launch per slot group.
+
+        The row set is ``(slot, rx, path)`` in that order, so the spectrum's
+        chunk axis is ``slot * num_rx + rx`` - the same partition the previous
+        Torch expression produced, reshaped rather than permuted.
+        """
+
         r = self.radar
         cfg = r.config
         num_rx = cfg.num_rx
@@ -328,12 +426,15 @@ class DirichletSolver(Solver):
                 device=self.device,
             )
 
+        context = LegacySensorContext.from_radar(r)
         spectrum_groups = []
         group = max(1, self._SLOT_GROUP_ELEMENT_BUDGET // max(1, n_max * num_rx * 3))
         for start in range(0, num_slots, group):
             stop = min(start + group, num_slots)
-            one_way, amplitudes = compute_slot_path_tensors(r, samples[start:stop], first_slot=start)
-            if one_way is None:
+            packed = _stack_slot_samples(
+                samples[start:stop], with_normals=context.uses_polarization
+            )
+            if packed is None:
                 spectrum_groups.append(
                     torch.zeros(
                         ((stop - start) * num_rx, self.mimo_num_bins),
@@ -342,16 +443,17 @@ class DirichletSolver(Solver):
                     )
                 )
                 continue
-            _, _, group_n = one_way.shape
+            weights = evaluate_slot_rows(context, packed, first_slot=start)
+            group_n = int(packed[0].shape[1])
             spectrum_groups.append(
-                _native_chunked_spectra(
+                _delay_spectra(
                     self,
-                    one_way.reshape(-1),
-                    amplitudes.reshape(-1),
+                    weights.total_delay_s,
+                    weights.weight,
                     targets_per_spectrum=group_n,
                     num_bins=self.mimo_num_bins,
                     n_fft=self.mimo_N_fft,
-                    k0_per_meter=self.mimo_k0_per_meter,
+                    k0_per_second=self.mimo_k0_per_second,
                 )
             )
 
@@ -401,25 +503,24 @@ class DirichletSolver(Solver):
         return self._path_cache_from_sample(sample, velocity_t)
 
     def _path_cache_from_sample(self, sample, velocities: torch.Tensor | None = None) -> MimoPathCache:
+        """One sensor-weight launch produces the whole cache.
+
+        Delay, delay rate, and the complex weight all come out of the same
+        kernel evaluation, so they cannot describe three slightly different
+        geometries the way three independent Torch expressions could.
+        """
+
         r = self.radar
-        total_lengths = compute_total_path_lengths(sample, r.tx_pos, r.rx_pos)
-        one_way = (total_lengths * 0.5).contiguous()
-        amplitudes = compute_path_amplitudes(
-            r,
-            sample,
-            total_lengths,
-            tx_pos=r.tx_pos,
-            rx_pos=r.rx_pos,
-        ).contiguous()
-        one_way_rates = None
-        if velocities is not None:
-            one_way_rates = (
-                self._total_path_length_rates(sample, velocities, tx_pos=r.tx_pos, rx_pos=r.rx_pos) * 0.5
-            ).contiguous()
+        cfg = r.config
+        shape = (cfg.num_tx, cfg.num_rx, int(sample.points.shape[0]))
+        context = LegacySensorContext.from_radar(r)
+        weights = evaluate_pair_rows(context, sample, velocities=velocities)
         return MimoPathCache(
-            one_way_distances=one_way,
-            amplitudes=amplitudes,
-            one_way_distance_rates=one_way_rates,
+            total_delay_s=weights.total_delay_s.view(shape).contiguous(),
+            amplitudes=weights.weight.view(shape).contiguous(),
+            delay_rate=(
+                None if velocities is None else weights.delay_rate.view(shape).contiguous()
+            ),
         )
 
     def mimo_from_paths(
@@ -431,21 +532,21 @@ class DirichletSolver(Solver):
     ):
         if amplitude_update not in {"constant", "range_loss"}:
             raise ValueError("amplitude_update must be 'constant' or 'range_loss'.")
-        distances = cache.one_way_distances.to(dtype=torch.float32, device=self.device).contiguous()
-        amplitudes = cache.amplitudes.to(dtype=torch.float32, device=self.device).contiguous()
-        if distances.shape != amplitudes.shape or distances.ndim != 3:
+        delays = cache.total_delay_s.to(dtype=torch.float32, device=self.device).contiguous()
+        amplitudes = cache.amplitudes.to(dtype=torch.complex64, device=self.device).contiguous()
+        if delays.shape != amplitudes.shape or delays.ndim != 3:
             raise ValueError(
-                "MimoPathCache one_way_distances and amplitudes must both have shape "
+                "MimoPathCache total_delay_s and amplitudes must both have shape "
                 "(num_tx, num_rx, num_paths)."
             )
         cfg = self.radar.config
         expected_shape = (cfg.num_tx, cfg.num_rx)
-        if distances.shape[:2] != expected_shape:
+        if delays.shape[:2] != expected_shape:
             raise ValueError(
                 "MimoPathCache antenna dimensions must match radar config; "
-                f"got {tuple(distances.shape[:2])}, expected {expected_shape}."
+                f"got {tuple(delays.shape[:2])}, expected {expected_shape}."
             )
-        n_targets = distances.shape[2]
+        n_targets = delays.shape[2]
         if n_targets == 0:
             return torch.zeros(
                 (cfg.num_tx, cfg.num_rx, cfg.chirp_per_frame, cfg.adc_samples),
@@ -453,9 +554,9 @@ class DirichletSolver(Solver):
                 device=self.device,
             )
         num_pairs = cfg.num_tx * cfg.num_rx
-        if cache.one_way_distance_rates is None:
+        if cache.delay_rate is None:
             spectra = self._mimo_spectra_static(
-                distances.reshape(-1).contiguous(),
+                delays.reshape(-1).contiguous(),
                 amplitudes.reshape(-1).contiguous(),
                 num_pairs,
                 n_targets,
@@ -465,11 +566,11 @@ class DirichletSolver(Solver):
             chirp = spectra.view(cfg.num_tx, cfg.num_rx, cfg.adc_samples)
             return chirp.unsqueeze(2).expand(-1, -1, cfg.chirp_per_frame, -1).clone()
 
-        rates = cache.one_way_distance_rates.to(dtype=torch.float32, device=self.device).contiguous()
-        if rates.shape != distances.shape:
-            raise ValueError("MimoPathCache one_way_distance_rates must match one_way_distances shape.")
+        rates = cache.delay_rate.to(dtype=torch.float32, device=self.device).contiguous()
+        if rates.shape != delays.shape:
+            raise ValueError("MimoPathCache delay_rate must match total_delay_s shape.")
         return self._mimo_from_path_tensors_linear(
-            distances,
+            delays,
             amplitudes,
             rates,
             freq_domain=freq_domain,
@@ -479,8 +580,6 @@ class DirichletSolver(Solver):
     def _mimo_from_sample_static(self, sample, *, freq_domain: bool):
         r = self.radar
         cfg = r.config
-        tx_pos = r.tx_pos
-        rx_pos = r.rx_pos
         num_pairs = cfg.num_tx * cfg.num_rx
         n_targets = sample.points.shape[0]
         if n_targets == 0:
@@ -490,12 +589,11 @@ class DirichletSolver(Solver):
                 device=self.device,
             )
 
-        total_lengths = compute_total_path_lengths(sample, tx_pos, rx_pos)
-        one_way = _reshape_pair_targets(total_lengths, num_pairs, n_targets) * 0.5
-        all_d = one_way.reshape(-1).contiguous()
-        amp = compute_path_amplitudes(r, sample, total_lengths, tx_pos=tx_pos, rx_pos=rx_pos)
-        all_a = amp.reshape(-1).contiguous()
-        spectra = self._mimo_spectra_static(all_d, all_a, num_pairs, n_targets)
+        context = LegacySensorContext.from_radar(r)
+        weights = evaluate_pair_rows(context, sample)
+        spectra = self._mimo_spectra_static(
+            weights.total_delay_s, weights.weight, num_pairs, n_targets
+        )
         if not freq_domain:
             spectra = torch.fft.ifft(spectra, dim=-1)
         chirp = spectra.view(cfg.num_tx, cfg.num_rx, cfg.adc_samples)
@@ -503,8 +601,8 @@ class DirichletSolver(Solver):
 
     def _mimo_spectra_static(
         self,
-        all_d: torch.Tensor,
-        all_a: torch.Tensor,
+        all_tau: torch.Tensor,
+        all_weight: torch.Tensor,
         num_pairs: int,
         n_targets: int,
         *,
@@ -513,129 +611,74 @@ class DirichletSolver(Solver):
         chunks_per_pair = (n_targets + targets_per_chunk - 1) // targets_per_chunk
         n_padded = chunks_per_pair * targets_per_chunk
         if n_padded != n_targets:
-            d = torch.zeros((num_pairs, n_padded), dtype=torch.float32, device=self.device)
-            a = torch.zeros_like(d)
-            d[:, :n_targets] = all_d.view(num_pairs, n_targets)
-            a[:, :n_targets] = all_a.view(num_pairs, n_targets)
-            all_d = d.reshape(-1)
-            all_a = a.reshape(-1)
+            tau = torch.zeros((num_pairs, n_padded), dtype=torch.float32, device=self.device)
+            weight = torch.zeros(
+                (num_pairs, n_padded), dtype=torch.complex64, device=self.device
+            )
+            tau[:, :n_targets] = all_tau.view(num_pairs, n_targets)
+            weight[:, :n_targets] = all_weight.view(num_pairs, n_targets)
+            all_tau = tau.reshape(-1)
+            all_weight = weight.reshape(-1)
 
-        spectra = _native_chunked_spectra(
+        spectra = _delay_spectra(
             self,
-            all_d,
-            all_a,
+            all_tau,
+            all_weight,
             targets_per_spectrum=targets_per_chunk,
             num_bins=self.mimo_num_bins,
             n_fft=self.mimo_N_fft,
-            k0_per_meter=self.mimo_k0_per_meter,
+            k0_per_second=self.mimo_k0_per_second,
         )
         return spectra.view(num_pairs, chunks_per_pair, self.mimo_num_bins).sum(dim=1)
 
     def _mimo_from_path_tensors_linear(
         self,
-        distances: torch.Tensor,
+        delays: torch.Tensor,
         amplitudes: torch.Tensor,
         rates: torch.Tensor,
         *,
         freq_domain: bool,
         amplitude_update: str,
     ):
-        # RECORDED DEBT, not a design. The fused native launch below has no
-        # registered backward or JVP companion yet, so a reverse-mode call is
-        # dispatched to the Torch replay underneath. The design assigns
-        # `mimo_linear_backward` and `mimo_linear_jvp` to the stage that deletes
-        # that replay; until they exist, deleting this dispatch would either
-        # change the production numerics of the frame path (a different kernel
-        # with a different reduction) or orphan a manifested symbol.
-        #
-        # The forward-mode hole this branch used to leave is closed: an
-        # ADR-038 dual has `requires_grad == False` and would take the native
-        # branch, which now refuses a forward tangent instead of dropping it.
-        if distances.requires_grad or amplitudes.requires_grad or rates.requires_grad:
-            return self._mimo_from_path_tensors_linear_autograd(
-                distances,
-                amplitudes,
-                rates,
-                freq_domain=freq_domain,
-                amplitude_update=amplitude_update,
-            )
+        """One fused native launch over the whole TDM frame, in every AD mode.
+
+        There is no ``requires_grad`` branch. The Torch expression that used to
+        sit behind one - ``dist = d0 + rate * t`` with the ``d0 / dist``
+        range-loss update, expanded to a ``chirps x pairs x targets``
+        intermediate and pushed through the chunked forward - was a second
+        implementation of ``forward_mimo_linear_chunked``'s physics, so a
+        gradient came from different code than the value it was the gradient of.
+        ``mimo_linear_backward`` and ``mimo_linear_jvp`` replace it.
+        """
+
         cfg = self.radar.config
-        num_pairs = cfg.num_tx * cfg.num_rx
-        n_targets = distances.shape[2]
+        n_targets = delays.shape[2]
         chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
+        weight = amplitudes.reshape(-1)
         spectra = mimo_linear_spectra(
-            distances.reshape(-1).contiguous(),
+            delays.reshape(-1).contiguous(),
             rates.reshape(-1).contiguous(),
-            amplitudes.reshape(-1).contiguous(),
+            weight.real.contiguous(),
+            weight.imag.contiguous(),
             spec=_spectrum_spec(
                 self,
                 num_bins=self.mimo_num_bins,
                 n_fft=self.mimo_N_fft,
-                k0_per_meter=self.mimo_k0_per_meter,
+                k0_per_meter=self.mimo_k0_per_second,
+                tau_is_seconds=1,
             ),
-            targets_per_pair=n_targets,
-            num_pairs=num_pairs,
-            chirp_per_frame=cfg.chirp_per_frame,
-            chirp_period_s=chirp_period,
-            num_tx=cfg.num_tx,
-            range_loss_update=amplitude_update == "range_loss",
+            plan=MimoLinearFramePlan(
+                targets_per_pair=n_targets,
+                num_pairs=cfg.num_tx * cfg.num_rx,
+                chirp_per_frame=cfg.chirp_per_frame,
+                chirp_period_s=chirp_period,
+                num_tx=cfg.num_tx,
+                range_loss_update=amplitude_update == "range_loss",
+            ),
         )
         if not freq_domain:
             spectra = torch.fft.ifft(spectra, dim=-1)
         return spectra.view(cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples).permute(1, 2, 0, 3).contiguous()
-
-    def _mimo_from_path_tensors_linear_autograd(
-        self,
-        distances: torch.Tensor,
-        amplitudes: torch.Tensor,
-        rates: torch.Tensor,
-        *,
-        freq_domain: bool,
-        amplitude_update: str,
-    ):
-        cfg = self.radar.config
-        num_pairs = cfg.num_tx * cfg.num_rx
-        n_targets = distances.shape[2]
-        chirp_period = (cfg.idle_time + cfg.ramp_end_time) * 1e-6
-        chirp_ids = torch.arange(
-            cfg.chirp_per_frame,
-            dtype=distances.dtype,
-            device=self.device,
-        ).view(-1, 1)
-        tx_ids = torch.arange(cfg.num_tx, dtype=distances.dtype, device=self.device).repeat_interleave(
-            cfg.num_rx
-        ).view(1, -1)
-        times = (chirp_ids * cfg.num_tx + tx_ids) * chirp_period
-        base_distances = distances.reshape(1, num_pairs, n_targets)
-        frame_distances = base_distances + rates.reshape(1, num_pairs, n_targets) * times.unsqueeze(-1)
-        frame_amplitudes = amplitudes.reshape(1, num_pairs, n_targets).expand_as(frame_distances)
-        if amplitude_update == "range_loss":
-            frame_amplitudes = frame_amplitudes * base_distances / torch.clamp(frame_distances, min=1e-6)
-        spectra = _native_chunked_spectra(
-            self,
-            frame_distances.reshape(-1),
-            frame_amplitudes.reshape(-1),
-            targets_per_spectrum=n_targets,
-            num_bins=self.mimo_num_bins,
-            n_fft=self.mimo_N_fft,
-            k0_per_meter=self.mimo_k0_per_meter,
-        )
-        if not freq_domain:
-            spectra = torch.fft.ifft(spectra, dim=-1)
-        return (
-            spectra.view(cfg.chirp_per_frame, cfg.num_tx, cfg.num_rx, cfg.adc_samples)
-            .permute(1, 2, 0, 3)
-            .contiguous()
-        )
-
-    def _total_path_length_rates(self, sample, velocities: torch.Tensor, *, tx_pos, rx_pos):
-        entry_vectors = sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1)
-        point_vectors = sample.points.unsqueeze(0) - rx_pos.unsqueeze(1)
-        entry_dist = torch.clamp(torch.linalg.norm(entry_vectors, dim=-1), min=1e-6)
-        point_dist = torch.clamp(torch.linalg.norm(point_vectors, dim=-1), min=1e-6)
-        entry_rates = (entry_vectors * velocities.unsqueeze(0)).sum(dim=-1) / entry_dist
-        point_rates = (point_vectors * velocities.unsqueeze(0)).sum(dim=-1) / point_dist
-        return entry_rates.unsqueeze(1) + point_rates.unsqueeze(0)
 
     def backward(self, distances, amplitudes, grad_output_re, grad_output_im):
         return backward(self, distances, amplitudes, grad_output_re, grad_output_im)

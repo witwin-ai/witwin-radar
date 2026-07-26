@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import textwrap
 
 import pytest
 
@@ -91,16 +90,15 @@ def test_the_oracles_still_import_the_two_copied_expressions():
     )
 
 
-def test_the_copied_expressions_still_match_the_production_ones():
-    """A copy that has drifted is worse than an import.
+def test_the_production_module_no_longer_holds_the_copied_expressions():
+    """The copy is now the SOLE record of the legacy expression.
 
-    Independence is about who owns the expression, not about permission to
-    change it behind the production module's back. While ``solvers/common.py``
-    still exists, the two sources must be textually identical after the
-    docstring, so a Phase-6 edit to one and not the other is caught here rather
-    than as a mysterious tolerance failure. When work item 8 deletes the
-    production functions, this test goes with them and ``path_math`` becomes the
-    sole record of the legacy expression.
+    This test used to assert that ``solvers/common.py`` and
+    ``reference/path_math.py`` were textually identical, and its own docstring
+    said it would go with the production functions when work item 8 deleted
+    them. It has: the four expressions live only under ``tests/`` now, and what
+    is asserted is that no production module grew them back. A drift check
+    against a module that no longer has the function would silently pass.
     """
 
     import inspect
@@ -110,20 +108,7 @@ def test_the_copied_expressions_still_match_the_production_ones():
 
     for name in ("compute_total_path_lengths", "compute_path_amplitudes",
                  "compute_polarization_amplitudes", "compute_antenna_pattern_gains"):
-        produced = inspect.getsource(getattr(common, name))
-        copied = inspect.getsource(getattr(path_math, name))
-        assert _body_without_docstring(produced) == _body_without_docstring(copied), name
-
-
-def _body_without_docstring(source: str) -> str:
-    function = ast.parse(textwrap.dedent(source)).body[0]
-    assert isinstance(function, ast.FunctionDef)
-    body = function.body
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    return "\n".join(ast.dump(node) for node in body)
+        assert not hasattr(common, name), name
+        assert callable(getattr(path_math, name)), name
+        # And the copy is still a real expression rather than a re-export.
+        assert inspect.getmodule(getattr(path_math, name)) is path_math, name
