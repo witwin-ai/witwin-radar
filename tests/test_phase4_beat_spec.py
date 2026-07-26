@@ -85,11 +85,14 @@ def test_round_trip_delay_is_the_sum_of_two_legs():
 
 
 def test_spec_rejects_a_degenerate_grid():
+    f_ref = geo.REFERENCE_FREQUENCY_HZ
     with pytest.raises(ValueError, match="num_samples must be positive"):
-        FmcwBeatSpec(0, 1, 1e-6, 1e-4, 1e12, 0.0)
+        FmcwBeatSpec(0, 1, 1e-6, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="num_chirps must be positive"):
-        FmcwBeatSpec(4, 0, 1e-6, 1e-4, 1e12, 0.0)
+        FmcwBeatSpec(4, 0, 1e-6, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="sample_period_s must be positive"):
-        FmcwBeatSpec(4, 1, 0.0, 1e-4, 1e12, 0.0)
+        FmcwBeatSpec(4, 1, 0.0, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="chirp_period_s must be positive"):
-        FmcwBeatSpec(4, 1, 1e-6, 0.0, 1e12, 0.0)
+        FmcwBeatSpec(4, 1, 1e-6, 0.0, 1e12, 0.0, f_ref)
+    with pytest.raises(ValueError, match="reference_frequency_hz must be"):
+        FmcwBeatSpec(4, 1, 1e-6, 1e-4, 1e12, 0.0, 0.0)

@@ -81,27 +81,38 @@ STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
   // Setting both to fc double counts the carrier, and the Python contract
   // refuses it. Both supported settings are exact; neither is a fallback.
   // See R-ADR-004.
+  //
+  // `segment_tx_index` (int32, one entry per sensor-pair segment) and `num_tx`
+  // carry TDM-MIMO slow time: the slow-time coordinate of a (chirp, segment)
+  // cell is its TDM slot, (chirp * num_tx + segment_tx_index[segment]) *
+  // chirp_period_s, not the chirp index. They are kernel ARGUMENTS rather than
+  // a second pass, so TDM costs no extra launch. `num_tx = 1` with a zero table
+  // reduces the slot to the chirp index exactly.
   m.def(
       "fmcw_beat_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
-      "Tensor(b!) out_im, int num_paths, int num_segments, int num_chirps, "
+      "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
+      "Tensor(a!) out_re, "
+      "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
+      "int num_chirps, "
       "int num_samples, float sample_period_s, float chirp_period_s, "
       "float slope_hz_per_s, float carrier_hz, float carrier_rate_hz, "
       "float t_start_s) -> ()");
   m.def(
       "fmcw_beat_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
+      "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
+      "Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
-      "int num_segments, int num_chirps, int num_samples, "
+      "int num_segments, int num_tx, int num_chirps, int num_samples, "
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
   m.def(
       "fmcw_beat_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
+      "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
+      "Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
-      "int num_segments, int num_chirps, int num_samples, "
+      "int num_segments, int num_tx, int num_chirps, int num_samples, "
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
 

@@ -281,7 +281,9 @@ def test_a_site_behind_the_wall_kills_every_row_and_the_frame_is_still_valid():
 
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
 
-    iq = synthesize_fmcw_beat(composed, drv.make_spec(num_chirps=2))
+    iq = synthesize_fmcw_beat(
+        drv.to_synthesis(composed), drv.make_spec(num_chirps=2)
+    )
     assert torch.count_nonzero(iq) == 0
 
 
@@ -337,7 +339,7 @@ def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipat
     assert frame.path_count == 4
     assert bool(frame.row_valid.all())
 
-    measured = synthesize_fmcw_beat(frame, spec)
+    measured = synthesize_fmcw_beat(drv.to_synthesis(frame), spec)
     expected = ref.beat_samples(
         delay.cpu(),
         rate.cpu(),
@@ -395,7 +397,9 @@ def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
     for row in range(frame.path_count):
         alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
         alone[row] = True
-        iq = synthesize_fmcw_beat(replace(frame, row_valid=alone), spec)
+        iq = synthesize_fmcw_beat(
+            drv.to_synthesis(replace(frame, row_valid=alone)), spec
+        )
         chirps = iq[:, 0, 0].cpu().to(torch.complex128)
         measured = float(
             torch.angle(chirps[1:] * torch.conj(chirps[:-1])).mean()

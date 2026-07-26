@@ -106,6 +106,7 @@ def beat_samples(
     beat_weight: torch.Tensor,
     pair_offsets: torch.Tensor,
     spec,
+    segment_tx_index=None,
 ) -> torch.Tensor:
     """The beat sum, in the BEAT convention, evaluated in float64.
 
@@ -113,24 +114,36 @@ def beat_samples(
 
         cycles = carrier * tau + carrier_rate * (tau - tau_rt)
                + slope * tau * (t_start - 0.5 * tau)
-               + slope * tau * t_m,        tau = tau_rt + tau_rate * t_c
+               + slope * tau * t_m,   tau = tau_rt + tau_rate * t_slot
+        t_slot(c, p) = (c * num_tx + tx[p]) * chirp_period
 
     ``carrier_rate`` applies the carrier to the intra-frame delay CHANGE only.
     On the production path the absolute carrier phase lives in the weight,
     frozen at ``tau_rt``, and this term is the Doppler the weight cannot carry.
+
+    ``t_slot`` is TDM slot time, not chirp time: with several transmitters
+    sharing the frame, the sensor pairs driven by transmitter ``tx`` sit a whole
+    chirp period later in slow time than those driven by ``tx - 1``.
+    ``segment_tx_index`` defaults to all-zero, which with ``spec.num_tx == 1``
+    is the single-transmitter case ``t_slot == c * T_chirp``.
     """
 
     offsets = [int(v) for v in pair_offsets.tolist()]
     num_segments = len(offsets) - 1
+    num_tx = int(getattr(spec, "num_tx", 1))
+    if segment_tx_index is None:
+        tx_of_segment = [0] * num_segments
+    else:
+        tx_of_segment = [int(v) for v in segment_tx_index]
     chirps = torch.arange(spec.num_chirps, dtype=torch.float64)
     samples = torch.arange(spec.num_samples, dtype=torch.float64)
-    t_c = chirps * spec.chirp_period_s
     t_m = samples * spec.sample_period_s
 
     out = torch.zeros(
         (spec.num_chirps, num_segments, spec.num_samples), dtype=torch.complex128
     )
     for segment in range(num_segments):
+        t_c = (chirps * num_tx + tx_of_segment[segment]) * spec.chirp_period_s
         for row in range(offsets[segment], offsets[segment + 1]):
             drift = delay_rate[row].to(torch.float64) * t_c.reshape(-1, 1)
             tau = total_delay_s[row].to(torch.float64) + drift
@@ -159,6 +172,7 @@ def synthesize(
     transfer_ref: torch.Tensor,
     pair_offsets: torch.Tensor,
     spec,
+    segment_tx_index=None,
 ) -> torch.Tensor:
     return beat_samples(
         total_delay_s,
@@ -166,6 +180,7 @@ def synthesize(
         channel_to_beat(transfer_ref),
         pair_offsets,
         spec,
+        segment_tx_index,
     )
 
 

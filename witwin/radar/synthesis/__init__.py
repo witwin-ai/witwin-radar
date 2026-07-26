@@ -10,6 +10,14 @@ the batch refuses any spec that would apply a factor the weight already
 carries.
 """
 
+from .assembly import (
+    FRAME_CUBE_AXES,
+    PAIR_RANK_LAYOUT,
+    assemble_frame_cube,
+    pair_rx_index,
+    pair_tx_index,
+    validate_pair_ordering,
+)
 from .contracts import (
     FmcwBeatSpec,
     SlowTimeMode,
@@ -24,11 +32,16 @@ from .fmcw_beat import (
 )
 
 __all__ = [
+    "FRAME_CUBE_AXES",
+    "PAIR_RANK_LAYOUT",
     "FmcwBeatSpec",
     "SlowTimeMode",
     "SynthesisPathBatch",
     "WaveformSpecProtocol",
+    "assemble_frame_cube",
     "channel_phasor_to_beat_weight",
+    "pair_rx_index",
+    "pair_tx_index",
     "require_compatible",
     "synthesize_beat_rows",
     "synthesize_fmcw_beat",

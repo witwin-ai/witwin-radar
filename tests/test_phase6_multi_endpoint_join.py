@@ -185,7 +185,7 @@ def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows(spike):
     assert empty == [1, 3]
 
     spec = drv.make_spec(num_chirps=2)
-    iq = synthesize_fmcw_beat(composed, spec)
+    iq = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
     assert tuple(iq.shape) == (2, 4, spec.num_samples)
     occupied = [int(torch.count_nonzero(iq[:, rank, :])) for rank in range(4)]
     assert occupied == [2 * spec.num_samples, 0, 2 * spec.num_samples, 0]

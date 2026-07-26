@@ -33,6 +33,7 @@ SPEC = FmcwBeatSpec(
     chirp_period_s=65.0e-6,
     slope_hz_per_s=60.012e12,
     t_start_s=6.0e-6,
+    reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
     carrier_hz=0.0,
     carrier_rate_hz=geo.REFERENCE_FREQUENCY_HZ,
 )
@@ -329,6 +330,7 @@ def test_gradcheck_corroborates_both_modes():
         chirp_period_s=65.0e-6,
         slope_hz_per_s=60.012e12,
         t_start_s=0.0,
+        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         carrier_hz=0.0,
     )
     offsets = torch.tensor([0, 2], dtype=torch.int64, device="cuda")

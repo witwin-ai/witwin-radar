@@ -85,7 +85,7 @@ def test_both_modes_publish_the_same_contract_to_the_same_synthesis(
         assert batch.sensor_pair_count == 1
         assert batch.pair_offsets.tolist() == [0, 1]
         assert batch.reference_frequency_hz == geo.REFERENCE_FREQUENCY_HZ
-        iq = synthesize_fmcw_beat(batch, spec)
+        iq = synthesize_fmcw_beat(drv.to_synthesis(batch), spec)
         assert iq.shape == (spec.num_chirps, 1, spec.num_samples)
         assert torch.isfinite(iq.real).all() and torch.isfinite(iq.imag).all()
 

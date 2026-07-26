@@ -7,12 +7,24 @@
 //
 // Convention, taken from `dirichlet.cu` `path_response` and NOT re-derived:
 //
-//   cycles(tau, t_c, t_m) = carrier_hz * tau
-//                         + carrier_rate_hz * (tau - tau_rt)
-//                         + slope * tau * (t_start - 0.5 * tau)
-//                         + slope * tau * t_m
-//   tau(t_c)              = tau_rt + tau_rate * t_c
+//   cycles(tau, t_slot, t_m) = carrier_hz * tau
+//                            + carrier_rate_hz * (tau - tau_rt)
+//                            + slope * tau * (t_start - 0.5 * tau)
+//                            + slope * tau * t_m
+//   t_slot(c, p)          = (c * num_tx + segment_tx_index[p]) * chirp_period
+//   tau(c, p)             = tau_rt + tau_rate * t_slot(c, p)
 //   s[c][p][m]            = sum_k w[k] * exp(+j * 2 * pi * cycles)
+//
+// TDM-MIMO fires the transmitters SEQUENTIALLY, one chirp period apart, so the
+// slow-time coordinate of a (chirp, sensor pair) cell is its TDM SLOT, not its
+// chirp index. `segment_tx_index[p]` is which transmitter owns sensor pair `p`,
+// and `num_tx` is how many slots one chirp loop holds. This is the same slot
+// time `dirichlet.cu`'s MIMO kernel, `solvers/common.py::collect_interpolated_
+// samples`, and `sigproc/pointcloud.py::_compensate_tdm_phase` already assume;
+// synthesizing it here is what makes the per-TX motion phase a physical
+// consequence of the kernel rather than a downstream reinterpretation.
+// `num_tx = 1` with a zero index table gives `(c * 1 + 0) * Tc == c * Tc`, i.e.
+// bit-identical output to the pre-TDM kernel.
 //
 // `carrier_rate_hz` exists because the carrier has two homes and only one of
 // them can express intra-frame Doppler. When the weight carries the carrier
@@ -58,14 +70,41 @@ constexpr double kTwoPiD = 6.283185307179586476925286766559;
 struct BeatPhase {
   float sin_phi;
   float cos_phi;
-  // d(phi) / d(tau_rt) in radians per second, at fixed t_c.
+  // d(phi) / d(tau_rt) in radians per second, at fixed t_slot.
   double dphi_dtau_rt;
-  // d(phi) / d(tau_rate) in radians, at fixed t_c. This is NOT simply
-  // `dphi_dtau_rt * t_c`: `carrier_rate_hz` multiplies `(tau - tau_rt)`, which
-  // depends on `tau_rate` but not on `tau_rt`, so the rate derivative carries
-  // an extra `carrier_rate_hz * t_c` the base-delay derivative does not.
+  // d(phi) / d(tau_rate) in radians, at fixed t_slot. This is NOT simply
+  // `dphi_dtau_rt * t_slot`: `carrier_rate_hz` multiplies `(tau - tau_rt)`,
+  // which depends on `tau_rate` but not on `tau_rt`, so the rate derivative
+  // carries an extra `carrier_rate_hz * t_slot` the base-delay derivative does
+  // not.
   double dphi_dtau_rate;
 };
+
+// The TDM slot time of one (chirp, sensor pair) cell. Slots run in a single
+// sequence across the frame: slot `c * num_tx + tx` starts `slot * T_chirp`
+// into it, so two sensor pairs driven by different transmitters within the same
+// chirp index are a whole chirp period apart in slow time.
+__device__ __forceinline__ double slot_time(
+    const int chirp,
+    const int tx_index,
+    const int num_tx,
+    const double chirp_period_s) {
+  const int64_t slot = static_cast<int64_t>(chirp) * num_tx + tx_index;
+  return static_cast<double>(slot) * chirp_period_s;
+}
+
+// A memory-safety backstop on the per-segment transmitter table, matching the
+// one on `path_offsets`: the host wrapper checks the table's shape but never
+// reads its VALUES, because doing so per frame would be the D2H the
+// fixed-topology capability exists to avoid.
+__device__ __forceinline__ int clamped_tx_index(
+    const int32_t* __restrict__ segment_tx_index,
+    const int segment,
+    const int num_tx) {
+  int tx = static_cast<int>(segment_tx_index[segment]);
+  tx = tx < 0 ? 0 : tx;
+  return tx >= num_tx ? num_tx - 1 : tx;
+}
 
 // Phase of one path at one (chirp, sample) grid point. The cycle count is a
 // large number  -  hundreds of cycles for a metre-scale target  -  so it is
@@ -74,7 +113,7 @@ struct BeatPhase {
 __device__ __forceinline__ BeatPhase beat_phase(
     const double tau,
     const double tau_drift,
-    const double t_c,
+    const double t_slot,
     const double t_m,
     const double slope,
     const double carrier_hz,
@@ -92,7 +131,7 @@ __device__ __forceinline__ BeatPhase beat_phase(
       sin_phi,
       cos_phi,
       dphi_dtau_rt,
-      t_c * (dphi_dtau_rt + kTwoPiD * carrier_rate_hz)};
+      t_slot * (dphi_dtau_rt + kTwoPiD * carrier_rate_hz)};
 }
 
 __global__ void fmcw_beat_forward_kernel(
@@ -101,10 +140,12 @@ __global__ void fmcw_beat_forward_kernel(
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
+    const int32_t* __restrict__ segment_tx_index,
     float* __restrict__ out_re,
     float* __restrict__ out_im,
     const int num_paths,
     const int num_segments,
+    const int num_tx,
     const int num_samples,
     const double sample_period_s,
     const double chirp_period_s,
@@ -131,16 +172,20 @@ __global__ void fmcw_beat_forward_kernel(
   start = start < 0 ? 0 : start;
   end = end > num_paths ? num_paths : end;
 
-  const double t_c = static_cast<double>(chirp) * chirp_period_s;
+  const double t_slot = slot_time(
+      chirp,
+      clamped_tx_index(segment_tx_index, segment, num_tx),
+      num_tx,
+      chirp_period_s);
   const double t_m = static_cast<double>(sample) * sample_period_s;
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_c;
+    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const BeatPhase phase = beat_phase(
-        tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+        tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     acc_re += w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -160,6 +205,7 @@ __global__ void fmcw_beat_jvp_kernel(
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
+    const int32_t* __restrict__ segment_tx_index,
     const float* __restrict__ tan_tau_rt,
     const float* __restrict__ tan_tau_rate,
     const float* __restrict__ tan_weight_re,
@@ -168,6 +214,7 @@ __global__ void fmcw_beat_jvp_kernel(
     float* __restrict__ tan_out_im,
     const int num_paths,
     const int num_segments,
+    const int num_tx,
     const int num_samples,
     const double sample_period_s,
     const double chirp_period_s,
@@ -187,16 +234,20 @@ __global__ void fmcw_beat_jvp_kernel(
   start = start < 0 ? 0 : start;
   end = end > num_paths ? num_paths : end;
 
-  const double t_c = static_cast<double>(chirp) * chirp_period_s;
+  const double t_slot = slot_time(
+      chirp,
+      clamped_tx_index(segment_tx_index, segment, num_tx),
+      num_tx,
+      chirp_period_s);
   const double t_m = static_cast<double>(sample) * sample_period_s;
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_c;
+    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const BeatPhase phase = beat_phase(
-        tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+        tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -227,6 +278,7 @@ __global__ void fmcw_beat_backward_kernel(
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_segment,
+    const int32_t* __restrict__ segment_tx_index,
     const float* __restrict__ grad_out_re,
     const float* __restrict__ grad_out_im,
     float* __restrict__ grad_tau_rt,
@@ -235,6 +287,7 @@ __global__ void fmcw_beat_backward_kernel(
     float* __restrict__ grad_weight_im,
     const int num_paths,
     const int num_segments,
+    const int num_tx,
     const int num_chirps,
     const int num_samples,
     const double sample_period_s,
@@ -258,6 +311,8 @@ __global__ void fmcw_beat_backward_kernel(
   const double rate = static_cast<double>(tau_rate[k]);
   const float w_re = weight_re[k];
   const float w_im = weight_im[k];
+  const int tx_index = clamped_tx_index(
+      segment_tx_index, static_cast<int>(segment), num_tx);
 
   double d_tau_rt = 0.0;
   double d_tau_rate = 0.0;
@@ -265,15 +320,15 @@ __global__ void fmcw_beat_backward_kernel(
   double d_w_im = 0.0;
 
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
-    const double t_c = static_cast<double>(chirp) * chirp_period_s;
-    const double drift = rate * t_c;
+    const double t_slot = slot_time(chirp, tx_index, num_tx, chirp_period_s);
+    const double drift = rate * t_slot;
     const double tau = base_tau + drift;
     const int64_t row_base =
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_samples;
     for (int sample = 0; sample < num_samples; ++sample) {
       const double t_m = static_cast<double>(sample) * sample_period_s;
       const BeatPhase phase = beat_phase(
-          tau, drift, t_c, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+          tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
       const float g_re = grad_out_re[row_base + sample];
       const float g_im = grad_out_im[row_base + sample];
       const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -303,6 +358,15 @@ void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
       tensor.scalar_type() == torch::headeronly::ScalarType::Float,
       name,
       " must have dtype torch.float32.");
+  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
+}
+
+void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
+  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
+  STD_TORCH_CHECK(
+      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
+      name,
+      " must have dtype torch.int32.");
   STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
 }
 
@@ -372,6 +436,17 @@ dim3 sample_grid(int num_samples, int num_segments, int num_chirps, int block) {
   return dim3((num_samples + block - 1) / block, num_segments, num_chirps);
 }
 
+void check_tdm(
+    const torch::stable::Tensor& segment_tx_index,
+    int num_segments,
+    int num_tx) {
+  STD_TORCH_CHECK(num_tx > 0, "num_tx must be positive.");
+  check_cuda_int(segment_tx_index, "segment_tx_index");
+  STD_TORCH_CHECK(
+      segment_tx_index.numel() == static_cast<int64_t>(num_segments),
+      "segment_tx_index must hold one transmitter index per sensor-pair segment.");
+}
+
 }  // namespace
 
 void fmcw_beat_forward_cuda(
@@ -380,10 +455,12 @@ void fmcw_beat_forward_cuda(
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
+    const torch::stable::Tensor& segment_tx_index,
     torch::stable::Tensor& out_re,
     torch::stable::Tensor& out_im,
     int64_t num_paths,
     int64_t num_segments,
+    int64_t num_tx,
     int64_t num_chirps,
     int64_t num_samples,
     double sample_period_s,
@@ -394,6 +471,7 @@ void fmcw_beat_forward_cuda(
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
+  const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
   const int samples = checked_int(num_samples, "num_samples");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
@@ -404,6 +482,7 @@ void fmcw_beat_forward_cuda(
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
       "path_offsets must hold num_segments + 1 values.");
+  check_tdm(segment_tx_index, segments, transmitters);
   check_output(out_re, out_im, chirps, segments, samples, "out_re", "out_im");
 
   const torch::stable::accelerator::DeviceGuard device_guard(
@@ -419,10 +498,12 @@ void fmcw_beat_forward_cuda(
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
+      segment_tx_index.const_data_ptr<int32_t>(),
       out_re.mutable_data_ptr<float>(),
       out_im.mutable_data_ptr<float>(),
       paths,
       segments,
+      transmitters,
       samples,
       sample_period_s,
       chirp_period_s,
@@ -439,6 +520,7 @@ void fmcw_beat_jvp_cuda(
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
+    const torch::stable::Tensor& segment_tx_index,
     const torch::stable::Tensor& tan_tau_rt,
     const torch::stable::Tensor& tan_tau_rate,
     const torch::stable::Tensor& tan_weight_re,
@@ -447,6 +529,7 @@ void fmcw_beat_jvp_cuda(
     torch::stable::Tensor& tan_out_im,
     int64_t num_paths,
     int64_t num_segments,
+    int64_t num_tx,
     int64_t num_chirps,
     int64_t num_samples,
     double sample_period_s,
@@ -457,6 +540,7 @@ void fmcw_beat_jvp_cuda(
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
+  const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
   const int samples = checked_int(num_samples, "num_samples");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
@@ -469,6 +553,7 @@ void fmcw_beat_jvp_cuda(
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
       "path_offsets must hold num_segments + 1 values.");
+  check_tdm(segment_tx_index, segments, transmitters);
   check_output(
       tan_out_re,
       tan_out_im,
@@ -491,6 +576,7 @@ void fmcw_beat_jvp_cuda(
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
+      segment_tx_index.const_data_ptr<int32_t>(),
       tan_tau_rt.const_data_ptr<float>(),
       tan_tau_rate.const_data_ptr<float>(),
       tan_weight_re.const_data_ptr<float>(),
@@ -499,6 +585,7 @@ void fmcw_beat_jvp_cuda(
       tan_out_im.mutable_data_ptr<float>(),
       paths,
       segments,
+      transmitters,
       samples,
       sample_period_s,
       chirp_period_s,
@@ -515,6 +602,7 @@ void fmcw_beat_backward_cuda(
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_segment,
+    const torch::stable::Tensor& segment_tx_index,
     const torch::stable::Tensor& grad_out_re,
     const torch::stable::Tensor& grad_out_im,
     torch::stable::Tensor& grad_tau_rt,
@@ -523,6 +611,7 @@ void fmcw_beat_backward_cuda(
     torch::stable::Tensor& grad_weight_im,
     int64_t num_paths,
     int64_t num_segments,
+    int64_t num_tx,
     int64_t num_chirps,
     int64_t num_samples,
     double sample_period_s,
@@ -533,6 +622,7 @@ void fmcw_beat_backward_cuda(
     double t_start_s) {
   const int paths = checked_int(num_paths, "num_paths");
   const int segments = checked_int(num_segments, "num_segments");
+  const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
   const int samples = checked_int(num_samples, "num_samples");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
@@ -543,6 +633,7 @@ void fmcw_beat_backward_cuda(
   STD_TORCH_CHECK(
       path_segment.numel() == static_cast<int64_t>(paths),
       "path_segment must hold one segment index per path.");
+  check_tdm(segment_tx_index, segments, transmitters);
   check_output(
       grad_out_re,
       grad_out_im,
@@ -571,6 +662,7 @@ void fmcw_beat_backward_cuda(
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_segment.const_data_ptr<int64_t>(),
+      segment_tx_index.const_data_ptr<int32_t>(),
       grad_out_re.const_data_ptr<float>(),
       grad_out_im.const_data_ptr<float>(),
       grad_tau_rt.mutable_data_ptr<float>(),
@@ -579,6 +671,7 @@ void fmcw_beat_backward_cuda(
       grad_weight_im.mutable_data_ptr<float>(),
       paths,
       segments,
+      transmitters,
       chirps,
       samples,
       sample_period_s,

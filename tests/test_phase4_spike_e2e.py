@@ -304,7 +304,13 @@ def test_forward_mode_loss_tangent_matches_the_oracle(spike, reference_iq):
 
 
 def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
-    spec = drv.make_spec(num_chirps=8, carrier_hz=geo.REFERENCE_FREQUENCY_HZ)
+    # The PRODUCTION carrier placement: the Channel weight already carries
+    # exp(-j 2 pi f_ref tau_rt), so the kernel owns only the delay change.
+    # Asking the kernel for the absolute carrier as well would double count it,
+    # and require_compatible now refuses that combination outright - the two
+    # placements agree on the slow-time slope this test measures, which is why
+    # the double count was invisible here before the contract existed.
+    spec = drv.make_spec(num_chirps=8)
     velocity = torch.tensor([[0.0, 12.0, 0.0]], dtype=torch.float32, device="cuda")
     tx, site, rx = drv.positions()
     response = drv.make_response()
@@ -346,7 +352,11 @@ def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
     # The rate reaches synthesis as a primal and shows up as a slow-time slope.
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
 
-    iq = synthesize_fmcw_beat(composed, spec).cpu().to(torch.complex128)
+    iq = (
+        synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+        .cpu()
+        .to(torch.complex128)
+    )
     steps = iq[1:, 0, 0] * torch.conj(iq[:-1, 0, 0])
     slope = float(torch.angle(steps).mean())
     dphi_dtau = 2.0 * math.pi * (
@@ -380,7 +390,7 @@ def test_every_stage_output_stays_on_the_tape(spike, spec, reference_iq):
 
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
 
-    iq = synthesize_fmcw_beat(composed, spec)
+    iq = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
     assert iq.requires_grad
     assert iq.grad_fn is not None
     loss = drv.radar_loss(iq, reference_iq)
@@ -415,7 +425,7 @@ def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(
             composed.path_count, dtype=torch.bool, device=composed.device
         ),
     )
-    iq = synthesize_fmcw_beat(dead, spec)
+    iq = synthesize_fmcw_beat(drv.to_synthesis(dead), spec)
     assert torch.count_nonzero(iq) == 0
 
     loss = drv.radar_loss(iq, reference_iq)

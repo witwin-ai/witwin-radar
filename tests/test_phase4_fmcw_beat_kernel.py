@@ -281,6 +281,7 @@ def test_the_two_carrier_homes_cannot_both_be_used():
             chirp_period_s=65.0e-6,
             slope_hz_per_s=60.012e12,
             t_start_s=0.0,
+            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
             carrier_hz=geo.REFERENCE_FREQUENCY_HZ,
             carrier_rate_hz=geo.REFERENCE_FREQUENCY_HZ,
         )
@@ -331,6 +332,7 @@ def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
         chirp_period_s=65.0e-6,
         slope_hz_per_s=0.0,
         t_start_s=0.0,
+        reference_frequency_hz=carrier,
         carrier_hz=carrier,
     )
 

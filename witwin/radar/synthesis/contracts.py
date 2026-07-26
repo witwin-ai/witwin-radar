@@ -28,11 +28,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 import torch
 
 from ..paths.contracts import JOIN_MODES, JoinMode, RadarPathBatch, RadarPathTopology
+
+
+#: Exact SI definition, in metres per second. Named here because the FMCW spec
+#: derives its unambiguous-velocity bound from a wavelength and must agree with
+#: ``Radar.max_doppler`` to the last bit.
+SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +70,20 @@ class FmcwBeatSpec:
 
     Setting both to ``fc`` double counts the carrier and is refused. Both
     supported settings are exact; neither is a fallback for the other.
+
+    ``num_tx`` and ``num_rx`` describe the TDM-MIMO array. They belong on the
+    spec rather than on the batch because they are a property of the WAVEFORM's
+    time structure: TDM fires the transmitters sequentially, so the slow-time
+    coordinate of a sensor pair is its slot ``chirp * num_tx + tx``, not the
+    chirp index. ``num_tx = 1`` is the degenerate single-transmitter case where
+    slot and chirp coincide.
     """
+
+    #: The beat kernel has no ``lambda / (4 pi d)`` term at all: free-space
+    #: spreading is Channel transport's, per leg, once. This is a statement
+    #: about the kernel and not a setting, so it is a class attribute rather
+    #: than a field nobody may change.
+    applies_spreading: ClassVar[bool] = False
 
     num_samples: int
     num_chirps: int
@@ -72,8 +91,11 @@ class FmcwBeatSpec:
     chirp_period_s: float
     slope_hz_per_s: float
     t_start_s: float
+    reference_frequency_hz: float
     carrier_hz: float = 0.0
     carrier_rate_hz: float = 0.0
+    num_tx: int = 1
+    num_rx: int = 1
 
     def __post_init__(self) -> None:
         if self.num_samples < 1:
@@ -84,6 +106,16 @@ class FmcwBeatSpec:
             raise ValueError("sample_period_s must be positive")
         if self.chirp_period_s <= 0.0:
             raise ValueError("chirp_period_s must be positive")
+        if not self.reference_frequency_hz > 0.0:
+            raise ValueError(
+                "reference_frequency_hz must be positive; it is the frequency "
+                "the weight this spec will consume was evaluated at, and "
+                "require_compatible refuses a mismatch"
+            )
+        if self.num_tx < 1:
+            raise ValueError("num_tx must be positive")
+        if self.num_rx < 1:
+            raise ValueError("num_rx must be positive")
         if self.carrier_hz != 0.0 and self.carrier_rate_hz != 0.0:
             raise ValueError(
                 "carrier_hz and carrier_rate_hz name the same carrier in two "
@@ -118,13 +150,49 @@ class FmcwBeatSpec:
             * 1e-6,
             slope_hz_per_s=float(config.slope) * 1e12,
             t_start_s=float(config.adc_start_time) * 1e-6,
+            reference_frequency_hz=float(config.fc),
             carrier_hz=carrier,
             carrier_rate_hz=0.0 if carrier != 0.0 else float(config.fc),
+            num_tx=int(config.num_tx),
+            num_rx=int(config.num_rx),
         )
 
     @property
     def sample_rate_hz(self) -> float:
         return 1.0 / self.sample_period_s
+
+    @property
+    def sensor_pair_count(self) -> int:
+        """The TDM-MIMO virtual array size the pair partition must span."""
+
+        return self.num_tx * self.num_rx
+
+    @property
+    def wavelength_m(self) -> float:
+        return SPEED_OF_LIGHT_M_PER_S / self.reference_frequency_hz
+
+    @property
+    def slot_period_s(self) -> float:
+        """Slow-time spacing between two chirps of the SAME transmitter.
+
+        With ``num_tx`` transmitters sharing the frame in TDM, a given
+        transmitter revisits its slot once every ``num_tx`` chirp periods. This
+        is the period the Doppler FFT actually samples at, and it is why TDM
+        costs a factor ``num_tx`` of unambiguous velocity.
+        """
+
+        return self.chirp_period_s * self.num_tx
+
+    @property
+    def max_unambiguous_speed_mps(self) -> float:
+        """``lambda / (4 * T_chirp * num_tx)``, the aliasing bound on ``|v_r|``.
+
+        Half a wavelength of two-way path change per slow-time sample is half a
+        cycle of Doppler phase; beyond it the sign of the velocity is not
+        recoverable.
+        """
+
+        return self.wavelength_m / (4.0 * self.slot_period_s)
 
     def beat_frequency_hz(self, round_trip_delay_s: float) -> float:
         """``f_beat = slope * tau``, with ``tau`` the ROUND-TRIP delay.

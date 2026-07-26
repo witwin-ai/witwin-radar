@@ -212,7 +212,13 @@ def test_an_empty_pair_segment_composes_without_a_special_case():
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
     from support import spike_driver as drv
 
-    iq = synthesize_fmcw_beat(composed, drv.make_spec(num_chirps=2))
+    # The fabricated front end is 2 sources x 2 sinks, so the waveform spec
+    # has to describe the SAME array: the TDM slot of a sensor pair is only
+    # defined once the pair partition and the array are the same front end.
+    from dataclasses import replace
+
+    spec = replace(drv.make_spec(num_chirps=2), num_tx=2, num_rx=2)
+    iq = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
     assert iq.shape[1] == 4
     # The three empty pairs are exactly zero, and the populated one is not.
     assert float(iq[:, 1:, :].abs().sum()) == 0.0

@@ -16,6 +16,7 @@ import torch
 
 from . import phase4_geometry as geo
 from . import phase4_world as world
+from .synthesis_batch import to_synthesis
 
 
 # A target response strong enough that the synthesized IQ and the reference IQ
@@ -167,7 +168,7 @@ class Phase4Spike:
             ad_mode=ad_mode,
             include_delay_rate=include_delay_rate,
         )
-        return synthesize_fmcw_beat(composed, spec)
+        return synthesize_fmcw_beat(to_synthesis(composed), spec)
 
     def loss(
         self,

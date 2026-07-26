@@ -27,8 +27,8 @@ from __future__ import annotations
 import torch
 from torch.autograd.function import once_differentiable
 
-from ..paths.contracts import RadarPathBatch
-from .contracts import FmcwBeatSpec
+from .assembly import pair_tx_index
+from .contracts import FmcwBeatSpec, SynthesisPathBatch, require_compatible
 
 
 _OPS = None
@@ -90,7 +90,9 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native beat operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec):
+    def forward(
+        tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec
+    ):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -105,10 +107,12 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             offsets,
+            tx_index,
             out_re,
             out_im,
             num_paths,
             num_segments,
+            spec.num_tx,
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -122,16 +126,36 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec = inputs
+        (
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            offsets,
+            segment,
+            tx_index,
+            spec,
+        ) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets)
+        ctx.save_for_backward(
+            tau_rt, tau_rate, weight_re, weight_im, segment, tx_index
+        )
+        ctx.save_for_forward(
+            tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index
+        )
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_out_re, grad_out_im):
-        tau_rt, tau_rate, weight_re, weight_im, segment = ctx.saved_tensors
+        (
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            segment,
+            tx_index,
+        ) = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
         grad_tau_rate = torch.empty_like(tau_rate)
@@ -143,6 +167,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             segment,
+            tx_index,
             grad_out_re.contiguous(),
             grad_out_im.contiguous(),
             grad_tau_rt,
@@ -151,6 +176,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             grad_weight_im,
             int(tau_rt.shape[0]),
             ctx.num_segments,
+            spec.num_tx,
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -168,6 +194,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
     @staticmethod
@@ -179,9 +206,17 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
         tan_weight_im,
         tan_offsets,
         tan_segment,
+        tan_tx_index,
         tan_spec,
     ):
-        tau_rt, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
+        (
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            offsets,
+            tx_index,
+        ) = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -200,6 +235,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             offsets,
+            tx_index,
             tan_tau_rt,
             tan_tau_rate,
             tan_weight_re,
@@ -208,6 +244,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
             tan_out_im,
             int(tau_rt.shape[0]),
             ctx.num_segments,
+            spec.num_tx,
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -226,6 +263,8 @@ def synthesize_beat_rows(
     beat_weight: torch.Tensor,
     pair_offsets: torch.Tensor,
     spec: FmcwBeatSpec,
+    *,
+    segment_tx_index: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize complex IQ from already-conjugated beat weights.
 
@@ -233,6 +272,14 @@ def synthesize_beat_rows(
     :func:`channel_phasor_to_beat_weight` to get there from a Channel transfer
     coefficient; this entry does not convert, so a caller cannot accidentally
     conjugate twice.
+
+    ``segment_tx_index`` names which transmitter drives each sensor-pair
+    segment, which is what turns the slow-time axis into TDM slot time. It may
+    be omitted only when ``spec.num_tx == 1``, where every segment is in slot
+    ``chirp`` and the question does not arise; a multi-TX spec must say, because
+    guessing it would put a whole chirp period of Doppler walk on the wrong
+    channel and still produce a plausible cube. :func:`synthesize_fmcw_beat`
+    derives it from the array layout.
     """
 
     path_count = int(total_delay_s.shape[0])
@@ -244,6 +291,26 @@ def synthesize_beat_rows(
         if delay_rate.shape != total_delay_s.shape:
             raise ValueError("delay_rate and total_delay_s must have the same shape")
         rate = delay_rate
+    num_segments = int(pair_offsets.shape[0]) - 1
+    if segment_tx_index is None:
+        if spec.num_tx != 1:
+            raise ValueError(
+                f"this spec declares num_tx={spec.num_tx}, so every sensor-pair "
+                "segment must name the transmitter that drives it; pass "
+                "segment_tx_index (witwin.radar.synthesis.assembly.pair_tx_index "
+                "derives it from the array layout)"
+            )
+        tx_index = torch.zeros(
+            num_segments, dtype=torch.int32, device=total_delay_s.device
+        )
+    else:
+        if tuple(segment_tx_index.shape) != (num_segments,):
+            raise ValueError(
+                "segment_tx_index must hold one transmitter index per sensor-pair "
+                f"segment, expected shape ({num_segments},), got "
+                f"{tuple(segment_tx_index.shape)}"
+            )
+        tx_index = segment_tx_index
     segment = _segment_of_each_path(pair_offsets, path_count)
     # Torch-owned, autograd-aware accessors: the real pair crosses the
     # boundary, never the complex tensor.
@@ -254,15 +321,25 @@ def synthesize_beat_rows(
         beat_weight.imag.contiguous(),
         pair_offsets.contiguous(),
         segment,
+        tx_index.contiguous(),
         spec,
     )
     return torch.complex(out_re, out_im)
 
 
-def synthesize_fmcw_beat(paths: RadarPathBatch, spec: FmcwBeatSpec) -> torch.Tensor:
-    """Synthesize one frame of complex IQ from composed round-trip rows.
+def synthesize_fmcw_beat(
+    batch: SynthesisPathBatch, spec: FmcwBeatSpec
+) -> torch.Tensor:
+    """Synthesize one frame of complex IQ from a synthesis path batch.
 
-    Returns ``complex64[num_chirps, sensor_pair_count, num_samples]``.
+    Returns ``complex64[num_chirps, sensor_pair_count, num_samples]``, one
+    rank-3 cube in the BEAT convention. ``assembly.assemble_frame_cube`` turns
+    it into the rank-4 ``(TX, RX, chirp, sample)`` layout ``sigproc`` consumes.
+
+    :func:`~witwin.radar.synthesis.contracts.require_compatible` runs FIRST, so
+    a weight and a spec that would count the carrier, the spreading, or the
+    Doppler twice are refused before any kernel launch rather than producing a
+    plausible cube that is wrong by a factor nobody notices.
 
     A dead row contributes exactly zero. That is enforced on the WEIGHT, with
     ``torch.where``, so the row is inert in the primal and carries no gradient
@@ -270,17 +347,24 @@ def synthesize_fmcw_beat(paths: RadarPathBatch, spec: FmcwBeatSpec) -> torch.Ten
     live gradient path back through a row that does not exist.
     """
 
-    weight = channel_phasor_to_beat_weight(paths.complex_transfer_ref)
-    if paths.row_valid is not None:
+    require_compatible(batch, spec)
+    weight = channel_phasor_to_beat_weight(batch.complex_transfer_ref)
+    if batch.row_valid is not None:
         weight = torch.where(
-            paths.row_valid, weight, torch.zeros_like(weight)
+            batch.row_valid, weight, torch.zeros_like(weight)
         )
     return synthesize_beat_rows(
-        paths.total_delay_s,
-        paths.delay_rate,
+        batch.total_delay_s,
+        batch.delay_rate,
         weight,
-        paths.pair_offsets,
+        batch.pair_offsets,
         spec,
+        segment_tx_index=pair_tx_index(
+            num_tx=spec.num_tx,
+            num_rx=spec.num_rx,
+            sensor_pair_count=batch.sensor_pair_count,
+            device=batch.device,
+        ),
     )
 
 
