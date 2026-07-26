@@ -544,10 +544,12 @@ def spectrum_vjp_single_block(
 
     Kept because it is a registered ABI symbol with its own contract test. It
     has no production caller: ``DirichletSolver.backward`` dispatches
-    ``backward_parallel_bins``, and the manifest's claim that it is this
-    symbol's end-to-end caller is inaccurate. Recorded rather than silently
-    fixed, because removing a manifested symbol is a deliberate deletion, not a
-    side effect of a Python owner move.
+    ``backward_parallel_bins``. The manifest used to name that method as this
+    symbol's end-to-end caller, which was false; it now records the symbol as
+    ``caller_status: test_only`` and the manifest test caps the number of
+    caller-free symbols at this one. Recorded rather than silently deleted,
+    because removing a manifested symbol is a deliberate change to the kernel,
+    the extension, and the load probe, not a side effect of a review.
     """
 
     if weight_im is None:

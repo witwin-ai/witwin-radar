@@ -56,7 +56,19 @@
       "family": "dirichlet_spectrum",
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward"
+      "end_to_end_caller": null,
+      "caller_status": "test_only",
+      "caller_note": [
+        "This entry used to name DirichletSolver.backward, which is false:",
+        "that method dispatches backward_parallel_bins through spectrum_vjp.",
+        "The only caller of spectrum_vjp_single_block - the Python owner of",
+        "this symbol - is its contract test. The symbol is therefore cleanup",
+        "debt, and the manifest records that rather than carrying a claim",
+        "whose one job is accuracy. Deleting a registered ABI symbol is a",
+        "deliberate change to the kernel, the extension, the load probe, and",
+        "the coverage set; until that happens this is the honest record. It",
+        "may not spread: the manifest test caps caller-free symbols at one."
+      ]
     },
     {
       "symbol": "backward_batched",

@@ -55,15 +55,71 @@ def test_declared_implemented_and_manifested_operators_agree(manifest):
     assert implemented == manifested, (sorted(implemented), sorted(manifested))
 
 
+#: Symbols that are registered, tested, and called by NOTHING in production.
+#: A caller-free symbol is cleanup debt, and the manifest is allowed to say so.
+#: What it is not allowed to do is name a caller that does not call it. This
+#: set is the budget: it may shrink, and growing it is a test failure.
+CALLER_FREE_SYMBOLS = {"backward"}
+
+
 def test_every_operator_has_an_owner_a_test_and_a_caller(manifest):
+    """And a caller-free symbol must SAY it is caller-free.
+
+    The ``backward`` entry named ``DirichletSolver.backward`` while that method
+    dispatched ``backward_parallel_bins`` through ``spectrum_vjp``. A manifest
+    whose only job is accuracy cannot carry a claim the owner's own docstring
+    contradicts, so the honest form - a null caller plus a recorded reason - is
+    a first-class entry shape, and the budget above stops it spreading.
+    """
+
+    caller_free = set()
     for entry in manifest["operators"]:
         owner = REPO_ROOT / entry["python_owner"]
         assert owner.exists(), entry["symbol"]
         contract = REPO_ROOT / entry["contract_test"]
         assert contract.exists(), entry["symbol"]
-        assert entry["end_to_end_caller"].startswith("witwin.radar."), entry["symbol"]
+        caller = entry["end_to_end_caller"]
+        if caller is None:
+            assert entry.get("caller_status") == "test_only", entry["symbol"]
+            assert entry.get("caller_note"), entry["symbol"]
+            caller_free.add(entry["symbol"])
+        else:
+            assert caller.startswith("witwin.radar."), entry["symbol"]
         # The owner must actually name the symbol it claims to own.
         assert entry["symbol"] in owner.read_text(encoding="utf-8"), entry["symbol"]
+    assert caller_free == CALLER_FREE_SYMBOLS, sorted(caller_free)
+
+
+def test_a_named_end_to_end_caller_resolves_to_something_that_exists(manifest):
+    """The checkable half of the claim: the dotted path is real.
+
+    Resolving the attribute chain does not prove the caller reaches the symbol -
+    that would need a call graph, which this file is not going to grow - but it
+    does stop an entry from naming a method that was renamed or deleted, which
+    is one of the two ways the ``backward`` inaccuracy could have arisen.
+    """
+
+    import importlib
+
+    for entry in manifest["operators"]:
+        caller = entry["end_to_end_caller"]
+        if caller is None:
+            continue
+        parts = caller.split(".")
+        module = None
+        attributes: list[str] = []
+        for split in range(len(parts) - 1, 2, -1):
+            try:
+                module = importlib.import_module(".".join(parts[:split]))
+            except ImportError:
+                continue
+            attributes = parts[split:]
+            break
+        assert module is not None, caller
+        target = module
+        for attribute in attributes:
+            assert hasattr(target, attribute), (caller, attribute)
+            target = getattr(target, attribute)
 
 
 def test_every_manifested_source_is_a_build_input(manifest):
