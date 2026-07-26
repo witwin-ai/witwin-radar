@@ -112,3 +112,56 @@ def test_the_production_module_no_longer_holds_the_copied_expressions():
         assert callable(getattr(path_math, name)), name
         # And the copy is still a real expression rather than a re-export.
         assert inspect.getmodule(getattr(path_math, name)) is path_math, name
+
+
+# --------------------------------------------------------------------------
+# D5.8 - the three per-waveform references are independent too
+# --------------------------------------------------------------------------
+
+SUPPORT_ROOT = TESTS_ROOT / "support"
+
+#: The three float64 references the waveform families are checked against, one
+#: per waveform. An oracle that imported the module it validates would be
+#: checking that module against itself, which is the defect this whole file
+#: exists to prevent - and it was a real one until Phase 6.
+WAVEFORM_ORACLES = (
+    "reference_chain.py",
+    "reference_ofdm.py",
+    "reference_pulsed.py",
+)
+
+FORBIDDEN_ORACLE_PREFIXES = ("witwin.radar.solvers", "witwin.radar.synthesis")
+
+
+def test_the_three_waveform_oracles_exist():
+    names = {path.name for path in SUPPORT_ROOT.glob("*.py")}
+    for oracle in WAVEFORM_ORACLES:
+        assert oracle in names, oracle
+
+
+@pytest.mark.parametrize("oracle", WAVEFORM_ORACLES)
+def test_no_waveform_oracle_imports_the_domain_it_validates(oracle: str):
+    """Neither the synthesis owners nor the solvers may appear in an oracle.
+
+    A spec dataclass is not a numerical implementation, so a reference may
+    CONSTRUCT one - a grid has to agree with the kernel about what a symbol
+    period is - but it may not import an expression from the package under
+    test. The scan therefore allows ``witwin.radar.synthesis.contracts`` by
+    name and forbids everything else in that package.
+    """
+
+    allowed = {
+        "witwin.radar.synthesis.contracts",
+        "witwin.radar.synthesis",
+    }
+    offenders = sorted(
+        name
+        for name in _imported_module_names(SUPPORT_ROOT / oracle)
+        if any(
+            name == prefix or name.startswith(prefix + ".")
+            for prefix in FORBIDDEN_ORACLE_PREFIXES
+        )
+        and name not in allowed
+        and not name.startswith("witwin.radar.synthesis.contracts.")
+    )
+    assert offenders == [], (oracle, offenders)
