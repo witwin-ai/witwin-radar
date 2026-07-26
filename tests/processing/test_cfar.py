@@ -79,6 +79,62 @@ def test_the_measured_false_alarm_rate_matches_the_analytic_one(pfa):
     )
 
 
+@pytest.mark.parametrize("pfa", [1e-2, 3e-3])
+def test_the_ordered_statistic_rate_follows_rohlings_law_and_not_its_pfa(pfa):
+    """``os_cfar`` misses the ``pfa`` it is handed, and this is what it hits instead.
+
+    It scales the ``k``-th smallest training sample with the constant that
+    inverts the false-alarm law of their MEAN, so the declared number is a
+    design constant rather than a prediction. The rate it actually achieves has
+    its own exact law on exponential power, Rohling's
+
+        ``P_fa = prod_{i=0}^{k-1} (N - i) / (N - i + alpha)``
+
+    which is measured here, so the gap is pinned rather than merely written
+    down: neither the constant nor the rank can move without this failing.
+
+    Tolerance is five standard errors of an iid binomial, and that is a LOWER
+    bound on the true spread - neighbouring cells share training rings, so their
+    detections are correlated. Observed deviations over four independent seeds
+    spanned -0.6 to +2.5 of these units.
+    """
+
+    guard, training, rank_fraction = (1, 1), (2, 2), 0.75
+    outer_d = guard[0] + training[0]
+    outer_r = guard[1] + training[1]
+    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * guard[0] + 1) * (
+        2 * guard[1] + 1
+    )
+    rank = min(int(rank_fraction * n_train), n_train - 1) + 1
+    alpha = n_train * (pfa ** (-1.0 / n_train) - 1.0)
+
+    analytic = 1.0
+    for offset in range(rank):
+        analytic *= (n_train - offset) / (n_train - offset + alpha)
+
+    # The declared rate is NOT achieved, and the miss is in the conservative
+    # direction: fewer false alarms than asked for, at the cost of sensitivity.
+    assert analytic < 0.25 * pfa
+
+    noise = _complex_gaussian_power((900, 900), variance=7.0, seed=31337)
+    detected = os_cfar(
+        noise,
+        guard_cells=guard,
+        training_cells=training,
+        rank_fraction=rank_fraction,
+        pfa=pfa,
+    )
+    interior = detected.mask[outer_d:-outer_d, outer_r:-outer_r]
+    total = int(interior.numel())
+    measured = int(interior.sum()) / total
+    standard_error = math.sqrt(analytic * (1.0 - analytic) / total)
+    assert abs(measured - analytic) <= 5.0 * standard_error, (
+        measured,
+        analytic,
+        standard_error,
+    )
+
+
 def test_the_rate_does_not_depend_on_the_noise_level():
     """It is CONSTANT false alarm rate, and that is the whole claim."""
 

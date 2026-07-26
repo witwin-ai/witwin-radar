@@ -26,6 +26,11 @@ estimate must be an average of ``|x| ** 2``. Fed a magnitude or a decibel map -
 which is what every existing caller does - the detector still adapts to the
 local level, but the nominal ``P_fa`` is a design parameter rather than a
 prediction. That is stated here because it was not stated anywhere before.
+
+The identity is equally a statement about a MEAN. :func:`os_cfar` scales an
+ordered statistic with that same cell-averaging constant, so the rate it
+achieves is NOT the ``pfa`` it is handed. Its own docstring gives the law its
+rate does follow, the measured ratio, and why the constant is left alone.
 """
 
 from __future__ import annotations
@@ -222,6 +227,27 @@ def os_cfar(
     This is the memory outlier of the three: it materialises every cell's
     training patch, ``[batch, D * R, n_outer]``, and sorts it. The cost is
     recorded rather than hidden.
+
+    ``pfa`` IS NOT THE ACHIEVED RATE HERE. The scale is the cell-averaging
+    constant ``alpha = N (pfa ** (-1 / N) - 1)``, which inverts the false-alarm
+    law of a MEAN of ``N`` exponential samples; this detector thresholds against
+    the ``k``-th smallest of them instead, whose exact rate on exponential power
+    is Rohling's
+
+        ``P_fa = prod_{i=0}^{k-1} (N - i) / (N - i + alpha)``
+
+    with ``k = min(int(rank_fraction * N), N - 1) + 1``. At the defaults that
+    lands well BELOW the declared number - measured 1.88e-3 for ``pfa=1e-2`` and
+    1.03e-4 for ``pfa=1e-3`` at ``N=40``, ``k=31``, ratios 0.19 and 0.10 - so
+    the error is in the conservative direction and costs sensitivity rather than
+    producing surprise false alarms. Read ``pfa`` on this function as a design
+    constant in the cell-averaging parameterisation; when the achieved rate is
+    what matters, invert the law above.
+
+    The constant is deliberately left alone rather than re-solved for the
+    ordered statistic: it is what the pre-cutover ``os_cfar_2d`` computed, the
+    migration adapter is pinned bitwise to that behaviour, and moving it is a
+    numerical change that owes its own decision and its own golden update.
     """
 
     values = _real_values(rd_map)
