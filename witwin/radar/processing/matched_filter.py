@@ -1,17 +1,21 @@
-"""Pulse compression: the matched filter, in DSP glue.
+"""Pulse compression against a ``PulsedEchoSpec``: the spec-facing entry.
 
-This module is on the Torch/FFT side of the plan's processing exception, and
-that placement is the deliberate half of a split. The synthesis kernel
-(``witwin/radar/cuda/kernels/pulsed_echo.cu``) produces the received pulse train
-- the matched-filter INPUT - and stops there. The filter itself is a correlation
-against a chosen replica, and a correlation carries modelling decisions (which
-replica, which window, how much oversampling) that belong to a processing chain
-a user may replace, not to a propagation model they may not.
+This is the thin spec-reading layer over
+:mod:`witwin.radar.processing.primitives`. The correlation itself lives there,
+once, because the range-profile stage needs the same operation and two matched
+filters in one package is exactly the duplication the Phase-8 cutover exists to
+remove. What is here is what a spec supplies: the replica's parameters, the lag
+axis, and the sample period the correlation is scaled by.
+
+Moved from ``witwin/radar/sigproc/`` at the Phase-8 cutover so that every
+production ``torch.fft`` expression in the radar processing chain lives inside
+this package. ``witwin.radar.sigproc.matched_filter`` survives as a deprecation
+shim that re-exports these three names and computes nothing.
 
 The rule this module obeys, and that its test pins: **it re-derives no delay and
-no phase.** It reads the pulse shape off the spec, correlates, and returns. There
-is no geometry here, no carrier, no Doppler, and no knowledge of a path row. If
-a future edit needs one of those, the edit is in the wrong file.
+no phase.** It reads the pulse shape off the spec, correlates, and returns.
+There is no geometry here, no carrier, no Doppler, and no knowledge of a path
+row. If a future edit needs one of those, the edit is in the wrong file.
 
 The replica built here and the pulse the kernel evaluates are the same analytic
 function, and that is the point rather than a duplication to be factored out:
@@ -31,13 +35,22 @@ Conventions, all three of which change the answer:
 * Correlation, not convolution: the replica is CONJUGATED and NOT reversed.
   Convolving instead would put the peak at ``tau + T_p`` and would look entirely
   plausible.
+
+**The working precision is now an explicit argument.** This entry used to upcast
+every signal to ``complex128`` unconditionally, which doubled the transform cost
+of every pulsed frame to buy precision a ``complex64`` input never had.
+``dtype`` defaults to ``None``, meaning the input's own precision; a caller that
+wants the pre-cutover behaviour asks for ``torch.complex128`` and can be seen
+asking.
 """
 
 from __future__ import annotations
 
-import math
-
 import torch
+
+from .primitives import DEFAULT_WINDOW
+from .primitives import matched_filter as _correlate
+from .primitives import pulse_replica
 
 
 def pulse_samples(spec, device: torch.device | str = "cpu") -> torch.Tensor:
@@ -56,33 +69,25 @@ def pulse_samples(spec, device: torch.device | str = "cpu") -> torch.Tensor:
     sequence a different function from the one the kernel evaluates, and the
     matched-filter peak identity - the thing that ties the two together - would
     then be true by construction instead of being a measurement.
-
-    The LFM phase is accumulated in float64 and wrapped before the trigonometric
-    call for the same reason the kernel does it: ``pi B u^2 / T_p`` reaches
-    ``pi B T_p`` radians, a hundred cycles at a 20 MHz, 10 us sweep, and a
-    single-precision argument there would cost about 1e-5 rad.
     """
 
-    count = spec.pulse_sample_count
-    if count < 1:
-        raise ValueError(
-            f"the pulse spans {count} samples on this grid: pulse_width_s="
-            f"{spec.pulse_width_s} is shorter than sample_period_s="
-            f"{spec.sample_period_s}, so there is no replica to correlate against"
-        )
-    u = torch.arange(count, dtype=torch.float64, device=device) * spec.sample_period_s
-    amplitude = torch.full((count,), spec.pulse_amplitude, dtype=torch.float64,
-                           device=device)
-    if spec.is_linear_fm:
-        cycles = 0.5 * spec.bandwidth_hz * u * u / spec.pulse_width_s
-        phase = math.tau * (cycles - torch.floor(cycles))
-    else:
-        phase = torch.zeros_like(u)
-    return torch.complex(amplitude * torch.cos(phase), amplitude * torch.sin(phase))
+    return pulse_replica(
+        pulse_sample_count=int(spec.pulse_sample_count),
+        sample_period_s=float(spec.sample_period_s),
+        amplitude=float(spec.pulse_amplitude),
+        bandwidth_hz=float(spec.bandwidth_hz),
+        pulse_width_s=float(spec.pulse_width_s),
+        is_linear_fm=bool(spec.is_linear_fm),
+        device=torch.device(device),
+    )
 
 
 def matched_filter(
-    signal: torch.Tensor, spec, *, oversample: int = 1
+    signal: torch.Tensor,
+    spec,
+    *,
+    oversample: int = 1,
+    dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """Correlate the fast-time axis against ``conj(p)``. Same rank as ``signal``.
 
@@ -102,36 +107,26 @@ def matched_filter(
     a three-point parabolic fit on the raw grid then measures its own truncation
     error instead of the peak. It changes only the lag GRID, never the values on
     the original grid.
+
+    ``dtype`` is the working precision. ``None`` means the input's own, which is
+    the honest default; pass ``torch.complex128`` to reproduce the pre-cutover
+    behaviour exactly.
     """
 
-    if oversample < 1:
-        raise ValueError(f"oversample must be at least 1, got {oversample}")
     if signal.shape[-1] != spec.num_samples:
         raise ValueError(
             f"the fast-time axis holds {signal.shape[-1]} samples but the spec "
             f"declares num_samples={spec.num_samples}"
         )
+    working = signal if dtype is None else signal.to(dtype)
     replica = pulse_samples(spec, device=signal.device)
-    length = spec.num_samples + replica.shape[0]
-    spectrum = torch.fft.fft(signal.to(torch.complex128), n=length, dim=-1) * torch.conj(
-        torch.fft.fft(replica, n=length)
+    return _correlate(
+        working,
+        replica,
+        sample_period_s=float(spec.sample_period_s),
+        oversample=oversample,
+        window=DEFAULT_WINDOW,
     )
-    if oversample > 1:
-        # Zero-insert the upper half of the spectrum. The scale keeps the
-        # inverse transform an interpolation of the same signal rather than a
-        # rescaled copy of it.
-        fine = torch.zeros(
-            (*spectrum.shape[:-1], length * oversample),
-            dtype=spectrum.dtype,
-            device=spectrum.device,
-        )
-        half = length // 2
-        fine[..., :half] = spectrum[..., :half]
-        fine[..., length * oversample - (length - half):] = spectrum[..., half:]
-        spectrum = fine * oversample
-        length = length * oversample
-    correlation = torch.fft.ifft(spectrum, n=length, dim=-1)
-    return correlation[..., : spec.num_samples * oversample] * spec.sample_period_s
 
 
 def lag_axis(spec, *, oversample: int = 1, device: torch.device | str = "cpu"):

@@ -1,14 +1,29 @@
 """
-Tests for Range-Doppler DSP functions: range FFT, Doppler FFT, clutter removal.
+Tests for the legacy Range-Doppler DSP adapters: range FFT, Doppler FFT,
+clutter removal.
 
-All DSP helpers are torch-only.
+``frame_reshape`` was deleted at the Phase-8 cutover: it repacked a FLAT legacy
+frame, while ``synthesis/assembly.py::assemble_frame_cube`` already performs the
+correct sink-major to tx-major transpose of a synthesis cube. Two packers for
+one layout is how a TX/RX swap ships silently on a square array, and its
+absence is asserted in ``tests/processing/test_cutover.py``.
 """
 
+import warnings
+
+import pytest
 import torch
 
 from witwin.radar.sigproc.pointcloud import (
-    frame_reshape, range_fft, doppler_fft, clutter_removal,
+    range_fft, doppler_fft, clutter_removal,
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_deprecation():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        yield
 
 
 class _FC:
@@ -27,21 +42,6 @@ class _FC:
 def _randc(*shape, seed=0):
     g = torch.Generator().manual_seed(seed)
     return torch.randn(*shape, generator=g, dtype=torch.float64) + 1j * torch.randn(*shape, generator=g, dtype=torch.float64)
-
-
-class TestFrameReshape:
-
-    def test_output_shape(self):
-        fc = _FC(num_tx=3, num_rx=4, chirps=128, adc=256)
-        flat = _randc(fc.numLoopsPerFrame * fc.numTxAntennas * fc.numRxAntennas * fc.numADCSamples)
-        reshaped = frame_reshape(flat, fc)
-        assert reshaped.shape == (3, 4, 128, 256)
-
-    def test_transpose_is_tx_rx_chirp_adc(self):
-        fc = _FC(num_tx=2, num_rx=3, chirps=4, adc=8)
-        flat = torch.arange(2 * 3 * 4 * 8, dtype=torch.int64).to(torch.complex64)
-        reshaped = frame_reshape(flat, fc)
-        assert reshaped.shape == (2, 3, 4, 8)
 
 
 class TestRangeFFT:

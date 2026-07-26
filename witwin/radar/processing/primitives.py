@@ -34,7 +34,19 @@ import torch
 #: The window family, named so a caller comparing against an analytic
 #: unwindowed spectrum can turn it off by name rather than by passing ``None``
 #: and hoping.
-WINDOWS = ("rectangular", "hann", "hamming", "blackman")
+WINDOWS = ("rectangular", "hann", "hamming", "blackman", "hamming_symmetric")
+
+#: The one SYMMETRIC member of the family, and the reason it exists. Every
+#: legacy ``sigproc`` transform used ``torch.hamming_window(N, periodic=False)``,
+#: which is ``0.54 - 0.46 cos(2 pi n / (N - 1))`` and is a DIFFERENT sequence
+#: from the periodic window above. The migration adapters preserve the
+#: behaviour of the public names they wrap, and that behaviour includes which
+#: window was applied, so the window family carries the symmetric variant rather
+#: than the adapters carrying a second window constructor outside this module.
+#: New code should use ``"hamming"``: a symmetric window makes the transform of
+#: a pure tone asymmetric about its bin, which is the property every exact-bin
+#: assertion in this package leans on.
+SYMMETRIC_WINDOWS = ("hamming_symmetric",)
 
 #: What ``window=None`` means. Named rather than special cased, so that every
 #: published :class:`RangeProfile` carries a window string and never a ``None``
@@ -59,6 +71,9 @@ def window_values(
     if name == "rectangular":
         return torch.ones(length, dtype=dtype, device=device)
     index = torch.arange(length, dtype=dtype, device=device)
+    if name == "hamming_symmetric":
+        span = float(length - 1) if length > 1 else 1.0
+        return 0.54 - 0.46 * torch.cos(index * (2.0 * math.pi / span))
     turn = index * (2.0 * math.pi / length)
     if name == "hann":
         return 0.5 - 0.5 * torch.cos(turn)
@@ -95,12 +110,23 @@ def window_coherent_gain(name: str, length: int) -> float:
     Below that the mean is computed from the two or one values directly, so the
     published gain is never a formula that quietly stops holding at a degenerate
     length.
+
+    The SYMMETRIC window has its own closed form and not the periodic one:
+    ``sum_{n=0}^{N-1} cos(2 pi n / (N - 1))`` is ``1``, not ``0``, because the
+    last sample repeats the first phase, so the mean is ``0.54 - 0.46 / N``.
     """
 
     if name not in WINDOWS:
         raise ValueError(f"window must be one of {WINDOWS}, got {name!r}")
     if type(length) is not int or length < 1:
         raise ValueError(f"length must be a positive int, got {length!r}")
+    if name == "hamming_symmetric":
+        if length < 3:
+            values = window_values(
+                name, length, dtype=torch.float64, device=torch.device("cpu")
+            )
+            return float(values.sum()) / length
+        return 0.54 - 0.46 / length
     if length >= 3 or name == "rectangular":
         return _COHERENT_GAIN[name]
     values = window_values(name, length, dtype=torch.float64, device=torch.device("cpu"))
@@ -244,6 +270,7 @@ def matched_filter(
 
 __all__ = [
     "DEFAULT_WINDOW",
+    "SYMMETRIC_WINDOWS",
     "WINDOWS",
     "matched_filter",
     "pulse_replica",

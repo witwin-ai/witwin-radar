@@ -21,11 +21,11 @@ import torch
 
 from support import exact_bin_grid as grid
 from witwin.radar.processing import (
+    ArrayGeometry,
     ProcessingAxes,
     RangeDopplerMap,
     beam_cube,
     conventional_steering,
-    virtual_element_offsets_m,
 )
 from witwin.radar.synthesis.contracts import SynthesisResult
 
@@ -50,6 +50,10 @@ def _axes(waveform: str = "fmcw") -> ProcessingAxes:
     return ProcessingAxes.from_synthesis(result, spec, array)
 
 
+def _array(waveform: str = "fmcw") -> ArrayGeometry:
+    return ArrayGeometry.from_axes(_axes(waveform))
+
+
 def _directions(angles_rad) -> torch.Tensor:
     return torch.tensor(
         [[math.sin(a), 0.0, math.cos(a)] for a in angles_rad], dtype=torch.float64
@@ -68,31 +72,37 @@ def _map(axes, data) -> RangeDopplerMap:
 
 
 def test_the_virtual_element_is_the_sum_of_its_transmitter_and_receiver_offsets():
-    """And the pair rank is SINK MAJOR, which is what decides which is which.
+    """And the element table is TX MAJOR, which is what decides which is which.
 
-    Under ``PAIR_RANK_LAYOUT`` the transmitter index of pair ``p`` is
-    ``p % num_tx``, not ``p // num_rx``. On a square array the two are a
-    transpose of each other, so getting it backwards mis-steers every angle
-    without changing a single shape.
+    The COMPOSED pair rank is sink major, ``pair = rx * num_tx + tx``. Every
+    cube that reaches this package has already been transposed to ``[TX, RX,
+    ...]`` by ``assemble_frame_cube``, because a virtual-antenna index is tx
+    major, so flattening its array axes gives ``pair = tx * num_rx + rx`` and
+    the element table has to be built in the same order. On a square array the
+    two orders are a transpose of each other, so getting it backwards
+    mis-steers every angle without changing a single shape.
     """
 
     axes = _axes()
-    offsets = virtual_element_offsets_m(axes)
+    array = ArrayGeometry.from_axes(axes)
+    offsets = array.element_positions_m
     assert tuple(offsets.shape) == (PAIRS, 3)
     spacing = axes.element_spacing_m
     for pair in range(PAIRS):
-        tx = axes.tx_loc_half_wavelength[pair % axes.num_tx]
-        rx = axes.rx_loc_half_wavelength[pair // axes.num_tx]
+        tx = axes.tx_loc_half_wavelength[pair // axes.num_rx]
+        rx = axes.rx_loc_half_wavelength[pair % axes.num_rx]
         expected = [(a + b) * spacing for a, b in zip(tx, rx, strict=True)]
         assert [float(v) for v in offsets[pair]] == pytest.approx(expected, rel=1e-12)
+    assert array.transmitter_index.tolist() == [p // axes.num_rx for p in range(PAIRS)]
+    assert array.receiver_index.tolist() == [p % axes.num_rx for p in range(PAIRS)]
 
 
 def test_the_manifold_runs_the_other_way_for_a_conjugated_beat_cube():
     """One derived quantity, two reconciliations, no second sign decision."""
 
     directions = _directions((0.3,))
-    beat = conventional_steering(_axes("fmcw"), directions)
-    channel = conventional_steering(_axes("ofdm"), directions)
+    beat = conventional_steering(_array("fmcw"), directions)
+    channel = conventional_steering(_array("ofdm"), directions)
     assert _axes("fmcw").doppler_sign == 1
     assert _axes("ofdm").doppler_sign == -1
     torch.testing.assert_close(beat, channel.conj(), rtol=1e-6, atol=1e-7)
@@ -108,8 +118,8 @@ def test_normalized_weights_give_a_unit_response_to_a_matched_wavefront():
 
     axes = _axes()
     directions = _directions((-0.3, 0.0, 0.25))
-    weights = conventional_steering(axes, directions)
-    manifold = conventional_steering(axes, directions, normalize=False)
+    weights = conventional_steering(ArrayGeometry.from_axes(axes), directions)
+    manifold = conventional_steering(ArrayGeometry.from_axes(axes), directions, normalize=False)
     response = (weights.conj() * manifold).sum(dim=0)
     torch.testing.assert_close(
         response,
@@ -130,8 +140,8 @@ def test_a_wavefront_from_one_beam_peaks_on_that_beam():
     axes = _axes()
     angles = (-0.4, -0.2, 0.0, 0.2, 0.4)
     directions = _directions(angles)
-    weights = conventional_steering(axes, directions)
-    manifold = conventional_steering(axes, directions, normalize=False)
+    weights = conventional_steering(ArrayGeometry.from_axes(axes), directions)
+    manifold = conventional_steering(ArrayGeometry.from_axes(axes), directions, normalize=False)
 
     data = torch.zeros((PAIRS, DOPPLER, RANGES), dtype=torch.complex64)
     steered = 3
@@ -153,24 +163,17 @@ def test_a_wavefront_from_one_beam_peaks_on_that_beam():
 
 
 def test_a_tx_rx_map_and_a_flat_pair_map_form_the_same_cube():
-    """``[TX, RX]`` IS ``[P]`` reshaped, in the published sink-major order."""
+    """``[TX, RX]`` IS ``[P]`` reshaped, in the tx-major cube order."""
 
     axes = _axes()
     directions = _directions((-0.2, 0.1))
-    weights = conventional_steering(axes, directions)
+    weights = conventional_steering(ArrayGeometry.from_axes(axes), directions)
     flat = torch.randn(PAIRS, DOPPLER, RANGES, dtype=torch.complex64)
-    grid_shaped = flat.reshape(axes.num_rx, axes.num_tx, DOPPLER, RANGES)
-    # The cube's array axes are [tx, rx]; the pair rank is rx-major, so the
-    # reshape above is [rx, tx] and has to be transposed to match.
-    grid_shaped = grid_shaped.permute(1, 0, 2, 3).contiguous()
+    grid_shaped = flat.reshape(axes.num_tx, axes.num_rx, DOPPLER, RANGES)
 
     from_flat = beam_cube(_map(axes, flat), weights, directions=directions)
-    from_grid = beam_cube(
-        _map(axes, grid_shaped.permute(1, 0, 2, 3).contiguous()),
-        weights,
-        directions=directions,
-    )
-    torch.testing.assert_close(from_flat.data, from_grid.data, rtol=1e-6, atol=1e-7)
+    from_grid = beam_cube(_map(axes, grid_shaped), weights, directions=directions)
+    assert torch.equal(from_flat.data, from_grid.data)
 
 
 def test_a_planar_beam_grid_keeps_both_of_its_axes():
@@ -182,7 +185,7 @@ def test_a_planar_beam_grid_keeps_both_of_its_axes():
     planar = torch.nn.functional.normalize(
         azimuth.reshape(3, 1, 3) + elevation.reshape(1, 2, 3), dim=-1
     )
-    weights = conventional_steering(axes, planar)
+    weights = conventional_steering(ArrayGeometry.from_axes(axes), planar)
     assert tuple(weights.shape) == (PAIRS, 3, 2)
 
     data = torch.zeros((PAIRS, DOPPLER, RANGES), dtype=torch.complex64)
@@ -199,7 +202,7 @@ def test_a_planar_beam_grid_keeps_both_of_its_axes():
 def test_the_former_refuses_a_front_end_mismatch_and_a_missing_direction_grid():
     axes = _axes()
     directions = _directions((0.0, 0.2))
-    weights = conventional_steering(axes, directions)
+    weights = conventional_steering(ArrayGeometry.from_axes(axes), directions)
     data = torch.zeros((PAIRS, DOPPLER, RANGES), dtype=torch.complex64)
 
     with pytest.raises(ValueError, match="same front end"):
@@ -209,4 +212,4 @@ def test_the_former_refuses_a_front_end_mismatch_and_a_missing_direction_grid():
     with pytest.raises(TypeError):
         beam_cube(data, weights, directions=directions)
     with pytest.raises(ValueError, match=r"\[\*beam, 3\]"):
-        conventional_steering(axes, torch.zeros(4, 2, dtype=torch.float64))
+        conventional_steering(ArrayGeometry.from_axes(axes), torch.zeros(4, 2, dtype=torch.float64))

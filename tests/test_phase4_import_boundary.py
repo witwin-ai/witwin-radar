@@ -135,7 +135,17 @@ SPIKE_MODULES = (
     # host-observation and Dr.Jit scans as the native owners because being on
     # the Torch side of the processing exception is permission to use an FFT,
     # not permission to read a device tensor to the host per frame.
-    "witwin/radar/sigproc/matched_filter.py",
+    "witwin/radar/processing/matched_filter.py",
+    # The rest of the Phase-8 processing chain, under the same scans. A batched
+    # detector, an angle estimator and a beam weight are all post-synthesis
+    # Torch by the owner directive; that is permission to use an FFT, not
+    # permission to read a device tensor to the host per frame.
+    "witwin/radar/processing/adapters.py",
+    "witwin/radar/processing/aoa.py",
+    "witwin/radar/processing/beamforming.py",
+    "witwin/radar/processing/cfar.py",
+    "witwin/radar/processing/microdoppler.py",
+    "witwin/radar/processing/tracking.py",
 )
 
 SPIKE_IMPORTS = textwrap.dedent(
@@ -149,7 +159,7 @@ SPIKE_IMPORTS = textwrap.dedent(
     import witwin.radar.sensors.legacy_paths
     import witwin.radar.sensors.weights
     import witwin.radar.frontend.chain
-    import witwin.radar.sigproc.matched_filter
+    import witwin.radar.processing.matched_filter
     """
 ).strip()
 
@@ -236,7 +246,7 @@ def test_synthesis_scattering_and_paths_do_not_require_channel():
         "import witwin.radar.synthesis.fmcw_beat\n"
         "import witwin.radar.synthesis.ofdm_cfr\n"
         "import witwin.radar.synthesis.pulsed_echo\n"
-        "import witwin.radar.sigproc.matched_filter\n"
+        "import witwin.radar.processing.matched_filter\n"
         "import witwin.radar.scattering.rcs\n"
         "import witwin.radar.paths.two_way"
     )
@@ -413,6 +423,25 @@ HOST_OBSERVATION_OWNERS = {
     # it reads nothing: ``mask`` is a device comparison and ``count`` returns a
     # host int decided at build time.
     "witwin/radar/paths/components.py": frozenset({"tolist"}),
+    # processing/adapters.py is the legacy sigproc surface, and PUBLISHING
+    # numpy is that surface's contract: process_pc and process_rd have always
+    # returned host arrays, and reg_data has always returned a host batch.
+    # Naming the allowance here rather than dropping the module from the scan
+    # keeps every OTHER observation - an item(), a stray cpu() inside a
+    # transform - a failure. The facade entries these adapters call read
+    # nothing; that is what test_no_host_observation_in_the_processing_chain
+    # in tests/processing/test_cutover.py measures at runtime.
+    "witwin/radar/processing/adapters.py": frozenset({"cpu", "numpy"}),
+    # processing/tracking.py is the frame-to-frame detection handoff. It is
+    # explicitly non-differentiable and explicitly a host-side stage: an
+    # association is a discrete decision over a detection list that already
+    # exists on the host, so the reads are the boundary, not a leak into the
+    # per-frame simulation path.
+    "witwin/radar/processing/tracking.py": frozenset({"tolist"}),
+    # processing/pointcloud.py performs exactly one: the argwhere that turns a
+    # detection mask into a row list. A point cloud has a data-dependent
+    # length, so that observation is the stage, and it is attributed here.
+    "witwin/radar/processing/pointcloud.py": frozenset(),
 }
 
 
@@ -734,9 +763,16 @@ def test_the_matched_filter_re_derives_no_geometry():
     computed here would be a second, silently divergent copy of physics that the
     synthesis kernel already owns. Scanned by name because every one of these
     would appear as an attribute read on the spec.
+
+    The module MOVED at the Phase-8 cutover, from ``sigproc`` into the
+    processing facade, so that every production ``torch.fft`` expression in the
+    processing chain lives in one package. The correlation itself moved one step
+    further, into ``processing/primitives.py``, which the range-profile stage
+    shares - so the FFT assertions below follow it there rather than being
+    dropped. The scan itself is unchanged.
     """
 
-    module = REPO_ROOT / "witwin/radar/sigproc/matched_filter.py"
+    module = REPO_ROOT / "witwin/radar/processing/matched_filter.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
 
     attributes = {
@@ -756,10 +792,20 @@ def test_the_matched_filter_re_derives_no_geometry():
     ):
         assert forbidden not in attributes, forbidden
 
-    imported = _imports_of(module, "witwin.radar.sigproc.matched_filter")
-    assert not any(name.startswith("witwin") for name in imported), sorted(imported)
+    # The one witwin edge it is allowed: the shared correlation primitive. It
+    # reaches nothing else, and in particular no synthesis contract, no path
+    # row and no propagation module.
+    imported = _imports_of(module, "witwin.radar.processing.matched_filter")
+    witwin_edges = sorted(
+        name
+        for name in imported
+        if name.startswith("witwin") and "." in name.removeprefix("witwin.radar.")
+    )
+    allowed = "witwin.radar.processing.primitives"
+    assert all(name.startswith(allowed) for name in witwin_edges), witwin_edges
 
-    source = module.read_text(encoding="utf-8")
+    correlation = REPO_ROOT / "witwin/radar/processing/primitives.py"
+    source = correlation.read_text(encoding="utf-8")
     assert "torch.fft" in source
     assert "torch.conj" in source
 

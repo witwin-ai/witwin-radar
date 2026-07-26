@@ -312,12 +312,25 @@ class Timeline:
         """Generate Range-Doppler maps for all frames.
 
         Returns:
-            rd_mags: (num_frames, chirps, ADC) numpy array — magnitude in dB
-            ranges: (num_range_bins//2,) numpy array — range axis in meters
-            velocities: (num_doppler_bins,) numpy array — velocity axis in m/s
+            rd_mags: (num_frames, chirps, ADC) numpy array - magnitude in dB
+            ranges: (num_range_bins//2,) numpy array - range axis in meters
+            velocities: (num_doppler_bins,) numpy array - velocity axis in m/s
+
+        Deprecated with the entry it is built on. ``process_rd`` is a migration
+        adapter over ``witwin.radar.processing.range_doppler``, and this method
+        follows it: it publishes the legacy unreconciled Doppler sign and the
+        legacy symmetric window, per frame, in numpy.
         """
+        import warnings
+
+        warnings.warn(
+            "Timeline.generate_rd follows witwin.radar.sigproc.process_rd, which "
+            "is a migration adapter over witwin.radar.processing.range_doppler.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         frames = self.generate(radar, progress=progress)
-        from .sigproc import process_rd
+        from .processing.adapters import process_rd
 
         rd_mags = []
         for f in frames:

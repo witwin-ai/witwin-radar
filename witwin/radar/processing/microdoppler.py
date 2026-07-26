@@ -1,5 +1,11 @@
 """Micro-Doppler analysis: slow-time spectra and spectrograms, in Torch.
 
+Moved here from ``sigproc`` unchanged, values and conventions included. A
+slow-time spectrum IS processing, and after the Phase-8 cutover every production
+``torch.fft`` expression in the radar processing chain lives inside this
+package. ``witwin.radar.sigproc.microdoppler`` survives as a deprecation shim
+that re-exports these four names and computes nothing.
+
 This module is on the Torch side of the owner directive of 2026-07-25, and the
 placement is the whole point rather than an implementation detail. The
 SIMULATION of micro-Doppler - a rotor blade's ``omega x r``, a limb's

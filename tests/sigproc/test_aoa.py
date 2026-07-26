@@ -1,16 +1,42 @@
 """
-Tests for Angle-of-Arrival (AoA) estimation.
+Tests for Angle-of-Arrival (AoA) estimation, through the legacy adapter.
 
-Tests the phase-comparison and 2D FFT AoA methods with synthetic
-virtual antenna data — no GPU needed. Inputs are torch tensors.
+Tests the phase-comparison and 2D FFT AoA methods with synthetic virtual
+antenna data - no GPU needed. Inputs are torch tensors.
+
+``_compensate_tdm_phase`` was deleted at the Phase-8 cutover; its Python
+transmitter loop with an in-place ``*=`` on a clone is one broadcast multiply in
+``witwin.radar.processing.tdm_compensate``, which is what the compensation tests
+below now drive. The velocity handed to it is NEGATED, because the legacy
+Doppler axis is receding-positive on a conjugated FMCW cube and the facade's
+convention is closing-positive; that translation is asserted bitwise against the
+pre-cutover golden in ``tests/processing/test_adapters.py``.
 """
+
+import warnings
 
 import numpy as np
 import pytest
 import torch
 
-from witwin.radar.sigproc.pointcloud import naive_xyz, _compensate_tdm_phase
+from witwin.radar.processing import ArrayGeometry, tdm_compensate
+from witwin.radar.processing.adapters import axes_from_radar
+from witwin.radar.sigproc.pointcloud import naive_xyz
 from conftest import MockRadar, STANDARD_CONFIG
+
+
+@pytest.fixture(autouse=True)
+def _allow_deprecation():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        yield
+
+
+def _compensate(aoa, velocities, radar):
+    """The legacy call, translated once: negate, then compensate."""
+
+    axes = axes_from_radar(radar)
+    return tdm_compensate(aoa, -velocities, ArrayGeometry.from_axes(axes), axes)
 
 
 TX_HW = np.array([[0, 0, 0], [2, 0, 0], [0, 1, 0]], dtype=np.float64)
@@ -141,37 +167,31 @@ class TestTDMPhaseCompensation:
 
     def test_no_compensation_for_zero_velocity(self):
         mock = MockRadar(STANDARD_CONFIG)
-        from witwin.radar.sigproc.pointcloud import FrameConfig
-        fc = FrameConfig(mock)
 
         g = torch.Generator().manual_seed(0)
         aoa = (torch.randn(12, 5, generator=g) + 1j * torch.randn(12, 5, generator=g)).to(torch.complex64)
         velocities = torch.zeros(5, dtype=torch.float64)
 
-        compensated = _compensate_tdm_phase(aoa, velocities, mock, fc)
+        compensated = _compensate(aoa, velocities, mock)
         torch.testing.assert_close(compensated, aoa, atol=1e-6, rtol=1e-6)
 
     def test_compensation_changes_phases_for_nonzero_velocity(self):
         mock = MockRadar(STANDARD_CONFIG)
-        from witwin.radar.sigproc.pointcloud import FrameConfig
-        fc = FrameConfig(mock)
 
         aoa = torch.ones((12, 3), dtype=torch.complex64)
         velocities = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
 
-        compensated = _compensate_tdm_phase(aoa, velocities, mock, fc)
+        compensated = _compensate(aoa, velocities, mock)
         torch.testing.assert_close(compensated[:4, :], aoa[:4, :], atol=1e-6, rtol=1e-6)
         assert not torch.allclose(compensated[4:8, :], aoa[4:8, :])
         assert not torch.allclose(compensated[8:12, :], aoa[8:12, :])
 
     def test_compensation_magnitude_preserved(self):
         mock = MockRadar(STANDARD_CONFIG)
-        from witwin.radar.sigproc.pointcloud import FrameConfig
-        fc = FrameConfig(mock)
 
         g = torch.Generator().manual_seed(42)
         aoa = (torch.randn(12, 10, generator=g) + 1j * torch.randn(12, 10, generator=g)).to(torch.complex64)
         velocities = (torch.rand(10, generator=g) * 6 - 3).to(torch.float64)
 
-        compensated = _compensate_tdm_phase(aoa, velocities, mock, fc)
+        compensated = _compensate(aoa, velocities, mock)
         torch.testing.assert_close(torch.abs(compensated), torch.abs(aoa), atol=1e-5, rtol=1e-5)
