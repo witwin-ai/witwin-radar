@@ -67,15 +67,47 @@ C1, and it is pinned by counting `scene.compile` calls rather than by argument.
 ### 3. The birth gap is closed by a declared cadence, not by a detector
 
 `motion_event_period_frames` forces a rediscovery every N frames. The free
-per-frame `rediscovery_required` poll catches everything else; it cannot catch a
-born row, because a born row leaves no trace in any version domain the frozen
-topology can be compared against. Every cheap alternative is either a full
-discovery or a device reduction plus a device-to-host copy the ADR-032 budget
-does not have room for.
+per-frame `rediscovery_required` poll compares the frozen rows against the
+versions the compiled scene RECORDED, so it catches exactly the drift the
+compiled scene already knows about; it cannot catch a born row, because a born
+row leaves no trace in any version domain the frozen topology can be compared
+against. Every cheap alternative is either a full discovery or a device
+reduction plus a device-to-host copy the ADR-032 budget does not have room for.
 
 Under `"fixed_winner_replay"` the poll ignores `geometry_version` and only that
 domain, mirroring Channel's own rule: topology, material and assignment changes
 respecify the labels the frozen rows carry and are never replayable.
+
+### 3b. The same tick verifies the world the compiled scene was built from
+
+The four version domains are content hashes, so a compiled scene and the rows
+discovered on it agree with each other no matter what happens to the world
+afterwards. A caller that edits mesh vertices in place therefore moves NO
+version domain, the free poll reports `None` forever, and the loop replays a
+world that no longer exists at full strength with every row valid. That route
+bypasses the declared dynamics API, but "it was a misuse" is not a reason for
+the answer to be silent.
+
+`consumer.rediscovery_required(revalidate_source=True)` is the only thing that
+can see it: it rehashes the live `witwin.core` world behind the compiled scene.
+That is `O(scene)` host work which Channel's own docstring forbids in a replay
+loop, so the loop runs it exactly on the motion-event tick - which already pays
+a full discovery, where a host hash is invisible - and never per frame. When it
+fires, the loop reports `SOURCE_MUTATION` and **recompiles**: the compiled scene
+itself is stale, and rediscovering against it would reproduce the stale answer.
+
+The signal is isolated rather than trusted wholesale. `revalidate_source=True`
+answers the recorded provenance FIRST, so the loop treats only "the default poll
+is silent AND the rehash is not" as a mutation; taking any non-`None` answer
+would report a mutation on every ordinary moving-wall frame.
+
+This makes `motion_event_period_frames=None` two declarations rather than one:
+no path can be born, AND the authored world is never mutated outside the
+`DynamicScene` API. A caller that cannot assert the second must declare a
+period. Pinned by
+`tests/test_phase7_invalidation.py::test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick`,
+`::test_a_declared_trajectory_never_reports_a_source_mutation` and
+`::test_no_declared_cadence_means_no_revalidation_at_all`.
 
 ### 4. The loop owns *when*, the caller owns *what*
 
@@ -98,6 +130,9 @@ rather than an import - the adapter stays the only Radar module that names
 - Two host integer comparisons per frozen handle per frame, and nothing else, is
   the whole per-frame cost of the cadence. Measured at zero `.item()`, `.cpu()`,
   `.tolist()`, `.numpy()` and zero synchronizations.
+- The `O(scene)` source rehash is charged to the motion-event tick only, and a
+  loop with no declared period performs it zero times, so the per-frame budget
+  above is unchanged by decision 3b.
 
 ## The boundary this stage found, and did not cross
 

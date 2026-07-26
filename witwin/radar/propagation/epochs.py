@@ -54,9 +54,13 @@ without a full discovery. So a caller whose world can gain paths must
 rediscover on a cadence it declares, and ``motion_event_period_frames`` is that
 declaration. Polling
 :meth:`~witwin.radar.propagation.channel_consumer.ChannelPropagationAdapter.rediscovery_required`
-every frame is free and catches everything else, but it cannot catch this one:
-a born row leaves no trace in any version domain that the frozen topology can
-be compared against.
+every frame is free, but it compares the frozen rows against the versions the
+COMPILED SCENE recorded, so it catches exactly the drift the compiled scene
+already knows about. Two classes escape it and both are handled above rather
+than by the poll: a born row leaves no trace in any version domain, and a world
+mutated in place after compilation leaves the compiled scene and its own rows
+agreeing with each other. The second is why the motion-event tick rehashes the
+live world - see :data:`SOURCE_MUTATION`.
 """
 
 from __future__ import annotations
@@ -116,6 +120,21 @@ FIRST_FRAME = "first_frame"
 STRUCTURE_MOTION = "structure_motion"
 MOTION_EVENT_CADENCE = "motion_event_cadence"
 
+#: The authored world was mutated in place behind the compiled scene.
+#:
+#: The four version domains are content hashes, so a compiled scene and the
+#: rows discovered on it always agree with each other no matter what happened
+#: to the world afterwards - the free per-frame poll compares the frozen rows
+#: against what the compiled scene RECORDED and therefore cannot see this. The
+#: only thing that can is rehashing the live world the compiled scene was built
+#: from, which is ``O(scene)`` host work and belongs exactly where this loop
+#: puts it: on the motion-event tick, which already pays a full discovery.
+#:
+#: When it fires the compiled scene itself is stale, so this is the one reason
+#: that forces a RECOMPILE as well as a rediscovery. Rediscovering against the
+#: stale compiled scene would reproduce the stale answer at full strength.
+SOURCE_MUTATION = "source_mutation"
+
 
 class SceneEpochLoop:
     """Drive one compiled-scene lifecycle from a Core ``DynamicScene``.
@@ -130,11 +149,15 @@ class SceneEpochLoop:
     almost always a mistake: the frozen handles carry an epoch number that only
     the adapter they came from can validate.
 
-    ``motion_event_period_frames`` is the birth-gap cadence in frames. ``None``
-    means never - correct only for a world that provably cannot gain a path,
-    which in practice means a world with no structure motion and endpoints that
-    never cross an occluder. ``1`` means rediscover every frame, which is
-    honest and costs the full 9-40 ms.
+    ``motion_event_period_frames`` is the birth-gap cadence in frames, and it
+    is also the cadence on which the live world is rehashed
+    (:data:`SOURCE_MUTATION`). ``None`` means never, and it is therefore two
+    declarations at once: that no path can be born, and that the authored world
+    is never mutated outside the ``DynamicScene`` API. Both are true of a world
+    with no structure motion and endpoints that never cross an occluder; a
+    caller that edits mesh vertices in place must declare a period instead.
+    ``1`` means rediscover every frame, which is honest and costs the full
+    9-40 ms.
 
     ``world_motion`` is forwarded verbatim to
     :meth:`ChannelPropagationAdapter.refreeze`; read its docstring, because
@@ -199,6 +222,7 @@ class SceneEpochLoop:
         self.compile_count = 0
         self.discovery_count = 0
         self.poll_count = 0
+        self.revalidation_count = 0
 
     # -- what the caller reads ---------------------------------------------
 
@@ -249,8 +273,9 @@ class SceneEpochLoop:
 
         self._frame_index += 1
         snapshot = self._dynamic.at(time_s)
-        recompiled = self._recompile(snapshot)
-        reason = self._rediscovery_reason(recompiled)
+        mutated = self._revalidate_source()
+        recompiled = self._recompile(snapshot, force=mutated)
+        reason = self._rediscovery_reason(recompiled, mutated)
         if reason is not None:
             self._rediscover(snapshot, reason)
         return EpochFrame(
@@ -267,15 +292,51 @@ class SceneEpochLoop:
 
     # -- the three decisions ------------------------------------------------
 
-    def _recompile(self, snapshot: object) -> bool:
+    def _revalidate_source(self) -> bool:
+        """Has the authored world been mutated behind the compiled scene?
+
+        Only on the motion-event tick, and only when a period was declared:
+        this rehashes the live world, which is ``O(scene)`` host work that the
+        Channel consumer forbids in a frame loop. The tick already pays a full
+        discovery, so the hash is invisible there.
+
+        The source signal is isolated rather than trusted wholesale.
+        ``rediscovery_required(revalidate_source=True)`` reports the recorded
+        provenance drift FIRST and only falls through to the live world, so a
+        non-``None`` answer on its own would confuse "the caller rebound onto a
+        moved scene" (which the declared rules above already handle, and which
+        ``fixed_winner_replay`` deliberately tolerates) with "the world moved
+        under the compiled scene" (which nothing else can see). Only the second
+        one recompiles.
+        """
+
+        if self._frozen is None or not self._motion_event_due():
+            return False
+        adapter = self._frozen.adapter
+        for handle in self._frozen.handles:
+            self.revalidation_count += 1
+            if adapter.rediscovery_required(handle) is not None:
+                continue
+            if adapter.rediscovery_required(handle, revalidate_source=True):
+                return True
+        return False
+
+    def _motion_event_due(self) -> bool:
+        return self._period is not None and (
+            self._frame_index - self._last_discovery_frame >= self._period
+        )
+
+    def _recompile(self, snapshot: object, *, force: bool = False) -> bool:
         """Compile this snapshot, or keep the one already built.
 
         The first frame always compiles because nothing exists yet. After that
         only declared structure motion compiles, which is what keeps Core's
-        time-folded ``geometry_version`` out of the budget.
+        time-folded ``geometry_version`` out of the budget - unless ``force``
+        says the world was mutated in place, in which case the compiled scene
+        is stale no matter what the descriptors declare.
         """
 
-        if self._compiled is not None and not self._structures_move:
+        if self._compiled is not None and not self._structures_move and not force:
             return False
         self._compiled = self._compile(snapshot)
         self.compile_count += 1
@@ -285,22 +346,25 @@ class SceneEpochLoop:
             )
         return True
 
-    def _rediscovery_reason(self, recompiled: bool) -> str | None:
+    def _rediscovery_reason(self, recompiled: bool, mutated: bool) -> str | None:
         """Name why this frame must rediscover, or ``None`` to replay.
 
         Order matters and is by cost, not by importance: the first frame has no
         alternative, a retired handle has no alternative, and only then is the
-        free per-frame poll consulted.
+        free per-frame poll consulted. ``SOURCE_MUTATION`` outranks the cadence
+        that discovered it because the two cost the same discovery but say
+        different things, and "the world changed behind your back" is the one a
+        caller has to act on.
         """
 
         if self._frozen is None:
             return FIRST_FRAME
+        if mutated:
+            return SOURCE_MUTATION
         if recompiled and self._world_motion == "frozen_world":
             # refreeze() retired every handle; there is nothing left to replay.
             return STRUCTURE_MOTION
-        if self._period is not None and (
-            self._frame_index - self._last_discovery_frame >= self._period
-        ):
+        if self._motion_event_due():
             return MOTION_EVENT_CADENCE
         return self._poll()
 
@@ -354,6 +418,7 @@ class SceneEpochLoop:
 __all__ = [
     "FIRST_FRAME",
     "MOTION_EVENT_CADENCE",
+    "SOURCE_MUTATION",
     "STRUCTURE_MOTION",
     "EpochFrame",
     "FrozenEpoch",

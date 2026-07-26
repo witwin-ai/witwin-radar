@@ -38,6 +38,7 @@ from witwin.radar.propagation import kinematics as kin  # noqa: E402
 from witwin.radar.propagation.epochs import (  # noqa: E402
     FIRST_FRAME,
     MOTION_EVENT_CADENCE,
+    SOURCE_MUTATION,
     STRUCTURE_MOTION,
     FrozenEpoch,
     SceneEpochLoop,
@@ -499,6 +500,138 @@ def test_the_motion_event_cadence_costs_what_it_says(monkeypatch):
     assert counter.counts["tolist"] == 0, counter.counts
     assert counter.counts["numpy"] == 0, counter.counts
     assert counter.counts["synchronize"] == 0, counter.counts
+
+
+def test_each_frame_samples_the_dynamic_scene_at_its_own_instant():
+    """``frame(t)`` advances the world, and the frame says which world it is.
+
+    Direct rather than downstream: a loop that sampled the ``DynamicScene``
+    once and then reused that snapshot while still labelling frames with the
+    asked time would produce a perfectly self-consistent stream of stale
+    worlds, and everything that notices it today notices it three layers away
+    (a rediscovery set that does not change). Here the wall's own
+    ``geometry_version`` is the witness, and the labels are checked against the
+    snapshot rather than against each other.
+    """
+
+    dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
+    loop, _ = _epoch_loop(dynamic, period=None)
+    instants = (0.0, 0.05, 0.10)
+    frames = [loop.frame(instant) for instant in instants]
+
+    for frame, instant in zip(frames, instants, strict=True):
+        assert frame.time_s == pytest.approx(instant)
+        assert float(frame.snapshot.time_s) == pytest.approx(instant)
+        assert float(frame.compiled.time_s) == pytest.approx(instant)
+
+    versions = [frame.compiled.geometry_version for frame in frames]
+    assert len(set(versions)) == len(instants), versions
+    # Non-vacuity: the wall really is somewhere else, not merely re-versioned.
+    first_pose = frames[0].snapshot.structures[0].rigid_motion.translation
+    last_pose = frames[-1].snapshot.structures[0].rigid_motion.translation
+    assert not torch.equal(first_pose, last_pose), (first_pose, last_pose)
+
+
+# --------------------------------------------------------------------------
+# The world mutated behind the compiled scene
+# --------------------------------------------------------------------------
+
+
+def test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick():
+    """The staleness class no version comparison can see, and its cadence.
+
+    A caller that edits mesh vertices in place bypasses the declared dynamics
+    API entirely: no trajectory, no deformation, no recompile, and - this is
+    the part that makes it dangerous - no version domain moves either, because
+    a compiled scene and the rows discovered on it are content hashes of each
+    other and stay consistent no matter what happens to the world afterwards.
+    The free per-frame poll therefore reports ``None`` forever and the loop
+    replays a world that no longer exists, at full strength, with every row
+    valid.
+
+    The motion-event tick closes it by rehashing the live world, which is the
+    only thing that can see this class. Two assertions carry the weight: the
+    reason is named rather than folded into the cadence, and the frame
+    RECOMPILES - rediscovering against the stale compiled scene would
+    reproduce the stale delays exactly.
+    """
+
+    from witwin.core.dynamics import DynamicScene
+
+    scene, mesh = world.make_scene()
+    world.assert_world_coordinates_survived(mesh)
+    loop, state = _epoch_loop(DynamicScene(scene), period=1)
+    assert loop.structures_move is False
+
+    first = loop.frame(0.0)
+    assert first.reason == FIRST_FRAME
+    before = _inbound(state.spike).delay_s.detach().clone()
+
+    with torch.no_grad():
+        mesh.vertices[:, 0] += 0.5
+    moved = loop.frame(1.0e-3)
+
+    assert moved.reason == SOURCE_MUTATION
+    assert moved.recompiled and moved.rediscovered
+    assert loop.compile_count == 2
+    after = _inbound(state.spike).delay_s.detach().clone()
+    assert not torch.equal(before, after)
+
+    # The world is still again, so the next tick is an ordinary cadence
+    # rediscovery and pays no compile. A revalidation that reported drift
+    # against a world it had already recompiled would recompile forever.
+    still = loop.frame(2.0e-3)
+    assert still.reason == MOTION_EVENT_CADENCE
+    assert not still.recompiled
+    assert loop.compile_count == 2
+
+
+def test_a_declared_trajectory_never_reports_a_source_mutation():
+    """The revalidation isolates the live world from the recorded provenance.
+
+    ``rediscovery_required(revalidate_source=True)`` answers the recorded
+    provenance FIRST, so a loop that took any non-``None`` answer as "the world
+    was mutated" would report ``source_mutation`` on every ordinary moving-wall
+    frame and recompile a scene it had just built. Both declarations are
+    exercised because they take different branches: ``fixed_winner_replay``
+    reaches the tick with a moved ``geometry_version`` on the recorded side,
+    ``frozen_world`` reaches it having recompiled.
+    """
+
+    for world_motion, expected in (
+        ("fixed_winner_replay", MOTION_EVENT_CADENCE),
+        ("frozen_world", STRUCTURE_MOTION),
+    ):
+        dynamic = world.make_dynamic_scene(
+            wall_velocity=geo.WALL_VELOCITY_M_PER_S
+        )
+        loop, _ = _epoch_loop(dynamic, period=1, world_motion=world_motion)
+        loop.frame(0.0)
+        frames = [loop.frame(0.05), loop.frame(0.10)]
+        assert loop.revalidation_count > 0, world_motion
+        for frame in frames:
+            assert frame.reason == expected, (world_motion, frame.reason)
+
+
+def test_no_declared_cadence_means_no_revalidation_at_all():
+    """``motion_event_period_frames=None`` is two declarations, and it costs.
+
+    It says no path can be born AND the authored world is never mutated
+    outside the ``DynamicScene`` API. The second one is what the frame loop
+    buys with it: rehashing the world is ``O(scene)`` host work that the
+    Channel consumer forbids in a replay loop, so a loop with no declared
+    motion event performs it zero times and stays free.
+    """
+
+    from witwin.core.dynamics import DynamicScene
+
+    scene, _ = world.make_scene()
+    loop, _ = _epoch_loop(DynamicScene(scene), period=None)
+    for index in range(6):
+        loop.frame(index * 1.0e-3)
+    assert loop.revalidation_count == 0
+    assert loop.poll_count == 2 * 5
+    assert loop.compile_count == 1
 
 
 def test_the_epoch_loop_refuses_a_bind_that_freezes_nothing():
