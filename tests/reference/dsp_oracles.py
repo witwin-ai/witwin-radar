@@ -8,16 +8,21 @@ can import or dispatch to one, so they moved here unchanged.
 Unchanged is the point. They are the independent chirp and MIMO references the
 native Dirichlet kernels are validated against, so editing them while moving
 them would invalidate every comparison that uses them.
+
+Independent is also the point, and it used to be untrue. Until Phase 6 this
+module imported ``compute_path_amplitudes`` and ``compute_total_path_lengths``
+from ``witwin.radar.solvers.common`` - the very module the Phase-6 native
+migration rewrites. An oracle built out of the code under test cannot witness
+that the migration preserved anything. Those two expressions now live in
+:mod:`reference.path_math`, copied verbatim, and nothing under ``tests/``
+imports ``witwin.radar.solvers`` to build a reference.
 """
 
 from __future__ import annotations
 
 import torch
 
-from witwin.radar.solvers.common import (
-    compute_path_amplitudes,
-    compute_total_path_lengths,
-)
+from .path_math import compute_path_amplitudes, compute_total_path_lengths
 
 
 def pytorch_chirp_reference(radar, distances, amplitudes):
