@@ -21,7 +21,15 @@ from .contracts import (
     RadarLegBatch,
     require_endpoint_role,
 )
-from .epochs import EpochFrame, FrozenEpoch, SceneEpochLoop
+from .epochs import (
+    MOBILITIES,
+    ClutterComponentSpec,
+    EpochFrame,
+    EpochPolicy,
+    FrozenEpoch,
+    SceneEpochLoop,
+    epoch_policy,
+)
 from .kinematics import (
     DeformationVelocity,
     Kinematics,
@@ -37,9 +45,12 @@ from .kinematics import (
 )
 
 __all__ = [
+    "MOBILITIES",
+    "ClutterComponentSpec",
     "DeformationVelocity",
     "EndpointRole",
     "EpochFrame",
+    "EpochPolicy",
     "FrozenEpoch",
     "Kinematics",
     "LinearDeformation",
@@ -49,6 +60,7 @@ __all__ = [
     "TwoWayDuals",
     "deformation_kinematics",
     "endpoint_kinematics",
+    "epoch_policy",
     "replicate_slots",
     "require_endpoint_role",
     "rigid_site_velocities",

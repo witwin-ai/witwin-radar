@@ -61,6 +61,16 @@ than by the poll: a born row leaves no trace in any version domain, and a world
 mutated in place after compilation leaves the compiled scene and its own rows
 agreeing with each other. The second is why the motion-event tick rehashes the
 live world - see :data:`SOURCE_MUTATION`.
+
+Those three rules are stated in the loop's own vocabulary - ``world_motion``
+and ``motion_event_period_frames`` - and a scene is not usually described that
+way. A caller describes it by naming its parts: this wall is static, that
+foliage moves and can gain paths, this vehicle moves and cannot.
+:class:`ClutterComponentSpec` is that description and :func:`epoch_policy`
+resolves a set of them into the two arguments this loop takes. The resolution
+is one-way on purpose: the loop never reads a component declaration, so
+"which parts does this scene have" and "when does the pipeline pay" stay
+separable questions with separate owners.
 """
 
 from __future__ import annotations
@@ -113,6 +123,165 @@ class EpochFrame:
     recompiled: bool
     rediscovered: bool
     reason: str | None
+
+
+#: How a declared scene component moves, and therefore what the loop must pay
+#: for it. These are CALLER DECLARATIONS about the world, never inferences:
+#: whether a moving structure can GAIN a path is not detectable from inside a
+#: replay, so nothing on the device can answer this question.
+#:
+#: * ``"static"`` - the component's geometry does not move. No structure
+#:   trajectory, no recompile, no rediscovery. The zero-cost case by
+#:   construction.
+#: * ``"replay"`` - the geometry moves and the caller asserts the discrete
+#:   winner set does not, so the frozen rows are replayed against it under
+#:   ``world_motion="fixed_winner_replay"``. Replay is SUBTRACTIVE: a row that
+#:   stops existing publishes ``row_valid=False`` with an exactly zero payload,
+#:   and a row that starts existing is simply absent.
+#: * ``"rediscover"`` - the component can gain paths, so the caller declares a
+#:   cadence in frames on which every frozen handle is retired and discovery
+#:   runs again.
+MOBILITIES: tuple[str, ...] = ("static", "replay", "rediscover")
+
+STATIC = "static"
+REPLAY = "replay"
+REDISCOVER = "rediscover"
+
+
+@dataclass(frozen=True, slots=True)
+class ClutterComponentSpec:
+    """One named scene component and how it moves.
+
+    ``components`` is the set of Channel propagation components this class
+    needs - ``{"los", "reflection"}`` for a wall, ``{"diffraction"}`` for an
+    edge. It is checked against the consumer's own
+    ``fixed_topology_components`` by :func:`epoch_policy`, because a component
+    that cannot be FROZEN cannot ride the fixed-topology inner loop at all and
+    must rediscover every time it is wanted.
+
+    ``rediscovery_period_frames`` belongs to ``mobility="rediscover"`` and to
+    nothing else. A period on a static or replayed component would be a
+    declaration that does nothing, which is the kind of dead configuration that
+    later reads as a promise.
+    """
+
+    name: str
+    mobility: str
+    components: frozenset[str] = frozenset({"los", "reflection"})
+    rediscovery_period_frames: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("name must be a non-empty str")
+        if self.mobility not in MOBILITIES:
+            raise ValueError(
+                f"mobility must be one of {list(MOBILITIES)}, got "
+                f"{self.mobility!r}"
+            )
+        object.__setattr__(
+            self, "components", frozenset(str(value) for value in self.components)
+        )
+        if not self.components:
+            raise ValueError(
+                f"component {self.name!r} declares no propagation components; "
+                "a component set is what decides whether it can be frozen"
+            )
+        if self.mobility == REDISCOVER:
+            period = self.rediscovery_period_frames
+            if type(period) is not int or period < 1:
+                raise ValueError(
+                    f"component {self.name!r} declares mobility 'rediscover' "
+                    "and must name rediscovery_period_frames as a positive int, "
+                    f"got {period!r}"
+                )
+        elif self.rediscovery_period_frames is not None:
+            raise ValueError(
+                f"component {self.name!r} declares mobility "
+                f"{self.mobility!r} and a rediscovery period of "
+                f"{self.rediscovery_period_frames!r}; only a rediscovering "
+                "component has a cadence, and a period here would never fire"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class EpochPolicy:
+    """The two :class:`SceneEpochLoop` arguments a declaration resolves to.
+
+    A value record with value equality, deliberately: comparing two resolutions
+    is the natural way to ask whether adding a component changed what the loop
+    will do, and identity semantics would answer that question wrongly.
+    """
+
+    world_motion: str
+    motion_event_period_frames: int | None
+
+
+def epoch_policy(specs, *, fixed_topology_components) -> EpochPolicy:
+    """Resolve a set of component declarations into ONE loop configuration.
+
+    There is one compiled scene and one epoch loop per session, so a mixed
+    declaration has to resolve to a single ``world_motion`` and a single
+    cadence. The resolution, stated rather than implied:
+
+    * every component static - nothing moves, so the declaration is
+      ``"frozen_world"`` with no cadence and the loop never recompiles;
+    * static plus replay - ``"fixed_winner_replay"`` with no cadence: the
+      frozen rows are replayed against the moved geometry and no path can be
+      born;
+    * static plus rediscover - ``"frozen_world"`` on the shortest declared
+      cadence, so every frozen handle is retired and discovery runs again;
+    * replay AND rediscover together - ``"fixed_winner_replay"`` on the
+      shortest declared cadence. Frames between the ticks replay, which is what
+      the replayed component asked for, and the tick pays the discovery the
+      rediscovering component asked for. Neither declaration is downgraded.
+
+    ``fixed_topology_components`` is the Channel capability record's own set,
+    passed in rather than imported: this module names no ``witwin`` package, and
+    quoting the live record is what keeps a Channel that widens or narrows its
+    freezable set from leaving a stale constant behind here.
+    """
+
+    declared = tuple(specs)
+    if not declared:
+        raise ValueError(
+            "epoch_policy needs at least one ClutterComponentSpec; an empty "
+            "declaration says nothing about how the world moves"
+        )
+    freezable = frozenset(str(value) for value in fixed_topology_components)
+    names: set[str] = set()
+    for spec in declared:
+        if not isinstance(spec, ClutterComponentSpec):
+            raise TypeError(
+                "epoch_policy needs ClutterComponentSpec values, got "
+                f"{type(spec).__name__}"
+            )
+        if spec.name in names:
+            raise ValueError(f"component {spec.name!r} is declared twice")
+        names.add(spec.name)
+        if spec.mobility == REDISCOVER:
+            continue
+        outside = spec.components - freezable
+        if outside:
+            raise NotImplementedError(
+                f"component {spec.name!r} declares mobility {spec.mobility!r} "
+                f"over propagation components {sorted(spec.components)}, but "
+                f"the consumer can freeze only {sorted(freezable)}; "
+                f"{sorted(outside)} cannot be replayed from a frozen topology "
+                "and must declare mobility 'rediscover' with a cadence"
+            )
+
+    mobilities = {spec.mobility for spec in declared}
+    periods = [
+        spec.rediscovery_period_frames
+        for spec in declared
+        if spec.mobility == REDISCOVER
+    ]
+    period = min(periods) if periods else None
+    replays = REPLAY in mobilities
+    return EpochPolicy(
+        world_motion="fixed_winner_replay" if replays else "frozen_world",
+        motion_event_period_frames=period,
+    )
 
 
 #: Why a frame paid for a rediscovery. Frozen strings so a caller can assert.
@@ -417,10 +586,17 @@ class SceneEpochLoop:
 
 __all__ = [
     "FIRST_FRAME",
+    "MOBILITIES",
     "MOTION_EVENT_CADENCE",
+    "REDISCOVER",
+    "REPLAY",
     "SOURCE_MUTATION",
+    "STATIC",
     "STRUCTURE_MOTION",
+    "ClutterComponentSpec",
     "EpochFrame",
+    "EpochPolicy",
     "FrozenEpoch",
     "SceneEpochLoop",
+    "epoch_policy",
 ]
