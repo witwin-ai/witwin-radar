@@ -13,9 +13,48 @@ DO vary per path. Those evaluate inside a native kernel; the protocol's
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
+
+#: Exact SI definition, in metres per second.
+SPEED_OF_LIGHT_M_PER_S = 299792458.0
+
+#: The normalisation that makes ``|C_rt|^2`` the bistatic radar equation.
+#:
+#: A composed two-way coefficient is
+#:
+#:   |C_rt|^2 = P_in (lam/(4 pi d_in))^2 |S|^2 P_site (lam/(4 pi d_out))^2
+#:
+#: and the bistatic radar equation is
+#:
+#:   P_r = P_t G_t G_r lam^2 sigma / ((4 pi)^3 d_in^2 d_out^2)
+#:
+#: With the site excited at exactly 1 W, matching the two requires
+#:
+#:   |S|^2 = 4 pi sigma / lam^2,   i.e.   S = sqrt(4 pi sigma) / lam
+#:
+#: This was unpinned, and an unpinned target strength is not a free parameter:
+#: it is a level that is wrong by ``lam^2 / (4 pi)``, which at 77 GHz is a
+#: factor of 6.6e5, or 58 dB.
+RCS_AMPLITUDE_LAW = "sqrt(4*pi*sigma_m2)/wavelength_m"
+
+
+def rcs_amplitude(sigma_m2: float, wavelength_m: float) -> float:
+    """``sqrt(4 pi sigma) / lambda``, the dimensionless target strength.
+
+    Dimensionless is the whole content of the normalisation. ``S`` carries no
+    propagation phase and no spreading - both belong to Channel transport, once
+    per leg - so what is left of a radar cross section after the two
+    ``lam/(4 pi d)`` factors have been accounted for is a pure ratio.
+    """
+
+    if sigma_m2 < 0.0:
+        raise ValueError("sigma_m2 is a radar cross section in square metres and cannot be negative")
+    if not wavelength_m > 0.0:
+        raise ValueError("wavelength_m must be positive")
+    return math.sqrt(4.0 * math.pi * float(sigma_m2)) / float(wavelength_m)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -61,6 +100,34 @@ class ScalarRcsResponse:
 
         return cls(amplitude=parameter(amplitude), phase_rad=parameter(phase_rad))
 
+    @classmethod
+    def from_rcs(
+        cls,
+        sigma_m2: float,
+        *,
+        reference_frequency_hz: float,
+        phase_rad: float = 0.0,
+        device: torch.device | str = "cpu",
+        requires_grad: bool = False,
+    ) -> "ScalarRcsResponse":
+        """Build ``S`` from a radar cross section, through the pinned law.
+
+        This is the only constructor that knows what a square metre is worth.
+        ``from_values`` still exists because a test or an optimiser may want to
+        author the dimensionless strength directly, but a caller that has a
+        cross section must come through here rather than guess the
+        normalisation: the guess that omits ``4 pi / lam^2`` is 58 dB out at
+        77 GHz and looks entirely plausible on a relative plot.
+        """
+
+        wavelength_m = SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz)
+        return cls.from_values(
+            rcs_amplitude(sigma_m2, wavelength_m),
+            phase_rad,
+            device=device,
+            requires_grad=requires_grad,
+        )
+
     @property
     def is_geometry_dependent(self) -> bool:
         return False
@@ -83,4 +150,9 @@ class ScalarRcsResponse:
         return (amplitude * torch.exp(-1j * phase)).expand(row_count)
 
 
-__all__ = ["ScalarRcsResponse"]
+__all__ = [
+    "RCS_AMPLITUDE_LAW",
+    "SPEED_OF_LIGHT_M_PER_S",
+    "ScalarRcsResponse",
+    "rcs_amplitude",
+]

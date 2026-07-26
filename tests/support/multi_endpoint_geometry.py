@@ -67,7 +67,25 @@ WALL_EPS_R = 5.24
 WALL_SIGMA_E = 0.0462
 
 POLARIZATION = (0.0, 0.0, 1.0)
-TX_POWER_W = 1.0
+
+#: The transmitter's radiated power, in watts, and deliberately NOT 1.0.
+#:
+#: A Channel coefficient carries ``sqrt(tx_power)`` from the source endpoint's
+#: ``powers_w``. The outbound leg's source is the SITE, so with a site power
+#: equal to the transmitter power the composed ``C_rt`` carries
+#: ``sqrt(P_tx) * sqrt(P_site)`` - and with both equal to 1.0 W that second
+#: factor is numerically invisible, which is exactly how a squared transmit
+#: power ships. Every absolute-level test in Phase 6 therefore runs at
+#: ``P_tx != 1 W``.
+TX_POWER_W = 0.01
+
+#: The site endpoint's excitation power, in watts, and deliberately EXACTLY 1.0.
+#:
+#: The site is a re-radiator, not a second transmitter: the entire target
+#: strength lives in the two-way join's ``S`` factor, normalised
+#: ``S = sqrt(4 pi sigma) / lambda``, and a site excitation of anything but unit
+#: power would multiply it again.
+SITE_POWER_W = 1.0
 
 TX_A_POSITION_M: Point = (0.0, 0.0, 0.0)
 TX_B_POSITION_M: Point = (6.0, -1.0, 0.0)
@@ -591,6 +609,7 @@ __all__ = [
     "TX_B_POSITION_M",
     "TX_B_STABLE_ID",
     "TX_B_UNOCCLUDED_POSITION_M",
+    "SITE_POWER_W",
     "TX_POWER_W",
     "WALL_EPS_R",
     "WALL_FACES",

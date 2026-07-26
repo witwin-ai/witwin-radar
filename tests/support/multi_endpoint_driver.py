@@ -159,10 +159,18 @@ class MultiEndpointSpike:
         )
 
     def _site_batch(self, positions, *, role: str):
+        """The site endpoint, excited at exactly 1 W when it is the source.
+
+        It used to be excited at ``TX_POWER_W``, the same value as the real
+        transmitter, so the composed coefficient carried ``sqrt(P_tx)`` twice.
+        With ``TX_POWER_W = 1.0`` that was numerically invisible. The site is a
+        re-radiator: the whole target strength belongs to the join's ``S``.
+        """
+
         return world.endpoint_batch(
             positions,
             self.site_ids,
-            power_w=geo.TX_POWER_W if role == "source" else None,
+            power_w=geo.SITE_POWER_W if role == "source" else None,
             device=self.device,
         )
 
