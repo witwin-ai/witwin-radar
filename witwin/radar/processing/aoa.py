@@ -142,15 +142,26 @@ def tdm_compensate(
 
 
 def _finish_direction_cosines(
-    x_vector: torch.Tensor, z_vector: torch.Tensor
+    x_vector: torch.Tensor, z_vector: torch.Tensor, array: ArrayGeometry
 ) -> torch.Tensor:
-    """``[3, N]``: complete the unit vector, zeroing the rows that cannot close.
+    """``[3, N]``: reconcile the phasor, complete the unit vector, zero the rest.
+
+    **The conjugation trap, for the third and last time.** A DFT peak measures
+    the phase progression of the data it was given. Channel's array response is
+    ``exp(+j k <r, u>)``, so a Channel-convention cube's peak sits at ``+u`` and
+    a CONJUGATED beat cube's peak sits at ``-u``: the same target reads as its
+    own mirror image. It is reconciled here, from the same derived
+    ``phase_sign`` the Doppler stage and the steering weights read, so there is
+    one quantity behind all three and not three sign decisions that can drift.
 
     ``y`` is the boresight component. A pair of direction cosines whose squares
     already exceed one describes no real direction, so its row is published as
     an exact zero triple rather than as a clamped guess a consumer would plot.
     """
 
+    reconcile = -array.phase_sign
+    x_vector = reconcile * x_vector
+    z_vector = reconcile * z_vector
     possible = 1 - x_vector.square() - z_vector.square()
     valid = possible >= 0
     zero = torch.zeros_like(x_vector)
@@ -231,8 +242,16 @@ def phase_comparison_aoa(
     phase_adjust = torch.exp(
         1j * torch.tensor(el_tx_dx, dtype=real_dtype, device=device) * wx
     )
-    wz = torch.angle(peak_azimuth * torch.conj(peak_elevation) * phase_adjust)
-    return _finish_direction_cosines(x_vector, wz / torch.pi)
+    # The ELEVATION aperture leads the azimuth one by the array's own z offset,
+    # so the ratio is taken that way round. The deleted original took its
+    # reciprocal and therefore published an elevation cosine that pointed the
+    # opposite way to the array's z axis - which is why every legacy elevation
+    # assertion in the tree was written on an absolute value. The adapter
+    # negates this row back, once and by name.
+    wz = torch.angle(
+        peak_elevation * torch.conj(peak_azimuth) * torch.conj(phase_adjust)
+    )
+    return _finish_direction_cosines(x_vector, wz / torch.pi, array)
 
 
 def fft2_aoa(
@@ -287,7 +306,7 @@ def fft2_aoa(
     k_el = torch.where(k_el > fft_size // 2 - 1, k_el - fft_size, k_el)
     x_vector = (2 * torch.pi / fft_size) * k_az.to(real_dtype) / torch.pi
     z_vector = (2 * torch.pi / fft_size) * k_el.to(real_dtype) / torch.pi
-    return _finish_direction_cosines(x_vector, z_vector)
+    return _finish_direction_cosines(x_vector, z_vector, array)
 
 
 #: The two FFT routes, by name. Route selection is EXPLICIT - the caller picks -
@@ -413,10 +432,17 @@ def music_spectrum(
         elevation_rad=elevation_rad,
         azimuth_rad=azimuth_rad,
     ).to(device=angle_data.device)
+    # ``a^H P_n a``, with the conjugate on the LEFT. The deleted original put it
+    # on the right, which evaluates the form at the CONJUGATE steering vector
+    # and therefore peaks at the mirror image of the true angle. Its own angle
+    # grids ran from ``+fov/2`` down to ``-fov/2``, which hid the mirror behind
+    # a descending axis and made the published spectrum wrong by a reflection.
+    # Corrected here, and the reflection is asserted against the pre-cutover
+    # golden in tests/processing/test_adapters.py.
     projector = torch.matmul(noise, noise.transpose(-1, -2).conj())
     quadratic = torch.matmul(
-        torch.einsum("ijk,akl->aijl", steering, projector),
-        steering.transpose(-1, -2).conj(),
+        torch.einsum("ijk,akl->aijl", steering.conj(), projector),
+        steering.transpose(-1, -2),
     )
     return torch.reciprocal(quadratic.diagonal(dim1=-2, dim2=-1)).reshape(
         bins, int(elevation_rad.shape[0]), int(azimuth_rad.shape[0])

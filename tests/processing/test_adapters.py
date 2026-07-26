@@ -327,12 +327,22 @@ def test_process_rd_still_returns_numpy(golden, radar):
 # ---------------------------------------------------------------------------
 
 
-def test_the_music_spectrum_and_image_agree_to_the_manifold_rewrite(golden):
-    """``rtol = 1e-6``: the sixteen-way stack and ``torch.exp`` both moved.
+def test_the_music_spectrum_is_the_pre_cutover_one_reflected(golden):
+    """The one deliberate CORRECTION, asserted as an exact reflection.
 
-    The sub-aperture ORDER is preserved exactly, so the smoothed covariance is a
-    sum over the same terms in the same sequence. What changed is how the
-    manifold's unit phasors are formed, and that moves the last bit.
+    The deleted ``MUSICImager`` evaluated ``a^T P_n a*`` - the quadratic form at
+    the CONJUGATE steering vector - so its pseudo-spectrum peaked at the mirror
+    image of the true angle. Its own angle grids ran from ``+fov/2`` DOWN to
+    ``-fov/2``, which hid the reflection behind a descending axis. The form is
+    corrected; because the grid is symmetric about zero, the correction is
+    exactly a reversal of both angle axes, and that is what is asserted here
+    rather than a vague "it changed".
+
+    ``rtol = 1e-6`` and not bitwise for a second, separate reason: the manifold
+    is built with ``torch.polar`` where the original wrote ``torch.exp(1j *
+    ...)``, and the sixteen-way ``torch.stack`` is two ``unfold`` calls. The
+    sub-aperture ORDER is preserved exactly, so the smoothed covariance is a sum
+    over the same terms in the same sequence; what moves is the last bit.
     """
 
     imager = MUSICImager(
@@ -340,13 +350,13 @@ def test_the_music_spectrum_and_image_agree_to_the_manifold_rewrite(golden):
     )
     torch.testing.assert_close(
         imager.music_spectrum(g.angle_data()),
-        golden["music_spectrum"],
+        golden["music_spectrum"].flip(dims=(1, 2)),
         rtol=1e-6,
         atol=1e-8,
     )
     torch.testing.assert_close(
         imager.radar_image(g.music_frame(), range_bins=g.music_range_bins()),
-        golden["music_image"],
+        golden["music_image"].flip(dims=(0, 1)),
         rtol=1e-6,
         atol=1e-8,
     )

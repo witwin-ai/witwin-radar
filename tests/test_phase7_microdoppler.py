@@ -457,7 +457,9 @@ def test_microdoppler_analysis_is_torch_only():
     import re
 
     root = _pathlib.Path(__file__).resolve().parents[1]
-    module = root / "witwin" / "radar" / "sigproc" / "microdoppler.py"
+    # Moved into the processing facade at the Phase-8 cutover, so that every
+    # production torch.fft in the processing chain lives in one package.
+    module = root / "witwin" / "radar" / "processing" / "microdoppler.py"
     source = module.read_text(encoding="utf-8")
 
     # Nothing in this module may resolve the extension, by any spelling.

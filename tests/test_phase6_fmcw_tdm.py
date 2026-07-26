@@ -438,16 +438,22 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
     kernel's phase LAW and are blind to the table that feeds it in production.
     This one drives the whole chain instead - ``synthesize_fmcw_beat`` ->
     ``assembly.pair_tx_index`` -> ``segment_tx_index`` -> the beat kernel ->
-    ``assemble_frame_cube`` -> ``sigproc.pointcloud._compensate_tdm_phase`` -
-    and asserts that the compensation lands every virtual-antenna block back on
-    top of block 0. A slot table off by one transmitter passes every other test
-    in this file and fails here, because the cube's TX axis comes from the
-    sink-major layout while the phase in it came from the table.
+    ``assemble_frame_cube`` -> ``processing.tdm_compensate`` - and asserts that
+    the compensation lands every virtual-antenna block back on top of block 0. A
+    slot table off by one transmitter passes every other test in this file and
+    fails here, because the cube's TX axis comes from the sink-major layout
+    while the phase in it came from the table.
 
-    The compensation is called for real. Only the two scalars it reads off a
-    radar object are stubbed - the wavelength and the chirp period - because
-    building a ``RadarAxes`` would drag a whole processing configuration in to
-    supply two numbers this test already owns.
+    The compensation is called for real. Only the scalars it reads off the two
+    records are stubbed - the wavelength, the slot period and the array shape -
+    because building a full ``ProcessingAxes`` would drag a whole processing
+    configuration in to supply numbers this test already owns.
+
+    The VELOCITY sign is negated at the call. The Phase-8 owner takes the
+    canonical closing-positive velocity, and ``C0 * tau_rate / 2`` is its
+    negative; the compensation is the same phase either way, and that negation
+    is asserted bitwise against the pre-cutover golden in
+    ``tests/processing/test_adapters.py``.
 
     The ramp is switched off so the compensation is exact; its residual on a
     real chirp is measured by
@@ -456,7 +462,7 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
 
     from types import SimpleNamespace
 
-    from witwin.radar.sigproc.pointcloud import _compensate_tdm_phase
+    from witwin.radar.processing import ArrayGeometry, tdm_compensate
     from witwin.radar.synthesis.assembly import assemble_frame_cube
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
 
@@ -484,16 +490,21 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
     velocities = torch.full(
         (num_chirps,), radial_speed, dtype=torch.float64, device=frame.device
     )
-    radar = SimpleNamespace(
-        axes=SimpleNamespace(
-            wavelength_m=C0 / FC_HZ, chirp_period_s=CHIRP_PERIOD_S
-        )
+    array = ArrayGeometry.from_offsets(
+        [[float(index), 0.0, 0.0] for index in range(num_tx)],
+        [[float(index), 0.0, 0.0] for index in range(num_rx)],
+        element_spacing_m=(C0 / FC_HZ) / 2.0,
+        wavelength_m=C0 / FC_HZ,
+        phase_sign=1,
+        device=frame.device,
     )
-    fc = SimpleNamespace(numTxAntennas=num_tx, numRxAntennas=num_rx)
+    axes = SimpleNamespace(
+        slow_time_period_s=CHIRP_PERIOD_S * num_tx, num_tx=num_tx
+    )
 
     raw = aoa_input.to(torch.complex128).cpu()
     compensated = (
-        _compensate_tdm_phase(aoa_input, velocities, radar, fc)
+        tdm_compensate(aoa_input, -velocities, array, axes)
         .to(torch.complex128)
         .cpu()
     )

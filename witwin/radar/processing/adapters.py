@@ -78,6 +78,14 @@ LEGACY_GATE_FLOOR_DB = -100.0
 #: configuration they silently assumed. Kept only to convert them into METRES.
 LEGACY_RANGE_CUT_BINS = (25, 125)
 
+#: The legacy angle estimators never reconciled the beat conjugation in SPACE:
+#: they read a DFT peak off a conjugated cube and published its position as a
+#: direction cosine, so a target at ``+u`` was reported at ``-u``. The facade
+#: reconciles it from ``ArrayGeometry.phase_sign``; the adapters hand the
+#: estimator an array declared in the CHANNEL convention so the legacy answer -
+#: mirror image and all - is reproduced exactly.
+LEGACY_UNRECONCILED_PHASE_SIGN = -1
+
 
 def _deprecated(name: str, replacement: str) -> None:
     warnings.warn(
@@ -329,7 +337,20 @@ def naive_xyz(virtual_ant, num_tx=3, num_rx=4, fft_size=64, tx_loc_hw=None):
     array = _synthetic_array(num_tx, num_rx, tx_loc_hw)
     route = fft2_aoa if num_tx > 4 else phase_comparison_aoa
     cosines = route(virtual_ant, array, fft_size=fft_size)
-    return cosines[0], cosines[1], cosines[2]
+    return cosines[0], cosines[1], _legacy_elevation(cosines[2], route)
+
+
+def _legacy_elevation(z_vector: torch.Tensor, route) -> torch.Tensor:
+    """The legacy elevation cosine pointed against the array's z axis.
+
+    The phase-comparison route took the azimuth-over-elevation phase ratio, the
+    reciprocal of the one the array geometry implies, so its ``z`` came out
+    negated. Every legacy elevation assertion in this tree is written on an
+    absolute value, which is the symptom. The facade takes the ratio the right
+    way round; this puts the legacy sign back for the legacy name only.
+    """
+
+    return -z_vector if route is phase_comparison_aoa else z_vector
 
 
 def _synthetic_array(num_tx: int, num_rx: int, tx_loc_hw) -> ArrayGeometry:
@@ -354,7 +375,7 @@ def _synthetic_array(num_tx: int, num_rx: int, tx_loc_hw) -> ArrayGeometry:
         receivers,
         element_spacing_m=0.5,
         wavelength_m=1.0,
-        phase_sign=1,
+        phase_sign=LEGACY_UNRECONCILED_PHASE_SIGN,
     )
 
 
@@ -518,7 +539,18 @@ def _legacy_point_cloud(
     # takes the canonical closing-positive velocity.
     aoa_input = tdm_compensate(aoa_input, -v, array, axes)
     route = fft2_aoa if axes.num_tx > 4 else phase_comparison_aoa
-    cosines = route(aoa_input, array, fft_size=64).to(torch.float64)
+    unreconciled = ArrayGeometry.from_offsets(
+        axes.tx_loc_half_wavelength,
+        axes.rx_loc_half_wavelength,
+        element_spacing_m=axes.element_spacing_m,
+        wavelength_m=axes.wavelength_m,
+        phase_sign=LEGACY_UNRECONCILED_PHASE_SIGN,
+        device=aoa_input.device,
+    )
+    cosines = route(aoa_input, unreconciled, fft_size=64).to(torch.float64)
+    cosines = torch.stack(
+        (cosines[0], cosines[1], _legacy_elevation(cosines[2], route)), dim=0
+    )
 
     cloud = PointCloud(
         xyz=(cosines * r.reshape(1, -1)).transpose(0, 1).contiguous(),
