@@ -20,6 +20,25 @@ scan originally covered only the packages. That is the wrong half: the module
 the item names by hand is the one place a Torch chirp expression still lives
 (``Radar.waveform``), so the guard did not look where the survivor is. The
 facade scan below closes that hole without pretending the survivors are gone.
+
+**Phase 9 extends the same discipline to what Phase 9 itself added.** The phase
+put roughly a thousand lines of guard and orchestration into the production
+graph - a first-order-only decorator, a wall of refusals, a host-float
+validator, a velocity-leaf refusal, an SMPL deformation refusal - and every one
+of them is new Torch in a package this file is supposed to police. The last
+three sections record what was added, in exactly two categories:
+
+* **refusal predicates**, which ASK Torch a question and never construct a
+  value: ``is_grad_enabled``, ``unpack_dual``, ``once_differentiable``. A guard
+  module that started computing something would show up as a call outside that
+  set.
+* **result construction**, which is one expression: ``rcs_amplitude``'s
+  ``torch.sqrt``. It runs once per response rather than once per path, and
+  every per-path product downstream of it is still a native kernel, which is why
+  the capability matrix records its mechanism as ``torch-orchestration`` and not
+  as physics.
+
+There is no third category, and the tests below fail if one appears.
 """
 
 from __future__ import annotations
@@ -249,3 +268,227 @@ def test_an_unknown_waveform_kind_raises_at_runtime():
     radar.system_config = _UnknownSystemConfig()
     with pytest.raises(ValueError, match="no synthesis owner"):
         radar.synthesize(object(), slow_time_mode=None)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: the guards and the orchestration this phase added
+# ---------------------------------------------------------------------------
+
+
+#: The two package-root modules Phase 9 introduced. Both are pure policy: they
+#: decide whether a call may proceed and they never produce a number.
+PHASE9_GUARD_OWNERS = ("ad_contracts.py", "host_parameters.py")
+
+#: Everything those two modules are allowed to ask Torch. Every entry is a
+#: PREDICATE or a decorator; none of them constructs, allocates or computes.
+PHASE9_GUARD_TORCH_CALLS = frozenset(
+    {
+        "torch.is_grad_enabled",
+        "torch.autograd.forward_ad.unpack_dual",
+        "torch.autograd.function.once_differentiable",
+    }
+)
+
+#: The ONE arithmetic Torch expression Phase 9 added to the production graph,
+#: with the constructors that place its result. ``rcs_amplitude`` is the
+#: ``sqrt(4 pi sigma)/lambda`` law and it runs once per response, off the
+#: per-path loop; ``torch.tensor`` places the phase beside a live amplitude
+#: because ``device=`` cannot move a graph-bearing tensor. ``evaluate``'s
+#: ``torch.exp`` predates Phase 9 and is the response's own complex assembly.
+#:
+#: Equality, not containment, and for the usual reason: a second Torch physics
+#: expression added to this module must fail here, and so must a stale entry.
+PHASE9_RCS_TORCH_CALLS = {
+    ("rcs_amplitude", "torch.sqrt"),
+    ("from_rcs", "torch.tensor"),
+    ("from_values", "torch.tensor"),
+    ("evaluate", "torch.exp"),
+}
+
+#: Packages that gained a Phase-9 guard. Wider than ``OWNER_PACKAGES``: the wall
+#: is in ``processing``, the velocity refusal is in ``propagation`` and the
+#: deformation refusal is in ``geometry``.
+PHASE9_GUARDED_PACKAGES = (
+    "processing",
+    "propagation",
+    "paths",
+    "scattering",
+    "geometry",
+    "sensors",
+    "frontend",
+    "synthesis",
+    "solvers",
+)
+
+#: The one place in the package where an ``if`` on ``requires_grad`` genuinely
+#: SELECTS behaviour rather than refusing or classifying. ``SMPLBody._evaluate``
+#: nudges a grad-carrying shape by 1e-8 to keep the SMPL layer's backward
+#: defined, which is a legacy numerical workaround inside a legacy path that IS
+#: driven to a loss. Recorded rather than removed: deleting it would change a
+#: working legacy capability, and that is a numerical decision with its own
+#: evidence rather than an architecture cleanup.
+PHASE9_KNOWN_REQUIRES_GRAD_ROUTES = {("geometry", "smpl.py", "_evaluate")}
+
+
+def _torch_calls(path: pathlib.Path) -> set:
+    """``(enclosing function, dotted call)`` for every ``torch.*`` call."""
+
+    tree = _tree(path)
+    functions = _enclosing_functions(tree)
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        if not name.startswith("torch."):
+            continue
+        found.add((functions.get(node.lineno, "<module>"), name))
+    return found
+
+
+def _selects_on_requires_grad(node: ast.If) -> bool:
+    """True when an ``if`` on ``requires_grad`` chooses rather than refuses.
+
+    Three shapes are legitimate and are not selection: a body that only
+    ``raise``s (a refusal), a body that only ``return``s a constant or a bare
+    name (a classifier, or an early return inside a refusal helper), and a body
+    that does neither but has no ``else`` and only reassigns - which is the one
+    recorded route.
+    """
+
+    if not any(
+        isinstance(inner, ast.Attribute) and inner.attr == "requires_grad"
+        for inner in ast.walk(node.test)
+    ):
+        return False
+    if node.orelse:
+        return True
+    if all(isinstance(item, ast.Raise) for item in node.body):
+        return False
+    if all(
+        isinstance(item, ast.Return)
+        and (item.value is None or isinstance(item.value, (ast.Constant, ast.Name)))
+        for item in node.body
+    ):
+        return False
+    return True
+
+
+def test_the_phase9_guard_owners_only_ask_torch_questions():
+    """A refusal owner that started computing would appear here.
+
+    The whole value of putting the wall and the first-order rule in two
+    dedicated modules is that their contents are checkable at a glance. This is
+    that glance, automated.
+    """
+
+    offenders = []
+    for name in PHASE9_GUARD_OWNERS:
+        path = REPO_ROOT / "witwin" / "radar" / name
+        assert path.exists(), path
+        for function, call in _torch_calls(path):
+            if call not in PHASE9_GUARD_TORCH_CALLS:
+                offenders.append((name, function, call))
+    assert offenders == [], offenders
+
+
+def test_the_phase9_guard_scan_is_not_vacuous():
+    """Calibration: the guards really do call the predicates they claim to.
+
+    Without this, deleting ``first_order_only``'s body would leave the
+    assertion above passing on an empty set.
+    """
+
+    calls = set()
+    for name in PHASE9_GUARD_OWNERS:
+        calls |= {
+            call for _, call in _torch_calls(REPO_ROOT / "witwin" / "radar" / name)
+        }
+    assert "torch.is_grad_enabled" in calls
+    assert "torch.autograd.forward_ad.unpack_dual" in calls
+    assert "torch.autograd.function.once_differentiable" in calls
+
+
+def test_the_only_phase9_torch_arithmetic_is_the_rcs_amplitude_law():
+    """``from_rcs``'s ``torch.sqrt`` is result construction, and it is alone.
+
+    ``scattering/rcs.py`` is the one production module Phase 9 gave a new Torch
+    ARITHMETIC expression. Recording the module's whole matched set by equality
+    - rather than asserting the absence of a list of forbidden names - is what
+    makes a second one fail: a new per-path phase reimplemented in Torch here
+    is exactly the defect class this file exists for, and a scan that only
+    forbids the names somebody thought of would not catch it.
+    """
+
+    path = REPO_ROOT / "witwin" / "radar" / "scattering" / "rcs.py"
+    found = _torch_calls(path)
+    assert found == PHASE9_RCS_TORCH_CALLS, sorted(found ^ PHASE9_RCS_TORCH_CALLS)
+
+
+def test_no_phase9_guarded_package_gates_a_route_on_requires_grad():
+    """The Phase-6 rule, over every package Phase 9 touched.
+
+    A forward-only dual has ``requires_grad == False`` the whole time, so a
+    branch that selects on it sends a tangent down the side that does not carry
+    one. Only the recorded route is allowed.
+    """
+
+    offenders = []
+    for package in PHASE9_GUARDED_PACKAGES:
+        for path in _modules(package):
+            tree = _tree(path)
+            functions = _enclosing_functions(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.If):
+                    continue
+                if not _selects_on_requires_grad(node):
+                    continue
+                key = (package, path.name, functions.get(node.lineno, "<module>"))
+                if key in PHASE9_KNOWN_REQUIRES_GRAD_ROUTES:
+                    continue
+                offenders.append((package, path.name, node.lineno))
+    assert offenders == [], offenders
+
+
+def test_the_one_recorded_requires_grad_route_still_exists():
+    """A stale allowlist entry is a hole that nothing reports.
+
+    If ``SMPLBody._evaluate``'s nudge is ever removed, this fails and the
+    allowlist above shrinks in the same change rather than outliving the branch
+    it was written for.
+    """
+
+    found = set()
+    for package in PHASE9_GUARDED_PACKAGES:
+        for path in _modules(package):
+            tree = _tree(path)
+            functions = _enclosing_functions(tree)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.If) and _selects_on_requires_grad(node):
+                    found.add(
+                        (package, path.name, functions.get(node.lineno, "<module>"))
+                    )
+    assert found == PHASE9_KNOWN_REQUIRES_GRAD_ROUTES, sorted(
+        found ^ PHASE9_KNOWN_REQUIRES_GRAD_ROUTES
+    )
+
+
+def test_no_phase9_guard_answers_with_a_detach_or_a_zero():
+    """The refusal owners must not sever a graph instead of refusing.
+
+    ``detach`` and ``zeros_like`` are how a stage answers a question it cannot
+    answer while looking like it did. Neither appears in a guard module, and a
+    guard that grew one would be publishing exactly the silent zero this phase
+    exists to remove.
+    """
+
+    offenders = []
+    for name in PHASE9_GUARD_OWNERS:
+        path = REPO_ROOT / "witwin" / "radar" / name
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            call = _dotted(node.func)
+            if call.endswith(".detach") or call.endswith("zeros_like"):
+                offenders.append((name, call, node.lineno))
+    assert offenders == [], offenders
