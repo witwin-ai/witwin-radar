@@ -6,6 +6,15 @@ is why it lives in the Radar repository: with all three wheels installed into
 one disposable directory, do the two native extensions and the pure-Python
 world contract stay in their own lanes?
 
+The two evidences are NOT interchangeable, and the difference matters as soon
+as a phase archives its wheels. ``wheel_smoke.py`` compares every shipped
+``.py`` member against the checked-in bytes and REFUSES a wheel built before
+the last source commit. This script deliberately does not: it validates
+whichever three artifacts it is handed, so a wheel that has drifted from the
+branch tip still passes here. Read a green run as "these three artifacts
+coexist", never as "these three artifacts are current" - currency is
+``wheel_smoke.py``'s claim, and an archived evidence set needs both.
+
 Nine scenarios, one subprocess each, so a failure names itself instead of
 collapsing a page of asserts into "the smoke failed":
 

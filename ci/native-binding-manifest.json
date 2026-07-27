@@ -113,6 +113,12 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test_note": [
+        "The contract test drives this symbol through Radar.chirp -> DirichletSolver",
+        "-> chunked_spectra, so it names the facade rather than the operator. The",
+        "chunked primal is the only path that call can take on CUDA, and the test",
+        "compares it against the float64 FFT oracle bit for bit of tolerance."
+      ],
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.chirp"
     },
@@ -134,6 +140,11 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test_note": [
+        "Same file, same reason: the MIMO-linear primal is reached through",
+        "Radar.mimo -> DirichletSolver.mimo_from_paths -> mimo_linear_spectra, and",
+        "the test asserts on that facade's output rather than on the symbol."
+      ],
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
     },
@@ -230,6 +241,12 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
+      "contract_test_note": [
+        "The batched VJP is exercised by backward() through Radar.mimo, so the test",
+        "names autograd and the facade rather than the symbol. It is the only",
+        "backward the chunked group can reach for a multi-target frame, and the",
+        "test pins it against a float64 reference gradient."
+      ],
       "contract_test": "tests/solvers/test_mimo_grad.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
     },

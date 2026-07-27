@@ -169,6 +169,55 @@ def test_g1_fires_on_a_lazily_imported_token(mirror: Path) -> None:
     assert "string literals mention 'drjit'" in completed.stderr
 
 
+def test_g1_fires_on_a_declared_ray_tracing_dependency(mirror: Path) -> None:
+    """The route that needs no import at all.
+
+    A `rayd` requirement in `pyproject.toml` installs a ray-tracing runtime
+    beside Radar without a single production module mentioning it, which is
+    exactly the shape criterion A8 forbids.
+    """
+
+    target = mirror / "pyproject.toml"
+    source = target.read_text(encoding="utf-8")
+    mutated = source.replace('"scipy>=1.10",', '"scipy>=1.10",\n    "rayd>=0.1",', 1)
+    assert mutated != source
+    target.write_text(mutated, encoding="utf-8")
+    completed = _run("check_production_dependencies.py", mirror)
+    assert completed.returncode == 1
+    assert "project.dependencies" in completed.stderr
+    assert "must never be a Radar requirement" in completed.stderr
+
+
+def test_g1_fires_on_a_ray_tracing_extra(mirror: Path) -> None:
+    """An extra is an installable route, not a comment."""
+
+    target = mirror / "pyproject.toml"
+    source = target.read_text(encoding="utf-8")
+    mutated = source.replace(
+        '"witwin-channel>=0.4,<0.5",',
+        '"witwin-channel>=0.4,<0.5",\n    "rayd-torch>=0.1",',
+        1,
+    )
+    assert mutated != source
+    target.write_text(mutated, encoding="utf-8")
+    completed = _run("check_production_dependencies.py", mirror)
+    assert completed.returncode == 1
+    assert "optional-dependencies.channel" in completed.stderr
+
+
+def test_g1_accepts_the_channel_extra_it_is_meant_to_allow() -> None:
+    """The one dependency that reaches RayD - through Channel's own build."""
+
+    declared = [
+        requirement
+        for _, requirement in check_production_dependencies.declared_distributions(
+            REPO_ROOT
+        )
+    ]
+    assert "witwin-channel>=0.4,<0.5" in declared
+    assert check_production_dependencies.check_declared_dependencies(REPO_ROOT) == []
+
+
 def test_g1_fires_when_a_recorded_prose_occurrence_disappears(mirror: Path) -> None:
     """A stale allowlist entry is a hole that nothing else reports."""
 

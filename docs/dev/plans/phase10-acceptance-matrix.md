@@ -102,7 +102,21 @@ document.
 > Every native symbol has a unique owner, manifest entry, direct contract test
 > and end-to-end caller.
 
-**Satisfied, measured, no deferral.**
+**Satisfied for 33 of the 34 symbols. One symbol has no end-to-end caller and
+the manifest says so; no deferral.**
+
+The exception, stated before the evidence rather than after it: the
+`dirichlet_spectrum` symbol `backward` (the single-block VJP) carries
+`end_to_end_caller: null` and `caller_status: "test_only"`. Its Python owner,
+`spectrum_vjp_single_block`, is called only by its contract test, because
+`DirichletSolver.backward` dispatches the parallel-bin path instead. The
+manifest records that with a nine-line `caller_note` rather than naming a
+caller that does not exist, and `tests/test_phase10_binding_registry.py` caps
+caller-free symbols at exactly one so the exception cannot spread. Under the
+platform guardrail a caller-free ABI symbol is cleanup debt: the honest close
+is to delete the symbol - kernel, registration, load probe and coverage row
+together - which is a deliberate native change and belongs in Phase 11, not in
+a packaging phase.
 
 | what | command | result |
 |---|---|---|
@@ -116,6 +130,16 @@ Each of the 34 rows carries `python_owner`, `contract_test`,
 `launches`, `fused_stages` and `host_observations`, and the gate resolves the
 owner/test/caller values against real files and importable dotted paths rather
 than accepting them as strings.
+
+`contract_test` is held to a reference rule, not to file existence. The named
+test must mention the symbol or the `python_owner` module - the same substring
+rule `python_owner` itself is held to - so a row re-pointed at any other
+existing test fails. Three rows drive their operator through a solver facade
+that names neither (`forward_chunked`, `forward_mimo_linear_chunked` and
+`backward_batched`, all reached through `Radar.chirp` / `Radar.mimo`); each one
+carries a written `contract_test_note` saying which facade stands in, and the
+suite asserts that only those three hold the hatch and that none of them could
+have satisfied the rule directly.
 
 The machine-checkable form of "unique": when a packaged prebuilt is present,
 the manifest symbol set must EQUAL the `operator_symbols` recorded in its build
@@ -212,6 +236,7 @@ claim cannot be made by accident.
 | what | command | result |
 |---|---|---|
 | source | `python ci/check_production_dependencies.py` | EXIT 0: 79 production modules name none of `drjit`, `mitsuba`, `rayd`, `sionna`, no `@dr.wrap` / `@drjit.wrap` decorator, and exactly 2 recorded prose occurrences |
+| declared metadata | the same gate, fourth scan | EXIT 0: 11 declared distributions - base list, both extras and `build-system.requires` - carry no ray-tracing runtime. Added after a mutation audit showed a bare `rayd>=0.1` requirement had exactly one catcher in the default test set; a frozen property belongs in a gate that runs in `quick` |
 | binary | `python ci/check_extension_boundary.py` | no `rayd*` or `drjit*` import in the radar library |
 | dependency resolution | `ci/coexistence_smoke.py` scenario H | `pip install --dry-run --report witwin-radar[channel]` resolves `witwin`, `witwin-channel`, `witwin-radar` and no ray-tracing distribution |
 | process | `ci/coexistence_smoke.py` scenarios A, B, C | zero `drjit` / `rayd` modules in any of the three |
@@ -227,12 +252,12 @@ kind. R-ADR-008 records the closure.
 ## The four production static gates (work item 7)
 
 Each runs in `quick`, and each is proven to FAIL on a planted violation in
-`tests/test_phase10_static_gates.py` (**29 passed**). A gate that cannot be
+`tests/test_phase10_static_gates.py` (**32 passed**). A gate that cannot be
 shown to fail is a comment with an exit code.
 
 | gate | what it freezes | measured today |
 |---|---|---|
-| `ci/check_production_dependencies.py` | imports, `@dr.wrap` decorators, and string-literal tokens for `drjit` / `rayd` / `mitsuba` / `sionna` | 79 modules clean; 2 prose occurrences frozen by equality with their reason |
+| `ci/check_production_dependencies.py` | imports, `@dr.wrap` decorators, string-literal tokens, and DECLARED distributions for `drjit` / `rayd` / `mitsuba` / `sionna` | 79 modules clean; 2 prose occurrences frozen by equality with their reason; 11 declared distributions clean |
 | `ci/check_test_oracle_isolation.py` | no production import of `tests`; `packages == ["witwin"]`; no `tests/` member in a built wheel | clean; the wheel half also runs as `nightly.oracle-isolation-wheel` |
 | `ci/check_raw_native_access.py` | the dispatcher owner set, by equality; the loader consumer set, by equality; `cuda/identity.py` holds no dispatcher access | 1 owner, 10 consumers |
 | `ci/check_torch_physics_allowlist.py` | the whole tree with an empty frozen exclusion list, against `ci/torch-physics-allowlist.json`, under a `FROZEN_BASELINE_DIGEST` | 79 modules, 23 recorded expressions, 34 occurrences |

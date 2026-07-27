@@ -74,7 +74,7 @@ REQUIRED_OPERATOR_COLUMNS = (
     "end_to_end_caller",
 )
 
-OPTIONAL_OPERATOR_COLUMNS = ("caller_status", "caller_note")
+OPTIONAL_OPERATOR_COLUMNS = ("caller_status", "caller_note", "contract_test_note")
 
 AD_ROLES = frozenset({"primal", "backward", "jvp", "utility"})
 
@@ -210,9 +210,32 @@ def _check_operators(manifest: dict, failures: list[str]) -> None:
                 f"{symbol}: python_owner {entry['python_owner']} does not name it"
             )
         contract = REPO_ROOT / entry["contract_test"]
+        note = entry.get("contract_test_note")
+        if note is not None and (
+            not isinstance(note, list)
+            or not note
+            or not all(isinstance(line, str) and line for line in note)
+        ):
+            failures.append(
+                f"{symbol}: contract_test_note must be a non-empty string list"
+            )
+            note = None
         if not contract.is_file():
             failures.append(
                 f"{symbol}: contract_test {entry['contract_test']} is missing"
+            )
+        elif note is None and not _references(
+            contract.read_text(encoding="utf-8"),
+            symbol=symbol,
+            owner_module=Path(entry["python_owner"]).stem,
+        ):
+            failures.append(
+                f"{symbol}: contract_test {entry['contract_test']} names neither "
+                f"the symbol nor its python_owner module "
+                f"{Path(entry['python_owner']).stem!r}, and the row records no "
+                "contract_test_note saying which facade exercises it. A test "
+                "file that mentions neither is not evidence that it covers "
+                "this operator"
             )
         caller = entry["end_to_end_caller"]
         if caller is None:
@@ -303,6 +326,22 @@ def _check_sidecar_symbols(manifest: dict, failures: list[str]) -> str:
         )
         return "error"
     return f"symbol-set tie checked against {binary.name} ({len(recorded)} symbols)"
+
+
+def _references(text: str, *, symbol: str, owner_module: str) -> bool:
+    """Does this test file mention the operator it is registered against?
+
+    File existence alone is not coverage: a row re-pointed at any existing
+    test passes that check. A contract test earns its column by naming the
+    native symbol, or by naming the Python owner module whose facade it drives
+    - the same substring rule the ``python_owner`` column is already held to.
+
+    Some tests legitimately do neither - they exercise a solver facade several
+    layers above the symbol. Those rows carry a ``contract_test_note`` instead,
+    which is a written claim rather than an accident.
+    """
+
+    return symbol in text or owner_module in text
 
 
 def _resolves(dotted: str) -> bool:

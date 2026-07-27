@@ -41,6 +41,18 @@ named owners rather than resolved by picking whichever side was cheaper.
 | D5 | the Stage-I release full build, still pending from that stage | folded here under the same owner directive rather than tracked separately, because it is the same run as D1/D3/D4 | `publish-witwin-channel.yml` scope `full` | the two-wheel Channel artifact set with its `validate-wheels` job green | Channel release owner |
 | D6 | the 8-cell Stable ABI compatibility matrix for Radar | it needs eight Torch versions across two operating systems, and - see deviation P3 - as configured six of the sixteen cells will measure a loader refusal rather than a load. The matrix is configured per policy; what it will report is a known question, not an unknown one | `publish-witwin-radar.yml` scope `full`, job `test_torch_compatibility` | for each cell, either a packaged load with `origin == "packaged"`, or a `RadarExtensionABIError` naming the mismatching runtime field | R-ADR-019 owner with the platform policy owner |
 
+### D4, restated after the adversarial loader audit: the sidecar is self-signed
+
+`build_type` is a DECLARATION inside the identity record, not proof of
+provenance. The audit re-signed a tampered record - flipping `build_type` to
+`release`, recomputing both sidecars, pinning the new fingerprint - and it
+validated and loaded. That crosses no security boundary: anyone who can rewrite
+the sidecar can rewrite the loader beside it, and the digests still cover the
+defect class the record exists for, which is a stale, swapped or mismatched
+artifact. What it does mean is that a release claim may never be made by
+reading `build_type` out of an artifact. It comes from the release pipeline
+that produced it, which is precisely what D4 defers.
+
 ### Closed since it was first recorded
 
 The `witwin-radar[channel]` dependency-closure dry run was deferred at one point

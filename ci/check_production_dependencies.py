@@ -1,8 +1,8 @@
 """G1: the radar production tree names no ray-tracing runtime, by any route.
 
 Phase 10 work item 7 forbids `drjit`, `rayd.drjit` and `@dr.wrap` from
-production. Three separate scans, because an import statement is only the
-easiest of the three ways to reach one:
+production. Four separate scans, because an import statement is only the
+easiest of the four ways to reach one:
 
 * **imports** (AST). `import drjit`, `from rayd.drjit import x`,
   `from rayd import drjit`. Prefix-matched, so `rayd.drjit.foo` is caught by
@@ -18,6 +18,11 @@ easiest of the three ways to reach one:
   frozen by equality with the reason each one is there. A third occurrence
   fails until somebody records it, and a recorded one that disappears fails
   too - a stale allowlist entry is a hole nothing reports.
+* **declared distributions** (`pyproject.toml`). No import is needed at all:
+  one requirement line makes pip install a ray-tracing runtime beside this
+  package, in the base list or in an extra. Criterion A8 is a property of the
+  METADATA as much as of the code, so it is checked here rather than only in a
+  packaging test.
 
 `tests/test_phase4_import_boundary.py` already probes a live process for
 `drjit` in `sys.modules`. That catches an import that RUNS. This catches one
@@ -34,7 +39,9 @@ import argparse
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import sys
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -175,9 +182,72 @@ def scan(root: Path) -> tuple[list[Violation], set[tuple[str, str, int]]]:
     return violations, census
 
 
+def _distribution_name(requirement: str) -> str:
+    """The PEP 503 normalized project name at the head of a requirement."""
+
+    head = requirement.strip()
+    for stop in ("[", "(", ";", "<", ">", "=", "!", "~", " ", "@"):
+        head = head.split(stop, 1)[0]
+    return re.sub(r"[-_.]+", "-", head).lower()
+
+
+def declared_distributions(root: Path) -> list[tuple[str, str]]:
+    """Every distribution this package declares, as ``(where, requirement)``."""
+
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    project = data.get("project", {})
+    declared = [
+        ("project.dependencies", requirement)
+        for requirement in project.get("dependencies", [])
+    ]
+    for extra, requirements in project.get("optional-dependencies", {}).items():
+        declared.extend(
+            (f"project.optional-dependencies.{extra}", requirement)
+            for requirement in requirements
+        )
+    declared.extend(
+        ("build-system.requires", requirement)
+        for requirement in data.get("build-system", {}).get("requires", [])
+    )
+    return declared
+
+
+def check_declared_dependencies(root: Path) -> list[str]:
+    """No ray-tracing runtime enters through the METADATA either.
+
+    The three scans above read code. A wheel can acquire a `rayd` runtime
+    without a single production import: one line in `pyproject.toml` does it,
+    and pip then installs the thing criterion A8 exists to keep out. Extras
+    count too - an extra is an installable route, not a comment.
+    `witwin-channel` is the one dependency allowed to reach RayD, and it does
+    so as its own build-time source link, never as a Radar runtime
+    requirement.
+
+    Before this check the property had exactly one guard in the default test
+    set, `tests/test_phase10_wheel_packaging.py`; the phase-5 metadata scan
+    knows only the `drjit` and `rayd-drjit` spellings and is blind to a bare
+    `rayd`. A frozen property belongs in a gate that runs in `quick`.
+    """
+
+    failures = []
+    for where, requirement in declared_distributions(root):
+        name = _distribution_name(requirement)
+        if any(
+            name == forbidden or name.startswith(f"{forbidden}-")
+            for forbidden in FORBIDDEN_MODULES
+        ):
+            failures.append(
+                f"pyproject.toml [{where}] declares {requirement!r}: a "
+                f"ray-tracing runtime distribution ({name}) must never be a "
+                "Radar requirement, in the base list or in an extra"
+            )
+    return failures
+
+
 def check(root: Path) -> list[str]:
     violations, census = scan(root)
     failures = [str(violation) for violation in violations]
+    failures.extend(check_declared_dependencies(root))
 
     unrecorded = sorted(census - set(ALLOWED_TOKEN_OCCURRENCES))
     for module, token, count in unrecorded:
@@ -213,11 +283,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     modules = production_modules(root)
+    declared = declared_distributions(root)
     print(
         f"check_production_dependencies: {len(modules)} production modules name "
         f"none of {', '.join(FORBIDDEN_MODULES)} or "
         f"{', '.join('@' + name for name in FORBIDDEN_DECORATOR_SUFFIXES)}; "
-        f"{len(ALLOWED_TOKEN_OCCURRENCES)} recorded prose occurrence(s)"
+        f"{len(ALLOWED_TOKEN_OCCURRENCES)} recorded prose occurrence(s); "
+        f"{len(declared)} declared distribution(s) clean"
     )
     return 0
 

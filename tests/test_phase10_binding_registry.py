@@ -232,3 +232,59 @@ def test_an_error_owner_naming_a_missing_module_fails_the_gate(tmp_path):
     completed = _run_gate(_mutated(tmp_path, mutate))
     assert completed.returncode == 1, completed.stdout
     assert "does not exist" in completed.stdout
+
+
+def test_a_contract_test_that_names_neither_the_symbol_nor_its_owner_fails(tmp_path):
+    """File existence is not coverage.
+
+    Re-pointing a row at an unrelated but existing test file used to pass. The
+    named file must mention the symbol or the Python owner module, or the row
+    must say in writing which facade stands in for it.
+    """
+
+    def mutate(data):
+        entry = next(
+            item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward"
+        )
+        entry["contract_test"] = "tests/test_phase10_diagnostics.py"
+        entry.pop("contract_test_note", None)
+
+    completed = _run_gate(_mutated(tmp_path, mutate))
+    assert completed.returncode == 1, completed.stdout
+    assert "names neither the symbol nor its python_owner module" in completed.stdout
+
+
+def test_a_facade_row_may_declare_the_gap_but_not_fake_it(tmp_path):
+    """The escape hatch is a written note, and the note itself is typed."""
+
+    def mutate(data):
+        entry = next(
+            item for item in data["operators"] if item["symbol"] == "forward_chunked"
+        )
+        entry["contract_test_note"] = []
+
+    completed = _run_gate(_mutated(tmp_path, mutate))
+    assert completed.returncode == 1, completed.stdout
+    assert "contract_test_note must be a non-empty string list" in completed.stdout
+
+
+def test_every_facade_row_that_uses_the_note_says_why(manifest):
+    """Only the rows that need the hatch may hold it, and each one explains."""
+
+    noted = []
+    for entry in manifest["operators"]:
+        note = entry.get("contract_test_note")
+        if note is None:
+            continue
+        text = (REPO_ROOT / entry["contract_test"]).read_text(encoding="utf-8")
+        owner_module = Path(entry["python_owner"]).stem
+        assert not gate._references(
+            text, symbol=entry["symbol"], owner_module=owner_module
+        ), f"{entry['symbol']}: the note is unnecessary, the test names it"
+        assert len(" ".join(note)) > 80, entry["symbol"]
+        noted.append(entry["symbol"])
+    assert noted == [
+        "forward_chunked",
+        "forward_mimo_linear_chunked",
+        "backward_batched",
+    ], noted
