@@ -344,12 +344,22 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
 #: ``native_frequency_resolution_law`` are ADR-042's, and they are propagation
 #: frequencies in Hz. A frequency at which a field is evaluated is propagation
 #: vocabulary; a subcarrier COUNT is not, and the ADR refuses one.
+#:
+#: ``ad_accounting``, ``component_material_leaves``,
+#: ``differentiable_geometry_outputs``, ``direction_differentiable_components``,
+#: ``primal_only_ad_inputs`` and ``supports_higher_order_ad`` are ADR-043's.
+#: They are AD vocabulary over propagation leaves and propagation outputs; not
+#: one of them names a processing stage, a bin count, or a detector parameter.
 EXPECTED_CAPABILITY_FIELDS = frozenset(
     {
+        "ad_accounting",
         "ad_modes",
         "component_ad_modes",
+        "component_material_leaves",
         "components",
         "contract_version",
+        "differentiable_geometry_outputs",
+        "direction_differentiable_components",
         "fixed_topology_components",
         "fixed_topology_responses",
         "fixed_topology_row_validity_components",
@@ -357,10 +367,12 @@ EXPECTED_CAPABILITY_FIELDS = frozenset(
         "max_slot_count",
         "native_frequency_resolution_law",
         "polarimetric_frozen_ad_inputs",
+        "primal_only_ad_inputs",
         "response_ad_modes",
         "response_components",
         "responses",
         "supports_fixed_topology",
+        "supports_higher_order_ad",
         "supports_los_jones",
         "supports_slot_batching",
         "supports_wideband_offsets",

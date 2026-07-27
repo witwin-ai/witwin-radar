@@ -916,6 +916,12 @@ def test_test_support_resolves_inside_this_worktree():
 
 
 def test_the_consumer_contract_is_the_version_this_spike_was_built_against():
+    # Version 6 = ADR-043: the propagation-consumer AD capability matrix.
+    # ``field_direction`` now carries a derivative on the fixed-topology route
+    # for ``{los, reflection}``, ``PropagationCapabilities`` publishes the
+    # per-route and per-component AD record this adapter queries before it
+    # assumes a leaf is live, and ``PropagationDiagnostics`` carries AD launch
+    # and tape accounting. Every primal value is unchanged bit for bit.
     # Version 5 = ADR-042: a fixed-topology request may declare
     # frequency_offsets_hz and receive the same frozen rows evaluated at each
     # absolute frequency. Additive behind a None default, so every call this
@@ -929,8 +935,17 @@ def test_the_consumer_contract_is_the_version_this_spike_was_built_against():
     pytest.importorskip("witwin.channel")
     from witwin.channel.propagation import consumer
 
-    assert consumer.CONTRACT_VERSION == 5
+    assert consumer.CONTRACT_VERSION == 6
     capabilities = consumer.capabilities()
     assert capabilities.fixed_topology_components == frozenset({"los", "reflection"})
     assert capabilities.supports_fixed_topology
     assert "scalar_transport" in capabilities.fixed_topology_responses
+    # ADR-043: the components whose ``field_direction`` is graph-bearing under
+    # a frozen topology. Radar's aspect chain (Deliverable 1) depends on this
+    # covering everything Radar ever freezes.
+    assert capabilities.direction_differentiable_components == frozenset(
+        {"los", "reflection"}
+    )
+    assert capabilities.fixed_topology_components.issubset(
+        capabilities.direction_differentiable_components
+    )
