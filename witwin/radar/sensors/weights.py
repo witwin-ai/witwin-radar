@@ -41,6 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.autograd.forward_ad as forward_ad
 from torch.autograd.function import once_differentiable
 
 from .contracts import AntennaPatternSpec, SPEED_OF_LIGHT_M_PER_S
@@ -65,6 +66,47 @@ def _ops():
 
         _OPS = build.build_extension()
     return _OPS
+
+
+def _require_frozen_constant(owner: str, name: str, value: torch.Tensor) -> None:
+    """Refuse a derivative on an input slot that has no gradient to return.
+
+    Eleven of the tensors this owner consumes are FROZEN descriptions of the
+    array and of the frame's row set: how fast each antenna and site is
+    moving, which way each facet faces, how each antenna is polarized, the
+    local frame the pattern is tabulated in, the fixed leg length, and the
+    pattern tables themselves. Only ``tx_pos``, ``rx_pos``, ``site_in``,
+    ``site_out``, ``intensity`` and the complex weight are differentiable
+    inputs of the native operator; the rest are either not inputs of the
+    autograd ``Function`` at all or sit in slots whose ``backward`` returns
+    ``None`` by construction.
+
+    Before Phase 9 a caller who marked one of them got exactly that ``None``
+    back, after a full frame had been computed, with nothing anywhere saying
+    the slot was not differentiable. That is the failure mode the whole
+    capability matrix exists to remove, so this refuses at CONSTRUCTION -
+    before ``validate``, before any launch, before a result object exists.
+
+    ``pattern_gain`` is the counter-example and stays as it is: it is a
+    published OUTPUT that is correctly ``mark_non_differentiable``, which is a
+    declaration rather than a silence.
+    """
+
+    tangent = forward_ad.unpack_dual(value).tangent
+    if value.requires_grad or tangent is not None:
+        raise RuntimeError(
+            f"{owner}.{name} carries "
+            + ("requires_grad" if value.requires_grad else "a forward tangent")
+            + ", and it is a frozen geometric constant of the array rather "
+            "than a differentiable input. The native sensor-weight operator "
+            "has no gradient or tangent slot for it, so this request would "
+            "run the whole frame and return None. The differentiable inputs "
+            "here are tx_pos, rx_pos, site_in, site_out, intensity and the "
+            "complex weight. A VELOCITY additionally has no leaf semantics at "
+            "all under ADR-038: it is a forward-AD tangent direction that "
+            "witwin.radar.propagation.kinematics puts in the tangent slot of "
+            "a position, so d(loss)/d(velocity) does not exist in either mode."
+        )
 
 
 def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int, ...]):
@@ -113,6 +155,13 @@ class SensorWeightGeometry:
     polarization vectors, and the local frame are constants by design: Phase 7
     owns dynamics, and a velocity that carried a gradient would be a different
     contract.
+
+    Since Phase 9 that sentence is ENFORCED rather than merely written down.
+    ``__post_init__`` refuses a float tensor here that carries
+    ``requires_grad`` or a forward tangent, naming the field, before
+    :meth:`validate` and before any launch. The index tensors are deliberately
+    not checked: they are ``int64`` / ``int32`` and cannot carry a derivative
+    for autograd to lose.
     """
 
     num_tx: int
@@ -128,6 +177,26 @@ class SensorWeightGeometry:
     pol_tx: torch.Tensor
     pol_rx: torch.Tensor
     local_axes: torch.Tensor
+
+    #: The float tensors this owner declares constant, in declaration order.
+    #: Named as data so that a field added to the dataclass without a decision
+    #: about its derivative is visible as a gap rather than as silence.
+    FROZEN_FIELDS = (
+        "tx_velocity",
+        "rx_velocity",
+        "site_velocity",
+        "fixed_length_m",
+        "normals",
+        "pol_tx",
+        "pol_rx",
+        "local_axes",
+    )
+
+    def __post_init__(self) -> None:
+        for name in SensorWeightGeometry.FROZEN_FIELDS:
+            value = getattr(self, name)
+            if isinstance(value, torch.Tensor):
+                _require_frozen_constant("SensorWeightGeometry", name, value)
 
     @property
     def path_count(self) -> int:
@@ -150,7 +219,15 @@ class SensorWeightGeometry:
 
 @dataclass(frozen=True, slots=True)
 class SensorWeightPlan:
-    """The scalars and the resident pattern tables one launch needs."""
+    """The scalars and the resident pattern tables one launch needs.
+
+    The tables are a resident LOOKUP - a measured or synthesised antenna
+    pattern, sampled on a fixed angular grid - and the kernel interpolates
+    them. They are not differentiable inputs of the operator, so a marked
+    table is refused here for the same reason the geometry's constants are.
+    The pattern's contribution to the derivative is real and is carried by the
+    WEIGHT, through the positions that decide which angle is looked up.
+    """
 
     pattern_kind: int
     tables: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
@@ -158,6 +235,13 @@ class SensorWeightPlan:
     wavelength_m: float
     tx_amplitude: float
     modes: SensorWeightModes
+
+    def __post_init__(self) -> None:
+        for index, table in enumerate(self.tables):
+            if isinstance(table, torch.Tensor):
+                _require_frozen_constant(
+                    "SensorWeightPlan", f"tables[{index}]", table
+                )
 
     @classmethod
     def build(
