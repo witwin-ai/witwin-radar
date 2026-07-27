@@ -11,7 +11,6 @@ Run:
 import sys
 import os
 
-import numpy as np
 import pytest
 
 # Ensure witwin.radar is importable
@@ -194,67 +193,23 @@ def mock_radar():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def mag_correlation(a, b):
-    """Pearson correlation of magnitudes (works for numpy and torch)."""
-    a_m = np.abs(np.asarray(a).ravel()).astype(np.float64)
-    b_m = np.abs(np.asarray(b).ravel()).astype(np.float64)
-    a_c = a_m - a_m.mean()
-    b_c = b_m - b_m.mean()
-    denom = np.linalg.norm(a_c) * np.linalg.norm(b_c)
-    if denom < 1e-30:
-        return 1.0 if np.linalg.norm(a_c) < 1e-30 and np.linalg.norm(b_c) < 1e-30 else 0.0
-    return float(np.dot(a_c, b_c) / denom)
-
-
-def complex_correlation(a, b):
-    """Normalized complex inner-product correlation."""
-    a_c = np.asarray(a).ravel().astype(np.complex128)
-    b_c = np.asarray(b).ravel().astype(np.complex128)
-    denom = np.linalg.norm(a_c) * np.linalg.norm(b_c)
-    if denom < 1e-30:
-        return 1.0 if np.linalg.norm(a_c) < 1e-30 and np.linalg.norm(b_c) < 1e-30 else 0.0
-    return float(np.abs(np.vdot(a_c, b_c)) / denom)
-
-
-def peak_ratio(a, b):
-    """Ratio of maximum magnitudes, matching verify.py style checks."""
-    a_peak = float(np.abs(np.asarray(a)).max())
-    b_peak = float(np.abs(np.asarray(b)).max())
-    if a_peak < 1e-30 or b_peak < 1e-30:
-        return 1.0 if max(a_peak, b_peak) < 1e-30 else 0.0
-    return b_peak / a_peak
-
-
-def make_static_interpolator(pos, sigma=1.0):
-    """Create an interpolator for a static target (GPU tensors).
-
-    LEGACY, SCHEDULED FOR DELETION. Nothing on the scene-driven route consumes
-    an interpolator: a target is a ``ScatterSitePolicy`` site in a Core world,
-    not a callable that reports positions at a time. The two remaining callers
-    are ``tests/solvers/test_mimo_cross.py`` and ``tests/solvers/test_solver_edge.py``,
-    both of which the Phase-11 deletion stage removes with the Dirichlet route;
-    this helper goes with them in the same commit. It is kept here rather than
-    deleted now only so that no intermediate commit fails collection.
-
-    The replacement is :func:`simulate_point_targets`.
-    """
-    import torch
-    pos_t = torch.tensor([pos], dtype=torch.float32, device="cuda")
-    sigma_t = torch.tensor([sigma], dtype=torch.float32, device="cuda")
-
-    def interp(t):
-        return sigma_t, pos_t
-
-    return interp
+#
+# ``mag_correlation``, ``complex_correlation`` and ``peak_ratio`` stood here
+# until Phase 11. All three were similarity scores between two Dirichlet
+# entry points - "the fast route still correlates with the slow one" - and the
+# only files that called them were the cross-check tests deleted with that
+# route. The scene-driven tests assert absolute quantities against closed
+# forms instead of a correlation between two implementations, so there is
+# nothing for them to score.
 
 
 # ---------------------------------------------------------------------------
 # The scene-driven point-target fixtures
 # ---------------------------------------------------------------------------
 #
-# ``make_moving_interpolator`` used to live beside the helper above and had
-# exactly one consumer, ``tests/validation/``. Those tests now drive
+# ``make_static_interpolator`` and ``make_moving_interpolator`` used to live
+# just above and had two consumers between them, ``tests/solvers/`` and
+# ``tests/validation/``. Those tests now drive
 # ``Radar.simulate``, which reads a Core world rather than a callable, so the
 # moving fixture is not "ported" - it is replaced by a declaration of where the
 # targets are and how fast they move.
