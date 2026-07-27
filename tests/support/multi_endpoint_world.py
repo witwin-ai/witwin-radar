@@ -18,8 +18,14 @@ import torch
 from . import multi_endpoint_geometry as geo
 
 
-def make_scene(*, transmitter_positions=None):
+def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None):
     """One narrow concrete wall plus one registered antenna endpoint.
+
+    ``vertices`` and ``eps_r`` accept a LIVE tensor and are passed through
+    untouched, so a caller can mark either as an AD leaf and have the graph
+    reach the compiled scene. They are the two scene-owned leaves Channel's
+    fixed-topology reflection route supports besides the endpoints, and until
+    Phase 9 no Radar test drove either.
 
     ``Mesh`` defaults ``recenter=True`` and silently subtracts the bounding-box
     centre from authored vertices, which would move the wall plane away from
@@ -38,7 +44,11 @@ def make_scene(*, transmitter_positions=None):
     from witwin.core.identity import reserve_antenna_id
 
     mesh = Mesh(
-        vertices=torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32),
+        vertices=(
+            torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32)
+            if vertices is None
+            else vertices
+        ),
         faces=torch.tensor(geo.WALL_FACES, dtype=torch.int64),
         recenter=False,
         fill_mode="surface",
@@ -48,7 +58,7 @@ def make_scene(*, transmitter_positions=None):
         geometry=mesh,
         material=PhysicalMaterial(
             name="concrete",
-            eps_r=geo.WALL_EPS_R,
+            eps_r=geo.WALL_EPS_R if eps_r is None else eps_r,
             sigma_e=geo.WALL_SIGMA_E,
         ),
         structure_id=1,
@@ -74,10 +84,26 @@ def make_scene(*, transmitter_positions=None):
     return scene, mesh
 
 
-def assert_world_coordinates_survived(mesh) -> None:
-    """Defensive check that authored world coordinates were not recentred."""
+def assert_world_coordinates_survived(mesh, authored=None) -> None:
+    """Defensive check that authored world coordinates were not recentred.
+
+    ``authored`` is the vertex tensor the caller handed in. When it is given the
+    check is elementwise against it, which is the direct statement ("the mesh
+    kept what I wrote") and is what a perturbed fixture needs; the fixture
+    constants below are the same statement specialised to the default wall, and
+    they are what catches a caller who forgot to pass anything at all.
+    """
 
     vertices = mesh.vertices.detach().to(dtype=torch.float64).cpu()
+    if authored is not None:
+        expected = authored.detach().to(dtype=torch.float64).cpu()
+        if not torch.equal(vertices, expected):
+            raise AssertionError(
+                "the authored vertices were rewritten between Mesh construction "
+                f"and mesh.vertices; max change "
+                f"{float((vertices - expected).abs().max())}"
+            )
+        return
     plane_x = float(vertices[:, 0].min())
     if abs(plane_x - geo.WALL_PLANE_X_M) > 1e-6:
         raise AssertionError(
@@ -92,13 +118,13 @@ def assert_world_coordinates_survived(mesh) -> None:
         )
 
 
-def compile_fixture_scene():
+def compile_fixture_scene(*, vertices=None, eps_r=None):
     """Compile the fixture world at the fixture reference frequency."""
 
     from witwin.channel.scene import compile as compile_scene
 
-    scene, mesh = make_scene()
-    assert_world_coordinates_survived(mesh)
+    scene, mesh = make_scene(vertices=vertices, eps_r=eps_r)
+    assert_world_coordinates_survived(mesh, authored=vertices)
     return compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
 
 
