@@ -1,7 +1,7 @@
 """Apply this radar's antenna pattern to composed round-trip rows.
 
 Until Phase 11 the ``sensor_weight`` family had exactly one importer,
-``sensors/legacy_paths.py``, which belongs to the Dirichlet route that this
+``sensors/legacy_paths.py``, which belonged to the Dirichlet route that this
 phase deletes. The new pipeline applied NO antenna pattern at all: a composed
 weight came out of the two-way join and went straight into synthesis, and
 ``SynthesisPathBatch.from_radar_paths`` asserted three provenance booleans

@@ -1,7 +1,7 @@
 """G2: `tests/` is an oracle, not a dependency, and it does not ship.
 
-`tests/reference/` holds real Torch CPU implementations - `dsp_oracles.py`,
-`path_math.py`, `two_way_torch.py`. R-ADR-007 allows them there and only
+`tests/reference/` holds real Torch CPU implementations - `path_math.py` and
+`two_way_torch.py`. R-ADR-007 allows them there and only
 there: an independent reference stops being independent the moment production
 can reach it, and a CPU reference inside a shipped wheel is a fallback waiting
 for the first loader failure that someone decides to "handle".
