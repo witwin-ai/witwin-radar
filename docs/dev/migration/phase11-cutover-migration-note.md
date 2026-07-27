@@ -143,7 +143,7 @@ moves to `witwin/radar/processing/contracts.py` as a pure file move.
 
 Per-chirp versus per-frame sampling is not a knob any more. `simulate` resolves
 the world once per FRAME; the within-frame slow-time walk is a named deferral
-(section 12).
+(section 13).
 
 ## 8. `Solver`, `DirichletSolver` and `radar.solver` are removed
 
@@ -198,9 +198,10 @@ physical - a noise figure, a system temperature, an explicit bandwidth - rather
 than a raw standard deviation, and seeds are per stage so toggling one stage
 leaves every other bit-identical.
 
-**Known gap, not a break.** `validate_radar_config` ignores a `"frontend"` key
-in the flat mapping accepted by `RadarConfig.from_dict`, so the block cannot be
-authored in a config file today. Attach it after validation:
+**Known gap, and now a loud one.** The flat mapping accepted by
+`RadarConfig.from_dict` cannot express the receive chain: it has no `"frontend"`
+key. It used to DROP one silently; it now refuses it by name (section 14).
+Attach the block after validation:
 
 ```python
 config = dataclasses.replace(
@@ -276,7 +277,42 @@ Not bugs, and not to be worked around silently.
   rank-5 cube, so a consumer re-synthesizes the last frame's composed rows to
   obtain one. See `docs/pipeline_guide.md` section 6.
 
-## 14. Quick reference
+## 14. The constructor loses `pad_factor`, and the flat config refuses what it cannot express
+
+Two breaks in the configuration surface that are easy to miss because neither
+one is a deleted name.
+
+**`Radar.__init__(config, pad_factor, device)` loses its second parameter.**
+
+```python
+radar = Radar(CONFIG, 16, "cuda")     # before
+radar = Radar(CONFIG, "cuda")         # after
+```
+
+`pad_factor` was the FFT zero-pad factor of the deleted signal-processing
+route; `witwin.radar.processing` takes the padding it needs per call. The
+parameter was positional, so an unported call does not raise a missing-argument
+error - it binds `16` to `device` and fails somewhere else entirely. Grep for
+`Radar(` with three positional arguments.
+
+**An unknown key in the flat mapping is refused.** `RadarConfig.from_dict`
+(and therefore `Radar(mapping, ...)` and `RadarConfig.from_json`) used to drop
+any key it did not recognize. It now raises and names the keys:
+
+```text
+Radar config has unsupported keys: waveform. The flat mapping accepts only ...
+```
+
+The two that cost real time were `"waveform"` and `"frontend"`. A caller who
+wrote `{"waveform": "ofdm"}` got an FMCW radar and a complete simulation in the
+wrong waveform with nothing raised; a caller who wrote `{"frontend": {...}}`
+got a radar with no receive chain. Neither block is authorable in the flat form
+today - see section 10 for how to attach a frontend after validation, and
+section 13 for the FMCW-only deferral - so the refusal is the honest answer.
+Every configuration in this repository already passes; only a mapping carrying
+a key the validator never read is affected.
+
+## 15. Quick reference
 
 | deleted | write instead |
 | --- | --- |
@@ -293,5 +329,7 @@ Not bugs, and not to be worked around silently.
 | `quantize_complex_signal` | `FrontendSpec(adc=AdcSpec(...))` |
 | `noise_model`, `receiver_chain` | `frontend=FrontendSpec(...)` |
 | `radar.last_trace` | `radar.last_snapshot` / `last_compiled_scene` / `last_propagation` / `last_radar_paths` |
+| `Radar(config, pad_factor, device)` | `Radar(config, device)`; pad per call in `witwin.radar.processing` |
+| an unknown flat config key (dropped) | refused by name; attach `frontend` after validation |
 | `witwin.radar.sigproc.*` | `witwin.radar.processing.*` (the adapters still work, and warn) |
 | `docs/fast_mimo_api.md` | `docs/pipeline_guide.md` |

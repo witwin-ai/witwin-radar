@@ -344,9 +344,9 @@ open one. Two consequences a caller must know:
   from slow time.
 
 **The flat configuration format does not carry the `frontend` block.**
-`RadarConfig.frontend` exists and `Radar` honours it, but
-`validate_radar_config` ignores a `"frontend"` key in the mapping accepted by
-`RadarConfig.from_dict`. Attach the spec after validation:
+`RadarConfig.frontend` exists and `Radar` honours it, but the mapping accepted
+by `RadarConfig.from_dict` has no `"frontend"` key, and `validate_radar_config`
+refuses one by name rather than dropping it. Attach the spec after validation:
 
 ```python
 import dataclasses

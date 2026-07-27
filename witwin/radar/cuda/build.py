@@ -326,8 +326,8 @@ def _require_operators(
     the JIT route turns that into a failure deep inside a kernel call.
 
     A validated artifact records the full symbol list it registers, so the
-    packaged and developer routes check all of them. The eight-family sample
-    below is the fallback for the JIT route, which has no record to consult.
+    packaged and developer routes check all of them. The seven-family sample
+    above is the fallback for the JIT route, which has no record to consult.
     """
 
     required = tuple(symbols) if symbols is not None else _REQUIRED_OPERATORS
