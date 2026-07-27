@@ -15,8 +15,9 @@ CONSTRUCTION - before ``validate``, before a plan, before any launch. Almost
 everything here is deliberately CPU-only: the refusal is a property of the
 contract and asking for a GPU to check it would have made it a test people skip.
 The last section is the exception, and it earns its ``--gpu`` mark - it drives
-the refusal from a real production entry point, ``Radar.mimo_from_trace``, which
-is where the one displaced caller in the tree was found.
+the refusal through the geometry a REAL production frame builds, which after the
+Phase-11 cutover is the antenna-pattern stage's rather than the deleted
+``Radar.mimo_from_trace`` route's.
 
 Three boundaries are pinned alongside the refusal, because over-refusing is the
 opposite mistake and just as easy to make:
@@ -299,59 +300,133 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
 
 
 # --------------------------------------------------------------------------
-# 5. The one displaced caller, from its real production entry point
+# 5. The refusal from the real production entry point
 # --------------------------------------------------------------------------
+#
+# This section used to drive the refusal through ``Radar.mimo_from_trace``,
+# which was the one caller in the tree the rule displaced: it routed a caller's
+# velocity into ``SensorWeightGeometry.site_velocity`` through
+# ``sensors/legacy_paths.py``, and a marked velocity there was MEASURED to run
+# the whole frame and return ``velocities.grad is None``.
+#
+# The Phase-11 cutover deletes that route, and the production consumer is now
+# ``sensors/round_trip.py``. Its geometry is a STAGE-OWNED constant: the
+# velocities, the fixed length and the normals are zeros the stage allocates at
+# freeze time, and no caller can hand it a marked one. That is a stronger
+# position than the old route's and it changes what is worth asserting, so the
+# section asserts both halves - that the production geometry carries nothing
+# marked, and that the SAME geometry with one field marked is still refused.
+
+
+#: Off the ``z = 0`` plane, so the elevation lookup is not sitting on a knot.
+PRODUCTION_SITE_POSITIONS_M = ((2.0, 0.6, 0.35), (1.7, -0.9, -0.5))
+
+
+#: A pattern that actually varies, for the one test that needs a non-zero
+#: derivative. ``ISOTROPIC_PATTERN`` has gain exactly 1 in every direction, so a
+#: site-position gradient through it is exactly zero - correctly.
+DIRECTIONAL_PATTERN_ANGLES_DEG = (-90.0, 0.0, 90.0)
+
+
+def _production_stage(pattern=None):
+    """The production pattern stage, frozen on a real two-way join.
+
+    ``RoundTripPatternStage.freeze`` is the constructor ``Radar.simulate`` calls
+    when a caller declares an antenna pattern, and it is given exactly these
+    arguments there: the radar, the frozen join, the binding's site IDs and the
+    pattern. Freezing it against the multi-endpoint fixture's own composer -
+    rather than a duck type - is what makes the geometry below the geometry a
+    production frame would hand the operator.
+
+    Returns ``(radar, stage, batch)``; the batch is that frame's composed rows.
+    """
+
+    pytest.importorskip("witwin.channel")
+    from support import multi_endpoint_driver as drv
+    from support import multi_endpoint_geometry as geo
+
+    from witwin.radar import Radar
+    from witwin.radar.sensors.round_trip import ISOTROPIC_PATTERN, RoundTripPatternStage
+
+    spike = drv.MultiEndpointSpike()
+    radar = Radar(
+        dict(geo.FIXTURE_RADAR_CONFIG),
+        position=(0.0, 0.0, 0.0),
+        target=(1.0, 0.0, 0.0),
+    )
+    stage = RoundTripPatternStage.freeze(
+        radar,
+        spike.composer,
+        site_ids=spike.site_ids,
+        pattern=ISOTROPIC_PATTERN if pattern is None else pattern,
+    )
+    composed, _, _ = spike.frame(response=drv.make_response())
+    return radar, stage, composed
 
 
 @pytest.mark.gpu
-def test_a_marked_velocity_into_mimo_from_trace_is_refused():
-    """The only caller in the tree that the new rule displaced, pinned.
+def test_the_production_geometry_carries_no_marked_frozen_field():
+    """The route cannot violate the rule, and this is why.
 
-    ``Radar.mimo_from_trace(trace, velocities=...)`` routes the velocity into
-    ``SensorWeightGeometry.site_velocity`` through
-    ``witwin/radar/sensors/legacy_paths.py``. A marked velocity there was
-    MEASURED, before this change, to run the whole frame and return
-    ``velocities.grad is None`` while the position gradient came back correctly:
-    the velocity is not an input of the operator's autograd ``Function`` at all.
-
-    So no capability was removed and the caller was fixed rather than the rule
-    softened - ``tests/solvers/test_mimo_cross.py`` now detaches at the call
-    site, with the reason written there. This test is what stops the mark from
-    drifting back in, and it drives the refusal through the real entry point
-    rather than through a hand-built geometry.
+    ``RoundTripPatternStage`` allocates every frozen field itself, at freeze
+    time, from the join's own shapes. A caller supplies positions and a pattern
+    and nothing else. Reading the geometry the stage would hand the operator and
+    checking every declared frozen field is what says the constants are
+    genuinely constant rather than merely unmarked in this fixture.
     """
 
-    from conftest import make_radar_or_skip
-    from solvers.test_mimo_cross import _mimo_config
+    _, stage, _ = _production_stage()
+    geometry = stage._geometry()
+    for name in GEOMETRY_SHAPES:
+        value = getattr(geometry, name)
+        assert isinstance(value, torch.Tensor), name
+        assert not value.requires_grad, name
+        assert forward_ad.unpack_dual(value).tangent is None, name
 
-    from witwin.radar import TraceResult
 
-    config = _mimo_config(
-        num_tx=1,
-        num_rx=1,
-        tx_loc=[[0, 0, 0]],
-        rx_loc=[[0, 0, 0]],
-        chirp_per_frame=4,
-        num_doppler_bins=4,
-        adc_start_time=6,
-    )
-    radar = make_radar_or_skip(config)
-    points = torch.tensor(
-        [[0.0, 0.0, -3.0]], dtype=torch.float32, device="cuda", requires_grad=True
-    )
-    intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
-    velocities = torch.tensor(
-        [[0.0, 0.0, -0.5]], dtype=torch.float32, device="cuda", requires_grad=True
-    )
-    trace = TraceResult(points, intensities)
+@pytest.mark.gpu
+def test_a_marked_field_on_the_production_geometry_is_still_refused():
+    """The production shapes, one field marked, refused at construction.
 
+    Rebuilding the stage's own geometry with a marked ``site_velocity`` is the
+    closest a caller can now get to the defect the old route allowed, and it has
+    to fail before any launch rather than run a frame and return ``None``.
+    """
+
+    import dataclasses
+
+    _, stage, _ = _production_stage()
+    geometry = stage._geometry()
+    marked = geometry.site_velocity.detach().clone().requires_grad_(True)
     with pytest.raises(RuntimeError) as excinfo:
-        radar.mimo_from_trace(trace, velocities=velocities, t0=0.4)
+        dataclasses.replace(geometry, site_velocity=marked)
     assert "SensorWeightGeometry.site_velocity" in str(excinfo.value)
 
-    # And the same call with the velocity detached still works and still carries
-    # the POSITION gradient, which is what that route is actually for.
-    frame = radar.mimo_from_trace(trace, velocities=velocities.detach(), t0=0.4)
-    frame.abs().square().sum().backward()
-    assert points.grad is not None
-    assert float(points.grad.abs().sum()) > 0.0
+
+@pytest.mark.gpu
+def test_the_production_route_still_carries_the_position_gradient():
+    """Over-refusing is the opposite mistake; the site position still works."""
+
+    from witwin.radar.sensors import AntennaPatternSpec
+
+    radar, stage, composed = _production_stage(
+        AntennaPatternSpec(
+            kind="separable",
+            x_angles_deg=DIRECTIONAL_PATTERN_ANGLES_DEG,
+            x_values=(0.2, 1.0, 0.3),
+            y_angles_deg=DIRECTIONAL_PATTERN_ANGLES_DEG,
+            y_values=(0.4, 1.0, 0.5),
+        )
+    )
+    sites = torch.tensor(
+        PRODUCTION_SITE_POSITIONS_M, dtype=torch.float32, device="cuda"
+    ).requires_grad_(True)
+    weight = stage.apply(
+        composed,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        site_positions_m=sites,
+    ).complex_transfer_ref
+    (weight.real.square().sum() + weight.imag.square().sum()).backward()
+    assert sites.grad is not None
+    assert float(sites.grad.abs().sum()) > 0.0

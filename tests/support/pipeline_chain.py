@@ -16,6 +16,15 @@ The two do not describe the same geometry, so the ANGLES this pipeline produces
 are meaningless. That is deliberate and it is the whole scope of this module: it
 is a COST fixture. Angular correctness is asserted in ``tests/processing/``
 against analytic targets on exact bins.
+
+It is NOT retargeted onto ``Radar.simulate`` by the Phase-11 cutover, and the
+reason is the same one that makes it a cost fixture: what is budgeted here
+starts at waveform SYNTHESIS, with freezing, discovery and composition already
+paid for outside the timed region. ``Radar.simulate`` does all four in one call
+and cannot hand back the composed batch alone. The production entry's own
+per-frame cost is budgeted separately, in
+``tests/test_phase8_pipeline_budget.py::
+test_the_simulation_frame_cost_has_not_regressed``.
 """
 
 from __future__ import annotations

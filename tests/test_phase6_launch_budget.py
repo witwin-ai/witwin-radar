@@ -225,69 +225,75 @@ def test_one_backward_launch_per_forward_launch(batch, monkeypatch):
 
 
 def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys):
-    """The legacy Dirichlet frame path, which is where the migration landed.
+    """One ``sensor_weight_forward`` per frame, on the scene-driven route.
 
-    One ``sensor_weight_forward`` for the whole frame's rows, and no synthesis
-    launch at all: the Dirichlet spectrum is its own family and this ledger is
-    about the owner work item 8 introduced.
+    The owner work item 8 introduced used to be reachable only through
+    ``Radar.mimo_from_trace``. Its production consumer is now
+    ``sensors/round_trip.py``, applied inside ``Radar.simulate`` when a caller
+    declares an antenna pattern, and the budget is unchanged: ONE launch covers
+    the whole frame's composed rows however many pairs and sites they span.
+
+    Two differences from the legacy spelling, both deliberate. This route also
+    synthesizes a waveform, so ``fmcw_beat_forward`` is asserted at the same
+    count rather than required to be zero - the claim is that the pattern stage
+    adds exactly one launch on top of the frame the entry already pays for. And
+    the run is TWO frames, which is what makes this a per-frame budget: a stage
+    that rebuilt its row tables inside the frame loop would still launch once
+    per frame, but one that re-applied the pattern per site or per pair would
+    not, and a single frame cannot tell those apart from the total.
     """
 
-    from witwin.radar import Radar
+    from support import multi_endpoint_geometry as geo
+    from support import multi_endpoint_world as world
 
-    config = {
-        "num_tx": 2,
-        "num_rx": 2,
-        "fc": 77e9,
-        "slope": 60.012,
-        "adc_samples": 128,
-        "adc_start_time": 6,
-        "sample_rate": 4400,
-        "idle_time": 7,
-        "ramp_end_time": 58,
-        "chirp_per_frame": 2,
-        "frame_per_second": 10,
-        "num_doppler_bins": 2,
-        "num_range_bins": 128,
-        "num_angle_bins": 16,
-        "power": 12,
-        "tx_loc": [[0, 0, 0], [2, 0, 0]],
-        "rx_loc": [[0, 0, 0], [1, 0, 0]],
-    }
-    radar = Radar(config, device="cuda")
-    points = torch.tensor(
-        [[0.0, 0.0, -4.0], [1.0, 0.5, -7.0], [-2.0, 0.0, -5.0]], device="cuda"
+    from witwin.radar import Radar, ScatterSitePolicy
+    from witwin.radar.scattering import ScalarRcsResponse
+    from witwin.radar.sensors.round_trip import ISOTROPIC_PATTERN
+
+    radar = Radar(
+        dict(geo.FIXTURE_RADAR_CONFIG),
+        position=(0.0, 0.0, 0.0),
+        target=(1.0, 0.0, 0.0),
     )
-    intensities = torch.tensor([1.0, 0.5, 0.25], device="cuda")
+    scene, mesh = world.make_scene()
+    world.assert_world_coordinates_survived(mesh)
+    sites = ScatterSitePolicy.explicit(
+        torch.tensor(
+            (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M),
+            dtype=torch.float32,
+            device=radar.device,
+        )
+    )
+    response = ScalarRcsResponse.from_values(
+        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
+    )
 
-    class _Trace:
-        def __init__(self, points, intensities):
-            self.points = points
-            self.intensities = intensities
-            self.entry_points = points
-            self.fixed_path_lengths = torch.zeros(
-                points.shape[0], device=points.device
-            )
-            self.depths = torch.zeros(
-                points.shape[0], dtype=torch.int32, device=points.device
-            )
-            self.normals = None
+    def simulate(times):
+        return radar.simulate(
+            scene,
+            times=times,
+            response=response,
+            sites=sites,
+            antenna_pattern=ISOTROPIC_PATTERN,
+        )
 
-    trace = _Trace(points, intensities)
-    radar.mimo_from_trace(trace)  # resolve the table before wrapping it
+    simulate((0.0,))  # resolve every lazy import and table before wrapping
 
+    frames = 2
     operators = _operators()
     ledger = Ledger(monkeypatch, operators, SYNTHESIS_OPERATORS)
-    radar.mimo_from_trace(trace)
+    simulate(tuple(index * 1.0e-3 for index in range(frames)))
     with capsys.disabled():
         print(
             "\n  sensor_weight  "
             f"{ {name: value for name, value in ledger.launches.items() if value} }"
         )
-    assert ledger.launches["sensor_weight_forward"] == 1, ledger.launches
+    assert ledger.launches["sensor_weight_forward"] == frames, ledger.launches
     assert ledger.launches["sensor_weight_backward"] == 0, ledger.launches
     assert ledger.launches["sensor_weight_jvp"] == 0, ledger.launches
+    assert ledger.launches["fmcw_beat_forward"] == frames, ledger.launches
     for name in SYNTHESIS_OPERATORS:
-        if not name.startswith("sensor_weight"):
+        if not name.startswith("sensor_weight") and name != "fmcw_beat_forward":
             assert ledger.launches[name] == 0, (name, ledger.launches)
 
 

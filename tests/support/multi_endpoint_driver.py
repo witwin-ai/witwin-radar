@@ -15,6 +15,32 @@ order is what lets a test drive the two apart without fabricating a leg.
 
 This lives under ``tests/`` because it is fixture orchestration, not a
 production owner. Every numerical primitive it calls is a production module.
+
+WHY IT SURVIVES THE PHASE-11 CUTOVER, since ``Radar.simulate`` now assembles the
+same owners in production. ``MultiEndpointSpike`` is deliberately NOT retargeted
+onto the production entry, for three reasons that are each sufficient:
+
+* **It is the independent oracle the entry is checked against.**
+  ``tests/test_phase11_simulate_entry.py::
+  test_the_composed_rows_agree_with_the_reference_orchestration`` asserts that
+  the production entry reproduces this orchestration exactly - same row
+  identity, bitwise identical round-trip delays. Retargeting the spike would
+  make that comparison a comparison of ``Radar.simulate`` with itself.
+* **It reaches shapes the entry cannot express.** Declared source, sink and site
+  ID lists that differ from the batch order, a separate outbound adapter with
+  its own components and depth, an endpoint set in descending stable-ID order,
+  and slot-major batched replay are all how the join's refusals and its
+  identity-order guarantees are driven with REAL legs. ``Radar.simulate``
+  declares one consistent world, which is the right public surface and the wrong
+  test surface.
+* **It is a cost fixture.** ``tests/support/pipeline_chain.py`` and
+  ``tools/benchmark_processing.py`` need one real Channel frame with freezing
+  and discovery OUTSIDE the timed region, which a whole-entry call cannot give
+  them.
+
+Eighty-odd test modules consume it. What DID move to the production entry is the
+end-to-end accuracy coverage - ``tests/validation/`` and the TDM slot phase -
+because those measure the product rather than the orchestration.
 """
 
 from __future__ import annotations

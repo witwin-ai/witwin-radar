@@ -17,8 +17,11 @@ scenario the rest of Phase 9 uses and because each one is small:
    cube.
 4. **sensor weight -> waveform -> loss.** ``evaluate_sensor_weights`` is
    validated against its own finite difference and its own adjoint. Its
-   production consumer is the Dirichlet spectrum synthesis inside
-   ``Radar.mimo_from_trace``, and that composition had no AD test.
+   production consumer is ``sensors/round_trip.py``, the antenna-pattern stage
+   ``Radar.simulate`` applies to composed round-trip rows, and that composition
+   had no AD test. (Before the Phase-11 cutover the consumer was the Dirichlet
+   spectrum inside ``Radar.mimo_from_trace``; the owner moved, the claim did
+   not.)
 
 **Noise reproducibility under AD** closes the file. Noise is off by default in
 every physics test in this tree; where it is on, the realisation is a
@@ -527,96 +530,129 @@ def test_the_wideband_cube_is_not_the_narrowband_one(spike, banded, values):
 # --------------------------------------------------------------------------
 
 
-#: The 1 TX x 1 RX legacy configuration ``tests/solvers/test_mimo_cross.py``
-#: uses for the same entry point, spelled out rather than imported: a test
-#: module is not a fixture owner, and importing one from another is how two
-#: files end up sharing a constant neither of them owns.
-MIMO_CONFIG = {
-    "num_tx": 1,
-    "num_rx": 1,
-    "fc": 77e9,
-    "slope": 60.012,
-    "adc_samples": 256,
-    "adc_start_time": 6,
-    "sample_rate": 4400,
-    "idle_time": 7,
-    "ramp_end_time": 65,
-    "chirp_per_frame": 4,
-    "frame_per_second": 10,
-    "num_doppler_bins": 4,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
-    "power": 15,
-    "tx_loc": [[0, 0, 0]],
-    "rx_loc": [[0, 0, 0]],
-}
+#: The pattern this chain is differentiated through.
+#:
+#: Knots at -90, 0 and +90 with every queried angle strictly inside a segment.
+#: A knot is a genuine non-differentiability where the kernel returns the
+#: almost-everywhere derivative, and a central difference that straddled one
+#: would disagree with the kernel correctly.
+PATTERN_ANGLES_DEG = (-90.0, 0.0, 90.0)
+
+#: Metres. The pattern gain is smooth on the scale of centimetres - it is a
+#: linear interpolation over degrees - and the composed DELAY is held fixed in
+#: this chain (see ``_pattern_loss``), so the loss carries no 77 GHz phase and a
+#: millimetre step is well inside the window rather than several cycles past it.
+PATTERN_STEP_M = 2.0e-3
+PATTERN_FD_RTOL = 2.0e-2
+
+#: Off the ``z = 0`` plane, because the multi-endpoint sites are coplanar with
+#: the array and that puts the elevation query exactly on the middle knot.
+PATTERN_SITE_POSITIONS_M = ((2.0, 0.6, 0.35), (1.7, -0.9, -0.5))
 
 
-def _mimo_config():
-    from witwin.radar import RadarConfig
+def _pattern_stage(spike):
+    """The production pattern stage, frozen against the fixture's own join.
 
-    return RadarConfig.from_dict(dict(MIMO_CONFIG))
-
-
-def _mimo_loss(points: torch.Tensor) -> torch.Tensor:
-    """``evaluate_sensor_weights -> Dirichlet spectrum -> cube -> scalar``.
-
-    ``Radar.mimo_from_trace`` is the production composition: one sensor-weight
-    launch produces the delay, the rate and the complex weight, and the
-    Dirichlet spectrum synthesis consumes all three. Building the chain by hand
-    here would test a composition nothing runs.
+    ``RoundTripPatternStage`` is what ``Radar.simulate`` builds when a caller
+    declares an antenna pattern, and it is the only production consumer of
+    ``evaluate_sensor_weights``. Freezing it against ``spike.composer`` rather
+    than a duck type is what makes this an end-to-end composition: the row-to-
+    element and row-to-site tables come from a real two-way join.
     """
 
-    from witwin.radar import Radar, TraceResult
+    from witwin.radar import Radar
+    from witwin.radar.sensors import AntennaPatternSpec
+    from witwin.radar.sensors.round_trip import RoundTripPatternStage
 
-    radar = Radar(_mimo_config())
-    intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
-    frame = radar.mimo_from_trace(TraceResult(points, intensities), t0=0.0)
-    return frame.abs().square().sum()
+    radar = Radar(
+        dict(geo.FIXTURE_RADAR_CONFIG),
+        position=(0.0, 0.0, 0.0),
+        target=(1.0, 0.0, 0.0),
+    )
+    stage = RoundTripPatternStage.freeze(
+        radar,
+        spike.composer,
+        site_ids=spike.site_ids,
+        pattern=AntennaPatternSpec(
+            kind="separable",
+            x_angles_deg=PATTERN_ANGLES_DEG,
+            x_values=(0.2, 1.0, 0.3),
+            y_angles_deg=PATTERN_ANGLES_DEG,
+            y_values=(0.4, 1.0, 0.5),
+        ),
+    )
+    return radar, stage
 
 
-#: Metres. The Dirichlet route has no 77 GHz reference phase in the loss - the
-#: legacy carrier lives in the spectrum - so the loss is far smoother in the
-#: target position than the Channel chain is, and a 1e-3 m step is inside the
-#: window rather than several cycles past it. Measured relative agreement at
-#: 1e-4, 5e-4, 1e-3 and 5e-3 is reported in the stage record.
-MIMO_STEP_M = 1.0e-3
-MIMO_FD_RTOL = 2.0e-2
+def _pattern_sites(*, requires_grad: bool = False) -> torch.Tensor:
+    return torch.tensor(
+        PATTERN_SITE_POSITIONS_M, dtype=torch.float32, device="cuda"
+    ).requires_grad_(requires_grad)
 
 
-def test_a_sensor_weight_gradient_reaches_a_synthesized_dirichlet_cube():
-    """The sensor weight's own AD, composed with a waveform for the first time.
+def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
+    """``evaluate_sensor_weights -> FMCW beat cube -> scalar``.
+
+    The composed batch is FROZEN and only the site positions the pattern stage
+    reads are varied. That is not a simplification of the production chain - it
+    is the production chain with one input held still - and it is what makes a
+    finite difference legitimate here: the round-trip delay is a property of the
+    replayed legs, so it does not move, and the loss therefore carries no 77 GHz
+    propagation phase to wrap. Letting the delay move too would measure the
+    delay's derivative and drown the pattern's contribution, which is the same
+    reason ``test_phase11_antenna_pattern_route.py`` states for not putting an
+    FD across the whole pipeline.
+    """
+
+    from witwin.radar.synthesis import synthesize_fmcw_beat
+
+    patterned = stage.apply(
+        composed,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        site_positions_m=sites,
+    )
+    cube = synthesize_fmcw_beat(to_synthesis(patterned), drv.make_spec())
+    return cube.real.square().sum() + cube.imag.square().sum()
+
+
+def test_a_sensor_weight_gradient_reaches_a_synthesized_waveform_cube(spike):
+    """The sensor weight's own AD, composed with a waveform.
 
     ``test_phase6_sensor_weight.py`` validates the weight kernel's jvp against a
     central difference and its vjp against that jvp. Neither says anything about
-    what happens when the weight is multiplied into a spectrum and summed: the
-    weight is complex, the spectrum conjugates nothing, and a chain that dropped
-    the imaginary half would still pass every operator-level test.
+    what happens when the weight is multiplied into a waveform and summed: the
+    weight is complex, the beat cube CONJUGATES it, and a chain that dropped or
+    mirrored the imaginary half would still pass every operator-level test.
+
+    The consumer moved with the cutover - it was the Dirichlet spectrum inside
+    ``Radar.mimo_from_trace`` and it is now ``sensors/round_trip.py`` inside
+    ``Radar.simulate`` - and the claim did not.
     """
 
-    base = torch.tensor(
-        [[0.0, 0.0, -3.0]], dtype=torch.float32, device="cuda"
-    )
-    live = base.clone().requires_grad_(True)
-    loss = _mimo_loss(live)
-    loss.backward()
+    radar, stage = _pattern_stage(spike)
+    composed, _, _ = spike.frame(response=drv.make_response())
+
+    live = _pattern_sites(requires_grad=True)
+    _pattern_loss(radar, stage, composed, live).backward()
     gradient = live.grad.detach()
     assert gradient is not None
     assert float(gradient.abs().sum()) > 0.0
 
-    # Radial: the target sits on the boresight axis, so the z component is the
-    # range derivative and the transverse ones are structurally small. The
-    # difference is taken along z for that reason.
-    direction = torch.tensor(
-        [[0.0, 0.0, 1.0]], dtype=torch.float32, device="cuda"
-    )
-    analytic = float((gradient * direction).sum())
+    # One component, chosen because it is the one the azimuth table reads: the
+    # radar looks along +x, so a site's own x displacement is mostly range and
+    # its z displacement is the local azimuth this pattern varies in.
+    row, axis = 0, 2
+    analytic = float(gradient[row, axis])
     assert abs(analytic) > 0.0
-    samples = {
-        offset: float(_mimo_loss(base + (offset * MIMO_STEP_M) * direction))
-        for offset in (-2, -1, 1, 2)
-    }
-    measured = fd.fourth_order_difference(samples, MIMO_STEP_M)
+    samples = {}
+    for offset in (-2, -1, 1, 2):
+        shifted = _pattern_sites()
+        shifted[row, axis] += offset * PATTERN_STEP_M
+        samples[offset] = float(
+            _pattern_loss(radar, stage, composed, shifted)
+        )
+    measured = fd.fourth_order_difference(samples, PATTERN_STEP_M)
     assert (
-        fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < MIMO_FD_RTOL
+        fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < PATTERN_FD_RTOL
     ), (measured, analytic)
