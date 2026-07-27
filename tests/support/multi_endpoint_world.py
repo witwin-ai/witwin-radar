@@ -18,14 +18,20 @@ import torch
 from . import multi_endpoint_geometry as geo
 
 
-def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None):
+def make_scene(
+    *, transmitter_positions=None, vertices=None, eps_r=None, sigma_e=None
+):
     """One narrow concrete wall plus one registered antenna endpoint.
 
-    ``vertices`` and ``eps_r`` accept a LIVE tensor and are passed through
-    untouched, so a caller can mark either as an AD leaf and have the graph
-    reach the compiled scene. They are the two scene-owned leaves Channel's
-    fixed-topology reflection route supports besides the endpoints, and until
-    Phase 9 no Radar test drove either.
+    ``vertices``, ``eps_r`` and ``sigma_e`` accept a LIVE tensor and are passed
+    through untouched, so a caller can mark any of them as an AD leaf and have
+    the graph reach the compiled scene. They are the scene-owned leaves
+    Channel's fixed-topology reflection route supports besides the endpoints,
+    and until Phase 9 no Radar test drove any of them. ``sigma_e`` is the
+    conductivity half of the Fresnel coefficient: it enters the same complex
+    permittivity ``eps_r`` does, through ``sigma_e / (2 pi f eps_0)``, so a
+    chain that reached one and not the other would be differentiating half a
+    material.
 
     ``Mesh`` defaults ``recenter=True`` and silently subtracts the bounding-box
     centre from authored vertices, which would move the wall plane away from
@@ -59,7 +65,7 @@ def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None):
         material=PhysicalMaterial(
             name="concrete",
             eps_r=geo.WALL_EPS_R if eps_r is None else eps_r,
-            sigma_e=geo.WALL_SIGMA_E,
+            sigma_e=geo.WALL_SIGMA_E if sigma_e is None else sigma_e,
         ),
         structure_id=1,
         material_id=1,
@@ -118,12 +124,12 @@ def assert_world_coordinates_survived(mesh, authored=None) -> None:
         )
 
 
-def compile_fixture_scene(*, vertices=None, eps_r=None):
+def compile_fixture_scene(*, vertices=None, eps_r=None, sigma_e=None):
     """Compile the fixture world at the fixture reference frequency."""
 
     from witwin.channel.scene import compile as compile_scene
 
-    scene, mesh = make_scene(vertices=vertices, eps_r=eps_r)
+    scene, mesh = make_scene(vertices=vertices, eps_r=eps_r, sigma_e=sigma_e)
     assert_world_coordinates_survived(mesh, authored=vertices)
     return compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
 
