@@ -6,7 +6,7 @@ This module is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis).
 
 ## Get Started
 
-CPython 3.10-3.14 and PyTorch 2.10 or newer are supported. Radar simulation uses the native Dirichlet CUDA backend and requires an NVIDIA GPU with CUDA. CPU construction remains useful for configuration and non-rendering helper workflows.
+CPython 3.10-3.14 and PyTorch 2.10 or newer are supported. Radar simulation runs in the `_radar_native` CUDA kernels and requires an NVIDIA GPU with CUDA. CPU construction remains useful for configuration and non-rendering helper workflows.
 This package depends on the base `witwin` package.
 
 Linux and Windows are supported targets. Release wheels include prebuilt native CUDA extensions for supported Python/platform combinations. Source builds require a CUDA-enabled PyTorch build, NVIDIA driver, CUDA toolkit, `ninja`, and a working C++ compiler.
@@ -21,12 +21,18 @@ pip install witwin[radar]
 
 ## Quick Start
 
+`Radar.simulate` is the entry point: a `witwin.core.Scene`, a list of frame
+instants, and a scatter response in, a `[frame, TX, RX, slow, fast]` cube out.
+`docs/pipeline_guide.md` walks the whole route; `examples/single_point.py` is
+this snippet with its closed-form checks attached.
+
 ```python
-import numpy as np
 import torch
 
-from witwin.radar import Radar, RadarConfig
-from witwin.radar.sigproc import process_pc, process_pc_tensor, process_rd, process_rd_tensor
+from witwin.core import Scene
+from witwin.radar import Radar, RadarConfig, ScatterSitePolicy
+from witwin.radar.processing import ProcessingAxes, range_doppler, range_profile
+from witwin.radar.scattering import ScalarRcsResponse
 
 # FMCW radar configuration.
 config = {
@@ -49,107 +55,125 @@ config = {
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
 
-# Use the native CUDA solver.
 radar = Radar(
     RadarConfig.from_dict(config),
     device="cuda",
     position=(0.0, 0.0, 0.0),
-    target=(0.0, 0.0, -5.0),
-    fov=60.0,
+    target=(1.0, 0.0, 0.0),   # boresight along +x
 )
 
-point = np.array([[0.0, 0.0, -3.0]], dtype=np.float32)
-velocity = np.array([[0.0, 0.0, 0.01]], dtype=np.float32)
+# An empty world is legal: a scatter site is a DECLARED endpoint, not geometry.
+scene = Scene(structures=())
+sites = ScatterSitePolicy.explicit(
+    torch.tensor([[3.0, 0.0, 0.0]], dtype=torch.float32, device=radar.device)
+)
+response = ScalarRcsResponse.from_rcs(
+    1.0, reference_frequency_hz=config["fc"], device=radar.device
+)
 
+result = radar.simulate(scene, times=(0.0, 0.1, 0.2), response=response, sites=sites)
+assert result.cube.shape[0] == 3          # [frame, TX, RX, chirp, sample]
 
-def interp(t):
-    # Return target intensity and position at time t.
-    positions = torch.tensor(point + velocity * t, dtype=torch.float32, device=radar.device)
-    intensities = torch.ones((positions.shape[0],), dtype=torch.float32, device=radar.device)
-    return intensities, positions
+# Post-processing is PyTorch and reads one metadata record.
+from witwin.radar.synthesis import SlowTimeMode
 
-
-# Simulate one frame, then extract point cloud and RD map.
-frame = radar.mimo(interp, t0=0)
-pc = process_pc(radar, frame)
-rd, _, ranges, vels = process_rd(radar, frame)
-
-# Tensor-first variants keep outputs on the frame device for real-time pipelines.
-pc_gpu = process_pc_tensor(radar, frame)
-rd_gpu, _, ranges_gpu, vels_gpu = process_rd_tensor(radar, frame)
+axes = ProcessingAxes.from_synthesis(
+    radar.synthesize(
+        radar.last_radar_paths,
+        slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
+    ),
+    radar.system_config.waveform_spec(),
+    radar.system_config.sensors.array,
+)
+profile = range_profile(result.cube[0], axes=axes)
+rd = range_doppler(profile)
 ```
 
-## Scene API
+Two conventions cost more time than anything else in this API, so they are
+stated here rather than discovered:
 
-Use `Radar(..., position=..., target=..., fov=...)` to define the radar pose, and `Scene.add_*` methods for scene assembly.
+* the endpoint polarization must be TRANSVERSE to the look direction. The
+  default is `(0, 0, 1)`, which is transverse for a radar looking along `x` and
+  PARALLEL for one looking along `-z`; a parallel polarization publishes an
+  exactly zero transport and raises nothing. Pass `polarization=(0, 1, 0)` for a
+  `-z` boresight.
+* `witwin.core.Mesh` defaults `recenter=True` and silently subtracts the
+  bounding-box centre from authored vertices. Always pass `recenter=False` for
+  world-frame geometry.
+
+## Scenes And Motion
+
+The logical world is owned by `witwin.core`, not by Radar. There is no
+radar-owned `Scene`, `SceneModule`, `Timeline` or `TransformMotion`: each of
+those names now raises with a message naming its Core replacement.
 
 ```python
-from witwin.core import Material, Structure
-from witwin.radar import Radar, RadarConfig, Scene, TransformMotion
+import torch
 
-radar = Radar(
-    RadarConfig.from_dict(config),
-    device="cuda",
-    position=(0.0, 0.0, 0.0),
-    target=(0.0, 0.0, -1.0),
-    fov=60.0,
-)
-scene = Scene(device="cpu")
+from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
+from witwin.core.dynamics import DynamicScene, LinearTrajectory
 
-scene.add_structure(
-    Structure(
-        name="car_body",
-        geometry=car_body_mesh,
-        material=Material(eps_r=3.0),
-    )
-)
-scene.add_mesh(name="wheel_fl", vertices=wheel_vertices, faces=wheel_faces, dynamic=True)
-scene.add_structure_motion(
-    "wheel_fl",
-    TransformMotion(
-        axis=(0.0, 1.0, 0.0),
-        angular_velocity=32.0,
-        origin=(0.0, 0.0, 0.0),
-        space="local",
+wall = Structure(
+    geometry=Mesh(
+        vertices=wall_vertices,
+        faces=wall_faces,
+        recenter=False,          # MANDATORY for world coordinates
+        fill_mode="surface",
+        topology_diagnostics=False,
     ),
+    material=PhysicalMaterial(name="concrete", eps_r=5.24, sigma_e=0.0462),
+    structure_id=1, material_id=1, assignment_id=1, surface_id=1,
 )
+scene = Scene(structures=(wall,))
 
+# A moving world is a DynamicScene; `simulate` samples it at every frame instant.
+moving = DynamicScene(
+    scene,
+    structure_trajectories={
+        1: LinearTrajectory(
+            origin=torch.zeros(3),
+            velocity=torch.tensor((0.0, 0.0, 1.0)),
+        )
+    },
+)
+result = radar.simulate(moving, times=(0.0, 0.1, 0.2), response=response, sites=sites)
 ```
 
-`Radar.simulate(scene, ...)` and `Radar.simulate_group(...)` have been REMOVED
-along with the Dr.Jit ray tracer that backed them. Propagation now goes through
-the Channel propagation consumer:
+`Scene` is immutable and builds with `with_structures(...)`,
+`with_endpoints(...)`, `with_material(...)` and `with_structure_geometry(...)`
+rather than with mutating `add_*` methods.
 
-1. compile the scene and build a
-   `witwin.radar.propagation.ChannelPropagationAdapter`;
-2. `freeze` each leg once, outside the per-frame loop;
-3. `reevaluate` it per frame at the new endpoint positions;
-4. compose the legs with `witwin.radar.paths.TwoWayComposer` (radar source ->
-   scatter site -> radar sink) or `DirectComposer` (source straight to sink);
-5. synthesize with `witwin.radar.synthesis.synthesize_fmcw_beat`.
+After a call, five typed diagnostics describe the last frame - on the result and
+on the radar, which are the same objects:
 
-A scene-driven entry point that assembles those steps for a whole `Scene` does
-not exist yet. `Radar.mimo`, `mimo_from_trace`, `mimo_from_paths`,
-`path_cache_from_trace`, `chirp`, and `frame` are unaffected.
+| name | type |
+| --- | --- |
+| `last_snapshot` | `witwin.core.SceneSnapshot` |
+| `last_compiled_scene` | Channel `CompiledScene` |
+| `last_propagation` | `witwin.radar.RadarPropagationLegs` |
+| `last_radar_paths` | `witwin.radar.paths.RadarPathBatch` |
+| `last_result` | `witwin.radar.RadarSimulationResult` |
 
-Available mutating scene methods:
-
-- `Scene.add_structure(...)`
-- `Scene.add_mesh(...)`
-- `Scene.add_smpl(...)`
-- `Scene.add_structure_motion(...)`
-- `Scene.update_structure(...)`
-- `Scene.remove(...)`
+Migrating from the pre-cutover API (`Radar.mimo`, `mimo_from_trace`,
+`MimoPathCache`, `TraceResult`, the radar `Scene`, the Dirichlet solver):
+`docs/dev/migration/phase11-cutover-migration-note.md` lists every break with
+its replacement.
 
 ## Features
 
-- Native Dirichlet CUDA kernels for chirp, frame, and MIMO generation
-- Native CUDA autograd kernels for distance and amplitude gradients
-- Differentiable multipath propagation (line of sight and reflection) consumed from the Channel propagation consumer, with a fixed-topology freeze/reevaluate split
-- Shared-core geometry and structure primitives
-- SMPL body support through `Scene.add_smpl(...)`
-- Optional per-structure rigid motion with parent inheritance
-- Torch-native DSP pipeline for range/Doppler processing and point-cloud extraction
+- One scene-driven entry point, `Radar.simulate`, from a `witwin.core.Scene` to
+  a `[frame, TX, RX, slow, fast]` cube, with five typed diagnostics
+- Native CUDA kernels for the two-way join, FMCW / OFDM / pulsed synthesis, the
+  aspect-dependent scatter response, the sensor weight and the receive chain,
+  each with an analytical backward and JVP companion
+- Differentiable multipath propagation (line of sight and reflection) consumed
+  from the Channel propagation consumer, with a fixed-topology freeze /
+  reevaluate split; mesh vertices, permittivity, endpoint and site positions and
+  the target cross section all reach the cube in both AD modes
+- Shared-core geometry, structure and material primitives; SMPL body support
+  through `witwin.radar.SMPLBody` as a Core `Structure` geometry
+- Per-structure rigid motion with parent inheritance, declared on a
+  `witwin.core.DynamicScene` and sampled per frame
 - One processing facade, `witwin.radar.processing`: range profile, Range-Doppler,
   beam/range/velocity cube, AoA, beamforming, CFAR, point cloud and detection
   handoff, all PyTorch, sharing one `ProcessingAxes` metadata/axes/units record
@@ -159,7 +183,9 @@ Available mutating scene methods:
   native-DSP gate was measured and the recorded answer is no native DSP
   (`tools/benchmark_processing.py`, `PERFORMANCE.md`)
 - Tensor-first DSP outputs with backwards-compatible NumPy wrappers
-- Optional antenna pattern, polarization, noise-model, and receiver-chain configuration
+- Optional antenna-pattern configuration, applied to a composed round trip
+  through `Radar.simulate(..., antenna_pattern=...)`; the receive chain is the
+  `frontend` configuration block
 
 ## Running Tests
 
@@ -171,20 +197,27 @@ pytest tests/ --gpu
 
 ## Examples
 
-Run the maintained Python examples from the `radar/` root:
+Run the maintained Python examples from the `radar/` root. Each has a notebook
+twin beside it with the same content.
 
 ```bash
 python -m examples.single_point
-python -m examples.mesh_scene
-python -m examples.humanbody
 python -m examples.music_imaging
-python -m examples.amass_pointcloud
-python -m examples.gen_amass_video
-python -m examples.rgbd_range_doppler --input path/to/depths.npy
+python -m examples.rgbd_range_doppler --input path/to/depths.npz
 ```
 
-`amass_pointcloud` and `gen_amass_video` additionally require AMASS BMLmovi data under `data/BMLmovi_full/BMLmovi/`. The rendering examples require RayD and CUDA; the SMPL examples also require `models/smpl_models/`.
-`rgbd_range_doppler` reads `.npy`/`.npz` depth or point-cloud sequences, and can read Azure Kinect `.mkv` files when `pykinect_azure` is installed. It assumes the depth camera view is the radar view by default.
+- `single_point` - one point target in front of a concrete wall: the target peak
+  and the image-source multipath peak, both checked against closed forms.
+- `music_imaging` - a 20 x 20 UPA resolving two targets in azimuth, checked
+  against the analytic bearings.
+- `rgbd_range_doppler` - a depth sequence turned into scatter sites, one
+  Range-Doppler map per frame. It reads the `.npz` written by
+  `examples/preprocess_rfgen_rd.py`, which converts `.npy`/`.npz` depth or
+  point-cloud sequences and Azure Kinect `.mkv` files (with `pykinect_azure`
+  installed). No depth asset ships with the repository; a missing `--input`
+  raises and names that script.
+
+All three require CUDA. There are no SMPL or AMASS examples in this tree.
 
 ## Installation
 

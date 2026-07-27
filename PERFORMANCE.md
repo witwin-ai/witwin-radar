@@ -1,95 +1,76 @@
-# Radar CUDA Kernel Performance
+# Radar Performance
 
 ## Overview
 
-Radar signal generation now uses a single native CUDA implementation of the Dirichlet frequency-domain kernel. The package no longer ships legacy solver backends.
-
-The maintained benchmark is:
+Two benchmarks are maintained, and everything in this document comes from one of
+them or from a pinned test.
 
 ```bash
-python tools/benchmark_dirichlet_cuda.py --targets 1024 16384 262144 1048576 --runs 20 --json
+python tools/benchmark_processing.py --runs 200 --warmup 20 --json
+python -m pytest tests/test_phase8_pipeline_budget.py --gpu -q -s
 ```
 
-It measures:
+One timing convention throughout: CUDA events or `perf_counter` with an explicit
+`torch.cuda.synchronize` on both sides, medians rather than means, and a peak
+allocation delta measured around a single call. Measured on an NVIDIA GeForce
+RTX 5080.
 
-- native Dirichlet forward spectrum generation
-- native Dirichlet backward gradients for distance and amplitude
-- public native-autograd forward+backward time and peak allocated memory
-- PyTorch FFT/autograd reference implementations for target counts below the configured memory limit
+The Phase-11 cutover deleted `tools/benchmark_dirichlet_cuda.py` and the whole
+Dirichlet route it measured (`Radar.chirp`, `Radar.frame`, `Radar.mimo`,
+`mimo_from_trace`, `witwin.radar.solvers`). Every number that came from it has
+been removed rather than carried forward: those tables described a code path
+that no longer exists, and a benchmark table for deleted code is worse than no
+table. The pre-cutover numbers remain in git history at `27829a9^`.
 
-## Legacy Slang Warm Comparison (Historical Kernel)
+## Scene-Driven Simulation
 
-The legacy `dirichlet.slang` kernel was measured separately from git history (`8ea84e2^`) to compare warmed steady-state performance against the native CUDA implementation. Compilation and module load were excluded from timing; each row used 8 warmup runs and 30 CUDA-event timed runs on an NVIDIA GeForce RTX 5080 with `adc_samples=400`, `N_fft=6400`, `num_bins=3200`, and `targets_per_chunk=256`.
+`Radar.simulate` cost against scatter-site count. Line of sight only,
+`max_depth=0`, 3 TX x 4 RX, 128 chirps, 256 samples, one frame; one warmup call
+per size then the median of five, `torch.cuda.synchronize` on both sides.
 
-SlangTorch's default CUDA build enables fast math. That default is faster, but it is not numerically equivalent to the native/PyTorch-correct path for this kernel because phase reduction differs for large radar carrier phases. In the default fast-math run, max relative error reached `5.57e-1` for forward output and about `2.0` for gradients at 1,048,576 targets, so those timings are not a correctness-preserving comparison.
-
-With Slang fast math disabled, native CUDA and legacy Slang produced identical forward and backward tensors in this benchmark:
-
-| Targets | Native fwd ms | Slang fwd ms | Native/Slang fwd | Native bwd ms | Slang bwd ms | Native/Slang bwd |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,024 | 0.144 | 0.152 | 1.05x faster | 1.673 | 1.658 | 0.99x |
-| 16,384 | 0.440 | 0.471 | 1.07x faster | 1.714 | 1.658 | 0.97x |
-| 262,144 | 6.240 | 6.166 | 0.99x | 12.141 | 11.844 | 0.98x |
-| 1,048,576 | 24.765 | 24.828 | 1.00x | 44.435 | 39.897 | 0.90x |
-
-This comparison predates the parallel-bin backward kernel documented below. It
-remains useful for forward parity with the removed Slang backend, but its native
-backward timings are no longer representative of the current implementation.
-
-## Native Autograd Acceptance
-
-Public `Radar.chirp()` autograd now uses analytical CUDA backward kernels instead
-of constructing the float64 PyTorch reference graph. A one-block-per-path kernel
-parallelizes spectrum bins and reduces gradients with warp shuffles. Batched MIMO
-spectra use a separate one-thread-per-path kernel because each spectrum has an
-independent output gradient.
-
-RTX 5080 results (`adc_samples=400`, `N_fft=6400`, 20 CUDA-event runs):
-
-| Targets | Native forward | Native backward | Native autograd e2e | PyTorch autograd e2e | E2E speedup | Native peak | PyTorch peak |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,024 | 0.124 ms | 0.064 ms | 0.510 ms | 1.144 ms | 2.24x | 8.6 MB | 53.2 MB |
-| 16,384 | 0.417 ms | 0.626 ms | 1.159 ms | 6.183 ms | 5.33x | 11.6 MB | 703.0 MB |
-| 262,144 | 5.514 ms | 9.760 ms | 15.369 ms | skipped | n/a | 85.4 MB | skipped |
-
-Forward and gradient correctness are checked against the float64 reference and
-finite differences in `tests/solvers/test_native_dirichlet_cuda.py` and
-`tests/solvers/test_mimo_grad.py`.
-
-## MIMO Frame Paths
-
-MIMO frame generation offers three paths with different speed/fidelity trade-offs (measured on an NVIDIA GeForce RTX 5080, 3TX x 4RX, 128 chirp loops, 256 ADC samples, CUDA-event medians):
-
-| Targets | `mimo(interpolator)` | `mimo_from_trace(velocities=...)` | `mimo_from_trace()` static |
+| sites | composed rows | median | peak allocation |
 | ---: | ---: | ---: | ---: |
-| 1,024 | 21.9 ms | 5.7 ms | 2.2 ms |
-| 13,776 | 84.4 ms | 44.3 ms | 2.3 ms |
-| 131,072 | 863.8 ms | 402.3 ms | 4.5 ms |
+| 512 | 6,144 | 26.5 ms | 6.5 MB |
+| 2,048 | 24,576 | 105.3 ms | 8.2 MB |
+| 4,096 | 49,152 | 209.8 ms | 10.3 MB |
 
-- `mimo(interpolator)` resamples the scene once per TDM chirp slot (`chirp_per_frame * num_tx` evaluations) and batches all slots into grouped `forward_chunked` launches. This is the highest-fidelity dynamic path.
-- `mimo_from_trace(velocities=...)` uses the fused `forward_mimo_linear_chunked` kernel with a first-order per-path range-rate model and per-TX slot timing.
-- The static path evaluates one chirp and expands it across the frame.
+Site count is the cost driver: every site is a Channel endpoint in BOTH legs, so
+the composed row count is `num_tx * num_rx * sites`. These are single-process
+medians, not a warmed benchmark suite; `tools/benchmark_processing.py` is the
+instrument for the post-processing half.
 
-Before the slot batching (per-chirp Python loop with one small kernel launch per chirp), the interpolator path took 348/885/6561 ms for the same target counts, so the batched path is roughly 8-16x faster while also simulating per-TX TDM timing.
+### The per-frame budget
 
-## End-to-End Scene And DSP
+`tests/test_phase8_pipeline_budget.py::test_the_simulation_frame_cost_has_not_regressed`
+pins the MARGINAL per-frame cost of `Radar.simulate` - `(T(2K) - T(K)) / K`, so
+the one-off compile and discovery of the first frame do not enter the number.
+The pin measures the minimum within each timing rather than the median, because
+a difference of two medians is not a stable quantity (the measured spread across
+repeats was 4.52 to 7.62 ms); it takes the best of three such differences after
+an explicit warmup.
 
-Steady-state RTX 5080 medians for 3TX x 4RX, 128 chirps, 256 ADC samples:
+| where | measured | budget |
+| --- | ---: | ---: |
+| isolation | 4.5372 ms | 5.044 ms |
+| inside the full `--gpu` suite | 4.3822 ms | 5.044 ms |
+| inside `ci/run_ci_tier.py cuda` (under `coverage run`) | 4.1623 ms | 5.044 ms |
 
-| Operation | Median |
-| --- | ---: |
-| Pixel trace, 128x128, 6,248 hits | 1.457 ms |
-| Cached static MIMO, 13,776 paths | 2.361 ms |
-| Cached static MIMO autograd e2e, 13,776 paths | 5.457 ms |
-| Tensor Range-Doppler | 0.234 ms |
-| Tensor point cloud | 2.038 ms |
+The third row exists because it did not always hold. `ci/run_ci_tier.py cuda`
+runs the GPU suite under `coverage run`, and both wall-clock pins are dispatch
+bound, so the per-line C tracer is charged straight to the measurement: 5.27 ms
+against 4.54 ms for the same code, a 16 percent instrument tax that on its own
+exceeded the budget. The pins now suspend the tracer and the profiler around the
+timed region and restore them afterwards (`_untraced` in the budget file). The
+thresholds are unchanged and the coverage floor still passes at 83 percent.
 
-Strict dynamic triangle tracing evaluates all 384 TDM slots and remains the
-highest-fidelity option. For a translating box scene it measured 917 ms.
-`motion_sampling="linear"` traces two adjacent slots, matches triangle IDs, and
-uses the fused linear range-rate kernel; the same scene measured 14.65 ms
-(62.6x faster). For a 32-chirp, 0.2 m/s translation check, complex-signal
-relative L2 error was `5.9e-4` and relative peak-magnitude error was `1.0e-3`.
+**Open item for the owner, recorded rather than acted on.** The 5.044 ms budget
+is `3.88 x 1.30`, and 3.88 ms described two leg replays plus one composition
+WITHOUT synthesis - a strictly smaller quantity than what the pin now measures.
+The measurement passes unchanged, in isolation and under load, but it sits at
+roughly 84 percent of a threshold derived for something else. Re-deriving it
+(`MEASURED_SIMULATION_FRAME_MS = 4.25`, same 1.30 factor, 5.53 ms) is proposed
+and deliberately NOT taken: raising a budget is an owner decision, and no phase
+should raise its own.
 
 ## Processing Chain (Phase 8)
 
@@ -203,7 +184,7 @@ its measured number and headroom factor inline:
 | full-pipeline peak allocation delta | 1.13 MB | `x 1.25` = 1.41 MB |
 | host observations per pipeline call | 1 | exactly 1 |
 | `torch.fft` dispatches per pipeline call | 7 | exactly 7 |
-| per-frame simulation cost | 3.88 ms | `x 1.30` = 5.04 ms |
+| per-frame simulation cost | 3.88 ms (see above) | `x 1.30` = 5.04 ms |
 | `os_cfar` peak, one `[128, 256]` map | 138.0 MB | `x 1.25` = 172.5 MB |
 | wideband D2H copies / synchronizations per leg | 1 / 1 | exactly, for `F` in {1, 8, 64} |
 | two-way join launches | `1 + F` | exactly, for `F` in {1, 8, 64} |
@@ -213,13 +194,22 @@ IS the stage: a point cloud has a data-dependent length. The seven dispatches ar
 one range transform, two for the Doppler stage, two building the velocity axis,
 and two inside the phase comparison.
 
-**On the per-frame simulation cost.** The Phase-7 report recorded 2.30 ms/frame
-for two leg reevaluations plus one composition. That figure is not reproducible
-in this environment and the reason is not a Phase-8 regression: measured at the
-Phase-8 BASE commit `4bb059a` in the same session on the same fixture, the same
-call costs **3.911 ms**, against **3.880 ms** at HEAD - a ratio of 0.992. The
-2.30 ms figure describes a different machine state. The portable claim is the
-ratio, and it says nothing regressed.
+**On the per-frame simulation cost.** The pin changed subject in Phase 11 and
+the threshold did not. It measured `MultiEndpointSpike.frame()` - two leg
+reevaluations plus one composition - and now measures the marginal per-frame
+cost of the production `Radar.simulate`, which additionally runs synthesis,
+frame assembly and the receive chain. That is more work against the same
+number, and it still passes: 4.5372 ms in isolation,
+4.3822 ms inside the full `--gpu` suite, against 5.044 ms. The
+Phase-8 note behind the 3.88 ms constant is preserved because it is the
+provenance of the threshold: the Phase-7 report recorded 2.30 ms/frame, which is
+not reproducible in this environment for a reason that is not a regression -
+measured at the Phase-8 base commit `4bb059a` the same call cost **3.911 ms**
+against **3.880 ms** at that HEAD, a ratio of 0.992.
+
+**On the full-pipeline latency pin.** It got the same treatment in Phase 11
+(warmup, synchronize on both sides, best of three) and its budget was likewise
+not raised: 2.3911 ms against 2.899 ms.
 
 **Component export multiplier.** Exporting components costs one synthesis launch
 each and zero host observations. On the multi-endpoint fixture: unseparated
@@ -252,18 +242,13 @@ per-criterion numbers are in
 
 ## Method
 
-The native forward kernel evaluates the Dirichlet closed form directly in frequency space, avoiding the time-domain signal materialization and FFT used by the reference path. The native backward kernel applies the analytical gradients for the same expression and accumulates per-target distance/amplitude gradients.
+Every number above is a wall-clock or allocation measurement of code that is in
+the tree at the recorded commit. Where a claim is a ratio rather than an
+absolute (the per-frame cost, the Channel reverse-pass surcharge), that is
+deliberate: absolute wall times on an otherwise idle device drifted by up to
+1.5x between processes in this environment, and a pin that cannot survive that
+drift is a flake rather than a budget.
 
-The PyTorch reference path remains in `witwin.radar.solvers.common` for tests and validation only. It is intentionally not exposed as a runtime backend because it allocates an `O(targets * samples)` intermediate and can run out of memory for large scenes.
-
-## Expected Shape
-
-For the default chirp benchmark (`adc_samples=400`, `pad_factor=16`, `N_fft=6400`, `num_bins=3200`):
-
-| Method | Memory trend | Notes |
-| --- | --- | --- |
-| Native Dirichlet forward | `O(chunks * bins)` scratch plus output | production path |
-| Native Dirichlet backward | `O(targets)` saved inputs and output gradients | production autograd path |
-| PyTorch FFT reference | `O(targets * samples)` complex intermediate | validation only |
-
-Use the JSON output from the benchmark in release notes when reporting hardware-specific numbers. Timings depend on GPU model, CUDA toolkit, PyTorch build, and driver.
+Timings depend on GPU model, CUDA toolkit, PyTorch build and driver. Use the
+`--json` output of `tools/benchmark_processing.py` when reporting
+hardware-specific numbers in release notes.
