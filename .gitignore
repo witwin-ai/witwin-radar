@@ -243,3 +243,12 @@ __marimo__/
 # what that setting is for.
 witwin/radar/cuda/prebuilt/*.build-info.json
 witwin/radar/cuda/prebuilt/*.build-fingerprint
+
+# Locally produced packaging evidence: built wheels and the JSON that
+# ci/wheel_smoke.py and ci/coexistence_smoke.py emit. Same argument as the
+# sidecars above - every value in there (absolute target paths, binary digests,
+# the git revision the prebuilt was built at, the local architecture subset)
+# describes one machine's run and would be stale the moment anything is
+# rebuilt. The evidence belongs in the change that produced it, not in the
+# tree.
+/artifacts/
