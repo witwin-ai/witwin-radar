@@ -197,42 +197,6 @@
       "adr": "R-ADR-007"
     },
     {
-      "module": "witwin/radar/timeline.py",
-      "function": "__init__",
-      "call": "torch.linalg.norm",
-      "occurrences": 1,
-      "category": "freeze_time_validation",
-      "reason": "TransformMotion refuses a zero rotation axis in its constructor. The norm decides whether the authored value is legal; it never reaches a result.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/utils/geometry.py",
-      "function": "axis_angle_rotation",
-      "call": "torch.linalg.norm",
-      "occurrences": 1,
-      "category": "freeze_time_pose",
-      "reason": "Axis normalisation inside the authored-motion rotation matrix helper.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/utils/geometry.py",
-      "function": "axis_angle_rotation",
-      "call": "torch.cos",
-      "occurrences": 1,
-      "category": "freeze_time_pose",
-      "reason": "Rodrigues for an authored TransformMotion, evaluated once per motion sample on the host-side timeline rather than per path.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/utils/geometry.py",
-      "function": "axis_angle_rotation",
-      "call": "torch.sin",
-      "occurrences": 1,
-      "category": "freeze_time_pose",
-      "reason": "The sine half of the same expression.",
-      "adr": "R-ADR-007"
-    },
-    {
       "module": "witwin/radar/utils/vector.py",
       "function": "normalize_rows",
       "call": "torch.linalg.norm",

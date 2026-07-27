@@ -18,7 +18,6 @@ from .radar import Radar, RadarConfig, quantize_complex_signal
 from .solvers import Solver
 from .trace_result import TraceResult
 from .path_cache import MimoPathCache
-from .scene import Scene, SceneModule
 from .scene_binding import (
     RadarWorldBinding,
     ScatterSitePolicy,
@@ -27,7 +26,6 @@ from .scene_binding import (
 )
 from .simulation import RadarSimulationResult
 from .propagation.contracts import RadarPropagationLegs
-from .timeline import Timeline, TransformMotion
 from .types import DetectorType, MotionSampling, SamplingMode
 from witwin.core import (
     Box,
@@ -68,6 +66,35 @@ _REMOVED = {
         "Reflection coefficients are owned by Channel's native material "
         "evaluation and reach Radar inside a leg's transport coefficient; "
         "there is no Radar-side Fresnel function to call."
+    ),
+    # The radar-owned logical world, deleted in Phase 11. These four names must
+    # not resolve to their Core counterparts: `witwin.radar.Scene` was a SECOND
+    # logical world with its own structure list, its own dirty/version domain,
+    # its own motion graph and its own compiler, and a caller who asks for it by
+    # the old name is asking for a different object than `witwin.core.Scene`.
+    "Scene": (
+        "witwin.radar.Scene has been removed. The one logical world is "
+        "witwin.core.Scene; build it there and hand it to Radar.simulate, "
+        "which compiles it through witwin.radar.scene_binding.bind_radar_world "
+        "and the Channel compile facade."
+    ),
+    "SceneModule": (
+        "witwin.radar.SceneModule has been removed with witwin.radar.Scene. A "
+        "torch.nn.Module that materializes a world builds a witwin.core.Scene "
+        "in its forward and passes it to Radar.simulate; there is no "
+        "radar-owned Scene subclass to derive from."
+    ),
+    "Timeline": (
+        "witwin.radar.Timeline has been removed. Frame sequencing is the "
+        "`times` argument of Radar.simulate, and world motion belongs to Core: "
+        "witwin.core.RigidMotion, LinearTrajectory, Trajectory and "
+        "DynamicScene."
+    ),
+    "TransformMotion": (
+        "witwin.radar.TransformMotion has been removed with "
+        "witwin.radar.Timeline. Structure motion is declared with Core's "
+        "witwin.core.RigidMotion / LinearTrajectory on a DynamicScene, which "
+        "the propagation epoch loop already consumes."
     ),
 }
 
@@ -123,11 +150,7 @@ __all__ = [
     'ScatterSitePolicy',
     'StableIdAllocator',
     'bind_radar_world',
-    'Scene',
-    'SceneModule',
     'SMPLBody',
-    'Timeline',
-    'TransformMotion',
     'Material',
     'Structure',
     'GeometryBase',
