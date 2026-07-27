@@ -71,8 +71,25 @@ NEVER_NAMED = SOLVER_AND_INTERNALS + (
 )
 
 # The exact Channel imports the spike is allowed to name.
+#
+# The scene compile facade joined the consumer facade in Phase 11 (R-ADR-020).
+# ``Radar.simulate`` has to compile a Core world before it can propagate through
+# it, and compiling is a Channel lifecycle operation, so SOME production module
+# must name ``witwin.channel.scene``. The decision was to let it be the module
+# that already owns this boundary rather than to allowlist a second crossing:
+# ``test_only_the_adapter_crosses_the_channel_boundary`` below is unchanged and
+# still names exactly one file. The import is function-local inside
+# ``compile_scene``, so importing the adapter still loads nothing beyond the
+# consumer facade's own closure - which is what
+# ``test_radar_adds_nothing_to_the_consumer_facade_closure`` measures at
+# runtime, independently of this list.
 ALLOWED_CHANNEL_IMPORTS = frozenset(
-    {"witwin.channel.propagation", "witwin.channel.propagation.consumer"}
+    {
+        "witwin.channel.propagation",
+        "witwin.channel.propagation.consumer",
+        "witwin.channel.scene",
+        "witwin.channel.scene.compile",
+    }
 )
 
 SPIKE_MODULES = (
@@ -96,6 +113,12 @@ SPIKE_MODULES = (
     # same reasons. It takes its scene compiler as an ARGUMENT precisely so
     # that it does not become a second module naming ``witwin.channel``.
     "witwin/radar/propagation/epochs.py",
+    # The production scene -> endpoint/site binding owner. It is scanned here
+    # because it is the module that turns a Core world into endpoint specs, and
+    # a host read of a structure anchor or an ID vector is exactly the kind of
+    # convenience that would look harmless in it. It names no Channel module at
+    # all: compiling is the adapter's, and this owns identity and packing.
+    "witwin/radar/scene_binding.py",
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
     "witwin/radar/paths/_identity.py",

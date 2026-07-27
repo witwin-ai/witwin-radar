@@ -19,6 +19,12 @@ from .solvers import Solver
 from .trace_result import TraceResult
 from .path_cache import MimoPathCache
 from .scene import Scene, SceneModule
+from .scene_binding import (
+    RadarWorldBinding,
+    ScatterSitePolicy,
+    StableIdAllocator,
+    bind_radar_world,
+)
 from .timeline import Timeline, TransformMotion
 from .types import DetectorType, MotionSampling, SamplingMode
 from witwin.core import (
@@ -109,6 +115,10 @@ __all__ = [
     'MotionSampling',
     'SamplingMode',
     'MimoPathCache',
+    'RadarWorldBinding',
+    'ScatterSitePolicy',
+    'StableIdAllocator',
+    'bind_radar_world',
     'Scene',
     'SceneModule',
     'SMPLBody',

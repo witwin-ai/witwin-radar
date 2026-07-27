@@ -1,13 +1,21 @@
 """Radar's adapter onto the stable Channel propagation consumer.
 
-This is the ONLY Radar module that imports ``witwin.channel``, and it imports
-exactly one thing from it: the solver-neutral consumer facade
-``witwin.channel.propagation.consumer``. Scene compilation goes through
-``witwin.channel.scene.compile``, which the spike calls from ``tests/support``
-rather than from any Radar module. Nothing here touches a Channel solver, the
-enumerated engine, the internal propagation contracts, or the native extension.
-R-ADR-001 records why: Radar is a consumer of the published contract, not a
-second enumerated exception to ADR-008.
+This is the ONLY Radar module that imports ``witwin.channel``, and it names
+exactly two things from it: the solver-neutral consumer facade
+``witwin.channel.propagation.consumer`` and the scene compile facade
+``witwin.channel.scene.compile``. The second one arrived with the production
+scene-driven entry (R-ADR-020): compiling a Core world is a Channel lifecycle
+operation, so it belongs to the module that already owns this boundary rather
+than to a second allowlisted crossing. It is a MODULE function
+(:func:`compile_scene`), not an adapter method, because it produces the scene an
+adapter is constructed WITH - there is no adapter yet when it is called - and it
+is imported inside that function so that importing this module still loads
+nothing beyond the consumer facade's own closure.
+
+Nothing here touches a Channel solver, the enumerated engine, the internal
+propagation contracts, or the native extension. R-ADR-001 records why: Radar is
+a consumer of the published contract, not a second enumerated exception to
+ADR-008.
 
 The adapter owns four things and nothing else:
 
@@ -231,6 +239,64 @@ def _detached(spec: RadarEndpointSpec) -> RadarEndpointSpec:
         polarizations=spec.polarizations.detach(),
         powers_w=None if spec.powers_w is None else spec.powers_w.detach(),
     )
+
+
+def compile_scene(
+    scene_or_snapshot: object, *, reference_frequency_hz: float
+) -> object:
+    """Compile one Core ``Scene`` or ``SceneSnapshot`` at one frequency.
+
+    The production spelling of what ``tests/support`` used to be the only caller
+    of. It is a thin wrapper by design: Channel owns compilation, the compiled
+    resources, and the compile cache, and a Radar-side reimplementation of any
+    of that would be a second owner of the same lifecycle.
+
+    Called exactly as :class:`~witwin.radar.propagation.epochs.SceneEpochLoop`
+    calls its ``compile_scene`` argument, so this function IS that argument for
+    the production driver. The loop keeps taking it as a parameter rather than
+    importing it: the compile count stays observable, and the loop stays free of
+    the Channel import edge.
+
+    ``reference_frequency_hz`` is checked against the scene that comes back
+    before the scene is handed to anybody. Channel refuses a mismatch at
+    ``evaluate``/``reevaluate`` time anyway, but that is after a request has been
+    built; checking here means a scene that came out of the compile cache at
+    some other frequency is refused at the compile call that asked for it, which
+    is where a caller can still read the two numbers side by side. There is no
+    implicit recompile: a mismatch is an error, never a second compile.
+    """
+
+    from witwin.channel.scene import compile as channel_compile
+
+    compiled = channel_compile(
+        scene_or_snapshot, reference_frequency_hz=reference_frequency_hz
+    )
+    require_reference_frequency(compiled, reference_frequency_hz)
+    return compiled
+
+
+def require_reference_frequency(
+    compiled_scene: object, reference_frequency_hz: float
+) -> None:
+    """Refuse a compiled scene that was not compiled at this frequency.
+
+    Host-only: it compares two numbers and launches nothing. A driver that
+    receives a compiled scene from somewhere other than :func:`compile_scene`
+    calls this BEFORE building an adapter, so the mismatch is reported where the
+    binding is made rather than inside the first replay.
+
+    The refusal is Channel's own, quoted rather than re-derived, because the
+    exactness rule (a hex comparison, not a tolerance) belongs to the side that
+    owns the compiled constant.
+    """
+
+    check = getattr(compiled_scene, "require_reference_frequency", None)
+    if check is None:
+        raise TypeError(
+            "compiled_scene must expose require_reference_frequency; pass a "
+            "witwin.channel CompiledScene"
+        )
+    check(reference_frequency_hz)
 
 
 class ChannelPropagationAdapter:
@@ -750,4 +816,6 @@ __all__ = [
     "WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD",
     "ChannelPropagationAdapter",
     "FrozenLegTopology",
+    "compile_scene",
+    "require_reference_frequency",
 ]

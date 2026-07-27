@@ -26,11 +26,38 @@ Each waveform block has a ``to_spec`` returning the SI synthesis spec, and that
 is the only unit-conversion site for its waveform. The engineering units the
 flat configuration uses - kSPS, microseconds, MHz per microsecond - are
 converted there and nowhere else.
+
+Two Phase-11 decisions about this module's surface, recorded here because a
+caller reads the docstring and not the plan (R-ADR-020):
+
+**``components`` and ``max_depth`` are structured-block fields reached through
+``from_radar_config`` and :meth:`RadarSystemConfig.with_propagation`, not new
+flat ``RadarConfig`` fields.** They are the two propagation knobs
+:class:`PropagationConfig` has always carried, and until Phase 11 nothing could
+set them from the public constructor at all, so they were permanently their
+defaults. They stay off the flat form for the reason the five blocks exist:
+``RadarConfig`` is the FILE format and the flat form is where every field
+becomes readable by anybody, while ``components`` and ``max_depth`` are
+propagation-request quantities with exactly one legitimate reader. The
+scene-driven entry accepts them as keywords and applies them with
+``with_propagation``, so a per-solve override never mutates the radar it was
+called on.
+
+**The waveform block is selectable rather than inferred.**
+``from_radar_config`` builds the FMCW block from the flat fields when no
+``waveform`` is given, which is the historical behaviour bit for bit, and
+otherwise takes the block it is handed verbatim. That is what makes the OFDM and
+pulsed owners reachable from a configuration instead of only from a
+hand-assembled :class:`RadarSystemConfig`. It stays a keyword rather than a flat
+discriminator because an OFDM block shares none of the FMCW block's fields: a
+flat form carrying both would have eighteen fields of which half are always
+dead, and inferring which half is live is precisely the defect the stored
+``kind`` removed.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 import torch
@@ -371,25 +398,82 @@ class RadarSystemConfig:
             "fallback"
         )
 
+    def with_propagation(
+        self,
+        *,
+        components: frozenset[str] | None = None,
+        max_depth: int | None = None,
+    ) -> "RadarSystemConfig":
+        """A copy whose propagation block carries these two knobs.
+
+        The scene-driven entry's ``components=`` / ``max_depth=`` keywords land
+        here. It returns a new configuration rather than mutating this one
+        because a per-solve override that edited the radar's stored
+        configuration would silently change every LATER solve as well, and a
+        propagation request is a statement about one solve.
+
+        ``reference_frequency_hz`` is deliberately not overridable: it is tied
+        to the array's element spacing by ``__post_init__`` and to the compiled
+        scene by Channel, so changing it here would produce a configuration that
+        is refused later rather than one that means something else.
+        """
+
+        if components is None and max_depth is None:
+            return self
+        current = self.propagation
+        replacement = PropagationConfig(
+            reference_frequency_hz=current.reference_frequency_hz,
+            components=(
+                current.components if components is None else frozenset(components)
+            ),
+            max_depth=(
+                current.max_depth if max_depth is None else int(max_depth)
+            ),
+        )
+        return replace(self, propagation=replacement)
+
     @classmethod
-    def from_radar_config(cls, config, *, frontend: FrontendSpec | None = None):
+    def from_radar_config(
+        cls,
+        config,
+        *,
+        frontend: FrontendSpec | None = None,
+        waveform: WaveformConfig | None = None,
+        components: frozenset[str] | None = None,
+        max_depth: int | None = None,
+    ):
         """Split a flat ``RadarConfig`` into the five blocks.
 
         The flat form remains the file format and the public constructor; this
         is the structural view of it. Blocks are the thing an adapter, a
         synthesis owner, or a signal processor is handed, so that each one sees
         only what it owns.
+
+        ``waveform`` selects the waveform block. ``None`` builds the FMCW block
+        out of the flat fields, which is what this classmethod has always done
+        and is bit-for-bit unchanged; anything else is used verbatim, which is
+        how an OFDM or pulsed radar is configured without hand-assembling all
+        five blocks. The flat fields the FMCW block would have read are simply
+        not consulted in that case, because an OFDM symbol has no ramp slope.
+
+        ``components`` and ``max_depth`` fill the propagation block. Their
+        defaults are :class:`PropagationConfig`'s own, so omitting both is
+        exactly the previous behaviour.
         """
 
         return cls(
-            waveform=FmcwWaveformConfig(
-                slope=float(config.slope),
-                adc_samples=int(config.adc_samples),
-                adc_start_time=float(config.adc_start_time),
-                sample_rate=float(config.sample_rate),
-                idle_time=float(config.idle_time),
-                ramp_end_time=float(config.ramp_end_time),
-                chirp_per_frame=int(config.chirp_per_frame),
+            waveform=(
+                FmcwWaveformConfig(
+                    slope=float(config.slope),
+                    adc_samples=int(config.adc_samples),
+                    adc_start_time=float(config.adc_start_time),
+                    sample_rate=float(config.sample_rate),
+                    idle_time=float(config.idle_time),
+                    ramp_end_time=float(config.ramp_end_time),
+                    chirp_per_frame=int(config.chirp_per_frame),
+                )
+                if waveform is None
+                else waveform
             ),
             sensors=SensorConfig(
                 array=SensorArraySpec.from_radar_config(config),
@@ -397,7 +481,15 @@ class RadarSystemConfig:
                 tx_power=TxPowerSpec.from_radar_config(config),
                 polarization=PolarizationSpec.from_config(config.polarization),
             ),
-            propagation=PropagationConfig(reference_frequency_hz=float(config.fc)),
+            propagation=PropagationConfig(
+                reference_frequency_hz=float(config.fc),
+                **(
+                    {}
+                    if components is None
+                    else {"components": frozenset(components)}
+                ),
+                **({} if max_depth is None else {"max_depth": int(max_depth)}),
+            ),
             processing=ProcessingConfig(
                 frame_per_second=float(config.frame_per_second),
                 num_doppler_bins=int(config.num_doppler_bins),
