@@ -26,12 +26,22 @@ an LFM - and the subcarrier spacing for an OFDM channel-frequency-response cube
 or the whole occupied band for time-domain OFDM samples. Getting it wrong is a
 pure scale error in SNR, which is exactly the kind of mistake that survives
 every relative test, so it must be stated rather than guessed.
+
+**Every scalar here is a host float and none of them is differentiable.** The
+receive chain describes a DEVICE, not the scene: a gain, a control setpoint, a
+noise figure, a unit convention, and a quantiser's grid. Each spec states its
+own reason through :func:`~witwin.radar.host_parameters.require_host_floats`
+and refuses a tensor at construction, before any chain exists. The alternative
+- ``float()`` on a marked tensor - runs the whole frame and hands the caller
+``grad = None`` for the parameter they were optimising.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+
+from ..host_parameters import require_host_floats
 
 
 #: Boltzmann's constant, exact in SI since 2019.
@@ -56,6 +66,60 @@ AGC_MODE_PER_RX = "per_rx"
 AGC_MODES = (AGC_MODE_GLOBAL, AGC_MODE_PER_RX)
 
 
+#: Why the port impedance has no derivative. It converts sqrt(W) to volts and
+#: is a UNIT CONVENTION: differentiating a loss with respect to the units it is
+#: expressed in is not a question about the world.
+_PORT_REASON = (
+    "reference_impedance_ohm is the unit convention that turns sqrt(W) into "
+    "volts, applied exactly once at stage 0."
+)
+
+#: Why every noise scalar has no derivative. All four parameterise a
+#: counter-based Philox draw in ``frontend/chain.py``; a pathwise derivative
+#: through an RNG stream is not defined by any accepted contract here, and a
+#: reparameterised noise model is a separate decision with its own ADR.
+_NOISE_REASON = (
+    "every scalar on NoiseSpec parameterises a counter-based Philox draw - the "
+    "thermal sigma and the Wiener step are the standard deviations of a "
+    "realisation, not a smooth function of the signal. A pathwise derivative "
+    "through an RNG stream is not defined by any contract this package "
+    "accepts, and a reparameterised noise model is a separate decision with "
+    "its own ADR."
+)
+
+#: Why the LNA gain has no derivative TODAY. This one is a named deferral
+#: rather than a statement that the derivative does not exist: the gain is a
+#: smooth multiplicative factor and a leaf would be perfectly well defined. It
+#: would need a new tangent and gradient slot in the native frontend operator,
+#: and no consumer asks for one.
+_LNA_REASON = (
+    "gain_db is device configuration rather than scene state. The native "
+    "frontend operator carries no tangent or gradient slot for it and no "
+    "consumer asks for one; adding the slot is a named Phase-9 deferral "
+    "recorded in docs/dev/radar-ad-capability-matrix.md."
+)
+
+#: Why the AGC setpoint has no derivative. It is a control target, and the
+#: stage is already non-linear in the signal because its gain depends on the
+#: signal's own RMS - which is why every physics test turns AGC off.
+_AGC_REASON = (
+    "target_rms is a control setpoint. The AGC gain depends on the signal's "
+    "own RMS, so the stage is not linear in the signal at all, and every "
+    "physics invariant in this package is asserted with AGC off."
+)
+
+#: Why the ADC grid has no derivative. Both fields define ``round``'s step and
+#: clip level, and the quantiser already refuses a differentiable SIGNAL at
+#: ``frontend/chain.py``. Refusing the grid as well keeps the wall in one
+#: piece: a full-scale leaf would be a derivative of a staircase's placement.
+_ADC_REASON = (
+    "bits and full_scale define the quantiser's grid, and `round` has a zero "
+    "derivative almost everywhere and an undefined one at every code "
+    "boundary. The ADC stage already refuses a differentiable signal; the "
+    "grid sits behind that same wall."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PortSpec:
     """The sqrt(W) to volt conversion, applied exactly once at stage 0.
@@ -70,6 +134,11 @@ class PortSpec:
     reference_impedance_ohm: float = 50.0
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "PortSpec",
+            _PORT_REASON,
+            reference_impedance_ohm=self.reference_impedance_ohm,
+        )
         if not self.reference_impedance_ohm > 0.0:
             raise ValueError("reference_impedance_ohm must be positive")
 
@@ -118,6 +187,16 @@ class NoiseSpec:
     phase_sample_rate_hz: float = 0.0
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "NoiseSpec",
+            _NOISE_REASON,
+            noise_figure_db=self.noise_figure_db,
+            antenna_temperature_k=self.antenna_temperature_k,
+            bandwidth_hz=self.bandwidth_hz,
+            phase_noise_dbc_per_hz=self.phase_noise_dbc_per_hz,
+            phase_offset_hz=self.phase_offset_hz,
+            phase_sample_rate_hz=self.phase_sample_rate_hz,
+        )
         if self.antenna_temperature_k < 0.0:
             raise ValueError("antenna_temperature_k must be non-negative")
         if self.bandwidth_hz < 0.0:
@@ -221,9 +300,19 @@ class NoiseSpec:
 
 @dataclass(frozen=True, slots=True)
 class LnaSpec:
-    """A voltage gain in dB. Applied AFTER thermal noise, always."""
+    """A voltage gain in dB. Applied AFTER thermal noise, always.
+
+    The gain is the one frontend scalar whose derivative would be perfectly
+    well defined - it is a smooth multiplicative factor on the whole signal -
+    and it is refused anyway, because the native operator has no slot for it.
+    Refusing it is the honest state; ``float()``-ing a marked tensor and
+    returning ``grad = None`` is not.
+    """
 
     gain_db: float = 0.0
+
+    def __post_init__(self) -> None:
+        require_host_floats("LnaSpec", _LNA_REASON, gain_db=self.gain_db)
 
     @property
     def voltage_gain(self) -> float:
@@ -247,6 +336,13 @@ class AgcSpec:
     max_gain_db: float = 60.0
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "AgcSpec",
+            _AGC_REASON,
+            target_rms=self.target_rms,
+            min_gain_db=self.min_gain_db,
+            max_gain_db=self.max_gain_db,
+        )
         if not self.target_rms > 0.0:
             raise ValueError("target_rms must be positive")
         if self.mode not in AGC_MODES:
@@ -277,6 +373,9 @@ class AdcSpec:
     full_scale: float
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "AdcSpec", _ADC_REASON, bits=self.bits, full_scale=self.full_scale
+        )
         if self.bits < 1 or self.bits > 30:
             raise ValueError("bits must lie in [1, 30]")
         if not self.full_scale > 0.0:

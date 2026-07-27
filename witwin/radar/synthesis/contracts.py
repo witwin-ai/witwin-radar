@@ -33,7 +33,34 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 import torch
 
+from ..host_parameters import require_host_floats
 from ..paths.contracts import JOIN_MODES, JoinMode, RadarPathBatch, RadarPathTopology
+
+
+#: Why no waveform spec scalar is differentiable, stated once and quoted by all
+#: three specs plus the Dirichlet plan.
+#:
+#: A waveform spec DECLARES a transmission: how fast the ramp sweeps, how far
+#: apart the subcarriers sit, how long the pulse is, where the gate opens. None
+#: of that is scene state - it is the radar's own configuration, chosen before
+#: a frame exists, and the kernels consume every one of these numbers by value
+#: on the host. The differentiable inputs of this family are the per-row
+#: tensors ``total_delay_s``, ``delay_rate`` and the complex weight, and they
+#: are covered leaf by leaf.
+#:
+#: Waveform-parameter optimisation is a real thing to want, and the reason it
+#: is not simply enabled is that a spec scalar changes the SHAPE of the output
+#: as often as its value: ``num_samples``, ``num_subcarriers`` and
+#: ``pulse_width_s`` all move a sampling grid, and a derivative taken across a
+#: grid change is not the derivative of a fixed function. That is a modelling
+#: decision with its own ADR, not a slot to open quietly.
+WAVEFORM_SPEC_REASON = (
+    "a waveform spec DECLARES the transmission - the ramp, the subcarrier "
+    "grid, the pulse, the gate - and is host configuration rather than scene "
+    "state. Its kernels read every scalar here by value on the host, and the "
+    "differentiable inputs of this family are the per-row delay, delay rate "
+    "and complex weight."
+)
 
 
 #: Exact SI definition, in metres per second. Named here because the FMCW spec
@@ -201,6 +228,21 @@ class FmcwBeatSpec:
     num_rx: int = 1
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "FmcwBeatSpec",
+            WAVEFORM_SPEC_REASON,
+            num_samples=self.num_samples,
+            num_chirps=self.num_chirps,
+            sample_period_s=self.sample_period_s,
+            chirp_period_s=self.chirp_period_s,
+            slope_hz_per_s=self.slope_hz_per_s,
+            t_start_s=self.t_start_s,
+            reference_frequency_hz=self.reference_frequency_hz,
+            carrier_hz=self.carrier_hz,
+            carrier_rate_hz=self.carrier_rate_hz,
+            num_tx=self.num_tx,
+            num_rx=self.num_rx,
+        )
         if self.num_samples < 1:
             raise ValueError("num_samples must be positive")
         if self.num_chirps < 1:
@@ -425,6 +467,18 @@ class OfdmCfrSpec:
     subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "OfdmCfrSpec",
+            WAVEFORM_SPEC_REASON,
+            num_subcarriers=self.num_subcarriers,
+            num_symbols=self.num_symbols,
+            subcarrier_spacing_hz=self.subcarrier_spacing_hz,
+            cyclic_prefix_s=self.cyclic_prefix_s,
+            reference_frequency_hz=self.reference_frequency_hz,
+            max_expected_delay_s=self.max_expected_delay_s,
+            carrier_hz=self.carrier_hz,
+            carrier_rate_hz=self.carrier_rate_hz,
+        )
         if self.num_subcarriers < 1:
             raise ValueError("num_subcarriers must be positive")
         if self.num_symbols < 1:
@@ -666,6 +720,21 @@ class PulsedEchoSpec:
     pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "PulsedEchoSpec",
+            WAVEFORM_SPEC_REASON,
+            num_pulses=self.num_pulses,
+            num_samples=self.num_samples,
+            sample_period_s=self.sample_period_s,
+            pri_s=self.pri_s,
+            range_gate_start_s=self.range_gate_start_s,
+            pulse_width_s=self.pulse_width_s,
+            bandwidth_hz=self.bandwidth_hz,
+            reference_frequency_hz=self.reference_frequency_hz,
+            max_expected_delay_rate=self.max_expected_delay_rate,
+            carrier_hz=self.carrier_hz,
+            carrier_rate_hz=self.carrier_rate_hz,
+        )
         if self.num_pulses < 1:
             raise ValueError("num_pulses must be positive")
         if self.num_samples < 1:

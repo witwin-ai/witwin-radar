@@ -34,6 +34,9 @@ from dataclasses import dataclass
 import torch
 from torch.autograd.function import once_differentiable
 
+from ..host_parameters import require_host_floats
+from .contracts import WAVEFORM_SPEC_REASON
+
 
 _OPS = None
 
@@ -91,6 +94,20 @@ class DirichletSpectrumSpec:
     slope_hz_per_s: float
     t_start_s: float
     tau_is_seconds: int = 0
+
+    def __post_init__(self) -> None:
+        require_host_floats(
+            "DirichletSpectrumSpec",
+            WAVEFORM_SPEC_REASON,
+            n=self.n,
+            k0_per_meter=self.k0_per_meter,
+            num_bins=self.num_bins,
+            n_fft=self.n_fft,
+            fc=self.fc,
+            slope_hz_per_s=self.slope_hz_per_s,
+            t_start_s=self.t_start_s,
+            tau_is_seconds=self.tau_is_seconds,
+        )
 
 
 def _zeros_like_weight(weight: torch.Tensor) -> torch.Tensor:
