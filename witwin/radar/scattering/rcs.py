@@ -41,19 +41,62 @@ SPEED_OF_LIGHT_M_PER_S = 299792458.0
 RCS_AMPLITUDE_LAW = "sqrt(4*pi*sigma_m2)/wavelength_m"
 
 
-def rcs_amplitude(sigma_m2: float, wavelength_m: float) -> float:
+def rcs_amplitude(
+    sigma_m2: float | torch.Tensor, wavelength_m: float
+) -> float | torch.Tensor:
     """``sqrt(4 pi sigma) / lambda``, the dimensionless target strength.
 
     Dimensionless is the whole content of the normalisation. ``S`` carries no
     propagation phase and no spreading - both belong to Channel transport, once
     per leg - so what is left of a radar cross section after the two
     ``lam/(4 pi d)`` factors have been accounted for is a pure ratio.
+
+    ``sigma_m2`` may be a 0-dim tensor, and then the returned amplitude carries
+    its graph. A radar cross section is the canonical inverse-design leaf -
+    "how big does this target have to look" - and it is the ONE configuration
+    scalar in this package that is genuine scene state rather than a device or
+    waveform declaration, which is why it is supported where
+    :mod:`witwin.radar.host_parameters` refuses everything else.
+
+    Two things this is NOT. It is not hot-path physics: it runs once per
+    response, off the per-path loop, and produces a single number that the
+    response broadcasts. And it is not a second numerical owner: the ``sqrt``
+    is result CONSTRUCTION, and every per-path product downstream of it is
+    still evaluated by a native kernel. The mechanism is recorded as
+    ``torch-orchestration`` in the capability matrix for exactly that reason.
+
+    The derivative is the elementary one, and a test asserts it through the
+    whole chain rather than only here::
+
+        d(amplitude)/d(sigma) = 0.5 * sqrt(4 pi) / (lambda * sqrt(sigma))
+                              = 0.5 * amplitude / sigma
+
+    **It is unbounded at ``sigma = 0`` and that is a property of the
+    parameterisation, not a defect to clamp.** The tensor route deliberately
+    does NOT range check its input: a value check is a host read, and this
+    module is inside the import boundary's no-host-observation scan precisely
+    so that a per-frame construction cannot hide a synchronisation. A
+    non-positive tensor therefore produces ``nan`` or ``inf``, which
+    propagates visibly through the entire cube rather than becoming a
+    plausible number. An optimiser that has to reach zero should drive the
+    already-supported ``amplitude`` leaf, where the map is linear, or carry
+    ``log sigma``. The host-float route keeps its exact old behaviour,
+    including the negative-value refusal, because there is no derivative there
+    to be wrong about.
     """
 
-    if sigma_m2 < 0.0:
-        raise ValueError("sigma_m2 is a radar cross section in square metres and cannot be negative")
     if not wavelength_m > 0.0:
         raise ValueError("wavelength_m must be positive")
+    if isinstance(sigma_m2, torch.Tensor):
+        if sigma_m2.ndim != 0:
+            raise ValueError(
+                "a tensor sigma_m2 must be a 0-dim scalar, got rank "
+                f"{sigma_m2.ndim}; ScalarRcsResponse is one complex number per "
+                "target, broadcast across that target's rows"
+            )
+        return torch.sqrt(4.0 * math.pi * sigma_m2) / float(wavelength_m)
+    if sigma_m2 < 0.0:
+        raise ValueError("sigma_m2 is a radar cross section in square metres and cannot be negative")
     return math.sqrt(4.0 * math.pi * float(sigma_m2)) / float(wavelength_m)
 
 
@@ -103,7 +146,7 @@ class ScalarRcsResponse:
     @classmethod
     def from_rcs(
         cls,
-        sigma_m2: float,
+        sigma_m2: float | torch.Tensor,
         *,
         reference_frequency_hz: float,
         phase_rad: float = 0.0,
@@ -118,14 +161,50 @@ class ScalarRcsResponse:
         cross section must come through here rather than guess the
         normalisation: the guess that omits ``4 pi / lam^2`` is 58 dB out at
         77 GHz and looks entirely plausible on a relative plot.
+
+        **A 0-dim ``sigma_m2`` tensor makes the cross section itself a leaf.**
+        The amplitude is then ``sqrt(4 pi sigma) / lambda`` with its graph
+        intact, so the derivative composes with everything the already-covered
+        ``amplitude`` leaf reaches: the join, the waveform kernels, the cube.
+        This is the inverse-design question a radar caller actually asks - how
+        large does this target have to be - and before Phase 9 it could not be
+        asked at all, because the amplitude was formed by ``math.sqrt`` on the
+        host and no refusal said so.
+
+        Two consequences of the tensor route, both deliberate:
+
+        * ``requires_grad=True`` is REFUSED with a tensor cross section. The
+          leaf is ``sigma_m2``, which the caller already marked; marking the
+          derived amplitude as well is not expressible - it is not a leaf - and
+          Torch's own error for it names neither this constructor nor the law.
+        * the placement follows the tensor. ``device`` selects where a
+          host-float response is built and cannot move a live one without
+          breaking its graph, so the phase is placed beside the amplitude.
         """
 
         wavelength_m = SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz)
-        return cls.from_values(
-            rcs_amplitude(sigma_m2, wavelength_m),
-            phase_rad,
-            device=device,
-            requires_grad=requires_grad,
+        amplitude = rcs_amplitude(sigma_m2, wavelength_m)
+        if not isinstance(amplitude, torch.Tensor):
+            return cls.from_values(
+                amplitude,
+                phase_rad,
+                device=device,
+                requires_grad=requires_grad,
+            )
+        if requires_grad:
+            raise ValueError(
+                "requires_grad=True is not meaningful with a tensor sigma_m2: "
+                "the amplitude is derived from it and is not a leaf, so there "
+                "is nothing here to mark. Mark sigma_m2 itself - the "
+                "derivative then reaches this response through "
+                "RCS_AMPLITUDE_LAW - or use from_values to author the "
+                "dimensionless strength as its own leaf."
+            )
+        return cls(
+            amplitude=amplitude,
+            phase_rad=torch.tensor(
+                float(phase_rad), dtype=torch.float32, device=amplitude.device
+            ),
         )
 
     @property
