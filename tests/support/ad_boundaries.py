@@ -305,14 +305,195 @@ def _frontend(device: str = "cuda") -> Boundary:
     return Boundary("frontend", "frontend.chain", signal, loss)
 
 
-#: The six boundaries the Phase-9 higher-order rejection is asserted at, by
-#: name. Built on demand rather than eagerly: each one costs a CUDA allocation
-#: and a consumer usually wants one.
+def _aspect(device: str = "cuda") -> Boundary:
+    """The aspect response, driven from its INBOUND direction table.
+
+    The leaf is ``dir_in`` rather than a response parameter because that is the
+    edge both the tape ledger and the higher-order rule are about: the two
+    direction tables are the legs' own aliased tensors, so this boundary is the
+    one place a geometry gradient enters the scatter response.
+    """
+
+    from witwin.radar.paths.two_way import TwoWayComposer
+    from witwin.radar.scattering import AspectScatterResponse
+
+    sources, sites, sinks = (0,), (10, 11), (20,)
+    inbound = fx.frozen_leg(fx.leg_rows(sources, sites, (0,)), device=device)
+    outbound = fx.frozen_leg(fx.leg_rows(sites, sinks, (0,)), device=device)
+    composer = TwoWayComposer.freeze(
+        inbound,
+        outbound,
+        torch.tensor(sites, dtype=torch.int64, device=device),
+        radar_source_ids=sources,
+        radar_sink_ids=sinks,
+        reference_frequency_hz=REFERENCE_FREQUENCY_HZ,
+    )
+
+    def unit(rows: int, seed: int, sign: float) -> torch.Tensor:
+        generator = torch.Generator().manual_seed(seed)
+        raw = torch.rand(rows, 3, generator=generator, dtype=torch.float32)
+        # Well inside the illuminated cone. A direction on the clamp boundary
+        # has an exactly zero lobe derivative on one side, which would make a
+        # first-order assertion here pass on a number that means nothing.
+        vectors = torch.stack(
+            [0.7 + 0.3 * raw[:, 0], 0.5 * (raw[:, 1] - 0.5), 0.5 * (raw[:, 2] - 0.5)],
+            dim=1,
+        )
+        vectors = sign * vectors / torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
+        return vectors.to(device)
+
+    rows_in = composer.inbound_row_count
+    rows_out = composer.outbound_row_count
+    dir_in = unit(rows_in, 71, -1.0)
+    dir_out = unit(rows_out, 72, 1.0)
+    site_count = composer.site_count
+    response = AspectScatterResponse(
+        axis=unit(site_count, 73, 1.0),
+        amplitude=torch.tensor(
+            [1.3 + 0.4 * index for index in range(site_count)],
+            dtype=torch.float32,
+            device=device,
+        ),
+        phase_rad=torch.tensor(
+            [0.35 + 0.25 * index for index in range(site_count)],
+            dtype=torch.float32,
+            device=device,
+        ),
+        exponent=2.0,
+        coherent_interval_s=1.0e-3,
+    )
+    tau_in, _, c_in = fx.payload(rows_in, seed=201, device=device)
+    tau_out, _, c_out = fx.payload(rows_out, seed=202, device=device)
+    row_valid = torch.ones(composer.path_count, dtype=torch.int32, device=device)
+
+    def loss(leaf: torch.Tensor) -> torch.Tensor:
+        inbound_batch = fx.leg_batch(
+            tau_in.to(torch.float32), c_in.to(torch.complex64), direction=leaf
+        )
+        outbound_batch = fx.leg_batch(
+            tau_out.to(torch.float32), c_out.to(torch.complex64), direction=dir_out
+        )
+        s_re, s_im = response.evaluate_rows(
+            composer, inbound_batch, outbound_batch, row_valid
+        )
+        return (s_re.square() + s_im.square()).sum()
+
+    return Boundary("aspect", "scattering.aspect", dir_in, loss)
+
+
+#: The Dirichlet family's own configuration. A modest carrier and a short
+#: transform: the question at this boundary is a contract question, and a
+#: production-sized frame answers it no better while costing every consumer
+#: the time.
+_DIRICHLET_NUM_BINS = 24
+_DIRICHLET_N_FFT = 48
+_DIRICHLET_SLOPE_HZ_PER_S = 5.0e13
+_DIRICHLET_SAMPLE_RATE_HZ = 5.0e6
+
+
+def _dirichlet_spec():
+    from witwin.radar.synthesis.dirichlet_spectrum import DirichletSpectrumSpec
+
+    k0 = (
+        (_DIRICHLET_SLOPE_HZ_PER_S * 2.0 / 299792458.0)
+        * _DIRICHLET_N_FFT
+        / _DIRICHLET_SAMPLE_RATE_HZ
+    )
+    return DirichletSpectrumSpec(
+        n=(_DIRICHLET_NUM_BINS - 1) / 2,
+        k0_per_meter=k0,
+        num_bins=_DIRICHLET_NUM_BINS,
+        n_fft=_DIRICHLET_N_FFT,
+        fc=0.0,
+        slope_hz_per_s=_DIRICHLET_SLOPE_HZ_PER_S,
+        t_start_s=6.0e-6,
+        tau_is_seconds=0,
+    )
+
+
+def _dirichlet(device: str = "cuda") -> Boundary:
+    """The chunked Dirichlet spectrum, driven from its one-way distance table."""
+
+    from witwin.radar.synthesis.dirichlet_spectrum import chunked_spectra
+
+    spec = _dirichlet_spec()
+    distance = torch.tensor([1.25, 2.5, 3.75, 4.5], dtype=torch.float32, device=device)
+    a_re = torch.tensor([0.7, -0.4, 1.0, 0.25], dtype=torch.float32, device=device)
+    a_im = torch.tensor([-0.3, 0.85, 0.0, 0.6], dtype=torch.float32, device=device)
+
+    def loss(leaf: torch.Tensor) -> torch.Tensor:
+        return (
+            chunked_spectra(leaf, a_re, a_im, spec=spec, targets_per_spectrum=2)
+            .abs()
+            .square()
+            .sum()
+        )
+
+    return Boundary("dirichlet", "synthesis.dirichlet_spectrum", distance, loss)
+
+
+def _mimo_linear(device: str = "cuda") -> Boundary:
+    """The fused TDM-frame MIMO launch - the family's second tape owner.
+
+    It saves ``d_rate`` as well as ``d0``, so it is a genuinely different
+    context from :func:`_dirichlet` rather than the same one at another size.
+    """
+
+    from witwin.radar.synthesis.dirichlet_spectrum import (
+        MimoLinearFramePlan,
+        mimo_linear_spectra,
+    )
+
+    num_tx, num_rx, targets = 2, 2, 3
+    pairs = num_tx * num_rx
+    rows = pairs * targets
+    plan = MimoLinearFramePlan(
+        targets_per_pair=targets,
+        num_pairs=pairs,
+        chirp_per_frame=4,
+        chirp_period_s=6.0e-5,
+        num_tx=num_tx,
+        range_loss_update=True,
+    )
+    spec = _dirichlet_spec()
+    generator = torch.Generator().manual_seed(613)
+
+    def sample() -> torch.Tensor:
+        return torch.rand(rows, generator=generator, dtype=torch.float32)
+
+    distance = (2.0 + 6.0 * sample()).to(device)
+    rate = (sample() - 0.5).to(device)
+    a_re = (sample() - 0.5).to(device)
+    a_im = (sample() - 0.5).to(device)
+
+    def loss(leaf: torch.Tensor) -> torch.Tensor:
+        return (
+            mimo_linear_spectra(leaf, rate, a_re, a_im, spec=spec, plan=plan)
+            .abs()
+            .square()
+            .sum()
+        )
+
+    return Boundary("mimo_linear", "synthesis.dirichlet_spectrum", distance, loss)
+
+
+#: The nine boundaries the Phase-9 higher-order rejection and the tape/budget
+#: ledger are both asserted at, by name. Built on demand rather than eagerly:
+#: each one costs a CUDA allocation and a consumer usually wants one.
+#:
+#: There are nine names and TEN tape owners: ``frontend`` runs two contexts -
+#: the noise phase and the AGC gain - in one call. Every
+#: ``torch.autograd.Function`` in the package is reachable from this table,
+#: which is what lets ``test_phase9_backward_budget.py`` assert that the ledger
+#: enumerates all of them rather than the ones someone remembered.
 BUILDERS = {
     "two_way": _two_way,
+    "aspect": _aspect,
     "fmcw": _fmcw,
     "ofdm": _ofdm,
     "pulsed": _pulsed,
+    "dirichlet": _dirichlet,
+    "mimo_linear": _mimo_linear,
     "sensor_weight": _sensor_weight,
     "frontend": _frontend,
 }
