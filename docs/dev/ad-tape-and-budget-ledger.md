@@ -16,6 +16,20 @@ prebuilt loaded (never a JIT rebuild), on an NVIDIA GeForce RTX 5080 that
 `nvidia-smi` reported at 2-3 percent utilization and 4.7-5.2 GB in use by
 desktop processes throughout. Nothing here is an estimate.
 
+**This document is parsed, not just read.** A mutation run falsified the join
+bytes formula, its measured value and a quoted wall-time budget by factors of
+two to ten and nothing in the tree noticed: the budgets themselves are pinned by
+constants in `tests/test_phase9_backward_budget.py` and by the fixture-derived
+band law, so no enforcement was weakened, but the prose was free to drift away
+from them. Three tests in that module now read this file -
+`::test_the_ledger_bytes_formula_is_the_law_this_module_measures` evaluates the
+join formula below at the fixture's own row counts and compares it with bytes
+read out of a live context, and
+`::test_the_ledger_budget_table_quotes_the_live_constants` /
+`::test_the_ledger_channel_accounting_table_quotes_the_live_constants` compare
+the two tables against the module's constants. Editing a number here without
+editing the constant fails.
+
 ## How to read a row
 
 - **saved tensors** are the literal names, in save order, so the row is

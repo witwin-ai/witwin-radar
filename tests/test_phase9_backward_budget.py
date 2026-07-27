@@ -53,6 +53,7 @@ widen a factor.
 
 from __future__ import annotations
 
+import pathlib
 import statistics
 
 import pytest
@@ -651,3 +652,119 @@ def test_a_primal_only_reevaluate_builds_no_tape_at_all(pipeline):
     for leg in (inbound, outbound):
         assert leg.diagnostics.ad_companion_launches == 0
         assert leg.diagnostics.ad_tape_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. The ledger document says what this module measures
+# ---------------------------------------------------------------------------
+
+#: The prose half of these budgets. A mutation run falsified its bytes formula,
+#: its measured value and a quoted budget by factors of two to ten and nothing
+#: in the tree noticed: the budgets are pinned by the constants above and by the
+#: fixture-derived band law, so no enforcement was weakened, but the document
+#: that explains them was free to drift. That is the exact rot the capability
+#: matrix has a parser for, so the ledger gets one too.
+LEDGER = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "docs"
+    / "dev"
+    / "ad-tape-and-budget-ledger.md"
+)
+
+
+def _ledger_row(label: str) -> list[str]:
+    """Cells of the first ledger table row whose first cell is ``label``."""
+
+    for line in LEDGER.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and cells[0].strip("`") == label:
+            return cells
+    raise AssertionError(f"the ledger has no row for {label!r}")
+
+
+def _evaluate(formula: str, **symbols: int) -> int:
+    """Evaluate a documented symbolic bytes formula at one fixture point."""
+
+    return int(eval(formula, {"__builtins__": {}}, symbols))  # noqa: S307
+
+
+def test_the_ledger_bytes_formula_is_the_law_this_module_measures(narrow):
+    """The documented join formula, evaluated against a live measurement.
+
+    Checking the formula against the ledger's own quoted total would only prove
+    the document is self-consistent - a two-cell edit stays invisible. So the
+    formula is taken from the document, evaluated at the fixture's own row
+    counts, and compared with bytes read out of a real context.
+    """
+
+    formula = _ledger_row("two-way join")[3].strip("`")
+    contexts, total, _ = _band_tape(_banded(narrow, 1), 1)
+    measured_per_context = total // contexts
+
+    documented = _evaluate(
+        formula,
+        R_in=narrow.composer.inbound_row_count,
+        R_out=narrow.composer.outbound_row_count,
+        S=narrow.composer.site_count,
+        K=narrow.composer.path_count,
+    )
+    assert documented == measured_per_context, (documented, measured_per_context)
+
+    # The ledger's own two quoted evaluations of that formula, both checked
+    # rather than trusted: the ten-owner table's small fixture and the band
+    # section's pinned fixture.
+    small = _ledger_row("two-way join")[4]
+    assert small.startswith(f"{_evaluate(formula, R_in=2, R_out=2, S=2, K=2)} B"), small
+    assert f"= {measured_per_context} B" in LEDGER.read_text(encoding="utf-8")
+
+
+def test_the_ledger_budget_table_quotes_the_live_constants() -> None:
+    """Every number in the budget table is one of this module's constants."""
+
+    wall = _ledger_row("full FMCW pipeline, BACKWARD wall time")
+    assert wall[1].startswith(f"{MEASURED_PIPELINE_BACKWARD_MS} ms"), wall
+    assert wall[2] == f"{PIPELINE_BACKWARD_BUDGET_MS:.3f} ms", wall
+    assert wall[3] == f"{BACKWARD_TIME_HEADROOM:.2f}x", wall
+
+    memory = _ledger_row("full FMCW pipeline, backward peak ALLOCATION")
+    assert memory[1].startswith(f"{MEASURED_PIPELINE_BACKWARD_MB:.4f} MB"), memory
+    assert memory[2] == f"{PIPELINE_BACKWARD_PEAK_BUDGET_MB:.4f} MB", memory
+    assert memory[3] == f"{BACKWARD_MEMORY_HEADROOM:.2f}x", memory
+
+    ratio = _ledger_row(
+        "Channel `reevaluate`, two legs, reverse cost as a RATIO to the forward"
+    )
+    low, high = MEASURED_REEVALUATE_VJP_RATIO_RANGE
+    assert ratio[1].startswith(f"{low} to {high}"), ratio
+    assert ratio[2].startswith(f"{REEVALUATE_VJP_RATIO_BUDGET}"), ratio
+
+
+def test_the_ledger_channel_accounting_table_quotes_the_live_constants() -> None:
+    """The ADR-043 half of the ledger, pinned to the same constants."""
+
+    text = LEDGER.read_text(encoding="utf-8")
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in text.splitlines()
+        if line.strip().startswith("| `reevaluate`")
+    ]
+    accounting = {
+        (row[0], row[1].strip("`")): (int(row[3]), int(row[4]))
+        for row in rows
+        if len(row) == 5
+    }
+    assert accounting, "the Channel accounting table lost its rows"
+
+    launches = {value[0] for key, value in accounting.items() if key[1] == "vjp"}
+    assert launches == {REEVALUATE_AD_LAUNCHES_PER_LEG}, accounting
+    tapes = {value[1] for key, value in accounting.items() if key[1] == "vjp"}
+    assert tapes == {
+        REEVALUATE_INBOUND_TAPE_BYTES,
+        REEVALUATE_OUTBOUND_TAPE_BYTES,
+    }, accounting
+    for key, value in accounting.items():
+        if key[1] == "none":
+            assert value == (0, 0), accounting
