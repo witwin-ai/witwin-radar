@@ -137,25 +137,27 @@ def test_the_migrated_expressions_did_not_come_back_under_another_owner():
 #:
 #: Two kinds, and the difference matters:
 #:
-#: * FREEZE-TIME SETUP, permanent. ``_normalize_rows``, ``_set_pose_fields``
-#:   and ``_world_from_local_matrix`` normalise a pose or an array layout once
-#:   per radar or once per ``set_pose``. They are not a per-path hot path and
-#:   work item 8 does not name them.
-#: * WORK-ITEM-8 SURVIVORS, debt. One is left: ``_apply_phase_noise`` belongs
-#:   to the legacy ``NoiseModelRuntime`` that ``FrontendChain`` replaced, and
-#:   deleting those runtimes is the commit after this one. ``Radar.waveform``
-#:   was the other - the Torch chirp ``exp(j 2 pi (fc t + S t^2 / 2))`` - and
-#:   it is gone: it was held alive only because ``tests/reference/dsp_oracles.py``
-#:   needed it to build the independent time-domain reference, and that oracle
-#:   died with the Dirichlet route it checked.
+#: * FREEZE-TIME SETUP, permanent. ``_set_pose_fields`` and
+#:   ``_world_from_local_matrix`` orthonormalise a pose once per radar or once
+#:   per ``set_pose``. They are not a per-path hot path and work item 8 does
+#:   not name them.
+#: * WORK-ITEM-8 SURVIVORS, debt. There are NONE left. There were two, and
+#:   naming them here is what a closed debt looks like.
+#:   ``Radar.waveform`` was the Torch chirp ``exp(j 2 pi (fc t + S t^2 / 2))``,
+#:   held alive only because ``tests/reference/dsp_oracles.py`` needed it to
+#:   build the independent time-domain reference; both died with the Dirichlet
+#:   route they belonged to. ``_apply_phase_noise`` belonged to the legacy
+#:   ``NoiseModelRuntime`` that ``FrontendChain`` replaced, and it died with
+#:   that runtime. What is left below is freeze-time pose setup only.
+#:
+#: ``_normalize_rows`` left the FREEZE-TIME group at the same time: its only
+#: caller was ``PolarizationRuntime.from_config``.
 #:
 #: Equality, not containment. A new Torch physics expression in the facade is a
 #: failure, and so is a stale entry for one that was finally deleted.
 RADAR_FACADE_TORCH_PHYSICS = {
-    ("_normalize_rows", "torch.linalg.norm"),
     ("_set_pose_fields", "torch.linalg.norm"),
     ("_world_from_local_matrix", "torch.linalg.norm"),
-    ("_apply_phase_noise", "torch.polar"),
 }
 
 

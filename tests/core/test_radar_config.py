@@ -39,66 +39,44 @@ class TestRadarConfigSchema:
         assert radar_config.antenna_pattern["x_values"][1] == pytest.approx(1.0)
         assert radar_config.antenna_pattern["y_values"] == [0.5, 1.0, 0.5]
 
-    def test_noise_model_round_trip_from_dict(self):
-        radar_config = RadarConfig.from_dict(
+    def test_polarization_round_trip_through_the_sensor_block(self):
+        """The named directions still resolve; the FLAT key no longer exists.
+
+        Phase 11 deleted ``RadarConfig.polarization`` with the runtime that read
+        it - a second projection of a field Channel has already projected onto
+        each endpoint's declared polarization. ``validate_polarization_config``
+        survives because the sensor BLOCK still declares one, for the native
+        kernel mode that implements the legacy projection, so the round trip is
+        asserted where it still happens.
+        """
+
+        from witwin.radar.validation import validate_polarization_config
+
+        polarization = validate_polarization_config(
             {
-                **STANDARD_CONFIG,
-                "noise_model": {
-                    "thermal": {"std": 0.01},
-                    "quantization": {"bits": 12, "full_scale": 0.8},
-                    "phase": {"std": 1e-3},
-                    "seed": 7,
-                },
-            }
+                "tx": "horizontal",
+                "rx": ["vertical", "horizontal", "vertical", "horizontal"],
+                "reflection_flip": False,
+            },
+            num_tx=STANDARD_CONFIG["num_tx"],
+            num_rx=STANDARD_CONFIG["num_rx"],
         )
 
-        assert radar_config.noise_model is not None
-        assert radar_config.noise_model["thermal"]["std"] == pytest.approx(0.01)
-        assert radar_config.noise_model["quantization"]["bits"] == 12
-        assert radar_config.noise_model["phase"]["std"] == pytest.approx(1e-3)
-        assert radar_config.noise_model == {
-            "thermal": {"std": 0.01},
-            "quantization": {"bits": 12, "full_scale": 0.8},
-            "phase": {"std": 0.001},
-            "seed": 7,
-        }
+        assert polarization["tx"][0] == pytest.approx((1.0, 0.0, 0.0))
+        assert polarization["rx"][0] == pytest.approx((0.0, 1.0, 0.0))
+        assert polarization["rx"][1] == pytest.approx((1.0, 0.0, 0.0))
+        assert polarization["reflection_flip"] is False
 
-    def test_polarization_round_trip_from_dict(self):
-        radar_config = RadarConfig.from_dict(
-            {
-                **STANDARD_CONFIG,
-                "polarization": {
-                    "tx": "horizontal",
-                    "rx": ["vertical", "horizontal", "vertical", "horizontal"],
-                    "reflection_flip": False,
-                },
-            }
-        )
+    def test_the_flat_record_no_longer_carries_the_three_deleted_blocks(self):
+        """A dataclass field is the claim; asserting its absence is the check."""
 
-        assert radar_config.polarization is not None
-        assert radar_config.polarization["tx"][0] == pytest.approx((1.0, 0.0, 0.0))
-        assert radar_config.polarization["rx"][0] == pytest.approx((0.0, 1.0, 0.0))
-        assert radar_config.polarization["rx"][1] == pytest.approx((1.0, 0.0, 0.0))
-        assert radar_config.polarization["reflection_flip"] is False
+        import dataclasses
 
-    def test_receiver_chain_round_trip_from_dict(self):
-        radar_config = RadarConfig.from_dict(
-            {
-                **STANDARD_CONFIG,
-                "receiver_chain": {
-                    "reference_impedance_ohm": 75.0,
-                    "lna": {"gain_db": 24.0},
-                    "agc": {"target_rms": 0.2, "max_gain_db": 20.0, "min_gain_db": -10.0},
-                    "adc": {"bits": 12, "full_scale": 0.8},
-                },
-            }
-        )
-
-        assert radar_config.receiver_chain is not None
-        assert radar_config.receiver_chain["reference_impedance_ohm"] == pytest.approx(75.0)
-        assert radar_config.receiver_chain["lna"]["gain_db"] == pytest.approx(24.0)
-        assert radar_config.receiver_chain["agc"]["target_rms"] == pytest.approx(0.2)
-        assert radar_config.receiver_chain["adc"]["bits"] == 12
+        fields = {field.name for field in dataclasses.fields(RadarConfig)}
+        assert "noise_model" not in fields
+        assert "receiver_chain" not in fields
+        assert "polarization" not in fields
+        assert "frontend" in fields
 
     def test_missing_required_key_raises(self):
         broken = dict(STANDARD_CONFIG)
@@ -129,58 +107,15 @@ class TestRadarConfigSchema:
         with pytest.raises(ValueError, match="must contain exactly 3 entries"):
             RadarConfig.from_dict(broken)
 
-    def test_noise_model_requires_enabled_component(self):
-        broken = {
-            **STANDARD_CONFIG,
-            "noise_model": {
-                "seed": 3,
-            },
-        }
-        with pytest.raises(ValueError, match="must enable at least one"):
-            RadarConfig.from_dict(broken)
-
-    def test_quantization_full_scale_must_be_positive(self):
-        broken = {
-            **STANDARD_CONFIG,
-            "noise_model": {
-                "quantization": {"bits": 10, "full_scale": 0.0},
-            },
-        }
-        with pytest.raises(ValueError, match="must be positive"):
-            RadarConfig.from_dict(broken)
-
-    def test_receiver_chain_requires_enabled_stage(self):
-        broken = {
-            **STANDARD_CONFIG,
-            "receiver_chain": {},
-        }
-        with pytest.raises(ValueError, match="must enable at least one"):
-            RadarConfig.from_dict(broken)
-
-    def test_receiver_chain_agc_bounds_must_be_ordered(self):
-        broken = {
-            **STANDARD_CONFIG,
-            "receiver_chain": {
-                "agc": {
-                    "target_rms": 0.2,
-                    "min_gain_db": 10.0,
-                    "max_gain_db": 0.0,
-                }
-            },
-        }
-        with pytest.raises(ValueError, match="min_gain_db <= max_gain_db"):
-            RadarConfig.from_dict(broken)
-
     def test_polarization_requires_matching_rx_count(self):
-        broken = {
-            **STANDARD_CONFIG,
-            "polarization": {
-                "tx": "horizontal",
-                "rx": ["horizontal", "vertical"],
-            },
-        }
+        from witwin.radar.validation import validate_polarization_config
+
         with pytest.raises(ValueError, match="must contain exactly 4 entries"):
-            RadarConfig.from_dict(broken)
+            validate_polarization_config(
+                {"tx": "horizontal", "rx": ["horizontal", "vertical"]},
+                num_tx=STANDARD_CONFIG["num_tx"],
+                num_rx=STANDARD_CONFIG["num_rx"],
+            )
 
 
 class TestParameterFormulas:
@@ -303,79 +238,6 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
         device="cpu",
     )
     assert radar.antenna_pattern_kind == "separable"
-
-
-def test_radar_builds_runtime_noise_model(standard_config):
-    from witwin.radar import Radar
-
-    radar = Radar(
-        RadarConfig.from_dict({
-            **STANDARD_CONFIG,
-            "noise_model": {
-                "thermal": {"std": 0.01},
-                "seed": 5,
-            },
-        }),
-        device="cpu",
-    )
-    assert radar.noise_model_config is not None
-    assert radar.noise_model is not None
-
-
-def test_radar_builds_runtime_polarization(standard_config):
-    from witwin.radar import Radar
-
-    radar = Radar(
-        RadarConfig.from_dict({
-            **STANDARD_CONFIG,
-            "polarization": {
-                "tx": "horizontal",
-                "rx": "vertical",
-            },
-        }),
-        device="cpu",
-    )
-    assert radar.polarization_config is not None
-    assert radar.polarization is not None
-    assert radar.polarization.tx_world.shape == (radar.config.num_tx, 3)
-    assert radar.polarization.rx_world.shape == (radar.config.num_rx, 3)
-
-
-def test_radar_builds_runtime_receiver_chain(standard_config):
-    from witwin.radar import Radar
-
-    radar = Radar(
-        RadarConfig.from_dict({
-            **STANDARD_CONFIG,
-            "receiver_chain": {
-                "lna": {"gain_db": 20.0},
-                "adc": {"bits": 10, "full_scale": 1.0},
-            },
-        }),
-        device="cpu",
-    )
-    assert radar.receiver_chain_config is not None
-    assert radar.receiver_chain is not None
-    # `radar.gain` is gone (Phase 6, hazard F4): it multiplied every path weight
-    # by sqrt(P R), including a Channel weight that already carries sqrt(P_tx).
-    # The amplitude survives under a name that says where it may be applied -
-    # the native sensor-weight owner's tx_power_mode, and nowhere else.
-    assert not hasattr(radar, "gain")
-    assert radar.transmit_amplitude == pytest.approx(radar.tx_voltage_rms)
-
-
-def test_radar_rejects_double_quantization(standard_config):
-    from witwin.radar import Radar
-
-    with pytest.raises(ValueError, match="cannot both be enabled"):
-        Radar(
-            RadarConfig.from_dict({
-                **STANDARD_CONFIG,
-                "noise_model": {"quantization": {"bits": 8, "full_scale": 1.0}},
-                "receiver_chain": {"adc": {"bits": 10, "full_scale": 1.0}},
-            }),
-            device="cpu",
-        )
 
 
 @pytest.mark.gpu

@@ -269,10 +269,8 @@ EXPECTED_FENCE_ALLOWANCES = set()
 #: What ``tests/test_phase6_no_torch_physics.py`` recorded as surviving Torch
 #: physics in the facade module. Phase 8 added nothing to it and must not.
 EXPECTED_FACADE_TORCH_PHYSICS = {
-    ("_normalize_rows", "torch.linalg.norm"),
     ("_set_pose_fields", "torch.linalg.norm"),
     ("_world_from_local_matrix", "torch.linalg.norm"),
-    ("_apply_phase_noise", "torch.polar"),
 }
 
 

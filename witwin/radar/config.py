@@ -65,7 +65,6 @@ import torch
 from .frontend.contracts import FrontendSpec
 from .sensors.contracts import (
     AntennaPatternSpec,
-    PolarizationSpec,
     SensorArraySpec,
     TxPowerSpec,
 )
@@ -479,7 +478,11 @@ class RadarSystemConfig:
                 array=SensorArraySpec.from_radar_config(config),
                 pattern=AntennaPatternSpec.from_config(config.antenna_pattern),
                 tx_power=TxPowerSpec.from_radar_config(config),
-                polarization=PolarizationSpec.from_config(config.polarization),
+                # The flat record dropped its `polarization` key in Phase 11
+                # with the runtime that read it. The block route
+                # (`validate_sensor_config`) still builds a `PolarizationSpec`,
+                # which is why the field survives on `SensorConfig`.
+                polarization=None,
             ),
             propagation=PropagationConfig(
                 reference_frequency_hz=float(config.fc),

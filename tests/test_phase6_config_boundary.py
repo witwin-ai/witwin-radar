@@ -113,12 +113,12 @@ def _populated_config():
     from witwin.radar.config import RadarSystemConfig
     from witwin.radar.validation import validate_frontend_config, validate_radar_config
 
-    flat = validate_radar_config(
-        {
-            **STANDARD_CONFIG,
-            "polarization": {"tx": "vertical", "rx": "horizontal"},
-        }
-    )
+    # The flat record carried a `polarization` block until Phase 11, and this
+    # fixture set it because a boundary test on a minimal configuration proves
+    # nothing. That block is deleted; the sensor block is still populated
+    # through the antenna pattern and the transmit power, which is what the
+    # leak scan below reads.
+    flat = validate_radar_config(dict(STANDARD_CONFIG))
     frontend = validate_frontend_config(
         {
             "port": {"reference_impedance_ohm": 50.0},
@@ -617,31 +617,3 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
         radar.synthesize(
             batch, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
         )
-
-
-def test_a_frontend_block_and_a_legacy_runtime_cannot_both_be_configured():
-    """Two chains would be two answers about where the LNA sits.
-
-    The legacy pair could not say this about itself - that is the whole reason
-    the frontend block exists - so the refusal lives where the two meet.
-    """
-
-    from witwin.radar import RadarConfig
-    from witwin.radar.radar import Radar
-    from witwin.radar.validation import validate_frontend_config, validate_radar_config
-
-    from conftest import MINIMAL_CONFIG
-
-    flat = validate_radar_config(
-        {**MINIMAL_CONFIG, "noise_model": {"thermal": {"std": 1e-6}}}
-    )
-    frontend = validate_frontend_config(
-        {"noise": {"noise_figure_db": 3.0, "bandwidth_hz": 1e6}}
-    )
-    import dataclasses
-
-    with pytest.raises(ValueError, match="frontend replaces"):
-        Radar._validate_runtime_config(
-            dataclasses.replace(flat, frontend=frontend)
-        )
-    assert isinstance(flat, RadarConfig)

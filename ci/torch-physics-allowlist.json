@@ -14,10 +14,14 @@
   ],
   "fence_allowances": [],
   "radar_facade_torch_physics": [
-    ["_normalize_rows", "torch.linalg.norm"],
-    ["_set_pose_fields", "torch.linalg.norm"],
-    ["_world_from_local_matrix", "torch.linalg.norm"],
-    ["_apply_phase_noise", "torch.polar"]
+    [
+      "_set_pose_fields",
+      "torch.linalg.norm"
+    ],
+    [
+      "_world_from_local_matrix",
+      "torch.linalg.norm"
+    ]
   ],
   "categories": {
     "freeze_time_pose": "Pose, axis and layout normalisation. Runs once per radar, per set_pose or per authored motion, never per path. R-ADR-007 lists Core scene authoring and typed-contract construction in the Torch allowlist.",
@@ -27,7 +31,6 @@
     "dsp_estimation": "Angle, Doppler or phase estimation over the cube. Behind the R-ADR-018 non-differentiability wall.",
     "result_assembly": "Per-response, not per-path, construction of a complex result whose per-path factors are all native.",
     "legacy_pose_authoring": "Body-model pose math on the legacy SMPL route, upstream of the Core/Channel compile boundary.",
-    "work_item_8_survivor": "Recorded DEBT. Phase-6 work item 8 names this expression and it has not moved into a kernel yet. Frozen so it cannot grow, and it may not be joined by a sibling.",
     "freeze_time_pattern_oracle": "Recorded DEBT found by this gate's widened scope. The production per-path antenna weight is the native sensor_weight family; this Torch route is the freeze-time and oracle evaluator."
   },
   "entries": [
@@ -132,15 +135,6 @@
     },
     {
       "module": "witwin/radar/radar.py",
-      "function": "_normalize_rows",
-      "call": "torch.linalg.norm",
-      "occurrences": 1,
-      "category": "freeze_time_pose",
-      "reason": "Row normalisation of an authored direction array. Already frozen by equality in tests/test_phase6_no_torch_physics.py::RADAR_FACADE_TORCH_PHYSICS.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/radar.py",
       "function": "_set_pose_fields",
       "call": "torch.linalg.norm",
       "occurrences": 3,
@@ -155,15 +149,6 @@
       "occurrences": 3,
       "category": "freeze_time_pose",
       "reason": "The same orthonormalisation when the world-from-local matrix is rebuilt.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/radar.py",
-      "function": "_apply_phase_noise",
-      "call": "torch.polar",
-      "occurrences": 1,
-      "category": "work_item_8_survivor",
-      "reason": "Belongs to the legacy NoiseModelRuntime that FrontendChain replaced. Deleting the legacy noise and receiver runtimes is a separate change with its own evidence.",
       "adr": "R-ADR-007"
     },
     {

@@ -10,7 +10,6 @@ diagnostics of the last completed frame.
 from __future__ import annotations
 
 import json
-import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -47,15 +46,19 @@ class RadarConfig:
     tx_loc: tuple[tuple[float, float, float], ...]
     rx_loc: tuple[tuple[float, float, float], ...]
     antenna_pattern: dict[str, Any] | None = None
-    noise_model: dict[str, Any] | None = None
-    polarization: dict[str, Any] | None = None
-    receiver_chain: dict[str, Any] | None = None
-    #: The Phase-6 receive chain: ONE ordered chain with ONE ADC and ONE seed
-    #: base, replacing the ``noise_model`` / ``receiver_chain`` pair whose
-    #: composite order was the caller's to choose. It is ``None`` by default -
-    #: noise is optional and OFF unless a caller asks for it, and every physics
-    #: test runs without it. Setting it alongside either legacy block is
-    #: refused: two chains would be two answers about where the LNA sits.
+    #: The receive chain: ONE ordered chain with ONE ADC and ONE seed base. It
+    #: replaced a ``noise_model`` / ``receiver_chain`` pair whose composite
+    #: order was the caller's to choose, and since Phase 11 it is the only one
+    #: - the pair is deleted, so there is no configuration in which two chains
+    #: can disagree about where the LNA sits. It is ``None`` by default: noise
+    #: is optional and OFF unless a caller asks for it, and every physics test
+    #: runs without it.
+    #:
+    #: ``polarization`` left this record with them. It described a second
+    #: projection of a field Channel has already projected onto each endpoint's
+    #: declared polarization, and its only reader was the deleted Dirichlet
+    #: route. The sensor block still carries a ``PolarizationSpec`` for the
+    #: kernel mode that implements it, which no production route enables.
     frontend: "FrontendSpec | None" = None
 
     @classmethod
@@ -74,173 +77,13 @@ def _target_from_position(position: torch.Tensor) -> torch.Tensor:
     return position + torch.tensor((0.0, 0.0, -1.0), dtype=torch.float32)
 
 
-def _component_dtype(signal: torch.Tensor) -> torch.dtype:
-    return torch.float64 if signal.dtype == torch.complex128 else torch.float32
-
-
-def _randn(shape, *, device, dtype, generator: torch.Generator | None) -> torch.Tensor:
-    if generator is None:
-        return torch.randn(shape, device=device, dtype=dtype)
-    return torch.randn(shape, device=device, dtype=dtype, generator=generator)
-
-
-def _normalize_rows(vectors: torch.Tensor) -> torch.Tensor:
-    return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
-
-
-def quantize_complex_signal(signal: torch.Tensor, *, bits: int, full_scale: float) -> torch.Tensor:
-    levels = 2 ** bits
-    step = (2.0 * full_scale) / (levels - 1)
-
-    def _quantize(component: torch.Tensor) -> torch.Tensor:
-        clipped = torch.clamp(component, min=-full_scale, max=full_scale)
-        code = torch.round((clipped + full_scale) / step)
-        return code * step - full_scale
-
-    real = _quantize(signal.real)
-    imag = _quantize(signal.imag)
-    return torch.complex(real, imag).to(dtype=signal.dtype)
-
-
-def db_to_voltage_gain(gain_db: float) -> float:
-    return 10.0 ** (float(gain_db) / 20.0)
-
-
-class ReceiverChainRuntime:
-    def __init__(self, config: dict[str, Any], *, device: str | torch.device):
-        self.config = config
-        self.device = device
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any], *, device: str | torch.device) -> "ReceiverChainRuntime":
-        return cls(config=config, device=device)
-
-    def apply(self, signal: torch.Tensor) -> torch.Tensor:
-        processed = signal
-        lna = self.config.get("lna")
-        agc = self.config.get("agc")
-        adc = self.config.get("adc")
-        if lna is not None:
-            processed = processed * db_to_voltage_gain(lna["gain_db"])
-        if agc is not None:
-            processed = self._apply_agc(processed, agc)
-        if adc is not None:
-            processed = quantize_complex_signal(
-                processed,
-                bits=adc["bits"],
-                full_scale=adc["full_scale"],
-            )
-        return processed
-
-    def _apply_agc(self, signal: torch.Tensor, config: dict) -> torch.Tensor:
-        real_dtype = signal.real.dtype
-        magnitude_sq = signal.real.square() + signal.imag.square()
-
-        if signal.ndim == 4 and config["mode"] == "per_rx":
-            rms = torch.sqrt(torch.clamp(magnitude_sq.mean(dim=(0, 2, 3), keepdim=True), min=1e-24))
-            target = torch.tensor(config["target_rms"], dtype=real_dtype, device=signal.device).view(1, 1, 1, 1)
-        else:
-            rms = torch.sqrt(torch.clamp(magnitude_sq.mean(), min=1e-24))
-            target = torch.tensor(config["target_rms"], dtype=real_dtype, device=signal.device)
-
-        gain = target / rms
-        min_gain = db_to_voltage_gain(config["min_gain_db"])
-        max_gain = db_to_voltage_gain(config["max_gain_db"])
-        gain = torch.clamp(gain, min=min_gain, max=max_gain)
-        return signal * gain.to(dtype=signal.dtype)
-
-
-class NoiseModelRuntime:
-    def __init__(self, config: dict[str, Any], *, device: str | torch.device):
-        self.config = config
-        self.device = device
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any], *, device: str | torch.device) -> "NoiseModelRuntime":
-        return cls(config=config, device=device)
-
-    def apply(self, signal: torch.Tensor, *, generator: torch.Generator | None = None) -> torch.Tensor:
-        noisy = signal
-        phase = self.config.get("phase")
-        thermal = self.config.get("thermal")
-        quantization = self.config.get("quantization")
-        if phase is not None and phase["std"] > 0.0:
-            noisy = self._apply_phase_noise(noisy, std=phase["std"], generator=generator)
-        if thermal is not None and thermal["std"] > 0.0:
-            noisy = self._apply_thermal_noise(noisy, std=thermal["std"], generator=generator)
-        if quantization is not None:
-            noisy = quantize_complex_signal(
-                noisy,
-                bits=quantization["bits"],
-                full_scale=quantization["full_scale"],
-            )
-        return noisy
-
-    def _apply_phase_noise(
-        self,
-        signal: torch.Tensor,
-        *,
-        std: float,
-        generator: torch.Generator | None,
-    ) -> torch.Tensor:
-        real = _component_dtype(signal)
-        if signal.ndim == 4:
-            phase_shape = signal.shape[-2:]
-            broadcast_shape = (1, 1, *phase_shape)
-        elif signal.ndim in (1, 2):
-            phase_shape = signal.shape
-            broadcast_shape = phase_shape
-        else:
-            raise ValueError("Phase noise currently supports chirp (T,), frame (F, T), or mimo (TX, RX, F, T) tensors.")
-
-        innovations = _randn(phase_shape, device=signal.device, dtype=real, generator=generator) * std
-        phase = torch.cumsum(innovations.reshape(-1), dim=0).reshape(phase_shape).reshape(broadcast_shape)
-        phase_factor = torch.polar(torch.ones_like(phase, dtype=real), phase)
-        return signal * phase_factor.to(dtype=signal.dtype)
-
-    def _apply_thermal_noise(
-        self,
-        signal: torch.Tensor,
-        *,
-        std: float,
-        generator: torch.Generator | None,
-    ) -> torch.Tensor:
-        real = _component_dtype(signal)
-        real_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
-        imag_part = _randn(signal.shape, device=signal.device, dtype=real, generator=generator) * std
-        noise = torch.complex(real_part, imag_part).to(dtype=signal.dtype)
-        return signal + noise
-
-
-class PolarizationRuntime:
-    def __init__(
-        self,
-        *,
-        tx_world: torch.Tensor,
-        rx_world: torch.Tensor,
-        reflection_flip: bool = True,
-    ) -> None:
-        self.tx_world = tx_world
-        self.rx_world = rx_world
-        self.reflection_flip = bool(reflection_flip)
-
-    @classmethod
-    def from_config(
-        cls,
-        config: dict[str, Any],
-        *,
-        device: str | torch.device,
-        radar,
-    ) -> "PolarizationRuntime":
-        tx_local = _normalize_rows(torch.tensor(config["tx"], dtype=torch.float32, device=device))
-        rx_local = _normalize_rows(torch.tensor(config["rx"], dtype=torch.float32, device=device))
-        tx_world = _normalize_rows(radar.world_from_local_vectors(tx_local))
-        rx_world = _normalize_rows(radar.world_from_local_vectors(rx_local))
-        return cls(
-            tx_world=tx_world.contiguous(),
-            rx_world=rx_world.contiguous(),
-            reflection_flip=bool(config.get("reflection_flip", True)),
-        )
+# `quantize_complex_signal`, `db_to_voltage_gain`, `ReceiverChainRuntime`,
+# `NoiseModelRuntime` and `PolarizationRuntime` stood here until Phase 11. The
+# first four were the legacy receive chain that `frontend/FrontendChain`
+# replaced, and `apply_signal_models` chose between the two owners at runtime -
+# a shadow mode, which acceptance criterion 6 forbids. `PolarizationRuntime`
+# went with them: its only consumer outside this file was
+# `sensors/legacy_paths.py`, on the deleted Dirichlet route.
 
 
 class Radar:
@@ -279,10 +122,8 @@ class Radar:
         self.config: RadarConfig = config if isinstance(config, RadarConfig) else RadarConfig.from_dict(config)
         cfg = self.config
 
-        self._validate_runtime_config(cfg)
         self._init_system_config(cfg)
         self._init_antenna_locations(cfg)
-        self._init_rf_state(cfg)
         self._init_runtime_models(cfg)
         self._init_axes(cfg)
 
@@ -302,27 +143,6 @@ class Radar:
             cfg, frontend=cfg.frontend
         )
 
-    @staticmethod
-    def _validate_runtime_config(cfg: RadarConfig) -> None:
-        if cfg.frontend is not None and (
-            cfg.noise_model is not None or cfg.receiver_chain is not None
-        ):
-            raise ValueError(
-                "Radar frontend replaces noise_model and receiver_chain; "
-                "configuring both leaves the order of the receive chain "
-                "ambiguous, which is the exact defect the frontend block "
-                "exists to remove. Use one of them."
-            )
-        if (
-            cfg.receiver_chain is not None
-            and cfg.receiver_chain.get("adc") is not None
-            and cfg.noise_model is not None
-            and cfg.noise_model.get("quantization") is not None
-        ):
-            raise ValueError(
-                "Radar receiver_chain.adc and noise_model.quantization cannot both be enabled; use one quantizer."
-            )
-
     def _init_antenna_locations(self, cfg: RadarConfig) -> None:
         self._lambda = self.c0 / cfg.fc
         antenna_spacing = self.c0 / cfg.fc / 2
@@ -330,55 +150,12 @@ class Radar:
         self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
         self._refresh_pose_dependent_state()
 
-    def _init_rf_state(self, cfg: RadarConfig) -> None:
-        """Transmit power, and the ONE amplitude the legacy route may apply.
-
-        ``radar.gain`` is gone. It was ``sqrt(P R)`` whenever a receiver chain
-        was configured and ``1.0`` otherwise, and ``compute_path_amplitudes``
-        multiplied every weight by it - including, once Phase 6 gave the family
-        complex Channel weights, a weight that already carries ``sqrt(P_tx)``
-        from the source endpoint's ``powers_w``. That counts the transmit power
-        twice and mixes sqrt(W ohm) with sqrt(W).
-
-        What remains is ``transmit_amplitude``, and it reaches physics through
-        exactly one route: the ``tx_power_mode`` argument of the native
-        ``sensor_weight`` kernel, which the LEGACY real-amplitude path sets and
-        a Channel-sourced batch cannot set, because its provenance says the
-        weight already carries the power.
-        """
-
-        self.transmit_power_watts = 1e-3 * (10.0 ** (cfg.power / 10.0))
-        reference_impedance = (
-            cfg.receiver_chain["reference_impedance_ohm"] if cfg.receiver_chain is not None else 50.0
-        )
-        self.tx_voltage_rms = math.sqrt(self.transmit_power_watts * reference_impedance)
-        self.transmit_amplitude = self.tx_voltage_rms if cfg.receiver_chain is not None else 1.0
-
     def _init_runtime_models(self, cfg: RadarConfig) -> None:
         from .validation import default_dipole_antenna_pattern
 
         self.antenna_pattern_config = cfg.antenna_pattern or default_dipole_antenna_pattern()
         self._build_antenna_pattern_runtime(self.antenna_pattern_config)
-        self.noise_model_config = cfg.noise_model
-        self.noise_model = (
-            NoiseModelRuntime.from_config(cfg.noise_model, device=self.device)
-            if cfg.noise_model is not None
-            else None
-        )
-        self.polarization_config = cfg.polarization
-        self.polarization = (
-            PolarizationRuntime.from_config(cfg.polarization, device=self.device, radar=self)
-            if cfg.polarization is not None
-            else None
-        )
-        self.receiver_chain_config = cfg.receiver_chain
-        self.receiver_chain = (
-            ReceiverChainRuntime.from_config(cfg.receiver_chain, device=self.device)
-            if cfg.receiver_chain is not None
-            else None
-        )
         self.frontend = self._make_frontend(cfg)
-        self._noise_generator = self._make_noise_generator()
 
     @staticmethod
     def _make_frontend(cfg: RadarConfig):
@@ -484,12 +261,6 @@ class Radar:
         fov_value = self.fov if fov is None else float(fov)
         self._set_pose_fields(position=new_position, target=target_t, up=up_t, fov=fov_value)
         self._refresh_pose_dependent_state()
-        if self.polarization_config is not None:
-            self.polarization = PolarizationRuntime.from_config(
-                self.polarization_config,
-                device=self.device,
-                radar=self,
-            )
         return self
 
     def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
@@ -523,37 +294,20 @@ class Radar:
         _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
         return vectors @ world_from_local
 
-    def _make_noise_generator(self) -> torch.Generator | None:
-        if self.config.noise_model is None or self.config.noise_model.get("seed") is None:
-            return None
-        generator = torch.Generator(device=self.device)
-        generator.manual_seed(self.config.noise_model["seed"])
-        return generator
-
-    def apply_noise(self, signal: torch.Tensor) -> torch.Tensor:
-        if self.noise_model is None:
-            return signal
-        return self.noise_model.apply(signal, generator=self._noise_generator)
-
-    def apply_receiver_chain(self, signal: torch.Tensor) -> torch.Tensor:
-        if self.receiver_chain is None:
-            return signal
-        return self.receiver_chain.apply(signal)
-
     def apply_signal_models(self, signal: torch.Tensor) -> torch.Tensor:
-        """Run whichever receive chain is configured. There is only ever one.
+        """Run the receive chain, if one is configured.
 
-        ``_validate_runtime_config`` refuses a configuration that names both the
-        frontend block and either legacy runtime, so this is a choice between
-        two owners rather than a composition of them - which is precisely what
-        the legacy pair could not say about itself.
+        This used to CHOOSE between two owners: the frontend block, or the
+        legacy ``noise_model`` / ``receiver_chain`` pair, with a constructor
+        refusal for the configuration that named both. A refusal is not the
+        same as having one owner, and a runtime choice between two chains is
+        the shadow mode acceptance criterion 6 forbids. The pair is deleted, so
+        the only question left is whether a chain exists.
         """
 
-        if self.frontend is not None:
-            return self.frontend.apply(signal).signal
-        modeled = self.apply_noise(signal)
-        modeled = self.apply_receiver_chain(modeled)
-        return modeled
+        if self.frontend is None:
+            return signal
+        return self.frontend.apply(signal).signal
 
     def synthesize(self, paths, *, slow_time_mode) -> "SynthesisResult":
         """Synthesize one frame with whichever waveform this radar declares.

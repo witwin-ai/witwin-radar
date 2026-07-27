@@ -204,57 +204,6 @@ def default_dipole_antenna_pattern() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Noise model
-# ---------------------------------------------------------------------------
-
-_NOISE_PREFIX = "Noise model field"
-
-
-def _validate_thermal(config: dict[str, Any]) -> dict[str, Any]:
-    return {"std": _non_negative_float("thermal.std", config.get("std"), _NOISE_PREFIX)}
-
-
-def _validate_quantization(config: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "bits": _positive_int("quantization.bits", config.get("bits"), _NOISE_PREFIX),
-        "full_scale": _positive_float(
-            "quantization.full_scale", config.get("full_scale", 1.0), _NOISE_PREFIX
-        ),
-    }
-
-
-def _validate_phase(config: dict[str, Any]) -> dict[str, Any]:
-    return {"std": _non_negative_float("phase.std", config.get("std"), _NOISE_PREFIX)}
-
-
-def validate_noise_model_config(config: dict[str, Any]) -> dict[str, Any]:
-    thermal = _validate_thermal(config["thermal"]) if config.get("thermal") is not None else None
-    quantization = (
-        _validate_quantization(config["quantization"])
-        if config.get("quantization") is not None
-        else None
-    )
-    phase = _validate_phase(config["phase"]) if config.get("phase") is not None else None
-    seed = _optional_seed(config.get("seed"), "seed", _NOISE_PREFIX)
-
-    if thermal is None and quantization is None and phase is None:
-        raise ValueError(
-            "Noise model config must enable at least one of 'thermal', 'quantization', or 'phase'."
-        )
-
-    normalized: dict[str, Any] = {}
-    if thermal is not None:
-        normalized["thermal"] = thermal
-    if quantization is not None:
-        normalized["quantization"] = quantization
-    if phase is not None:
-        normalized["phase"] = phase
-    if seed is not None:
-        normalized["seed"] = seed
-    return normalized
-
-
-# ---------------------------------------------------------------------------
 # Polarization
 # ---------------------------------------------------------------------------
 
@@ -315,55 +264,6 @@ def validate_polarization_config(
         "rx": [list(vector) for vector in _vector_bank("rx", rx_value, num_rx)],
         "reflection_flip": bool(config.get("reflection_flip", True)),
     }
-
-
-# ---------------------------------------------------------------------------
-# Receiver chain
-# ---------------------------------------------------------------------------
-
-_RECEIVER_PREFIX = "Receiver chain field"
-
-
-def _validate_lna(config: dict[str, Any]) -> dict[str, Any]:
-    return {"gain_db": _finite_float("lna.gain_db", config.get("gain_db", 0.0), _RECEIVER_PREFIX)}
-
-
-def _validate_agc(config: dict[str, Any]) -> dict[str, Any]:
-    mode = str(config.get("mode", "per_rx")).lower()
-    if mode not in {"global", "per_rx"}:
-        raise ValueError("Receiver chain field 'agc.mode' must be 'global' or 'per_rx'.")
-    max_gain_db = _finite_float("agc.max_gain_db", config.get("max_gain_db", 60.0), _RECEIVER_PREFIX)
-    min_gain_db = _finite_float("agc.min_gain_db", config.get("min_gain_db", -60.0), _RECEIVER_PREFIX)
-    if min_gain_db > max_gain_db:
-        raise ValueError("Receiver chain AGC requires min_gain_db <= max_gain_db.")
-    return {
-        "target_rms": _positive_float("agc.target_rms", config.get("target_rms"), _RECEIVER_PREFIX),
-        "max_gain_db": max_gain_db,
-        "min_gain_db": min_gain_db,
-        "mode": mode,
-    }
-
-
-def validate_receiver_chain_config(config: dict[str, Any]) -> dict[str, Any]:
-    lna = _validate_lna(config["lna"]) if config.get("lna") is not None else None
-    agc = _validate_agc(config["agc"]) if config.get("agc") is not None else None
-    adc = _validate_quantization(config["adc"]) if config.get("adc") is not None else None
-    if lna is None and agc is None and adc is None:
-        raise ValueError("Receiver chain config must enable at least one of 'lna', 'agc', or 'adc'.")
-    normalized: dict[str, Any] = {
-        "reference_impedance_ohm": _positive_float(
-            "receiver_chain.reference_impedance_ohm",
-            config.get("reference_impedance_ohm", 50.0),
-            _RECEIVER_PREFIX,
-        )
-    }
-    if lna is not None:
-        normalized["lna"] = lna
-    if agc is not None:
-        normalized["agc"] = agc
-    if adc is not None:
-        normalized["adc"] = adc
-    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -429,22 +329,6 @@ def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
         if config.get("antenna_pattern") is not None
         else None
     )
-    noise_model = (
-        validate_noise_model_config(config["noise_model"])
-        if config.get("noise_model") is not None
-        else None
-    )
-    polarization = (
-        validate_polarization_config(config["polarization"], num_tx=num_tx, num_rx=num_rx)
-        if config.get("polarization") is not None
-        else None
-    )
-    receiver_chain = (
-        validate_receiver_chain_config(config["receiver_chain"])
-        if config.get("receiver_chain") is not None
-        else None
-    )
-
     return RadarConfig(
         num_tx=num_tx,
         num_rx=num_rx,
@@ -464,9 +348,6 @@ def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
         tx_loc=_validate_antenna_locations("tx_loc", config["tx_loc"], num_tx),
         rx_loc=_validate_antenna_locations("rx_loc", config["rx_loc"], num_rx),
         antenna_pattern=antenna_pattern,
-        noise_model=noise_model,
-        polarization=polarization,
-        receiver_chain=receiver_chain,
     )
 
 

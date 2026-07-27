@@ -20,7 +20,7 @@ Core world and a declared frame sequence rather than a callable that reports
 scatterer positions at a time.
 """
 
-from .radar import Radar, RadarConfig, quantize_complex_signal
+from .radar import Radar, RadarConfig
 from .scene_binding import (
     RadarWorldBinding,
     ScatterSitePolicy,
@@ -130,6 +130,12 @@ _REMOVED = {
         "argument of Radar.simulate and intra-frame motion is an ADR-038 "
         "forward dual over the site tensor."
     ),
+    "quantize_complex_signal": (
+        "witwin.radar.quantize_complex_signal has been removed with the "
+        "legacy receive chain. The ADC is a stage of "
+        "witwin.radar.frontend.FrontendChain, configured by the `frontend` "
+        "block, and it runs in the native frontend_quantize operator."
+    ),
 }
 
 
@@ -171,7 +177,6 @@ __all__ = [
     'runtime_diagnostics',
     'Radar',
     'RadarConfig',
-    'quantize_complex_signal',
     'DetectorType',
     'RadarPropagationLegs',
     'RadarSimulationResult',

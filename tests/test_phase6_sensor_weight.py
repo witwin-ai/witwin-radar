@@ -56,19 +56,48 @@ def _radar(request_config=None):
     return make_radar_or_skip(request_config or STANDARD_CONFIG)
 
 
-def _polarized_config():
-    """A configuration that actually declares a polarization.
+@dataclass(frozen=True)
+class _Polarization:
+    """The three fields the kernel and the oracle both read.
 
-    The standard fixture does not, so ``radar.polarization`` is ``None`` there
-    and the projection tests would pass by not running. Vertical on both sides
-    means a surface normal along +Y mirrors the transmit vector exactly onto its
-    own negative, which is what makes the sign assertion sharp rather than
-    approximate.
+    ``RadarConfig.polarization`` and the ``PolarizationRuntime`` that turned it
+    into world vectors are deleted (Phase 11): the projection is a second one,
+    on top of the endpoint projection Channel already applies, and no
+    production route enables the kernel mode that implements it. The mode is
+    still in the ABI, so it still needs a contract test, and the vectors it
+    needs are declared here.
     """
 
-    from conftest import STANDARD_CONFIG
+    tx_world: torch.Tensor
+    rx_world: torch.Tensor
+    reflection_flip: bool = True
 
-    return {**STANDARD_CONFIG, "polarization": {"tx": "vertical", "rx": "vertical"}}
+
+def _unit_rows(vectors: torch.Tensor) -> torch.Tensor:
+    return vectors / torch.clamp(
+        torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12
+    )
+
+
+def _vertical_polarization(radar, *, reflection_flip: bool = True) -> _Polarization:
+    """Vertical on both sides, in world coordinates.
+
+    Vertical on both sides means a surface normal along +Y mirrors the transmit
+    vector exactly onto its own negative, which is what makes the sign
+    assertion sharp rather than approximate.
+
+    The local-to-world step and both normalisations are what
+    ``PolarizationRuntime.from_config`` did, in the same order, so the numbers
+    this produces are the numbers the deleted runtime produced.
+    """
+
+    local = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32, device=radar.device)
+    world = _unit_rows(radar.world_from_local_vectors(_unit_rows(local)))
+    return _Polarization(
+        tx_world=world.expand(radar.config.num_tx, 3).contiguous(),
+        rx_world=world.expand(radar.config.num_rx, 3).contiguous(),
+        reflection_flip=reflection_flip,
+    )
 
 
 def _sample(radar, count: int, *, seed: int = 0):
@@ -101,7 +130,7 @@ def _sample(radar, count: int, *, seed: int = 0):
     )
 
 
-def _rows(radar, sample, *, velocities=None):
+def _rows(radar, sample, *, velocities=None, polarization=None):
     """Enumerate the ``(tx, rx, path)`` grid as flat kernel rows.
 
     The oracle produces a ``(TX, RX, N)`` tensor; the kernel consumes a row
@@ -147,19 +176,27 @@ def _rows(radar, sample, *, velocities=None):
         rx_index=rx_index,
         row_kind=torch.full((rows,), ROW_KIND_VIA, dtype=torch.int32, device=device),
         normals=sample.normals.repeat(*repeat, 1).contiguous(),
-        pol_tx=_polarization(radar, "tx"),
-        pol_rx=_polarization(radar, "rx"),
+        pol_tx=_polarization(radar, "tx", polarization),
+        pol_rx=_polarization(radar, "rx", polarization),
         local_axes=_local_axes(radar),
     )
     return geometry, site_in, site_out, sample.intensities.repeat(*repeat).contiguous()
 
 
-def _polarization(radar, side: str) -> torch.Tensor:
-    if radar.polarization is None:
+#: The polarization vectors the ABI takes but the kernel never reads when
+#: ``legacy_real_polarization`` is 0. A row of zeros would be a different
+#: statement - that the projection is onto nothing - so the filler is a real
+#: unit vector, exactly as ``sensors/round_trip.py`` does on the production
+#: route.
+_UNUSED_POLARIZATION = (0.0, 1.0, 0.0)
+
+
+def _polarization(radar, side: str, polarization=None) -> torch.Tensor:
+    if polarization is None:
         count = radar.config.num_tx if side == "tx" else radar.config.num_rx
-        return torch.tensor([[0.0, 1.0, 0.0]] * count, device=radar.device)
+        return torch.tensor([_UNUSED_POLARIZATION] * count, device=radar.device)
     return (
-        radar.polarization.tx_world if side == "tx" else radar.polarization.rx_world
+        polarization.tx_world if side == "tx" else polarization.rx_world
     ).contiguous()
 
 
@@ -190,11 +227,20 @@ def _plan(radar, *, modes, tx_amplitude=1.0):
     )
 
 
-def _evaluate(radar, sample, *, modes, tx_amplitude=1.0, velocities=None, weight=None):
+def _evaluate(
+    radar,
+    sample,
+    *,
+    modes,
+    tx_amplitude=1.0,
+    velocities=None,
+    weight=None,
+    polarization=None,
+):
     from witwin.radar.sensors import evaluate_sensor_weights
 
     geometry, site_in, site_out, intensity = _rows(
-        radar, sample, velocities=velocities
+        radar, sample, velocities=velocities, polarization=polarization
     )
     rows = intensity.shape[0]
     if weight is None:
@@ -420,10 +466,11 @@ def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
     """
 
     from witwin.radar.sensors import SensorWeightModes
-    radar = _radar(_polarized_config())
+    radar = _radar()
+    polarization = _vertical_polarization(radar)
     base = _sample(radar, 32, seed=17)
-    # The configured polarization defaults to +Y on both sides here; a normal
-    # along +Y therefore flips the transmit vector exactly onto its negative.
+    # The declared polarization is +Y on both sides here; a normal along +Y
+    # therefore flips the transmit vector exactly onto its negative.
     aligned = torch.zeros_like(base.normals)
     aligned[:, 1] = 1.0
     sample = PathSample(
@@ -443,6 +490,7 @@ def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
             legacy_real_polarization=True,
             reflection_flip=True,
         ),
+        polarization=polarization,
     ).weight
     plain = _evaluate(
         radar,
@@ -453,6 +501,7 @@ def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
             legacy_real_polarization=True,
             reflection_flip=False,
         ),
+        polarization=polarization,
     ).weight
     assert torch.equal(flipped, -plain)
     assert (flipped.real <= 0).all()
@@ -465,7 +514,8 @@ def test_the_polarization_projection_matches_the_torch_expression():
     from witwin.radar.sensors import SensorWeightModes
     from reference.path_math import compute_polarization_amplitudes
 
-    radar = _radar(_polarized_config())
+    radar = _radar()
+    polarization = _vertical_polarization(radar)
     sample = _sample(radar, 64, seed=23)
     with_projection = _evaluate(
         radar,
@@ -473,6 +523,7 @@ def test_the_polarization_projection_matches_the_torch_expression():
         modes=SensorWeightModes(
             spreading=False, tx_power=False, legacy_real_polarization=True
         ),
+        polarization=polarization,
     ).weight
     without = _evaluate(
         radar,
@@ -480,8 +531,9 @@ def test_the_polarization_projection_matches_the_torch_expression():
         modes=SensorWeightModes(
             spreading=False, tx_power=False, legacy_real_polarization=False
         ),
+        polarization=polarization,
     ).weight
-    reference = compute_polarization_amplitudes(radar, sample)
+    reference = compute_polarization_amplitudes(polarization, sample)
     assert reference is not None, "the fixture must declare a polarization"
     ratio = with_projection.real / without.real.clamp(min=1e-20)
     assert torch.allclose(ratio, reference.reshape(-1), rtol=1e-5, atol=1e-6)

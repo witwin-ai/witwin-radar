@@ -55,7 +55,7 @@ ALLOWLIST_PATH = REPO_ROOT / "ci" / "torch-physics-allowlist.json"
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
 FROZEN_BASELINE_DIGEST = (
-    "f5723d89074a0aad9be1d30f83e620c6b000915d9fefc9a8ccdff8b6f67188eb"
+    "c3d85ab84dcfd310e6291ca2176571131762e072e66397f23c321e6ce192c227"
 )
 
 SCHEMA_VERSION = 1

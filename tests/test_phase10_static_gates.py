@@ -430,9 +430,10 @@ def test_g4_fires_when_a_pytest_constant_drifts_from_the_record(mirror: Path) ->
 
     target = mirror / "tests" / "test_phase6_no_torch_physics.py"
     source = target.read_text(encoding="utf-8")
-    assert '("_apply_phase_noise", "torch.polar"),' in source
+    assert '("_set_pose_fields", "torch.linalg.norm"),' in source
     target.write_text(
-        source.replace('("_apply_phase_noise", "torch.polar"),', ""), encoding="utf-8"
+        source.replace('("_set_pose_fields", "torch.linalg.norm"),', ""),
+        encoding="utf-8",
     )
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
@@ -494,22 +495,31 @@ def test_the_allowlist_records_every_measured_expression_with_a_reason() -> None
 
 
 def test_the_recorded_debt_is_named_as_debt() -> None:
-    """Two categories are debt, and the record must keep saying so.
+    """Debt is not approval, and the record must keep saying so.
 
-    `work_item_8_survivor` and `freeze_time_pattern_oracle` are not approval.
-    If a later change quietly reclassified them as ordinary allowlist entries,
-    the gate would still pass and the debt would disappear from the record.
+    There were two debt categories. `work_item_8_survivor` is CLOSED: its two
+    entries were `Radar.waveform` and `NoiseModelRuntime._apply_phase_noise`,
+    and Phase 11 deleted both expressions rather than reclassifying them. The
+    category is asserted ABSENT from the description map and from the entries,
+    because "the debt disappeared from the record" and "the debt was paid" look
+    identical in a subset check.
+
+    `freeze_time_pattern_oracle` is still debt. If a later change quietly
+    reclassified it as an ordinary allowlist entry, the gate would still pass
+    and the debt would disappear from the record.
     """
 
     document = json.loads(
         (REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8")
     )
-    debt = {"work_item_8_survivor", "freeze_time_pattern_oracle"}
+    debt = {"freeze_time_pattern_oracle"}
     assert debt <= set(document["categories"])
     for name in debt:
         assert "DEBT" in document["categories"][name]
     recorded = {entry["category"] for entry in document["entries"]}
     assert debt <= recorded
+    assert "work_item_8_survivor" not in document["categories"]
+    assert "work_item_8_survivor" not in recorded
 
 
 def test_the_dispatcher_owner_set_is_a_single_module() -> None:

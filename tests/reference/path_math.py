@@ -11,11 +11,18 @@ shapes, and the order of the multiplications are reproduced exactly, so the
 oracle's numbers are bit-identical to what it produced before the split. A
 "cleaner" rewrite here would silently move the reference.
 
-The radar-facade calls (``_lambda``, ``polarization``,
-``local_from_world_vectors``, ``evaluate_antenna_pattern_vectors``) are NOT
-copied: they belong to ``witwin/radar/radar.py``, not to the module Phase-6
-work item 8 migrates, and duplicating a pattern interpolator would make the
-oracle test a different antenna than the production path does.
+The radar-facade calls (``_lambda``, ``local_from_world_vectors``,
+``evaluate_antenna_pattern_vectors``) are NOT copied: they belong to
+``witwin/radar/radar.py``, not to the module Phase-6 work item 8 migrated, and
+duplicating a pattern interpolator would make the oracle test a different
+antenna than the production path does.
+
+``polarization`` used to be a fourth facade call, ``radar.polarization``.
+Phase 11 deleted that runtime - it was a second projection of a field Channel
+has already projected onto each endpoint's declared polarization - so the two
+world-space vector banks and the flip flag are ARGUMENTS here now. The
+expression is unchanged, including the order of the normalisations and the sign
+of the mirror; only where the vectors come from moved.
 
 One field IS no longer read off the radar: ``radar.gain``. Phase 6 deleted it,
 because it applied ``sqrt(P R)`` on top of a weight that already carries
@@ -56,9 +63,12 @@ def _normalize_vectors(vectors: torch.Tensor) -> torch.Tensor:
     return vectors / torch.clamp(torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)
 
 
-def compute_polarization_amplitudes(radar, sample) -> torch.Tensor | None:
-    """Return signed TX/RX polarization projection factors for each path."""
-    polarization = radar.polarization
+def compute_polarization_amplitudes(polarization, sample) -> torch.Tensor | None:
+    """Return signed TX/RX polarization projection factors for each path.
+
+    ``polarization`` is any object carrying ``tx_world``, ``rx_world`` and
+    ``reflection_flip``, or ``None`` for a sensor that declares none.
+    """
     if polarization is None:
         return None
     if sample.normals is None:
@@ -84,6 +94,7 @@ def compute_path_amplitudes(
     rx_pos: torch.Tensor | None = None,
     tx_index: int | None = None,
     gain: float = 1.0,
+    polarization=None,
 ) -> torch.Tensor:
     """Convert power-domain material coefficients to amplitude-domain weights with FSPL.
 
@@ -100,7 +111,7 @@ def compute_path_amplitudes(
     if pattern_gains is not None:
         scatter_power = scatter_power * torch.clamp(pattern_gains, min=0.0)
     amplitudes = gain * torch.sqrt(scatter_power) * fspl_amp
-    polarization_factor = compute_polarization_amplitudes(radar, sample)
+    polarization_factor = compute_polarization_amplitudes(polarization, sample)
     if polarization_factor is not None:
         if tx_index is not None:
             polarization_factor = polarization_factor[tx_index : tx_index + 1]
