@@ -37,7 +37,6 @@ import torch.autograd.forward_ad as forward_ad
 from support import fd  # noqa: E402
 from support import reference_pulsed as ref  # noqa: E402
 from support.pulsed_grid import (  # noqa: E402
-    BANDWIDTH_HZ,
     F_REF_HZ,
     SAMPLE_PERIOD_S,
     reference_spec,

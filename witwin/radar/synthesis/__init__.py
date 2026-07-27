@@ -103,6 +103,7 @@ __all__ = [
     "select_component",
     "tdm_slot_count",
     "tdm_slot_times_s",
+    "validate_pair_ordering",
     "synthesize_beat_rows",
     "synthesize_cfr_rows",
     "synthesize_echo_rows",

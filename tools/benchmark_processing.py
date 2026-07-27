@@ -309,7 +309,9 @@ def group_cfar(size, args) -> list[dict]:
             ("ca_cfar_fast", ca_cfar_fast),
             ("os_cfar", os_cfar),
         ):
-            call = (lambda _fn=fn, _m=magnitude: _fn(_m))
+            def call(_fn=fn, _m=magnitude):
+                return _fn(_m)
+
             median, _ = cuda_time(call, warmup=args.warmup, runs=args.runs)
             rows.append(
                 {
@@ -324,7 +326,9 @@ def group_cfar(size, args) -> list[dict]:
                 }
             )
     profile = torch.rand((size["pairs"], ranges), device="cuda", dtype=torch.float32)
-    call = lambda: ca_cfar_1d(profile)
+    def call():
+        return ca_cfar_1d(profile)
+
     median, _ = cuda_time(call, warmup=args.warmup, runs=args.runs)
     rows.append(
         {
@@ -522,9 +526,9 @@ def group_pipeline(args) -> list[dict]:
 
     rows = []
     for detector in ("ca_cfar_fast", "ca_cfar", "os_cfar"):
-        call = lambda _d=detector: run_pipeline(
-            batch, spec, spec_array, detector=_d
-        )
+        def call(_d=detector):
+            return run_pipeline(batch, spec, spec_array, detector=_d)
+
         median, samples = cuda_time(call, warmup=args.warmup, runs=args.runs)
         rows.append(
             {

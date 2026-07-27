@@ -600,7 +600,7 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
     would have picked whichever one did not raise.
     """
 
-    from dataclasses import dataclass, replace
+    from dataclasses import dataclass
 
     from conftest import MINIMAL_CONFIG, make_radar_or_skip
     from witwin.radar.synthesis import SlowTimeMode

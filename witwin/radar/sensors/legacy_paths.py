@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .contracts import AntennaPatternSpec, SPEED_OF_LIGHT_M_PER_S
+from .contracts import AntennaPatternSpec
 from .weights import (
     ROW_KIND_VIA,
     SensorWeightGeometry,

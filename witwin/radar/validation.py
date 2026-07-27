@@ -537,7 +537,6 @@ def validate_waveform_config(config: dict[str, Any]):
         WAVEFORM_FMCW,
         WAVEFORM_KINDS,
         WAVEFORM_OFDM,
-        WAVEFORM_PULSED,
         FmcwWaveformConfig,
         OfdmWaveformConfig,
         PulsedWaveformConfig,

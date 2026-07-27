@@ -208,7 +208,6 @@ def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
     kernel that dropped the conjugation would still produce a plausible cube.
     """
 
-    import torch.autograd.forward_ad as forward_ad
 
     from witwin.radar.propagation import kinematics as kin
     from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat

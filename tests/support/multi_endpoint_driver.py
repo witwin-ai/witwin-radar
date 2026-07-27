@@ -23,7 +23,6 @@ import torch
 
 from . import multi_endpoint_geometry as geo
 from . import multi_endpoint_world as world
-from .synthesis_batch import to_synthesis
 
 
 MULTIPATH_COMPONENTS = frozenset({"los", "reflection"})

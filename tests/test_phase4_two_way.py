@@ -10,7 +10,6 @@ positional one.
 
 from __future__ import annotations
 
-import pathlib
 from types import SimpleNamespace
 
 import pytest

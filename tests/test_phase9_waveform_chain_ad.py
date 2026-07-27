@@ -185,7 +185,7 @@ def test_the_pulsed_fixture_uses_an_lfm_and_says_why(spike, specs):
 
 
 @pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{l}" for w, l in CELLS]
+    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
 )
 def test_the_endpoint_gradient_matches_a_fourth_order_difference(
     spike, specs, waveform, leaf
@@ -223,7 +223,7 @@ def test_the_endpoint_gradient_matches_a_fourth_order_difference(
 
 
 @pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{l}" for w, l in CELLS]
+    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
 )
 def test_the_forward_tangent_reproduces_the_reverse_directional_derivative(
     spike, specs, waveform, leaf
@@ -280,7 +280,7 @@ def test_the_silent_transmitter_has_an_exactly_zero_gradient(spike, specs, wavef
 
 
 @pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{l}" for w, l in CELLS]
+    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
 )
 def test_the_out_of_plane_gradient_is_exactly_zero(spike, specs, waveform, leaf):
     """Every endpoint and the whole facet lie in ``z = 0``, so ``dL/dz`` is zero.
