@@ -156,14 +156,40 @@ that rather than on top of the luckiest run.
 | full FMCW pipeline, BACKWARD wall time | 2.68 ms (four medians: 1.816, 1.925, 2.153, 2.684) | 3.484 ms | 1.30x | `tests/test_phase9_backward_budget.py::test_the_full_fmcw_pipeline_backward_meets_its_time_budget` |
 | full FMCW pipeline, backward peak ALLOCATION | 0.1426 MB (149504 B, identical on all four runs) | 0.1782 MB | 1.25x | `::test_the_full_fmcw_pipeline_backward_meets_its_peak_memory_budget` |
 | the same, forward peak, for the ratio | 43008 B forward vs 149504 B forward-plus-backward = 3.48x | reverse > 2x forward | - | `::test_the_backward_peak_is_larger_than_the_forward_peak` |
-| Channel `reevaluate`, two legs, primal | 3.72 ms (3.607, 3.693, 3.721, 3.723) | 4.836 ms | 1.30x | `::test_the_channel_reevaluate_forward_meets_its_time_budget` |
-| Channel `reevaluate`, two legs, vjp forward + backward | 5.68 ms (5.343, 5.532, 5.596, 5.680) | 7.384 ms | 1.30x | `::test_the_channel_reevaluate_with_a_reverse_leaf_meets_its_time_budget` |
+| Channel `reevaluate`, two legs, reverse cost as a RATIO to the forward | 1.334 to 1.523 over six processes, sampled alternately | 2.0, a structural threshold | - | `::test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve` |
 | `_compose_band` tape law | exact, see above | exact equality | - | `::test_the_band_loop_tape_obeys_its_predicted_linear_law` |
 
-The reverse pass costs about **1.9 ms on top of a 3.7 ms Channel forward** - a
-fifty-percent surcharge, not a second solve - and about **3.5x the forward's
-peak allocation**. Those two ratios are the portable statements; the millisecond
-constants describe this machine.
+The reverse pass costs about a **fifty-percent surcharge** on the Channel
+forward, not a second solve, and about **3.5x the forward's peak allocation**.
+Those two ratios are the portable statements; the millisecond constants describe
+this machine.
+
+### Why the Channel pin is a ratio and not two wall times
+
+This is a measurement result and not a preference, and it is worth recording
+because the obvious pin is the one that does not work.
+
+The absolute medians of the two-leg `reevaluate` call drift over a 1.5x range on
+this machine between processes on an idle device: forward 3.636 to 5.542 ms,
+forward-plus-backward 5.326 to 7.071 ms, twelve samples in three processes. Both
+quantities drift together - allocator state and clock ramp move them the same
+way - so an absolute budget set at the tightest observation fails on the first
+cold run of a session, and one set at the loosest catches nothing. A first
+version of this pin used 3.72 ms and 5.68 ms with a 1.30 factor; it failed on
+the first run of the very next session, at 8.14 ms, which is how the problem was
+found rather than shipped.
+
+The quotient is stable when the two medians are sampled ALTERNATELY in one
+loop - 1.334 to 1.523 over six processes - and noticeably less so when they are
+timed one after the other, 1.342 to 1.841 over four. Interleaving puts both
+under the same drift.
+
+The budget of 2.0 is a structural threshold rather than a measured number with a
+factor bolted on: the reverse pass rides the topology the forward already
+solved, so a backward that started re-solving geometry would cost at least a
+second forward and could not come in under 2x. The pin also asserts the ratio is
+above 1.0, so a backward that stopped running would fail rather than pass
+comfortably.
 
 ### The cold-clock caveat, measured
 

@@ -20,8 +20,19 @@ what is pinned is what is budget critical:
 3. the full FMCW pipeline's backward wall time - the first backward time budget
    in the tree;
 4. the same pipeline's backward peak allocation;
-5. the Channel ``reevaluate`` inner loop Radar actually runs, forward and
-   reverse, with its ADR-043 companion launches and tape bytes.
+5. the Channel ``reevaluate`` inner loop Radar actually runs - its reverse cost
+   as a RATIO to its forward cost, plus its ADR-043 companion launches and tape
+   bytes by exact value.
+
+**Why one of the five is a ratio and not a wall time.** The absolute medians of
+the Channel two-leg call drift over a 1.5x range on this machine between
+processes, and the forward and the reverse drift together, so an absolute
+budget on either is a pin on the session rather than on the code - measured,
+and then measured again, before the constant was replaced. The quotient taken
+back-to-back in one process is stable and is the statement worth making anyway:
+the reverse pass rides the topology the forward already solved, so it is a
+surcharge and cannot approach a second solve. The observed absolute ranges are
+recorded beside the constant so the information is not lost.
 
 **Measurement conditions, recorded because a wall-time budget is a statement
 about a machine.** NVIDIA GeForce RTX 5080, CUDA events, median of 50 after 10
@@ -86,20 +97,32 @@ PIPELINE_BACKWARD_PEAK_BUDGET_MB = (
     MEASURED_PIPELINE_BACKWARD_MB * BACKWARD_MEMORY_HEADROOM
 )
 
-#: Measured median of one two-leg ``consumer.reevaluate`` at ``ad_mode='none'``,
-#: in ms. Four independent process medians: 3.607, 3.693, 3.721, 3.723.
-MEASURED_REEVALUATE_FORWARD_MS = 3.72
-REEVALUATE_FORWARD_BUDGET_MS = (
-    MEASURED_REEVALUATE_FORWARD_MS * BACKWARD_TIME_HEADROOM
-)
+#: The Channel ``reevaluate`` inner loop is pinned as a RATIO rather than as two
+#: wall times, and that is a measurement result rather than a preference.
+#:
+#: Absolute medians of the two-leg call drift far more than the reverse
+#: surcharge does. Twelve samples in three processes on an idle device:
+#: forward 3.636 to 5.542 ms, forward-plus-backward 5.326 to 7.071 ms. Both
+#: quantities drift together within a process - allocator state and clock ramp
+#: move them the same way - so an absolute budget on either one is a pin on the
+#: session and not on the code, and one set at the tightest observation fails
+#: on the first cold run of a session. Measured, twice, before writing this.
+#:
+#: The RATIO, sampled ALTERNATELY in one loop, runs 1.334 to 1.523 over six
+#: independent processes. Taking the two medians one after the other instead
+#: gives 1.342 to 1.841 - measured, and the reason the sampling is interleaved
+#: rather than sequential.
+#:
+#: The ratio is also the statement worth making: a reverse pass costs a
+#: surcharge on the forward, and a backward that started re-solving geometry
+#: could not come in under 2x. The budget is 2.0 for exactly that reason - it
+#: is a structural threshold, not a measured number with a factor bolted on.
+MEASURED_REEVALUATE_VJP_RATIO_RANGE = (1.334, 1.523)
+REEVALUATE_VJP_RATIO_BUDGET = 2.0
 
-#: The same two legs at ``ad_mode='vjp'`` INCLUDING the backward, in ms. Four
-#: independent process medians: 5.343, 5.532, 5.596, 5.680. The reverse pass
-#: costs about 1.9 ms on top of a 3.7 ms forward, which is the ratio the pin is
-#: really about: a backward that started re-solving geometry would not be a
-#: fifty-percent surcharge.
-MEASURED_REEVALUATE_VJP_MS = 5.68
-REEVALUATE_VJP_BUDGET_MS = MEASURED_REEVALUATE_VJP_MS * BACKWARD_TIME_HEADROOM
+#: Recorded for the ledger, not asserted. See above for why.
+OBSERVED_REEVALUATE_FORWARD_MS_RANGE = (3.636, 5.542)
+OBSERVED_REEVALUATE_VJP_MS_RANGE = (5.326, 7.071)
 
 #: ADR-043 accounting at the pinned fixture, per leg, under ``ad_mode='vjp'``.
 #: Two companion launches each; the tape differs between the legs because the
@@ -129,6 +152,33 @@ def _cuda_ms(fn, *, warmup: int = 10, runs: int = 50) -> float:
         torch.cuda.synchronize()
         samples.append(float(start.elapsed_time(end)))
     return statistics.median(samples)
+
+
+def _cuda_ms_paired(first, second, *, warmup: int = 10, runs: int = 50):
+    """Two medians, sampled ALTERNATELY in one loop.
+
+    Timing them one after the other leaves the second measurement on a
+    different clock and allocator state than the first, and on this device that
+    drift is larger than the difference being measured. Interleaving puts both
+    quantities under the same drift, so their quotient is a property of the two
+    calls rather than of when each one happened to run.
+    """
+
+    for _ in range(warmup):
+        first()
+        second()
+    torch.cuda.synchronize()
+    left, right = [], []
+    for _ in range(runs):
+        for call, samples in ((first, left), (second, right)):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            call()
+            end.record()
+            torch.cuda.synchronize()
+            samples.append(float(start.elapsed_time(end)))
+    return statistics.median(left), statistics.median(right)
 
 
 # ---------------------------------------------------------------------------
@@ -513,32 +563,29 @@ def _legs(spike, values, *, ad_mode: str, leaf=None):
     )
 
 
-def test_the_channel_reevaluate_forward_meets_its_time_budget(pipeline, capsys):
-    """Two ``consumer.reevaluate`` calls, primal only.
+def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(
+    pipeline, capsys
+):
+    """The Channel inner loop's reverse cost, as a ratio taken in one process.
 
     Measured on the Radar side rather than in Channel's own
     ``tests/ad/test_ad_budgets.py``, which covers the deterministic solver and
     not the fixed-topology route Radar's per-frame loop actually runs.
+
+    The two medians are taken back-to-back in the same process, so the clock
+    and allocator drift that makes an absolute pin unreliable here cancels out
+    of the quotient. The claim is structural: the reverse pass rides the frozen
+    topology the forward already solved, so it is a surcharge. A backward that
+    re-solved geometry would be at least a second forward and could not come in
+    under 2x.
     """
 
     spike, values = pipeline
-    median = _cuda_ms(lambda: _legs(spike, values, ad_mode="none"))
-    with capsys.disabled():
-        print(
-            f"\nchannel reevaluate forward: {median:.4f} ms "
-            f"(budget {REEVALUATE_FORWARD_BUDGET_MS:.4f} ms)"
-        )
-    assert median < REEVALUATE_FORWARD_BUDGET_MS, median
 
+    def forward():
+        _legs(spike, values, ad_mode="none")
 
-def test_the_channel_reevaluate_with_a_reverse_leaf_meets_its_time_budget(
-    pipeline, capsys
-):
-    """The same two calls plus their backward, which is the optimisation step."""
-
-    spike, values = pipeline
-
-    def once():
+    def reverse():
         sites = values["sites"].clone().requires_grad_(True)
         inbound, outbound = _legs(spike, values, ad_mode="vjp", leaf=sites)
         loss = (
@@ -549,13 +596,23 @@ def test_the_channel_reevaluate_with_a_reverse_leaf_meets_its_time_budget(
         )
         loss.backward()
 
-    median = _cuda_ms(once)
+    forward_ms, reverse_ms = _cuda_ms_paired(forward, reverse)
+    ratio = reverse_ms / forward_ms
     with capsys.disabled():
         print(
-            f"\nchannel reevaluate forward+backward: {median:.4f} ms "
-            f"(budget {REEVALUATE_VJP_BUDGET_MS:.4f} ms)"
+            f"\nchannel reevaluate: forward {forward_ms:.4f} ms, "
+            f"forward+backward {reverse_ms:.4f} ms, ratio {ratio:.4f} "
+            f"(budget {REEVALUATE_VJP_RATIO_BUDGET:.2f}, "
+            f"measured range {MEASURED_REEVALUATE_VJP_RATIO_RANGE})"
         )
-    assert median < REEVALUATE_VJP_BUDGET_MS, median
+    assert ratio > 1.0, (
+        f"ratio {ratio:.4f}: a reverse pass that cost no more than the forward "
+        "would mean the backward is not running"
+    )
+    assert ratio < REEVALUATE_VJP_RATIO_BUDGET, (
+        f"ratio {ratio:.4f} exceeds {REEVALUATE_VJP_RATIO_BUDGET}: the reverse "
+        "pass is no longer a surcharge on the frozen topology"
+    )
 
 
 def test_the_channel_reevaluate_publishes_its_ad_launches_and_tape_bytes(pipeline):
