@@ -1,3 +1,19 @@
+"""Select, validate and load the radar native library.
+
+R-ADR-019 is the contract this file implements. In one sentence: the packaged
+prebuilt is the only normal load source, every failure is loud and names the
+full build identity, and ``torch.utils.cpp_extension`` is reachable only when
+the build script explicitly asks for it.
+
+That last clause is not tidiness. The just-in-time route calls
+``_ensure_windows_build_tools_on_path()``, which copies the whole ``vcvars64``
+environment over ``os.environ`` including ``PATH``; a library built after that
+mutation fails ``DllMain`` with an access violation in the same process, and the
+unbounded ``PATH`` growth surfaces much later as unrelated CUDA failures. While
+the JIT route was the silent fallback for a missing or stale prebuilt, an
+ordinary ``import witwin.radar.paths.two_way`` could reach it.
+"""
+
 from __future__ import annotations
 
 import os
@@ -8,10 +24,27 @@ import tempfile
 from pathlib import Path
 
 import torch
-from torch.utils.cpp_extension import load
+
+from . import identity
+from .identity import (
+    RADAR_ABI_VERSION,
+    RadarExtensionABIError,
+    RadarExtensionLoadError,
+    RadarExtensionSymbolError,
+)
 
 
 EXTENSION_NAME = "witwin_radar_dirichlet_cuda"
+
+#: The Stable ABI target compiled into every translation unit. Recorded in the
+#: build record so a binary built against a different target is visible.
+TORCH_TARGET_VERSION = "0x020a000000000000"
+
+_BUILD_ENV = "WITWIN_RADAR_NATIVE_BUILD"
+_BUILD_DIR_ENV = "WITWIN_RADAR_NATIVE_BUILD_DIR"
+_OVERRIDE_ENABLE_ENV = "WITWIN_RADAR_NATIVE_DEVELOPER_OVERRIDE"
+_OVERRIDE_PATH_ENV = "WITWIN_RADAR_NATIVE_EXTENSION_PATH"
+_OVERRIDE_FINGERPRINT_ENV = "WITWIN_RADAR_NATIVE_EXPECTED_FINGERPRINT"
 
 
 def _candidate_vcvars64_paths() -> list[Path]:
@@ -107,7 +140,18 @@ def _load_vcvars64_environment() -> bool:
     return False
 
 
+def _build_requested() -> bool:
+    return os.environ.get(_BUILD_ENV) == "1"
+
+
 def _ensure_windows_build_tools_on_path() -> None:
+    # Guarded a second time, at the point of damage. This function replaces the
+    # process PATH wholesale; a caller that reaches it without asking for a
+    # build has made a mistake that must not silently mutate the environment.
+    if not _build_requested():
+        raise RadarExtensionLoadError(
+            f"preparing MSVC build tools requires {_BUILD_ENV}=1"
+        )
     if os.name != "nt":
         return
     # Keep MSVC diagnostics ASCII/English so PyTorch's compiler-version probe
@@ -136,6 +180,10 @@ def _ensure_windows_build_tools_on_path() -> None:
 
 
 def _ensure_cuda_home_from_nvcc() -> None:
+    if not _build_requested():
+        raise RadarExtensionLoadError(
+            f"locating CUDA_HOME for a build requires {_BUILD_ENV}=1"
+        )
     if os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH"):
         return
     nvcc = shutil.which("nvcc")
@@ -210,11 +258,35 @@ def _conda_torch_ldflags() -> list[str]:
 class _StableOpsModule:
     """Attribute-compatible view of the dispatcher operators."""
 
-    def __init__(self, library_path: Path) -> None:
+    def __init__(
+        self,
+        library_path: Path,
+        *,
+        origin: str,
+        info: dict[str, object] | None = None,
+    ) -> None:
         self.__file__ = str(library_path)
+        self._origin = origin
+        self._info = dict(info) if info is not None else None
 
     def is_available(self) -> bool:
         return bool(torch.cuda.is_available())
+
+    def build_info(self) -> dict[str, object]:
+        """The validated identity record plus where the library came from.
+
+        ``origin`` is ``packaged``, ``developer`` or ``jit``. A JIT build has no
+        validated record - it was compiled in this process from these sources -
+        so ``native_build`` is ``None`` there and the caller can tell the two
+        situations apart instead of guessing from a missing key.
+        """
+
+        return {
+            "origin": self._origin,
+            "extension_path": self.__file__,
+            "radar_abi_version": RADAR_ABI_VERSION,
+            "native_build": dict(self._info) if self._info is not None else None,
+        }
 
     def __getattr__(self, name: str):
         return getattr(torch.ops.witwin_radar_dirichlet_cuda, name)
@@ -235,8 +307,14 @@ _REQUIRED_OPERATORS = (
 )
 
 
-def _require_operators(library_path: Path) -> _StableOpsModule:
-    """Reject a library that does not register every required family.
+def _require_operators(
+    library_path: Path,
+    symbols: tuple[str, ...] | list[str] | None = None,
+    *,
+    origin: str = "jit",
+    info: dict[str, object] | None = None,
+) -> _StableOpsModule:
+    """Reject a library that does not register every required operator.
 
     Applied to EVERY load route, including the just-in-time build. A JIT build
     can hand back a stale library too: `torch.utils.cpp_extension.load` reuses
@@ -244,41 +322,93 @@ def _require_operators(library_path: Path) -> _StableOpsModule:
     this package compiled a different source list into the same directory, the
     operators this process needs may simply not be there. Skipping the check on
     the JIT route turns that into a failure deep inside a kernel call.
+
+    A validated artifact records the full symbol list it registers, so the
+    packaged and developer routes check all of them. The eight-family sample
+    below is the fallback for the JIT route, which has no record to consult.
     """
 
+    required = tuple(symbols) if symbols is not None else _REQUIRED_OPERATORS
     missing = [
         name
-        for name in _REQUIRED_OPERATORS
+        for name in required
         if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, name)
     ]
     if missing:
-        raise ImportError(
+        raise RadarExtensionSymbolError(
             f"{library_path} does not register the Stable ABI radar operators "
             f"{missing}; the binary is stale."
         )
-    return _StableOpsModule(library_path)
+    return _StableOpsModule(library_path, origin=origin, info=info)
 
 
-def _load_extension_file(library_path: Path) -> _StableOpsModule:
+def _load_validated_extension(
+    library_path: Path,
+    *,
+    origin: str,
+    expected_fingerprint: str | None = None,
+) -> _StableOpsModule:
+    """Validate the identity chain, then load. Never the other way round.
+
+    Validation happens before `torch.ops.load_library` because loading a shared
+    library is irreversible within the process: a mismatched binary that has
+    already run its initializers cannot be unloaded, so a check afterwards would
+    report a problem the process can no longer avoid.
+    """
+
+    info = identity.validate_identity(
+        library_path,
+        extension_sources(),
+        expected_fingerprint=expected_fingerprint,
+    )
     torch.ops.load_library(str(library_path))
-    return _require_operators(library_path)
+    return _require_operators(
+        library_path,
+        list(info["operator_symbols"]),
+        origin=origin,
+        info=info,
+    )
 
 
-def _load_packaged_prebuilt_extension():
-    module_path = prebuilt_extension_path()
-    if not module_path.exists():
+def _developer_override_config() -> tuple[Path, str] | None:
+    """All three variables together, or none of them. Never a partial set.
+
+    A partial set is always a mistake and never a request for the default
+    behaviour, so it raises even when the packaged prebuilt is present and would
+    otherwise have won: silently ignoring two of three variables is how a
+    developer ends up measuring the wrong binary.
+    """
+
+    enabled = os.environ.get(_OVERRIDE_ENABLE_ENV)
+    raw_path = os.environ.get(_OVERRIDE_PATH_ENV)
+    fingerprint = os.environ.get(_OVERRIDE_FINGERPRINT_ENV)
+    if enabled is None and raw_path is None and fingerprint is None:
         return None
-    return _load_extension_file(module_path)
-
-
-def _load_prebuilt_extension(build_directory: Path):
-    module_path = build_directory / f"{EXTENSION_NAME}{extension_suffix()}"
-    if not module_path.exists():
-        raise FileNotFoundError(
-            f"WITWIN_RADAR_DIRICHLET_CUDA_PREBUILT=1 but {module_path} does not exist; "
-            "run a normal build first."
+    if enabled != "1" or not raw_path or not fingerprint:
+        raise RadarExtensionLoadError(
+            "loading a developer radar native library requires all three of "
+            f"{_OVERRIDE_ENABLE_ENV}=1, an absolute {_OVERRIDE_PATH_ENV}, and a "
+            f"SHA-256 {_OVERRIDE_FINGERPRINT_ENV}"
         )
-    return _load_extension_file(module_path)
+    if not identity.is_sha256(fingerprint):
+        raise RadarExtensionLoadError(
+            f"{_OVERRIDE_FINGERPRINT_ENV} must be a SHA-256 digest"
+        )
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise RadarExtensionLoadError(f"{_OVERRIDE_PATH_ENV} must be an absolute path")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise RadarExtensionLoadError(
+            f"the developer radar native library does not exist: {path}"
+        ) from exc
+    if not resolved.is_file() or resolved.suffix != extension_suffix():
+        raise RadarExtensionLoadError(
+            "the developer radar native library must be a "
+            f"{extension_suffix()} file: {resolved}"
+        )
+    return resolved, fingerprint
 
 
 # The loaded library, cached for the process.
@@ -319,58 +449,99 @@ def source_fingerprint() -> str:
     edited kernel must not.
     """
 
-    import hashlib
-
-    digest = hashlib.sha256()
-    for path in extension_sources():
-        digest.update(path.name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()[:16]
+    return identity.source_digest(extension_sources())[:16]
 
 
 def default_build_directory() -> Path:
     return (
         Path(tempfile.gettempdir())
-        / "witwin_radar_dirichlet_cuda"
+        / EXTENSION_NAME
         / f"stable_abi_v1_{source_fingerprint()}"
     )
 
 
 def _build_extension(*, verbose: bool = False):
+    """Resolve exactly one load source, or fail naming what would fix it.
+
+    Order, and the reason for it:
+
+    1. the developer override configuration is READ first, because a partial set
+       of its three variables is a mistake in every situation and must not be
+       silently ignored just because a packaged prebuilt happens to be present;
+    2. ``WITWIN_RADAR_NATIVE_BUILD=1`` means "compile from these sources", so it
+       bypasses the packaged artifact entirely. That is how
+       ``scripts/build_radar_cuda_prebuilt.py`` replaces a prebuilt that the
+       loader would otherwise refuse - a stale artifact must not be able to
+       block the command that fixes it;
+    3. a present packaged prebuilt wins over the override, matching Channel's
+       ADR-006 precedence - in a source checkout the packaged prebuilt IS the
+       developer artifact, and refreshing it is the supported dev flow;
+    4. otherwise the fully specified developer override;
+    5. otherwise a loud failure naming the three override variables.
+
+    There is no branch that answers a validation failure with a rebuild, and no
+    branch that returns ``None``.
+    """
+
+    override = _developer_override_config()
+
+    if _build_requested():
+        return _jit_build_extension(verbose=verbose)
+
+    packaged = prebuilt_extension_path()
+    if packaged.exists():
+        return _load_validated_extension(packaged, origin="packaged")
+
+    if override is not None:
+        override_path, expected_fingerprint = override
+        return _load_validated_extension(
+            override_path,
+            origin="developer",
+            expected_fingerprint=expected_fingerprint,
+        )
+
+    raise RadarExtensionLoadError(
+        f"no radar native library is available: {packaged} does not exist. "
+        "Build the packaged prebuilt with "
+        "`python scripts/build_radar_cuda_prebuilt.py`, or point at an existing "
+        f"one with all three of {_OVERRIDE_ENABLE_ENV}=1, an absolute "
+        f"{_OVERRIDE_PATH_ENV}, and a SHA-256 {_OVERRIDE_FINGERPRINT_ENV}. "
+        f"Compiling from source requires {_BUILD_ENV}=1 and must never happen "
+        "inside a test or user process."
+    )
+
+
+def _jit_build_extension(*, verbose: bool = False):
+    """Compile from source. Reachable only from the build script.
+
+    ``torch.utils.cpp_extension`` is imported HERE and not at module scope, so
+    an ordinary import of this module cannot pull the compiler machinery into
+    the process, and a test can assert that by looking at ``sys.modules``.
+    """
+
+    from torch.utils.cpp_extension import load
+
     root = source_root()
     build_directory = Path(
-        os.environ.get(
-            "WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR", default_build_directory()
-        )
+        os.environ.get(_BUILD_DIR_ENV, default_build_directory())
     )
-    if os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_SKIP_PREBUILT") != "1":
-        try:
-            module = _load_packaged_prebuilt_extension()
-        except Exception:  # noqa: BLE001 - stale/ABI-mismatched prebuilt, rebuild instead
-            module = None
-        if module is not None:
-            return module
-    if os.environ.get("WITWIN_RADAR_DIRICHLET_CUDA_PREBUILT") == "1":
-        return _load_prebuilt_extension(build_directory)
-
     _ensure_windows_build_tools_on_path()
     _ensure_cuda_home_from_nvcc()
     build_directory.mkdir(parents=True, exist_ok=True)
+    target_flag = f"TORCH_TARGET_VERSION={TORCH_TARGET_VERSION}"
     library_path = load(
         name=EXTENSION_NAME,
         sources=[str(path) for path in extension_sources()],
         build_directory=str(build_directory),
         extra_include_paths=[str(root / "kernels")],
         extra_cflags=(
-            ["/O2", "/DTORCH_TARGET_VERSION=0x020a000000000000"]
+            ["/O2", f"/D{target_flag}"]
             if os.name == "nt"
-            else ["-O3", "-DTORCH_TARGET_VERSION=0x020a000000000000"]
+            else ["-O3", f"-D{target_flag}"]
         ),
         extra_cuda_cflags=[
             "-O3",
-            "-DTORCH_TARGET_VERSION=0x020a000000000000",
+            f"-D{target_flag}",
             "-DUSE_CUDA",
             *_cuda_gencode_flags(),
         ],
@@ -379,3 +550,21 @@ def _build_extension(*, verbose: bool = False):
         verbose=verbose,
     )
     return _require_operators(Path(library_path))
+
+
+__all__ = [
+    "EXTENSION_NAME",
+    "RADAR_ABI_VERSION",
+    "TORCH_TARGET_VERSION",
+    "RadarExtensionABIError",
+    "RadarExtensionLoadError",
+    "RadarExtensionSymbolError",
+    "build_extension",
+    "default_build_directory",
+    "extension_sources",
+    "extension_suffix",
+    "prebuilt_extension_path",
+    "prebuilt_root",
+    "source_fingerprint",
+    "source_root",
+]

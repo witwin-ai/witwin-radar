@@ -234,3 +234,12 @@ __marimo__/
 .codex-tmp/
 .test-tmp/
 .tmp/
+
+# Locally built native artifacts. The binary is already covered by *.py[codz];
+# its R-ADR-019 identity sidecars are machine-specific - git revision and dirty
+# flag, compiler and nvcc versions, binary digest - and belong to the build that
+# produced them, never to the repository. The wheel still ships them: hatch
+# lists them under [tool.hatch.build.targets.wheel] artifacts, which is exactly
+# what that setting is for.
+witwin/radar/cuda/prebuilt/*.build-info.json
+witwin/radar/cuda/prebuilt/*.build-fingerprint

@@ -1,5 +1,5 @@
 """Native CUDA extension support for radar solvers."""
 
-from . import build
+from . import build, identity
 
-__all__ = ["build"]
+__all__ = ["build", "identity"]
