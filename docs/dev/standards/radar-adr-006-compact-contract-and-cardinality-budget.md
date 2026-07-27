@@ -1,6 +1,6 @@
 # R-ADR-006: Compact contract, cardinality budget, and no partial results
 
-Status: Accepted (Phase 4), amended (Phase 5)
+Status: Accepted (Phase 4), amended (Phase 5, Phase 7, Phase 10)
 
 ## Context
 
@@ -184,3 +184,53 @@ unchanged and still measured at zero.
 - `tests/test_phase7_slot_batching.py::test_batched_slots_equal_a_per_slot_loop`
 - `tests/test_phase7_slot_batching.py::test_pair_count_grows_linearly_not_quadratically`
 - `tests/test_phase7_slot_batching.py::test_the_batched_replay_is_exactly_one_consumer_call_per_leg`
+
+## Amendment (Phase 10): the record is machine-readable
+
+"Radar adds zero host observations" and "backward is ONE launch" were prose in
+this document and in R-ADR-004, pinned indirectly by two budget tests. Prose is
+not a registry: a new operator could be added with a second launch and a host
+read and nothing would say so until somebody reread an ADR.
+
+`ci/native-binding-manifest.json` schema 2 carries three columns per operator
+that state it directly, and `ci/check_native_bindings.py` requires every one of
+them on every row:
+
+- `host_observations` - **0 on all 34 operators.** This is the machine-readable
+  form of the section above. A kernel that read a count back to decide a size
+  would have to declare it here.
+- `launches` - 1 on 29 operators and 2 on 5. It is the fusion/launch contract as
+  data rather than as the sentence "Backward: ONE launch", and it is the value
+  a refactor would have to change on purpose.
+- `fused_stages` - what a single launch actually does, mirroring Channel's
+  `runtime/kernel_metadata.py`. A stage list is what makes a `launches` value
+  reviewable: 1 launch over 3 named stages is a fusion, and 1 launch over 1
+  stage is an operator.
+
+The two budget tests are unchanged and remain the measurement;
+`tests/test_phase6_launch_budget.py` counts launches in a running frame and
+`tests/test_phase9_backward_budget.py` counts them in a backward pass. The
+manifest is the DECLARATION, the tests are the MEASUREMENT, and neither
+replaces the other. This amendment adds no number and relaxes none: every
+declared value is the value the existing tests already measure.
+
+Two further registry columns land with them and belong to R-ADR-004's ownership
+half rather than to this budget: `numerical_owner`, which must read `radar` on
+every row so that a RayD-owned or Channel-owned family cannot be registered as
+a Radar shared primitive, and `native_tu`, which maps each symbol to the `.cu`
+file that implements it.
+
+`error_owners` names the six failure domains and the module that owns each -
+`native_load`, `operator_contract`, `differentiability_wall`, `higher_order_ad`,
+`host_parameter_type`, `consumer_contract`. Radar has no single
+`CapacityFailureState` because it allocates no fixed-capacity device result;
+its failures are host-side refusals before any launch, so the honest record is
+one owner per domain rather than one device flag.
+
+### Acceptance evidence (Phase 10)
+
+- `ci/check_native_bindings.py` (every column present on all 34 operators; the
+  manifest symbol set equals the packaged sidecar's `operator_symbols`)
+- `tests/test_phase10_binding_registry.py` (the gate fires on a mutated copy)
+- `tests/test_phase6_launch_budget.py`, `tests/test_phase9_backward_budget.py`
+  (unchanged, still the measurement)

@@ -1,6 +1,6 @@
 # R-ADR-004: The `_radar_native` source and ABI boundary
 
-Status: Accepted (Phase 4), extended (Phase 5)
+Status: Accepted (Phase 4), extended (Phase 5), rename closed (Phase 10)
 
 ## Context
 
@@ -26,16 +26,38 @@ consumer contract, never as linked code.
 
 ### Library name: an explicit decision, not drift
 
-The new operators are registered in the EXISTING `witwin_radar_dirichlet_cuda`
-Stable ABI library rather than a new one. `pyproject.toml`'s wheel artifacts,
+The new operators are registered in ONE Stable ABI library rather than a new one
+per family. `pyproject.toml`'s wheel artifacts,
 `scripts/verify_cuda_binary_arches.py --stem`, `hatch_build.py`, and
 `publish-witwin-radar.yml`'s `assert len(native) == 1` all assume a single native
 stem. Splitting the stem is a packaging change, and packaging changes do not
 belong in an AD spike.
 
-`_radar_native` is the LOGICAL owner name for Phase 4. The physical rename, with
-`dirichlet.cu` moving under `synthesis/`, is Phase-10 work. The binding manifest
-records both names so the gap is visible rather than forgotten.
+For Phase 4 the physical stem stayed `witwin_radar_dirichlet_cuda` while
+`_radar_native` was the LOGICAL owner name, and the binding manifest recorded
+both so the gap was visible rather than forgotten.
+
+**Closed in Phase 10.** `_radar_native` is now the ONE name: the physical stem,
+the `STABLE_TORCH_LIBRARY` dispatcher namespace, the prebuilt filename, the two
+identity sidecars, the manifest's `library` and `logical_owner`, the wheel
+artifact globs, the hatch build hook, the arch verifier's default `--stem`, and
+the publish workflow's member assertion. There is no alias and no second name.
+
+The rename changes how every `_OPS.<x>` call resolves, so it was proven
+numerically inert rather than argued to be: 22 sha256 digests over the raw
+output bytes of the operator families were IDENTICAL before and after, and
+`pytest tests --gpu` reported 1570 passed / 0 failed on both sides. The build
+fingerprint necessarily changed, which is the fingerprint doing its job - the
+sources it covers were edited.
+
+**Dropped, not deferred: moving `dirichlet.cu` under `synthesis/`.** The Phase-4
+text paired the rename with that relocation. It did not happen and is no longer
+planned. A translation unit's directory is not an ownership statement in this
+repository; `ci/native-binding-manifest.json`'s `native_tu` column is, and it
+maps each of the 34 symbols to its `.cu` file. Moving a file so a directory
+listing reads like a registry would change the build inputs, the
+`source_fingerprint`, and therefore every packaged artifact's identity, in
+exchange for nothing a reader cannot already get from the manifest.
 
 ### Operator shape
 
