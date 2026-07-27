@@ -52,6 +52,19 @@ same interpreter, the dispatcher namespaces are disjoint
 extension module rather than a dispatcher library), and one crossing compute
 completes with the expected delay and beat phase increment.
 
+The archived Radar wheel under `artifacts/phase10/wheels/` was REBUILT at the
+final branch tip and both smokes re-run against it, because the first archive
+predated a lint commit that touched four shipped modules and
+`ci/wheel_smoke.py` correctly refused it (`wheel checked-in source bytes
+differ: ['witwin/radar/radar.py', 'witwin/radar/sensors/legacy_paths.py',
+'witwin/radar/synthesis/__init__.py', 'witwin/radar/validation.py']`, exit 2).
+That refusal is the currency check working, and it is worth stating as a
+standing rule: an archived evidence wheel is only evidence for the source it
+was built from, so any later commit that changes a shipped `.py` invalidates
+it. `ci/coexistence_smoke.py` does not repeat that check - it validates
+whichever artifacts it is handed - so the two smokes are complementary rather
+than interchangeable, and its docstring now says so.
+
 Deferred: the Linux / `manylinux_2_28` cells for all three packages, **D1**.
 
 ### A2 - a Core world-contract import loads no RayD or Channel propagation runtime, and the mesh-SDF CUDA wheel keeps its independent owner
@@ -288,17 +301,32 @@ python ci/run_ci_tier.py cuda     EXIT 0   (14 gates)
 | `quick.torch-physics-allowlist` | EXIT 0 |
 | `quick.workflow-policy` | EXIT 0 |
 | `quick.import-no-native` | EXIT 0 |
-| `quick.cpu-tests` | **837 passed, 807 skipped** |
+| `quick.cpu-tests` | **843 passed, 807 skipped** |
 | `quick.cpu-coverage` | TOTAL 64%, floor 50 |
-| `cuda.gpu-tests` | **1644 passed, 0 failed** |
+| `cuda.gpu-tests` | **1644 passed, 0 failed** (see the wall-clock note below) |
 | `cuda.gpu-coverage` | TOTAL 81%, floor 75 |
 | `cuda.loader-contract` | 22 passed |
 | `cuda.extension-boundary` | EXIT 0, "extension boundary OK" |
 
 Suite counts against the phase baseline (`28b5360`): default 699 passed / 807
-skipped becomes **837 passed / 807 skipped**; `--gpu` 1506 passed / 0 failed
-becomes **1644 passed / 0 failed**. Every added test is a Phase-10 test; no
+skipped becomes **843 passed / 807 skipped**; `--gpu` 1506 passed / 0 failed
+becomes **1650 passed / 0 failed**. Every added test is a Phase-10 test; no
 existing test was weakened, skipped or removed.
+
+**Wall-clock note, measured during remediation on the same tip.** The bare
+`pytest -q tests --gpu` run is green (1650 passed, 0 failed), but two
+consecutive `run_ci_tier.py cuda` runs failed on
+`tests/test_phase8_pipeline_budget.py` (`2 failed / 1648 passed`, then
+`1 failed / 1649 passed`), with medians 3.384 ms against the 2.899 ms pipeline
+budget and 6.530 ms against the 5.044 ms frame budget. Isolated file reruns
+alternate pass and fail both with and without `coverage`. The failure
+reproduces at the phase baseline `28b5360`, the GPU is idle when it happens,
+and the diff touches no budget, tolerance or anything on that test's path: it
+is a host wall-clock flake on this machine, made likelier by running the suite
+under `coverage run`. **No budget was raised.** The correct fix is to make the
+measurement robust - more repetitions, a rejected-outlier median, or moving the
+pin to a device-time measurement - which is a numerical/perf change with its
+own evidence and belongs in Phase 11, not in a packaging phase.
 
 `nightly` and `release` were exercised gate by gate rather than as whole tiers,
 because `nightly.coexistence-smoke` needs a Channel wheel this repository
