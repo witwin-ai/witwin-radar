@@ -43,8 +43,8 @@ import os
 from dataclasses import dataclass
 
 import torch
-from torch.autograd.function import once_differentiable
 
+from ..ad_contracts import first_order_only, refuse_derivative
 from .contracts import (
     AGC_MODE_PER_RX,
     FRONTEND_STAGE_ORDER,
@@ -96,18 +96,21 @@ def _require_no_derivative(signal: torch.Tensor, stage: str) -> None:
 
     Silently detaching would return a number with no gradient where the caller
     asked for one, which is the failure a fail-loud contract exists to prevent.
+
+    The check itself is :func:`witwin.radar.ad_contracts.refuse_derivative`,
+    the ONE owner of the non-differentiability wall. This wording was the model
+    that owner was generalised from, so what stays here is the ADC's own reason
+    - why ``round`` has no derivative - rather than a second copy of the rule.
     """
 
-    tangent = torch.autograd.forward_ad.unpack_dual(signal).tangent
-    if signal.requires_grad or tangent is not None:
-        raise RuntimeError(
-            f"the frontend {stage} stage is not differentiable: `round` has a "
-            "zero derivative almost everywhere and an undefined one at every "
-            "code boundary, so this family ships no backward and no jvp. A "
-            "straight-through surrogate is a Phase-9 modelling decision rather "
-            "than something the frontend may choose. Detach the signal before "
-            "the ADC, or run without one."
-        )
+    refuse_derivative(
+        f"the frontend {stage} stage",
+        "`round` has a zero derivative almost everywhere and an undefined one "
+        "at every code boundary, and a Phase-9 straight-through surrogate is a "
+        "modelling decision rather than something the frontend may choose: "
+        "detach the signal before the ADC, or run without one.",
+        signal=signal,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +175,7 @@ class _FrontendNoise(torch.autograd.Function):
         ctx.mark_non_differentiable(output[2])
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im, grad_phase):
         (phase_rad,) = ctx.saved_tensors
         plan = ctx.plan
@@ -259,7 +262,7 @@ class _FrontendAgc(torch.autograd.Function):
         ctx.mark_non_differentiable(output[2], output[3])
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im, grad_gain, grad_rms):
         x_re, x_im, gain, rms = ctx.saved_tensors
         plan = ctx.plan

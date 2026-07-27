@@ -23,10 +23,24 @@ Three pieces:
 Phase-9 item 4 already names CFAR, peak selection and tracking as the
 non-differentiable stages. A detection is the output of a threshold comparison
 and an ``argwhere``; a gradient through an association decision is a gradient
-through a discrete choice that does not have one. A tensor that
-``requires_grad`` is REFUSED at the boundary rather than silently detached: a
-silent detach is how a caller ends up with a zero gradient and a plausible
-number, which is worse than an error.
+through a discrete choice that does not have one. A derivative-carrying tensor
+is REFUSED at the boundary rather than silently detached: a silent detach is how
+a caller ends up with a zero gradient and a plausible number, which is worse
+than an error.
+
+Two Phase-9 corrections to that enforcement, both of which mattered:
+
+* it checked ``requires_grad`` only, so a FORWARD DUAL walked straight through
+  with a live tangent. It now goes through
+  :func:`witwin.radar.ad_contracts.refuse_derivative`, which checks both modes,
+  so this module and the wall speak with one voice and one wording;
+* it fired LATE. A :class:`DetectionFrame` is built from a
+  :class:`~witwin.radar.processing.pointcloud.PointCloud` that already exists,
+  so by the time this refusal ran the frame had been computed in full. The
+  point-cloud stage now refuses at ITS entry, which makes this check
+  unreachable in the normal flow. It is kept anyway: an unreachable guard on
+  the second door is the right shape for a wall, and a caller who hands this
+  class a hand-built tensor still meets it.
 """
 
 from __future__ import annotations
@@ -36,19 +50,17 @@ from typing import Callable
 
 import torch
 
+from ..ad_contracts import refuse_derivative
 from .pointcloud import POINT_CLOUD_COLUMNS, PointCloud
 
 
-def _refuse_gradient(name: str, value: torch.Tensor) -> torch.Tensor:
-    if isinstance(value, torch.Tensor) and value.requires_grad:
-        raise ValueError(
-            f"{name} requires grad, and the detection and tracking handoff is "
-            "explicitly non-differentiable: it is built on a threshold "
-            "comparison and a discrete association, neither of which has a "
-            "derivative. Detach it deliberately at the call site rather than "
-            "letting this stage return a plausible number with a zero gradient"
-        )
-    return value
+#: Why a detection frame has no derivative.
+_ASSOCIATION_REASON = (
+    "a detection is the output of a threshold comparison and an argwhere, and "
+    "an association is a discrete assignment between two frames; neither has a "
+    "derivative, and the frame this class publishes is non-differentiable in "
+    "every field."
+)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -66,9 +78,13 @@ class DetectionFrame:
     frame_index: int
 
     def __post_init__(self) -> None:
-        _refuse_gradient("xyz", self.xyz)
-        _refuse_gradient("velocity_mps", self.velocity_mps)
-        _refuse_gradient("energy", self.energy)
+        refuse_derivative(
+            "witwin.radar.processing.tracking.DetectionFrame",
+            _ASSOCIATION_REASON,
+            xyz=self.xyz,
+            velocity_mps=self.velocity_mps,
+            energy=self.energy,
+        )
         if self.xyz.dim() != 2 or int(self.xyz.shape[1]) != 3:
             raise ValueError(f"xyz must be [N, 3]; got {tuple(self.xyz.shape)}")
         count = int(self.xyz.shape[0])

@@ -16,6 +16,18 @@ exactly one host observation - the ``torch.argwhere`` that turns a mask into a
 row list - and that observation is unavoidable: a point cloud has a data
 dependent length. It is named here so the frozen pipeline budget can attribute
 it to processing rather than to the simulation half.
+
+**This stage is explicitly non-differentiable and refuses a derivative at its
+entry.** That same ``argwhere`` is the reason: which cells become points is a
+discrete choice, the number of points is data dependent, and ``max_points``
+thins the list with a ``topk`` whose indices carry no derivative either. Before
+Phase 9 the stage published a live one anyway - ``cloud.xyz`` and
+``cloud.energy`` both came back with ``requires_grad=True`` and
+``d(energy)/d(cube)`` had abs-sum 58.36 - and what that derivative describes is
+the value AT a frozen selection, not the answer moving. Perturb the map far
+enough for the selection to change and the derivative predicts nothing about
+the new point list, including its length. Item 4 of the Phase-9 plan names peak
+selection as explicitly non-differentiable.
 """
 
 from __future__ import annotations
@@ -24,10 +36,20 @@ from dataclasses import dataclass
 
 import torch
 
+from ..ad_contracts import refuse_derivative
 from .aoa import AOA_ROUTES, tdm_compensate
 from .beamforming import ArrayGeometry
 from .cfar import Detections
 from .contracts import RangeDopplerMap
+
+
+#: Why the point-cloud stage has no derivative. One statement, quoted by the
+#: stage and by the ``topk`` thinning inside it.
+_SELECTION_REASON = (
+    "which cells become points is a discrete selection - an argwhere over a "
+    "threshold mask, thinned by a topk - so the published values are values AT "
+    "a frozen choice, and even the LENGTH of the answer is data dependent."
+)
 
 
 #: The column order of :meth:`PointCloud.as_columns`, stated as data.
@@ -170,6 +192,16 @@ def point_cloud(
         raise ValueError(
             f"route must be one of {tuple(sorted(AOA_ROUTES))}, got {route!r}"
         )
+    # Before the shape checks and before any arithmetic, so the refusal fires
+    # with no PointCloud in existence and no transform paid for. The type
+    # checks above are all that precede it, and only because the guard has to
+    # know these are the records whose tensors it is naming.
+    refuse_derivative(
+        "witwin.radar.processing.pointcloud.point_cloud",
+        _SELECTION_REASON,
+        rd_data=rd.data,
+        detection_threshold=detections.threshold,
+    )
     mask = detections.mask
     if mask.dim() != 2:
         raise ValueError(
@@ -235,8 +267,19 @@ def _keep_strongest(
 
     Done on the DEVICE with ``topk`` over the flattened map rather than by
     reading the detection list to the host and sorting it there.
+
+    Guarded again even though :func:`point_cloud` already refused at its entry
+    and is this function's only caller. Defence in depth is the right shape for
+    a wall: a future second caller inherits the refusal instead of quietly
+    reopening the hole, and the ``topk`` here is the peak selection the plan
+    names by that name.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.pointcloud._keep_strongest",
+        _SELECTION_REASON,
+        energy=energy,
+    )
     if max_points < 0:
         raise ValueError(f"max_points must be non-negative, got {max_points}")
     flat_mask = mask.reshape(-1)

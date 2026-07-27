@@ -31,6 +31,21 @@ The identity is equally a statement about a MEAN. :func:`os_cfar` scales an
 ordered statistic with that same cell-averaging constant, so the rate it
 achieves is NOT the ``pfa`` it is handed. Its own docstring gives the law its
 rate does follow, the measured ratio, and why the constant is left alone.
+
+**Every detector here is explicitly non-differentiable and refuses a derivative
+at its entry.** This one deliberately gives up a derivative that does exist: the
+threshold is a ring average of the training cells, so it is a perfectly smooth
+function of the map, and before Phase 9 it silently published one -
+``d(threshold)/d(power)`` summed to 1.51e4 on the point-cloud fixture, and under
+a forward dual the tangent was live too. What the stage OUTPUTS is a detection
+decision, and the mask that carries it is a bool with no derivative at all;
+publishing a live threshold beside a severed mask is how a caller ends up
+optimising the level and believing they are optimising the detection. Item 4 of
+the Phase-9 plan names CFAR as explicitly non-differentiable, and a
+differentiable-CFAR surrogate - a soft threshold, a sigmoid mask - is a
+modelling decision with its own design rather than something a detector may
+choose. ``docs/dev/radar-ad-capability-matrix.md`` carries the same reason as
+four ``REF`` rows.
 """
 
 from __future__ import annotations
@@ -39,6 +54,17 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+
+from ..ad_contracts import refuse_derivative
+
+
+#: Why no detector here has a derivative. Written once and quoted by all four
+#: entries, so the four cannot drift into four explanations of one decision.
+_CFAR_REASON = (
+    "a detection is the output of a threshold COMPARISON, a step function of "
+    "the map with a zero derivative almost everywhere and an undefined one "
+    "exactly where the detection changes."
+)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -133,6 +159,9 @@ def ca_cfar(
     smaller and therefore noisier one.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.cfar.ca_cfar", _CFAR_REASON, rd_map=rd_map
+    )
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
@@ -182,6 +211,9 @@ def ca_cfar_fast(
     where the summed-area route is three passes plus two gathers.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.cfar.ca_cfar_fast", _CFAR_REASON, rd_map=rd_map
+    )
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
@@ -250,6 +282,13 @@ def os_cfar(
     numerical change that owes its own decision and its own golden update.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.cfar.os_cfar",
+        _CFAR_REASON
+        + " The ordered statistic adds a second discrete decision on top of it: "
+        "which training sample the threshold is read from is chosen by a sort.",
+        rd_map=rd_map,
+    )
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     batch = int(flat.shape[0])
@@ -298,6 +337,9 @@ def ca_cfar_1d(
     detection at the first range bin is not systematically favoured.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.cfar.ca_cfar_1d", _CFAR_REASON, profile=profile
+    )
     values = _real_values(profile)
     flat, leading = _as_batch(values, 1)
     ranges = int(flat.shape[-1])

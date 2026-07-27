@@ -27,6 +27,25 @@ The virtual-antenna ordering is TX MAJOR, ``va = tx * num_rx + rx``, matching
 the ``[TX, RX, ...]`` cube ``assemble_frame_cube`` publishes and the element
 table :class:`ArrayGeometry` builds. Every slice below is expressed through
 ``array.transmitter_index`` rather than by arithmetic on a raw rank.
+
+**This module sits on BOTH sides of the non-differentiability wall, and the
+split is by function rather than by file.**
+
+* :func:`tdm_compensate` is one multiply, :func:`upa_steering` is a manifold,
+  and :func:`music_spectrum` is a smooth pseudo-spectrum of the covariance.
+  All three stay differentiable, and the MUSIC one is measured rather than
+  asserted: its gradient agrees with a central difference on the fixture its
+  test pins.
+* :func:`phase_comparison_aoa` and :func:`fft2_aoa` read an ``argmax`` BIN and
+  publish a direction cosine derived from that index. The index is discrete,
+  the cosine is a quantized function of it with a zero derivative inside every
+  bin, and the phase read at the peak keeps the tape. Both refuse a derivative
+  at their entry.
+
+:func:`music_image` is on the differentiable side, and that is a statement
+about this code rather than about MUSIC in general: it selects range bins the
+CALLER supplies - it refuses to auto-detect a peak, deliberately, and says so -
+and then calls :func:`music_spectrum`. There is no peak pick in it to guard.
 """
 
 from __future__ import annotations
@@ -35,7 +54,17 @@ import math
 
 import torch
 
+from ..ad_contracts import refuse_derivative
 from .beamforming import ArrayGeometry
+
+
+#: Why the two FFT routes have no derivative. Written once and quoted by both.
+_PEAK_BIN_REASON = (
+    "the direction cosine is read off an argmax BIN INDEX, which is discrete: "
+    "the published cosine is a staircase of the input with a zero derivative "
+    "inside every bin and an undefined one at each bin edge, and the phase "
+    "sampled at the peak carries a tape describing a peak that is held fixed."
+)
 
 
 #: The direction-cosine rows :func:`phase_comparison_aoa` and :func:`fft2_aoa`
@@ -200,6 +229,11 @@ def phase_comparison_aoa(
     grid instead of correcting one with the other.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.aoa.phase_comparison_aoa",
+        _PEAK_BIN_REASON,
+        virtual_ant=virtual_ant,
+    )
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
     if type(fft_size) is not int or fft_size < 2:
@@ -278,6 +312,11 @@ def fft2_aoa(
     bin relation holds on both axes as in :func:`phase_comparison_aoa`.
     """
 
+    refuse_derivative(
+        "witwin.radar.processing.aoa.fft2_aoa",
+        _PEAK_BIN_REASON,
+        virtual_ant=virtual_ant,
+    )
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
     if type(fft_size) is not int or fft_size < 2:
@@ -387,6 +426,18 @@ def music_spectrum(
     The sub-aperture ORDER is preserved exactly - row shift major, then column -
     because the smoothed covariance is a sum over them and reordering a float
     sum changes its last bits.
+
+    **This entry is DIFFERENTIABLE and is not guarded**, which is worth stating
+    because it sits one function away from two that are. The ``topk`` here sorts
+    EIGENVALUES to split the signal subspace from the noise subspace; it is a
+    permutation, not a peak pick, and away from an eigenvalue crossing the
+    published spectrum is a smooth function of the covariance. Measured on the
+    fixture its test pins: the autograd gradient of ``sum |spectrum|`` with
+    respect to one element of ``angle_data`` is 1.8279e-2 and a central
+    difference at ``h = 1e-2`` gives 1.8311e-2, 0.2 percent apart in a float32
+    pipeline. What is NOT differentiable is reading a peak off this spectrum,
+    and this function does not do that - :func:`music_image` makes the caller
+    supply the range bins for exactly that reason.
     """
 
     array = _require_array(array)
