@@ -221,8 +221,65 @@ def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor):
     return (vertices - center).unsqueeze(0), (posed_joints - center).unsqueeze(0)
 
 
+def _carries_derivative(value) -> str | None:
+    """``"requires_grad"``, ``"a forward tangent"``, or ``None``."""
+
+    if not isinstance(value, torch.Tensor):
+        return None
+    import torch.autograd.forward_ad as forward_ad
+
+    if value.requires_grad:
+        return "requires_grad"
+    if forward_ad.unpack_dual(value).tangent is not None:
+        return "a forward tangent"
+    return None
+
+
+def _refuse_deformation_derivative(name: str, value, carrier: str) -> None:
+    """Refuse a pose or shape derivative at the Core/Channel deformation bridge.
+
+    ``SmplPoseDeformation`` publishes two things into the Core world model: a
+    rest ``Mesh`` and a per-frame ``DeformationState``. Both cross the
+    Core/Channel COMPILE boundary. Until Phase 9 the rest mesh silently
+    ``detach()``ed its vertices, so a caller could mark the pose, watch the
+    whole chain run, and read ``pose.grad is None`` back - a severed derivative
+    with no failure, which is the defect class this phase removes.
+
+    Whether a graph-bearing vertex tensor survives ``Mesh`` construction and a
+    Channel compile is a separate, unverified question, and a half-working pose
+    gradient would be worse than none. So this refuses, and the deferral is
+    named: plumbing a pose derivative into the compiled scene is a design that
+    has to be accepted on the Core/Channel side first, not a detach to delete.
+
+    ``SMPLBody`` itself is untouched and still publishes differentiable
+    vertices. Its pose and shape gradients reach the LEGACY radar
+    ``Scene.compile_renderables()`` mesh and are a working capability there
+    (measured); this refusal is about the deformation bridge only.
+    """
+
+    raise RuntimeError(
+        f"{name} carries {carrier}, and SmplPoseDeformation cannot deliver that "
+        "derivative: the rest Mesh and every DeformationState it publishes cross "
+        "the Core/Channel compile boundary, and a pose derivative is not plumbed "
+        "across it. Accepting this would sever the graph silently and hand back "
+        "grad = None. What IS supported is pose_rate as a forward-AD tangent "
+        "DIRECTION, which is how velocity_at produces an exact vertex velocity. "
+        "For a differentiable body geometry today, mark the mesh VERTICES of a "
+        "witwin.core.Mesh, which the fixed-topology reflection route does "
+        "support. Plumbing a pose derivative into the compiled scene is a "
+        "separate accepted design."
+    )
+
+
 class SMPLBody(GeometryBase):
-    """Differentiable SMPL geometry with position and rotation."""
+    """Differentiable SMPL geometry with position and rotation.
+
+    A ``requires_grad`` pose or shape reaches the vertices this publishes and,
+    through the legacy radar ``Scene``, the compiled mesh. That route is left
+    alone. What does NOT work is routing a pose derivative through
+    :class:`SmplPoseDeformation` into a Core ``Structure``, and that one now
+    refuses rather than detaching.
+    """
 
     kind = "smpl"
 
@@ -329,6 +386,26 @@ class SmplPoseDeformation:
             raise TypeError(
                 f"body must be an SMPLBody, got {type(body).__name__}"
             )
+        # Refused here, at the earliest point the bridge exists, rather than at
+        # the first rest_mesh: a caller that got to build the deformation, run a
+        # whole epoch loop and only then learn the pose was never differentiable
+        # has already paid for the wrong answer.
+        for name, value in (("body.pose", body.pose), ("body.shape", body.shape)):
+            carrier = _carries_derivative(value)
+            if carrier is not None:
+                _refuse_deformation_derivative(name, value, carrier)
+        # pose_rate is a forward-AD tangent DIRECTION and never a leaf, the same
+        # ADR-038 statement kinematics makes about a velocity: it is consumed by
+        # make_dual inside velocity_at, so d(loss)/d(pose_rate) does not exist.
+        rate_carrier = _carries_derivative(pose_rate)
+        if rate_carrier is not None:
+            raise RuntimeError(
+                f"pose_rate carries {rate_carrier}, and a pose rate here is a "
+                "forward-AD tangent DIRECTION rather than a leaf (ADR-038). "
+                "velocity_at feeds it to make_dual as the tangent of the pose "
+                "primal, so d(loss)/d(pose_rate) is structurally unavailable in "
+                "both AD modes and no gradient would ever come back."
+            )
         self._device = _resolve_scene_device(device or body.position.device)
         self._body = body
         rate = _to_vertex_tensor(pose_rate, device=self._device).reshape(-1)
@@ -403,6 +480,13 @@ class SmplPoseDeformation:
         the authored vertices, and Channel's compiler re-applies that same
         recentring to the DEFORMED vertices with a different bounding box, so a
         limb that moved would drag the whole body with it.
+
+        The vertices used to be ``detach()``ed here. That detach was the whole
+        of the pose-gradient defect: it made the severance invisible. It is now
+        a refusal. The body's pose and shape were already checked at
+        construction, so what this catches is a derivative that arrived through
+        the body's TRANSFORM - a ``requires_grad`` ``position`` or ``rotation``
+        reaching ``_transform_mesh_verts`` - which the constructor cannot see.
         """
 
         from witwin.core import Mesh
@@ -410,8 +494,15 @@ class SmplPoseDeformation:
         vertices, faces = self._body.updated(
             pose=self._pose, device=self._device
         ).to_mesh(device=self._device)
+        carrier = _carries_derivative(vertices)
+        if carrier is not None:
+            _refuse_deformation_derivative(
+                "the posed body's vertices (through its position or rotation)",
+                vertices,
+                carrier,
+            )
         return Mesh(
-            vertices=vertices.detach(),
+            vertices=vertices,
             faces=faces.detach().to(dtype=torch.int64),
             recenter=False,
             fill_mode=mesh_kwargs.pop("fill_mode", "surface"),
