@@ -44,10 +44,14 @@ this work.
 
 ### Loading
 
-The packaged prebuilt extension is the normal load source. A developer override
-must be explicit. Nothing silently searches for or loads a stale global
-extension, and the load-time presence check names one operator per family so a
-stale binary fails at load.
+SUPERSEDED by R-ADR-019 (Phase 10). This section stated the intent - the
+packaged prebuilt is the normal load source, a developer override must be
+explicit, nothing silently loads a stale global extension - while the Phase-4
+code still fell through to a just-in-time build on any packaged failure and
+validated nothing but eight operator names. R-ADR-019 is the contract the loader
+now implements, and it names the three developer-override variables, the
+`WITWIN_RADAR_NATIVE_BUILD=1` gate on the compiler, and the sidecar identity
+chain.
 
 ## Acceptance evidence
 
