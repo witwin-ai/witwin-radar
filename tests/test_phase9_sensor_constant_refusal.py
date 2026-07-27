@@ -11,9 +11,12 @@ frame, a full result object, and ``grad = None``, with nothing anywhere saying
 the slot had no derivative.
 
 That is the defect class this phase exists to remove, and the fix is a refusal at
-CONSTRUCTION - before ``validate``, before a plan, before any launch. These tests
-are deliberately CPU-only: the refusal is a property of the contract and asking
-for a GPU to check it would have made it a test people skip.
+CONSTRUCTION - before ``validate``, before a plan, before any launch. Almost
+everything here is deliberately CPU-only: the refusal is a property of the
+contract and asking for a GPU to check it would have made it a test people skip.
+The last section is the exception, and it earns its ``--gpu`` mark - it drives
+the refusal from a real production entry point, ``Radar.mimo_from_trace``, which
+is where the one displaced caller in the tree was found.
 
 Three boundaries are pinned alongside the refusal, because over-refusing is the
 opposite mistake and just as easy to make:
@@ -293,3 +296,62 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
 
     with pytest.raises(TypeError):
         LnaSpec(gain_db=torch.tensor(20.0))
+
+
+# --------------------------------------------------------------------------
+# 5. The one displaced caller, from its real production entry point
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.gpu
+def test_a_marked_velocity_into_mimo_from_trace_is_refused():
+    """The only caller in the tree that the new rule displaced, pinned.
+
+    ``Radar.mimo_from_trace(trace, velocities=...)`` routes the velocity into
+    ``SensorWeightGeometry.site_velocity`` through
+    ``witwin/radar/sensors/legacy_paths.py``. A marked velocity there was
+    MEASURED, before this change, to run the whole frame and return
+    ``velocities.grad is None`` while the position gradient came back correctly:
+    the velocity is not an input of the operator's autograd ``Function`` at all.
+
+    So no capability was removed and the caller was fixed rather than the rule
+    softened - ``tests/solvers/test_mimo_cross.py`` now detaches at the call
+    site, with the reason written there. This test is what stops the mark from
+    drifting back in, and it drives the refusal through the real entry point
+    rather than through a hand-built geometry.
+    """
+
+    from conftest import make_radar_or_skip
+    from solvers.test_mimo_cross import _mimo_config
+
+    from witwin.radar import TraceResult
+
+    config = _mimo_config(
+        num_tx=1,
+        num_rx=1,
+        tx_loc=[[0, 0, 0]],
+        rx_loc=[[0, 0, 0]],
+        chirp_per_frame=4,
+        num_doppler_bins=4,
+        adc_start_time=6,
+    )
+    radar = make_radar_or_skip(config)
+    points = torch.tensor(
+        [[0.0, 0.0, -3.0]], dtype=torch.float32, device="cuda", requires_grad=True
+    )
+    intensities = torch.tensor([0.9], dtype=torch.float32, device="cuda")
+    velocities = torch.tensor(
+        [[0.0, 0.0, -0.5]], dtype=torch.float32, device="cuda", requires_grad=True
+    )
+    trace = TraceResult(points, intensities)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        radar.mimo_from_trace(trace, velocities=velocities, t0=0.4)
+    assert "SensorWeightGeometry.site_velocity" in str(excinfo.value)
+
+    # And the same call with the velocity detached still works and still carries
+    # the POSITION gradient, which is what that route is actually for.
+    frame = radar.mimo_from_trace(trace, velocities=velocities.detach(), t0=0.4)
+    frame.abs().square().sum().backward()
+    assert points.grad is not None
+    assert float(points.grad.abs().sum()) > 0.0

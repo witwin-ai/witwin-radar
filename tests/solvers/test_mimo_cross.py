@@ -193,10 +193,26 @@ class TestMIMOCrossValidation:
             return TraceResult(base_points + velocities * (float(t) - t0), intensities)
 
         legacy = radar.mimo(interp, t0=t0, fast=False)
-        fallback = radar.mimo_from_trace(trace, velocities=velocities, t0=t0)
+        # The velocity is DETACHED at this call site, and its two uses here are
+        # different in kind. Inside ``interp`` it is part of a differentiable
+        # POSITION expression and its graph is real. Handed to
+        # ``mimo_from_trace`` it lands in ``SensorWeightGeometry.site_velocity``,
+        # a frozen constant of the row set that is not an input of the native
+        # operator's autograd Function at all: a marked tensor there ran a whole
+        # frame and returned ``grad = None``, measured in Phase 9. That slot now
+        # refuses instead of returning the None, so the mark comes off here.
+        # Nothing this test asserts is lost - the gradient under test is the one
+        # through ``base_points``, which is untouched and is now checked.
+        fallback = radar.mimo_from_trace(
+            trace, velocities=velocities.detach(), t0=t0
+        )
 
         torch.testing.assert_close(fallback, legacy, rtol=5e-4, atol=1e-8)
         assert fallback.requires_grad
+        assert base_points.grad is None
+        fallback.abs().square().sum().backward()
+        assert base_points.grad is not None
+        assert float(base_points.grad.abs().sum()) > 0.0
 
 
 class TestMIMOOutputShape:

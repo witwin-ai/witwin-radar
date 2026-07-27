@@ -151,6 +151,13 @@ return `None` from `backward` by construction, with no refusal anywhere; they no
 fail at `SensorWeightGeometry` / `SensorWeightPlan` construction, before
 `validate` and before any launch.
 
+One caller in the tree was displaced and it was FIXED rather than the rule
+softened: `tests/solvers/test_mimo_cross.py` marked a velocity and handed it to
+`Radar.mimo_from_trace`. That request was measured, before the change, to run a
+whole frame and return `velocities.grad is None` while the position gradient
+came back correctly, so no capability was removed. The call site now detaches,
+with the reason written there.
+
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
 | sensor_weight/evaluate | tx_pos, rx_pos, site_in, site_out | jvp | SUP | native-companion | witwin/radar/sensors/weights.py:332 | tests/test_phase6_sensor_weight.py::test_the_jvp_matches_a_central_finite_difference | fd |
@@ -161,6 +168,7 @@ fail at `SensorWeightGeometry` / `SensorWeightPlan` construction, before
 | sensor_weight/SensorWeightGeometry | fixed_length_m, normals, pol_tx, pol_rx, local_axes | vjp | REF | host-declaration | witwin/radar/sensors/weights.py:195 | tests/test_phase9_sensor_constant_refusal.py::test_a_marked_frozen_geometry_field_is_refused | refusal |
 | sensor_weight/SensorWeightGeometry | fixed_length_m, normals, pol_tx, pol_rx, local_axes | jvp | REF | host-declaration | witwin/radar/sensors/weights.py:195 | tests/test_phase9_sensor_constant_refusal.py::test_a_dual_carrying_frozen_geometry_field_is_refused | refusal |
 | sensor_weight/SensorWeightPlan | pattern tables | both | REF | host-declaration | witwin/radar/sensors/weights.py:239 | tests/test_phase9_sensor_constant_refusal.py::test_a_marked_pattern_table_is_refused | refusal |
+| sensor_weight/mimo_from_trace | a marked velocity from a production entry point | both | REF | host-declaration | witwin/radar/sensors/legacy_paths.py:157 | tests/test_phase9_sensor_constant_refusal.py::test_a_marked_velocity_into_mimo_from_trace_is_refused | refusal |
 | sensor_weight/evaluate | out:pattern_gain | both | DECL | native-declared | witwin/radar/sensors/weights.py:410 | tests/test_phase6_sensor_weight.py::test_the_kernel_pattern_gain_equals_the_torch_pattern_gain | declaration |
 
 ### Scatter response (`witwin/radar/scattering/rcs.py`)
