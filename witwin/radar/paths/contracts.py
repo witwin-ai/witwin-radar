@@ -130,6 +130,17 @@ class RadarPathBatch:
     property of the result and never a guess from its shape. Both modes publish
     THIS contract, so a consumer downstream of it - synthesis, in particular -
     needs no branch; the choice is made once, by the caller, upstream.
+
+    ``weight_includes_antenna_pattern`` is the fourth provenance boolean of the
+    pipeline and the only one a composer does not already know. A composed
+    weight is Channel-sourced, so it always carries the reference-frequency
+    phase, the free-space spreading and the transmit power; it carries the
+    ARRAY's transmit and receive pattern gain only after
+    :meth:`witwin.radar.sensors.RoundTripPatternStage.apply` has run. Both
+    composers publish ``False`` because neither applies a pattern, and that
+    stage is the one producer that publishes ``True``. It exists to be READ: the
+    stage refuses a batch that already carries it, because applying an antenna
+    pattern twice squares its gain and no magnitude plot shows the difference.
     """
 
     sensor_pair_count: int
@@ -145,8 +156,11 @@ class RadarPathBatch:
     join_mode: JoinMode
     frequency_response: torch.Tensor | None = None
     frequency_offsets_hz: torch.Tensor | None = None
+    weight_includes_antenna_pattern: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.weight_includes_antenna_pattern) is not bool:
+            raise TypeError("weight_includes_antenna_pattern must be a bool")
         if self.join_mode not in JOIN_MODES:
             raise ValueError(
                 f"join_mode must be one of {sorted(JOIN_MODES)}, got "

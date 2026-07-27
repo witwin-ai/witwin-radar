@@ -170,6 +170,17 @@ with the reason written there.
 | sensor_weight/SensorWeightPlan | pattern tables | both | REF | host-declaration | witwin/radar/sensors/weights.py:239 | tests/test_phase9_sensor_constant_refusal.py::test_a_marked_pattern_table_is_refused | refusal |
 | sensor_weight/mimo_from_trace | a marked velocity from a production entry point | both | REF | host-declaration | witwin/radar/sensors/legacy_paths.py:157 | tests/test_phase9_sensor_constant_refusal.py::test_a_marked_velocity_into_mimo_from_trace_is_refused | refusal |
 | sensor_weight/evaluate | out:pattern_gain | both | DECL | native-declared | witwin/radar/sensors/weights.py:410 | tests/test_phase6_sensor_weight.py::test_the_kernel_pattern_gain_equals_the_torch_pattern_gain | declaration |
+| sensor_weight/round_trip | site positions to a composed round-trip weight | vjp | SUP | native-companion | witwin/radar/sensors/round_trip.py:293 | tests/test_phase11_antenna_pattern_route.py::test_the_reverse_gradient_of_a_site_matches_a_central_difference | fd |
+| sensor_weight/round_trip | transmit element positions to a composed round-trip weight | vjp | SUP | native-companion | witwin/radar/sensors/round_trip.py:293 | tests/test_phase11_antenna_pattern_route.py::test_the_reverse_gradient_of_a_transmit_element_matches_a_central_difference | fd |
+| sensor_weight/round_trip | site positions to a composed round-trip weight | jvp | SUP | native-companion | witwin/radar/sensors/round_trip.py:293 | tests/test_phase11_antenna_pattern_route.py::test_the_forward_tangent_of_a_site_matches_a_central_difference | fd |
+
+The last three rows are Phase 11's PRODUCTION route for this family. Until
+`RoundTripPatternStage` existed the family's only importer was
+`sensors/legacy_paths.py`, on the Dirichlet route that Phase 11 deletes, so
+every row above described a capability no production entry point could reach.
+The stage reaches all three companions through `evaluate_sensor_weights` and
+adds no `torch.autograd.Function` of its own, so the tape ledger's ten owners
+are still ten and the boundary budget is unchanged.
 
 ### Scatter response (`witwin/radar/scattering/rcs.py`)
 

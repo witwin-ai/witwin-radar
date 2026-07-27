@@ -152,7 +152,10 @@ SECTION_ROWS = {
     "Kinematics (`witwin/radar/propagation/kinematics.py`)": 8,
     "SMPL geometry (`witwin/radar/geometry/smpl.py`)": 6,
     "The host-float rule (`witwin/radar/host_parameters.py`)": 12,
-    "Sensor weight (`witwin/radar/sensors/weights.py`)": 10,
+    # 10 leaves of the family itself, plus the three Phase-11 rows for the
+    # PRODUCTION route that reaches it, `sensors/round_trip.py`. The section
+    # keeps the family's name because there is still one numerical owner.
+    "Sensor weight (`witwin/radar/sensors/weights.py`)": 13,
     "Scatter response (`witwin/radar/scattering/rcs.py`)": 6,
     "FMCW beat synthesis (`witwin/radar/synthesis/fmcw_beat.py`)": 5,
     "End-to-end waveform chains (`tests/support/waveform_chains.py`)": 9,

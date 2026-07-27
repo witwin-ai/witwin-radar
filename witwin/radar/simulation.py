@@ -14,6 +14,7 @@ The chain, once per frame, in the order it runs:
       -> bind_radar_world             endpoints, sites and their stable IDs
       -> reevaluate_slots x 2         one consumer call per leg, no discovery
       -> TwoWayComposer.compose       the round trip, on the device
+      -> RoundTripPatternStage.apply  the array pattern, when one was declared
       -> Radar.synthesize             the waveform this radar declares
       -> assemble_frame_cube          [chirp, pair, sample] -> [TX, RX, ...]
       -> Radar.apply_signal_models    the receive chain, if one is configured
@@ -247,6 +248,7 @@ def simulate_scene(
     motion_event_period_frames: int | None = None,
     ids: object = None,
     polarization: object = None,
+    antenna_pattern: object = None,
 ) -> RadarSimulationResult:
     """Run ``radar`` over ``scene`` at ``times`` and publish the frame cubes.
 
@@ -279,6 +281,15 @@ def simulate_scene(
     builds no graph; ``"vjp"`` makes the published cube differentiable with
     respect to the endpoint and site positions the binding passed through by
     identity.
+
+    ``antenna_pattern`` is an
+    :class:`~witwin.radar.sensors.contracts.AntennaPatternSpec` and defaults to
+    ``None``, which applies no pattern and launches no extra kernel. It does NOT
+    default to ``radar.system_config.sensors.pattern``: that spec falls back to
+    a half-wave dipole, so adopting it here would attenuate every result by a
+    number nobody chose. Pass that spec to use it,
+    :data:`~witwin.radar.sensors.round_trip.ISOTROPIC_PATTERN` to run the stage
+    as a proven no-op, or leave it ``None``.
     """
 
     from .paths import TwoWayComposer
@@ -288,6 +299,7 @@ def simulate_scene(
     )
     from .propagation.contracts import RadarPropagationLegs
     from .propagation.epochs import FrozenEpoch, SceneEpochLoop
+    from .sensors.round_trip import RoundTripPatternStage
     from .scene_binding import (
         DEFAULT_POLARIZATION,
         ScatterSitePolicy,
@@ -347,13 +359,26 @@ def simulate_scene(
             num_rx=array.num_rx,
             sensor_pair_count=composer.sensor_pair_count,
         )
+        # The pattern tables are a property of the frozen join - which pair each
+        # row belongs to and which site it visits - so they are built here, once
+        # per epoch, and the frame loop only gathers positions and launches.
+        stage = (
+            None
+            if antenna_pattern is None
+            else RoundTripPatternStage.freeze(
+                radar,
+                composer,
+                site_ids=binding.site_ids,
+                pattern=antenna_pattern,
+            )
+        )
         # The binding travels with the epoch so the frame that just froze does
         # not build a second one from the same snapshot. It is deterministic, so
         # the two would agree - which is exactly why building both is waste.
         return FrozenEpoch(
             adapter=adapter,
             handles=(inbound, outbound),
-            payload=(composer, binding),
+            payload=(composer, binding, stage),
         )
 
     loop = SceneEpochLoop(
@@ -376,7 +401,7 @@ def simulate_scene(
         epoch_frame = loop.frame(time_s)
         frozen = epoch_frame.frozen
         inbound_handle, outbound_handle = frozen.handles
-        composer, epoch_binding = frozen.payload
+        composer, epoch_binding, pattern_stage = frozen.payload
         # Rebound at every frame that did not just freeze, because the site
         # positions and the radar pose are read from the CURRENT world: a site
         # riding a Core rigid motion moves between frames while the frozen
@@ -409,6 +434,13 @@ def simulate_scene(
             ),
         )
         composed = composer.compose(legs.inbound, legs.outbound, response)
+        if pattern_stage is not None:
+            composed = pattern_stage.apply(
+                composed,
+                tx_pos=binding.transmitters.positions_m,
+                rx_pos=binding.receivers.positions_m,
+                site_positions_m=binding.site_positions_m,
+            )
         synthesis = radar.synthesize(composed, slow_time_mode=mode)
         cubes.append(
             radar.apply_signal_models(

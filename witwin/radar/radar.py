@@ -741,6 +741,7 @@ class Radar:
         motion_event_period_frames: int | None = None,
         ids=None,
         polarization=None,
+        antenna_pattern=None,
     ) -> "RadarSimulationResult":
         """Simulate this radar over a Core world and return the frame cubes.
 
@@ -762,6 +763,14 @@ class Radar:
         :attr:`last_propagation`, :attr:`last_radar_paths`). They are cleared
         FIRST, so a call that raises part way through leaves no stale world
         behind claiming to describe this radar.
+
+        ``antenna_pattern`` opts this solve into the array's transmit and
+        receive pattern gain, applied by the native ``sensor_weight`` family
+        between the two-way join and synthesis. It is ``None`` by default and
+        deliberately does not fall back to
+        ``self.system_config.sensors.pattern``, whose own default is a half-wave
+        dipole: silently attenuating every result by an unrequested pattern is
+        the failure this keyword exists to avoid. Pass that spec to use it.
 
         ``simulate_group`` is gone. It was a permanently refusing classmethod
         and a permanent refusal is itself a legacy shim; simulating several
@@ -786,6 +795,7 @@ class Radar:
             motion_event_period_frames=motion_event_period_frames,
             ids=ids,
             polarization=polarization,
+            antenna_pattern=antenna_pattern,
         )
         self._last_result = result
         return result

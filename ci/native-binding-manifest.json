@@ -630,7 +630,8 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
-      "end_to_end_caller": "witwin.radar.sensors.weights.evaluate_sensor_weights"
+      "end_to_end_caller": "witwin.radar.sensors.round_trip.RoundTripPatternStage.apply",
+      "caller_note": "The scene-driven production route. Radar.simulate(..., antenna_pattern=spec) freezes a RoundTripPatternStage once per topology epoch and applies it between the two-way join and synthesis; the stage calls evaluate_sensor_weights, this symbol's python_owner. Before Phase 11 the only importer of that owner was sensors/legacy_paths.py, which the Dirichlet-route deletion removes."
     },
     {
       "symbol": "sensor_weight_backward",
@@ -649,7 +650,8 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
-      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.backward"
+      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.backward",
+      "caller_note": "Reached from the same production route through autograd: RoundTripPatternStage.apply builds the _SensorWeight context and this companion runs when that frame's graph is differentiated. The forward row names the production entry."
     },
     {
       "symbol": "sensor_weight_jvp",
@@ -668,7 +670,8 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
-      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.jvp"
+      "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.jvp",
+      "caller_note": "Reached from the same production route through autograd: a forward-AD dual on a site or an element position enters RoundTripPatternStage.apply and this companion carries its tangent. The forward row names the production entry."
     },
     {
       "symbol": "frontend_noise_forward",

@@ -1,16 +1,42 @@
+"""Antenna-pattern interpolation, measured through the production route.
+
+This file used to drive the pattern through ``solvers.common`` and compare it
+with ``tests/reference/path_math.py``. Both belong to the legacy Dirichlet
+route that Phase 11 deletes, so the same four questions are now asked of the
+route that survives: :class:`witwin.radar.sensors.RoundTripPatternStage`, which
+applies the transmit and receive pattern gain to a composed round-trip batch
+through the native ``sensor_weight`` family.
+
+The measured quantity is unchanged and so are the expected numbers. With one
+transmitter and one receiver co-located at the radar origin, the transmit and
+receive directions to a target are the same vector, so the stage's amplitude
+factor ``sqrt(G_t * G_r)`` is exactly ``G``, and the ratio of an off-axis row to
+a boresight row is the POWER gain the tables tabulate. That is why the dipole
+and bilinear expectations below are the same as before the migration.
+
+These are now GPU tests. The interpolation they exercise lives in a CUDA kernel;
+its Torch oracle is pinned separately, over random directions, by
+``tests/test_phase6_sensor_weight.py``.
+"""
+
 from __future__ import annotations
 
 import math
+import types
 
 import pytest
 import torch
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.solvers.common import normalize_interpolated_sample
+from witwin.radar.paths import RadarPathBatch, RadarPathTopology
+from witwin.radar.sensors import AntennaPatternSpec
+from witwin.radar.sensors.round_trip import RoundTripPatternStage
 
-# The two path expressions are the INDEPENDENT copy under tests/reference.
-# Phase 6 migrated the production ones into the native `sensor_weight` family.
-from reference.path_math import compute_path_amplitudes, compute_total_path_lengths
+
+pytestmark = pytest.mark.gpu
+
+#: One site, one transmitter, one receiver: one composed row.
+_SITE_STABLE_ID = 3_000_000
 
 
 def _base_config() -> dict:
@@ -39,7 +65,7 @@ def _make_radar(*, antenna_pattern=None) -> Radar:
     config = _base_config()
     if antenna_pattern is not None:
         config["antenna_pattern"] = antenna_pattern
-    return Radar(RadarConfig.from_dict(config), device="cpu")
+    return Radar(RadarConfig.from_dict(config))
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
@@ -55,17 +81,62 @@ def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.T
     return direction * radius
 
 
-def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
-    position = _target_position(x_deg, y_deg, radius).to(device=radar.device)
-    sample = normalize_interpolated_sample(
-        (
-            torch.tensor([1.0], dtype=torch.float32, device=radar.device),
-            position.unsqueeze(0),
-        ),
-        device=radar.device,
+def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]:
+    """The stage and a unit-weight batch for a single-element single-site array.
+
+    The join is duck-typed: the stage reads a pair index, a pair count, a site
+    count and a response slot off it, and a real Channel round trip would only
+    supply four one-element tensors at the cost of a compiled scene.
+    """
+
+    device = radar.device
+    zeros = torch.zeros(1, dtype=torch.int64, device=device)
+    join = types.SimpleNamespace(
+        sensor_pair_index=zeros,
+        sensor_pair_count=1,
+        site_count=1,
+        path_count=1,
+        response_slot=zeros,
     )
-    total_lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos)
-    return compute_path_amplitudes(radar, sample, total_lengths).abs().max()
+    stage = RoundTripPatternStage.freeze(
+        radar,
+        join,
+        site_ids=(_SITE_STABLE_ID,),
+        pattern=AntennaPatternSpec.from_config(radar.config.antenna_pattern),
+    )
+    batch = RadarPathBatch(
+        sensor_pair_count=1,
+        path_count=1,
+        sensor_pair_index=zeros,
+        pair_offsets=torch.tensor([0, 1], dtype=torch.int64, device=device),
+        total_delay_s=torch.zeros(1, dtype=torch.float32, device=device),
+        delay_rate=None,
+        complex_transfer_ref=torch.ones(1, dtype=torch.complex64, device=device),
+        reference_frequency_hz=float(radar.config.fc),
+        row_valid=None,
+        topology=RadarPathTopology(
+            radar_source_id=zeros,
+            site_id=zeros + _SITE_STABLE_ID,
+            radar_sink_id=zeros,
+            inbound_row=zeros,
+            outbound_row=zeros,
+        ),
+        join_mode="multipath",
+    )
+    return stage, batch
+
+
+def _signal_peak(
+    radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.0
+) -> torch.Tensor:
+    """The composed weight's magnitude for a target at that off-boresight angle."""
+
+    stage, batch = _one_row_stage(radar)
+    site = _target_position(x_deg, y_deg, radius).to(device=radar.device).unsqueeze(0)
+    published = stage.apply(
+        batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=site
+    )
+    return published.complex_transfer_ref.abs().max()
 
 
 def _half_wave_dipole_power(angle_deg: float) -> float:
@@ -107,26 +178,41 @@ def test_missing_antenna_pattern_uses_default_dipole_runtime():
     assert radar.antenna_pattern_config["kind"] == "separable"
 
     center_gain = radar.evaluate_antenna_pattern_xy(
-        torch.tensor([0.0], dtype=torch.float32),
-        torch.tensor([0.0], dtype=torch.float32),
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
     edge_gain = radar.evaluate_antenna_pattern_xy(
-        torch.tensor([85.0], dtype=torch.float32),
-        torch.tensor([0.0], dtype=torch.float32),
+        torch.tensor([85.0], dtype=torch.float32, device=radar.device),
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
 
-    assert torch.allclose(center_gain, torch.tensor([1.0], dtype=torch.float32), atol=1e-6, rtol=1e-6)
+    assert torch.allclose(
+        center_gain,
+        torch.tensor([1.0], dtype=torch.float32, device=radar.device),
+        atol=1e-6,
+        rtol=1e-6,
+    )
     assert edge_gain.item() < 0.05
 
 
 @pytest.mark.parametrize("angle_deg", [0.0, 30.0, 60.0])
 def test_default_dipole_signal_matches_expected_gain(angle_deg: float):
+    """The configured default is a dipole, and the stage applies exactly it.
+
+    ``AntennaPatternSpec.from_config(None)`` is the half-wave dipole, which is
+    also what ``radar.antenna_pattern_config`` falls back to, so passing the
+    spec through the production stage measures the same cut the runtime
+    declares.
+    """
+
     radar = _make_radar()
     center_peak = _signal_peak(radar, x_deg=0.0, y_deg=0.0)
     off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
     measured_ratio = (off_axis_peak / center_peak).item()
 
-    assert measured_ratio == pytest.approx(_half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3)
+    assert measured_ratio == pytest.approx(
+        _half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3
+    )
 
 
 def test_flat_custom_pattern_keeps_signal_constant():
@@ -143,7 +229,9 @@ def test_flat_custom_pattern_keeps_signal_constant():
     center_peak = _signal_peak(radar, x_deg=0.0, y_deg=0.0)
     for angle_deg in (15.0, 45.0, 70.0):
         off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
-        assert (off_axis_peak / center_peak).item() == pytest.approx(1.0, rel=5e-3, abs=5e-3)
+        assert (off_axis_peak / center_peak).item() == pytest.approx(
+            1.0, rel=5e-3, abs=5e-3
+        )
 
 
 def test_2d_map_signal_matches_bilinear_gain():

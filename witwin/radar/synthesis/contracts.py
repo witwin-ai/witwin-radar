@@ -1070,11 +1070,21 @@ class SynthesisPathBatch:
     ``reference_frequency_hz``. It is NOT a beat weight; converting to one is
     the FMCW owner's single call site.
 
-    The four provenance fields are the whole reason this type exists. They say
+    The five provenance fields are the whole reason this type exists. They say
     what is ALREADY inside the weight, so :func:`require_compatible` can refuse
     a spec that would apply it a second time. They are set by the two
     classmethods below rather than by a caller, because a caller that could
     assert its own provenance could assert the convenient one.
+
+    ``weight_includes_antenna_pattern`` is the one of the five that a composer
+    cannot know, so it is CARRIED rather than asserted: it is read off the
+    composed batch, where
+    :meth:`witwin.radar.sensors.RoundTripPatternStage.apply` set it. No
+    synthesis rule consumes it - a waveform kernel has never applied an antenna
+    pattern and still does not - which is exactly why it has to be recorded
+    here: it is the only surviving statement of whether the array's gain is in
+    the cube, and a consumer that has to guess would guess the one that makes
+    its numbers agree.
 
     Validation is host-only: shapes, dtypes, contiguity, device, and flags. It
     reads no tensor VALUE, so constructing this contract costs no
@@ -1112,6 +1122,7 @@ class SynthesisPathBatch:
     weight_includes_spreading: bool
     weight_includes_tx_power: bool
     slow_time_mode: SlowTimeMode
+    weight_includes_antenna_pattern: bool = False
 
     def __post_init__(self) -> None:
         if self.join_mode not in JOIN_MODES:
@@ -1132,6 +1143,7 @@ class SynthesisPathBatch:
             "weight_includes_reference_phase",
             "weight_includes_spreading",
             "weight_includes_tx_power",
+            "weight_includes_antenna_pattern",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -1235,11 +1247,18 @@ class SynthesisPathBatch:
         dtype, device, and gradient state are all preserved, and a test asserts
         object identity rather than value equality.
 
-        The three provenance booleans are Channel's published contract, not a
-        caller's opinion, which is why they are written here:
+        Three of the four provenance booleans are Channel's published contract,
+        not a caller's opinion, which is why they are written here:
 
         * ``coefficient_reference = "includes_reference_frequency_phase"``
         * ``FREE_SPACE_AMPLITUDE = "sqrt(tx_power)*wavelength/(4*pi*distance)"``
+
+        The fourth, ``weight_includes_antenna_pattern``, is READ off the batch
+        instead. Channel has no antenna pattern to publish a contract about, and
+        whether Radar applied its own is a fact about what ran upstream rather
+        than about what Channel guarantees; asserting ``True`` here - as this
+        method did for all three of the others until Phase 11 - would have been
+        a claim about a stage that did not exist.
 
         ``slow_time_mode`` is the one thing the caller must say, because only
         the caller knows whether it froze the weight for the frame or refreshes
@@ -1275,6 +1294,9 @@ class SynthesisPathBatch:
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
             slow_time_mode=slow_time_mode,
+            weight_includes_antenna_pattern=bool(
+                paths.weight_includes_antenna_pattern
+            ),
         )
 
     @classmethod
@@ -1353,6 +1375,11 @@ class SynthesisPathBatch:
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
             slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
+            # The legacy real-amplitude route applies the pattern inside the
+            # same sensor-weight launch that produces the amplitude, so a batch
+            # built here has already been weighted. It is not the round-trip
+            # stage's input and the stage would refuse it on join_mode anyway.
+            weight_includes_antenna_pattern=True,
         )
 
 
