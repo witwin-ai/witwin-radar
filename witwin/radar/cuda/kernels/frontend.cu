@@ -2,10 +2,9 @@
 //
 // This is the Phase-6 native owner of the receive chain that
 // `NoiseModelRuntime` and `ReceiverChainRuntime` split between them in Torch
-// today. Like every other Phase-6 family it registers in the existing
-// `witwin_radar_dirichlet_cuda` library because the packaging chain assumes a
-// single native artifact stem; the physical rename is Phase-10 work and is
-// recorded in R-ADR-004.
+// today. Like every other Phase-6 family it registers in the single
+// `_radar_native` library Radar ships (R-ADR-004; the Phase-10 rename made the
+// physical stem match this logical name).
 //
 // THE ORDER IS FIXED HERE AND NOWHERE ELSE. The Python runtime applies these
 // operators in one sequence with no exceptions:
@@ -931,7 +930,7 @@ void frontend_quantize_forward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("frontend_noise_forward", TORCH_BOX(&frontend_noise_forward_cuda));
   m.impl("frontend_noise_backward", TORCH_BOX(&frontend_noise_backward_cuda));
   m.impl("frontend_noise_jvp", TORCH_BOX(&frontend_noise_jvp_cuda));

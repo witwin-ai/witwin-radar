@@ -192,7 +192,7 @@ def test_every_load_route_validates_the_required_operators(monkeypatch):
         def __getattr__(self, name):
             raise AttributeError(name)
 
-    monkeypatch.setattr(torch.ops, "witwin_radar_dirichlet_cuda", Empty())
+    monkeypatch.setattr(torch.ops, "_radar_native", Empty())
     with pytest.raises(ImportError, match="stale"):
         build._require_operators(pathlib.Path("fake.pyd"))
 

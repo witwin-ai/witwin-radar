@@ -1,9 +1,9 @@
 // Pulsed echo train over the (pulse, fast-time sample) grid.
 //
 // This is the Phase-6 pulsed synthesis primitive. Like the beat and CFR
-// families it is registered in the existing `witwin_radar_dirichlet_cuda`
-// library because the packaging chain assumes a single native artifact stem;
-// the physical rename is Phase-10 work and is recorded in R-ADR-004.
+// families it is registered in the single `_radar_native` library Radar ships
+// (R-ADR-004; the Phase-10 rename made the physical stem match this logical
+// name).
 //
 // Closed form, stated verbatim:
 //
@@ -774,7 +774,7 @@ void pulsed_echo_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("pulsed_echo_forward", TORCH_BOX(&pulsed_echo_forward_cuda));
   m.impl("pulsed_echo_backward", TORCH_BOX(&pulsed_echo_backward_cuda));
   m.impl("pulsed_echo_jvp", TORCH_BOX(&pulsed_echo_jvp_cuda));

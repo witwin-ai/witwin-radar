@@ -145,7 +145,7 @@ def main() -> None:
     missing = [
         name
         for name in symbols
-        if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, name)
+        if not hasattr(torch.ops._radar_native, name)
     ]
     if missing:
         raise SystemExit(

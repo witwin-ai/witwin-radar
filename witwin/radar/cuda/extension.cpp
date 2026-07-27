@@ -1,6 +1,6 @@
 #include <torch/csrc/stable/library.h>
 
-STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m) {
+STABLE_TORCH_LIBRARY(_radar_native, m) {
   // Dirichlet range spectrum. The path weight is COMPLEX, carried as the two
   // real tensors (a, a_im) exactly like the beat and join families: no complex
   // tensor crosses the autograd boundary. A real weight is a_im = 0 and is

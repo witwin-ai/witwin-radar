@@ -691,7 +691,7 @@ void scatter_response_aspect_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl(
       "scatter_response_aspect_forward",
       TORCH_BOX(&scatter_response_aspect_forward_cuda));

@@ -161,7 +161,7 @@ jobs:
           MAX_JOBS: "2"
           WITWIN_CUDA_GENCODE_ARCHES: "7.0;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0+PTX"
           PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
-          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/witwin_radar_dirichlet_cuda/stable_abi_v1
+          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/_radar_native/stable_abi_v1
         run: |
           python "$PACKAGE_DIR"/scripts/build_radar_cuda_prebuilt.py --verbose
 
@@ -195,7 +195,7 @@ jobs:
             pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128 &&
             python {project}/scripts/build_radar_cuda_prebuilt.py --verbose &&
             python {project}/scripts/verify_cuda_binary_arches.py
-            --stem witwin_radar_dirichlet_cuda
+            --stem _radar_native
             {project}/witwin/radar/cuda/prebuilt
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel repair --plat manylinux_2_28_x86_64
@@ -216,7 +216,7 @@ jobs:
           PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
         run: |
           python "$PACKAGE_DIR"/scripts/verify_cuda_binary_arches.py \
-            --stem witwin_radar_dirichlet_cuda \
+            --stem _radar_native \
             "$PACKAGE_DIR"/witwin/radar/cuda/prebuilt
 
       - name: Build platform wheel
@@ -245,7 +245,7 @@ jobs:
 
           wheel = next((Path(os.environ["PACKAGE_DIR"]) / "dist").glob("*.whl"))
           names = zipfile.ZipFile(wheel).namelist()
-          native = [name for name in names if "witwin_radar_dirichlet_cuda" in name and name.endswith((".so", ".pyd"))]
+          native = [name for name in names if "_radar_native" in name and name.endswith((".so", ".pyd"))]
           assert len(native) == 1, native
           assert "/prebuilt/" in f"/{native[0]}"
           assert "torch_" not in native[0]
@@ -256,7 +256,7 @@ jobs:
           build_path = next((path for path in candidates if path.exists()), None)
           assert build_path is not None, f"installed build.py not found in {candidates}"
 
-          spec = importlib.util.spec_from_file_location("witwin_radar_dirichlet_cuda_build", build_path)
+          spec = importlib.util.spec_from_file_location("_radar_native_build", build_path)
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
 
@@ -336,7 +336,7 @@ jobs:
           ]
           build_path = next((path for path in candidates if path.exists()), None)
           assert build_path is not None, candidates
-          spec = importlib.util.spec_from_file_location("witwin_radar_dirichlet_cuda_build", build_path)
+          spec = importlib.util.spec_from_file_location("_radar_native_build", build_path)
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
 

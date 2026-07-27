@@ -4,9 +4,8 @@
 // Torch today (`compute_total_path_lengths`, `compute_antenna_pattern_gains`,
 // `compute_polarization_amplitudes`, `compute_path_amplitudes`, and the batched
 // `compute_slot_path_tensors`). Like every other Phase-6 family it registers in
-// the existing `witwin_radar_dirichlet_cuda` library because the packaging
-// chain assumes a single native artifact stem; the physical rename is Phase-10
-// work and is recorded in R-ADR-004.
+// the single `_radar_native` library Radar ships (R-ADR-004; the Phase-10
+// rename made the physical stem match this logical name).
 //
 // Closed form, stated verbatim. Per row k, with transmitter `ti` and receiver
 // `ri` selected by the row's index tensors:
@@ -1436,7 +1435,7 @@ void sensor_weight_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("sensor_weight_forward", TORCH_BOX(&sensor_weight_forward_cuda));
   m.impl("sensor_weight_backward", TORCH_BOX(&sensor_weight_backward_cuda));
   m.impl("sensor_weight_jvp", TORCH_BOX(&sensor_weight_jvp_cuda));

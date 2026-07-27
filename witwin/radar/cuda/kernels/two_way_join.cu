@@ -631,7 +631,7 @@ void two_way_join_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("two_way_join_forward", TORCH_BOX(&two_way_join_forward_cuda));
   m.impl("two_way_join_backward", TORCH_BOX(&two_way_join_backward_cuda));
   m.impl("two_way_join_jvp", TORCH_BOX(&two_way_join_jvp_cuda));

@@ -1,9 +1,9 @@
 // Complex FMCW beat synthesis over a chirp's fast-time axis.
 //
-// This is the Phase-4 `_radar_native` synthesis primitive. It is registered in
-// the existing `witwin_radar_dirichlet_cuda` library because the packaging
-// chain assumes a single native artifact stem; the physical rename is Phase-10
-// work and is recorded in R-ADR-004.
+// This is the Phase-4 `_radar_native` synthesis primitive. Radar ships ONE
+// native artifact, so every family registers in the same `_radar_native`
+// library (R-ADR-004; the Phase-10 rename made the physical stem match this
+// logical name).
 //
 // Convention, taken from `dirichlet.cu` `path_response` and NOT re-derived:
 //
@@ -683,7 +683,7 @@ void fmcw_beat_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("fmcw_beat_forward", TORCH_BOX(&fmcw_beat_forward_cuda));
   m.impl("fmcw_beat_backward", TORCH_BOX(&fmcw_beat_backward_cuda));
   m.impl("fmcw_beat_jvp", TORCH_BOX(&fmcw_beat_jvp_cuda));

@@ -1574,7 +1574,7 @@ void backward_per_bin_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("forward_chunked", TORCH_BOX(&forward_chunked_cuda));
   m.impl("forward_mimo_linear_chunked", TORCH_BOX(&forward_mimo_linear_chunked_cuda));
   m.impl("mimo_linear_backward", TORCH_BOX(&mimo_linear_backward_cuda));

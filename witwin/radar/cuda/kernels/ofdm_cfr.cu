@@ -1,9 +1,8 @@
 // OFDM channel frequency response over the (symbol, subcarrier) grid.
 //
 // This is the Phase-6 OFDM synthesis primitive. Like the beat family it is
-// registered in the existing `witwin_radar_dirichlet_cuda` library because the
-// packaging chain assumes a single native artifact stem; the physical rename is
-// Phase-10 work and is recorded in R-ADR-004.
+// registered in the single `_radar_native` library Radar ships (R-ADR-004; the
+// Phase-10 rename made the physical stem match this logical name).
 //
 // Closed form, stated verbatim:
 //
@@ -739,7 +738,7 @@ void ofdm_cfr_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-STABLE_TORCH_LIBRARY_IMPL(witwin_radar_dirichlet_cuda, CUDA, m) {
+STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("ofdm_cfr_forward", TORCH_BOX(&ofdm_cfr_forward_cuda));
   m.impl("ofdm_cfr_backward", TORCH_BOX(&ofdm_cfr_backward_cuda));
   m.impl("ofdm_cfr_jvp", TORCH_BOX(&ofdm_cfr_jvp_cuda));

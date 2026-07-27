@@ -34,7 +34,7 @@ from .identity import (
 )
 
 
-EXTENSION_NAME = "witwin_radar_dirichlet_cuda"
+EXTENSION_NAME = "_radar_native"
 
 #: The Stable ABI target compiled into every translation unit. Recorded in the
 #: build record so a binary built against a different target is visible.
@@ -289,7 +289,7 @@ class _StableOpsModule:
         }
 
     def __getattr__(self, name: str):
-        return getattr(torch.ops.witwin_radar_dirichlet_cuda, name)
+        return getattr(torch.ops._radar_native, name)
 
 
 # Every operator family the library is required to register. A stale binary
@@ -332,7 +332,7 @@ def _require_operators(
     missing = [
         name
         for name in required
-        if not hasattr(torch.ops.witwin_radar_dirichlet_cuda, name)
+        if not hasattr(torch.ops._radar_native, name)
     ]
     if missing:
         raise RadarExtensionSymbolError(

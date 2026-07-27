@@ -10,6 +10,11 @@ from pathlib import Path
 EXPECTED_SASS = ("70", "75", "80", "86", "87", "89", "90", "100", "101", "120")
 EXPECTED_PTX_TARGET = "sm_120"
 
+#: Radar ships exactly one native artifact, so the stem has a default. Passing
+#: ``--stem`` still overrides it, which is what verifying a foreign binary
+#: needs; omitting it no longer means "verify nothing".
+DEFAULT_STEM = "_radar_native"
+
 
 def _matches(path: Path, stems: tuple[str, ...]) -> bool:
     return path.suffix in {".pyd", ".so"} and any(path.name.startswith(stem) for stem in stems)
@@ -48,13 +53,14 @@ def _cuobjdump(flag: str, binary: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify CUDA SASS and PTX targets in release binaries.")
     parser.add_argument("inputs", nargs="+", type=Path)
-    parser.add_argument("--stem", action="append", required=True)
+    parser.add_argument("--stem", action="append", default=None)
     args = parser.parse_args()
+    stems = tuple(args.stem) if args.stem else (DEFAULT_STEM,)
 
     with tempfile.TemporaryDirectory(prefix="witwin_cuda_arch_verify_") as temp_dir:
-        binaries = _collect_binaries(args.inputs, tuple(args.stem), Path(temp_dir))
+        binaries = _collect_binaries(args.inputs, stems, Path(temp_dir))
         if not binaries:
-            raise SystemExit(f"No native binaries matching {args.stem!r} were found.")
+            raise SystemExit(f"No native binaries matching {list(stems)!r} were found.")
 
         for binary in binaries:
             elf_listing = _cuobjdump("--list-elf", binary)

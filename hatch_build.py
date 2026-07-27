@@ -12,7 +12,7 @@ class CustomBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
         prebuilt_dir = Path(self.root) / "witwin" / "radar" / "cuda" / "prebuilt"
-        has_prebuilt_extension = any(prebuilt_dir.glob("witwin_radar_dirichlet_cuda.*"))
+        has_prebuilt_extension = any(prebuilt_dir.glob("_radar_native.*"))
         if has_prebuilt_extension:
             platform_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
             build_data["tag"] = f"py3-none-{platform_tag}"
