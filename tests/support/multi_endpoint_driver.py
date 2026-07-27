@@ -23,6 +23,11 @@ import torch
 
 from . import multi_endpoint_geometry as geo
 from . import multi_endpoint_world as world
+# A deliberate RE-EXPORT, written in the redundant-alias form so it reads as
+# one. Eight modules reach it as `drv.to_synthesis(...)` rather than
+# importing `synthesis_batch` themselves; `ruff --fix` deleted it once as an
+# unused import and took four launch-budget tests with it.
+from .synthesis_batch import to_synthesis as to_synthesis
 
 
 MULTIPATH_COMPONENTS = frozenset({"los", "reflection"})
