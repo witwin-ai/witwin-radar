@@ -335,6 +335,120 @@ def test_the_processing_results_carry_no_tape():
     )
 
 
+def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
+    """One ``Radar.simulate`` frame, on a fresh radar unless one is given."""
+
+    pytest.importorskip("witwin.channel")
+    from support import multi_endpoint_driver as drv
+    from support import multi_endpoint_geometry as geo
+    from support import multi_endpoint_world as world
+    from witwin.radar import Radar, ScatterSitePolicy
+    from witwin.radar.scattering import ScalarRcsResponse
+
+    if radar is None:
+        radar = Radar(
+            dict(geo.FIXTURE_RADAR_CONFIG),
+            position=(0.0, 0.0, 0.0),
+            target=(1.0, 0.0, 0.0),
+        )
+    scene, mesh = world.make_scene()
+    world.assert_world_coordinates_survived(mesh)
+    sites = torch.tensor(
+        (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M),
+        dtype=torch.float32,
+        device=radar.device,
+    ).requires_grad_(ad_mode != "none")
+    result = radar.simulate(
+        scene,
+        times=(0.0,),
+        response=ScalarRcsResponse.from_values(
+            drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
+        ),
+        sites=ScatterSitePolicy.explicit(sites),
+        ad_mode=ad_mode,
+    )
+    return radar, result
+
+
+@pytest.fixture(scope="module")
+def simulated():
+    """One ``Radar.simulate`` run with a LIVE graph on its site positions.
+
+    The scene-driven entry is a NEW retention site: four ``last_*`` properties
+    on a long-lived ``Radar``, each holding a typed record from the last frame.
+    A result that never built a graph could not leak a tape it never had, so
+    this is taken under ``ad_mode='vjp'`` for the same reason the leg fixture
+    above is.
+    """
+
+    return _simulate_once()
+
+
+#: The retention rule for the scene-driven entry's diagnostics, stated once.
+#:
+#: The four ``last_*`` members are NOT detached. Detaching them would cost a
+#: copy of every payload tensor and would make the one diagnostic a caller
+#: reaches for while debugging a gradient the one that cannot carry it. What is
+#: forbidden is the same thing forbidden everywhere else in this file: a FIELD
+#: holding the tape - a context, a Function, a ``saved_tensors`` tuple - which
+#: turns a data record into a handle on somebody else's memory. Holding a
+#: ``grad_fn`` is not that, and a caller who wants the graph released simply
+#: drops the result or runs another ``simulate``, which clears all four first.
+DIAGNOSTIC_RETENTION_RULE = "aliased_and_live, never a tape field"
+
+
+@pytest.mark.gpu
+def test_the_simulate_diagnostics_carry_no_tape(simulated):
+    """All four ``last_*`` attributes, walked, with a live graph behind them."""
+
+    radar, result = simulated
+    assert result.cube.requires_grad, "the fixture must be live"
+    for name in (
+        "last_snapshot",
+        "last_compiled_scene",
+        "last_propagation",
+        "last_radar_paths",
+    ):
+        value = getattr(radar, name)
+        assert value is not None, name
+        _assert_clean(f"radar.{name}", value)
+    _assert_clean("simulation_result", result)
+
+
+@pytest.mark.gpu
+def test_the_diagnostics_alias_the_frame_rather_than_a_detached_copy(simulated):
+    """The retention rule above, pinned rather than merely written down.
+
+    If a later change decides to detach these, this test is where the decision
+    has to be re-made, and the rule constant next to it is what has to change
+    with it.
+    """
+
+    radar, result = simulated
+    assert radar.last_radar_paths is result.last_radar_paths
+    assert radar.last_propagation is result.last_propagation
+    assert result.last_radar_paths.complex_transfer_ref.requires_grad
+    assert result.last_propagation.inbound.coefficient.requires_grad
+
+
+@pytest.mark.gpu
+def test_a_second_simulate_replaces_the_retained_frame():
+    """The bound on the retention: there is only ever one live frame here.
+
+    Its own radar, deliberately: this is the one test in the file that MUTATES
+    the diagnostic state, and sharing the module fixture with it would make the
+    other two depend on running first.
+    """
+
+    radar, live = _simulate_once()
+    assert live.cube.requires_grad
+    _, replacement = _simulate_once(radar, ad_mode="none")
+    assert radar.last_result is replacement
+    assert radar.last_radar_paths is not live.last_radar_paths
+    assert not replacement.cube.requires_grad
+    _assert_clean("replacement", replacement)
+
+
 def test_the_walk_would_find_a_planted_tape():
     """Calibration. Without it the walker could be inspecting nothing.
 

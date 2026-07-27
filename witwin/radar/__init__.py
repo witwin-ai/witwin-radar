@@ -25,6 +25,8 @@ from .scene_binding import (
     StableIdAllocator,
     bind_radar_world,
 )
+from .simulation import RadarSimulationResult
+from .propagation.contracts import RadarPropagationLegs
 from .timeline import Timeline, TransformMotion
 from .types import DetectorType, MotionSampling, SamplingMode
 from witwin.core import (
@@ -115,6 +117,8 @@ __all__ = [
     'MotionSampling',
     'SamplingMode',
     'MimoPathCache',
+    'RadarPropagationLegs',
+    'RadarSimulationResult',
     'RadarWorldBinding',
     'ScatterSitePolicy',
     'StableIdAllocator',

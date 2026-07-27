@@ -16,6 +16,7 @@ from .utils.vector import vec3_tensor
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .frontend import FrontendSpec
+    from .simulation import RadarSimulationResult
     from .synthesis import SynthesisResult
 
 
@@ -236,6 +237,12 @@ class PolarizationRuntime:
 
 
 class Radar:
+    #: The one diagnostic retention site, as a CLASS attribute so that the four
+    #: ``last_*`` properties answer ``None`` on an instance that has never run -
+    #: including one built by ``object.__new__`` for a refusal test - instead of
+    #: raising ``AttributeError`` from a half-initialized object.
+    _last_result = None
+
     def __init__(
         self,
         config: RadarConfig | Mapping[str, Any],
@@ -719,29 +726,115 @@ class Radar:
         signal = self.solver.mimo_from_paths(cache, **options)
         return self.apply_signal_models(signal)
 
-    # The Dr.Jit ray tracer that backed simulate() and simulate_group() has
-    # been removed, and so has the scene-driven entry that wrapped it. There is
-    # no in-scope replacement with the same signature: propagation is now a
-    # frozen-topology contract with the Channel consumer rather than a
-    # per-frame retrace, so a shim that quietly picked some other route would
-    # return numbers from a different model under the old name.
-    _SIMULATE_REPLACEMENT = (
-        "Radar.simulate and Radar.simulate_group have been removed with the "
-        "Dr.Jit ray tracer. Propagation now goes through the Channel "
-        "consumer: build a "
-        "witwin.radar.propagation.ChannelPropagationAdapter, freeze each leg "
-        "once, reevaluate it per frame, compose the legs with "
-        "witwin.radar.paths.TwoWayComposer or DirectComposer, and synthesize "
-        "with witwin.radar.synthesis.synthesize_fmcw_beat. A scene-driven "
-        "entry point that assembles those steps for a whole Scene is separate "
-        "work and does not exist yet; Radar.mimo, mimo_from_trace, "
-        "mimo_from_paths, path_cache_from_trace, chirp and frame are "
-        "unaffected."
-    )
+    def simulate(
+        self,
+        scene,
+        *,
+        times,
+        response,
+        sites=None,
+        components=None,
+        max_depth=None,
+        slow_time_mode=None,
+        ad_mode: str = "none",
+        world_motion: str = "frozen_world",
+        motion_event_period_frames: int | None = None,
+        ids=None,
+        polarization=None,
+    ) -> "RadarSimulationResult":
+        """Simulate this radar over a Core world and return the frame cubes.
 
-    def simulate(self, *args, **kwargs):
-        raise NotImplementedError(self._SIMULATE_REPLACEMENT)
+        The scene-driven entry point. ``scene`` is a ``witwin.core.Scene`` or a
+        ``witwin.core.dynamics.DynamicScene``; ``times`` is the sequence of
+        frame instants in seconds; ``response`` is the scatter response the
+        two-way join multiplies the round trip by, and it is required because
+        every default for it would be an unchosen statement about how strongly
+        the target scatters.
 
-    @classmethod
-    def simulate_group(cls, *args, **kwargs):
-        raise NotImplementedError(cls._SIMULATE_REPLACEMENT)
+        The whole assembly lives in :mod:`witwin.radar.simulation` and its
+        docstring is the contract; read it before changing anything here. This
+        method exists so that the pipeline is reachable under the name a caller
+        looks for, and it delegates rather than reimplementing so there is one
+        owner of the frame loop.
+
+        Calling this publishes the four typed diagnostics
+        (:attr:`last_snapshot`, :attr:`last_compiled_scene`,
+        :attr:`last_propagation`, :attr:`last_radar_paths`). They are cleared
+        FIRST, so a call that raises part way through leaves no stale world
+        behind claiming to describe this radar.
+
+        ``simulate_group`` is gone. It was a permanently refusing classmethod
+        and a permanent refusal is itself a legacy shim; simulating several
+        radars over one world is a loop over this method, and no Radar-owned
+        batching of it exists to hide.
+        """
+
+        from .simulation import simulate_scene
+
+        self._last_result = None
+        result = simulate_scene(
+            self,
+            scene,
+            times=times,
+            response=response,
+            sites=sites,
+            components=components,
+            max_depth=max_depth,
+            slow_time_mode=slow_time_mode,
+            ad_mode=ad_mode,
+            world_motion=world_motion,
+            motion_event_period_frames=motion_event_period_frames,
+            ids=ids,
+            polarization=polarization,
+        )
+        self._last_result = result
+        return result
+
+    # -- the four typed diagnostics (Phase 11 work item 2) ------------------
+    #
+    # One retention site, four reads of it. The alternative - four independent
+    # attributes - can be left describing four different frames by any code
+    # path that sets three of them, and "which frame is this" is exactly the
+    # question a diagnostic exists to answer. ``None`` before the first
+    # ``simulate`` is the pinned answer: a caller may poll these, and raising
+    # would make "has this radar run yet" a try/except.
+
+    @property
+    def last_result(self) -> "RadarSimulationResult | None":
+        """The whole of the last :meth:`simulate` call, or ``None``."""
+
+        return self._last_result
+
+    @property
+    def last_snapshot(self):
+        """The Core ``SceneSnapshot`` the last simulated frame ran against."""
+
+        return None if self._last_result is None else self._last_result.last_snapshot
+
+    @property
+    def last_compiled_scene(self):
+        """The Channel ``CompiledScene`` that frame's legs were replayed on."""
+
+        return (
+            None
+            if self._last_result is None
+            else self._last_result.last_compiled_scene
+        )
+
+    @property
+    def last_propagation(self):
+        """That frame's two legs, as a typed
+        :class:`~witwin.radar.propagation.contracts.RadarPropagationLegs`."""
+
+        return (
+            None if self._last_result is None else self._last_result.last_propagation
+        )
+
+    @property
+    def last_radar_paths(self):
+        """That frame's composed
+        :class:`~witwin.radar.paths.RadarPathBatch`."""
+
+        return (
+            None if self._last_result is None else self._last_result.last_radar_paths
+        )

@@ -19,6 +19,7 @@ from .contracts import (
     EndpointRole,
     RadarEndpointSpec,
     RadarLegBatch,
+    RadarPropagationLegs,
     require_endpoint_role,
 )
 from .epochs import (
@@ -56,6 +57,7 @@ __all__ = [
     "LinearDeformation",
     "RadarEndpointSpec",
     "RadarLegBatch",
+    "RadarPropagationLegs",
     "SceneEpochLoop",
     "TwoWayDuals",
     "deformation_kinematics",

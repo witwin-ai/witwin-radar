@@ -119,6 +119,14 @@ SPIKE_MODULES = (
     # convenience that would look harmless in it. It names no Channel module at
     # all: compiling is the adapter's, and this owns identity and packing.
     "witwin/radar/scene_binding.py",
+    # The scene-driven entry's frame loop. It is the module that RUNS the
+    # per-frame path rather than one the path passes through, so a stray host
+    # read there - a progress count, a convergence check, a "just this once"
+    # float() on a delay - would be the most expensive one in the package. It
+    # reaches ``witwin.channel`` only through the adapter's own
+    # ``compile_scene``, which is why it does not appear in
+    # ``test_only_the_adapter_crosses_the_channel_boundary`` below.
+    "witwin/radar/simulation.py",
     "witwin/radar/paths/__init__.py",
     "witwin/radar/paths/contracts.py",
     "witwin/radar/paths/_identity.py",

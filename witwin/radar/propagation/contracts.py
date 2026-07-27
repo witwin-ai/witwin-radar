@@ -435,10 +435,64 @@ class RadarLegBatch:
         )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class RadarPropagationLegs:
+    """The two legs of one radar round trip, as ONE typed value.
+
+    A radar frame evaluates two legs - transmitter to scatter site, scatter
+    site to receiver - and every consumer of the pair has to know which is
+    which. A tuple says it by position and a dict says it by a string key, and
+    both let a caller hand the outbound leg to something expecting the inbound
+    one; the two legs have the same type and the same shape family, so nothing
+    downstream would notice. This type is what makes the pairing checkable, and
+    it is why ``Radar.last_propagation`` is not a tuple.
+
+    It is a VIEW, not a copy: both members are the batches the adapter
+    published, so every payload tensor still aliases the consumer's storage and
+    keeps its gradient state. Nothing here reads a tensor value, so
+    constructing it costs no launch, no allocation and no transfer.
+
+    The two legs of one frame are evaluated at one world instant on one device,
+    and a pair that disagrees about either is not a round trip. Both are checked
+    on the host from members the batches already publish.
+    """
+
+    inbound: RadarLegBatch
+    outbound: RadarLegBatch
+
+    def __post_init__(self) -> None:
+        for name in ("inbound", "outbound"):
+            value = getattr(self, name)
+            if not isinstance(value, RadarLegBatch):
+                raise TypeError(
+                    f"{name} must be a RadarLegBatch, got {type(value).__name__}"
+                )
+        if self.inbound.slot_count != self.outbound.slot_count:
+            raise ValueError(
+                f"the inbound leg carries {self.inbound.slot_count} slots and "
+                f"the outbound leg {self.outbound.slot_count}; the two legs of "
+                "one frame are the same slow-time axis"
+            )
+        if self.inbound.device != self.outbound.device:
+            raise ValueError(
+                f"the inbound leg is on {self.inbound.device} and the outbound "
+                f"leg on {self.outbound.device}; one round trip is one device"
+            )
+
+    @property
+    def slot_count(self) -> int:
+        return self.inbound.slot_count
+
+    @property
+    def device(self) -> torch.device:
+        return self.inbound.device
+
+
 __all__ = [
     "EndpointRole",
     "RadarEndpointSpec",
     "RadarLegBatch",
+    "RadarPropagationLegs",
     "require_endpoint_role",
     "require_wideband_pair",
 ]

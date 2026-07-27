@@ -46,21 +46,47 @@ def test_an_unknown_attribute_still_gets_an_ordinary_error():
         wr.definitely_not_a_real_name
 
 
-def test_simulate_and_simulate_group_raise_with_the_replacement_route():
+def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
+    """Phase 11 work item 1 turned this refusal into the entry point.
+
+    This block used to assert the ``_SIMULATE_REPLACEMENT`` message, which said
+    that "a scene-driven entry point that assembles those steps for a whole
+    Scene is separate work and does not exist yet". It exists;
+    ``tests/test_phase11_simulate_entry.py`` is what it does. What survives here
+    is the shape of the surface: ``simulate`` is a bound method taking a scene
+    and a declared frame sequence, and its four typed diagnostics answer
+    ``None`` on a radar that has not run.
+    """
+
+    import inspect
+
+    assert callable(wr.Radar.simulate)
+    parameters = inspect.signature(wr.Radar.simulate).parameters
+    assert "scene" in parameters
+    for name in ("times", "response", "sites"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+
     radar = object.__new__(wr.Radar)
-    for call in (
-        lambda: wr.Radar.simulate(radar, object()),
-        lambda: wr.Radar.simulate_group(object(), radars=[]),
+    for name in (
+        "last_snapshot",
+        "last_compiled_scene",
+        "last_propagation",
+        "last_radar_paths",
     ):
-        with pytest.raises(NotImplementedError) as raised:
-            call()
-        message = str(raised.value)
-        assert "ChannelPropagationAdapter" in message
-        assert "TwoWayComposer" in message
-        assert "synthesize_fmcw_beat" in message
-        # And it says what still works, so the error is actionable rather than
-        # merely a refusal.
-        assert "mimo_from_paths" in message
+        assert getattr(radar, name) is None, name
+
+
+def test_simulate_group_is_gone_rather_than_permanently_refusing():
+    """A classmethod that can only ever raise is itself a legacy shim.
+
+    Approved public break (Phase 11, D3). Simulating several radars over one
+    world is a loop over ``Radar.simulate``; there was no Radar-owned batching
+    behind the old name, so keeping a refusal would have been advertising a
+    capability that never existed.
+    """
+
+    assert not hasattr(wr.Radar, "simulate_group")
+    assert not hasattr(wr.Radar, "_SIMULATE_REPLACEMENT")
 
 
 def test_the_surviving_solver_entry_points_are_untouched():
