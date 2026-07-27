@@ -30,9 +30,12 @@ build: Channel source-links RayD and owns that build entirely. The gate reads
 it is empty. A radar tier that quietly skipped the cross-package check would be
 worse than one that asks for the artifact.
 
-Note for the stage that lands the production static gates (G1-G4:
-forbidden runtimes, oracle isolation, raw native access, the Torch-physics
-allowlist): they belong in QUICK_GATES, next to `quick.native-bindings`.
+The four production static gates (Phase-10 work item 7: forbidden runtimes,
+oracle isolation, raw native access, the Torch-physics allowlist) sit in
+`quick`, next to `quick.native-bindings`. None of them imports the package or
+needs a GPU, so the cheapest tier is the one that should catch them; the only
+half that cannot run there is the oracle gate's wheel-member check, which is a
+separate `nightly` gate against the wheel the tier just built.
 """
 
 from __future__ import annotations
@@ -58,6 +61,14 @@ WHEEL_ROOT = "artifacts/nightly/wheels"
 QUICK_GATES = (
     Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "tools", "ci", "scripts")),
     Gate("quick.native-bindings", ("ci/check_native_bindings.py",)),
+    # The four production static gates (Phase-10 work item 7). They are here
+    # rather than in `cuda` on purpose: none of them imports the package,
+    # loads the extension, or needs a GPU, so the cheapest tier is the one
+    # that should catch a forbidden import or a widened allowlist.
+    Gate("quick.production-dependencies", ("ci/check_production_dependencies.py",)),
+    Gate("quick.oracle-isolation", ("ci/check_test_oracle_isolation.py",)),
+    Gate("quick.raw-native-access", ("ci/check_raw_native_access.py",)),
+    Gate("quick.torch-physics-allowlist", ("ci/check_torch_physics_allowlist.py",)),
     Gate("quick.workflow-policy", ("ci/check_workflow_policy.py",)),
     # Importing the package must not load the loader, the compiler, or CUDA.
     # The lazy __getattr__ in witwin/radar/__init__.py is what makes that true
@@ -106,6 +117,13 @@ NIGHTLY_GATES = (
     Gate(
         "nightly.wheel-build",
         ("-m", "build", "--wheel", "--no-isolation", "--outdir", f"{WHEEL_ROOT}/radar"),
+    ),
+    # `quick.oracle-isolation` can only check the CONFIGURATION - what the
+    # build was asked for. This checks what came out, on the wheel that was
+    # just built, which is a different question once a build hook is involved.
+    Gate(
+        "nightly.oracle-isolation-wheel",
+        ("ci/check_test_oracle_isolation.py", "--wheel", f"{WHEEL_ROOT}/radar"),
     ),
     Gate(
         "nightly.wheel-smoke",
