@@ -1,5 +1,11 @@
 name: Radar GPU regression
 
+# Manually dispatched only, and the one radar workflow that runs on a
+# self-hosted runner: no GitHub-hosted runner offers a CUDA device. That is
+# deviation P4 in docs/dev/plans/phase10-deferred-release-matrix.md, and
+# ci/check_workflow_policy.py freezes the exception by filename with its reason,
+# so no other radar workflow can acquire a self-hosted runner quietly. This job
+# builds no wheel and publishes nothing.
 on:
   workflow_dispatch:
 
@@ -11,11 +17,13 @@ jobs:
       - name: Install package and development tools
         shell: pwsh
         run: python -m pip install -e ".[dev]"
-      - name: Full GPU suite
+      # The cuda tier is quick plus the GPU suite under coverage with the same
+      # 75% floor this workflow used to assert inline, plus the R-ADR-019 loader
+      # contract and the extension-boundary audit, which reads the shipped
+      # binary and therefore needs a machine that has one.
+      - name: CUDA tier
         shell: pwsh
-        run: |
-          coverage run -m pytest tests --gpu -q
-          coverage report --fail-under=75
+        run: python ci/run_ci_tier.py cuda
       - name: CUDA performance smoke benchmark
         shell: pwsh
         run: python tools/benchmark_dirichlet_cuda.py --targets 1024 16384 --warmup 3 --runs 10 --json

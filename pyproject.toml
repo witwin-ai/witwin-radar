@@ -32,9 +32,15 @@ License = "https://witwin.ai/license"
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.0",
     "coverage>=7.0",
     "pytest>=8.0",
     "ruff>=0.15",
+    # ci/check_workflow_policy.py PARSES the workflow YAML rather than grepping
+    # it, so a comment mentioning the right architecture string cannot satisfy a
+    # policy check. The `quick` tier runs that gate, so its parser belongs in
+    # the extra the tier is installed from.
+    "pyyaml>=6.0",
 ]
 # R-ADR-008 decided that Channel is an OPTIONAL consumer dependency and never
 # a required one: the Radar wheel ships a self-contained `_radar_native` and

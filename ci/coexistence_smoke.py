@@ -139,6 +139,30 @@ class CoexistenceError(RuntimeError):
     """A scenario did not hold, or the harness could not run one."""
 
 
+def _resolve_wheel(path: Path) -> Path:
+    """Accept a wheel file, or a directory holding exactly one wheel.
+
+    The directory form is what makes this callable from a CI tier, whose gate
+    arguments are fixed strings and cannot know a platform-dependent wheel
+    filename. "Exactly one" rather than "the newest": a directory with two
+    wheels in it is an ambiguous input, and silently picking one is how a smoke
+    ends up auditing last week's artifact. Both wheel smokes already resolve
+    their inputs this way.
+    """
+
+    path = path.resolve()
+    if path.is_dir():
+        wheels = sorted(path.glob("*.whl"))
+        if len(wheels) != 1:
+            raise ValueError(
+                f"{path} must contain exactly one .whl file; found {len(wheels)}"
+            )
+        return wheels[0]
+    if path.suffix != ".whl" or not path.is_file():
+        raise ValueError(f"wheel does not exist: {path}")
+    return path
+
+
 def _preamble(target: Path) -> str:
     """Shared scenario prologue: isolate the target, then define ``emit``."""
 
@@ -991,14 +1015,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    wheels = {
-        "core": args.core_wheel,
-        "channel": args.channel_wheel,
-        "radar": args.radar_wheel,
-    }
-    for label, wheel in wheels.items():
-        if not wheel.is_file():
-            parser.error(f"--{label}-wheel is not a file: {wheel}")
+    wheels = {}
+    for label, given in (
+        ("core", args.core_wheel),
+        ("channel", args.channel_wheel),
+        ("radar", args.radar_wheel),
+    ):
+        try:
+            wheels[label] = _resolve_wheel(given)
+        except ValueError as error:
+            parser.error(f"--{label}-wheel: {error}")
 
     if args.workspace is not None:
         workspace = args.workspace.resolve()
@@ -1010,9 +1036,9 @@ def main() -> int:
 
     try:
         evidence = run(
-            core_wheel=args.core_wheel.resolve(),
-            channel_wheel=args.channel_wheel.resolve(),
-            radar_wheel=args.radar_wheel.resolve(),
+            core_wheel=wheels["core"],
+            channel_wheel=wheels["channel"],
+            radar_wheel=wheels["radar"],
             workspace=workspace,
         )
     except CoexistenceError as exc:

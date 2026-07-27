@@ -1,5 +1,9 @@
 name: Radar quality
 
+# CPU only: no CUDA toolkit, no native build, no wheel. The prebuild policy's
+# opt-in boundary covers native wheel work, which this workflow does not do, so
+# push and pull_request triggers are appropriate here and forbidden in
+# publish-witwin-radar.yml.
 on:
   push:
     branches: [main, master, "codex/**"]
@@ -17,9 +21,9 @@ jobs:
           cache: pip
       - name: Install package and development tools
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
-      - name: Lint
-        run: ruff check witwin/radar tests tools
-      - name: CPU tests with coverage
-        run: |
-          coverage run -m pytest tests -q
-          coverage report --fail-under=50
+      # One name that a person and this workflow both run. The steps it used to
+      # restate - ruff, then the CPU suite under coverage with a 50% floor - are
+      # gates inside the tier now, alongside the manifest, workflow-policy and
+      # import-isolation checks that had no CI home at all.
+      - name: Quick tier
+        run: python ci/run_ci_tier.py quick

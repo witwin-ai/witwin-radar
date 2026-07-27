@@ -1,23 +1,71 @@
 name: Build and publish witwin-radar
 
+# Trigger boundary, from GITHUB_ACTIONS_PREBUILD_MATRIX.md "CI execution
+# policy": native wheel work is OPT-IN. This workflow used to run on every push
+# to main/master/codex/** and on every pull request, which meant a paid
+# full-matrix CUDA build - ten SASS images on two platforms - per commit,
+# against the policy line that reserves it for a published release, an explicit
+# dispatch, or the exact `run-ci` label. Channel already complied; Radar did
+# not, and nothing recorded it as an accepted exception.
 on:
-  push:
-    branches:
-      - main
-      - master
-      - "codex/**"
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Validation scope
+        required: true
+        default: pr-smoke
+        type: choice
+        options:
+          - pr-smoke
+          - full
+  # types: [labeled] and nothing else. A pull request that is merely opened or
+  # pushed to starts no build; a maintainer applies `run-ci` to pay for one.
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: radar-distributions-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: read
+
+env:
+  # Policy "Required CUDA coverage". The release set and its verifier
+  # expectation are separate values on purpose: the first tells NVCC what to
+  # emit, the second tells the verifier what to find in the finished binary, and
+  # a build that silently emitted less fails on the second.
+  FULL_GENCODE_ARCHES: "7.0;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0+PTX"
+  FULL_EXPECTED_SASS: "70,75,80,86,87,89,90,100,101,120"
+  FULL_EXPECTED_PTX: "120"
+  # The policy's allowed reduced pull-request profile: sm_87, sm_120,
+  # compute_120. A compile and package gate, never a release artifact - the
+  # upload step below is skipped for it.
+  SMOKE_GENCODE_ARCHES: "8.7;12.0+PTX"
+  SMOKE_EXPECTED_SASS: "87,120"
+  SMOKE_EXPECTED_PTX: "120"
 
 jobs:
-  validate_release:
-    if: github.event_name != 'release' || (startsWith(github.event.release.tag_name, 'witwin-radar-v') && !github.event.release.prerelease)
-    name: Validate release
+  policy:
+    # The single entry job. Every other job reaches it through `needs`, so this
+    # one condition is the whole opt-in boundary: a `labeled` event that is not
+    # `run-ci` starts nothing at all.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-ci'
+    name: Validate release metadata and CI policy
     runs-on: ubuntu-latest
     outputs:
       package_dir: ${{ steps.package_dir.outputs.path }}
+      scope: ${{ steps.scope.outputs.scope }}
+      os_matrix: ${{ steps.scope.outputs.os_matrix }}
+      gencode_arches: ${{ steps.scope.outputs.gencode_arches }}
+      expected_sass: ${{ steps.scope.outputs.expected_sass }}
+      expected_ptx: ${{ steps.scope.outputs.expected_ptx }}
+      build_type_flag: ${{ steps.scope.outputs.build_type_flag }}
+      publish_artifacts: ${{ steps.scope.outputs.publish_artifacts }}
 
     steps:
       - name: Check out repository
@@ -40,6 +88,51 @@ jobs:
             echo "Unable to find pyproject.toml for the witwin-radar package." >&2
             exit 1
           fi
+
+      - name: Check the workflow against the prebuild policy
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ steps.package_dir.outputs.path }}
+        run: |
+          python -m pip install --upgrade pip pyyaml
+          python "$PACKAGE_DIR"/ci/check_workflow_policy.py
+
+      - name: Resolve validation scope
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SCOPE: ${{ github.event.inputs.scope }}
+        run: |
+          case "$EVENT_NAME" in
+            release) scope=full ;;
+            workflow_dispatch) scope="${DISPATCH_SCOPE:-pr-smoke}" ;;
+            *) scope=pr-smoke ;;
+          esac
+          if [ "$scope" = "full" ]; then
+            echo "os_matrix=[\"ubuntu-22.04\",\"windows-2022\"]" >> "$GITHUB_OUTPUT"
+            echo "gencode_arches=$FULL_GENCODE_ARCHES" >> "$GITHUB_OUTPUT"
+            echo "expected_sass=$FULL_EXPECTED_SASS" >> "$GITHUB_OUTPUT"
+            echo "expected_ptx=$FULL_EXPECTED_PTX" >> "$GITHUB_OUTPUT"
+            echo "publish_artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "os_matrix=[\"windows-2022\"]" >> "$GITHUB_OUTPUT"
+            echo "gencode_arches=$SMOKE_GENCODE_ARCHES" >> "$GITHUB_OUTPUT"
+            echo "expected_sass=$SMOKE_EXPECTED_SASS" >> "$GITHUB_OUTPUT"
+            echo "expected_ptx=$SMOKE_EXPECTED_PTX" >> "$GITHUB_OUTPUT"
+            echo "publish_artifacts=false" >> "$GITHUB_OUTPUT"
+          fi
+          # `build_type=release` is a provenance claim, not a compiler setting,
+          # and only a published release may make it. Everything else - a manual
+          # full dispatch included - is stamped `developer`, so a locally or
+          # manually produced binary can never be mistaken for a release one.
+          if [ "$EVENT_NAME" = "release" ]; then
+            echo "build_type_flag=--release" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_type_flag=--developer" >> "$GITHUB_OUTPUT"
+          fi
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "Resolved scope: $scope"
 
       - name: Validate release tag and package version
         if: github.event_name == 'release'
@@ -83,14 +176,21 @@ jobs:
           print(f"Validated {package_name} {package_version} from {pyproject_path}.")
           PY
 
+      - name: Refuse a prerelease or foreign tag
+        if: github.event_name == 'release' && (github.event.release.prerelease || !startsWith(github.event.release.tag_name, 'witwin-radar-v'))
+        shell: bash
+        run: |
+          echo "This workflow publishes only final witwin-radar-v* releases." >&2
+          exit 1
+
   build_cuda_wheels:
-    name: Build stable CUDA wheel / ${{ matrix.os }}
-    needs: validate_release
+    name: Build stable CUDA wheel / ${{ matrix.os }} / ${{ needs.policy.outputs.scope }}
+    needs: policy
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022]
+        os: ${{ fromJSON(needs.policy.outputs.os_matrix) }}
 
     steps:
       - name: Check out repository
@@ -154,16 +254,21 @@ jobs:
           python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
           python -m pip install build
 
-      - name: Build packaged stable Dirichlet CUDA extension
+      - name: Build packaged _radar_native library
         if: runner.os == 'Windows'
         shell: bash
         env:
           MAX_JOBS: "2"
-          WITWIN_CUDA_GENCODE_ARCHES: "7.0;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0+PTX"
-          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
-          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/_radar_native/stable_abi_v1
+          WITWIN_CUDA_GENCODE_ARCHES: ${{ needs.policy.outputs.gencode_arches }}
+          PACKAGE_DIR: ${{ needs.policy.outputs.package_dir }}
+          BUILD_TYPE_FLAG: ${{ needs.policy.outputs.build_type_flag }}
+          # R-ADR-019: this script is the ONLY route to
+          # torch.utils.cpp_extension.load - it is what sets
+          # WITWIN_RADAR_NATIVE_BUILD=1. Nothing else in this workflow, and
+          # nothing in a user process, can reach the JIT.
+          WITWIN_RADAR_NATIVE_BUILD_DIR: ${{ runner.temp }}/_radar_native/stable_abi_v1
         run: |
-          python "$PACKAGE_DIR"/scripts/build_radar_cuda_prebuilt.py --verbose
+          python "$PACKAGE_DIR"/scripts/build_radar_cuda_prebuilt.py --verbose "$BUILD_TYPE_FLAG"
 
       - name: Build manylinux_2_28 wheel
         if: runner.os == 'Linux'
@@ -189,13 +294,16 @@ jobs:
             PATH=/usr/local/cuda/bin:$PATH
             LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
             MAX_JOBS=2
-            WITWIN_CUDA_GENCODE_ARCHES="7.0;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0+PTX"
+            WITWIN_CUDA_GENCODE_ARCHES="${{ needs.policy.outputs.gencode_arches }}"
           CIBW_BEFORE_BUILD_LINUX: >-
             pip install --upgrade pip setuptools wheel ninja numpy build &&
             pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128 &&
-            python {project}/scripts/build_radar_cuda_prebuilt.py --verbose &&
+            python {project}/scripts/build_radar_cuda_prebuilt.py --verbose
+            ${{ needs.policy.outputs.build_type_flag }} &&
             python {project}/scripts/verify_cuda_binary_arches.py
             --stem _radar_native
+            --expected-sass ${{ needs.policy.outputs.expected_sass }}
+            --expected-ptx ${{ needs.policy.outputs.expected_ptx }}
             {project}/witwin/radar/cuda/prebuilt
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel repair --plat manylinux_2_28_x86_64
@@ -206,40 +314,56 @@ jobs:
             --exclude libcudart.so.12 --exclude libcuda.so.1
             {wheel}
         with:
-          package-dir: ${{ needs.validate_release.outputs.package_dir }}
-          output-dir: ${{ needs.validate_release.outputs.package_dir }}/dist
+          package-dir: ${{ needs.policy.outputs.package_dir }}
+          output-dir: ${{ needs.policy.outputs.package_dir }}/dist
 
       - name: Verify compiled CUDA architectures
         if: runner.os == 'Windows'
         shell: bash
         env:
-          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+          PACKAGE_DIR: ${{ needs.policy.outputs.package_dir }}
+          EXPECTED_SASS: ${{ needs.policy.outputs.expected_sass }}
+          EXPECTED_PTX: ${{ needs.policy.outputs.expected_ptx }}
         run: |
           python "$PACKAGE_DIR"/scripts/verify_cuda_binary_arches.py \
             --stem _radar_native \
+            --expected-sass "$EXPECTED_SASS" \
+            --expected-ptx "$EXPECTED_PTX" \
             "$PACKAGE_DIR"/witwin/radar/cuda/prebuilt
 
       - name: Build platform wheel
         if: runner.os == 'Windows'
         shell: bash
         env:
-          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+          PACKAGE_DIR: ${{ needs.policy.outputs.package_dir }}
         run: |
           python -m build --wheel "$PACKAGE_DIR"
 
+      # The old version of this step set
+      # WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR to a nonexistent directory and
+      # concluded "no JIT happened" from the absence of a crash. Under R-ADR-019
+      # the JIT is unreachable by construction - it needs
+      # WITWIN_RADAR_NATIVE_BUILD=1, which only the build script sets - so that
+      # trick proves nothing and reads as if it did. These are positive
+      # assertions instead: the extension reports where it came from, and the
+      # module that would have compiled it was never even imported.
       - name: Smoke install prebuilt wheel
         shell: bash
         env:
-          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
-          WITWIN_RADAR_DIRICHLET_CUDA_PREBUILT: "1"
-          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/missing_prebuilt_build_dir
+          PACKAGE_DIR: ${{ needs.policy.outputs.package_dir }}
         run: |
           python -m pip uninstall -y witwin-radar || true
+          # `witwin.radar.__init__` imports `witwin.core` eagerly, so the
+          # world-contract package has to be present for the wheel to import at
+          # all. Installed --no-deps and from the declared range: this smoke is
+          # about the radar extension, and pulling Core's full dependency tree
+          # would let pip replace the pinned Torch underneath it.
+          python -m pip install --no-deps "witwin>=0.4,<0.5"
           python -m pip install --no-deps "$PACKAGE_DIR"/dist/*.whl
           python - <<'PY'
-          import importlib.util
+          import json
           import os
-          import site
+          import sys
           import zipfile
           from pathlib import Path
 
@@ -250,34 +374,66 @@ jobs:
           assert "/prebuilt/" in f"/{native[0]}"
           assert "torch_" not in native[0]
 
-          candidates = []
-          for root in site.getsitepackages() + [site.getusersitepackages()]:
-              candidates.append(Path(root) / "witwin" / "radar" / "cuda" / "build.py")
-          build_path = next((path for path in candidates if path.exists()), None)
-          assert build_path is not None, f"installed build.py not found in {candidates}"
+          # R-ADR-019 validates the binary against both sidecars BEFORE
+          # torch.ops.load_library, so a wheel that ships one without the other
+          # cannot import at all. Assert they are packaged, not merely present
+          # in the build tree.
+          for sidecar in ("_radar_native.build-info.json", "_radar_native.build-fingerprint"):
+              matches = [name for name in names if name.endswith(sidecar)]
+              assert len(matches) == 1, (sidecar, matches)
+              assert "/prebuilt/" in f"/{matches[0]}"
 
-          spec = importlib.util.spec_from_file_location("_radar_native_build", build_path)
-          module = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(module)
+          import witwin.radar as radar
 
-          path = module.prebuilt_extension_path()
-          assert path.exists(), f"missing packaged prebuilt extension: {path}"
-          assert path.parent.name == "prebuilt"
-          extension = module.build_extension()
-          print(f"Loaded packaged radar Dirichlet CUDA extension from {extension.__file__}")
+          record = radar.build_info()
+          assert record["origin"] == "packaged", record["origin"]
+          assert record["extension_name"] == "_radar_native", record
+          extension_path = Path(record["extension_path"]).resolve()
+          assert extension_path.name.startswith("_radar_native"), extension_path
+          assert extension_path.parent.name == "prebuilt", extension_path
+
+          # The fingerprint chain: the record hashes to the value it declares,
+          # and the sidecar beside the binary carries the same value. build_info
+          # already refuses to return without this, so re-reading the sidecar
+          # here is the independent half.
+          from witwin.radar.cuda import identity
+
+          declared = identity.fingerprint_sidecar_path(extension_path).read_text(
+              encoding="ascii"
+          ).strip()
+          assert declared == record["build_fingerprint"], (declared, record["build_fingerprint"])
+
+          # Nothing imported the compiler. A silent JIT is not merely absent,
+          # it is unreachable: the module that performs it was never loaded.
+          assert "torch.utils.cpp_extension" not in sys.modules
+
+          print(json.dumps({
+              "origin": record["origin"],
+              "build_type": record["build_type"],
+              "build_fingerprint": record["build_fingerprint"],
+              "cuda_architectures": record["cuda_architectures"],
+              "operator_count": len(record["operator_symbols"]),
+              "extension_path": str(extension_path),
+          }, indent=2, sort_keys=True))
           PY
 
+      # Skipped for the reduced pull-request profile. A smoke build compiles
+      # sm_87/sm_120 only; uploading it would put an artifact with the release
+      # name and a fraction of the release coverage where a later job, or a
+      # person, could mistake it for one.
       - name: Upload wheel artifact
+        if: needs.policy.outputs.publish_artifacts == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.os }}
-          path: ${{ needs.validate_release.outputs.package_dir }}/dist/*.whl
+          path: ${{ needs.policy.outputs.package_dir }}/dist/*.whl
           if-no-files-found: error
 
   test_torch_compatibility:
     name: Stable ABI / ${{ matrix.os }} / py${{ matrix.compatibility.python_version }} / torch${{ matrix.compatibility.torch_version }}
+    if: needs.policy.outputs.scope == 'full'
     needs:
-      - validate_release
+      - policy
       - build_cuda_wheels
     runs-on: ${{ matrix.os }}
     strategy:
@@ -310,47 +466,167 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
+          # Torch 2.10 dropped its numpy dependency and everything below is
+          # installed --no-deps, so numpy has to arrive explicitly or
+          # `import witwin.core` fails for a reason unrelated to this matrix.
+          python -m pip install numpy
           python -m pip install --no-cache-dir "torch==${{ matrix.compatibility.torch_version }}" \
             --index-url "https://download.pytorch.org/whl/${{ matrix.compatibility.cuda_index }}"
+          python -m pip install --no-deps "witwin>=0.4,<0.5"
           python -m pip install --no-deps dist/*.whl
 
+      # NOTE (deviation P3, deferral D6). The binary is Stable-ABI built against
+      # Torch 2.10, but R-ADR-019's identity record pins the torch and CUDA
+      # versions it was built with, and validate_identity compares them against
+      # the live runtime. So the LOADER, not the ABI, decides these cells: a
+      # matching-Torch cell must load, and a different-Torch cell must be
+      # REFUSED loudly and must still not JIT. Asserting both is the honest
+      # reading of the contract as built. Reconciling it with the policy line
+      # "one Stable ABI binary ... loaded unchanged in every applicable
+      # compatibility cell" is an open decision owned by the R-ADR-019 author
+      # and the platform policy owner; see
+      # docs/dev/plans/phase10-deferred-release-matrix.md.
       - name: Load the same stable binary
         shell: bash
         env:
           EXPECTED_TORCH: ${{ matrix.compatibility.torch_version }}
-          WITWIN_RADAR_DIRICHLET_CUDA_PREBUILT: "1"
-          WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR: ${{ runner.temp }}/must-not-jit-build
         run: |
           python - <<'PY'
-          import importlib.util
           import os
-          import site
-          from pathlib import Path
+          import sys
 
           import torch
 
-          assert torch.__version__.split("+", 1)[0] == os.environ["EXPECTED_TORCH"]
-          candidates = [
-              Path(root) / "witwin" / "radar" / "cuda" / "build.py"
-              for root in site.getsitepackages() + [site.getusersitepackages()]
-          ]
-          build_path = next((path for path in candidates if path.exists()), None)
-          assert build_path is not None, candidates
-          spec = importlib.util.spec_from_file_location("_radar_native_build", build_path)
-          module = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(module)
+          expected_torch = os.environ["EXPECTED_TORCH"]
+          assert torch.__version__.split("+", 1)[0] == expected_torch
 
-          native_path = module.prebuilt_extension_path()
-          assert native_path.exists(), native_path
-          extension = module.build_extension()
-          assert Path(extension.__file__).resolve() == native_path.resolve()
-          assert extension.forward_chunked is not None
-          print(f"Loaded {native_path.name} with torch {torch.__version__} on Python {os.sys.version.split()[0]}")
+          import witwin.radar as radar
+          from witwin.radar.cuda import build, identity
+
+          recorded = identity.read_build_info(build.prebuilt_extension_path())
+          built_with = recorded["torch_version"]
+          live = identity.runtime_identity()
+          matches = all(recorded.get(key) == value for key, value in live.items())
+
+          if matches:
+              record = radar.build_info()
+              assert record["origin"] == "packaged", record["origin"]
+              assert "torch.utils.cpp_extension" not in sys.modules
+              print(f"packaged load OK with torch {torch.__version__} (built with {built_with})")
+              raise SystemExit(0)
+
+          try:
+              radar.build_info()
+          except build.RadarExtensionABIError as error:
+              assert "torch_version" in str(error) or "cuda_version" in str(error), error
+              assert "torch.utils.cpp_extension" not in sys.modules
+              print(f"::warning::R-ADR-019 refuses torch {torch.__version__} "
+                    f"against a binary built with {built_with}: {error}")
+              print("This cell measures deviation P3, not a passing Stable ABI cell.")
+              raise SystemExit(0)
+          raise SystemExit(
+              "the loader accepted a runtime its own identity record does not "
+              "describe; that is the silent-mismatch failure R-ADR-019 exists to stop"
+          )
+          PY
+
+  consumer_channel_extra:
+    # R-ADR-008 follow-up 2: the required-consumer job. Radar declares
+    # `witwin-radar[channel]`, and until something installs it that extra is a
+    # claim rather than a tested constraint. CPU Linux, no GPU: the point is
+    # dependency resolution and import isolation, neither of which needs a
+    # device.
+    name: Consumer install / witwin-radar[channel]
+    if: needs.policy.outputs.scope == 'full'
+    needs:
+      - policy
+      - build_cuda_wheels
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download Linux wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-ubuntu-22.04
+          path: dist
+
+      - name: Install the consumer extra
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+          wheel=$(ls dist/*.whl)
+          python -m pip install "witwin-radar[channel] @ file://$(readlink -f "$wheel")"
+          python -m pip list
+
+      - name: Refuse a ray-tracing runtime dependency
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata as metadata
+
+          installed = {
+              distribution.metadata["Name"].lower().replace("_", "-")
+              for distribution in metadata.distributions()
+              if distribution.metadata["Name"]
+          }
+          forbidden = sorted(
+              name
+              for name in installed
+              if name.split("-")[0] in {"rayd", "drjit", "mitsuba", "sionna"}
+          )
+          assert not forbidden, forbidden
+          # True by construction rather than by omission: the extra really did
+          # bring Channel in, and Channel still brought no tracer with it.
+          assert "witwin-channel" in installed, sorted(installed)
+          assert "witwin" in installed, sorted(installed)
+          print("installed:", ", ".join(sorted(installed)))
+          PY
+
+      - name: Import isolation subset
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import sys
+
+          import witwin.core  # noqa: F401
+
+          forbidden = sorted(
+              name
+              for name in sys.modules
+              if name.split(".")[0] in {"rayd", "drjit", "mitsuba", "sionna"}
+              or name.startswith("witwin.channel")
+          )
+          assert not forbidden, forbidden
+          assert "witwin.core.geometry.cuda" not in sys.modules
+
+          import torch
+
+          assert not torch.cuda.is_initialized()
+
+          import witwin.radar  # noqa: F401
+
+          assert not [name for name in sys.modules if name.startswith("witwin.channel")]
+          assert "witwin.radar.cuda.build" not in sys.modules
+          assert "torch.utils.cpp_extension" not in sys.modules
+
+          import witwin.radar.propagation.channel_consumer  # noqa: F401
+
+          channel_modules = [name for name in sys.modules if name.startswith("witwin.channel")]
+          assert channel_modules, "the adapter did not load the Channel package"
+          assert "witwin.channel._channel" not in sys.modules
+          print(f"adapter loaded {len(channel_modules)} Channel modules, no native extension")
           PY
 
   build_sdist:
     name: Build source distribution
-    needs: validate_release
+    if: needs.policy.outputs.scope == 'full'
+    needs: policy
     runs-on: ubuntu-latest
 
     steps:
@@ -365,7 +641,7 @@ jobs:
       - name: Build distributions
         shell: bash
         env:
-          PACKAGE_DIR: ${{ needs.validate_release.outputs.package_dir }}
+          PACKAGE_DIR: ${{ needs.policy.outputs.package_dir }}
         run: |
           python -m pip install --upgrade pip build
           python -m build --sdist "$PACKAGE_DIR"
@@ -374,15 +650,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sdist
-          path: ${{ needs.validate_release.outputs.package_dir }}/dist/*.tar.gz
+          path: ${{ needs.policy.outputs.package_dir }}/dist/*.tar.gz
           if-no-files-found: error
 
   publish:
     name: Publish to PyPI
     if: github.event_name == 'release'
     needs:
+      - policy
       - build_cuda_wheels
       - test_torch_compatibility
+      - consumer_channel_extra
       - build_sdist
     runs-on: ubuntu-latest
     permissions:
@@ -405,6 +683,21 @@ jobs:
         with:
           name: sdist
           path: dist
+
+      - name: Validate the artifact set before publishing
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          sdists = sorted(Path("dist").glob("*.tar.gz"))
+          assert len(wheels) == 2, [wheel.name for wheel in wheels]
+          assert len(sdists) == 1, [sdist.name for sdist in sdists]
+          tags = {wheel.name.rsplit("-", 1)[-1].removesuffix(".whl") for wheel in wheels}
+          assert tags == {"win_amd64", "manylinux_2_28_x86_64"}, tags
+          print("publishing:", ", ".join(path.name for path in wheels + sdists))
+          PY
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
