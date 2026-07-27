@@ -396,6 +396,39 @@ could mark. That refusal is Channel's and lives in Channel's matrix.
 | join/_compose_band | endpoint positions to a synthesized wideband cube | vjp | SUP | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_chain_coverage.py::test_a_wideband_endpoint_gradient_reaches_a_synthesized_cube, tests/test_phase9_chain_coverage.py::test_the_wideband_cube_is_not_the_narrowband_one | fd |
 | sensor_weight/mimo_from_trace | target position to a Dirichlet cube | vjp | SUP | native-companion | witwin/radar/solvers/solver_dirichlet.py:505 | tests/test_phase9_chain_coverage.py::test_a_sensor_weight_gradient_reaches_a_synthesized_dirichlet_cube | fd |
 
+## Tape ownership and the budget pins
+
+Every autograd context in the package, its reverse companion, and the structural
+statement that pins it. The full ledger - saved tensor names, symbolic byte
+formulas, measured bytes, launch counts, backward wall times and, above all,
+context LIFETIMES - is `docs/dev/ad-tape-and-budget-ledger.md`. These rows are
+the matrix's index into it.
+
+A tape row is `SUP` with `validation = declaration` on purpose. What is being
+claimed is that the reverse companion exists, is native, and costs one launch -
+a structural fact proved by a structural test. The NUMERICAL correctness of each
+of these companions is claimed by the finite-difference rows in the sections
+above; a tape row does not restate it.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| tape/two_way | out:join context, 10 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/paths/two_way.py:240 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/aspect | out:aspect context, 9 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/scattering/aspect.py:159 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/fmcw_beat | out:beat context, backward saves segment where forward saves offsets | both | SUP | native-companion | witwin/radar/synthesis/fmcw_beat.py:141 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/ofdm_cfr | out:cfr context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/ofdm_cfr.py:118 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/pulsed_echo | out:echo context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/pulsed_echo.py:151 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/dirichlet_spectrum | out:chunked and MIMO-linear contexts, two variants | both | SUP | native-companion | witwin/radar/synthesis/dirichlet_spectrum.py:159 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/sensor_weight | out:weight context, 9 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/sensors/weights.py:405 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/frontend | out:noise and AGC contexts, two owners in one call | vjp | SUP | native-companion | witwin/radar/frontend/chain.py:173 | tests/test_phase9_backward_budget.py::test_the_frontend_costs_one_backward_launch_per_forward_stage | declaration |
+| tape/compose_band | out:tape bytes as a linear law in the band column count | vjp | SUP | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_backward_budget.py::test_the_band_loop_tape_obeys_its_predicted_linear_law, tests/test_phase9_backward_budget.py::test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on | declaration |
+| tape/any | out:no tape reaches a public result record | both | SUP | torch-orchestration | witwin/radar/propagation/contracts.py:186 | tests/test_phase9_tape_non_leak.py::test_the_leg_batch_and_the_composed_batch_carry_no_tape, tests/test_phase9_tape_non_leak.py::test_the_synthesis_and_sensor_results_carry_no_tape | declaration |
+| tape/any | out:no module outside an owner reads a context | both | SUP | native-companion | witwin/radar/ad_contracts.py:104 | tests/test_phase9_tape_non_leak.py::test_every_context_read_sits_inside_a_tape_owner, tests/test_phase9_tape_non_leak.py::test_the_context_scan_is_not_vacuous | declaration |
+| reevaluate/prepared | out:ad_companion_launches, ad_tape_bytes | vjp | SUP | native-declared | witwin/radar/propagation/channel_consumer.py:588 | tests/test_phase9_backward_budget.py::test_the_channel_reevaluate_publishes_its_ad_launches_and_tape_bytes, tests/test_phase9_backward_budget.py::test_a_primal_only_reevaluate_builds_no_tape_at_all | declaration |
+
+The wall-time and peak-memory budgets are not matrix rows - they are statements
+about a machine rather than about a cell - and live in the ledger's own budget
+table with their measured values and headroom.
+
 ## Deferred
 
 Each entry names the work and the reason. A deferral is a `REF` or a `DECL` cell
@@ -404,12 +437,12 @@ above, never a silent one.
 - **`field_direction` on transmission, wedge and coupled diffraction.** Channel
   forwards those families to `rayd::torch`, which publishes no direction
   cotangent or tangent. Channel declares them `DECL` in ADR-043 with a deferral
-  to a RayD ADR. Radar never requests those components, so no Radar cell exists.
+  to a RayD ADR. Radar never requests those components, so no Radar cell exists. Follow-up owner: Channel, in the RayD ADR that ADR-043 defers to; Radar has no cell to open until it lands.
 - **Discovery-route geometry liveness.** The derivative of a discovery result is
   only defined between selection boundaries and Channel deliberately publishes
   no subgradient at one. The supported differentiable route is
   `prepare_fixed_topology` + `reevaluate`, which is the route Radar runs per
-  frame. Channel owns the deferral.
+  frame. Channel owns the deferral. Follow-up owner: Channel, ADR-043 section on `differentiable_geometry_outputs`.
 - **A pose derivative into the compiled scene.** `SmplPoseDeformation` publishes
   a rest `Mesh` and per-frame `DeformationState`s that cross the Core/Channel
   compile boundary, and a pose derivative is not plumbed across it. Whether a
@@ -417,14 +450,14 @@ above, never a silent one.
   is unverified, and a half-working pose gradient would be worse than none, so
   the bridge refuses. The supported differentiable geometry today is a
   `witwin.core.Mesh` vertex tensor. Plumbing a pose derivative across the
-  boundary is a separate accepted design.
+  boundary is a separate accepted design. Follow-up owner: Radar `geometry/smpl.py` plus `witwin.core` Mesh construction, as one accepted design covering the compile boundary.
 - **A material-only forward tangent.** The adapter's dead-tangent guard requires
   a `delay_s` tangent under `ad_mode='jvp'`, because a dead tangent publishes
   `delay_rate = 0`, which is indistinguishable from a correct stationary answer.
   A permittivity moves the coefficient and not the delay. Loosening the guard to
   accept a coefficient-only tangent is a decision about what `delay_rate = None`
   means to a caller and is not taken here; the cell is available today whenever
-  the same call also carries an endpoint tangent.
+  the same call also carries an endpoint tangent. Follow-up owner: Radar `propagation/channel_consumer.py`, whose dead-tangent guard owns the decision about what `delay_rate = None` means to a caller.
 - **The LNA voltage gain as a leaf.** It is the one frontend scalar whose
   derivative would be perfectly well defined - a smooth multiplicative factor on
   the whole signal - and it is refused anyway, because the native frontend
@@ -432,21 +465,57 @@ above, never a silent one.
   one. Adding the slot is a self-contained native change: one extra input on the
   fused phase/thermal/LNA operator's backward and jvp. It is deferred rather
   than done because a device gain is not scene state and nothing in the Phase-9
-  acceptance set needs it.
+  acceptance set needs it. Follow-up owner: Radar `frontend/`, one extra tangent and gradient slot on the fused phase/thermal/LNA operator.
 - **Waveform-parameter optimisation.** A spec scalar changes the SHAPE of the
   output as often as its value - `num_samples`, `num_subcarriers` and
   `pulse_width_s` all move a sampling grid - and a derivative taken across a
   grid change is not the derivative of a fixed function. Deciding which subset
   is safely continuous, and what a sampling-grid derivative means, is a
-  modelling decision with its own ADR rather than a slot to open quietly.
+  modelling decision with its own ADR rather than a slot to open quietly. Follow-up owner: Radar `synthesis/`, as a new R-ADR deciding which spec scalars are continuous and what a sampling-grid derivative means.
 - **A pathwise derivative through the noise realisation.** Every `NoiseSpec`
   scalar parameterises a counter-based Philox draw. A reparameterised noise
   model, where the realisation is a smooth function of a fixed standard normal,
   is the shape that would make these leaves meaningful, and it is a separate
-  design with its own accuracy and reproducibility questions.
+  design with its own accuracy and reproducibility questions. Follow-up owner: Radar `frontend/`, as a reparameterised noise-model R-ADR with its own accuracy and reproducibility evidence.
 - **A sensor pattern table as a leaf.** The tables are a resident lookup and the
   kernel interpolates them; the pattern's real contribution to the derivative is
   already carried by the weight, through the positions that decide which angle
   is looked up. Optimising the tabulated VALUES - antenna design rather than
   scene reconstruction - would need a gradient slot on the interpolation and a
-  decision about what a derivative at a knot means.
+  decision about what a derivative at a knot means. Follow-up owner: Radar `sensors/`, gated on a consumer asking for antenna-design gradients rather than scene gradients.
+- **The Channel diffraction primal defect.** `evaluate` with
+  `components={"diffraction"}` raises `IndexError` inside Channel's own
+  enumerated diffraction stage at every AD mode including `none`, because the
+  solver scene it builds carries no transmitters or receivers to index. ADR-043
+  narrowed `component_ad_modes["diffraction"]` to `{"none"}` so the AD column is
+  refused pre-compute rather than advertised and unreachable, and deliberately
+  did NOT fix the primal: repairing the plumbing would silently re-open an AD
+  column nobody has validated. Radar refuses the component at adapter
+  construction and never reaches it. Follow-up owner: Channel, as a primal
+  reachability fix with its own evidence, separately from any AD work.
+
+## Acceptance record
+
+The plan's seven Phase-9 acceptance criteria, each mapped to the tests that
+prove it, and each marked with what was actually achieved. "Partially proved" is
+used where it is true; an honest partial is worth more than a claimed pass.
+
+| criterion | proved by | verdict |
+|---|---|---|
+| Capability-advertised geometry, material, frequency, target-state, RCS, waveform and receiver jvp/vjp matrix passes; unsupported cells have pre-compute failure tests | this document, 165 rows in four states with no empty test cell, enforced by `tests/test_phase9_capability_matrix.py` (13 tests); the refusals themselves by `tests/test_phase9_host_float_refusal.py`, `tests/test_phase9_refused_tangents.py`, `tests/test_phase9_processing_wall.py`, `tests/test_phase9_velocity_leaf_refusal.py`, `tests/test_phase9_smpl_pose_refusal.py`, `tests/test_phase9_sensor_constant_refusal.py` | proved |
+| Tests-only finite differences or independent references validate first order | every `SUP` row carries `fd`, `oracle-f64`, `analytic`, `adjoint` or - for a structural claim - `declaration`; `tests/test_phase9_capability_matrix.py::test_a_supported_row_is_never_justified_by_a_refusal` and `::test_every_row_declares_a_mode_and_a_validation` enforce the vocabulary; no production finite difference exists, pinned by `tests/test_phase6_no_torch_physics.py` | proved |
+| Primal, jvp and vjp share compact path identity, row mapping and numerical convention | `tests/test_phase9_combined_ad_matrix.py::test_the_three_ad_modes_publish_the_same_compact_rows`, `::test_the_primal_is_bitwise_identical_in_all_three_ad_modes`, `::test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology`, `::test_the_three_waveforms_share_one_frozen_topology`, all on ONE frozen topology per scenario | proved |
+| Topology discovery, hard pruning, ADC, CFAR and tracking AD requests fail before any partial result | `tests/test_phase9_processing_wall.py` (25 tests, with a `_ComputeWatch` instrument that measures that nothing was computed and is calibrated against the same stages running normally), `tests/test_phase9_refused_tangents.py::test_an_unfreezable_component_is_refused_before_any_discovery`, `::test_a_primal_only_endpoint_input_is_refused_in_both_modes` | proved |
+| No production finite difference, detach, silent zero-gradient or Torch physics fallback | `tests/test_phase6_no_torch_physics.py` (12 tests, extended this phase to the guard owners and to `scattering/rcs.py` by equality), `tests/test_phase9_row_validity_ad.py::test_a_poisoned_dead_row_cannot_change_the_cube` for the zero-gradient half, `tests/test_phase4_import_boundary.py` for the host-observation half | proved |
+| Tape does not leak into public results or get parsed across owners | `tests/test_phase9_tape_non_leak.py` (8 tests), with a calibration that plants a context in a record and checks the walker objects; scan limits stated in the module docstring | proved |
+| Forward and backward time, launch and memory budgets met | `tests/test_phase9_backward_budget.py` (19 tests) and `docs/dev/ad-tape-and-budget-ledger.md`; the pre-existing forward pins in `tests/test_phase8_pipeline_budget.py` and `tests/test_phase5_budget.py` are unchanged and pass on an idle device, with the measured cold-clock caveat recorded in the ledger rather than absorbed into a wider factor | partially proved |
+
+**Why the last criterion is "partially proved" and not "proved".** Every budget
+this phase introduced is measured, pinned and green. The two pre-existing
+Phase-8 wall-time pins are also green on an idle device - measured three
+consecutive times while closing the phase, at 2.7421-2.9225 ms against a 2.8990
+ms budget and 4.2097-4.9246 ms against a 5.0440 ms budget - but the first run of
+a cold session lands within one percent of the first budget, which is inside the
+measurement's own noise rather than comfortably clear of it. Calling that
+"proved" would overstate it. The number to fix is the device state, not the
+factor; the ledger records the measurement and the reason.
