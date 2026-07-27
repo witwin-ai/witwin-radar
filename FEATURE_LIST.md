@@ -6,6 +6,10 @@
 - Each wheel includes one Python-independent LibTorch Stable ABI Dirichlet library targeting PyTorch 2.10 or newer; the same binary is CI load-tested with PyTorch 2.10, 2.11, and 2.12 across CPython 3.10-3.14.
 - Native CUDA images cover compute capabilities 7.0, 7.5, 8.0, 8.6, 8.9, 9.0, 10.0, 10.1, and 12.0, with compute 12.0 PTX retained for forward-compatible Blackwell execution.
 - Linux release wheels are repaired and validated as `manylinux_2_35_x86_64` artifacts before publication.
+- The native artifact is `_radar_native` - one name for the physical stem, the dispatcher namespace, the binding manifest's `library` and `logical_owner`, the two identity sidecars, and the arch verifier's default `--stem` (R-ADR-004).
+- Channel is an OPTIONAL dependency, installed as `pip install witwin-radar[channel]` (R-ADR-008). The base wheel requires no ray-tracing runtime of any kind, and the extra pins `witwin-channel>=0.4,<0.5` because the propagation consumer contract is versioned.
+- Building a wheel without a packaged extension FAILS instead of emitting a `py3-none-any` wheel that cannot import. `WITWIN_RADAR_ALLOW_PURE_WHEEL=1` is the explicit opt-out for sdist-driven and documentation builds; the hook also refuses two binaries and a binary without its two identity sidecars.
+- `ci/wheel_smoke.py` audits a built wheel and then installs it into a disposable `--target` directory: canonical members, one dist-info, RECORD hash/size coverage, exactly one DSO and it is `_radar_native.<pyd|so>` under `prebuilt/`, both sidecars consistent with the PACKED binary, the packed CUDA sources re-hashing to the recorded `source_fingerprint`, no build residue and no `tests/` member - then a `python -I` import asserting `build_info()["origin"] == "packaged"`, every origin inside the target, and that no `witwin.channel`, `rayd` or `drjit` module was loaded.
 
 ## Public API
 
