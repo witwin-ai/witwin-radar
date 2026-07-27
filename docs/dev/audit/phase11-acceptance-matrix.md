@@ -419,3 +419,26 @@ resolve silently. What actually happened:
    name, not a binding, and four files outside the `channel-dormant` write set
    pin it as frozen comparative evidence. Retiring that evidence group is a
    separate change with its own justification.
+
+## Post-audit remediation
+
+Three independent audits (cutover/parity, hygiene/policy, mutation) ran against
+`34f3a9d` (Radar) and `209cc33` (Channel) and returned no blocking finding. The
+remediation pass that followed changed four things and nothing else.
+
+| what | where | why |
+| --- | --- | --- |
+| `ci/check_orphan_modules.py` ported to Channel, wired into `quick`, proven to fail | Channel `73a553f` | The mutation audit's only MAJOR-candidate: a COMMITTED resurrection of one of the 11 modules this phase deleted from `src/witwin/channel` passed hygiene (the tracked-file count is not pinned), the import graph, contract coverage and ruff. Channel's dead-code criterion was a one-time sweep; Radar closed the same hole with a standing gate. It reports 186 production modules, all reachable from the package root and the four solver entry points - zero orphans on the first run, so no allowlist was needed. |
+| `validate_radar_config` refuses an unknown key | Radar `a72ba75` | Finding 2 below, promoted by the cutover audit: the swallow also ate `"waveform"`, so `{"waveform": "ofdm"}` returned an FMCW radar and a complete simulation in the wrong waveform with nothing raised. Every configuration in the repository already passes. |
+| the migration note is pinned to the removals it documents | Radar `68df7ce` | The mutation audit deleted the whole note and every gate stayed green. Two tests now require each `_REMOVED` name (except the two the Dr.Jit phase removed) and each unnamed break - `pad_factor`, `simulate_group`, `last_trace` - to appear in it. |
+| `pad_factor` documented; `(section 12)` cross-reference and the "eight-family" docstring corrected | Radar `68df7ce` | Hygiene findings H1 and H6. The `pad_factor` removal took a POSITIONAL parameter away, so an unported call binds its old argument to `device`. |
+
+Finding 2 is now half closed: the unknown key is refused rather than dropped,
+so the mistake is loud. Making the `frontend` block AUTHORABLE in the flat
+mapping is still open and still one call to `validate_frontend_config`.
+
+Unchanged and still owner business: **D5** (the `sensor_weight` rewire was taken
+on the design default; `git revert 37aef3b` is the escape), the frame-budget
+re-derivation, findings 3 to 5 above, and the deferred `nightly` / `release`
+tiers in both repositories - Channel's 253 -> 234 symbol change makes the
+deferred release evidence mandatory before any release tag.
