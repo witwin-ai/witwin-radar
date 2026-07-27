@@ -36,6 +36,25 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.15",
 ]
+# R-ADR-008 decided that Channel is an OPTIONAL consumer dependency and never
+# a required one: the Radar wheel ships a self-contained `_radar_native` and
+# needs no ray-tracing runtime of its own. Until this extra existed that claim
+# was true only because Radar declared no Channel dependency at all, which is
+# an omission rather than a constraint. Naming the released range makes it a
+# tested one - installing `witwin-radar[channel]` resolves witwin-channel and
+# still pulls in no ray-tracing distribution, which the dependency-closure
+# check in the coexistence smoke asserts.
+#
+# Pinned to `<0.5` rather than left open because Channel's propagation consumer
+# contract is versioned and Radar reads it; a new minor Channel is a contract
+# review, not an automatic upgrade.
+#
+# Deliberately no forbidden-runtime token appears in this file: the Phase-5
+# gate `tests/test_phase5_removed_entry_points.py` scans the whole pyproject
+# text, comments included, and that scan is worth more than a comment is.
+channel = [
+    "witwin-channel>=0.4,<0.5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["witwin"]
@@ -46,6 +65,12 @@ artifacts = [
     "witwin/radar/cuda/**/*.h",
     "witwin/radar/cuda/prebuilt/*.pyd",
     "witwin/radar/cuda/prebuilt/*.so",
+    # R-ADR-019: the loader validates the binary against these two sidecars
+    # BEFORE torch.ops.load_library, so a wheel that ships the binary without
+    # them cannot load at all. They are gitignored build outputs, which is
+    # exactly what `artifacts` is for.
+    "witwin/radar/cuda/prebuilt/*.build-info.json",
+    "witwin/radar/cuda/prebuilt/*.build-fingerprint",
 ]
 
 [tool.hatch.build.hooks.custom]
