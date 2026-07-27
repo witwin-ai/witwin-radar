@@ -76,6 +76,13 @@ ALLOWED_CHANNEL_IMPORTS = frozenset(
 )
 
 SPIKE_MODULES = (
+    # The two cross-domain contract owners at the package root. Every domain
+    # with an AD boundary or a configuration scalar imports one of them, so
+    # they are on the per-frame path by construction, and they are scanned here
+    # for the same reason the DSP glue is: being a validator is permission to
+    # read an attribute, not permission to read a device tensor to the host.
+    "witwin/radar/ad_contracts.py",
+    "witwin/radar/host_parameters.py",
     "witwin/radar/propagation/__init__.py",
     "witwin/radar/propagation/contracts.py",
     "witwin/radar/propagation/channel_consumer.py",
