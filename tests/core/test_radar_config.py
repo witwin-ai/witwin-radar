@@ -78,6 +78,31 @@ class TestRadarConfigSchema:
         assert "polarization" not in fields
         assert "frontend" in fields
 
+    def test_an_unknown_key_is_refused_rather_than_dropped(self):
+        """The flat mapping used to swallow anything it did not recognize."""
+
+        broken = {**STANDARD_CONFIG, "receiver_chain": {"lna_gain_db": 30.0}}
+        with pytest.raises(ValueError, match="unsupported keys: receiver_chain"):
+            RadarConfig.from_dict(broken)
+
+    def test_a_waveform_selector_cannot_be_silently_ignored(self):
+        """`{"waveform": "ofdm"}` used to build an FMCW radar with no error.
+
+        That is the worst shape the swallow had: the one key a caller reaches
+        for to choose a waveform, dropped, with a full simulation returned in
+        the wrong waveform. A non-FMCW `Radar` is still unconstructible; this
+        pins that the refusal says so instead of the result implying otherwise.
+        """
+
+        with pytest.raises(ValueError, match="unsupported keys: waveform"):
+            RadarConfig.from_dict({**STANDARD_CONFIG, "waveform": "ofdm"})
+
+    def test_a_frontend_block_is_refused_instead_of_dropped(self):
+        """The receive chain is attached after validation, not authored here."""
+
+        with pytest.raises(ValueError, match="unsupported keys: frontend"):
+            RadarConfig.from_dict({**STANDARD_CONFIG, "frontend": {"seed": 7}})
+
     def test_missing_required_key_raises(self):
         broken = dict(STANDARD_CONFIG)
         broken.pop("num_tx")

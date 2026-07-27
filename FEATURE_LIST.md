@@ -54,7 +54,7 @@
 
 ## Configuration
 
-- `RadarConfig` frozen schema validates required radar fields and antenna layouts
+- `RadarConfig` frozen schema validates required radar fields and antenna layouts, and REFUSES a key it cannot express instead of dropping it. The flat mapping is the file format, so an unknown key is a caller who believes a block is configured: `{"waveform": "ofdm"}` used to return an FMCW radar and a complete simulation in the wrong waveform with nothing raised, and `{"frontend": {...}}` used to return a radar with no receive chain
 - Optional `antenna_pattern` config defaults to a broadside dipole and also supports separable `x/y` 1D gain curves or a direct 2D gain map. `Radar.simulate(..., antenna_pattern=spec)` is the only route that applies it to a composed round trip, and it deliberately defaults to `None` (no stage, no launch) rather than to the sensor block's own dipole default
 - The receive chain is the `frontend` block only. The flat `noise_model` and `receiver_chain` blocks are deleted with the legacy chain they configured; a `polarization` block still exists on the SENSOR block config, for the native kernel's projection mode
 - `RadarSystemConfig.from_radar_config(config, waveform=..., components=..., max_depth=...)` and `RadarSystemConfig.with_propagation(...)` select the waveform family and the propagation request; `components` and `max_depth` were previously reachable only as `PropagationConfig` defaults

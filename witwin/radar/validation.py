@@ -293,6 +293,29 @@ _RADAR_REQUIRED_KEYS = (
 )
 
 
+_RADAR_OPTIONAL_KEYS = ("antenna_pattern",)
+
+#: What the flat mapping can express. A key outside this set is refused rather
+#: than dropped: the flat form is the file format, so an unknown key is a
+#: caller who believes a block is configured. ``"waveform"`` and ``"frontend"``
+#: are the two that cost real time - a caller who writes
+#: ``{"waveform": "ofdm"}`` used to get an FMCW radar with nothing raised, and
+#: ``{"frontend": {...}}`` used to get a radar with no receive chain. Neither
+#: block is authorable here today (see the migration note); refusing says so.
+_RADAR_KNOWN_KEYS = frozenset(_RADAR_REQUIRED_KEYS + _RADAR_OPTIONAL_KEYS)
+
+
+def _reject_unknown_radar_keys(config: dict[str, Any]) -> None:
+    unknown = sorted(set(config) - _RADAR_KNOWN_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Radar config has unsupported keys: {', '.join(unknown)}. The flat "
+            f"mapping accepts only {', '.join(sorted(_RADAR_KNOWN_KEYS))}; a "
+            "waveform other than FMCW and a frontend chain are not authorable "
+            "in it, so attach them to the RadarConfig after validation."
+        )
+
+
 def _validate_antenna_locations(
     name: str, value: Any, expected_count: int
 ) -> tuple[tuple[float, float, float], ...]:
@@ -320,6 +343,7 @@ def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
     from .radar import RadarConfig
 
     _require_keys(config, _RADAR_REQUIRED_KEYS, "Radar config")
+    _reject_unknown_radar_keys(config)
 
     num_tx = _positive_int("num_tx", config["num_tx"], _RADAR_PREFIX)
     num_rx = _positive_int("num_rx", config["num_rx"], _RADAR_PREFIX)
