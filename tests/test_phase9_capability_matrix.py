@@ -62,6 +62,86 @@ VALIDATIONS = frozenset(
 
 MODES = frozenset({"jvp", "vjp", "both"})
 
+#: The validations that measure a derivative rather than assert a structure.
+NUMERICAL_VALIDATIONS = frozenset({"fd", "oracle-f64", "analytic", "adjoint"})
+
+#: The ``SUP`` rows whose claim is structural or a liveness statement - a
+#: compact row identity, an autograd context and its saved-tensor count, a
+#: reduction order, a tape non-leak, "this legacy route still publishes a
+#: nonzero gradient" - and which are therefore proved by a structural test
+#: rather than by an oracle. Frozen by ``(route, leaf-or-output, mode)`` so that
+#: flipping some OTHER row to ``SUP`` and pointing it at a declaration-style
+#: test fails here instead of quietly advertising an unmeasured derivative.
+STRUCTURAL_SUP_ROWS = frozenset(
+    {
+        ("reevaluate/prepared", "out:field_direction", "both"),
+        ("join/_compose_band", "out:autograd context aliasing", "vjp"),
+        (
+            "kinematics/two_way_duals",
+            "position leaf beside a velocity tangent",
+            "both",
+        ),
+        ("legacy-scene/SMPLBody", "pose", "vjp"),
+        ("sensor_weight/evaluate", "antenna position reduction order", "vjp"),
+        ("chain/any", "one dual level over all three endpoint sets", "jvp"),
+        (
+            "reevaluate/prepared",
+            "out:compact row identity across none, jvp and vjp",
+            "both",
+        ),
+        (
+            "reevaluate/prepared",
+            "out:topology identity, scene-leaf compile against the shared one",
+            "both",
+        ),
+        ("frontend/noise", "out:the Philox realisation under AD", "vjp"),
+        (
+            "tape/two_way",
+            "out:join context, 10 saved tensors, one launch each way",
+            "vjp",
+        ),
+        (
+            "tape/aspect",
+            "out:aspect context, 9 saved tensors, one launch each way",
+            "vjp",
+        ),
+        (
+            "tape/fmcw_beat",
+            "out:beat context, backward saves segment where forward saves offsets",
+            "both",
+        ),
+        ("tape/ofdm_cfr", "out:cfr context, same forward/backward asymmetry", "both"),
+        (
+            "tape/pulsed_echo",
+            "out:echo context, same forward/backward asymmetry",
+            "both",
+        ),
+        (
+            "tape/dirichlet_spectrum",
+            "out:chunked and MIMO-linear contexts, two variants",
+            "both",
+        ),
+        (
+            "tape/sensor_weight",
+            "out:weight context, 9 saved tensors, one launch each way",
+            "vjp",
+        ),
+        (
+            "tape/frontend",
+            "out:noise and AGC contexts, two owners in one call",
+            "vjp",
+        ),
+        (
+            "tape/compose_band",
+            "out:tape bytes as a linear law in the band column count",
+            "vjp",
+        ),
+        ("tape/any", "out:no tape reaches a public result record", "both"),
+        ("tape/any", "out:no module outside an owner reads a context", "both"),
+        ("reevaluate/prepared", "out:ad_companion_launches, ad_tape_bytes", "vjp"),
+    }
+)
+
 #: Rows per document section, frozen. A new leaf without a row changes a number
 #: here; so does a deleted row. Both are deliberate acts and both should show up
 #: in a diff rather than in nobody's attention.
@@ -243,11 +323,12 @@ def test_no_row_has_an_empty_test_cell(parsed):
 def test_a_supported_row_is_never_justified_by_a_refusal(parsed):
     """``SUP`` cannot be evidenced by a raise.
 
-    ``declaration`` is deliberately still legal for a ``SUP`` row: a supported
-    cell whose claim is structural - a compact row identity, an autograd context
-    aliasing, a reduction order - is proved by a structural test and not by a
-    finite difference, and nine such rows exist. What is never legal is a
-    supported derivative whose only evidence is that something else was refused.
+    ``declaration`` remains legal for a ``SUP`` row whose claim is structural -
+    a compact row identity, an autograd context aliasing, a reduction order -
+    because a structural fact is not proved by a finite difference. Which rows
+    those are is frozen in :data:`STRUCTURAL_SUP_ROWS` rather than left open;
+    see the two tests below. What is never legal, in any row, is a supported
+    derivative whose only evidence is that something else was refused.
     """
 
     bad = [
@@ -256,6 +337,47 @@ def test_a_supported_row_is_never_justified_by_a_refusal(parsed):
         if row.state == "SUP" and row.validation == "refusal"
     ]
     assert not bad, bad
+
+
+def test_a_supported_numerical_row_carries_a_real_oracle(parsed):
+    """The hole the narrowed rule left, closed by an allowlist.
+
+    Allowing ``declaration`` on any ``SUP`` row made one edit invisible: flip a
+    ``DECL`` row that already cites a declaration-style test to ``SUP`` and the
+    document advertises a supported derivative with no oracle behind it while
+    every gate still passes. A mutation run confirmed exactly that on
+    ``sensor_weight/evaluate out:pattern_gain``.
+
+    So the structural rows are enumerated. Every other ``SUP`` row has to carry
+    ``fd``, ``oracle-f64``, ``analytic`` or ``adjoint`` - the evidence bar the
+    document's own state table states.
+    """
+
+    bad = [
+        (row.line, row.route, row.leaf, row.validation)
+        for row in parsed
+        if row.state == "SUP"
+        and row.validation not in NUMERICAL_VALIDATIONS
+        and (row.route, row.leaf, row.mode) not in STRUCTURAL_SUP_ROWS
+    ]
+    assert not bad, bad
+
+
+def test_the_structural_allowlist_has_no_stale_entry(parsed):
+    """An allowlist nobody prunes becomes a second place for a claim to hide.
+
+    Every enumerated key must still be a ``SUP`` row validated by
+    ``declaration``. Deleting or relabelling such a row therefore has to delete
+    its key in the same diff, and a new structural row has to be added here
+    deliberately rather than by inheriting a permissive rule.
+    """
+
+    present = {
+        (row.route, row.leaf, row.mode)
+        for row in parsed
+        if row.state == "SUP" and row.validation == "declaration"
+    }
+    assert present == STRUCTURAL_SUP_ROWS
 
 
 def test_a_refusal_validation_appears_only_on_a_refused_row(parsed):
