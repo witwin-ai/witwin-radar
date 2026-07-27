@@ -65,6 +65,7 @@ import torch
 from .frontend.contracts import FrontendSpec
 from .sensors.contracts import (
     AntennaPatternSpec,
+    PolarizationSpec,
     SensorArraySpec,
     TxPowerSpec,
 )

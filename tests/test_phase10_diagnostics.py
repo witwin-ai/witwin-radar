@@ -31,7 +31,7 @@ import sys
 
 import pytest
 
-from witwin.radar import capabilities as capabilities_module
+from witwin.radar import capabilities as capability_record
 from witwin.radar import deployment
 
 
@@ -206,7 +206,7 @@ def test_verified_architectures_are_a_subset_of_declared_ones():
 def test_the_capability_record_is_versioned_and_names_its_abi():
     from witwin.radar.cuda.identity import RADAR_ABI_VERSION
 
-    record = capabilities_module.capabilities()
+    record = capability_record()
     assert record["schema_version"] == 1
     assert record["radar_abi_version"] == RADAR_ABI_VERSION
     assert record["native_library"]["numerical_owner"] == "radar"
@@ -216,7 +216,7 @@ def test_the_capability_families_are_the_manifest_families():
     manifest = json.loads(
         (REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8")
     )
-    record = capabilities_module.capabilities()
+    record = capability_record()
     assert set(record["native_library"]["operator_families"]) == {
         entry["family"] for entry in manifest["operators"]
     }
@@ -226,7 +226,7 @@ def test_the_ad_summary_agrees_with_the_capability_matrix_document():
     """The record summarizes the matrix; the matrix stays the authority."""
 
     text = MATRIX.read_text(encoding="utf-8")
-    record = capabilities_module.capabilities()["ad_contract"]
+    record = capability_record()["ad_contract"]
     assert record["matrix_document"] == "docs/dev/radar-ad-capability-matrix.md"
     for state in record["states"]:
         assert f"| `{state}` |" in text, state
@@ -239,7 +239,7 @@ def test_the_ad_summary_agrees_with_the_capability_matrix_document():
 
 def test_the_processing_wall_stages_are_the_matrix_wall_stages():
     text = MATRIX.read_text(encoding="utf-8")
-    wall = capabilities_module.capabilities()["processing_wall"]
+    wall = capability_record()["processing_wall"]
     for stage in ("range_profile", "range_doppler", "beam_cube", "matched_filter"):
         assert stage in wall["differentiable_stages"]
         assert f"processing/{stage}" in text
@@ -250,7 +250,7 @@ def test_the_processing_wall_stages_are_the_matrix_wall_stages():
 
 
 def test_the_refused_components_are_refused_by_the_adapter():
-    record = capabilities_module.capabilities()["propagation_request"]
+    record = capability_record()["propagation_request"]
     source = (REPO_ROOT / record["refusal_site"]).read_text(encoding="utf-8")
     assert "not_freezable" in source
     assert set(record["components"]) == {"los", "reflection"}

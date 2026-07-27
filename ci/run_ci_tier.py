@@ -36,6 +36,12 @@ oracle isolation, raw native access, the Torch-physics allowlist) sit in
 needs a GPU, so the cheapest tier is the one that should catch them; the only
 half that cannot run there is the oracle gate's wheel-member check, which is a
 separate `nightly` gate against the wheel the tier just built.
+
+`quick.orphan-modules` joined them in Phase 11 for the same reason - it parses
+the tree and imports nothing - and closes the dead-code half of that phase's
+acceptance criterion 8. Its sibling, the frozen public-API snapshot, is a test
+rather than a gate script (`tests/test_public_api_snapshot.py`), so it runs
+inside `quick.cpu-tests`.
 """
 
 from __future__ import annotations
@@ -70,6 +76,10 @@ QUICK_GATES = (
     Gate("quick.raw-native-access", ("ci/check_raw_native_access.py",)),
     Gate("quick.torch-physics-allowlist", ("ci/check_torch_physics_allowlist.py",)),
     Gate("quick.workflow-policy", ("ci/check_workflow_policy.py",)),
+    # Dead code, Phase-11 work item 7. Ruff reports an unused IMPORT; nothing
+    # reported an unused MODULE, which is how `witwin/radar/timeline.py`
+    # survived four phases after its last consumer went away.
+    Gate("quick.orphan-modules", ("ci/check_orphan_modules.py",)),
     # Importing the package must not load the loader, the compiler, or CUDA.
     # The lazy __getattr__ in witwin/radar/__init__.py is what makes that true
     # and this is the gate that notices when an eager import creeps back in.

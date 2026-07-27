@@ -162,7 +162,15 @@ def __getattr__(name: str):
         from importlib import import_module
 
         module_name, attribute = _LAZY[name]
-        return getattr(import_module(f".{module_name}", __name__), attribute)
+        resolved = getattr(import_module(f".{module_name}", __name__), attribute)
+        # Bind the RESOLVED object, and bind it after the import, because
+        # importing `witwin.radar.capabilities` sets `capabilities` on this
+        # package to the submodule. Without this line the export means the
+        # function on its first access and the MODULE on every access after,
+        # and `from witwin.radar import capabilities` means the module from
+        # the start - three answers for one name in `__all__`.
+        globals()[name] = resolved
+        return resolved
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

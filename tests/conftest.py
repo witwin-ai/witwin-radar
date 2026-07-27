@@ -399,8 +399,6 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     Returns a :class:`PointTargetFrame`.
     """
 
-    import torch
-
     from witwin.radar import ScatterSitePolicy
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes
     from witwin.radar.propagation import kinematics as kin
