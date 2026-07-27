@@ -64,13 +64,42 @@ _REMOVED = {
 }
 
 
+# Deployment reporting, exported LAZILY. `build_info` loads the native
+# extension and `runtime_diagnostics` imports torch; binding either eagerly
+# would make `import witwin.radar` pay for a native load, and would let a
+# broken or missing prebuilt fail a bare import of the package root. The
+# measured property that `import witwin.radar` loads neither
+# `witwin.radar.cuda.build` nor any `witwin.channel` module is what
+# acceptance criterion A2 rests on, so these three names resolve on first
+# ACCESS rather than on import.
+_LAZY = {
+    "build_info": ("deployment", "build_info"),
+    "runtime_diagnostics": ("deployment", "runtime_diagnostics"),
+    "require_supported_runtime": ("deployment", "require_supported_runtime"),
+    "capabilities": ("capabilities", "capabilities"),
+}
+
+
 def __getattr__(name: str):
     if name in _REMOVED:
         raise AttributeError(_REMOVED[name])
+    if name in _LAZY:
+        from importlib import import_module
+
+        module_name, attribute = _LAZY[name]
+        return getattr(import_module(f".{module_name}", __name__), attribute)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __dir__():
+    return sorted({*globals(), *_LAZY})
+
+
 __all__ = [
+    'build_info',
+    'capabilities',
+    'require_supported_runtime',
+    'runtime_diagnostics',
     'Radar',
     'RadarConfig',
     'quantize_complex_signal',
