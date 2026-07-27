@@ -28,7 +28,12 @@ import sysconfig
 #: Bumped whenever the sidecar schema or the loader contract changes shape.
 #: A packaged artifact whose record carries a different value is rejected; it is
 #: never silently upgraded, and it never triggers a rebuild.
-RADAR_ABI_VERSION = 1
+#:
+#: 2 - Phase 11 deleted the nine ``dirichlet_spectrum`` operators together with
+#:     their translation unit. The registered operator set went from 34 symbols
+#:     to 25, which a consumer can observe: a lookup that used to resolve now
+#:     fails. That is an ABI change even though the sidecar schema is unchanged.
+RADAR_ABI_VERSION = 2
 
 BUILD_INFO_SUFFIX = ".build-info.json"
 FINGERPRINT_SUFFIX = ".build-fingerprint"

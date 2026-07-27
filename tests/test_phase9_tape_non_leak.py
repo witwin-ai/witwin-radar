@@ -41,15 +41,16 @@ import torch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "witwin" / "radar"
 
-#: The nine files that own a ``torch.autograd.Function``. ``frontend/chain.py``
-#: owns two, which is why there are ten tape owners and nine files.
+#: The seven files that own a ``torch.autograd.Function``. ``frontend/chain.py``
+#: owns two, which is why there are eight tape owners and seven files. There
+#: were nine files until Phase 11 deleted ``synthesis/dirichlet_spectrum.py``
+#: with the route it synthesized for.
 TAPE_OWNER_FILES = frozenset(
     {
         "frontend/chain.py",
         "paths/two_way.py",
         "scattering/aspect.py",
         "sensors/weights.py",
-        "synthesis/dirichlet_spectrum.py",
         "synthesis/fmcw_beat.py",
         "synthesis/ofdm_cfr.py",
         "synthesis/pulsed_echo.py",
@@ -116,9 +117,10 @@ def test_every_context_read_sits_inside_a_tape_owner():
 def test_the_context_scan_is_not_vacuous():
     """Calibration: the scan finds the reads that are supposed to be there.
 
-    Ten owners, each reading its tape in exactly two places - the backward and
-    the jvp - is twenty reads. A scanner that silently matched nothing would
-    make the assertion above pass forever.
+    Eight owners, each reading its tape in exactly two places - the backward
+    and the jvp - is sixteen reads. It was ten owners and twenty reads until
+    Phase 11 deleted the two ``dirichlet_spectrum`` contexts. A scanner that
+    silently matched nothing would make the assertion above pass forever.
     """
 
     found = {
@@ -128,7 +130,7 @@ def test_the_context_scan_is_not_vacuous():
     live = {name: reads for name, reads in found.items() if reads}
     assert set(live) == TAPE_OWNER_FILES, sorted(live)
     total = sum(len(reads) for reads in live.values())
-    assert total == 20, {name: len(reads) for name, reads in live.items()}
+    assert total == 16, {name: len(reads) for name, reads in live.items()}
 
 
 def test_no_production_module_stores_a_context_on_an_object():

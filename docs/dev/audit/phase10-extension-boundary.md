@@ -17,11 +17,32 @@ by `ci/check_extension_boundary.py`, in the Phase-10 radar worktree
 
 ---
 
+## 0. Phase-11 supersession note
+
+This document is a dated Phase-10 measurement. Phase 11 deleted the Dirichlet
+route, which changes four measured quantities and one name:
+
+* the radar build input is eight sources, not nine - `kernels/dirichlet.cu` is
+  gone;
+* the radar binary registers 25 operators, not 34;
+* `RADAR_ABI_VERSION` is 2, not 1;
+* the caller-free symbol budget is 0, not 1 - the `backward` entry died with
+  its translation unit;
+* every occurrence of `witwin_radar_dirichlet_cuda` in the original text was
+  the PRE-Phase-10 extension stem, kept in prose after the rename to
+  `_radar_native` had landed in the source. Those are corrected in place below
+  rather than annotated, because leaving them would advertise a dispatcher
+  namespace named after a deleted route that never existed under that name.
+
+Nothing else in the audit's conclusions changes: the two binaries remain
+independent, neither names the other, and there is still no shared RF or
+geometry binary between them.
+
 ## 1. The two binaries
 
 | | Radar | Channel |
 |---|---|---|
-| file | `witwin/radar/cuda/prebuilt/witwin_radar_dirichlet_cuda.pyd` | `channel/.codex_tmp/adr043-objbuild/_channel.cp311-win_amd64.pyd` |
+| file | `witwin/radar/cuda/prebuilt/_radar_native.pyd` | `channel/.codex_tmp/adr043-objbuild/_channel.cp311-win_amd64.pyd` |
 | bytes | 1,244,160 | 37,206,528 |
 | built (UTC) | 2026-07-27T11:26:51Z | 2026-07-27T10:49:57Z |
 | sha256 (16) | `9705f4593653fc8c` | `581ae947f057c12f` |
@@ -91,10 +112,10 @@ would leave the string in `.rdata` and nothing in the import table.
 
 | scan | result |
 |---|---|
-| `witwin_radar_dirichlet_cuda` in the radar binary | present (its own dispatcher namespace) |
+| `_radar_native` in the radar binary | present (its own dispatcher namespace) |
 | `_channel` in the radar binary | **absent** |
 | `_channel` in the Channel binary | present (its own module name) |
-| `witwin_radar_dirichlet_cuda` in the Channel binary | **absent** |
+| `_radar_native` in the Channel binary | **absent** |
 
 The two positive rows are the calibration. A scan that found neither stem would
 be indistinguishable from a scan that does not work, so the audit records that
@@ -120,14 +141,14 @@ each binary DOES name itself before concluding that neither names the other.
 
 Measured at Channel `1606f0d`.
 
-### `_radar_native` compiles nine Radar-owned sources
+### `_radar_native` compiles eight Radar-owned sources
 
-`witwin/radar/cuda/build.py:214-226` lists exactly nine files and they are the
-whole build input:
+`witwin/radar/cuda/build.py` lists exactly eight files and they are the whole
+build input. It listed nine when this audit was written; Phase 11 deleted
+`kernels/dirichlet.cu` with the Dirichlet route:
 
 ```
 witwin/radar/cuda/extension.cpp
-witwin/radar/cuda/kernels/dirichlet.cu
 witwin/radar/cuda/kernels/fmcw_beat.cu
 witwin/radar/cuda/kernels/frontend.cu
 witwin/radar/cuda/kernels/ofdm_cfr.cu
@@ -144,8 +165,16 @@ asserts the equality; `ci/check_native_bindings.py` re-asserts it outside pytest
 so a release run that does not execute the suite still checks it.
 
 `witwin/radar/cuda/extension.cpp:3` opens a single
-`STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m)` block with 34 `m.def`
-entries. One dispatcher namespace, one registry, one binary.
+`STABLE_TORCH_LIBRARY(_radar_native, m)` block with 25 `m.def` entries. One
+dispatcher namespace, one registry, one binary.
+
+This paragraph said `STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, m)` and
+34 entries. The name was already wrong when written - the Phase-10 rename to
+`_radar_native` had landed in the source and the prose kept the pre-rename stem
+- and the count is now 25 because Phase 11 removed the nine
+`dirichlet_spectrum` operators. Corrected rather than annotated, because a
+namespace named after a deleted route would be a real finding and this one is
+not: there is no Dirichlet-named dispatcher namespace to rename.
 
 ### No second RayD registry, no `extern "C"` handshake
 
@@ -174,7 +203,7 @@ nowhere:
 
 | artifact | Channel | Radar before Phase 10 | Radar after S0/S1 |
 |---|---|---|---|
-| binding manifest | `ci/native-binding-manifest.json`, 253 symbols | 34 symbols, no schema version | schema 2, ownership registry |
+| binding manifest | `ci/native-binding-manifest.json`, 253 symbols | 34 symbols, no schema version | schema 2, ownership registry (25 symbols after Phase 11) |
 | contract-coverage manifest | `ci/contract-coverage-manifest.json` | none | coverage lives in the binding manifest rows |
 | public API snapshot | `ci/public-api-snapshot.json` | none | none (Phase-11 work) |
 | import-graph gate | `ci/check_import_graph.py` + frozen digest | pytest AST scans | unchanged (S5 owns the static gates) |
@@ -209,5 +238,5 @@ Recorded so the evidence is not read as broader than it is.
 - **Symbol-level cross-calls through Torch.** Both libraries register into the
   Torch dispatcher, which is a shared registry by design. What the boundary
   forbids is a PRIVATE ABI between them, and the disjoint namespaces
-  (`witwin_radar_dirichlet_cuda::*` versus Channel's pybind surface) plus the
-  absence of any cross-naming are what is measured here.
+  (`_radar_native::*` versus Channel's pybind surface) plus the absence of any
+  cross-naming are what is measured here.

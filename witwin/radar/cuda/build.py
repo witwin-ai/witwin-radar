@@ -215,7 +215,6 @@ def extension_sources() -> list[Path]:
     root = source_root()
     return [
         root / "extension.cpp",
-        root / "kernels" / "dirichlet.cu",
         root / "kernels" / "fmcw_beat.cu",
         root / "kernels" / "frontend.cu",
         root / "kernels" / "ofdm_cfr.cu",
@@ -295,8 +294,11 @@ class _StableOpsModule:
 # Every operator family the library is required to register. A stale binary
 # that predates a family loads fine and then fails deep inside a kernel call,
 # so the presence check names one operator per family and fails at load.
+#
+# `forward_chunked` stood first until Phase 11 deleted the `dirichlet_spectrum`
+# family with its route. Leaving it here would have made every load reject the
+# correct binary, which is the same defect in the other direction.
 _REQUIRED_OPERATORS = (
-    "forward_chunked",
     "fmcw_beat_forward",
     "frontend_noise_forward",
     "ofdm_cfr_forward",

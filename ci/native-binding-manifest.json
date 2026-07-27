@@ -36,7 +36,7 @@
     "                    after the kernel's own device helpers. This is what",
     "                    makes 'do not split a fused operation' reviewable.",
     "  host_observations host reads (.item/.cpu/.tolist/.numpy) the operator",
-    "                    performs. Zero for all 34, which is R-ADR-006's 'Radar",
+    "                    performs. Zero for all 25, which is R-ADR-006's 'Radar",
     "                    adds zero host observations' made machine-readable.",
     "                    The sanctioned freeze-time reads live in",
     "                    witwin/radar/paths/_identity.py, which is not a native",
@@ -51,12 +51,11 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 1,
+  "radar_abi_version": 2,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
     "witwin/radar/cuda/extension.cpp",
-    "witwin/radar/cuda/kernels/dirichlet.cu",
     "witwin/radar/cuda/kernels/fmcw_beat.cu",
     "witwin/radar/cuda/kernels/frontend.cu",
     "witwin/radar/cuda/kernels/ofdm_cfr.cu",
@@ -98,218 +97,6 @@
     }
   ],
   "operators": [
-    {
-      "symbol": "forward_chunked",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "primal",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "path_response",
-        "complex_amplitude_rotation",
-        "target_chunk_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test_note": [
-        "The contract test drives this symbol through Radar.chirp -> DirichletSolver",
-        "-> chunked_spectra, so it names the facade rather than the operator. The",
-        "chunked primal is the only path that call can take on CUDA, and the test",
-        "compares it against the float64 FFT oracle bit for bit of tolerance."
-      ],
-      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.chirp"
-    },
-    {
-      "symbol": "forward_mimo_linear_chunked",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "primal",
-      "ad_group": "dirichlet_spectrum.mimo_linear",
-      "launches": 1,
-      "fused_stages": [
-        "tdm_slot_time",
-        "linear_range_drift",
-        "range_loss_update",
-        "path_response",
-        "complex_amplitude_rotation",
-        "target_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test_note": [
-        "Same file, same reason: the MIMO-linear primal is reached through",
-        "Radar.mimo -> DirichletSolver.mimo_from_paths -> mimo_linear_spectra, and",
-        "the test asserts on that facade's output rather than on the symbol."
-      ],
-      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
-    },
-    {
-      "symbol": "mimo_linear_backward",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "backward",
-      "ad_group": "dirichlet_spectrum.mimo_linear",
-      "launches": 1,
-      "fused_stages": [
-        "tdm_slot_time",
-        "linear_range_drift",
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "warp_sum_reduction"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/test_phase6_mimo_linear_ad.py",
-      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.backward"
-    },
-    {
-      "symbol": "mimo_linear_jvp",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "jvp",
-      "ad_group": "dirichlet_spectrum.mimo_linear",
-      "launches": 1,
-      "fused_stages": [
-        "tdm_slot_time",
-        "linear_range_drift",
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "tangent_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/test_phase6_mimo_linear_ad.py",
-      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.jvp"
-    },
-    {
-      "symbol": "backward",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "backward",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "single_block_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": null,
-      "caller_status": "test_only",
-      "caller_note": [
-        "This entry used to name DirichletSolver.backward, which is false:",
-        "that method dispatches backward_parallel_bins through spectrum_vjp.",
-        "The only caller of spectrum_vjp_single_block - the Python owner of",
-        "this symbol - is its contract test. The symbol is therefore cleanup",
-        "debt, and the manifest records that rather than carrying a claim",
-        "whose one job is accuracy. Deleting a registered ABI symbol is a",
-        "deliberate change to the kernel, the extension, the load probe, and",
-        "the coverage set; until that happens this is the honest record. It",
-        "may not spread: the manifest test caps caller-free symbols at one."
-      ]
-    },
-    {
-      "symbol": "backward_batched",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "backward",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "batched_atomic_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test_note": [
-        "The batched VJP is exercised by backward() through Radar.mimo, so the test",
-        "names autograd and the facade rather than the symbol. It is the only",
-        "backward the chunked group can reach for a multi-target frame, and the",
-        "test pins it against a float64 reference gradient."
-      ],
-      "contract_test": "tests/solvers/test_mimo_grad.py",
-      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
-    },
-    {
-      "symbol": "backward_parallel_bins",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "backward",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "warp_sum_reduction"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
-    },
-    {
-      "symbol": "backward_per_bin",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "backward",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "per_bin_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
-      "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward_per_bin"
-    },
-    {
-      "symbol": "dirichlet_jvp",
-      "family": "dirichlet_spectrum",
-      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
-      "numerical_owner": "radar",
-      "ad_role": "jvp",
-      "ad_group": "dirichlet_spectrum.chunked",
-      "launches": 1,
-      "fused_stages": [
-        "round_trip_delay",
-        "delay_phase_scale",
-        "dirichlet_kernel",
-        "dirichlet_kernel_grad",
-        "tangent_accumulation"
-      ],
-      "host_observations": 0,
-      "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
-      "contract_test": "tests/test_phase6_dirichlet_complex.py",
-      "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.jvp"
-    },
     {
       "symbol": "fmcw_beat_forward",
       "family": "fmcw_beat_synthesis",

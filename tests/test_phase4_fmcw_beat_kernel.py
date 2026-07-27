@@ -122,49 +122,6 @@ def test_tau_is_the_round_trip_delay_and_is_never_doubled():
     assert abs(peak_doubled - 2 * peak_single) <= 1.0
 
 
-def test_matches_the_dirichlet_path_when_carrier_is_the_carrier():
-    """``carrier_hz = fc`` reproduces the existing solver's phase structure.
-
-    The Dirichlet solver works in the frequency domain over a padded spectrum,
-    so the comparison is made in the domain both can reach: the DFT of this
-    kernel's time samples against the Dirichlet spectrum at the matching bin
-    scale. What is being pinned is the phase convention and the ``t_start`` /
-    RVP terms, which are shared.
-    """
-
-    from witwin.radar import Radar, RadarConfig
-
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    radar = Radar(config, device="cuda")
-    solver = radar.solver
-
-    distance_m = 3.0
-    tau_rt = 2.0 * distance_m / geo.C0_M_PER_S
-    spec = _spec(num_chirps=1, carrier_hz=config.fc)
-
-    tau, rate, weight, offsets = _rows([tau_rt], [1.0 + 0.0j])
-    samples = synthesize_beat_rows(tau, rate, weight, offsets, spec)[0, 0]
-    measured = torch.fft.fft(samples.cpu().to(torch.complex128))
-
-    dirichlet = solver.chirp_mimo(
-        torch.tensor([distance_m], dtype=torch.float32, device="cuda"),
-        torch.tensor([1.0], dtype=torch.float32, device="cuda"),
-    ).cpu()
-
-    peak_measured = int(measured.abs().argmax())
-    peak_dirichlet = int(dirichlet.abs().argmax())
-    assert peak_measured == peak_dirichlet
-
-    a = complex(measured[peak_measured])
-    b = complex(dirichlet[peak_dirichlet])
-    # Same peak bin, same peak phase: the shared convention is what is pinned.
-    assert abs(abs(a) - abs(b)) <= 2e-3 * abs(b)
-    phase_gap = math.remainder(
-        math.atan2(a.imag, a.real) - math.atan2(b.imag, b.real), 2.0 * math.pi
-    )
-    assert abs(phase_gap) < 2e-2, phase_gap
-
-
 def test_multi_chirp_slow_time_phase_slope_carries_doppler():
     """Slow-time phase advances by ``2 pi f_c * tau_rate * T_chirp`` per chirp.
 

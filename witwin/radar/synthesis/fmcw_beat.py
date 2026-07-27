@@ -12,7 +12,7 @@ exactly one Python owner, this module.
 Two structural contracts, each with a test:
 
 * The facade ALWAYS routes through ``Function.apply``. It must never replicate
-  the eager shortcut in ``solvers/solver_dirichlet.py``, which checks
+  the eager shortcut in the deleted ``solvers/solver_dirichlet.py``, which checked
   ``requires_grad`` and bypasses autograd when it is false. An ADR-038
   forward-only dual has ``requires_grad == False``, so that shortcut silently
   swallows its tangent and returns a plain tensor.

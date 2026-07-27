@@ -1,4 +1,11 @@
-"""Unified FMCW radar using the native Dirichlet CUDA solver."""
+"""The radar facade: configuration, pose, antenna state and the frame entry.
+
+``Radar.simulate`` is the production entry point and it delegates to
+:mod:`witwin.radar.simulation`. This module owns no propagation and no
+synthesis physics; what it holds is the configuration record, the pose
+transforms every consumer shares, the antenna-pattern state, and the four typed
+diagnostics of the last completed frame.
+"""
 
 from __future__ import annotations
 
@@ -246,7 +253,6 @@ class Radar:
     def __init__(
         self,
         config: RadarConfig | Mapping[str, Any],
-        pad_factor: int = 16,
         device: str | torch.device = "cuda",
         *,
         position=(0.0, 0.0, 0.0),
@@ -258,7 +264,6 @@ class Radar:
         """
         Args:
             config: ``RadarConfig`` or a raw mapping accepted by ``RadarConfig.from_dict``.
-            pad_factor: FFT zero-padding factor for the Dirichlet backend
             device: CUDA compute device
             position: radar origin in world coordinates
             target: look-at target in world coordinates. Defaults to one meter along -Z from position.
@@ -277,11 +282,9 @@ class Radar:
         self._validate_runtime_config(cfg)
         self._init_system_config(cfg)
         self._init_antenna_locations(cfg)
-        self._init_waveform_state(cfg)
         self._init_rf_state(cfg)
         self._init_runtime_models(cfg)
         self._init_axes(cfg)
-        self.solver = self._make_solver(pad_factor)
 
     def _init_system_config(self, cfg: RadarConfig) -> None:
         """The five-block structural view of the flat configuration.
@@ -321,19 +324,11 @@ class Radar:
             )
 
     def _init_antenna_locations(self, cfg: RadarConfig) -> None:
+        self._lambda = self.c0 / cfg.fc
         antenna_spacing = self.c0 / cfg.fc / 2
         self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
         self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
         self._refresh_pose_dependent_state()
-
-    def _init_waveform_state(self, cfg: RadarConfig) -> None:
-        self.t_sample = (
-            torch.arange(0, cfg.adc_samples, dtype=torch.float64, device=self.device)
-            / (cfg.sample_rate * 1e3)
-            + cfg.adc_start_time * 1e-6
-        )
-        self.tx_waveform = self.waveform(self.t_sample)
-        self._lambda = self.c0 / cfg.fc
 
     def _init_rf_state(self, cfg: RadarConfig) -> None:
         """Transmit power, and the ONE amplitude the legacy route may apply.
@@ -411,11 +406,6 @@ class Radar:
         self.doppler_resolution = self.axes.doppler_resolution
         self.max_doppler = self.axes.max_doppler
         self.velocities = self.axes.velocities
-
-    def _make_solver(self, pad_factor: int):
-        from .solvers.solver_dirichlet import DirichletSolver
-
-        return DirichletSolver(self, pad_factor)
 
     @staticmethod
     def _resolve_device(*, device: torch.device) -> torch.device:
@@ -540,11 +530,6 @@ class Radar:
         generator.manual_seed(self.config.noise_model["seed"])
         return generator
 
-    def waveform(self, t, phi=0):
-        """FMCW chirp waveform: exp(j * 2pi * (fc*t + 0.5*slope*t^2))."""
-        phase = self.config.fc * t + 0.5 * (self.config.slope * 1e12) * t * t
-        return torch.exp(1j * (2 * torch.pi * phase + phi))
-
     def apply_noise(self, signal: torch.Tensor) -> torch.Tensor:
         if self.noise_model is None:
             return signal
@@ -569,27 +554,6 @@ class Radar:
         modeled = self.apply_noise(signal)
         modeled = self.apply_receiver_chain(modeled)
         return modeled
-
-    def _refuse_frequency_domain_signal_models(self, options: dict) -> None:
-        """One guard, in one place, for all three MIMO entry points.
-
-        It was three copy-pasted `if` statements, which is three chances for one
-        of them to fall out of step with a new receive-chain owner - and the
-        frontend block is exactly that new owner.
-        """
-
-        if not bool(options.get("freq_domain", False)):
-            return
-        if (
-            self.noise_model is None
-            and self.receiver_chain is None
-            and self.frontend is None
-        ):
-            return
-        raise ValueError(
-            "Radar noise_model, receiver_chain, and frontend only support "
-            "time-domain mimo output; omit freq_domain=True."
-        )
 
     def synthesize(self, paths, *, slow_time_mode) -> "SynthesisResult":
         """Synthesize one frame with whichever waveform this radar declares.
@@ -640,91 +604,6 @@ class Radar:
         synthesize, build_result = owners[kind]
         spec = self.system_config.waveform_spec()
         return build_result(synthesize(batch, spec), spec)
-
-    def chirp(self, distances, amplitudes):
-        """Compute one chirp. distances/amplitudes: (N,) one-way range."""
-        signal = self.solver.chirp(distances, amplitudes)
-        return self.apply_signal_models(signal)
-
-    def frame(self, interpolator, t0=0):
-        """Single TX-RX frame. Returns: (chirps, N_fft // 2) complex range spectra."""
-        signal = self.solver.frame(interpolator, t0)
-        return self.apply_signal_models(signal)
-
-    def mimo(self, interpolator, t0=0, **options):
-        """Full MIMO data cube. Returns: (TX, RX, chirps, adc_samples) complex."""
-        self._refuse_frequency_domain_signal_models(options)
-        signal = self.solver.mimo(interpolator, t0, **options)
-        return self.apply_signal_models(signal)
-
-    def mimo_from_trace(self, trace, *, velocities=None, t0=0, **options):
-        """Full MIMO data cube from one pre-traced frame.
-
-        This is the fixed-trace fast path: it does not call ray tracing or a
-        per-chirp interpolator inside the frame. When ``velocities`` is passed,
-        the Dirichlet backend uses a first-order per-path range-rate model; it
-        does not update incidence, antenna-pattern, polarization, or occlusion
-        terms within the frame.
-
-        Args:
-            trace: ``TraceResult`` or legacy ``(intensities, points)`` sample at frame start.
-            velocities: optional per-path world velocity tensor with shape ``(N, 3)``.
-            t0: frame start time in seconds, used only by fallback backends.
-            **options: backend options, including ``freq_domain=True`` for Dirichlet.
-        """
-        self._refuse_frequency_domain_signal_models(options)
-        if hasattr(self.solver, "mimo_from_trace"):
-            signal = self.solver.mimo_from_trace(
-                trace,
-                velocities=velocities,
-                t0=t0,
-                **options,
-            )
-            return self.apply_signal_models(signal)
-
-        if velocities is None:
-            return self.mimo(lambda _t: trace, t0=t0, **options)
-
-        if not hasattr(trace, "points"):
-            raise TypeError("mimo_from_trace with velocities requires a TraceResult-like trace object.")
-
-        from .trace_result import TraceResult
-
-        velocity_t = torch.as_tensor(velocities, dtype=torch.float32, device=self.device)
-        base_points = trace.points.to(dtype=torch.float32, device=self.device)
-        base_entry = trace.entry_points.to(dtype=torch.float32, device=self.device)
-
-        def interpolator(t):
-            dt = float(t) - float(t0)
-            return TraceResult(
-                base_points + velocity_t * dt,
-                trace.intensities,
-                entry_points=base_entry + velocity_t * dt,
-                fixed_path_lengths=trace.fixed_path_lengths,
-                depths=trace.depths,
-                normals=trace.normals,
-            )
-
-        return self.mimo(interpolator, t0=t0, **options)
-
-    def path_cache_from_trace(self, trace, *, velocities=None):
-        """Precompute fixed-trace path distances and amplitudes for fast MIMO.
-
-        Optional velocities are converted to first-order one-way range rates at
-        the trace pose. The cache intentionally freezes material, antenna, and
-        polarization terms within the frame.
-        """
-        if not hasattr(self.solver, "path_cache_from_trace"):
-            raise NotImplementedError("path_cache_from_trace is currently implemented by the Dirichlet backend.")
-        return self.solver.path_cache_from_trace(trace, velocities=velocities)
-
-    def mimo_from_paths(self, cache, **options):
-        """Full MIMO data cube from a ``MimoPathCache``."""
-        self._refuse_frequency_domain_signal_models(options)
-        if not hasattr(self.solver, "mimo_from_paths"):
-            raise NotImplementedError("mimo_from_paths is currently implemented by the Dirichlet backend.")
-        signal = self.solver.mimo_from_paths(cache, **options)
-        return self.apply_signal_models(signal)
 
     def simulate(
         self,

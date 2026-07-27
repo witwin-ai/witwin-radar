@@ -1,21 +1,27 @@
-"""The float64 DSP oracles are independent of the code they check.
+"""The float64 oracles are independent of the code they check.
 
-Phase 6 migrates ``witwin/radar/solvers/common.py``'s Torch path geometry and
+Phase 6 migrated ``witwin/radar/solvers/common.py``'s Torch path geometry and
 amplitude expressions into a native owner (plan work item 8), and the
-acceptance criterion for that migration is that the real-amplitude Radar
-baseline is preserved. Until Phase 6, ``tests/reference/dsp_oracles.py``
-imported ``compute_path_amplitudes`` and ``compute_total_path_lengths`` from
-exactly that module, so "the reference still agrees" would have meant "the
-module still agrees with itself" - true by construction and worth nothing.
+acceptance criterion for that migration was that the real-amplitude Radar
+baseline is preserved. Before that, the oracle imported
+``compute_path_amplitudes`` and ``compute_total_path_lengths`` from exactly the
+module under test, so "the reference still agrees" would have meant "the module
+still agrees with itself" - true by construction and worth nothing.
 
-The two expressions now live in ``tests/reference/path_math.py``, copied
-verbatim. This file is the structural guard that keeps them copied: an AST scan
-over every module in the reference package, asserting that none of them names
-``witwin.radar.solvers``.
+The expressions live in ``tests/reference/path_math.py``, copied verbatim.
+This file is the structural guard that keeps them copied: an AST scan over
+every module in the reference package, asserting that none of them names the
+production owner of the family it validates.
 
-The scan is on the AST rather than on text because the module docstrings
-legitimately talk about ``witwin.radar.solvers.common`` - naming the rule is
-not breaking it.
+**Phase 11 moved the target of that assertion.** ``witwin.radar.solvers`` no
+longer exists, so naming it would make the scan vacuous. The family
+``path_math`` still checks is the LIVE ``sensor_weight`` one, whose owners are
+``witwin.radar.sensors`` and ``witwin.radar.synthesis``; those are what the
+oracle may not import. The ``dsp_oracles`` half of the file went with the
+Dirichlet route it checked.
+
+The scan is on the AST rather than on text because module docstrings
+legitimately talk about the owner package - naming the rule is not breaking it.
 """
 
 from __future__ import annotations
@@ -29,7 +35,11 @@ import pytest
 TESTS_ROOT = pathlib.Path(__file__).resolve().parent
 REFERENCE_ROOT = TESTS_ROOT / "reference"
 
-FORBIDDEN_PREFIX = "witwin.radar.solvers"
+#: The production owners of the families the reference package checks. An
+#: oracle that imported one of these would be checking a module against itself.
+#: ``witwin.radar.solvers`` used to be the single entry and is gone; the
+#: sensor-weight owner replaced it as the thing ``path_math`` is a copy of.
+FORBIDDEN_PREFIXES = ("witwin.radar.sensors", "witwin.radar.synthesis")
 
 
 def _imported_module_names(path: pathlib.Path) -> set[str]:
@@ -58,8 +68,10 @@ def _reference_modules() -> list[pathlib.Path]:
 
 def test_the_reference_package_has_the_modules_this_scan_assumes():
     names = {path.name for path in _reference_modules()}
-    assert "dsp_oracles.py" in names
     assert "path_math.py" in names
+    # And the Dirichlet oracle is gone rather than merely unused: it evaluated
+    # a chirp and a MIMO cube for a family that no longer ships.
+    assert "dsp_oracles.py" not in names
 
 
 @pytest.mark.parametrize(
@@ -69,49 +81,46 @@ def test_no_reference_oracle_imports_the_module_it_checks(module: pathlib.Path):
     offenders = sorted(
         name
         for name in _imported_module_names(module)
-        if name == FORBIDDEN_PREFIX or name.startswith(FORBIDDEN_PREFIX + ".")
+        if any(
+            name == prefix or name.startswith(prefix + ".")
+            for prefix in FORBIDDEN_PREFIXES
+        )
     )
     assert offenders == [], (module.name, offenders)
 
 
-def test_the_oracles_still_import_the_two_copied_expressions():
+def test_the_copy_is_still_a_real_expression_and_has_a_live_consumer():
     """Independence must not have been won by deleting the call.
 
-    ``dsp_oracles`` still evaluates the same two expressions; it just gets them
-    from the copy. If a future edit inlines or drops them, this fails and the
-    scan above stops meaning anything.
-    """
-
-    from reference import dsp_oracles, path_math
-
-    assert dsp_oracles.compute_path_amplitudes is path_math.compute_path_amplitudes
-    assert (
-        dsp_oracles.compute_total_path_lengths is path_math.compute_total_path_lengths
-    )
-
-
-def test_the_production_module_no_longer_holds_the_copied_expressions():
-    """The copy is now the SOLE record of the legacy expression.
-
-    This test used to assert that ``solvers/common.py`` and
-    ``reference/path_math.py`` were textually identical, and its own docstring
-    said it would go with the production functions when work item 8 deleted
-    them. It has: the four expressions live only under ``tests/`` now, and what
-    is asserted is that no production module grew them back. A drift check
-    against a module that no longer has the function would silently pass.
+    Two claims. First, each copied expression is defined in ``path_math``
+    rather than re-exported from somewhere - a re-export would make the scan
+    above pass while checking a module against itself through one more hop.
+    Second, the copy is still USED: ``tests/test_phase6_sensor_weight.py`` is
+    the contract test of the live ``sensor_weight`` family and drives four of
+    these five as its reference. An oracle nobody calls is not independent, it
+    is dead.
     """
 
     import inspect
 
-    from witwin.radar.solvers import common
     from reference import path_math
 
-    for name in ("compute_total_path_lengths", "compute_path_amplitudes",
-                 "compute_polarization_amplitudes", "compute_antenna_pattern_gains"):
-        assert not hasattr(common, name), name
+    names = (
+        "compute_total_path_lengths",
+        "compute_total_path_length_rates",
+        "compute_path_amplitudes",
+        "compute_polarization_amplitudes",
+        "compute_antenna_pattern_gains",
+    )
+    for name in names:
         assert callable(getattr(path_math, name)), name
-        # And the copy is still a real expression rather than a re-export.
         assert inspect.getmodule(getattr(path_math, name)) is path_math, name
+
+    consumer = (TESTS_ROOT / "test_phase6_sensor_weight.py").read_text(
+        encoding="utf-8"
+    )
+    for name in names:
+        assert name in consumer, name
 
 
 # --------------------------------------------------------------------------
@@ -130,7 +139,7 @@ WAVEFORM_ORACLES = (
     "reference_pulsed.py",
 )
 
-FORBIDDEN_ORACLE_PREFIXES = ("witwin.radar.solvers", "witwin.radar.synthesis")
+FORBIDDEN_ORACLE_PREFIXES = ("witwin.radar.sensors", "witwin.radar.synthesis")
 
 
 def test_the_three_waveform_oracles_exist():

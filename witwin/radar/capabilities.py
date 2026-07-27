@@ -43,7 +43,6 @@ _CAPABILITIES: dict[str, Any] = {
     "native_library": {
         "logical_owner": "_radar_native",
         "operator_families": [
-            "dirichlet_spectrum",
             "fmcw_beat_synthesis",
             "ofdm_cfr_synthesis",
             "pulsed_echo_synthesis",
@@ -74,13 +73,6 @@ _CAPABILITIES: dict[str, Any] = {
             "supports_wideband_band": False,
             "phasor": "channel_domain",
             "pulse_kinds": ["rect", "lfm"],
-        },
-        "dirichlet_spectrum": {
-            "axes": "chirp x pair x bin",
-            "supports_tdm": True,
-            "supports_wideband_band": False,
-            "phasor": "channel_domain",
-            "status": "legacy_solver_route",
         },
     },
     # The propagation request Radar actually makes. Narrower than what the

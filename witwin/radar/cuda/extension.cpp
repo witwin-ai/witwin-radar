@@ -1,108 +1,12 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(_radar_native, m) {
-  // Dirichlet range spectrum. The path weight is COMPLEX, carried as the two
-  // real tensors (a, a_im) exactly like the beat and join families: no complex
-  // tensor crosses the autograd boundary. A real weight is a_im = 0 and is
-  // bit-identical to what this family produced before it gained the component.
-  //
-  // Two additive switches, both defaulting to the legacy meaning:
-  //
-  //   fc is the carrier home, mirroring carrier_hz in the beat family.
-  //     fc != 0  - the kernel owns the absolute phase 2 pi fc tau.
-  //     fc == 0  - the weight owns it and the kernel applies none.
-  //   A Channel coefficient already carries the reference-frequency phase, so
-  //   pairing one with fc != 0 double counts the carrier. The Python contract
-  //   (synthesis/contracts.py, rule R1) refuses that combination before any
-  //   launch; this comment records why the kernel does not need to.
-  //
-  //   tau_is_seconds says what the first tensor holds.
-  //     0 - a ONE-WAY distance in metres, round trip assumed monostatic,
-  //         tau = 2 d / c0, with k0_per_meter = (slope * 2 / c0) * n_fft / fs.
-  //     1 - a ROUND-TRIP delay in seconds, consumed directly, with the matching
-  //         scale k0_per_meter = slope * n_fft / fs.
-  //   The second form exists because every Phase-6 contract speaks round-trip
-  //   delay, and reconstructing a distance from one only to halve it again is
-  //   how a path becomes self-consistently 2x wrong.
-  //
-  // See R-ADR-004.
-  m.def(
-      "forward_chunked(Tensor d, Tensor a, Tensor a_im, Tensor(a!) output_re, "
-      "Tensor(b!) output_im, float n, float k0_per_meter, int num_bins, int n_fft, "
-      "int num_targets, int targets_per_chunk, float fc, float slope, float t_start, "
-      "int tau_is_seconds) -> ()");
-  m.def(
-      "forward_mimo_linear_chunked(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
-      "Tensor(a!) output_re, Tensor(b!) output_im, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int targets_per_pair, int chirp_per_frame, "
-      "float chirp_period, int num_tx, int range_loss_update, float fc, float slope, "
-      "float t_start, int tau_is_seconds) -> ()");
-  // AD companions of forward_mimo_linear_chunked. They exist so that the frame
-  // path has ONE owner: the Torch expression that used to stand in for a
-  // reverse-mode call - `dist = d0 + rate * t` plus the `d0 / dist` range-loss
-  // update - was a second implementation of this kernel's physics, evaluated in
-  // a different dtype and a different order, and reachable only when an input
-  // happened to require grad.
-  //
-  //   d(dist)/d(d0) = 1, d(dist)/d(d_rate) = t_slot
-  //   with range_loss_update, d(amp)/d(d0)     =  a (dist - d0) / dist^2
-  //                           d(amp)/d(d_rate) = -a d0 t_slot   / dist^2
-  //
-  // The backward owns one gradient slot per target row and uses no atomics; the
-  // jvp keeps the forward's own grid, so a tangent costs one launch. See
-  // R-ADR-004.
-  m.def(
-      "mimo_linear_backward(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
-      "Tensor grad_output_re, Tensor grad_output_im, Tensor(a!) grad_d0, "
-      "Tensor(b!) grad_d_rate, Tensor(c!) grad_a0, Tensor(d!) grad_a0_im, "
-      "float n, float k0_per_meter, int num_bins, int n_fft, "
-      "int targets_per_pair, int chirp_per_frame, float chirp_period, "
-      "int num_tx, int range_loss_update, float fc, float slope, float t_start, "
-      "int tau_is_seconds) -> ()");
-  m.def(
-      "mimo_linear_jvp(Tensor d0, Tensor d_rate, Tensor a0, Tensor a0_im, "
-      "Tensor tan_d0, Tensor tan_d_rate, Tensor tan_a0, Tensor tan_a0_im, "
-      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, float n, "
-      "float k0_per_meter, int num_bins, int n_fft, int targets_per_pair, "
-      "int chirp_per_frame, float chirp_period, int num_tx, "
-      "int range_loss_update, float fc, float slope, float t_start, "
-      "int tau_is_seconds) -> ()");
-  m.def(
-      "dirichlet_jvp(Tensor d, Tensor a, Tensor a_im, Tensor tan_d, Tensor tan_a, "
-      "Tensor tan_a_im, Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, float n, "
-      "float k0_per_meter, int num_bins, int n_fft, int num_targets, "
-      "int targets_per_chunk, float fc, float slope, float t_start, "
-      "int tau_is_seconds) -> ()");
-  m.def(
-      "backward(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
-      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
-      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int num_targets, float fc, float slope, float t_start, "
-      "int tau_is_seconds) -> ()");
-  m.def(
-      "backward_batched(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
-      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
-      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int num_targets, int targets_per_spectrum, "
-      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
-  m.def(
-      "backward_parallel_bins(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
-      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
-      "Tensor(c!) grad_a_im, float n, "
-      "float k0_per_meter, int num_bins, int n_fft, int num_targets, "
-      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
-  m.def(
-      "backward_per_bin(Tensor d, Tensor a, Tensor a_im, Tensor grad_output_re, "
-      "Tensor grad_output_im, Tensor(a!) grad_d, Tensor(b!) grad_a, "
-      "Tensor(c!) grad_a_im, float n, float k0_per_meter, "
-      "int num_bins, int n_fft, int num_targets, int bins_per_chunk, "
-      "float fc, float slope, float t_start, int tau_is_seconds) -> ()");
-
   // Phase-4 FMCW beat synthesis over a chirp's fast-time axis. The carrier has
   // two homes and exactly one of the two parameters names it:
   //
-  //   carrier_hz = fc, carrier_rate_hz = 0   reproduces the Dirichlet path's
-  //     phase structure exactly; the kernel owns the whole carrier phase.
+  //   carrier_hz = fc, carrier_rate_hz = 0   the kernel owns the whole carrier
+  //     phase. This is the absolute-carrier form, which the deleted Dirichlet
+  //     family also used; a weight carrying no reference phase still needs it.
   //   carrier_hz = 0, carrier_rate_hz = fc   is the production path for a
   //     Channel-sourced weight, which already carries exp(j 2 pi fc tau_rt) at
   //     the frozen per-frame delay. carrier_rate_hz supplies the intra-frame
@@ -248,8 +152,8 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
 
   // Phase-6 sensor weight: array geometry, antenna pattern, transmit power,
   // and the legacy receive projection, applied to a path weight exactly once
-  // each. This is the native owner of what `solvers/common.py` computes in
-  // Torch today.
+  // each. This is the native owner of the four Torch expressions that used to
+  // live in `solvers/common.py`, a module Phase 11 deleted.
   //
   // THE THREE MODE FLAGS ARE THE SINGLE-COUNT RULE, AS ARGUMENTS. They are
   // driven directly by the batch's provenance booleans:

@@ -117,11 +117,6 @@ STRUCTURAL_SUP_ROWS = frozenset(
             "both",
         ),
         (
-            "tape/dirichlet_spectrum",
-            "out:chunked and MIMO-linear contexts, two variants",
-            "both",
-        ),
-        (
             "tape/sensor_weight",
             "out:weight context, 9 saved tensors, one launch each way",
             "vjp",
@@ -151,7 +146,8 @@ SECTION_ROWS = {
     "Two-way join and the wideband band (`witwin/radar/paths/two_way.py`)": 5,
     "Kinematics (`witwin/radar/propagation/kinematics.py`)": 8,
     "SMPL geometry (`witwin/radar/geometry/smpl.py`)": 6,
-    "The host-float rule (`witwin/radar/host_parameters.py`)": 12,
+    # 12 until Phase 11 deleted DirichletSpectrumSpec with its route.
+    "The host-float rule (`witwin/radar/host_parameters.py`)": 11,
     # 10 leaves of the family itself, plus the three Phase-11 rows for the
     # PRODUCTION route that reaches it, `sensors/round_trip.py`. The section
     # keeps the family's name because there is still one numerical owner.
@@ -167,7 +163,8 @@ SECTION_ROWS = {
     "Row validity: a row that stops existing": 8,
     "Refused tangents, driven through the whole chain": 10,
     "The four chains that had no AD coverage": 9,
-    "Tape ownership and the budget pins": 12,
+    # 12 until Phase 11 deleted the dirichlet_spectrum tape row.
+    "Tape ownership and the budget pins": 11,
 }
 
 TOTAL_ROWS = sum(SECTION_ROWS.values())

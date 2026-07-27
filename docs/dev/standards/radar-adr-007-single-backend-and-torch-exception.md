@@ -1,6 +1,6 @@
 # R-ADR-007: Single production backend, Dr.Jit prohibition, Torch/DSP exception
 
-Status: Accepted (Phase 4), amended (Phase 5)
+Status: Accepted (Phase 4), amended (Phase 5), deviation closed (Phase 11)
 
 ## Context
 
@@ -69,18 +69,38 @@ would be returning numbers from a different model. `pyproject.toml` drops the
 `drjit` and `rayd-drjit` pins in the same change, since leaving them would keep
 forcing Dr.Jit into every install after the modules are gone.
 
-### Recorded deviation: `solvers/common.py` path physics stays (Phase 5)
+### Recorded deviation: `solvers/common.py` path physics stays (Phase 5) - CLOSED in Phase 11
 
-Per-path geometry and amplitude math in `witwin/radar/solvers/common.py` is
-Torch, is production, and is NOT removed here. The reason is not convenience.
-`solver_dirichlet.py` consumes six of its helpers, and six of the nine
-manifested native symbols are the `dirichlet_spectrum` family whose
-`end_to_end_caller` is in every case a `DirichletSolver` method reached through
-`Radar.mimo` / `chirp` / `frame` / `mimo_from_paths` / `path_cache_from_trace`.
-Deleting the only production owner of that math while its native replacement is
-explicitly out of scope would orphan six ABI symbols and force the binding
-manifest and the CUDA sources into an architecture-cleanup commit. That is not
-a scope reduction; it is a contradiction.
+**This section is superseded and its central claim is now false.** It said that
+`end_to_end_caller` was "in every case a `DirichletSolver` method". There is no
+`DirichletSolver`: Phase 11 deleted `witwin/radar/solvers/` entirely, together
+with `synthesis/dirichlet_spectrum.py`, `sensors/legacy_paths.py`,
+`cuda/kernels/dirichlet.cu` and the nine `dirichlet_spectrum` ABI symbols. The
+manifest holds 25 operators, `RADAR_ABI_VERSION` is 2, and every remaining
+symbol names a production caller.
+
+The deviation is closed rather than merely removed. Its own argument was that
+deleting `solvers/common.py` while its native replacement was out of scope would
+orphan six ABI symbols; the replacement exists (the `sensor_weight` family, with
+a production caller on the scene-driven route since Phase 11's antenna-pattern
+stage), so the whole route could be deleted in one commit and no symbol passed
+through a caller-free state. The Torch expressions themselves survive only as
+the independent float64 oracle `tests/reference/path_math.py`, which is where a
+CPU reference belongs.
+
+The original text follows, for the record.
+
+> Per-path geometry and amplitude math in `witwin/radar/solvers/common.py` is
+> Torch, is production, and is NOT removed here. The reason is not convenience.
+> `solver_dirichlet.py` consumes six of its helpers, and six of the nine
+> manifested native symbols are the `dirichlet_spectrum` family whose
+> `end_to_end_caller` is in every case a `DirichletSolver` method reached
+> through `Radar.mimo` / `chirp` / `frame` / `mimo_from_paths` /
+> `path_cache_from_trace`. Deleting the only production owner of that math
+> while its native replacement is explicitly out of scope would orphan six ABI
+> symbols and force the binding manifest and the CUDA sources into an
+> architecture-cleanup commit. That is not a scope reduction; it is a
+> contradiction.
 
 What did move is the pair of helpers with ZERO production callers,
 `pytorch_chirp_reference` and `pytorch_mimo_from_samples`. A CPU/Torch reference
@@ -88,10 +108,12 @@ oracle belongs under `tests/`, and those two were shipping inside the wheel;
 they are now `tests/reference/dsp_oracles.py`, unchanged, so every comparison
 that used them still means the same thing.
 
-The residual surface is FROZEN by test. `test_the_residual_torch_path_surface_is_frozen`
-enumerates exactly the nine names `solvers/common.py` may define, so "recorded
-deviation" cannot quietly become "growing exception". The owner of its removal
-is the native path evaluator, which is separate work.
+The residual surface was FROZEN by test:
+`test_the_residual_torch_path_surface_is_frozen` enumerated exactly the names
+`solvers/common.py` could define, so "recorded deviation" could not quietly
+become "growing exception". That test is gone with the module it froze, and
+`tests/test_phase5_removed_entry_points.py` now asserts the stronger claim that
+`witwin/radar/solvers/` does not exist.
 
 ### No finite differences in production
 

@@ -3,8 +3,8 @@
 Four claims, each asserted over the SOURCE rather than over a run, because a
 run only visits the branch it happened to take:
 
-* T5.12 no Torch physics remains under ``solvers/``, and no ``requires_grad``
-  gates a route anywhere in the Phase-6 owners;
+* T5.12 no Torch physics remains in the Phase-6 owner packages, and no
+  ``requires_grad`` gates a route in any of them;
 * T5.13 waveform dispatch is a lookup on a stored discriminator, with no
   ``try``/``except``, no capability probe, and no default;
 * the packaged graph names ``drjit`` nowhere;
@@ -15,11 +15,13 @@ The existing import-boundary file scans for host observation and Dr.Jit in the
 spike modules. This one scans for the specific expressions plan work item 8
 moved, in the specific package it moved them out of.
 
-Work item 8 names two sources, ``solvers/common.py`` and ``radar.py``, and the
-scan originally covered only the packages. That is the wrong half: the module
-the item names by hand is the one place a Torch chirp expression still lives
-(``Radar.waveform``), so the guard did not look where the survivor is. The
-facade scan below closes that hole without pretending the survivors are gone.
+Work item 8 named two sources, ``solvers/common.py`` and ``radar.py``, and the
+scan originally covered only the packages. That was the wrong half: the module
+the item named by hand was where the Torch chirp expression lived
+(``Radar.waveform``), so the guard did not look where the survivor was. The
+facade scan below closes that hole. Phase 11 deleted both of work item 8's
+named sources - ``solvers/`` with the Dirichlet route and ``Radar.waveform``
+with it - so the facade record below is now the whole of what is left.
 
 **Phase 9 extends the same discipline to what Phase 9 itself added.** The phase
 put roughly a thousand lines of guard and orchestration into the production
@@ -52,8 +54,8 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: Torch calls that evaluate GEOMETRY or a PHASE. ``torch.fft`` is deliberately
-#: absent: it is the allowlisted DSP exception and the Dirichlet solver's
-#: ``ifft`` is a real production caller.
+#: absent: it is the allowlisted DSP exception, and the range and Doppler
+#: transforms in ``processing/`` are real production callers.
 FORBIDDEN_TORCH_CALLS = (
     "cdist",
     "exp",
@@ -66,7 +68,7 @@ FORBIDDEN_TORCH_CALLS = (
 
 #: The four Phase-6 owner packages. ``sigproc`` is NOT here: the plan's
 #: Torch/DSP exception is what it exists under.
-OWNER_PACKAGES = ("solvers", "synthesis", "sensors", "frontend")
+OWNER_PACKAGES = ("synthesis", "sensors", "frontend")
 
 
 def _modules(package: str) -> list[pathlib.Path]:
@@ -88,32 +90,46 @@ def _dotted(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
-def test_the_solver_package_evaluates_no_geometry_and_no_phase_in_torch():
+def test_the_migrated_expressions_did_not_come_back_under_another_owner():
     """T5.12: the five migrated expressions cannot come back under a new name.
 
     ``torch.cdist`` was two distance fields, ``torch.linalg.norm`` was the unit
     directions the delay rate is built from, and ``torch.exp`` / ``sin`` /
-    ``cos`` are a phase. All five now live in one CUDA kernel. ``torch.fft`` is
-    allowlisted and is asserted to still be CALLED, so this is a scan for the
-    right thing rather than a scan that passes because the package is empty.
+    ``cos`` are a phase. All five now live in one CUDA kernel, the
+    ``sensor_weight`` family.
+
+    This used to scan ``solvers/`` for forbidden Torch calls and assert that
+    ``torch.fft`` was still CALLED there, so that it could not pass by the
+    package being empty. Phase 11 deleted the package, which makes that scan
+    vacuous in the strongest possible way, and the emptiness guard becomes the
+    opposite claim: the directory must not exist, and none of the five
+    functions may reappear under any owner.
+
+    The tree-wide forbidden-call scan is NOT restated here. It has an owner -
+    ``ci/check_torch_physics_allowlist.py`` walks all of ``witwin/`` with an
+    empty exclusion list and a frozen digest - and duplicating it with a
+    different allowlist is how two gates end up disagreeing.
     """
 
+    assert not (REPO_ROOT / "witwin" / "radar" / "solvers").exists()
+
+    migrated = (
+        "compute_total_path_lengths",
+        "compute_antenna_pattern_gains",
+        "compute_polarization_amplitudes",
+        "compute_path_amplitudes",
+        "compute_slot_path_tensors",
+    )
     offenders = []
-    fft_callers = []
-    for path in _modules("solvers"):
-        for node in ast.walk(_tree(path)):
-            if not isinstance(node, ast.Call):
-                continue
-            name = _dotted(node.func)
-            if name.startswith("torch.fft."):
-                fft_callers.append(path.name)
-                continue
-            if not name.startswith("torch."):
-                continue
-            if name[len("torch."):] in FORBIDDEN_TORCH_CALLS:
-                offenders.append((path.name, name, node.lineno))
+    scanned = 0
+    for package in OWNER_PACKAGES:
+        for path in _modules(package):
+            scanned += 1
+            for node in ast.walk(_tree(path)):
+                if isinstance(node, ast.FunctionDef) and node.name in migrated:
+                    offenders.append((path.name, node.name, node.lineno))
     assert offenders == [], offenders
-    assert fft_callers, "torch.fft is the allowlisted DSP exception and is still used"
+    assert scanned > 0, "the scan must walk real modules"
 
 
 #: Every Torch call in ``radar.py`` that this file's forbidden list matches,
@@ -125,13 +141,13 @@ def test_the_solver_package_evaluates_no_geometry_and_no_phase_in_torch():
 #:   and ``_world_from_local_matrix`` normalise a pose or an array layout once
 #:   per radar or once per ``set_pose``. They are not a per-path hot path and
 #:   work item 8 does not name them.
-#: * WORK-ITEM-8 SURVIVORS, debt. ``Radar.waveform`` is the Torch chirp
-#:   expression ``exp(j 2 pi (fc t + S t^2 / 2))`` and ``_apply_phase_noise``
-#:   belongs to the legacy ``NoiseModelRuntime`` that ``FrontendChain``
-#:   replaced. Both are recorded gaps in the plan's Phase-6 completion record:
-#:   ``tests/reference/dsp_oracles.py`` still needs ``radar.waveform`` to build
-#:   the independent time-domain reference, and deleting the legacy noise and
-#:   receiver runtimes is a separate change.
+#: * WORK-ITEM-8 SURVIVORS, debt. One is left: ``_apply_phase_noise`` belongs
+#:   to the legacy ``NoiseModelRuntime`` that ``FrontendChain`` replaced, and
+#:   deleting those runtimes is the commit after this one. ``Radar.waveform``
+#:   was the other - the Torch chirp ``exp(j 2 pi (fc t + S t^2 / 2))`` - and
+#:   it is gone: it was held alive only because ``tests/reference/dsp_oracles.py``
+#:   needed it to build the independent time-domain reference, and that oracle
+#:   died with the Dirichlet route it checked.
 #:
 #: Equality, not containment. A new Torch physics expression in the facade is a
 #: failure, and so is a stale entry for one that was finally deleted.
@@ -139,7 +155,6 @@ RADAR_FACADE_TORCH_PHYSICS = {
     ("_normalize_rows", "torch.linalg.norm"),
     ("_set_pose_fields", "torch.linalg.norm"),
     ("_world_from_local_matrix", "torch.linalg.norm"),
-    ("waveform", "torch.exp"),
     ("_apply_phase_noise", "torch.polar"),
 }
 
@@ -158,8 +173,8 @@ def test_the_radar_facade_carries_no_unrecorded_torch_physics():
     """The half of work item 8 the package scan cannot see.
 
     ``radar.py`` is a facade, not an owner package, so it is not under any of
-    the four scanned directories - and it is the module work item 8 names
-    alongside ``solvers/common.py``. Scanning it with an explicit, reasoned
+    the scanned directories - and it is the module work item 8 named alongside
+    ``solvers/common.py``. Scanning it with an explicit, reasoned
     allowlist records the survivors where a reader of the guard will see them,
     and turns "the migration is not finished" from a report sentence into a
     test that fails if the list grows.
@@ -184,8 +199,8 @@ def test_no_owner_gates_a_route_on_requires_grad():
 
     A forward-only dual has ``requires_grad == False``, so a branch of the form
     ``if x.requires_grad: <one route> else: <another>`` sends a tangent down the
-    route that does not carry one. ``samples_require_grad`` survives as a
-    predicate and may be READ; what is forbidden is an ``if`` whose test
+    route that does not carry one. A ``requires_grad`` predicate may be READ;
+    what is forbidden is an ``if`` whose test
     mentions ``requires_grad`` and whose body SELECTS something. A branch whose
     only statement is ``raise`` is the opposite of a fallback - it is the
     frontend quantiser refusing a differentiable input rather than detaching it
@@ -317,7 +332,6 @@ PHASE9_GUARDED_PACKAGES = (
     "sensors",
     "frontend",
     "synthesis",
-    "solvers",
 )
 
 #: The one place in the package where an ``if`` on ``requires_grad`` genuinely

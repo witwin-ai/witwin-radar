@@ -259,9 +259,12 @@ def test_the_adjacent_vendor_calls_are_recorded_and_have_not_grown():
 # 2. The fence, and the allowance lists
 # ---------------------------------------------------------------------------
 
-#: What ``tests/processing/test_cutover.py`` allowed when the fence was built:
-#: one simulation owner, inverting a SYNTHESIZED spectrum into time samples.
-EXPECTED_FENCE_ALLOWANCES = {"witwin/radar/solvers/solver_dirichlet.py"}
+#: What ``tests/processing/test_cutover.py`` allows. It allowed exactly one
+#: simulation owner when the fence was built - the Dirichlet solver, inverting
+#: a SYNTHESIZED spectrum into time samples - and Phase 11 deleted that owner
+#: with its route, so the allowance list is now empty. Frozen here as well as
+#: there so that re-opening it costs an edit in two files.
+EXPECTED_FENCE_ALLOWANCES = set()
 
 #: What ``tests/test_phase6_no_torch_physics.py`` recorded as surviving Torch
 #: physics in the facade module. Phase 8 added nothing to it and must not.
@@ -269,7 +272,6 @@ EXPECTED_FACADE_TORCH_PHYSICS = {
     ("_normalize_rows", "torch.linalg.norm"),
     ("_set_pose_fields", "torch.linalg.norm"),
     ("_world_from_local_matrix", "torch.linalg.norm"),
-    ("waveform", "torch.exp"),
     ("_apply_phase_noise", "torch.polar"),
 }
 
@@ -298,7 +300,7 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
     too rather than needing a second edit.
     """
 
-    packages = ("solvers", "synthesis", "sensors", "frontend", "paths", "propagation")
+    packages = ("synthesis", "sensors", "frontend", "paths", "propagation")
     allowed = EXPECTED_FENCE_ALLOWANCES
     scanned = 0
     offenders = []

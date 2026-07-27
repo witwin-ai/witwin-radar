@@ -5,7 +5,8 @@ Phase 8 ships NO native DSP; this tool exists to justify that default with
 numbers rather than to look for permission to break it. It is run and recorded
 regardless of the expected answer.
 
-Timing convention, deliberately identical to ``tools/benchmark_dirichlet_cuda.py``
+Timing convention, deliberately identical to the deleted
+``tools/benchmark_dirichlet_cuda.py``
 so the repository has ONE: :func:`cuda_time` is CUDA events with an explicit
 ``torch.cuda.synchronize``, :func:`peak_memory_mb` resets the allocator's peak
 statistics around a single call, results are medians, and ``--json`` prints the
@@ -51,8 +52,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 # The fixture orchestration lives under ``tests/`` because it is a fixture, not
-# a production owner. ``benchmark_dirichlet_cuda.py`` reaches for its reference
-# oracle the same way.
+# a production owner. The deleted ``benchmark_dirichlet_cuda.py`` reached for
+# its reference oracle the same way.
 if str(REPO_ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "tests"))
 

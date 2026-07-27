@@ -1,12 +1,19 @@
 """The native sensor-weight family, pinned against the Torch it replaces.
 
-These tests are the PIN half of an atomic pin/switch/delete. ``solvers/common.py``
-still computes the path length, the antenna gain, the polarization projection,
-and the amplitude in Torch, and the whole point of this file is that the kernel
-reproduces those expressions term for term BEFORE anything switches to it. Two
-live owners during this stage is the accepted cost of an additive change; the
-next stage closes it in one commit, and it can only do that safely because these
-assertions exist.
+These tests were the PIN half of an atomic pin/switch/delete. ``solvers/common.py``
+computed the path length, the antenna gain, the polarization projection, and the
+amplitude in Torch, and the point of this file was that the kernel reproduces
+those expressions term for term BEFORE anything switched to it. Phase 11
+completed the delete half: that module is gone and the copy in
+``tests/reference/path_math.py`` is now the sole record of the expressions, which
+is what makes this file the family's independent contract test rather than a
+comparison of two production owners.
+
+``PathSample`` came from ``solvers/common.py`` and is declared here now. It was
+never physics - the module's own docstring called it a contract - and its only
+remaining use is to carry six tensors from ``_sample`` into ``_rows`` and the
+oracle. Keeping a production dataclass alive for that would have been keeping a
+module alive for its test.
 
 The three mode flags get their own tests because they are the single-count rule
 in executable form. A flag that is accepted but ignored looks exactly like a flag
@@ -15,6 +22,7 @@ that works, in every magnitude plot anyone would draw.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 import pytest
@@ -23,6 +31,23 @@ import torch
 pytestmark = pytest.mark.gpu
 
 C0 = 299792458.0
+
+
+@dataclass(frozen=True)
+class PathSample:
+    """The six per-path tensors the oracle and the kernel rows are built from.
+
+    Verbatim from the deleted ``witwin/radar/solvers/common.py``, field for
+    field and in the same order, because ``tests/reference/path_math.py``
+    indexes it by attribute name.
+    """
+
+    intensities: torch.Tensor
+    points: torch.Tensor
+    entry_points: torch.Tensor
+    fixed_path_lengths: torch.Tensor
+    depths: torch.Tensor
+    normals: torch.Tensor | None
 
 
 def _radar(request_config=None):
@@ -48,8 +73,6 @@ def _polarized_config():
 
 def _sample(radar, count: int, *, seed: int = 0):
     """A ``PathSample`` of random scatterers in front of the radar."""
-
-    from witwin.radar.solvers.common import PathSample
 
     generator = torch.Generator(device="cpu").manual_seed(seed)
     device = radar.device
@@ -81,7 +104,7 @@ def _sample(radar, count: int, *, seed: int = 0):
 def _rows(radar, sample, *, velocities=None):
     """Enumerate the ``(tx, rx, path)`` grid as flat kernel rows.
 
-    ``common.py`` produces a ``(TX, RX, N)`` tensor; the kernel consumes a row
+    The oracle produces a ``(TX, RX, N)`` tensor; the kernel consumes a row
     set. The mapping is ``row = (tx * num_rx + rx) * N + n``, which is also the
     order ``reshape(-1)`` gives the Torch result, so the two are comparable
     without a permutation.
@@ -315,8 +338,6 @@ def test_spreading_mode_zero_makes_the_weight_independent_of_range():
     """
 
     from witwin.radar.sensors import SensorWeightModes
-    from witwin.radar.solvers.common import PathSample
-
     # A single element at the radar origin, so that scaling the scene ABOUT
     # that origin leaves every antenna direction exactly unchanged. With an
     # offset element the direction moves by the element offset over the range
@@ -399,8 +420,6 @@ def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
     """
 
     from witwin.radar.sensors import SensorWeightModes
-    from witwin.radar.solvers.common import PathSample
-
     radar = _radar(_polarized_config())
     base = _sample(radar, 32, seed=17)
     # The configured polarization defaults to +Y on both sides here; a normal

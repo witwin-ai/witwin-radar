@@ -1,16 +1,16 @@
 """G4: the Torch-physics allowlist covers the whole tree and cannot grow quietly.
 
-`tests/test_phase6_no_torch_physics.py` scanned ONE package, `solvers/`, for
-the seven Torch calls that evaluate geometry or a phase. Four of eleven
-production packages were nominally in scope and only one was actually scanned,
-so `processing/`, `sensors/`, `geometry/`, `utils/`, `timeline.py` and the rest
-were outside it. That is the failure mode this gate exists for and it is worth
+`tests/test_phase6_no_torch_physics.py` scanned ONE package - `solvers/`, which
+Phase 11 has since deleted - for the seven Torch calls that evaluate geometry or
+a phase. Four of eleven production packages were nominally in scope and only one
+was actually scanned, so `processing/`, `sensors/`, `geometry/`, `utils/`,
+`timeline.py` and the rest were outside it. That is the failure mode this gate exists for and it is worth
 naming precisely: **narrowing the scan is a silent way to grow the allowlist**.
 Nothing had to be added to a list; a hit simply had to land in a directory
 nobody was looking at.
 
 So the scope here is the whole `witwin/` tree with an EMPTY exclusion list, and
-the exclusion list is itself frozen. Every one of the 34 matches that scope
+the exclusion list is itself frozen. Every match that scope
 produces is recorded in `ci/torch-physics-allowlist.json` with a category, a
 reason and the ADR that permits it, keyed by
 `(module, function, call, occurrences)`. Equality in both directions: an
@@ -55,7 +55,7 @@ ALLOWLIST_PATH = REPO_ROOT / "ci" / "torch-physics-allowlist.json"
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
 FROZEN_BASELINE_DIGEST = (
-    "d4a00ea1b2c9d915688be680534379d6ee7e915b118c57f927c8cd8966cf9d7d"
+    "f5723d89074a0aad9be1d30f83e620c6b000915d9fefc9a8ccdff8b6f67188eb"
 )
 
 SCHEMA_VERSION = 1

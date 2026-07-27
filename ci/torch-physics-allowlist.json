@@ -12,14 +12,11 @@
     "atan2",
     "linalg.norm"
   ],
-  "fence_allowances": [
-    "witwin/radar/solvers/solver_dirichlet.py"
-  ],
+  "fence_allowances": [],
   "radar_facade_torch_physics": [
     ["_normalize_rows", "torch.linalg.norm"],
     ["_set_pose_fields", "torch.linalg.norm"],
     ["_world_from_local_matrix", "torch.linalg.norm"],
-    ["waveform", "torch.exp"],
     ["_apply_phase_noise", "torch.polar"]
   ],
   "categories": {
@@ -158,15 +155,6 @@
       "occurrences": 3,
       "category": "freeze_time_pose",
       "reason": "The same orthonormalisation when the world-from-local matrix is rebuilt.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/radar.py",
-      "function": "waveform",
-      "call": "torch.exp",
-      "occurrences": 1,
-      "category": "work_item_8_survivor",
-      "reason": "The Torch chirp exp(j 2 pi (fc t + S t^2 / 2)). tests/reference/dsp_oracles.py still needs Radar.waveform to build the independent time-domain reference, so deleting it would delete the oracle's input. Recorded gap in the Phase-6 completion record.",
       "adr": "R-ADR-007"
     },
     {

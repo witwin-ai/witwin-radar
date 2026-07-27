@@ -271,7 +271,7 @@ class TestConfigVariations:
         assert mock.max_doppler == pytest.approx(expected, rel=1e-10)
 
 
-def test_dirichlet_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_config):
+def test_a_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(standard_config, device="cpu")
@@ -380,7 +380,7 @@ def test_radar_rejects_double_quantization(standard_config):
 
 @pytest.mark.gpu
 class TestRadarConstruction:
-    def test_radar_creates_with_dirichlet_backend(self, standard_config):
+    def test_radar_creates_from_a_validated_config(self, standard_config):
         from witwin.radar import Radar
 
         try:
@@ -413,7 +413,18 @@ class TestRadarConstruction:
         assert radar.ranges.shape[0] == radar.config.num_range_bins // 2
         assert radar.velocities.shape[0] == radar.config.num_doppler_bins
 
-    def test_dirichlet_solver_owns_fft_state(self, standard_config):
+    def test_no_solver_and_no_fft_state_hang_off_the_radar(self, standard_config):
+        """This used to assert where the FFT state LIVED; now there is none.
+
+        The claim was that ``N_fft`` and ``pad_factor`` belonged to the solver
+        rather than to the radar. Phase 11 deleted the solver, so the radar
+        carries neither the state nor the owner, and ``pad_factor`` is not a
+        constructor argument any more - an accepted-but-ignored parameter is
+        indistinguishable from one that works.
+        """
+
+        import inspect
+
         from witwin.radar import Radar
 
         try:
@@ -423,4 +434,5 @@ class TestRadarConstruction:
 
         assert not hasattr(radar, "N_fft")
         assert not hasattr(radar, "pad_factor")
-        assert radar.solver.N_fft == standard_config.adc_samples * radar.solver.pad_factor
+        assert not hasattr(radar, "solver")
+        assert "pad_factor" not in inspect.signature(Radar.__init__).parameters

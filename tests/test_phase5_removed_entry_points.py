@@ -20,14 +20,18 @@ import witwin.radar as wr
 
 
 RADAR_ROOT = pathlib.Path(wr.__file__).resolve().parent
+TESTS_ROOT = pathlib.Path(__file__).resolve().parent
 
 
 def test_the_dr_jit_modules_are_gone_from_the_source_tree():
     for removed in ("trace.py", "material.py", "_rayd_bridge.py"):
         assert not (RADAR_ROOT / removed).exists(), removed
-    # trace_result.py is Torch-only and survives; TraceResult is still exported.
-    assert (RADAR_ROOT / "trace_result.py").exists()
-    assert wr.TraceResult is not None
+    # `trace_result.py` survived the Dr.Jit removal because it was Torch-only.
+    # Phase 11 deleted it anyway: what it held was the payload of an
+    # interpolator, and the scene-driven entry has no interpolator.
+    assert not (RADAR_ROOT / "trace_result.py").exists()
+    assert not (RADAR_ROOT / "path_cache.py").exists()
+    assert not (RADAR_ROOT / "solvers").exists()
 
 
 @pytest.mark.parametrize("name", ["Tracer", "fresnel"])
@@ -89,14 +93,20 @@ def test_simulate_group_is_gone_rather_than_permanently_refusing():
     assert not hasattr(wr.Radar, "_SIMULATE_REPLACEMENT")
 
 
-def test_the_surviving_solver_entry_points_are_untouched():
-    """The Dirichlet family keeps every production caller it had.
+def test_the_dirichlet_entry_points_are_gone_and_name_their_replacement():
+    """This block used to assert that the SAME six methods were untouched.
 
-    Six of the nine manifested native symbols are the dirichlet_spectrum
-    family, and every one of their end-to-end callers is a Radar method that
-    never constructed a Tracer. Removing them alongside the tracer would have
-    orphaned those symbols and forced the manifest and the CUDA sources to
-    change in the same commit, for no reason.
+    Its argument was that the ``dirichlet_spectrum`` family's callers had
+    nothing to do with the tracer, so removing them alongside it would orphan
+    six native symbols for no reason. Phase 11 removes them for a reason: the
+    scene-driven entry point exists, so the whole route - nine symbols, its
+    translation unit, its solver and its path cache - goes at once, and no
+    symbol passes through a caller-free state.
+
+    ``Radar`` gets a plain ``AttributeError`` for a deleted method because a
+    class attribute has no ``__getattr__`` hook to route through; the package
+    root does have one, so the four deleted module-level names answer with a
+    message that says where to go instead.
     """
 
     for name in (
@@ -106,84 +116,39 @@ def test_the_surviving_solver_entry_points_are_untouched():
         "path_cache_from_trace",
         "chirp",
         "frame",
+        "waveform",
+        "solver",
     ):
-        assert callable(getattr(wr.Radar, name)), name
+        assert not hasattr(wr.Radar, name), name
+
+    for name, expected in (
+        ("Solver", "no backend selector"),
+        ("TraceResult", "ScatterSitePolicy"),
+        ("MimoPathCache", "frozen topology"),
+        ("SamplingMode", "interpolator contract"),
+        ("MotionSampling", "interpolator contract"),
+    ):
+        with pytest.raises(AttributeError) as raised:
+            getattr(wr, name)
+        assert expected in str(raised.value), name
+        assert name not in wr.__all__, name
 
 
-def test_the_torch_dsp_oracles_no_longer_ship_inside_the_package():
-    """A CPU reference oracle belongs under tests/, not in the wheel."""
+def test_the_torch_dsp_oracles_are_gone_from_the_package_and_from_tests():
+    """A CPU reference oracle belongs under tests/ - or nowhere.
 
-    from witwin.radar.solvers import common
-
-    for name in ("pytorch_chirp_reference", "pytorch_mimo_from_samples"):
-        assert not hasattr(common, name), name
-
-    from reference import dsp_oracles
-
-    assert callable(dsp_oracles.pytorch_chirp_reference)
-    assert callable(dsp_oracles.pytorch_mimo_from_samples)
-
-
-def test_the_residual_torch_path_surface_is_frozen():
-    """solvers/common.py is a recorded deviation, so it must not grow.
-
-    Phase 6 work item 8 SHRANK this set. When this test was written its
-    docstring said the six geometry and amplitude helpers were not removed
-    because "the native evaluator that replaces them is out of scope"; that
-    evaluator is the ``sensor_weight`` family and it now exists, so
-    ``compute_total_path_lengths``, ``compute_antenna_pattern_gains``,
-    ``compute_polarization_amplitudes``, ``compute_path_amplitudes``, and
-    ``compute_slot_path_tensors`` are gone, and ``collect_interpolated_samples``
-    moved to its single caller.
-
-    The set below is what is LEFT, and none of it is physics: a contract, dtype
-    and device glue, a predicate, and structural packing. The assertion is an
-    equality rather than a subset for the same reason it always was - a subset
-    check passes when something is added back.
+    Until Phase 11 this asserted the first half only: the two float64 chirp and
+    MIMO references had moved out of ``solvers/common.py`` and into
+    ``tests/reference/dsp_oracles.py``. They checked the Dirichlet family and
+    nothing else, so they went with it. ``tests/reference/path_math.py``
+    survives on purpose - it is the independent oracle for the LIVE
+    ``sensor_weight`` family - which is why this asserts the two files
+    separately rather than asserting that the reference package is empty.
     """
 
-    from witwin.radar.solvers import common
-
-    # Defined here, not merely reachable: `dir` also returns imported names.
-    public = {
-        name
-        for name, value in vars(common).items()
-        if not name.startswith("_")
-        and callable(value)
-        and getattr(value, "__module__", None) == common.__name__
-    }
-    assert public == {
-        "PathSample",
-        "normalize_interpolated_sample",
-        "samples_require_grad",
-    }, sorted(public)
-    # `_stack_slot_samples` is private and therefore outside the set above, but
-    # it is the fourth survivor and it must still be here: it is the padding
-    # step the slot route hands to the native owner.
-    assert callable(common._stack_slot_samples)
-
-
-def test_the_migrated_helpers_are_gone_from_the_shared_module():
-    """Named one by one, because "the set shrank" is not the same statement.
-
-    A helper that came back under a new name would keep the set above at three
-    entries only by accident. These five are the Torch expressions plan work
-    item 8 migrated, and they must not exist here under any spelling.
-    """
-
-    from witwin.radar.solvers import common
-
-    for name in (
-        "compute_total_path_lengths",
-        "compute_antenna_pattern_gains",
-        "compute_polarization_amplitudes",
-        "compute_path_amplitudes",
-        "compute_slot_path_tensors",
-        "_slot_polarization_factors",
-        "_normalize_vectors",
-        "collect_interpolated_samples",
-    ):
-        assert not hasattr(common, name), name
+    assert not (RADAR_ROOT / "solvers").exists()
+    assert not (TESTS_ROOT / "reference" / "dsp_oracles.py").exists()
+    assert (TESTS_ROOT / "reference" / "path_math.py").exists()
 
 
 def test_the_packaging_metadata_no_longer_pulls_in_dr_jit():

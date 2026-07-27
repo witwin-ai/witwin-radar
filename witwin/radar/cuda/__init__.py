@@ -1,4 +1,4 @@
-"""Native CUDA extension support for radar solvers."""
+"""Native CUDA extension support for the radar package."""
 
 from . import build, identity
 

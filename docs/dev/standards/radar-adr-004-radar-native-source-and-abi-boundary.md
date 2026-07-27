@@ -1,6 +1,28 @@
 # R-ADR-004: The `_radar_native` source and ABI boundary
 
-Status: Accepted (Phase 4), extended (Phase 5), rename closed (Phase 10)
+Status: Accepted (Phase 4), extended (Phase 5), rename closed (Phase 10),
+Dirichlet family removed (Phase 11)
+
+## Phase-11 amendment: the Dirichlet family is gone
+
+Every count and every `dirichlet` reference below is a Phase-4 to Phase-10
+measurement and is retained as the record of those phases. What changed:
+
+* `witwin/radar/cuda/kernels/dirichlet.cu` is deleted. The build input is eight
+  sources; the binary registers 25 operators, not 34.
+* `RADAR_ABI_VERSION` is 2. The operator set shrank, which a consumer can
+  observe as a lookup that no longer resolves, so it is an ABI change even
+  though the sidecar schema did not move.
+* The caller-free budget in `tests/test_phase4_binding_manifest.py` is 0. The
+  `backward` symbol that held the single slot was in this family and died with
+  its translation unit rather than acquiring a caller.
+* `tests/test_phase4_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
+  is deleted: its reference no longer exists. The `carrier_hz = fc` setting it
+  pinned is still supported and still exact - it is the absolute-carrier form -
+  and the surrounding tests in that file pin the convention without it.
+
+The decision itself is unchanged: one binary, one dispatcher namespace, Radar
+numerics only, and no shared RF or geometry binary with Channel.
 
 ## Context
 

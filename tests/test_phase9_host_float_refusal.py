@@ -51,10 +51,6 @@ from witwin.radar.synthesis.contracts import (  # noqa: E402
     OfdmCfrSpec,
     PulsedEchoSpec,
 )
-from witwin.radar.synthesis.dirichlet_spectrum import (  # noqa: E402
-    DirichletSpectrumSpec,
-)
-
 
 #: A working set of keyword arguments per spec, and the fields that must each
 #: refuse a tensor. The valid set is what makes this a test of the refusal
@@ -103,17 +99,6 @@ PULSED_BASE = dict(
     carrier_rate_hz=F_REF_HZ,
 )
 
-DIRICHLET_BASE = dict(
-    n=8.0,
-    k0_per_meter=1.0,
-    num_bins=16,
-    n_fft=32,
-    fc=0.0,
-    slope_hz_per_s=60.012e12,
-    t_start_s=0.0,
-    tau_is_seconds=1,
-)
-
 NOISE_BASE = dict(
     noise_figure_db=6.0,
     antenna_temperature_k=290.0,
@@ -149,9 +134,6 @@ SPEC_CASES = (
       "range_gate_start_s", "pulse_width_s", "bandwidth_hz",
       "reference_frequency_hz", "max_expected_delay_rate", "carrier_hz",
       "carrier_rate_hz")),
-    ("DirichletSpectrumSpec", DirichletSpectrumSpec, DIRICHLET_BASE,
-     ("n", "k0_per_meter", "num_bins", "n_fft", "fc", "slope_hz_per_s",
-      "t_start_s", "tau_is_seconds")),
 )
 
 FIELD_CASES = tuple(

@@ -67,7 +67,6 @@ REGISTERED_BACKWARDS = {
     "witwin/radar/synthesis/fmcw_beat.py": 1,
     "witwin/radar/synthesis/ofdm_cfr.py": 1,
     "witwin/radar/synthesis/pulsed_echo.py": 1,
-    "witwin/radar/synthesis/dirichlet_spectrum.py": 2,
     "witwin/radar/frontend/chain.py": 2,
 }
 
@@ -82,11 +81,13 @@ def _radar_root() -> pathlib.Path:
 
 
 def test_every_registered_backward_is_decorated_by_the_one_owner():
-    """Ten backwards, one decorator, no bare ``once_differentiable`` left.
+    """Eight backwards, one decorator, no bare ``once_differentiable`` left.
 
-    The per-boundary tests below drive six of the ten through a real call. This
-    is what covers the other four and, more importantly, what fails when an
-    eleventh ``Function`` is added: a new backward with no decorator is a new
+    There were ten until Phase 11 deleted the two ``dirichlet_spectrum``
+    contexts with their route. The per-boundary tests below drive six of the
+    eight through a real call. This is what covers the other two and, more
+    importantly, what fails when a ninth ``Function`` is added: a new backward
+    with no decorator is a new
     silent second-order hole, and it would otherwise be invisible until someone
     asked for a grad of a grad.
     """
@@ -125,7 +126,7 @@ def test_every_registered_backward_is_decorated_by_the_one_owner():
         assert "once_differentiable" not in source.replace(
             "``once_differentiable``", ""
         ), relative
-    assert total_functions == 10, total_functions
+    assert total_functions == 8, total_functions
 
 
 def test_the_package_names_no_second_higher_order_rule():

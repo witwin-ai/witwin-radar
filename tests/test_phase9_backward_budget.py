@@ -312,7 +312,7 @@ def test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on(narrow):
 # ---------------------------------------------------------------------------
 
 
-#: Every operator any of the nine boundaries can launch, with the family it
+#: Every operator any of the seven boundaries can launch, with the family it
 #: belongs to. A boundary is allowed exactly one forward and one backward from
 #: its own family and nothing at all from another's.
 BOUNDARY_OPERATORS = {
@@ -325,12 +325,6 @@ BOUNDARY_OPERATORS = {
     "fmcw": ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"),
     "ofdm": ("ofdm_cfr_forward", "ofdm_cfr_backward", "ofdm_cfr_jvp"),
     "pulsed": ("pulsed_echo_forward", "pulsed_echo_backward", "pulsed_echo_jvp"),
-    "dirichlet": ("forward_chunked", "backward_batched", "dirichlet_jvp"),
-    "mimo_linear": (
-        "forward_mimo_linear_chunked",
-        "mimo_linear_backward",
-        "mimo_linear_jvp",
-    ),
     "sensor_weight": (
         "sensor_weight_forward",
         "sensor_weight_backward",

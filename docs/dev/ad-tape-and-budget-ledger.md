@@ -56,25 +56,29 @@ it no better. At these sizes the `bwd ms` column is dominated by launch
 overhead, not by arithmetic; it is recorded as the floor cost of a companion
 launch, and the budget pins that matter are on the whole pipeline further down.
 
-## The ten tape owners
+## The eight tape owners
 
 The fixture is `tests/support/ad_boundaries.py`, one boundary per owner. There
-are nine boundaries and ten owners: `frontend` runs two contexts in one call.
+are seven boundaries and eight owners: `frontend` runs two contexts in one call.
+
+There were nine boundaries and ten owners until Phase 11 deleted the Dirichlet
+route. The two rows it removed - the chunked spectrum and the MIMO-linear frame
+- are struck from the table below rather than kept as history, because this
+document is read as a description of the live tape and a row for a context that
+cannot be created is worse than no row.
 
 | family | tape owner (file:line) | saved tensors | bytes formula | measured bytes @fixture | fwd launches | bwd launches | bwd ms (measured) | lifetime |
 |---|---|---|---|---|---|---|---|---|
 | two-way join | `witwin/radar/paths/two_way.py:240/241` | `c_in_re`, `c_in_im`, `c_out_re`, `c_out_im`, `s_re`, `s_im`, `row_valid`, `idx_in`, `idx_out`, `idx_s` | `8*R_in + 8*R_out + 8*S + 28*K` | 104 B at `R_in=R_out=S=K=2` | 1 `two_way_join_forward` | 1 `two_way_join_backward` | 0.412 | created in `TwoWayComposer.compose`; released when the composed `RadarPathBatch`'s graph is freed. Under `_compose_band` there is **one context per frequency column plus one**, and all `F+1` live until the band's graph is freed - see the band section below. |
 | aspect response | `witwin/radar/scattering/aspect.py:159/160` | `dir_in`, `dir_out`, `axis`, `amplitude`, `phase_rad`, `idx_in`, `idx_out`, `idx_site`, `row_valid` | `12*(R_in + R_out + S) + 8*S + 28*K` | 144 B at `R_in=R_out=S=K=2` | 1 `scatter_response_aspect_forward` | 1 `scatter_response_aspect_backward` | 0.276 | created inside `AspectScatterResponse.evaluate_rows`, which the composer calls once per compose; released with the composed batch. The two direction tables are the legs' own aliased tensors, so this context pins the legs' geometry alive as well as its own. |
-| sensor weight | `witwin/radar/sensors/weights.py:405/406` | `tx_pos`, `rx_pos`, `site_in`, `site_out`, `intensity`, `weight_re`, `weight_im`, `tx_velocity`, `rx_velocity` | `24*T + 24*R + 36*K` | 120 B at `T=R=1`, `K=2` | 1 `sensor_weight_forward` | 1 `sensor_weight_backward` | 0.348 | created in `evaluate_sensor_weights`, once per frame; released with the `SensorWeightResult`'s graph. The geometry and the plan are attached to the context as configuration, not saved as tensors, so neither is retained storage. Since Phase 11 the PRODUCTION creator on the scene-driven route is `RoundTripPatternStage.apply` (`witwin/radar/sensors/round_trip.py`), which calls the same facade and therefore reuses this one context rather than defining a `Function` of its own - the table still has ten owners. It exists only when `Radar.simulate` was given an `antenna_pattern`; a composed BAND adds one context per frequency column, exactly as the join's band loop does. |
+| sensor weight | `witwin/radar/sensors/weights.py:405/406` | `tx_pos`, `rx_pos`, `site_in`, `site_out`, `intensity`, `weight_re`, `weight_im`, `tx_velocity`, `rx_velocity` | `24*T + 24*R + 36*K` | 120 B at `T=R=1`, `K=2` | 1 `sensor_weight_forward` | 1 `sensor_weight_backward` | 0.348 | created in `evaluate_sensor_weights`, once per frame; released with the `SensorWeightResult`'s graph. The geometry and the plan are attached to the context as configuration, not saved as tensors, so neither is retained storage. Since Phase 11 the PRODUCTION creator on the scene-driven route is `RoundTripPatternStage.apply` (`witwin/radar/sensors/round_trip.py`), which calls the same facade and therefore reuses this one context rather than defining a `Function` of its own - it added no owner to this table. It exists only when `Radar.simulate` was given an `antenna_pattern`; a composed BAND adds one context per frequency column, exactly as the join's band loop does. |
 | FMCW beat | `witwin/radar/synthesis/fmcw_beat.py:141/144` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**, `tx_index`; forward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`offsets`**, `tx_index` | backward `16*K + 8*K + 4*T`; forward `16*K + 8*(P+1) + 4*T` | 52 B at `K=2`, `P=1`, `T=1` | 1 `fmcw_beat_forward` | 1 `fmcw_beat_backward` | 0.313 | created in `synthesize_beat_rows`; released with the cube's graph. **The two lists differ**: the backward needs a per-ROW segment id to reduce into, the jvp needs the per-SEGMENT offsets to walk. That is not an inconsistency, and it means the reverse and forward tapes have different sizes whenever `K != P+1`. |
 | OFDM CFR | `witwin/radar/synthesis/ofdm_cfr.py:118/119` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**; forward: same four plus **`offsets`** | backward `16*K + 8*K`; forward `16*K + 8*(P+1)` | 48 B at `K=2`, `P=1` | 1 `ofdm_cfr_forward` | 1 `ofdm_cfr_backward` | 0.332 | as FMCW, same asymmetry, no `tx_index`. |
 | pulsed echo | `witwin/radar/synthesis/pulsed_echo.py:151/152` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**; forward: same four plus **`offsets`** | backward `16*K + 8*K`; forward `16*K + 8*(P+1)` | 48 B at `K=2`, `P=1` | 1 `pulsed_echo_forward` | 1 `pulsed_echo_backward` | 0.341 | as OFDM. |
-| Dirichlet spectrum | `witwin/radar/synthesis/dirichlet_spectrum.py:159/160` | `d`, `a_re`, `a_im` | `12*N` | 48 B at `N=4` targets | 1 `forward_chunked` | 1 `backward_batched` | 0.290 | created in `chunked_spectra`; released with the spectrum's graph. The spec crosses by VALUE rather than by reference, so a config mutated between forward and backward cannot silently change the function being differentiated. |
-| MIMO linear spectrum | `witwin/radar/synthesis/dirichlet_spectrum.py:364/365` | `d0`, `d_rate`, `a_re`, `a_im` | `16*N` | 192 B at `N=12` rows | 1 `forward_mimo_linear_chunked` | 1 `mimo_linear_backward` | 0.189 | created in `mimo_linear_spectra`, once per TDM frame; released with the frame's graph. Saves the rate as well as the distance, which is what makes it a different context from the chunked variant rather than the same one at another size. |
 | frontend noise | `witwin/radar/frontend/chain.py:173/174` | `phase_rad` (the realised phase, taken from the OUTPUT) | `4*N` | 1024 B at `N=256` | 1 `frontend_noise_forward` | 1 `frontend_noise_backward` | 0.585 (both frontend contexts) | created in `FrontendChain.apply`; released with the chain output's graph. Saving the realised phase rather than the generator state is deliberate: the derivative is taken at the phase the primal actually used, so the two are exactly consistent and the backward holds no second copy of the RNG. |
 | frontend AGC | `witwin/radar/frontend/chain.py:260/261` | `x_re`, `x_im`, `gain`, `rms` | `8*N + 8*G` | 2056 B at `N=256`, `G=1` | 1 `frontend_agc_forward` | 1 `frontend_agc_backward` | (included above) | created in the same `apply` call, immediately after the noise context; released with the same graph. `gain` and `rms` are outputs marked non-differentiable and saved anyway, because the backward of a normalisation needs the normalisation it actually applied. |
 
-**One backward launch per forward launch, at every one of the ten.** That is
+**One backward launch per forward launch, at every one of the eight.** That is
 R-ADR-004's shape and it is now pinned at every boundary rather than at the
 three synthesis families `tests/test_phase6_launch_budget.py` covers:
 `tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch`
@@ -287,5 +291,5 @@ The per-owner rows come from wrapping each `Function`'s `setup_context` and
 reading `ctx.to_save`; `tests/support/ad_boundaries.py` is the fixture and
 `tests/test_phase9_backward_budget.py` is the pinned subset. Run on an idle GPU,
 with the packaged prebuilt at
-`witwin/radar/cuda/prebuilt/witwin_radar_dirichlet_cuda.pyd` - never a JIT
+`witwin/radar/cuda/prebuilt/_radar_native.pyd` - never a JIT
 rebuild inside a test process.

@@ -140,7 +140,6 @@ parametrized ids inside the cited test.
 | synthesis/FmcwBeatSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/contracts.py:230 | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | synthesis/OfdmCfrSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/contracts.py:469 | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | synthesis/PulsedEchoSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/contracts.py:722 | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| synthesis/DirichletSpectrumSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/dirichlet_spectrum.py:98 | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | any spec | an unmarked tensor, the tomorrow case | both | REF | host-declaration | witwin/radar/host_parameters.py:40 | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_an_unmarked_tensor_too | refusal |
 | any spec | a forward dual | jvp | REF | host-declaration | witwin/radar/host_parameters.py:40 | tests/test_phase9_host_float_refusal.py::test_a_forward_dual_is_refused_as_well | refusal |
 
@@ -155,8 +154,9 @@ One caller in the tree was displaced and it was FIXED rather than the rule
 softened: `tests/solvers/test_mimo_cross.py` marked a velocity and handed it to
 `Radar.mimo_from_trace`. That request was measured, before the change, to run a
 whole frame and return `velocities.grad is None` while the position gradient
-came back correctly, so no capability was removed. The call site now detaches,
-with the reason written there.
+came back correctly, so no capability was removed. Both the caller and the
+entry point it used are deleted in Phase 11; the refusal itself is unchanged
+and is now driven through the production geometry.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
@@ -176,11 +176,11 @@ with the reason written there.
 
 The last three rows are Phase 11's PRODUCTION route for this family. Until
 `RoundTripPatternStage` existed the family's only importer was
-`sensors/legacy_paths.py`, on the Dirichlet route that Phase 11 deletes, so
-every row above described a capability no production entry point could reach.
-The stage reaches all three companions through `evaluate_sensor_weights` and
-adds no `torch.autograd.Function` of its own, so the tape ledger's ten owners
-are still ten and the boundary budget is unchanged.
+`sensors/legacy_paths.py`, on the Dirichlet route Phase 11 deleted, so every
+row above described a capability no production entry point could reach. The
+stage reaches all three companions through `evaluate_sensor_weights` and adds
+no `torch.autograd.Function` of its own, so it changed no tape owner and no
+boundary budget.
 
 ### Scatter response (`witwin/radar/scattering/rcs.py`)
 
@@ -428,7 +428,6 @@ above; a tape row does not restate it.
 | tape/fmcw_beat | out:beat context, backward saves segment where forward saves offsets | both | SUP | native-companion | witwin/radar/synthesis/fmcw_beat.py:141 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/ofdm_cfr | out:cfr context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/ofdm_cfr.py:118 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/pulsed_echo | out:echo context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/pulsed_echo.py:151 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
-| tape/dirichlet_spectrum | out:chunked and MIMO-linear contexts, two variants | both | SUP | native-companion | witwin/radar/synthesis/dirichlet_spectrum.py:159 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/sensor_weight | out:weight context, 9 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/sensors/weights.py:405 | tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/frontend | out:noise and AGC contexts, two owners in one call | vjp | SUP | native-companion | witwin/radar/frontend/chain.py:173 | tests/test_phase9_backward_budget.py::test_the_frontend_costs_one_backward_launch_per_forward_stage | declaration |
 | tape/compose_band | out:tape bytes as a linear law in the band column count | vjp | SUP | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_backward_budget.py::test_the_band_loop_tape_obeys_its_predicted_linear_law, tests/test_phase9_backward_budget.py::test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on | declaration |

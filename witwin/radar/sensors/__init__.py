@@ -2,7 +2,7 @@
 
 Work item 4's "single owner" is this package. What used to be spread between
 ``utils/antenna.py``, three ``Radar`` attributes, and four Torch expressions in
-``solvers/common.py`` is one description and one native kernel.
+``solvers/common.py`` was one description and one native kernel.
 
 Two ownership rules are structural here rather than documented:
 

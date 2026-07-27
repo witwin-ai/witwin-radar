@@ -139,7 +139,6 @@ SPIKE_MODULES = (
     "witwin/radar/synthesis/__init__.py",
     "witwin/radar/synthesis/assembly.py",
     "witwin/radar/synthesis/contracts.py",
-    "witwin/radar/synthesis/dirichlet_spectrum.py",
     "witwin/radar/synthesis/fmcw_beat.py",
     "witwin/radar/synthesis/ofdm_cfr.py",
     "witwin/radar/synthesis/pulsed_echo.py",
@@ -164,7 +163,6 @@ SPIKE_MODULES = (
     "witwin/radar/sensors/__init__.py",
     "witwin/radar/sensors/contracts.py",
     "witwin/radar/sensors/pattern.py",
-    "witwin/radar/sensors/legacy_paths.py",
     "witwin/radar/sensors/weights.py",
     "witwin/radar/frontend/__init__.py",
     "witwin/radar/frontend/contracts.py",
@@ -194,7 +192,6 @@ SPIKE_IMPORTS = textwrap.dedent(
     import witwin.radar.synthesis.fmcw_beat
     import witwin.radar.synthesis.ofdm_cfr
     import witwin.radar.synthesis.pulsed_echo
-    import witwin.radar.sensors.legacy_paths
     import witwin.radar.sensors.weights
     import witwin.radar.frontend.chain
     import witwin.radar.processing.matched_filter

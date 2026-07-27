@@ -1,23 +1,26 @@
 """Public radar API.
 
-The Dr.Jit ray tracer is GONE, not deprecated in place. ``Tracer``,
-``fresnel``, ``Radar.simulate`` and ``Radar.simulate_group`` were the only
-production entry points that reached it, and every one of them now raises with
-a pointer to its replacement. Nothing silently falls back: a caller who used
-the tracer gets an error naming the route that replaces it, which is the only
-honest outcome when the replacement is a different contract rather than a
-drop-in.
+The Dr.Jit ray tracer is GONE, not deprecated in place. ``Tracer`` and
+``fresnel`` were the production entry points that reached it, and both now
+raise with a pointer to their replacement. Nothing silently falls back: a
+caller who used the tracer gets an error naming the route that replaces it,
+which is the only honest outcome when the replacement is a different contract
+rather than a drop-in.
 
 Removing the import is what makes the process-global "no Dr.Jit anywhere"
 assertion possible at all. It used to be unachievable for one reason: importing
 any ``witwin.radar`` submodule initialized this file, which imported
 ``trace.py``, which imported ``drjit``.
+
+Phase 11 applied the same rule to the Dirichlet route. ``Solver``,
+``TraceResult``, ``MimoPathCache``, the radar-owned ``Scene`` and ``Timeline``,
+and the ``Radar.mimo*`` / ``chirp`` / ``frame`` / ``waveform`` methods are all
+gone. ``Radar.simulate`` is the entry point, and it is a different contract: a
+Core world and a declared frame sequence rather than a callable that reports
+scatterer positions at a time.
 """
 
 from .radar import Radar, RadarConfig, quantize_complex_signal
-from .solvers import Solver
-from .trace_result import TraceResult
-from .path_cache import MimoPathCache
 from .scene_binding import (
     RadarWorldBinding,
     ScatterSitePolicy,
@@ -26,7 +29,7 @@ from .scene_binding import (
 )
 from .simulation import RadarSimulationResult
 from .propagation.contracts import RadarPropagationLegs
-from .types import DetectorType, MotionSampling, SamplingMode
+from .types import DetectorType
 from witwin.core import (
     Box,
     Cone,
@@ -96,6 +99,37 @@ _REMOVED = {
         "witwin.core.RigidMotion / LinearTrajectory on a DynamicScene, which "
         "the propagation epoch loop already consumes."
     ),
+    # The Dirichlet route, deleted in Phase 11. Its replacement is not a
+    # renamed function: `Radar.simulate` reads a Core world, so a caller who
+    # held an interpolator has to say where their targets are instead.
+    "Solver": (
+        "witwin.radar.Solver has been removed with the Dirichlet route. There "
+        "is no backend selector: Radar.simulate is the one production entry "
+        "point, and it goes Core Scene -> Channel CompiledScene -> propagation "
+        "-> two-way join -> synthesis."
+    ),
+    "TraceResult": (
+        "witwin.radar.TraceResult has been removed with the Dirichlet route. "
+        "Scatterers are declared as sites of a "
+        "witwin.radar.ScatterSitePolicy over a witwin.core.Scene, not as a "
+        "per-frame sample of points and intensities."
+    ),
+    "MimoPathCache": (
+        "witwin.radar.MimoPathCache has been removed with the Dirichlet "
+        "route. The scene-driven pipeline caches a frozen topology per epoch "
+        "inside witwin.radar.propagation, and Radar.last_propagation is how "
+        "you look at it."
+    ),
+    "SamplingMode": (
+        "witwin.radar.SamplingMode has been removed with the Dirichlet "
+        "route's interpolator contract. It had no consumer in the tree."
+    ),
+    "MotionSampling": (
+        "witwin.radar.MotionSampling has been removed with the Dirichlet "
+        "route's interpolator contract. Frame instants are the `times` "
+        "argument of Radar.simulate and intra-frame motion is an ADR-038 "
+        "forward dual over the site tensor."
+    ),
 }
 
 
@@ -138,12 +172,7 @@ __all__ = [
     'Radar',
     'RadarConfig',
     'quantize_complex_signal',
-    'Solver',
-    'TraceResult',
     'DetectorType',
-    'MotionSampling',
-    'SamplingMode',
-    'MimoPathCache',
     'RadarPropagationLegs',
     'RadarSimulationResult',
     'RadarWorldBinding',

@@ -51,9 +51,8 @@ DISPATCHER_OWNERS = frozenset({"witwin/radar/cuda/build.py"})
 IDENTITY_OWNER = "witwin/radar/cuda/identity.py"
 
 #: Every module that takes a handle from the loader, and why. Frozen by
-#: equality. Nine are kernel facades that keep the handle in a module global
-#: `_OPS`; `solvers/solver_dirichlet.py` wraps it in `_load_module()`; and
-#: `deployment.py` is the identity reporter - `build_info()` must come from
+#: equality. Seven are kernel facades that keep the handle in a module global
+#: `_OPS`; `deployment.py` is the identity reporter - `build_info()` must come from
 #: the loader that VALIDATED the record, not from a re-read of the sidecar,
 #: which would answer a different question.
 EXPECTED_LOADER_CONSUMERS = {
@@ -62,8 +61,6 @@ EXPECTED_LOADER_CONSUMERS = {
     "witwin/radar/paths/two_way.py": "two_way_join facade",
     "witwin/radar/scattering/aspect.py": "scatter_response_aspect facade",
     "witwin/radar/sensors/weights.py": "sensor_weight facade",
-    "witwin/radar/solvers/solver_dirichlet.py": "dirichlet_spectrum facade",
-    "witwin/radar/synthesis/dirichlet_spectrum.py": "dirichlet_spectrum synthesis facade",
     "witwin/radar/synthesis/fmcw_beat.py": "fmcw_beat_synthesis facade",
     "witwin/radar/synthesis/ofdm_cfr.py": "ofdm_cfr_synthesis facade",
     "witwin/radar/synthesis/pulsed_echo.py": "pulsed_echo_synthesis facade",

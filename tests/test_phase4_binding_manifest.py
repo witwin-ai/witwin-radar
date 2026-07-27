@@ -59,17 +59,25 @@ def test_declared_implemented_and_manifested_operators_agree(manifest):
 #: A caller-free symbol is cleanup debt, and the manifest is allowed to say so.
 #: What it is not allowed to do is name a caller that does not call it. This
 #: set is the budget: it may shrink, and growing it is a test failure.
-CALLER_FREE_SYMBOLS = {"backward"}
+#:
+#: Phase 11 emptied it. The one entry was ``backward``, in the
+#: ``dirichlet_spectrum`` family, and it was deleted with that family's
+#: translation unit rather than given a caller. Every registered symbol now
+#: names a production entry point, which is acceptance criterion 6's "no orphan
+#: binding" written as an equality.
+CALLER_FREE_SYMBOLS = set()
 
 
 def test_every_operator_has_an_owner_a_test_and_a_caller(manifest):
     """And a caller-free symbol must SAY it is caller-free.
 
-    The ``backward`` entry named ``DirichletSolver.backward`` while that method
-    dispatched ``backward_parallel_bins`` through ``spectrum_vjp``. A manifest
+    The entry shape survives an empty budget on purpose. It exists because the
+    ``backward`` row named ``DirichletSolver.backward`` while that method
+    dispatched ``backward_parallel_bins`` through ``spectrum_vjp``: a manifest
     whose only job is accuracy cannot carry a claim the owner's own docstring
-    contradicts, so the honest form - a null caller plus a recorded reason - is
-    a first-class entry shape, and the budget above stops it spreading.
+    contradicts, so a null caller plus a recorded reason is a first-class entry
+    shape. What changed is the budget. A new caller-free symbol is now an
+    explicit decision recorded above rather than an addition that costs nothing.
     """
 
     caller_free = set()

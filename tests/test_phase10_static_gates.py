@@ -430,26 +430,34 @@ def test_g4_fires_when_a_pytest_constant_drifts_from_the_record(mirror: Path) ->
 
     target = mirror / "tests" / "test_phase6_no_torch_physics.py"
     source = target.read_text(encoding="utf-8")
-    assert '("waveform", "torch.exp"),' in source
-    target.write_text(source.replace('("waveform", "torch.exp"),', ""), encoding="utf-8")
+    assert '("_apply_phase_noise", "torch.polar"),' in source
+    target.write_text(
+        source.replace('("_apply_phase_noise", "torch.polar"),', ""), encoding="utf-8"
+    )
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
     assert "RADAR_FACADE_TORCH_PHYSICS disagrees with the allowlist" in completed.stderr
 
 
 def test_g4_fires_when_the_fence_allowance_list_drifts(mirror: Path) -> None:
+    """Phase 11 emptied the list, so the drift under test is an ADDITION.
+
+    The mutation used to append a second entry beside the Dirichlet solver's.
+    That entry is gone with its route, and adding the FIRST allowance is the
+    sharper test anyway: it is exactly the shape of change this gate exists to
+    catch.
+    """
+
     target = mirror / "tests" / "processing" / "test_cutover.py"
     source = target.read_text(encoding="utf-8")
-    entry = '"witwin/radar/solvers/solver_dirichlet.py": "legacy waveform synthesis",'
-    assert entry in source
-    target.write_text(
-        source.replace(
-            entry,
-            entry + '\n    "witwin/radar/processing/aoa.py": "smuggled in",',
-            1,
-        ),
-        encoding="utf-8",
+    empty = "FENCE_ALLOWANCES = {}"
+    assert empty in source
+    smuggled = (
+        "FENCE_ALLOWANCES = {\n"
+        '    "witwin/radar/processing/aoa.py": "smuggled in",\n'
+        "}"
     )
+    target.write_text(source.replace(empty, smuggled, 1), encoding="utf-8")
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
     assert "FENCE_ALLOWANCES disagrees with the allowlist" in completed.stderr

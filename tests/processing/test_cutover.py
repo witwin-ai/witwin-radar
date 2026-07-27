@@ -45,15 +45,15 @@ FENCED_CALLS = (
 #: Named allowances, each with a reason. This is a list of SIMULATION owners,
 #: not of processing stages that got away.
 #:
-#: The legacy Dirichlet solver and the spectrum helper it names both invert a
-#: SYNTHESIZED spectrum into time samples: that transform is part of producing
-#: the received signal, not part of reading it, and it predates the processing
-#: chain entirely. ``test_phase6_no_torch_physics`` already records it as the
-#: allowlisted DSP exception and asserts it is still CALLED, so it cannot become
-#: a scan that passes because the package is empty.
-FENCE_ALLOWANCES = {
-    "witwin/radar/solvers/solver_dirichlet.py": "legacy waveform synthesis",
-}
+#: Phase 11 emptied it. The one allowance was the legacy Dirichlet solver, which
+#: inverted a SYNTHESIZED spectrum into time samples - a transform that is part
+#: of producing the received signal rather than of reading it, and that predated
+#: the processing chain entirely. It was deleted with its route, so no
+#: production module outside ``processing/`` names a fenced DSP call at all.
+#: The dict is kept because an empty allowance list is the claim; a future
+#: allowance has to be added here with a reason, and ci/check_torch_physics_
+#: allowlist.py holds the same list so the two cannot drift.
+FENCE_ALLOWANCES = {}
 
 
 def _code(source: str) -> str:
@@ -115,8 +115,15 @@ def test_no_dsp_expression_survives_outside_the_processing_facade():
 
 
 def test_the_named_allowance_is_a_simulation_owner_and_still_calls_its_transform():
-    """A scan that passes because the code vanished proves nothing."""
+    """A scan that passes because the code vanished proves nothing.
 
+    With no allowances left this body does not iterate, which is why the
+    emptiness itself is asserted first: a future allowance must be a
+    simulation owner that really calls the inverse transform, and this test
+    must run over it rather than silently skipping.
+    """
+
+    assert FENCE_ALLOWANCES == {}, FENCE_ALLOWANCES
     for relative in FENCE_ALLOWANCES:
         source = _code((REPO_ROOT / relative).read_text(encoding="utf-8"))
         assert "torch . fft . ifft" in source, relative

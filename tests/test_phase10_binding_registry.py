@@ -78,7 +78,7 @@ def test_every_operator_carries_every_column(manifest):
 def test_symbols_are_unique(manifest):
     symbols = [entry["symbol"] for entry in manifest["operators"]]
     assert len(symbols) == len(set(symbols))
-    assert len(symbols) == 34
+    assert len(symbols) == 25
 
 
 def test_every_native_tu_is_a_build_input(manifest):
@@ -255,11 +255,19 @@ def test_a_contract_test_that_names_neither_the_symbol_nor_its_owner_fails(tmp_p
 
 
 def test_a_facade_row_may_declare_the_gap_but_not_fake_it(tmp_path):
-    """The escape hatch is a written note, and the note itself is typed."""
+    """The escape hatch is a written note, and the note itself is typed.
+
+    The mutation adds the note rather than emptying an existing one. All three
+    rows that carried a ``contract_test_note`` were ``dirichlet_spectrum``
+    operators whose contract test drove them through a solver facade, and
+    Phase 11 deleted the family; the hatch itself is kept because a future
+    facade-driven operator would need it, and an unexercised gate is not a
+    gate.
+    """
 
     def mutate(data):
         entry = next(
-            item for item in data["operators"] if item["symbol"] == "forward_chunked"
+            item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward"
         )
         entry["contract_test_note"] = []
 
@@ -269,7 +277,13 @@ def test_a_facade_row_may_declare_the_gap_but_not_fake_it(tmp_path):
 
 
 def test_every_facade_row_that_uses_the_note_says_why(manifest):
-    """Only the rows that need the hatch may hold it, and each one explains."""
+    """Only the rows that need the hatch may hold it, and each one explains.
+
+    The list is empty since Phase 11. The loop is kept rather than replaced by
+    a bare emptiness assertion because the emptiness is not the claim - the
+    claim is that a row holding the note is a row whose contract test really
+    cannot name the symbol, and that has to be checked for whichever rows exist.
+    """
 
     noted = []
     for entry in manifest["operators"]:
@@ -283,8 +297,4 @@ def test_every_facade_row_that_uses_the_note_says_why(manifest):
         ), f"{entry['symbol']}: the note is unnecessary, the test names it"
         assert len(" ".join(note)) > 80, entry["symbol"]
         noted.append(entry["symbol"])
-    assert noted == [
-        "forward_chunked",
-        "forward_mimo_linear_chunked",
-        "backward_batched",
-    ], noted
+    assert noted == [], noted
