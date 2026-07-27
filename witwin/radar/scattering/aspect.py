@@ -439,6 +439,21 @@ class AspectScatterResponse:
         Host work only: shape and depth validation, then one kernel launch. The
         direction tables are the legs' own aliased tensors, so a gradient taken
         here reaches the endpoint positions the directions were built from.
+
+        That last sentence was written in Phase 7 and was not true until
+        Channel's ADR-043 (``CONTRACT_VERSION`` 6). Before it,
+        ``PropagationGeometry.field_direction`` was marked non-differentiable in
+        both field-transport setup contexts, so ``grad_dir_in`` / ``grad_dir_out``
+        were computed by the backward kernel below and then discarded, and a
+        forward tangent never arrived. It is true now, for ``{los, reflection}``
+        under a frozen topology, which is
+        ``capabilities().direction_differentiable_components`` and a superset of
+        every component the Radar adapter is allowed to freeze. Liveness is
+        decided ONCE for a whole propagation result, so there is no result in
+        which some of these rows carry a derivative and others silently do not.
+        ``tests/test_phase9_aspect_direction_ad.py`` measures the whole chain
+        against finite differences, including the falsifier that a detached
+        direction takes this gradient to exactly zero.
         """
 
         if self.site_count != composer.site_count:

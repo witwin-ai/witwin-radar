@@ -67,6 +67,17 @@ class MultiEndpointSpike:
     the batch's own IDs; overriding them is how a test reaches the composer's
     stray-endpoint and unreachable-site refusals with REAL legs rather than
     fabricated ones.
+
+    ``outbound_components`` and ``outbound_max_depth`` give the OUTBOUND leg its
+    own adapter. An aspect-dependent scatter response refuses an outbound leg
+    that reaches any depth above zero, because a leg publishes its final
+    segment's direction and above depth zero that is the arrival direction at
+    the receiver rather than the departure direction from the site. Freezing the
+    outbound leg line-of-sight only while the inbound leg keeps its reflection
+    rows is the shape that response accepts, and it is the only way to drive a
+    REFLECTION ``field_direction`` into it. A separate adapter is required
+    rather than merely convenient: a frozen handle carries the epoch of the
+    adapter that produced it and only that adapter may replay it.
     """
 
     def __init__(
@@ -83,6 +94,8 @@ class MultiEndpointSpike:
         declared_site_ids=None,
         components: frozenset[str] = MULTIPATH_COMPONENTS,
         max_depth: int = 1,
+        outbound_components: frozenset[str] | None = None,
+        outbound_max_depth: int | None = None,
     ) -> None:
         from witwin.radar.paths import TwoWayComposer
         from witwin.radar.propagation.channel_consumer import (
@@ -110,6 +123,23 @@ class MultiEndpointSpike:
             if adapter is None
             else adapter
         )
+        # The outbound leg shares the inbound adapter unless a caller narrows
+        # it. Sharing is the default because two adapters over one compiled
+        # scene means two epoch counters, and every existing test wants one.
+        self.outbound_adapter = (
+            self.adapter
+            if outbound_components is None and outbound_max_depth is None
+            else ChannelPropagationAdapter(
+                self.compiled,
+                reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+                components=(
+                    components if outbound_components is None else outbound_components
+                ),
+                max_depth=(
+                    max_depth if outbound_max_depth is None else outbound_max_depth
+                ),
+            )
+        )
 
         self.transmitter_ids, transmitter_positions = world.split(self.transmitters)
         self.site_ids, site_positions = world.split(self.sites)
@@ -121,7 +151,7 @@ class MultiEndpointSpike:
             self._transmitter_batch(transmitter_positions),
             self._site_batch(site_positions, role="sink"),
         )
-        self.outbound = self.adapter.freeze(
+        self.outbound = self.outbound_adapter.freeze(
             self._site_batch(site_positions, role="source"),
             self._receiver_batch(receiver_positions),
         )
@@ -244,7 +274,7 @@ class MultiEndpointSpike:
             ),
             ad_mode=ad_mode,
         )
-        outbound = self.adapter.reevaluate(
+        outbound = self.outbound_adapter.reevaluate(
             self.outbound,
             self._site_batch(
                 self.site_positions if sites is None else sites, role="source"
@@ -349,7 +379,7 @@ class MultiEndpointSpike:
             slot_count=slot_count,
             ad_mode=ad_mode,
         )
-        outbound = self.adapter.reevaluate_slots(
+        outbound = self.outbound_adapter.reevaluate_slots(
             self.outbound,
             self._stacked_ids(sites, self.site_ids, geo.SITE_POWER_W),
             self._stacked_ids(receivers, self.receiver_ids, None),
