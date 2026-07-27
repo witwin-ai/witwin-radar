@@ -36,7 +36,7 @@ every pair and there is no per-segment time offset to carry.
 from __future__ import annotations
 
 import torch
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 from .assembly import segment_of_each_row
 from .contracts import (
@@ -119,7 +119,7 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
         ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets)
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
         tau_rt, tau_rate, weight_re, weight_im, segment = ctx.saved_tensors
         spec = ctx.spec

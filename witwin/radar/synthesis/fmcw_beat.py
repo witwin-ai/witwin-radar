@@ -25,7 +25,7 @@ Two structural contracts, each with a test:
 from __future__ import annotations
 
 import torch
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 from .assembly import pair_tx_index
 from .contracts import FmcwBeatSpec, SynthesisPathBatch, require_compatible
@@ -146,7 +146,7 @@ class _FmcwBeatSynthesis(torch.autograd.Function):
         )
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
         (
             tau_rt,

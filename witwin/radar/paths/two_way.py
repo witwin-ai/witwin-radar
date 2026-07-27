@@ -46,7 +46,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.autograd.forward_ad as forward_ad
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 from ..propagation.contracts import RadarLegBatch
 from . import _identity
@@ -241,7 +241,7 @@ class _TwoWayJoin(torch.autograd.Function):
         ctx.save_for_forward(*saved)
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_tau_rt, grad_rate_rt, grad_c_rt_re, grad_c_rt_im):
         (
             c_in_re,

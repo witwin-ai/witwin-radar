@@ -42,7 +42,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.autograd.forward_ad as forward_ad
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 from .contracts import AntennaPatternSpec, SPEED_OF_LIGHT_M_PER_S
 
@@ -410,7 +410,7 @@ class _SensorWeight(torch.autograd.Function):
         ctx.mark_non_differentiable(output[4])
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im, grad_tau_rt, grad_tau_rate, grad_gain):
         (
             tx_pos,

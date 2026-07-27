@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 from ..host_parameters import require_host_floats
 from .contracts import WAVEFORM_SPEC_REASON
@@ -160,7 +160,7 @@ class _DirichletSpectrum(torch.autograd.Function):
         ctx.save_for_forward(d, a_re, a_im)
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
         d, a_re, a_im = ctx.saved_tensors
         spec = ctx.spec
@@ -365,7 +365,7 @@ class _MimoLinearSpectrum(torch.autograd.Function):
         ctx.save_for_forward(d0, d_rate, a_re, a_im)
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
         d0, d_rate, a_re, a_im = ctx.saved_tensors
         plan = ctx.plan

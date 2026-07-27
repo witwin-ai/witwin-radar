@@ -53,7 +53,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from torch.autograd.function import once_differentiable
+from ..ad_contracts import first_order_only
 
 
 #: The law this response evaluates, stated once so a test can quote it.
@@ -160,7 +160,7 @@ class _AspectResponse(torch.autograd.Function):
         ctx.save_for_forward(*saved)
 
     @staticmethod
-    @once_differentiable
+    @first_order_only
     def backward(ctx, grad_s_re, grad_s_im):
         (
             dir_in,
