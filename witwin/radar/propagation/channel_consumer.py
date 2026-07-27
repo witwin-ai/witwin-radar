@@ -129,6 +129,35 @@ class FrozenLegTopology:
     slot_topologies: dict = field(default_factory=dict, repr=False)
 
 
+_OFFSETS_ARE_HOST = (
+    "frequency_offsets_hz is a host declaration, not a differentiable input; "
+    "pass a tuple of floats. A per-offset tangent is the reference-frequency "
+    "tangent evaluated at that offset, which the consumer already supports"
+)
+
+
+def _require_host_offsets(offsets: object) -> None:
+    """Refuse a tensor band, entry by entry as well as whole.
+
+    The whole-grid case was refused from the start. A SEQUENCE whose entries
+    are 0-dim tensors was not, and it is the shape a caller actually reaches
+    for: ``float(tensor)`` accepted it silently, so an offset carrying
+    ``requires_grad`` ran the whole band and returned no gradient at all, with
+    at most a ``UserWarning`` from Torch. The rule is on the TYPE for the same
+    reason :mod:`witwin.radar.host_parameters` puts it there - an unmarked
+    tensor today is the marked one tomorrow, and ``float()`` on a device tensor
+    is a host synchronisation as well.
+    """
+
+    if isinstance(offsets, torch.Tensor):
+        raise TypeError(_OFFSETS_ARE_HOST)
+    for index, value in enumerate(offsets):
+        if isinstance(value, torch.Tensor):
+            raise TypeError(
+                f"{_OFFSETS_ARE_HOST} (entry {index} is a torch.Tensor)"
+            )
+
+
 def _declared_offsets(
     offsets: object, components: frozenset[str], capabilities: object
 ) -> tuple[float, ...] | None:
@@ -146,13 +175,7 @@ def _declared_offsets(
 
     if offsets is None:
         return None
-    if isinstance(offsets, torch.Tensor):
-        raise TypeError(
-            "frequency_offsets_hz is a host declaration, not a differentiable "
-            "input; pass a tuple of floats. A per-offset tangent is the "
-            "reference-frequency tangent evaluated at that offset, which the "
-            "consumer already supports"
-        )
+    _require_host_offsets(offsets)
     grid = tuple(float(value) for value in offsets)
     if not capabilities.supports_wideband_offsets:
         raise NotImplementedError(
