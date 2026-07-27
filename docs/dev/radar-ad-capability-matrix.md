@@ -223,6 +223,90 @@ modes, against a fourth-order difference of the whole production chain.
 |---|---|---|---|---|---|---|---|
 | frontend/adc | the signal | both | REF | host-declaration | witwin/radar/frontend/chain.py:94 | tests/test_phase6_frontend_chain.py::test_the_quantizer_refuses_a_differentiable_input | refusal |
 
+## Processing: the non-differentiability wall
+
+The wall sits at the first DISCRETE DECISION, not at "post-processing". Above it
+the signal chain is linear or smooth and stays live; below it every stage
+refuses at its entry, in both modes, before any device operation runs.
+`witwin/radar/sigproc/*` are deprecated re-export shims over these owners, so
+there is exactly one implementation of each guard and no second copy under
+`sigproc/`.
+
+`witwin/radar/ad_contracts.py::refuse_derivative` is the single owner of every
+`REF` row here and of the frontend ADC row below. "Before any result exists" is
+measured rather than asserted: each refusal test replaces the nine device
+operations these stages are built from with counting stand-ins and asserts the
+count is exactly zero, and the instrument is calibrated against the same stages
+running normally.
+
+Over-refusing is the opposite mistake and just as easy to make, so three of
+the `REF` rows below carry a second test that asserts the guard changed
+nothing else: the detector still detects and gives bitwise the same threshold
+on a detached map, the point cloud still publishes its point, and the
+estimator's own contract checks still fire.
+
+### Above the wall (`SUP`)
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| processing/range_profile | the frame cube | vjp | SUP | torch-orchestration | witwin/radar/processing/range_profile.py:77 | tests/test_phase9_processing_wall.py::test_the_range_and_doppler_transforms_stay_differentiable | analytic |
+| processing/range_doppler | the frame cube | vjp | SUP | torch-orchestration | witwin/radar/processing/doppler.py:40 | tests/test_phase9_processing_wall.py::test_the_range_and_doppler_transforms_stay_differentiable | analytic |
+| processing/beam_cube | the frame cube | vjp | SUP | torch-orchestration | witwin/radar/processing/beam_cube.py:30 | tests/test_phase9_processing_wall.py::test_the_beam_cube_stays_differentiable | analytic |
+| processing/matched_filter | the received train | vjp | SUP | torch-orchestration | witwin/radar/processing/matched_filter.py:85 | tests/test_phase9_processing_wall.py::test_the_matched_filter_stays_differentiable | analytic |
+| processing/tdm_compensate | the virtual-antenna column | vjp | SUP | torch-orchestration | witwin/radar/processing/aoa.py:109 | tests/test_phase9_processing_wall.py::test_the_tdm_compensation_stays_differentiable | analytic |
+| processing/music_spectrum | the angle snapshots | vjp | SUP | torch-orchestration | witwin/radar/processing/aoa.py:409 | tests/test_phase9_processing_wall.py::test_the_music_pseudo_spectrum_is_differentiable_and_matches_a_difference | fd |
+| processing/music_image | the range profile | vjp | SUP | torch-orchestration | witwin/radar/processing/aoa.py:513 | tests/test_phase9_processing_wall.py::test_music_image_carries_the_same_live_derivative_as_the_spectrum | analytic |
+
+### Below the wall (`REF`)
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| processing/ca_cfar | the Range-Doppler map | vjp | REF | host-declaration | witwin/radar/processing/cfar.py:162 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_gradient_before_any_compute | refusal |
+| processing/ca_cfar | the Range-Doppler map | jvp | REF | host-declaration | witwin/radar/processing/cfar.py:162 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_forward_dual_before_any_compute | refusal |
+| processing/ca_cfar_fast | the Range-Doppler map | vjp | REF | host-declaration | witwin/radar/processing/cfar.py:214 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_gradient_before_any_compute , tests/test_phase9_processing_wall.py::test_the_detectors_still_detect_and_the_guard_changed_no_value | refusal |
+| processing/ca_cfar_fast | the Range-Doppler map | jvp | REF | host-declaration | witwin/radar/processing/cfar.py:214 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_forward_dual_before_any_compute | refusal |
+| processing/os_cfar | the Range-Doppler map | vjp | REF | host-declaration | witwin/radar/processing/cfar.py:285 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_gradient_before_any_compute | refusal |
+| processing/os_cfar | the Range-Doppler map | jvp | REF | host-declaration | witwin/radar/processing/cfar.py:285 | tests/test_phase9_processing_wall.py::test_a_cfar_detector_refuses_a_forward_dual_before_any_compute | refusal |
+| processing/ca_cfar_1d | the range profile | both | REF | host-declaration | witwin/radar/processing/cfar.py:340 | tests/test_phase9_processing_wall.py::test_the_range_only_detector_refuses_both_modes_before_any_compute | refusal |
+| processing/point_cloud | the Range-Doppler map | vjp | REF | host-declaration | witwin/radar/processing/pointcloud.py:199 | tests/test_phase9_processing_wall.py::test_the_point_cloud_refuses_a_gradient_before_any_compute , tests/test_phase9_processing_wall.py::test_the_point_cloud_still_produces_its_one_point | refusal |
+| processing/point_cloud | the Range-Doppler map | jvp | REF | host-declaration | witwin/radar/processing/pointcloud.py:199 | tests/test_phase9_processing_wall.py::test_the_point_cloud_refuses_a_forward_dual_before_any_compute | refusal |
+| processing/point_cloud | the detection threshold | vjp | REF | host-declaration | witwin/radar/processing/pointcloud.py:199 | tests/test_phase9_processing_wall.py::test_the_point_cloud_refuses_a_live_detection_threshold | refusal |
+| processing/_keep_strongest | the energy map | both | REF | host-declaration | witwin/radar/processing/pointcloud.py:278 | tests/test_phase9_processing_wall.py::test_the_peak_selection_refuses_a_gradient_before_any_topk | refusal |
+| processing/phase_comparison_aoa | the virtual-antenna column | both | REF | host-declaration | witwin/radar/processing/aoa.py:232 | tests/test_phase9_processing_wall.py::test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute | refusal |
+| processing/fft2_aoa | the virtual-antenna column | both | REF | host-declaration | witwin/radar/processing/aoa.py:315 | tests/test_phase9_processing_wall.py::test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute , tests/test_phase9_processing_wall.py::test_the_fft2_route_still_enforces_its_own_contract | refusal |
+| processing/DetectionFrame | xyz, velocity_mps, energy | both | REF | host-declaration | witwin/radar/processing/tracking.py:81 | tests/processing/test_tracking.py::test_the_handoff_is_explicitly_non_differentiable_and_refuses_a_gradient, tests/processing/test_tracking.py::test_the_handoff_also_refuses_a_forward_dual_which_it_used_to_accept | refusal |
+| processing/any guarded stage | the wall speaks with one voice | both | REF | host-declaration | witwin/radar/ad_contracts.py:71 | tests/test_phase9_processing_wall.py::test_every_wall_refusal_comes_from_the_one_owner | refusal |
+| processing/any guarded stage | no result object is produced | both | REF | host-declaration | witwin/radar/ad_contracts.py:71 | tests/test_phase9_processing_wall.py::test_the_no_partial_result_instrument_is_not_vacuous | refusal |
+
+## Higher order: first derivatives only, everywhere
+
+`witwin/radar/ad_contracts.py::first_order_only` decorates all ten registered
+`backward` methods in the package and is the only implementation of the rule.
+It matches Channel's ADR-043 convention exactly, including the half Channel
+DROPPED: `jvp` beside `requires_grad` is a legitimate first-order request under
+ADR-038 and is not refused on either side of the boundary.
+
+The decorator wraps `once_differentiable` from OUTSIDE, and the ordering is load
+bearing: `once_differentiable` runs the backward body inside `torch.no_grad()`,
+so a grad-mode check written inside the body sees grad mode off even under
+`create_graph=True`. That is measured, not assumed.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| higher-order/two_way | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/paths/two_way.py:244 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/fmcw | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/synthesis/fmcw_beat.py:149 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/ofdm | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/synthesis/ofdm_cfr.py:122 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/pulsed | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/synthesis/pulsed_echo.py:155 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/sensor_weight | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/sensors/weights.py:413 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/frontend | grad of grad, create_graph=True | vjp | REF | torch-orchestration | witwin/radar/frontend/chain.py:265 | tests/test_phase9_higher_order_refusal.py::test_a_grad_of_grad_request_fails_loudly_and_names_the_owner | refusal |
+| higher-order/every boundary | a cotangent carrying a forward tangent | jvp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_a_cotangent_carrying_a_forward_tangent_is_refused | refusal |
+| higher-order/every boundary | a cotangent that itself requires grad | vjp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_a_cotangent_that_itself_requires_grad_is_refused | refusal |
+| higher-order/every boundary | no partial second-order gradient is left behind | vjp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_no_gradient_survives_the_refusal | refusal |
+| higher-order/every boundary | the FIRST-order request over the same graph | vjp | SUP | native-companion | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_the_first_order_request_over_the_same_graph_still_works | adjoint |
+| higher-order/all ten backwards | the decorator is applied at every site | both | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_every_registered_backward_is_decorated_by_the_one_owner, tests/test_phase9_higher_order_refusal.py::test_the_package_names_no_second_higher_order_rule | refusal |
+| higher-order/nested forward levels | a second dual_level | jvp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_nested_forward_levels_stay_torch_owned | refusal |
+| higher-order/decorator ordering | once_differentiable cannot replace the check | vjp | REF | torch-orchestration | witwin/radar/ad_contracts.py:128 | tests/test_phase9_higher_order_refusal.py::test_once_differentiable_cannot_replace_the_grad_mode_check | refusal |
+
 ## Deferred
 
 Each entry names the work and the reason. A deferral is a `REF` or a `DECL` cell
