@@ -8,8 +8,50 @@
     "pyproject wheel artifacts, scripts/verify_cuda_binary_arches.py, and the",
     "publish workflow all assume a single native stem. _radar_native is the",
     "logical owner name for Phase 4; the physical rename is Phase-10 work.",
-    "R-ADR-004 records this as a decision rather than drift."
+    "R-ADR-004 records this as a decision rather than drift.",
+    "",
+    "Schema 2 (Phase 10, work items 3-4) turns this from a coverage manifest",
+    "into an OWNERSHIP REGISTRY. Seven per-operator columns were added:",
+    "",
+    "  native_tu         the translation unit that owns the numerics. The",
+    "                    registration itself lives in extension.cpp for every",
+    "                    symbol, so naming that file would carry no ownership",
+    "                    information at all.",
+    "  numerical_owner   who owns the arithmetic. Must be 'radar' in THIS",
+    "                    manifest: item 4 forbids registering a RayD-owned or",
+    "                    Channel-owned family as a Radar shared primitive, and",
+    "                    a column makes that a checkable value rather than an",
+    "                    unwritten rule. RayD and Channel numerics reach Radar",
+    "                    as compact typed CUDA tensors through the consumer",
+    "                    contract, never as linked code (R-ADR-004).",
+    "  ad_role           primal / backward / jvp / utility.",
+    "  ad_group          the AD family the role belongs to. Exactly one primal",
+    "                    per group, so a companion registered without its",
+    "                    primal - or a primal quietly replaced - is visible.",
+    "  launches          CUDA kernel launches per operator call, counted in the",
+    "                    kernel source. R-ADR-004 pins the two_way_join family",
+    "                    at one launch each way; the rest are transcribed from",
+    "                    the launch sites in native_tu.",
+    "  fused_stages      the device stages fused into those launches, named",
+    "                    after the kernel's own device helpers. This is what",
+    "                    makes 'do not split a fused operation' reviewable.",
+    "  host_observations host reads (.item/.cpu/.tolist/.numpy) the operator",
+    "                    performs. Zero for all 34, which is R-ADR-006's 'Radar",
+    "                    adds zero host observations' made machine-readable.",
+    "                    The sanctioned freeze-time reads live in",
+    "                    witwin/radar/paths/_identity.py, which is not a native",
+    "                    operator and has no row here.",
+    "",
+    "frontend_quantize is a one-member ad_group on purpose: the ADC sits below",
+    "R-ADR-018's non-differentiability wall and refuses a differentiable input,",
+    "so it ships no backward and no jvp. That is a declared state, not a gap.",
+    "",
+    "error_owners is Radar's answer to Channel's single CapacityFailureState",
+    "owner: one row per failure domain, naming the module that raises and what",
+    "it guarantees about partial results."
   ],
+  "schema_version": 2,
+  "radar_abi_version": 1,
   "library": "witwin_radar_dirichlet_cuda",
   "logical_owner": "_radar_native",
   "sources": [
@@ -23,10 +65,53 @@
     "witwin/radar/cuda/kernels/sensor_weight.cu",
     "witwin/radar/cuda/kernels/two_way_join.cu"
   ],
+  "error_owners": [
+    {
+      "domain": "native_load",
+      "owner_module": "witwin/radar/cuda/identity.py",
+      "failure_mode": "RadarExtensionLoadError / RadarExtensionABIError / RadarExtensionSymbolError before torch.ops.load_library; no fallback, no rebuild, no partial module (R-ADR-019)"
+    },
+    {
+      "domain": "operator_contract",
+      "owner_module": "witwin/radar/cuda/build.py",
+      "failure_mode": "RadarExtensionSymbolError when a recorded operator does not resolve on the loaded dispatcher namespace"
+    },
+    {
+      "domain": "differentiability_wall",
+      "owner_module": "witwin/radar/ad_contracts.py",
+      "failure_mode": "refuse_derivative raises at stage entry, before any device work and before any result object exists (R-ADR-018)"
+    },
+    {
+      "domain": "higher_order_ad",
+      "owner_module": "witwin/radar/ad_contracts.py",
+      "failure_mode": "first_order_only raises NotImplementedError from the one decorator applied to every registered backward"
+    },
+    {
+      "domain": "host_parameter_type",
+      "owner_module": "witwin/radar/host_parameters.py",
+      "failure_mode": "every configuration scalar refuses a tensor at spec construction, before any launch"
+    },
+    {
+      "domain": "consumer_contract",
+      "owner_module": "witwin/radar/propagation/channel_consumer.py",
+      "failure_mode": "unfreezable components, refused endpoint tangents and dead forward tangents fail before any Channel discovery"
+    }
+  ],
   "operators": [
     {
       "symbol": "forward_chunked",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "path_response",
+        "complex_amplitude_rotation",
+        "target_chunk_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.chirp"
@@ -34,6 +119,20 @@
     {
       "symbol": "forward_mimo_linear_chunked",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "dirichlet_spectrum.mimo_linear",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "linear_range_drift",
+        "range_loss_update",
+        "path_response",
+        "complex_amplitude_rotation",
+        "target_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.mimo_from_paths"
@@ -41,6 +140,21 @@
     {
       "symbol": "mimo_linear_backward",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "dirichlet_spectrum.mimo_linear",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "linear_range_drift",
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "warp_sum_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/test_phase6_mimo_linear_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.backward"
@@ -48,6 +162,21 @@
     {
       "symbol": "mimo_linear_jvp",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "dirichlet_spectrum.mimo_linear",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "linear_range_drift",
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "tangent_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/test_phase6_mimo_linear_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._MimoLinearSpectrum.jvp"
@@ -55,6 +184,19 @@
     {
       "symbol": "backward",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "single_block_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": null,
@@ -74,6 +216,19 @@
     {
       "symbol": "backward_batched",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "batched_atomic_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_mimo_grad.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
@@ -81,6 +236,19 @@
     {
       "symbol": "backward_parallel_bins",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "warp_sum_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.backward"
@@ -88,6 +256,19 @@
     {
       "symbol": "backward_per_bin",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "per_bin_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/solvers/test_native_dirichlet_cuda.py",
       "end_to_end_caller": "witwin.radar.solvers.solver_dirichlet.DirichletSolver.backward_per_bin"
@@ -95,6 +276,19 @@
     {
       "symbol": "dirichlet_jvp",
       "family": "dirichlet_spectrum",
+      "native_tu": "witwin/radar/cuda/kernels/dirichlet.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "dirichlet_spectrum.chunked",
+      "launches": 1,
+      "fused_stages": [
+        "round_trip_delay",
+        "delay_phase_scale",
+        "dirichlet_kernel",
+        "dirichlet_kernel_grad",
+        "tangent_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/dirichlet_spectrum.py",
       "contract_test": "tests/test_phase6_dirichlet_complex.py",
       "end_to_end_caller": "witwin.radar.synthesis.dirichlet_spectrum._DirichletSpectrum.jvp"
@@ -102,6 +296,19 @@
     {
       "symbol": "fmcw_beat_forward",
       "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "fmcw_beat",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "delay_drift",
+        "beat_phase",
+        "complex_weight_rotation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
       "contract_test": "tests/test_phase4_fmcw_beat_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat.synthesize_fmcw_beat"
@@ -109,6 +316,19 @@
     {
       "symbol": "fmcw_beat_backward",
       "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "fmcw_beat",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "delay_drift",
+        "beat_phase",
+        "cotangent_projection",
+        "segment_ordered_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
       "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.backward"
@@ -116,6 +336,19 @@
     {
       "symbol": "fmcw_beat_jvp",
       "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "fmcw_beat",
+      "launches": 1,
+      "fused_stages": [
+        "tdm_slot_time",
+        "delay_drift",
+        "beat_phase",
+        "tangent_propagation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw_beat.py",
       "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw_beat._FmcwBeatSynthesis.jvp"
@@ -123,6 +356,20 @@
     {
       "symbol": "ofdm_cfr_forward",
       "family": "ofdm_cfr_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/ofdm_cfr.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "ofdm_cfr",
+      "launches": 1,
+      "fused_stages": [
+        "symbol_time",
+        "delay_drift",
+        "cfr_phase",
+        "wideband_weight_index",
+        "complex_weight_rotation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
       "contract_test": "tests/test_phase6_ofdm_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr.synthesize_ofdm_cfr"
@@ -130,6 +377,19 @@
     {
       "symbol": "ofdm_cfr_backward",
       "family": "ofdm_cfr_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/ofdm_cfr.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "ofdm_cfr",
+      "launches": 1,
+      "fused_stages": [
+        "symbol_time",
+        "delay_drift",
+        "cfr_phase",
+        "cotangent_projection",
+        "segment_ordered_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
       "contract_test": "tests/test_phase6_ofdm_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr._OfdmCfrSynthesis.backward"
@@ -137,6 +397,20 @@
     {
       "symbol": "ofdm_cfr_jvp",
       "family": "ofdm_cfr_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/ofdm_cfr.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "ofdm_cfr",
+      "launches": 1,
+      "fused_stages": [
+        "symbol_time",
+        "delay_drift",
+        "cfr_phase",
+        "wideband_weight_index",
+        "tangent_propagation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm_cfr.py",
       "contract_test": "tests/test_phase6_ofdm_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm_cfr._OfdmCfrSynthesis.jvp"
@@ -144,6 +418,20 @@
     {
       "symbol": "pulsed_echo_forward",
       "family": "pulsed_echo_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/pulsed_echo.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "pulsed_echo",
+      "launches": 1,
+      "fused_stages": [
+        "pri_slow_time",
+        "range_gate_fast_time",
+        "delay_drift",
+        "pulse_term",
+        "complex_weight_rotation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
       "contract_test": "tests/test_phase6_pulsed_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo.synthesize_pulsed_echo"
@@ -151,6 +439,20 @@
     {
       "symbol": "pulsed_echo_backward",
       "family": "pulsed_echo_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/pulsed_echo.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "pulsed_echo",
+      "launches": 1,
+      "fused_stages": [
+        "pri_slow_time",
+        "range_gate_fast_time",
+        "delay_drift",
+        "pulse_term",
+        "cotangent_projection",
+        "segment_ordered_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
       "contract_test": "tests/test_phase6_pulsed_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo._PulsedEchoSynthesis.backward"
@@ -158,6 +460,20 @@
     {
       "symbol": "pulsed_echo_jvp",
       "family": "pulsed_echo_synthesis",
+      "native_tu": "witwin/radar/cuda/kernels/pulsed_echo.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "pulsed_echo",
+      "launches": 1,
+      "fused_stages": [
+        "pri_slow_time",
+        "range_gate_fast_time",
+        "delay_drift",
+        "pulse_term",
+        "tangent_propagation",
+        "path_accumulation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed_echo.py",
       "contract_test": "tests/test_phase6_pulsed_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed_echo._PulsedEchoSynthesis.jvp"
@@ -165,6 +481,19 @@
     {
       "symbol": "two_way_join_forward",
       "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/kernels/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "two_way_join",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "leg_gather",
+        "delay_sum",
+        "rate_sum",
+        "complex_triple_product"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/paths/two_way.py",
       "contract_test": "tests/test_phase5_two_way_join_kernel.py",
       "end_to_end_caller": "witwin.radar.paths.two_way.TwoWayComposer.compose"
@@ -172,6 +501,18 @@
     {
       "symbol": "two_way_join_backward",
       "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/kernels/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "two_way_join",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "leg_gather",
+        "complex_triple_product",
+        "csr_segment_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/paths/two_way.py",
       "contract_test": "tests/test_phase5_two_way_join_ad.py",
       "end_to_end_caller": "witwin.radar.paths.two_way._TwoWayJoin.backward"
@@ -179,6 +520,19 @@
     {
       "symbol": "two_way_join_jvp",
       "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/kernels/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "two_way_join",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "leg_gather",
+        "delay_sum",
+        "tangent_propagation",
+        "complex_triple_product"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/paths/two_way.py",
       "contract_test": "tests/test_phase5_two_way_join_ad.py",
       "end_to_end_caller": "witwin.radar.paths.two_way._TwoWayJoin.jvp"
@@ -186,6 +540,18 @@
     {
       "symbol": "scatter_response_aspect_forward",
       "family": "scatter_response_aspect",
+      "native_tu": "witwin/radar/cuda/kernels/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "scatter_response_aspect",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "direction_gather",
+        "aspect_row_terms",
+        "complex_response_assembly"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/scattering/aspect.py",
       "contract_test": "tests/test_phase7_scatter_response_kernel.py",
       "end_to_end_caller": "witwin.radar.scattering.aspect.AspectScatterResponse.evaluate_rows"
@@ -193,6 +559,19 @@
     {
       "symbol": "scatter_response_aspect_backward",
       "family": "scatter_response_aspect",
+      "native_tu": "witwin/radar/cuda/kernels/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "scatter_response_aspect",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "direction_gather",
+        "aspect_row_terms",
+        "cotangent_projection",
+        "csr_segment_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/scattering/aspect.py",
       "contract_test": "tests/test_phase7_scatter_response_ad.py",
       "end_to_end_caller": "witwin.radar.scattering.aspect._AspectResponse.backward"
@@ -200,6 +579,19 @@
     {
       "symbol": "scatter_response_aspect_jvp",
       "family": "scatter_response_aspect",
+      "native_tu": "witwin/radar/cuda/kernels/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "scatter_response_aspect",
+      "launches": 1,
+      "fused_stages": [
+        "row_validity_gate",
+        "direction_gather",
+        "aspect_row_terms",
+        "directional_derivative",
+        "tangent_assembly"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/scattering/aspect.py",
       "contract_test": "tests/test_phase7_scatter_response_ad.py",
       "end_to_end_caller": "witwin.radar.scattering.aspect._AspectResponse.jvp"
@@ -207,6 +599,18 @@
     {
       "symbol": "sensor_weight_forward",
       "family": "sensor_weight",
+      "native_tu": "witwin/radar/cuda/kernels/sensor_weight.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "sensor_weight",
+      "launches": 1,
+      "fused_stages": [
+        "row_geometry",
+        "round_trip_delay",
+        "pattern_gain_lookup",
+        "weight_scaling"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors.weights.evaluate_sensor_weights"
@@ -214,6 +618,18 @@
     {
       "symbol": "sensor_weight_backward",
       "family": "sensor_weight",
+      "native_tu": "witwin/radar/cuda/kernels/sensor_weight.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "sensor_weight",
+      "launches": 2,
+      "fused_stages": [
+        "row_geometry",
+        "pattern_gain_lookup",
+        "cotangent_projection",
+        "antenna_ordered_reduction"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.backward"
@@ -221,6 +637,18 @@
     {
       "symbol": "sensor_weight_jvp",
       "family": "sensor_weight",
+      "native_tu": "witwin/radar/cuda/kernels/sensor_weight.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "sensor_weight",
+      "launches": 1,
+      "fused_stages": [
+        "row_geometry",
+        "round_trip_delay",
+        "pattern_gain_lookup",
+        "tangent_propagation"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/sensors/weights.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors.weights._SensorWeight.jvp"
@@ -228,6 +656,18 @@
     {
       "symbol": "frontend_noise_forward",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "frontend_noise",
+      "launches": 2,
+      "fused_stages": [
+        "phase_noise_random_walk",
+        "phase_rotation",
+        "thermal_noise_draw",
+        "lna_gain"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain.apply"
@@ -235,6 +675,16 @@
     {
       "symbol": "frontend_noise_backward",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "frontend_noise",
+      "launches": 1,
+      "fused_stages": [
+        "phase_rotation_transpose",
+        "lna_gain"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain._FrontendNoise.backward"
@@ -242,6 +692,16 @@
     {
       "symbol": "frontend_noise_jvp",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "frontend_noise",
+      "launches": 1,
+      "fused_stages": [
+        "phase_rotation",
+        "lna_gain"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain._FrontendNoise.jvp"
@@ -249,6 +709,17 @@
     {
       "symbol": "frontend_agc_forward",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "frontend_agc",
+      "launches": 2,
+      "fused_stages": [
+        "group_rms_reduction",
+        "gain_clamp",
+        "gain_apply"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain.apply"
@@ -256,6 +727,16 @@
     {
       "symbol": "frontend_agc_backward",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "frontend_agc",
+      "launches": 2,
+      "fused_stages": [
+        "group_inner_product_reduction",
+        "clamped_gain_linearization"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain._FrontendAgc.backward"
@@ -263,6 +744,16 @@
     {
       "symbol": "frontend_agc_jvp",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "frontend_agc",
+      "launches": 2,
+      "fused_stages": [
+        "group_inner_product_reduction",
+        "clamped_gain_linearization"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain._FrontendAgc.jvp"
@@ -270,6 +761,17 @@
     {
       "symbol": "frontend_quantize_forward",
       "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/kernels/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "frontend_quantize",
+      "launches": 1,
+      "fused_stages": [
+        "full_scale_clip",
+        "uniform_quantize",
+        "clip_counter"
+      ],
+      "host_observations": 0,
       "python_owner": "witwin/radar/frontend/chain.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.chain.FrontendChain._quantize"
