@@ -91,10 +91,19 @@ def test_a_point_cloud_crosses_into_a_detection_frame_without_recomputing_anythi
 
 
 def test_the_handoff_is_explicitly_non_differentiable_and_refuses_a_gradient():
-    """Refused, not detached. A silent detach is a zero gradient nobody sees."""
+    """Refused, not detached. A silent detach is a zero gradient nobody sees.
+
+    Phase 9 moved this refusal onto
+    :func:`witwin.radar.ad_contracts.refuse_derivative`, the one owner of the
+    non-differentiability wall, which changed the exception type from
+    ``ValueError`` to the ``RuntimeError`` the frontend ADC guard already
+    raised. The type is asserted here so that the two doors of the wall cannot
+    drift apart again, and the owner name is asserted so the message points at
+    the code that cannot answer.
+    """
 
     xyz = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64, requires_grad=True)
-    with pytest.raises(ValueError, match="non-differentiable"):
+    with pytest.raises(RuntimeError, match="tracking.DetectionFrame"):
         DetectionFrame(
             time_s=0.0,
             xyz=xyz,
@@ -102,7 +111,7 @@ def test_the_handoff_is_explicitly_non_differentiable_and_refuses_a_gradient():
             energy=torch.zeros(1, dtype=torch.float64),
             frame_index=0,
         )
-    with pytest.raises(ValueError, match="non-differentiable"):
+    with pytest.raises(RuntimeError, match="not differentiable"):
         DetectionFrame(
             time_s=0.0,
             xyz=xyz.detach(),
@@ -110,6 +119,32 @@ def test_the_handoff_is_explicitly_non_differentiable_and_refuses_a_gradient():
             energy=torch.zeros(1, dtype=torch.float64),
             frame_index=0,
         )
+
+
+def test_the_handoff_also_refuses_a_forward_dual_which_it_used_to_accept():
+    """The half that was missing: ``requires_grad`` was checked, a dual was not.
+
+    Before Phase 9 ``_refuse_gradient`` tested ``requires_grad`` only, so a
+    detection frame built inside a ``dual_level`` walked straight through
+    carrying a live tangent - a derivative published by a stage that declares
+    it has none, in the mode nobody was looking at.
+    """
+
+    from torch.autograd.forward_ad import dual_level, make_dual
+
+    with dual_level():
+        xyz = make_dual(
+            torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64),
+            torch.ones((1, 3), dtype=torch.float64),
+        )
+        with pytest.raises(RuntimeError, match="a forward tangent"):
+            DetectionFrame(
+                time_s=0.0,
+                xyz=xyz,
+                velocity_mps=torch.zeros(1, dtype=torch.float64),
+                energy=torch.zeros(1, dtype=torch.float64),
+                frame_index=0,
+            )
 
 
 def test_a_handoff_is_an_ordered_stream():
