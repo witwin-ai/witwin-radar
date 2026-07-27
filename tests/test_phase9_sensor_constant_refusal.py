@@ -2,9 +2,9 @@
 
 ``SensorWeightGeometry``'s docstring has said since Phase 6 that every field on
 it except the four position tensors is a constant with respect to the
-derivative. Nothing enforced it. Eleven float tensors - three velocity sets, the
-fixed leg length, the facet normals, the two polarization sets, the local frame,
-and the five resident pattern tables - reach the native operator through slots
+derivative. Nothing enforced it. Thirteen float tensors - three velocity sets,
+the fixed leg length, the facet normals, the two polarization sets, the local
+frame, and the five resident pattern tables - reach the native operator through slots
 whose ``backward`` returns ``None`` by construction, and five of them are not
 inputs of the autograd ``Function`` at all. A caller who marked one got a full
 frame, a full result object, and ``grad = None``, with nothing anywhere saying

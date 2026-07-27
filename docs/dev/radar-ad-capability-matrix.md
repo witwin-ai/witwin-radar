@@ -146,7 +146,7 @@ parametrized ids inside the cited test.
 
 ### Sensor weight (`witwin/radar/sensors/weights.py`)
 
-Six differentiable inputs and eleven frozen constants. The constants used to
+Six differentiable inputs and thirteen frozen constants. The constants used to
 return `None` from `backward` by construction, with no refusal anywhere; they now
 fail at `SensorWeightGeometry` / `SensorWeightPlan` construction, before
 `validate` and before any launch.

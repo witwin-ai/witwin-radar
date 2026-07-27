@@ -71,7 +71,7 @@ def _ops():
 def _require_frozen_constant(owner: str, name: str, value: torch.Tensor) -> None:
     """Refuse a derivative on an input slot that has no gradient to return.
 
-    Eleven of the tensors this owner consumes are FROZEN descriptions of the
+    Thirteen of the tensors this owner consumes are FROZEN descriptions of the
     array and of the frame's row set: how fast each antenna and site is
     moving, which way each facet faces, how each antenna is polarized, the
     local frame the pattern is tabulated in, the fixed leg length, and the
