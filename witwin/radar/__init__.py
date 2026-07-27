@@ -29,7 +29,7 @@ from .scene_binding import (
 )
 from .simulation import RadarSimulationResult
 from .propagation.contracts import RadarPropagationLegs
-from .types import DetectorType
+from .processing.contracts import DetectorType
 from witwin.core import (
     Box,
     Cone,

@@ -47,12 +47,11 @@ import warnings
 import torch
 
 from ..synthesis.contracts import BEAT_PHASOR
-from ..types import DetectorType
 from .aoa import fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
 from .axes import ProcessingAxes
 from .beamforming import ArrayGeometry
 from .cfar import ca_cfar, ca_cfar_fast, os_cfar
-from .contracts import FAST_TIME_NAMES, SLOW_TIME_NAMES
+from .contracts import FAST_TIME_NAMES, SLOW_TIME_NAMES, DetectorType
 from .microdoppler import (  # noqa: F401  (re-exported for the sigproc shim)
     dominant_frequencies_hz,
     doppler_frequencies_hz,

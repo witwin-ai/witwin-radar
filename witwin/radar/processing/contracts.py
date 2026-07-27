@@ -35,8 +35,14 @@ already exactly zero and there is nothing here for a row mask to do.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 import torch
+
+
+class DetectorType(StrEnum):
+    CFAR = "cfar"
+    TOPK = "topk"
 
 
 #: A positive Doppler bin is a closing target. Stated once, applied once.
@@ -210,6 +216,7 @@ __all__ = [
     "PROCESSING_UNITS",
     "SLOW_TIME_NAMES",
     "BeamCube",
+    "DetectorType",
     "RangeDopplerMap",
     "RangeProfile",
 ]

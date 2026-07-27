@@ -50,6 +50,7 @@ from .contracts import (
     PROCESSING_UNITS,
     SLOW_TIME_NAMES,
     BeamCube,
+    DetectorType,
     RangeDopplerMap,
     RangeProfile,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "BeamCube",
     "DetectionFrame",
     "Detections",
+    "DetectorType",
     "PointCloud",
     "ProcessingAxes",
     "ProcessingCube",
