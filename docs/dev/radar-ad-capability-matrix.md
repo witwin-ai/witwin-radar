@@ -48,17 +48,17 @@ mirrored row below is therefore a row Radar can actually reach.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| reevaluate/prepared | endpoint positions | both | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:493 | tests/test_phase4_spike_e2e.py::test_reverse_mode_loss_gradients_match_the_oracle, tests/test_phase5_reflection_ad.py::test_reverse_mode_site_gradients_match_finite_differences | fd |
+| reevaluate/prepared | endpoint positions | both | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase4_spike_e2e.py::test_reverse_mode_loss_gradients_match_the_oracle, tests/test_phase5_reflection_ad.py::test_reverse_mode_site_gradients_match_finite_differences | fd |
 | reevaluate/prepared | mesh vertices | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_scene_leaf_ad.py::test_a_mesh_vertex_gradient_reaches_a_synthesized_fmcw_loss | fd |
 | reevaluate/prepared | mesh vertices | jvp | SUP | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_scene_leaf_ad.py::test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient | adjoint |
 | reevaluate/prepared | mesh vertices, in-plane components | both | ZERO | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_scene_leaf_ad.py::test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct | analytic |
 | reevaluate/prepared | material eps_r | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_scene_leaf_ad.py::test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss | fd |
-| reevaluate/prepared | material eps_r, alone | jvp | REF | torch-orchestration | witwin/radar/propagation/channel_consumer.py:718 | tests/test_phase9_scene_leaf_ad.py::test_a_material_only_forward_dual_is_refused_by_the_dead_tangent_guard | refusal |
+| reevaluate/prepared | material eps_r, alone | jvp | REF | torch-orchestration | witwin/radar/propagation/channel_consumer.py:742 | tests/test_phase9_scene_leaf_ad.py::test_a_material_only_forward_dual_is_refused_by_the_dead_tangent_guard | refusal |
 | reevaluate/prepared | material eps_r, beside an endpoint tangent | jvp | SUP | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_scene_leaf_ad.py::test_vertices_permittivity_and_endpoints_are_live_in_one_call | fd |
-| reevaluate/prepared | out:field_direction | both | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:571 | tests/test_phase9_aspect_direction_ad.py::test_the_frozen_leg_publishes_a_graph_bearing_field_direction | declaration |
-| discovery | out:field_direction | both | DECL | native-declared | witwin/radar/propagation/channel_consumer.py:395 | tests/test_phase4_import_boundary.py::test_the_consumer_contract_is_the_version_this_spike_was_built_against | declaration |
-| reevaluate/prepared | sources.powers_w, endpoint polarizations | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:493 | tests/test_phase4_adapter.py::test_differentiable_power_is_rejected_before_any_native_work, tests/test_phase4_adapter.py::test_differentiable_polarization_is_rejected | refusal |
-| any | component diffraction, component transmission | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:248 | tests/test_phase4_adapter.py::test_adapter_rejects_unfreezable_components | refusal |
+| reevaluate/prepared | out:field_direction | both | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:594 | tests/test_phase9_aspect_direction_ad.py::test_the_frozen_leg_publishes_a_graph_bearing_field_direction | declaration |
+| discovery | out:field_direction | both | DECL | native-declared | witwin/radar/propagation/channel_consumer.py:418 | tests/test_phase4_import_boundary.py::test_the_consumer_contract_is_the_version_this_spike_was_built_against | declaration |
+| reevaluate/prepared | sources.powers_w, endpoint polarizations | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase4_adapter.py::test_differentiable_power_is_rejected_before_any_native_work, tests/test_phase4_adapter.py::test_differentiable_polarization_is_rejected | refusal |
+| any | component diffraction, component transmission | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:271 | tests/test_phase4_adapter.py::test_adapter_rejects_unfreezable_components | refusal |
 
 ## Propagation-adjacent Radar cells
 
@@ -214,7 +214,7 @@ modes, against a fourth-order difference of the whole production chain.
 | chain/ofdm, chain/pulsed | the silent transmitter TX_B | vjp | ZERO | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_waveform_chain_ad.py::test_the_silent_transmitter_has_an_exactly_zero_gradient | analytic |
 | chain/ofdm, chain/pulsed | the out-of-plane endpoint component | vjp | ZERO | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_waveform_chain_ad.py::test_the_out_of_plane_gradient_is_exactly_zero | analytic |
 | chain/pulsed | tau_rt with a RECTANGULAR pulse | both | ZERO | native-companion | witwin/radar/synthesis/pulsed_echo.py:283 | tests/test_phase6_pulsed_ad.py::test_the_rectangular_envelope_has_exactly_zero_delay_gradient | analytic |
-| chain/any | a forward dual covering one endpoint set only | jvp | REF | torch-orchestration | witwin/radar/propagation/channel_consumer.py:718 | tests/test_phase9_waveform_chain_ad.py::test_a_transmitter_only_forward_dual_is_refused_by_the_dead_tangent_guard | refusal |
+| chain/any | a forward dual covering one endpoint set only | jvp | REF | torch-orchestration | witwin/radar/propagation/channel_consumer.py:742 | tests/test_phase9_waveform_chain_ad.py::test_a_transmitter_only_forward_dual_is_refused_by_the_dead_tangent_guard | refusal |
 | chain/any | one dual level over all three endpoint sets | jvp | SUP | native-companion | witwin/radar/propagation/kinematics.py:561 | tests/test_phase9_waveform_chain_ad.py::test_one_dual_level_over_all_three_endpoint_sets_is_the_supported_shape | declaration |
 
 ### Frontend chain (`witwin/radar/frontend/chain.py`)
@@ -306,6 +306,95 @@ so a grad-mode check written inside the body sees grad mode off even under
 | higher-order/all ten backwards | the decorator is applied at every site | both | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_every_registered_backward_is_decorated_by_the_one_owner, tests/test_phase9_higher_order_refusal.py::test_the_package_names_no_second_higher_order_rule | refusal |
 | higher-order/nested forward levels | a second dual_level | jvp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_higher_order_refusal.py::test_nested_forward_levels_stay_torch_owned | refusal |
 | higher-order/decorator ordering | once_differentiable cannot replace the check | vjp | REF | torch-orchestration | witwin/radar/ad_contracts.py:128 | tests/test_phase9_higher_order_refusal.py::test_once_differentiable_cannot_replace_the_grad_mode_check | refusal |
+
+## The combined-input matrix: one scenario, one frozen topology
+
+Every row above drives ONE leaf. These drive all eight supported leaves through
+the same `PreparedFixedTopology`, in all three AD modes, for each of the three
+waveform families. The scenario owner is `tests/support/ad_matrix.py`.
+
+Two facts the scenario is built around, both measured rather than assumed:
+
+- the combined gradient equals the single-leaf gradient **bitwise** on all eight
+  leaves and all three waveforms, so the equality is asserted exactly;
+- `sum |cube|^2` is exactly invariant under the response phase, because one
+  `ScalarRcsResponse` multiplies every composed row. The scenario's loss adds
+  `sum Re(cube^2)`, which a global rotation multiplies by `exp(2 j theta)`, and
+  a test pins the invariance of the magnitude half so the choice cannot be
+  mistaken for decoration.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| chain/fmcw, chain/ofdm, chain/pulsed | all eight supported leaves at once | vjp | SUP | native-companion | tests/support/ad_matrix.py:151 | tests/test_phase9_combined_ad_matrix.py::test_every_supported_leaf_is_live_in_one_combined_backward, tests/test_phase9_combined_ad_matrix.py::test_each_combined_gradient_equals_its_single_leaf_gradient | analytic |
+| chain/fmcw, chain/ofdm, chain/pulsed | all eight supported leaves at once, against a difference | vjp | SUP | native-companion | tests/support/ad_matrix.py:151 | tests/test_phase9_combined_ad_matrix.py::test_the_combined_difference_equals_the_sum_of_the_single_leaf_differences | fd |
+| reevaluate/prepared | material sigma_e | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py:21 | tests/test_phase9_combined_ad_matrix.py::test_the_conductivity_gradient_matches_a_central_difference | fd |
+| rcs/from_rcs | phase_rad to a synthesized cube, all three waveforms | vjp | SUP | torch-orchestration | witwin/radar/scattering/rcs.py:132 | tests/test_phase9_combined_ad_matrix.py::test_the_response_phase_gradient_matches_a_central_difference | fd |
+| rcs/from_rcs | phase_rad under a magnitude-only loss | vjp | ZERO | torch-orchestration | witwin/radar/scattering/rcs.py:214 | tests/test_phase9_combined_ad_matrix.py::test_a_magnitude_only_loss_cannot_see_the_response_phase | analytic |
+| chain/fmcw, chain/ofdm, chain/pulsed | endpoint positions, full-cube cotangent | both | SUP | native-companion | tests/support/ad_matrix.py:151 | tests/test_phase9_combined_ad_matrix.py::test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology | adjoint |
+| reevaluate/prepared | out:compact row identity across none, jvp and vjp | both | SUP | native-declared | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_combined_ad_matrix.py::test_the_three_ad_modes_publish_the_same_compact_rows | declaration |
+| reevaluate/prepared | out:primal, bitwise across the three modes | both | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_combined_ad_matrix.py::test_the_primal_is_bitwise_identical_in_all_three_ad_modes | analytic |
+| reevaluate/prepared | out:every published tensor under ad_mode none | both | DECL | native-declared | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_combined_ad_matrix.py::test_ad_mode_none_publishes_no_graph_and_no_tangent | declaration |
+| reevaluate/prepared | out:topology identity, scene-leaf compile against the shared one | both | SUP | native-declared | tests/support/ad_matrix.py:151 | tests/test_phase9_combined_ad_matrix.py::test_the_scene_leaf_scenario_is_the_same_topology_as_the_shared_one | declaration |
+| chain/fmcw, chain/ofdm, chain/pulsed | out:the scenario shape the matrix rests on | both | DECL | native-declared | tests/support/ad_matrix.py:151 | tests/test_phase9_combined_ad_matrix.py::test_the_three_waveforms_share_one_frozen_topology | declaration |
+
+## Row validity: a row that stops existing
+
+`row_valid` covers `{los, reflection}` and is the sole authority. A row that
+stops existing at the perturbed endpoints is a COMPLETE answer, not a failure:
+exact zeros on the payload, an exact zero contribution to every gradient, and an
+exactly zero forward tangent. The falsifier for the whole group is that the
+waveform kernels gate on `row_valid` rather than on a weight that happens to be
+zero, which is shown by overwriting a dead row's payload with a value four
+orders of magnitude above every live one and asserting the cube is bitwise
+unchanged.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| reevaluate/prepared | out:payload of a dead row | both | ZERO | native-companion | witwin/radar/propagation/channel_consumer.py:587 | tests/test_phase9_row_validity_ad.py::test_a_dead_row_publishes_an_exactly_zero_payload, tests/test_phase9_row_validity_ad.py::test_the_base_configuration_has_no_dead_row_at_all | analytic |
+| reevaluate/prepared | endpoint positions through a dead row | vjp | ZERO | native-companion | witwin/radar/propagation/channel_consumer.py:587 | tests/test_phase9_row_validity_ad.py::test_the_dead_rows_contribute_exactly_zero_to_the_gradient | analytic |
+| reevaluate/prepared | endpoint positions through a dead row | jvp | ZERO | native-companion | witwin/radar/propagation/channel_consumer.py:587 | tests/test_phase9_row_validity_ad.py::test_a_dead_row_carries_an_exactly_zero_forward_tangent | analytic |
+| synthesis/any | out:cube contribution of a dead row | both | ZERO | native-companion | witwin/radar/synthesis/contracts.py:1225 | tests/test_phase9_row_validity_ad.py::test_a_poisoned_dead_row_cannot_change_the_cube | analytic |
+| reevaluate/prepared | endpoint positions, frozen replay against a fresh discovery | vjp | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_row_validity_ad.py::test_the_frozen_replay_and_a_fresh_discovery_agree_bit_for_bit | analytic |
+| reevaluate/prepared | endpoint positions of a fully occluded site | vjp | ZERO | native-companion | witwin/radar/propagation/channel_consumer.py:587 | tests/test_phase9_row_validity_ad.py::test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient, tests/test_phase9_row_validity_ad.py::test_moving_one_site_kills_exactly_two_rows_and_keeps_nine | analytic |
+| join/freeze | a declared site with no outbound row | both | REF | torch-orchestration | witwin/radar/paths/two_way.py:527 | tests/test_phase9_row_validity_ad.py::test_a_fresh_freeze_at_the_occluded_geometry_refuses_instead | refusal |
+| reevaluate/prepared | out:a stale discovery-time answer | both | REF | native-companion | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_row_validity_ad.py::test_the_replay_never_answers_with_the_geometry_it_was_frozen_at | analytic |
+
+## Refused tangents, driven through the whole chain
+
+Every row here is asserted to fail BEFORE a cube exists: the three waveform
+owners are replaced by counting stand-ins and the count must be exactly zero,
+with the instrument calibrated against the same chain running normally.
+
+`RadarEndpointSpec` carries exactly `stable_ids`, `positions_m`,
+`polarizations` and `powers_w`, so there is no polarization BASIS a Radar caller
+could mark. That refusal is Channel's and lives in Channel's matrix.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| reevaluate/prepared | an ad_mode outside the vocabulary | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:525 | tests/test_phase9_refused_tangents.py::test_an_ad_mode_outside_the_vocabulary_is_refused_before_any_cube, tests/test_phase9_refused_tangents.py::test_the_no_cube_instrument_counts_a_real_synthesis | refusal |
+| adapter/frequency_offsets_hz | the whole grid as a tensor | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:139 | tests/test_phase9_refused_tangents.py::test_a_tensor_band_is_refused_at_adapter_construction | refusal |
+| adapter/frequency_offsets_hz | a sequence whose entries are tensors | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:139 | tests/test_phase9_refused_tangents.py::test_a_band_whose_ENTRIES_are_tensors_is_refused_too, tests/test_phase9_refused_tangents.py::test_a_host_float_band_is_still_accepted | refusal |
+| reevaluate/prepared | sources.powers_w | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_refused_tangents.py::test_a_primal_only_endpoint_input_is_refused_in_both_modes | refusal |
+| reevaluate/prepared | endpoint polarizations | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:516 | tests/test_phase9_refused_tangents.py::test_a_primal_only_endpoint_input_is_refused_in_both_modes | refusal |
+| reevaluate/prepared | there is no polarization basis to mark | both | DECL | host-declaration | witwin/radar/propagation/contracts.py:1 | tests/test_phase9_refused_tangents.py::test_the_endpoint_spec_carries_no_polarization_basis_to_mark | declaration |
+| adapter/components | diffraction, transmission | both | REF | host-declaration | witwin/radar/propagation/channel_consumer.py:271 | tests/test_phase9_refused_tangents.py::test_an_unfreezable_component_is_refused_before_any_discovery | refusal |
+| synthesis/any spec | a tensor waveform scalar, from the chain | both | REF | host-declaration | witwin/radar/host_parameters.py:40 | tests/test_phase9_refused_tangents.py::test_a_tensor_waveform_scalar_is_refused_before_the_spec_exists | refusal |
+| higher-order/whole chain | grad of grad over compile to cube | vjp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_refused_tangents.py::test_a_grad_of_grad_request_through_the_whole_chain_is_refused, tests/test_phase9_refused_tangents.py::test_the_first_order_request_over_the_same_chain_still_works | refusal |
+| higher-order/every boundary | a cotangent carrying a forward tangent | jvp | REF | torch-orchestration | witwin/radar/ad_contracts.py:100 | tests/test_phase9_refused_tangents.py::test_a_cotangent_carrying_a_forward_tangent_is_refused_at_every_boundary | refusal |
+
+## The four chains that had no AD coverage
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| frontend/chain | endpoint positions behind a real cube | vjp | SUP | native-companion | witwin/radar/frontend/chain.py:419 | tests/test_phase9_chain_coverage.py::test_the_noiseless_frontend_scales_the_endpoint_gradient_by_exactly_r_g_squared | analytic |
+| frontend/chain | endpoint positions behind a real cube, noise live | vjp | SUP | native-companion | witwin/radar/frontend/chain.py:419 | tests/test_phase9_chain_coverage.py::test_the_noisy_frontend_gradient_matches_a_fourth_order_difference | fd |
+| frontend/chain | endpoint positions behind a real cube | jvp | SUP | native-companion | witwin/radar/frontend/chain.py:419 | tests/test_phase9_chain_coverage.py::test_the_frontend_forward_tangent_reproduces_the_reverse_gradient | adjoint |
+| frontend/agc | endpoint positions through a global AGC | vjp | ZERO | native-companion | witwin/radar/frontend/chain.py:228 | tests/test_phase9_chain_coverage.py::test_a_global_agc_makes_a_magnitude_loss_exactly_constant | analytic |
+| frontend/noise | out:the Philox realisation under AD | vjp | SUP | native-companion | witwin/radar/frontend/chain.py:140 | tests/test_phase9_chain_coverage.py::test_the_same_seed_replays_a_bitwise_identical_gradient, tests/test_phase9_chain_coverage.py::test_the_physics_chain_itself_has_no_noise_to_reproduce | declaration |
+| reevaluate_slots/prepared | endpoint positions over a whole slot-major frame | vjp | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:483 | tests/test_phase9_chain_coverage.py::test_a_slot_batched_replay_carries_the_single_frame_gradient_exactly | analytic |
+| reevaluate_slots/prepared | endpoint positions over a whole slot-major frame, against a difference | vjp | SUP | native-companion | witwin/radar/propagation/channel_consumer.py:483 | tests/test_phase9_chain_coverage.py::test_the_slot_batched_gradient_matches_a_fourth_order_difference | fd |
+| join/_compose_band | endpoint positions to a synthesized wideband cube | vjp | SUP | native-companion | witwin/radar/paths/two_way.py:754 | tests/test_phase9_chain_coverage.py::test_a_wideband_endpoint_gradient_reaches_a_synthesized_cube, tests/test_phase9_chain_coverage.py::test_the_wideband_cube_is_not_the_narrowband_one | fd |
+| sensor_weight/mimo_from_trace | target position to a Dirichlet cube | vjp | SUP | native-companion | witwin/radar/solvers/solver_dirichlet.py:505 | tests/test_phase9_chain_coverage.py::test_a_sensor_weight_gradient_reaches_a_synthesized_dirichlet_cube | fd |
 
 ## Deferred
 
