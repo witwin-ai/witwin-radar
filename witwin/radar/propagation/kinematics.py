@@ -48,6 +48,16 @@ Every test that exercises this seam must carry a non-zero RADIAL component for
 the same reason. A purely transverse fixture cannot tell a dead tangent from a
 correct zero.
 
+**A velocity is never a leaf, and saying so is this module's other refusal.**
+Every velocity here goes into the TANGENT slot of ``make_dual``. A tangent is
+consumed by the forward pass and never differentiated, so ``d(loss)/d(velocity)``
+does not exist in either AD mode - not "is zero", does not exist. Until Phase 9
+nothing said that: a ``requires_grad`` velocity was accepted, the whole chain
+ran, and the caller got ``grad = None`` back for the one quantity this module is
+named after. :func:`_require_velocity_is_not_a_leaf` now refuses it at every
+point a velocity is authored, before any Kinematics or dual exists, and the
+message states that the tangent-direction use is supported and covered.
+
 The module is duck typed over Core's snapshot shape and imports no witwin
 package at module scope. The single Core reference is the ``DeformationState``
 constructor inside :meth:`LinearDeformation.at`, which exists so that ONE
@@ -100,6 +110,53 @@ def _require_positions(name: str, value: object) -> torch.Tensor:
     return value
 
 
+def _require_velocity_is_not_a_leaf(name: str, owner: str, value: torch.Tensor):
+    """Refuse a velocity that carries a derivative, before anything is built.
+
+    Under ADR-038 a velocity in this module is a forward-AD TANGENT DIRECTION,
+    never a leaf. ``make_dual(position, velocity)`` puts it in the tangent slot,
+    and a tangent is consumed by the forward pass and never differentiated:
+    there is no ``d(loss)/d(velocity)`` for autograd to return, in either mode.
+    Accepting a marked velocity would therefore hand the caller ``grad = None``
+    - or, worse, a plausible-looking zero - for a quantity the whole module is
+    named after.
+
+    Two shapes reach here:
+
+    * a velocity the caller marked directly, which is the request this refuses;
+    * a velocity DERIVED from a grad-carrying position, which
+      :func:`rigid_site_velocities` produces because ``omega x (p - c)`` is a
+      differentiable expression of ``p``. That one is the same defect one step
+      removed: the derived tangent would carry a graph back to the position
+      leaf, autograd would never traverse it, and the position gradient the
+      caller actually wanted would arrive short by the Doppler term with nothing
+      to say so. The fix is to derive the velocity from a detached copy of the
+      positions and to dual the live positions with it, which keeps the two
+      roles separate and is what the supported workflow does.
+
+    A forward tangent on a velocity is a second-order forward request and is
+    refused for the reason in ``supports_higher_order_ad``: nothing in either
+    package ships a second derivative.
+    """
+
+    tangent = forward_ad.unpack_dual(value).tangent
+    if not value.requires_grad and tangent is None:
+        return value
+    carrier = "requires_grad" if value.requires_grad else "a forward tangent"
+    raise RuntimeError(
+        f"{owner}.{name} carries {carrier}, and a velocity here is a forward-AD "
+        "tangent DIRECTION rather than a leaf (ADR-038). It is consumed by "
+        "make_dual as the tangent of the position primal, so d(loss)/d(velocity) "
+        "is structurally unavailable in both AD modes and no gradient would ever "
+        "come back. Its use as a tangent direction IS supported and is what "
+        "publishes delay_rate. If this tensor inherited its graph from a "
+        "grad-carrying position, derive the velocity from a detached copy of "
+        "those positions and dual the live positions with the result; that keeps "
+        "the position leaf and the tangent direction separate instead of "
+        "silently merging them."
+    )
+
+
 def _vector3(
     name: str,
     value: object,
@@ -147,8 +204,10 @@ class Kinematics:
 
     def __post_init__(self) -> None:
         positions = _require_positions("positions_m", self.positions_m)
-        velocities = _require_positions(
-            "velocities_m_per_s", self.velocities_m_per_s
+        velocities = _require_velocity_is_not_a_leaf(
+            "velocities_m_per_s",
+            "Kinematics",
+            _require_positions("velocities_m_per_s", self.velocities_m_per_s),
         )
         if tuple(positions.shape) != tuple(velocities.shape):
             raise ValueError(
@@ -288,6 +347,12 @@ def deformation_kinematics(
             f"{type(descriptor).__name__}.velocity_at must return a torch."
             f"Tensor, got {type(velocities).__name__}"
         )
+    # Named here rather than left to ``Kinematics`` below, because a custom
+    # ``DeformationVelocity`` is a third place a caller authors a velocity and
+    # the message should blame the descriptor that produced it.
+    _require_velocity_is_not_a_leaf(
+        "velocity_at", type(descriptor).__name__, velocities
+    )
     if vertex_index is not None:
         if vertex_index.dtype != torch.int64:
             raise TypeError(
@@ -337,8 +402,10 @@ class LinearDeformation:
 
     def __post_init__(self) -> None:
         vertices = _require_positions("vertices_m", self.vertices_m)
-        velocities = _require_positions(
-            "velocities_m_per_s", self.velocities_m_per_s
+        velocities = _require_velocity_is_not_a_leaf(
+            "velocities_m_per_s",
+            "LinearDeformation",
+            _require_positions("velocities_m_per_s", self.velocities_m_per_s),
         )
         if tuple(vertices.shape) != tuple(velocities.shape):
             raise ValueError(
