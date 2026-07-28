@@ -2789,3 +2789,29 @@ Phase 12 之前不得宣布架构迁移完成；Phase 12 release acceptance 是�
   producer生成；
 - live source/docs/manifests中无`RayDN/raydn` identity、integer scene handle、legacy bridge、
   旧产品identity或compatibility shim；ADR-032 owning native compact route保持唯一。
+
+---
+
+### Stage-II 执行收尾记录（2026-07-27）
+
+Phase 4-11 全部完成并合并（radar main `351b74b`, channel main `73a553f`）。
+每个 phase 的验收矩阵、审计与 remediation 记录见各 phase 提交与
+`docs/dev/audit/phase11-acceptance-matrix.md`、
+`docs/dev/migration/phase11-cutover-migration-note.md`。
+
+合并后终验（本机、witwin2、idle GPU、新 `_channel` 234 符号 /
+`_radar_native` 25 算子）：
+
+- radar：default 787 passed / 792 skipped；`--gpu` 1578 passed / 1 skipped /
+  0 failed；`run_ci_tier.py quick` exit 0（短 basetemp）。
+- channel：targeted propagation/deterministic/path/runtime/kernels/ad +
+  orphan-modules 1469 passed / 8 skipped / 1 xfailed；quick tier 于
+  worktree 全绿（主 checkout 当时有 owner 未提交文档，hygiene 阶段跳过
+  主 checkout 属环境性）。
+
+Phase 12（全系统验收与 Release）中依赖远程 CI 的部分按 owner 指令延期：
+Linux/manylinux wheel 矩阵、SM87 运行时、完整 SASS 集、clean locked
+release 构建、Stage-I release 构建、Stable ABI 矩阵——清单与测试钉见
+radar `docs/dev/plans/phase10-deferred-release-matrix.md`。释出 tag 之前
+必须先跑 channel nightly/release tier（ABI 253→234 之后 release 证据为
+强制项）。本地可验证的 Phase 12 验收项已由 Phase 9-11 的验收矩阵覆盖。
