@@ -29,12 +29,11 @@ import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
 
-from witwin.radar.sensors import ROW_KIND_VIA  # noqa: E402
 from witwin.radar.sensors import (  # noqa: E402
+    ROW_KIND_VIA,  # noqa: E402
     SensorWeightGeometry,
     SensorWeightPlan,
 )
-
 
 NUM_TX = 2
 NUM_RX = 2
@@ -70,11 +69,7 @@ def _geometry_fields() -> dict:
 def _plan(tables=None) -> SensorWeightPlan:
     return SensorWeightPlan(
         pattern_kind=0,
-        tables=tuple(
-            torch.zeros(4, dtype=torch.float32) for _ in range(5)
-        )
-        if tables is None
-        else tables,
+        tables=tuple(torch.zeros(4, dtype=torch.float32) for _ in range(5)) if tables is None else tables,
         c0=299792458.0,
     )
 
@@ -111,13 +106,7 @@ def test_the_declared_frozen_field_list_matches_the_dataclass():
     import dataclasses
 
     declared = {field.name for field in dataclasses.fields(SensorWeightGeometry)}
-    accounted = set(SensorWeightGeometry.FROZEN_FIELDS) | {
-        "num_tx",
-        "num_rx",
-        "tx_index",
-        "rx_index",
-        "row_kind",
-    }
+    accounted = set(SensorWeightGeometry.FROZEN_FIELDS) | {"num_tx", "num_rx", "tx_index", "rx_index", "row_kind"}
     assert declared == accounted, sorted(declared ^ accounted)
     assert set(SensorWeightGeometry.FROZEN_FIELDS) == set(GEOMETRY_SHAPES)
 
@@ -332,16 +321,9 @@ def _production_stage(pattern=None):
     from witwin.radar.sensors import ISOTROPIC_PATTERN, RoundTripPatternStage
 
     spike = drv.MultiEndpointSpike()
-    radar = Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
-        position=(0.0, 0.0, 0.0),
-        target=(1.0, 0.0, 0.0),
-    )
+    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
     stage = RoundTripPatternStage.freeze(
-        radar,
-        spike.composer,
-        site_ids=spike.site_ids,
-        pattern=ISOTROPIC_PATTERN if pattern is None else pattern,
+        radar, spike.composer, site_ids=spike.site_ids, pattern=ISOTROPIC_PATTERN if pattern is None else pattern
     )
     composed, _, _ = spike.frame(response=drv.make_response())
     return radar, stage, composed
@@ -401,14 +383,9 @@ def test_the_production_route_still_carries_the_position_gradient():
             y_values=(0.4, 1.0, 0.5),
         )
     )
-    sites = torch.tensor(
-        PRODUCTION_SITE_POSITIONS_M, dtype=torch.float32, device="cuda"
-    ).requires_grad_(True)
+    sites = torch.tensor(PRODUCTION_SITE_POSITIONS_M, dtype=torch.float32, device="cuda").requires_grad_(True)
     weight = stage.apply(
-        composed,
-        tx_pos=radar.tx_pos,
-        rx_pos=radar.rx_pos,
-        site_positions_m=sites,
+        composed, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=sites
     ).complex_transfer_ref
     (weight.real.square().sum() + weight.imag.square().sum()).backward()
     assert sites.grad is not None

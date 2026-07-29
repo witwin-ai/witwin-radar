@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def _module(repo: Path, path: Path) -> str:
@@ -47,11 +47,7 @@ def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool]:
             for alias in node.names:
                 note(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            target = (
-                _resolve(package, node.level, node.module)
-                if node.level
-                else (node.module or "")
-            )
+            target = _resolve(package, node.level, node.module) if node.level else (node.module or "")
             note(target)
             for alias in node.names:
                 note(f"{target}.{alias.name}")
@@ -101,15 +97,10 @@ def _cycles(graph: dict[str, set[str]]) -> list[tuple[str, ...]]:
 
 
 def audit(repo: Path) -> list[str]:
-    manifest = json.loads(
-        (repo / "ci" / "architecture-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((repo / "ci" / "architecture-manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
         return ["architecture manifest schema_version must be 1"]
-    paths = {
-        _module(repo, path): path
-        for path in sorted((repo / "witwin" / "radar").rglob("*.py"))
-    }
+    paths = {_module(repo, path): path for path in sorted((repo / "witwin" / "radar").rglob("*.py"))}
     known = set(paths)
     target = set(manifest["target_modules"])
     errors = [
@@ -117,11 +108,7 @@ def audit(repo: Path) -> list[str]:
         *(f"unexpected production module: {name}" for name in sorted(known - target)),
     ]
     owners = manifest.get("concept_owners", {})
-    duplicate_owners = [
-        name
-        for name, count in __import__("collections").Counter(owners.values()).items()
-        if count > 1
-    ]
+    duplicate_owners = [name for name, count in __import__("collections").Counter(owners.values()).items() if count > 1]
     errors.extend(
         f"one module owns multiple declared concepts without an explicit merge: {name}"
         for name in sorted(duplicate_owners)
@@ -139,10 +126,7 @@ def audit(repo: Path) -> list[str]:
             channel_importers.append(name)
     expected = [manifest["channel_importer"]]
     if sorted(channel_importers) != expected:
-        errors.append(
-            "Channel executable importers differ: "
-            f"expected {expected}, got {sorted(channel_importers)}"
-        )
+        errors.append(f"Channel executable importers differ: expected {expected}, got {sorted(channel_importers)}")
     for cycle in _cycles(graph):
         errors.append("internal import cycle: " + " -> ".join((*cycle, cycle[0])))
     return errors

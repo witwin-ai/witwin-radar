@@ -31,7 +31,6 @@ import torch
 
 from . import join_fixture as fx
 
-
 REFERENCE_FREQUENCY_HZ = 77.0e9
 
 #: Two rows, one pair segment. The delays and rates are the operator tests'
@@ -135,12 +134,7 @@ def _pulsed(device: str = "cuda") -> Boundary:
     zero_rate = torch.zeros_like(rate)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        return (
-            synthesize_echo_rows(leaf, zero_rate, weight, offsets, spec)
-            .abs()
-            .square()
-            .sum()
-        )
+        return synthesize_echo_rows(leaf, zero_rate, weight, offsets, spec).abs().square().sum()
 
     return Boundary("pulsed", "synthesis.pulsed", tau, loss)
 
@@ -163,25 +157,15 @@ def _two_way(device: str = "cuda") -> Boundary:
         reference_frequency_hz=REFERENCE_FREQUENCY_HZ,
     )
     tau_in, rate_in, c_in = fx.payload(composer.inbound_row_count, seed=101, device=device)
-    tau_out, rate_out, c_out = fx.payload(
-        composer.outbound_row_count, seed=102, device=device
-    )
+    tau_out, rate_out, c_out = fx.payload(composer.outbound_row_count, seed=102, device=device)
 
     def leg(tau, coefficient, rate):
-        return fx.leg_batch(
-            tau.to(torch.float32),
-            coefficient.to(torch.complex64),
-            rate=rate.to(torch.float32),
-        )
+        return fx.leg_batch(tau.to(torch.float32), coefficient.to(torch.complex64), rate=rate.to(torch.float32))
 
-    response = ScalarRcsResponse.from_values(
-        1.4, 0.35, device=device, requires_grad=False
-    )
+    response = ScalarRcsResponse.from_values(1.4, 0.35, device=device, requires_grad=False)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        composed = composer.compose(
-            leg(leaf, c_in, rate_in), leg(tau_out, c_out, rate_out), response
-        )
+        composed = composer.compose(leg(leaf, c_in, rate_in), leg(tau_out, c_out, rate_out), response)
         return (
             composed.complex_transfer_ref.abs().square().sum()
             + (composed.total_delay_s.to(torch.float64) * 1.0e8).square().sum()
@@ -191,11 +175,12 @@ def _two_way(device: str = "cuda") -> Boundary:
 
 
 def _sensor_weight(device: str = "cuda") -> Boundary:
-    from witwin.radar.sensors import ROW_KIND_VIA, evaluate_sensor_weights
-    from witwin.radar.sensors import AntennaPatternSpec
     from witwin.radar.sensors import (
+        ROW_KIND_VIA,
+        AntennaPatternSpec,
         SensorWeightGeometry,
         SensorWeightPlan,
+        evaluate_sensor_weights,
     )
 
     num_tx, num_rx, rows = 1, 1, 2
@@ -213,10 +198,7 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
     )
     # A real half-wave dipole table rather than zeros: a zero pattern gives a
     # zero weight, and a higher-order test on a zero is a test of nothing.
-    plan = SensorWeightPlan.build(
-        AntennaPatternSpec.half_wave_dipole(),
-        device=device,
-    )
+    plan = SensorWeightPlan.build(AntennaPatternSpec.half_wave_dipole(), device=device)
     tx_pos = torch.zeros((num_tx, 3), dtype=torch.float32, device=device)
     rx_pos = torch.zeros((num_rx, 3), dtype=torch.float32, device=device)
     # Boresight is -z: the pattern angles are ``atan2(v_x, -v_z)`` and
@@ -224,9 +206,7 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
     # exactly zero by design. A site placed off boresight therefore produces a
     # zero weight, a zero loss and a zero gradient - a fixture that runs and
     # measures nothing.
-    site_out = torch.tensor(
-        [[0.4, 0.1, -5.0], [-0.3, 0.2, -6.0]], dtype=torch.float32, device=device
-    )
+    site_out = torch.tensor([[0.4, 0.1, -5.0], [-0.3, 0.2, -6.0]], dtype=torch.float32, device=device)
     intensity = torch.ones(rows, dtype=torch.float32, device=device)
     weight = torch.ones(rows, dtype=torch.complex64, device=device)
     site_in = site_out.clone()
@@ -248,15 +228,7 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
 
 
 def _frontend(device: str = "cuda") -> Boundary:
-    from witwin.radar.frontend import (
-        AgcSpec,
-        FrontendChain,
-        FrontendSpec,
-        LnaSpec,
-        NoiseSpec,
-        PortSpec,
-        SeedSpec,
-    )
+    from witwin.radar.frontend import AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec
 
     # No ADC. The quantizer is on the far side of the wall and refuses a
     # derivative outright, so a higher-order question about the frontend has to
@@ -278,9 +250,7 @@ def _frontend(device: str = "cuda") -> Boundary:
     )
     generator = torch.Generator(device="cpu").manual_seed(31)
     signal = (
-        torch.complex(
-            torch.randn(256, generator=generator), torch.randn(256, generator=generator)
-        )
+        torch.complex(torch.randn(256, generator=generator), torch.randn(256, generator=generator))
         .to(torch.complex64)
         .to(device)
         * 1e-4
@@ -322,10 +292,7 @@ def _aspect(device: str = "cuda") -> Boundary:
         # Well inside the illuminated cone. A direction on the clamp boundary
         # has an exactly zero lobe derivative on one side, which would make a
         # first-order assertion here pass on a number that means nothing.
-        vectors = torch.stack(
-            [0.7 + 0.3 * raw[:, 0], 0.5 * (raw[:, 1] - 0.5), 0.5 * (raw[:, 2] - 0.5)],
-            dim=1,
-        )
+        vectors = torch.stack([0.7 + 0.3 * raw[:, 0], 0.5 * (raw[:, 1] - 0.5), 0.5 * (raw[:, 2] - 0.5)], dim=1)
         vectors = sign * vectors / torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
         return vectors.to(device)
 
@@ -336,15 +303,9 @@ def _aspect(device: str = "cuda") -> Boundary:
     site_count = composer.site_count
     response = AspectScatterResponse(
         axis=unit(site_count, 73, 1.0),
-        amplitude=torch.tensor(
-            [1.3 + 0.4 * index for index in range(site_count)],
-            dtype=torch.float32,
-            device=device,
-        ),
+        amplitude=torch.tensor([1.3 + 0.4 * index for index in range(site_count)], dtype=torch.float32, device=device),
         phase_rad=torch.tensor(
-            [0.35 + 0.25 * index for index in range(site_count)],
-            dtype=torch.float32,
-            device=device,
+            [0.35 + 0.25 * index for index in range(site_count)], dtype=torch.float32, device=device
         ),
         exponent=2.0,
         coherent_interval_s=1.0e-3,
@@ -354,15 +315,9 @@ def _aspect(device: str = "cuda") -> Boundary:
     row_valid = torch.ones(composer.path_count, dtype=torch.int32, device=device)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        inbound_batch = fx.leg_batch(
-            tau_in.to(torch.float32), c_in.to(torch.complex64), direction=leaf
-        )
-        outbound_batch = fx.leg_batch(
-            tau_out.to(torch.float32), c_out.to(torch.complex64), direction=dir_out
-        )
-        s_re, s_im = response.evaluate_rows(
-            composer, inbound_batch, outbound_batch, row_valid
-        )
+        inbound_batch = fx.leg_batch(tau_in.to(torch.float32), c_in.to(torch.complex64), direction=leaf)
+        outbound_batch = fx.leg_batch(tau_out.to(torch.float32), c_out.to(torch.complex64), direction=dir_out)
+        s_re, s_im = response.evaluate_rows(composer, inbound_batch, outbound_batch, row_valid)
         return (s_re.square() + s_im.square()).sum()
 
     return Boundary("aspect", "witwin.radar.scattering", dir_in, loss)

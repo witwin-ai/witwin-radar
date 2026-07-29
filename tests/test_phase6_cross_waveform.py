@@ -39,17 +39,11 @@ from dataclasses import replace
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
 from support import multi_endpoint_driver as drv
 from support import multi_endpoint_geometry as geo
 from support import pulsed_grid
-from witwin.radar.synthesis import (
-    FmcwSpec,
-    OfdmSpec,
-    synthesize_fmcw,
-    synthesize_ofdm,
-    synthesize_pulsed,
-)
+
+from witwin.radar.synthesis import FmcwSpec, OfdmSpec, synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
 pytestmark = pytest.mark.gpu
 
@@ -75,9 +69,7 @@ FMCW_T_START_S = 6.0e-6
 FMCW_NUM_TX = 2
 FMCW_NUM_RX = 2
 #: ``1 / (S N T_s)``: one FFT bin expressed as a delay.
-FMCW_DELAY_RESOLUTION_S = 1.0 / (
-    FMCW_SLOPE_HZ_PER_S * FMCW_SAMPLES * FMCW_SAMPLE_PERIOD_S
-)
+FMCW_DELAY_RESOLUTION_S = 1.0 / (FMCW_SLOPE_HZ_PER_S * FMCW_SAMPLES * FMCW_SAMPLE_PERIOD_S)
 
 OFDM_SUBCARRIERS = 64
 OFDM_DF_HZ = 120.0e3
@@ -175,9 +167,7 @@ def _select(batch, keep: torch.Tensor):
     index = torch.nonzero(keep, as_tuple=False).flatten()
     pair = batch.sensor_pair_index[index].contiguous()
     counts = torch.bincount(pair, minlength=batch.sensor_pair_count)
-    offsets = torch.zeros(
-        batch.sensor_pair_count + 1, dtype=torch.int64, device=pair.device
-    )
+    offsets = torch.zeros(batch.sensor_pair_count + 1, dtype=torch.int64, device=pair.device)
     offsets[1:] = torch.cumsum(counts, dim=0)
     topology = batch.topology
     reduced_topology = RadarPathTopology(
@@ -193,23 +183,17 @@ def _select(batch, keep: torch.Tensor):
         sensor_pair_index=pair,
         pair_offsets=offsets.contiguous(),
         total_delay_s=batch.total_delay_s[index].contiguous(),
-        delay_rate=(
-            None if batch.delay_rate is None else batch.delay_rate[index].contiguous()
-        ),
+        delay_rate=(None if batch.delay_rate is None else batch.delay_rate[index].contiguous()),
         complex_transfer_ref=batch.complex_transfer_ref[index].contiguous(),
         topology=reduced_topology,
-        row_valid=(
-            None if batch.row_valid is None else batch.row_valid[index].contiguous()
-        ),
+        row_valid=(None if batch.row_valid is None else batch.row_valid[index].contiguous()),
     )
 
 
 def _live_rows(batch) -> list[int]:
     if batch.row_valid is None:
         return list(range(batch.path_count))
-    return [
-        row for row, live in enumerate(batch.row_valid.tolist()) if bool(live)
-    ]
+    return [row for row, live in enumerate(batch.row_valid.tolist()) if bool(live)]
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +221,7 @@ def ofdm_delay_s(row_response: torch.Tensor, spec: OfdmSpec) -> float:
     """``-(1/(2 pi df)) d(arg H)/dn`` by least squares over the whole band."""
 
     values = row_response.detach().to(torch.complex128).cpu()
-    phase = torch.from_numpy(
-        __import__("numpy").unwrap(torch.angle(values).numpy())
-    )
+    phase = torch.from_numpy(__import__("numpy").unwrap(torch.angle(values).numpy()))
     n = torch.arange(values.shape[0], dtype=torch.float64)
     n_mean = n.mean()
     slope = ((n - n_mean) * (phase - phase.mean())).sum() / ((n - n_mean) ** 2).sum()
@@ -279,16 +261,9 @@ def test_all_three_estimators_return_the_same_round_trip_delay(frame, capsys):
         truth = oracle[keys[row]]
 
         measured = {
-            "fmcw": fmcw_delay_s(
-                synthesize_fmcw(isolated, fmcw_spec(1))[0, segment], fmcw_spec(1)
-            ),
-            "ofdm": ofdm_delay_s(
-                synthesize_ofdm(isolated, ofdm_spec(1))[0, segment], ofdm_spec(1)
-            ),
-            "pulsed": pulsed_delay_s(
-                synthesize_pulsed(isolated, pulsed_spec(1))[0, segment],
-                pulsed_spec(1),
-            ),
+            "fmcw": fmcw_delay_s(synthesize_fmcw(isolated, fmcw_spec(1))[0, segment], fmcw_spec(1)),
+            "ofdm": ofdm_delay_s(synthesize_ofdm(isolated, ofdm_spec(1))[0, segment], ofdm_spec(1)),
+            "pulsed": pulsed_delay_s(synthesize_pulsed(isolated, pulsed_spec(1))[0, segment], pulsed_spec(1)),
         }
         reported.append((row, truth, measured))
 
@@ -296,16 +271,8 @@ def test_all_three_estimators_return_the_same_round_trip_delay(frame, capsys):
         assert measured["ofdm"] == pytest.approx(truth, rel=1e-5), (row, measured)
         # The other two are peak finders and are held to a fraction of their
         # own resolution, stated rather than fitted.
-        assert abs(measured["fmcw"] - truth) < 0.3 * FMCW_DELAY_RESOLUTION_S, (
-            row,
-            measured["fmcw"],
-            truth,
-        )
-        assert abs(measured["pulsed"] - truth) < 0.05 * PULSED_DELAY_RESOLUTION_S, (
-            row,
-            measured["pulsed"],
-            truth,
-        )
+        assert abs(measured["fmcw"] - truth) < 0.3 * FMCW_DELAY_RESOLUTION_S, (row, measured["fmcw"], truth)
+        assert abs(measured["pulsed"] - truth) < 0.05 * PULSED_DELAY_RESOLUTION_S, (row, measured["pulsed"], truth)
 
     assert len(reported) == 11
     with capsys.disabled():
@@ -313,15 +280,12 @@ def test_all_three_estimators_return_the_same_round_trip_delay(frame, capsys):
         print(f"{'row':>4} {'oracle':>14} {'fmcw':>14} {'ofdm':>14} {'pulsed':>14}")
         for row, truth, measured in reported:
             print(
-                f"{row:>4} {truth:14.6e} {measured['fmcw']:14.6e} "
-                f"{measured['ofdm']:14.6e} {measured['pulsed']:14.6e}"
+                f"{row:>4} {truth:14.6e} {measured['fmcw']:14.6e} {measured['ofdm']:14.6e} {measured['pulsed']:14.6e}"
             )
     # And the oracle the batch itself agrees with is the fixture's image-source
     # table, not the solver's own output.
     for row, truth, _ in reported:
-        assert any(
-            abs(truth - value) < 1e-12 for value in oracle.values()
-        ), (row, truth)
+        assert any(abs(truth - value) < 1e-12 for value in oracle.values()), (row, truth)
 
 
 def _spike_of(frame):  # pragma: no cover - placeholder for the unused branch
@@ -357,32 +321,16 @@ def test_the_three_waveforms_carry_one_doppler_with_two_signs(spike):
     it from the comparison would mean restating the kernel's own expression.
     """
 
-    velocities = {
-        geo.SITE_P_STABLE_ID: geo.SITE_P_VELOCITY_M_PER_S,
-        geo.SITE_Q_STABLE_ID: geo.SITE_Q_VELOCITY_M_PER_S,
-    }
-    tangent = torch.tensor(
-        [velocities[stable_id] for stable_id in spike.site_ids],
-        dtype=torch.float32,
-        device="cuda",
-    )
+    velocities = {geo.SITE_P_STABLE_ID: geo.SITE_P_VELOCITY_M_PER_S, geo.SITE_Q_STABLE_ID: geo.SITE_Q_VELOCITY_M_PER_S}
+    tangent = torch.tensor([velocities[stable_id] for stable_id in spike.site_ids], dtype=torch.float32, device="cuda")
     positions = spike.site_tensor()
     with forward_ad.dual_level():
-        composed, _, _ = spike.frame(
-            forward_ad.make_dual(positions, tangent), ad_mode="jvp"
-        )
+        composed, _, _ = spike.frame(forward_ad.make_dual(positions, tangent), ad_mode="jvp")
         rate = composed.delay_rate.clone()
         transfer = composed.complex_transfer_ref.clone()
         delay = composed.total_delay_s.clone()
         frozen = composed
-        batch = drv.to_synthesis(
-            replace(
-                frozen,
-                total_delay_s=delay,
-                delay_rate=rate,
-                complex_transfer_ref=transfer,
-            )
-        )
+        batch = drv.to_synthesis(replace(frozen, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer))
 
     fmcw = fmcw_spec(8)
     ofdm = ofdm_spec(8)
@@ -405,10 +353,8 @@ def test_the_three_waveforms_carry_one_doppler_with_two_signs(spike):
         peak_sample = int(train[0, segment].abs().argmax())
         measured = {
             "fmcw": _slow_time_step_rad(beat, segment, 0) / (2.0 * math.pi * fmcw_step),
-            "ofdm": _slow_time_step_rad(cfr, segment, 0)
-            / (2.0 * math.pi * ofdm.symbol_period_s),
-            "pulsed": _slow_time_step_rad(train, segment, peak_sample)
-            / (2.0 * math.pi * pulsed.pri_s),
+            "ofdm": _slow_time_step_rad(cfr, segment, 0) / (2.0 * math.pi * ofdm.symbol_period_s),
+            "pulsed": _slow_time_step_rad(train, segment, peak_sample) / (2.0 * math.pi * pulsed.pri_s),
         }
         expected = F_REF_HZ * tau_rate
         assert measured["fmcw"] == pytest.approx(expected, rel=1e-2), (row, measured)
@@ -545,9 +491,7 @@ def test_a_dead_rows_weight_receives_exactly_zero_gradient(frame):
         cube = synthesize(live, spec)
         (cube.real.sum() + cube.imag.sum()).backward()
         dead = ~keep
-        assert torch.equal(
-            transfer.grad[dead], torch.zeros_like(transfer.grad[dead])
-        ), spec
+        assert torch.equal(transfer.grad[dead], torch.zeros_like(transfer.grad[dead])), spec
         assert float(transfer.grad[keep].abs().sum()) > 0.0, spec
 
 
@@ -572,9 +516,9 @@ def test_every_waveform_is_linear_in_the_path_weight(frame):
         (synthesize_pulsed, pulsed_spec(2)),
     ):
         together = synthesize(_masked(batch, both), spec)
-        apart = synthesize(
-            _masked(batch, _one_hot(batch, first)), spec
-        ) + synthesize(_masked(batch, _one_hot(batch, second)), spec)
+        apart = synthesize(_masked(batch, _one_hot(batch, first)), spec) + synthesize(
+            _masked(batch, _one_hot(batch, second)), spec
+        )
         torch.testing.assert_close(together, apart, rtol=1e-5, atol=1e-8 * float(together.abs().max()))
 
 
@@ -599,9 +543,7 @@ def test_the_frontend_agc_breaks_linearity_and_that_is_a_tested_fact(frame):
     with_agc = FrontendChain(
         FrontendSpec(
             port=PortSpec(reference_impedance_ohm=50.0),
-            agc=AgcSpec(
-                target_rms=1e-3, mode="global", min_gain_db=-60.0, max_gain_db=60.0
-            ),
+            agc=AgcSpec(target_rms=1e-3, mode="global", min_gain_db=-60.0, max_gain_db=60.0),
         )
     )
     agc_once = with_agc.apply(cube).signal
@@ -635,10 +577,7 @@ def test_permuting_rows_within_a_segment_changes_nothing_but_the_sum_order(frame
     ):
         reference = synthesize(batch, spec)
         torch.testing.assert_close(
-            synthesize(permuted, spec),
-            reference,
-            rtol=1e-6,
-            atol=1e-7 * float(reference.abs().max()),
+            synthesize(permuted, spec), reference, rtol=1e-6, atol=1e-7 * float(reference.abs().max())
         )
 
 
@@ -650,9 +589,7 @@ def _reindex(batch, order: torch.Tensor):
         batch,
         sensor_pair_index=batch.sensor_pair_index[order].contiguous(),
         total_delay_s=batch.total_delay_s[order].contiguous(),
-        delay_rate=(
-            None if batch.delay_rate is None else batch.delay_rate[order].contiguous()
-        ),
+        delay_rate=(None if batch.delay_rate is None else batch.delay_rate[order].contiguous()),
         complex_transfer_ref=batch.complex_transfer_ref[order].contiguous(),
         topology=RadarPathTopology(
             radar_source_id=topology.radar_source_id[order].contiguous(),
@@ -661,9 +598,7 @@ def _reindex(batch, order: torch.Tensor):
             inbound_row=topology.inbound_row[order].contiguous(),
             outbound_row=topology.outbound_row[order].contiguous(),
         ),
-        row_valid=(
-            None if batch.row_valid is None else batch.row_valid[order].contiguous()
-        ),
+        row_valid=(None if batch.row_valid is None else batch.row_valid[order].contiguous()),
     )
 
 
@@ -675,9 +610,7 @@ def test_moving_a_row_to_another_segment_moves_it_in_the_cube(frame):
     row = rows[0]
     source_segment = int(batch.sensor_pair_index[row])
     empty = [
-        segment
-        for segment in range(batch.sensor_pair_count)
-        if int((batch.sensor_pair_index == segment).sum()) == 0
+        segment for segment in range(batch.sensor_pair_count) if int((batch.sensor_pair_index == segment).sum()) == 0
     ]
     assert empty, "the fixture is supposed to publish empty pair segments"
     target = empty[0]
@@ -686,19 +619,13 @@ def test_moving_a_row_to_another_segment_moves_it_in_the_cube(frame):
     moved_index = isolated.sensor_pair_index.clone()
     moved_index[row] = target
     counts = torch.bincount(moved_index, minlength=isolated.sensor_pair_count)
-    offsets = torch.zeros(
-        isolated.sensor_pair_count + 1, dtype=torch.int64, device=moved_index.device
-    )
+    offsets = torch.zeros(isolated.sensor_pair_count + 1, dtype=torch.int64, device=moved_index.device)
     offsets[1:] = torch.cumsum(counts, dim=0)
     # Moving a row across a segment boundary reorders the CSR, so the whole row
     # set is sorted by its new segment - which is what the contract requires.
     order = torch.argsort(moved_index, stable=True)
     moved = _reindex(replace(isolated, sensor_pair_index=moved_index), order)
-    moved = replace(
-        moved,
-        sensor_pair_index=moved_index[order].contiguous(),
-        pair_offsets=offsets.contiguous(),
-    )
+    moved = replace(moved, sensor_pair_index=moved_index[order].contiguous(), pair_offsets=offsets.contiguous())
 
     for synthesize, spec in (
         (synthesize_fmcw, fmcw_spec(1)),
@@ -709,9 +636,7 @@ def test_moving_a_row_to_another_segment_moves_it_in_the_cube(frame):
         after = synthesize(moved, spec)
         assert float(before[0, source_segment].abs().sum()) > 0.0
         assert float(after[0, source_segment].abs().sum()) == 0.0
-        torch.testing.assert_close(
-            after[0, target], before[0, source_segment], rtol=1e-6, atol=0.0
-        )
+        torch.testing.assert_close(after[0, target], before[0, source_segment], rtol=1e-6, atol=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -722,9 +647,7 @@ def test_moving_a_row_to_another_segment_moves_it_in_the_cube(frame):
 def test_empty_pair_segments_are_exactly_zero_in_all_three_cubes(frame):
     _, _, batch = frame
     empty = [
-        segment
-        for segment in range(batch.sensor_pair_count)
-        if int((batch.sensor_pair_index == segment).sum()) == 0
+        segment for segment in range(batch.sensor_pair_count) if int((batch.sensor_pair_index == segment).sum()) == 0
     ]
     assert len(empty) == 2
 
@@ -735,9 +658,7 @@ def test_empty_pair_segments_are_exactly_zero_in_all_three_cubes(frame):
     ):
         cube = synthesize(batch, spec)
         for segment in empty:
-            assert torch.equal(
-                cube[:, segment], torch.zeros_like(cube[:, segment])
-            ), (spec, segment)
+            assert torch.equal(cube[:, segment], torch.zeros_like(cube[:, segment])), (spec, segment)
 
 
 def test_a_batch_with_no_rows_gives_an_all_zero_cube_of_the_right_shape(frame):
@@ -785,12 +706,7 @@ def _los_row(spike, composed):
 
 def _radar_equation_power(power_w: float, d_in: float, d_out: float) -> float:
     wavelength = C0 / F_REF_HZ
-    return (
-        power_w
-        * wavelength**2
-        * SIGMA_M2
-        / ((4.0 * math.pi) ** 3 * d_in**2 * d_out**2)
-    )
+    return power_w * wavelength**2 * SIGMA_M2 / ((4.0 * math.pi) ** 3 * d_in**2 * d_out**2)
 
 
 def test_the_composed_coefficient_is_the_bistatic_radar_equation(spike):
@@ -811,9 +727,7 @@ def test_the_composed_coefficient_is_the_bistatic_radar_equation(spike):
 
     from witwin.radar.scattering import ScalarRcsResponse
 
-    response = ScalarRcsResponse.from_rcs(
-        SIGMA_M2, reference_frequency_hz=F_REF_HZ, device="cuda"
-    )
+    response = ScalarRcsResponse.from_rcs(SIGMA_M2, reference_frequency_hz=F_REF_HZ, device="cuda")
     composed, _, _ = spike.frame(response=response)
     row, d_in, d_out = _los_row(spike, composed)
 
@@ -841,9 +755,7 @@ def test_channel_applies_the_declared_transmit_power_once(spike, monkeypatch):
 
     from witwin.radar.scattering import ScalarRcsResponse
 
-    response = ScalarRcsResponse.from_rcs(
-        SIGMA_M2, reference_frequency_hz=F_REF_HZ, device="cuda"
-    )
+    response = ScalarRcsResponse.from_rcs(SIGMA_M2, reference_frequency_hz=F_REF_HZ, device="cuda")
     monkeypatch.setattr(geo, "TX_POWER_W", 0.01)
     low, _, _ = spike.frame(response=response)
     row, d_in, d_out = _los_row(spike, low)

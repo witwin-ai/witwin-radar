@@ -29,7 +29,6 @@ pytest.importorskip("witwin.channel")
 
 from support import spike_driver as drv  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 MULTIPATH = frozenset({"los", "reflection"})
@@ -69,9 +68,7 @@ def multipath():
     return drv.Phase4Spike(components=MULTIPATH, max_depth=1)
 
 
-def test_freezing_a_multipath_leg_costs_four_copies_and_four_synchronizations(
-    multipath,
-):
+def test_freezing_a_multipath_leg_costs_four_copies_and_four_synchronizations(multipath):
     """One-time, outside every loop, and reported separately for that reason.
 
     Line of sight alone reports (3, 17, 3) per leg; adding reflection makes it
@@ -88,9 +85,7 @@ def test_freezing_a_multipath_leg_costs_four_copies_and_four_synchronizations(
         assert frozen.row_count == 2
 
 
-def test_a_multipath_frame_costs_exactly_two_host_observations(
-    multipath, monkeypatch
-):
+def test_a_multipath_frame_costs_exactly_two_host_observations(multipath, monkeypatch):
     tx, site, rx = drv.positions()
     response = drv.make_response()
     multipath.paths(tx, site, rx, response)  # resolve the operator table first
@@ -135,10 +130,7 @@ def test_multipath_costs_no_more_per_frame_than_line_of_sight(monkeypatch):
     response = drv.make_response()
 
     measured = {}
-    for label, components, depth in (
-        ("los", frozenset({"los"}), 0),
-        ("multipath", MULTIPATH, 1),
-    ):
+    for label, components, depth in (("los", frozenset({"los"}), 0), ("multipath", MULTIPATH, 1)):
         spike = drv.Phase4Spike(components=components, max_depth=depth)
         spike.paths(tx, site, rx, response)
         counter = _Counter(monkeypatch)
@@ -178,9 +170,7 @@ def test_the_per_frame_host_budget_is_flat_in_slot_count(slot_spike, monkeypatch
     measured = {}
     for slots in (1, 8, 64, 256):
         times = [index * 1.0e-5 for index in range(slots)]
-        stack = multi.slot_site_stack(
-            slot_spike.site_tensor(), (0.0, 1.0, 0.0), times
-        )
+        stack = multi.slot_site_stack(slot_spike.site_tensor(), (0.0, 1.0, 0.0), times)
         cold = _Counter(monkeypatch)
         slot_spike.slot_legs(stack, slot_count=slots)
         cold_counts = dict(cold.counts)
@@ -215,9 +205,7 @@ def test_the_per_frame_host_budget_is_flat_in_slot_count(slot_spike, monkeypatch
     assert len({tuple(sorted(value.items())) for value in measured.values()}) == 1
 
 
-def test_the_native_join_adds_no_host_observation_of_its_own(
-    multipath, monkeypatch
-):
+def test_the_native_join_adds_no_host_observation_of_its_own(multipath, monkeypatch):
     """Isolated to the join, so the legs cannot mask a regression in it."""
 
     tx, site, rx = drv.positions()
@@ -266,9 +254,7 @@ def test_peak_memory_and_per_slot_cost_scale(slot_spike):
     peak_mb = {}
     for slots in (64, 256, 1024):
         times = [index * 1.0e-5 for index in range(slots)]
-        stack = multi.slot_site_stack(
-            slot_spike.site_tensor(), (0.0, 1.0, 0.0), times
-        )
+        stack = multi.slot_site_stack(slot_spike.site_tensor(), (0.0, 1.0, 0.0), times)
         slot_spike.slot_legs(stack, slot_count=slots)
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
@@ -280,7 +266,7 @@ def test_peak_memory_and_per_slot_cost_scale(slot_spike):
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
 
-        peak_mb[slots] = (torch.cuda.max_memory_allocated() - before) / (1024.0 ** 2)
+        peak_mb[slots] = (torch.cuda.max_memory_allocated() - before) / (1024.0**2)
         per_slot_ms[slots] = 1.0e3 * elapsed / slots
         assert inbound.slot_count == slots
         assert inbound.pair_count == slots * inbound.pairs_per_slot

@@ -42,21 +42,14 @@ def make_scene(*, rough: bool = False):
         topology_diagnostics=False,
     )
     roughness = (
-        SurfaceRoughness(
-            rms_height_m=1.0e-3,
-            correlation_length_x_m=1.0e-2,
-            correlation_length_y_m=1.0e-2,
-        )
+        SurfaceRoughness(rms_height_m=1.0e-3, correlation_length_x_m=1.0e-2, correlation_length_y_m=1.0e-2)
         if rough
         else None
     )
     wall = Structure(
         geometry=mesh,
         material=PhysicalMaterial(
-            name="concrete",
-            eps_r=geo.WALL_EPS_R,
-            sigma_e=geo.WALL_SIGMA_E,
-            roughness_front=roughness,
+            name="concrete", eps_r=geo.WALL_EPS_R, sigma_e=geo.WALL_SIGMA_E, roughness_front=roughness
         ),
         structure_id=1,
         material_id=1,
@@ -65,13 +58,7 @@ def make_scene(*, rough: bool = False):
     )
     scene = Scene(
         structures=(wall,),
-        endpoints=[
-            AntennaState(
-                reserve_antenna_id(77001),
-                "tx",
-                torch.tensor(geo.TX_POSITION_M, dtype=torch.float32),
-            )
-        ],
+        endpoints=[AntennaState(reserve_antenna_id(77001), "tx", torch.tensor(geo.TX_POSITION_M, dtype=torch.float32))],
     )
     return scene, mesh
 
@@ -116,24 +103,13 @@ def endpoint_spec(position, stable_id, *, power_w=None, device="cuda"):
         positions = position.reshape(1, 3)
     else:
         positions = torch.tensor([position], dtype=torch.float32, device=device)
-    powers = (
-        None
-        if power_w is None
-        else torch.full((1,), float(power_w), dtype=torch.float32, device=device)
-    )
+    powers = None if power_w is None else torch.full((1,), float(power_w), dtype=torch.float32, device=device)
     return RadarEndpointSpec(
         stable_ids=torch.tensor([stable_id], dtype=torch.int64, device=device),
         positions_m=positions,
-        polarizations=torch.tensor(
-            [geo.POLARIZATION], dtype=torch.float32, device=device
-        ),
+        polarizations=torch.tensor([geo.POLARIZATION], dtype=torch.float32, device=device),
         powers_w=powers,
     )
 
 
-__all__ = [
-    "assert_world_coordinates_survived",
-    "compile_fixture_scene",
-    "endpoint_spec",
-    "make_scene",
-]
+__all__ = ["assert_world_coordinates_survived", "compile_fixture_scene", "endpoint_spec", "make_scene"]

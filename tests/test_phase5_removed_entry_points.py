@@ -12,7 +12,6 @@ import pytest
 
 import witwin.radar as wr
 
-
 RADAR_ROOT = pathlib.Path(wr.__file__).resolve().parent
 TESTS_ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -39,7 +38,7 @@ def test_an_unknown_attribute_still_gets_an_ordinary_error():
     """The __getattr__ hook must not swallow genuine typos."""
 
     with pytest.raises(AttributeError, match="has no attribute"):
-        wr.definitely_not_a_real_name
+        _ = wr.definitely_not_a_real_name
 
 
 def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
@@ -63,12 +62,7 @@ def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, name
 
     radar = object.__new__(wr.Radar)
-    for name in (
-        "last_snapshot",
-        "last_compiled_scene",
-        "last_propagation",
-        "last_radar_paths",
-    ):
+    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):
         assert getattr(radar, name) is None, name
 
 
@@ -98,13 +92,7 @@ def test_the_dirichlet_entry_points_are_absent_without_a_proxy():
     ):
         assert not hasattr(wr.Radar, name), name
 
-    for name in (
-        "Solver",
-        "TraceResult",
-        "MimoPathCache",
-        "SamplingMode",
-        "MotionSampling",
-    ):
+    for name in ("Solver", "TraceResult", "MimoPathCache", "SamplingMode", "MotionSampling"):
         with pytest.raises(AttributeError, match="has no attribute"):
             getattr(wr, name)
         assert name not in wr.__all__, name

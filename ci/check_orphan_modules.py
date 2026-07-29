@@ -30,10 +30,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import sys
 from collections import deque
 from pathlib import Path
-import sys
-
 
 PACKAGE = "witwin.radar"
 
@@ -92,11 +91,7 @@ def edges_from(path: Path, name: str, known: set[str]) -> set[str]:
             for alias in node.names:
                 note(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            target = (
-                _resolve(base_package, node.level, node.module)
-                if node.level
-                else (node.module or "")
-            )
+            target = _resolve(base_package, node.level, node.module) if node.level else (node.module or "")
             note(target)
             for alias in node.names:
                 note(f"{target}.{alias.name}")
@@ -115,16 +110,13 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = Path(arguments.root) if arguments.root else Path(__file__).resolve().parents[1]
     package_dir = repo / PACKAGE.replace(".", "/")
-    paths = {
-        module_name(repo, path): path for path in sorted(package_dir.rglob("*.py"))
-    }
+    paths = {module_name(repo, path): path for path in sorted(package_dir.rglob("*.py"))}
     known = set(paths)
 
     unknown_entries = sorted(set(ENTRY_POINTS) - known)
     if unknown_entries:
         print(
-            "ci/check_orphan_modules.py: ENTRY_POINTS names modules that do not "
-            "exist; delete the stale entries:",
+            "ci/check_orphan_modules.py: ENTRY_POINTS names modules that do not exist; delete the stale entries:",
             file=sys.stderr,
         )
         for name in unknown_entries:

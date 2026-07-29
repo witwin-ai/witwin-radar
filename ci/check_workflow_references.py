@@ -3,15 +3,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
-
-SCRIPT = re.compile(
-    r"(?:^|[\s;&|])(?:python|python3|py)\s+(?!-m\b)([A-Za-z0-9_./\\-]+\.py)\b",
-    re.MULTILINE,
-)
+SCRIPT = re.compile(r"(?:^|[\s;&|])(?:python|python3|py)\s+(?!-m\b)([A-Za-z0-9_./\\-]+\.py)\b", re.MULTILINE)
 RUN = re.compile(r"^(?P<spaces>\s*)(?:-\s+)?run:\s*(?P<body>.*)$")
 
 
@@ -54,9 +50,7 @@ def audit(repo: Path) -> list[str]:
             if token.startswith("./"):
                 token = token[2:]
             if not (repo / token).is_file():
-                errors.append(
-                    f"{path.relative_to(repo).as_posix()} invokes missing script {token}"
-                )
+                errors.append(f"{path.relative_to(repo).as_posix()} invokes missing script {token}")
     return errors
 
 

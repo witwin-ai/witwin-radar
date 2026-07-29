@@ -24,43 +24,30 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from witwin.radar.capabilities import capabilities as capability_record
 import witwin.radar.deployment as deployment
-
+from witwin.radar.capabilities import capabilities as capability_record
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MATRIX = REPO_ROOT / "docs" / "dev" / "radar-ad-capability-matrix.md"
 
 
 def _run(source: str, env: dict[str, str] | None = None) -> dict:
-    child_env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("WITWIN_RADAR_")
-    }
+    child_env = {key: value for key, value in os.environ.items() if not key.startswith("WITWIN_RADAR_")}
     child_env.update(env or {})
     completed = subprocess.run(
-        [sys.executable, "-c", source],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env=child_env,
-        check=False,
+        [sys.executable, "-c", source], capture_output=True, text=True, cwd=str(REPO_ROOT), env=child_env, check=False
     )
     for line in completed.stdout.splitlines():
         if line.startswith("PHASE10DIAG "):
             return json.loads(line[len("PHASE10DIAG ") :])
-    raise AssertionError(
-        f"probe produced no result\nstdout:\n{completed.stdout}\n"
-        f"stderr:\n{completed.stderr}"
-    )
+    raise AssertionError(f"probe produced no result\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}")
 
 
 # --------------------------------------------------------------------------
@@ -129,9 +116,7 @@ def test_runtime_diagnostics_survives_an_unloadable_extension():
         assert key in result["keys"], key
     assert result["native_build"] is None
     assert result["errors"], "a broken native load must be reported, not hidden"
-    assert any(
-        "scripts/build_radar_cuda_prebuilt.py" in error for error in result["errors"]
-    ), result["errors"]
+    assert any("scripts/build_radar_cuda_prebuilt.py" in error for error in result["errors"]), result["errors"]
 
 
 def test_build_info_fails_loudly_where_diagnostics_degrades():
@@ -145,6 +130,7 @@ def test_build_info_fails_loudly_where_diagnostics_degrades():
 
 def test_build_info_reports_the_full_validated_identity():
     from witwin.radar.cuda import runtime as build
+
     identity = build
 
     if not build.prebuilt_extension_path().is_file():
@@ -177,15 +163,10 @@ def test_the_declared_sm_matrix_is_the_release_gencode_list():
     one of them is lying to an operator about what is inside the binary.
     """
 
-    source = (REPO_ROOT / "scripts" / "verify_cuda_binary_arches.py").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "scripts" / "verify_cuda_binary_arches.py").read_text(encoding="utf-8")
     expected = re.search(r"EXPECTED_SASS = \(([^)]*)\)", source)
     assert expected is not None
-    architectures = tuple(
-        int(entry.strip().strip('"')) for entry in expected.group(1).split(",")
-        if entry.strip()
-    )
+    architectures = tuple(int(entry.strip().strip('"')) for entry in expected.group(1).split(",") if entry.strip())
     assert architectures == deployment.DECLARED_SM_ARCHITECTURES
 
     ptx = re.search(r'EXPECTED_PTX_TARGET = "sm_(\d+)"', source)
@@ -194,9 +175,7 @@ def test_the_declared_sm_matrix_is_the_release_gencode_list():
 
 
 def test_verified_architectures_are_a_subset_of_declared_ones():
-    assert set(deployment.VERIFIED_SM_ARCHITECTURES) <= set(
-        deployment.DECLARED_SM_ARCHITECTURES
-    )
+    assert set(deployment.VERIFIED_SM_ARCHITECTURES) <= set(deployment.DECLARED_SM_ARCHITECTURES)
 
 
 # --------------------------------------------------------------------------
@@ -214,13 +193,9 @@ def test_the_capability_record_is_versioned_and_names_its_abi():
 
 
 def test_the_capability_families_are_the_manifest_families():
-    manifest = json.loads(
-        (REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
     record = capability_record()
-    assert set(record["native_library"]["operator_families"]) == {
-        entry["family"] for entry in manifest["operators"]
-    }
+    assert set(record["native_library"]["operator_families"]) == {entry["family"] for entry in manifest["operators"]}
 
 
 def test_the_ad_summary_agrees_with_the_capability_matrix_document():

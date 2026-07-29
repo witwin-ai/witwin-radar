@@ -47,8 +47,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from witwin.core import AntennaState, Scene  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
+
 from witwin.radar import Radar, RadarConfig  # noqa: E402
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
@@ -58,6 +58,7 @@ from witwin.radar.processing import (  # noqa: E402
     range_profile,
 )
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.synthesis import SlowTimeMode  # noqa: E402
 
 ARRAY_SIZE = 20
@@ -67,7 +68,8 @@ NUM_SIGNALS = 7
 SPATIAL_SMOOTH = 3
 
 CONFIG = {
-    "num_tx": ARRAY_SIZE, "num_rx": ARRAY_SIZE,
+    "num_tx": ARRAY_SIZE,
+    "num_rx": ARRAY_SIZE,
     "fc": 77e9,
     "slope": 60.012,
     "adc_samples": 256,
@@ -92,10 +94,7 @@ CONFIG = {
 #: targets - separated in world x - are separated along the image's first axis.
 TARGET_RANGE_M = 3.0
 TARGET_OFFSET_M = 0.5
-TARGET_POSITIONS_M = (
-    (-TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M),
-    (TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M),
-)
+TARGET_POSITIONS_M = ((-TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M), (TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M))
 TARGET_RCS_M2 = 1.0
 #: Transverse to the ``-z`` boresight. Channel projects the field onto this
 #: world-frame vector; the package default ``(0, 0, 1)`` is parallel to this
@@ -108,8 +107,7 @@ def build_radar() -> Radar:
     config = dataclasses.replace(
         config,
         frontend=FrontendSpec(
-            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3),
-            seed=SeedSpec(20260727),
+            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3), seed=SeedSpec(20260727)
         ),
     )
     return Radar(config, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
@@ -120,13 +118,7 @@ def build_scene() -> Scene:
 
     return Scene(
         structures=(),
-        endpoints=[
-            AntennaState(
-                reserve_antenna_id(770201),
-                "tx",
-                torch.tensor((0.0, 0.0, 0.0), dtype=torch.float32),
-            )
-        ],
+        endpoints=[AntennaState(reserve_antenna_id(770201), "tx", torch.tensor((0.0, 0.0, 0.0), dtype=torch.float32))],
     )
 
 
@@ -140,14 +132,9 @@ def processing_axes(radar: Radar) -> ProcessingAxes:
     waveform specification and are the same for every frame.
     """
 
-    synthesis = radar._synthesize(
-        radar.last_radar_paths,
-        slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
-    )
+    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis,
-        radar.system_config.waveform_spec(),
-        radar.system_config.sensors.array,
+        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
     )
 
 
@@ -159,14 +146,8 @@ def main() -> None:
         )
 
     radar = build_radar()
-    sites = ScatterSitePolicy.explicit(
-        torch.tensor(TARGET_POSITIONS_M, dtype=torch.float32, device=radar.device)
-    )
-    response = ScalarRcsResponse.from_rcs(
-        TARGET_RCS_M2,
-        reference_frequency_hz=radar.config.fc,
-        device=radar.device,
-    )
+    sites = ScatterSitePolicy.explicit(torch.tensor(TARGET_POSITIONS_M, dtype=torch.float32, device=radar.device))
+    response = ScalarRcsResponse.from_rcs(TARGET_RCS_M2, reference_frequency_hz=radar.config.fc, device=radar.device)
 
     print(f"Using device={radar.device}")
     print(f"Simulating two targets with a {ARRAY_SIZE}x{ARRAY_SIZE} MIMO array...")
@@ -179,9 +160,9 @@ def main() -> None:
         components=frozenset({"los"}),
         max_depth=0,
     )
-    assert result.cube.shape == (
-        1, ARRAY_SIZE, ARRAY_SIZE, CONFIG["chirp_per_frame"], CONFIG["adc_samples"]
-    ), f"Unexpected cube shape: {tuple(result.cube.shape)}"
+    assert result.cube.shape == (1, ARRAY_SIZE, ARRAY_SIZE, CONFIG["chirp_per_frame"], CONFIG["adc_samples"]), (
+        f"Unexpected cube shape: {tuple(result.cube.shape)}"
+    )
     print(f"  Cube: {tuple(result.cube.shape)} {result.axes}  OK")
     print(f"  Composed rows: {radar.last_radar_paths.path_count}")
 
@@ -195,13 +176,10 @@ def main() -> None:
     range_energy = profile.data.abs().sum(dim=(0, 1, 2))
     peak_bin = int(torch.argmax(range_energy))
     range_bins = torch.arange(peak_bin - 2, peak_bin + 3, device=radar.device)
-    print(f"  Range gate: bins {peak_bin - 2}..{peak_bin + 2} "
-          f"({float(axes.range_m[peak_bin]):.4f} m)")
+    print(f"  Range gate: bins {peak_bin - 2}..{peak_bin + 2} ({float(axes.range_m[peak_bin]):.4f} m)")
 
     print("Running MUSIC...")
-    grid = torch.linspace(
-        -FIELD_OF_VIEW_RAD / 2, FIELD_OF_VIEW_RAD / 2, NUM_PIXELS, device=radar.device
-    )
+    grid = torch.linspace(-FIELD_OF_VIEW_RAD / 2, FIELD_OF_VIEW_RAD / 2, NUM_PIXELS, device=radar.device)
     image = music_image(
         profile,
         geometry,
@@ -223,14 +201,12 @@ def main() -> None:
     peaks = _two_strongest_lobes(lobe_profile)
     measured_deg = sorted(float(grid[index]) * 180.0 / math.pi for index in peaks)
     expected_deg = sorted(
-        math.degrees(math.atan2(offset, TARGET_RANGE_M))
-        for offset in (-TARGET_OFFSET_M, TARGET_OFFSET_M)
+        math.degrees(math.atan2(offset, TARGET_RANGE_M)) for offset in (-TARGET_OFFSET_M, TARGET_OFFSET_M)
     )
     pixel_deg = float(grid[1] - grid[0]) * 180.0 / math.pi
-    for measured, expected in zip(measured_deg, expected_deg):
+    for measured, expected in zip(measured_deg, expected_deg, strict=True):
         assert abs(measured - expected) <= 2.0 * pixel_deg, (
-            f"MUSIC reports {measured:.2f} deg where the target is at "
-            f"{expected:.2f} deg ({pixel_deg:.2f} deg pixels)"
+            f"MUSIC reports {measured:.2f} deg where the target is at {expected:.2f} deg ({pixel_deg:.2f} deg pixels)"
         )
     print(
         f"  Resolved at {measured_deg[0]:.2f} and {measured_deg[1]:.2f} deg; "
@@ -253,8 +229,7 @@ def _two_strongest_lobes(profile: torch.Tensor) -> tuple[int, int]:
     indices = torch.nonzero(is_peak, as_tuple=False).reshape(-1) + 1
     if int(indices.numel()) < 2:
         raise AssertionError(
-            f"the MUSIC profile has {int(indices.numel())} lobes; two targets "
-            "must produce at least two"
+            f"the MUSIC profile has {int(indices.numel())} lobes; two targets must produce at least two"
         )
     order = torch.argsort(values[indices], descending=True)
     return int(indices[order[0]]), int(indices[order[1]])

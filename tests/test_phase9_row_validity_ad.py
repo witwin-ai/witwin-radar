@@ -48,7 +48,6 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -62,13 +61,7 @@ PARTIAL_DEATH_SHIFT_M = 1.0
 #: inbound one stays on it.
 DEAD_ROW_KEYS = (
     (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_B_STABLE_ID, "los", "reflection"),
-    (
-        geo.TX_A_STABLE_ID,
-        geo.SITE_P_STABLE_ID,
-        geo.RX_B_STABLE_ID,
-        "reflection",
-        "reflection",
-    ),
+    (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_B_STABLE_ID, "reflection", "reflection"),
 )
 
 #: A payload no valid row could produce, written into the dead rows to prove the
@@ -139,9 +132,7 @@ def test_moving_one_site_kills_exactly_two_rows_and_keeps_nine(spike, moved):
     assert composed.path_count == 11
     assert dead == DEAD_ROW_KEYS, dead
     assert len(live) == 9
-    assert (
-        sum(1 for key in live if key[1] == geo.SITE_P_STABLE_ID) == 6
-    ), live
+    assert sum(1 for key in live if key[1] == geo.SITE_P_STABLE_ID) == 6, live
 
 
 def test_the_base_configuration_has_no_dead_row_at_all(spike, values):
@@ -202,11 +193,7 @@ def test_a_dead_row_carries_an_exactly_zero_forward_tangent(spike, moved, kind):
         # a fixture that would make "every live row carries a tangent" false for
         # a reason that has nothing to do with validity.
         for name in ("sites", "transmitters", "receivers"):
-            seed = (
-                torch.ones_like(moved[name])
-                if name == "sites"
-                else torch.zeros_like(moved[name])
-            )
+            seed = torch.ones_like(moved[name]) if name == "sites" else torch.zeros_like(moved[name])
             duals[name] = forward_ad.make_dual(moved[name].clone(), seed)
         composed = mx.replay(spike, duals, ad_mode="jvp")
         dead = ~composed.row_valid
@@ -240,14 +227,9 @@ def test_the_dead_rows_contribute_exactly_zero_to_the_gradient(spike, moved, kin
     weight = transfer.abs().square()
 
     (whole,) = torch.autograd.grad(weight.sum(), live["sites"], retain_graph=True)
-    (masked,) = torch.autograd.grad(
-        (weight * valid).sum(), live["sites"], retain_graph=True
-    )
+    (masked,) = torch.autograd.grad((weight * valid).sum(), live["sites"], retain_graph=True)
     (dead_only,) = torch.autograd.grad(
-        (weight * (~valid).to(weight.dtype)).sum(),
-        live["sites"],
-        retain_graph=True,
-        allow_unused=True,
+        (weight * (~valid).to(weight.dtype)).sum(), live["sites"], retain_graph=True, allow_unused=True
     )
 
     assert float(whole.abs().max()) > 0.0
@@ -272,37 +254,20 @@ def test_a_poisoned_dead_row_cannot_change_the_cube(spike, moved, kind):
     poisoned = dataclasses.replace(
         batch,
         complex_transfer_ref=torch.where(
-            valid,
-            batch.complex_transfer_ref,
-            torch.full_like(batch.complex_transfer_ref, POISON_TRANSFER),
+            valid, batch.complex_transfer_ref, torch.full_like(batch.complex_transfer_ref, POISON_TRANSFER)
         ),
-        total_delay_s=torch.where(
-            valid,
-            batch.total_delay_s,
-            torch.full_like(batch.total_delay_s, POISON_DELAY_S),
-        ),
+        total_delay_s=torch.where(valid, batch.total_delay_s, torch.full_like(batch.total_delay_s, POISON_DELAY_S)),
     )
     spec = wc.make_spec(kind)
     reference = wc.synthesize(kind, composed, spec)
-    from witwin.radar.synthesis import (
-        synthesize_fmcw,
-        synthesize_ofdm,
-        synthesize_pulsed,
-    )
+    from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
-    owner = {
-        "fmcw": synthesize_fmcw,
-        "ofdm": synthesize_ofdm,
-        "pulsed": synthesize_pulsed,
-    }[kind]
+    owner = {"fmcw": synthesize_fmcw, "ofdm": synthesize_ofdm, "pulsed": synthesize_pulsed}[kind]
     assert torch.equal(owner(poisoned, spec), reference)
     # And the poison really was large enough to be seen: applied to a LIVE row
     # the same value moves the cube.
     all_poisoned = dataclasses.replace(
-        batch,
-        complex_transfer_ref=torch.full_like(
-            batch.complex_transfer_ref, POISON_TRANSFER
-        ),
+        batch, complex_transfer_ref=torch.full_like(batch.complex_transfer_ref, POISON_TRANSFER)
     )
     assert not torch.equal(owner(all_poisoned, spec), reference)
 
@@ -313,9 +278,7 @@ def test_a_poisoned_dead_row_cannot_change_the_cube(spike, moved, kind):
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_frozen_replay_and_a_fresh_discovery_agree_bit_for_bit(
-    spike, moved, kind
-):
+def test_the_frozen_replay_and_a_fresh_discovery_agree_bit_for_bit(spike, moved, kind):
     """Nine dead-carrying rows against nine freshly discovered ones.
 
     The frozen topology publishes eleven rows of which two are dead; a topology
@@ -331,22 +294,13 @@ def test_the_frozen_replay_and_a_fresh_discovery_agree_bit_for_bit(
 
     fresh = drv.MultiEndpointSpike(
         compiled=spike.compiled,
-        sites=tuple(
-            (stable_id, tuple(moved["sites"][row].tolist()))
-            for row, stable_id in enumerate(spike.site_ids)
-        ),
+        sites=tuple((stable_id, tuple(moved["sites"][row].tolist())) for row, stable_id in enumerate(spike.site_ids)),
     )
     frozen_keys = drv.composed_keys(spike, mx.replay(spike, moved))
     fresh_composed = mx.replay(fresh, moved)
     assert bool(fresh_composed.row_valid.all())
     assert drv.composed_keys(fresh, fresh_composed) == [
-        key
-        for key, alive in zip(
-            frozen_keys,
-            mx.replay(spike, moved).row_valid.tolist(),
-            strict=True,
-        )
-        if alive
+        key for key, alive in zip(frozen_keys, mx.replay(spike, moved).row_valid.tolist(), strict=True) if alive
     ]
 
     frozen_gradient, _ = _reverse(spike, kind, moved)
@@ -361,9 +315,7 @@ def test_the_frozen_replay_and_a_fresh_discovery_agree_bit_for_bit(
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient(
-    spike, occluded, kind
-):
+def test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient(spike, occluded, kind):
     """Past the selection boundary the replay still answers, completely.
 
     Every ``SITE_P`` row is gone and its gradient is EXACTLY zero - not a small
@@ -375,9 +327,7 @@ def test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient(
     gradient, composed = _reverse(spike, kind, occluded)
     keys = drv.composed_keys(spike, composed)
     valid = composed.row_valid.tolist()
-    surviving_sites = {
-        key[1] for key, alive in zip(keys, valid, strict=True) if alive
-    }
+    surviving_sites = {key[1] for key, alive in zip(keys, valid, strict=True) if alive}
     assert surviving_sites == {geo.SITE_Q_STABLE_ID}
     assert torch.equal(gradient[0], torch.zeros_like(gradient[0]))
     assert float(gradient[1].abs().max()) > 0.0
@@ -396,16 +346,13 @@ def test_a_fresh_freeze_at_the_occluded_geometry_refuses_instead(spike, occluded
         drv.MultiEndpointSpike(
             compiled=spike.compiled,
             sites=tuple(
-                (stable_id, tuple(occluded["sites"][row].tolist()))
-                for row, stable_id in enumerate(spike.site_ids)
+                (stable_id, tuple(occluded["sites"][row].tolist())) for row, stable_id in enumerate(spike.site_ids)
             ),
         )
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_replay_never_answers_with_the_geometry_it_was_frozen_at(
-    spike, values, moved, kind
-):
+def test_the_replay_never_answers_with_the_geometry_it_was_frozen_at(spike, values, moved, kind):
     """The stale-answer class, ruled out directly.
 
     The moved frame must differ from the frozen-at frame in the surviving rows'
@@ -417,9 +364,7 @@ def test_the_replay_never_answers_with_the_geometry_it_was_frozen_at(
     base_composed = mx.replay(spike, values)
     moved_composed = mx.replay(spike, moved)
     alive = moved_composed.row_valid
-    assert not torch.equal(
-        moved_composed.total_delay_s[alive], base_composed.total_delay_s[alive]
-    )
+    assert not torch.equal(moved_composed.total_delay_s[alive], base_composed.total_delay_s[alive])
     base_cube = wc.synthesize(kind, base_composed, wc.make_spec(kind))
     moved_cube = wc.synthesize(kind, moved_composed, wc.make_spec(kind))
     assert not torch.equal(moved_cube, base_cube)

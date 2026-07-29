@@ -13,10 +13,7 @@ import torch
 
 
 def central_difference(
-    evaluate: Callable[[torch.Tensor], torch.Tensor],
-    value: torch.Tensor,
-    index: tuple[int, ...] | int,
-    step: float,
+    evaluate: Callable[[torch.Tensor], torch.Tensor], value: torch.Tensor, index: tuple[int, ...] | int, step: float
 ) -> float:
     """d(evaluate)/d(value[index]) by central difference, in float64."""
 
@@ -35,14 +32,8 @@ def directional_derivative(
 ) -> float:
     """Directional derivative along ``directions``, by central difference."""
 
-    plus = tuple(
-        value + step * direction
-        for value, direction in zip(values, directions, strict=True)
-    )
-    minus = tuple(
-        value - step * direction
-        for value, direction in zip(values, directions, strict=True)
-    )
+    plus = tuple(value + step * direction for value, direction in zip(values, directions, strict=True))
+    minus = tuple(value - step * direction for value, direction in zip(values, directions, strict=True))
     return float((evaluate(*plus) - evaluate(*minus)) / (2.0 * step))
 
 
@@ -62,9 +53,7 @@ def fourth_order_difference(samples: dict[int, float], step: float) -> float:
     everything else being measured here.
     """
 
-    return (
-        -samples[2] + 8.0 * samples[1] - 8.0 * samples[-1] + samples[-2]
-    ) / (12.0 * step)
+    return (-samples[2] + 8.0 * samples[1] - 8.0 * samples[-1] + samples[-2]) / (12.0 * step)
 
 
 def relative_error(measured: float, reference: float, *, floor: float) -> float:
@@ -79,9 +68,4 @@ def relative_error(measured: float, reference: float, *, floor: float) -> float:
     return abs(measured - reference) / scale
 
 
-__all__ = [
-    "central_difference",
-    "directional_derivative",
-    "fourth_order_difference",
-    "relative_error",
-]
+__all__ = ["central_difference", "directional_derivative", "fourth_order_difference", "relative_error"]

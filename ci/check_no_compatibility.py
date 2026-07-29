@@ -5,14 +5,10 @@ from __future__ import annotations
 
 import ast
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
-
-RETIRED_PATHS = (
-    "witwin/radar/sigproc",
-    "witwin/radar/processing/adapters.py",
-)
+RETIRED_PATHS = ("witwin/radar/sigproc", "witwin/radar/processing/adapters.py")
 RETIRED_NAMES = {
     "FmcwBeatSpec",
     "PolarizationSpec",
@@ -67,15 +63,11 @@ def _literal_all(tree: ast.Module) -> tuple[str, ...] | None:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if not any(
-            isinstance(target, ast.Name) and target.id == "__all__"
-            for target in targets
-        ):
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
             continue
         value = node.value
         if isinstance(value, (ast.List, ast.Tuple)) and all(
-            isinstance(item, ast.Constant) and isinstance(item.value, str)
-            for item in value.elts
+            isinstance(item, ast.Constant) and isinstance(item.value, str) for item in value.elts
         ):
             return tuple(item.value for item in value.elts)
     return None
@@ -91,9 +83,7 @@ def _root_bindings(tree: ast.Module) -> set[str]:
                 bindings.add(alias.asname or alias.name.rpartition(".")[2])
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            bindings.update(
-                target.id for target in targets if isinstance(target, ast.Name)
-            )
+            bindings.update(target.id for target in targets if isinstance(target, ast.Name))
     return bindings
 
 
@@ -103,9 +93,7 @@ def audit(repo: Path) -> list[str]:
         if (repo / relative).exists():
             errors.append(f"retired path exists: {relative}")
 
-    public = json.loads(
-        (repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8")
-    )
+    public = json.loads((repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8"))
     expected_root = tuple(sorted(public["modules"]["witwin.radar"]))
     root_path = repo / "witwin" / "radar" / "__init__.py"
     root_tree = ast.parse(root_path.read_text(encoding="utf-8"), filename=str(root_path))
@@ -124,13 +112,9 @@ def audit(repo: Path) -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name in RETIRED_NAMES:
-                    errors.append(
-                        f"retired definition {node.name}: {relative}:{node.lineno}"
-                    )
+                    errors.append(f"retired definition {node.name}: {relative}:{node.lineno}")
             elif isinstance(node, ast.Name) and node.id in {"_REMOVED", "_LAZY"}:
-                errors.append(
-                    f"compatibility proxy {node.id}: {relative}:{node.lineno}"
-                )
+                errors.append(f"compatibility proxy {node.id}: {relative}:{node.lineno}")
             elif isinstance(node, ast.Name) and node.id == "DeprecationWarning":
                 errors.append(f"deprecation shim warning: {relative}:{node.lineno}")
         text = path.read_text(encoding="utf-8")
@@ -143,10 +127,7 @@ def audit(repo: Path) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
         for token in RETIRED_NATIVE_TOKENS:
             if token in text:
-                errors.append(
-                    f"retired native compatibility token {token!r}: "
-                    f"{path.relative_to(repo).as_posix()}"
-                )
+                errors.append(f"retired native compatibility token {token!r}: {path.relative_to(repo).as_posix()}")
     return sorted(set(errors))
 
 

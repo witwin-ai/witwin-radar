@@ -43,7 +43,6 @@ import textwrap
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RADAR_ROOT = REPO_ROOT / "witwin" / "radar"
 
@@ -65,11 +64,7 @@ SOLVER_AND_INTERNALS = (
 # Modules Radar must never NAME. Some of them are loaded anyway by Channel's or
 # Radar's own package initialization; the static closure is what proves Radar
 # does not reach for them.
-NEVER_NAMED = SOLVER_AND_INTERNALS + (
-    "witwin.channel.runtime.extension",
-    "drjit",
-    "rayd.drjit",
-)
+NEVER_NAMED = SOLVER_AND_INTERNALS + ("witwin.channel.runtime.extension", "drjit", "rayd.drjit")
 
 # The exact Channel imports the spike is allowed to name.
 #
@@ -93,6 +88,7 @@ ALLOWED_CHANNEL_IMPORTS = frozenset(
     }
 )
 
+
 def _module_source_path(module: str) -> str:
     relative = module.replace(".", "/")
     module_file = REPO_ROOT / f"{relative}.py"
@@ -104,12 +100,8 @@ def _module_source_path(module: str) -> str:
     raise AssertionError(f"architecture manifest names missing module {module!r}")
 
 
-_ARCHITECTURE = json.loads(
-    (REPO_ROOT / "ci" / "architecture-manifest.json").read_text(encoding="utf-8")
-)
-SPIKE_MODULES = tuple(
-    _module_source_path(module) for module in _ARCHITECTURE["hot_path_modules"]
-)
+_ARCHITECTURE = json.loads((REPO_ROOT / "ci" / "architecture-manifest.json").read_text(encoding="utf-8"))
+SPIKE_MODULES = tuple(_module_source_path(module) for module in _ARCHITECTURE["hot_path_modules"])
 SPIKE_IMPORTS = textwrap.dedent(
     """
     import witwin.radar.channel
@@ -137,10 +129,7 @@ def _child_env() -> dict[str, str]:
 
 
 def _subprocess_modules(body: str) -> set[str]:
-    script = (
-        textwrap.dedent(body).strip()
-        + "\nimport sys\nprint('\\n'.join(sorted(sys.modules)))\n"
-    )
+    script = textwrap.dedent(body).strip() + "\nimport sys\nprint('\\n'.join(sorted(sys.modules)))\n"
     completed = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
@@ -150,9 +139,7 @@ def _subprocess_modules(body: str) -> set[str]:
         timeout=600,
     )
     if completed.returncode != 0:
-        raise AssertionError(
-            f"probe subprocess failed:\n{completed.stdout}\n{completed.stderr}"
-        )
+        raise AssertionError(f"probe subprocess failed:\n{completed.stdout}\n{completed.stderr}")
     return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
 
 
@@ -166,9 +153,7 @@ def test_no_channel_solver_or_internal_module_is_ever_loaded():
 
     pytest.importorskip("witwin.channel")
     modules = _subprocess_modules(SPIKE_IMPORTS)
-    offenders = sorted(
-        name for name in modules if _matches(name, SOLVER_AND_INTERNALS)
-    )
+    offenders = sorted(name for name in modules if _matches(name, SOLVER_AND_INTERNALS))
     assert offenders == [], offenders
     assert "witwin.channel.propagation.consumer" in modules
 
@@ -187,10 +172,7 @@ def test_radar_adds_nothing_to_the_consumer_facade_closure():
         for name in _subprocess_modules("import witwin.channel.propagation.consumer")
         if name.startswith("witwin.channel")
     }
-    spike = {
-        name for name in _subprocess_modules(SPIKE_IMPORTS)
-        if name.startswith("witwin.channel")
-    }
+    spike = {name for name in _subprocess_modules(SPIKE_IMPORTS) if name.startswith("witwin.channel")}
     assert spike - facade == set(), sorted(spike - facade)
 
 
@@ -231,9 +213,7 @@ def test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar():
     """
 
     modules = _subprocess_modules("import witwin.radar")
-    offenders = sorted(
-        name for name in modules if name.split(".")[0] in ("drjit", "rayd")
-    )
+    offenders = sorted(name for name in modules if name.split(".")[0] in ("drjit", "rayd"))
     assert offenders == [], offenders
 
 
@@ -243,9 +223,7 @@ def test_the_spike_adds_no_drjit_rayd_or_channel_internals():
     with_spike = _subprocess_modules("import witwin.radar\n" + SPIKE_IMPORTS)
     added = with_spike - baseline
 
-    offenders = sorted(
-        name for name in with_spike if name.split(".")[0] in ("drjit", "rayd")
-    )
+    offenders = sorted(name for name in with_spike if name.split(".")[0] in ("drjit", "rayd"))
     assert offenders == [], offenders
     assert not any(_matches(name, SOLVER_AND_INTERNALS) for name in added)
 
@@ -256,21 +234,13 @@ def test_the_spike_adds_no_drjit_rayd_or_channel_internals():
 
 
 def _module_name(relative: str) -> str:
-    stem = (
-        relative.removeprefix("witwin/radar/")
-        .removesuffix("/__init__.py")
-        .removesuffix(".py")
-        .replace("/", ".")
-    )
+    stem = relative.removeprefix("witwin/radar/").removesuffix("/__init__.py").removesuffix(".py").replace("/", ".")
     return f"witwin.radar.{stem}" if stem else "witwin.radar"
 
 
 def _module_path(name: str) -> pathlib.Path | None:
     relative = name.removeprefix("witwin.radar.").replace(".", "/")
-    for candidate in (
-        RADAR_ROOT / f"{relative}.py",
-        RADAR_ROOT / relative / "__init__.py",
-    ):
+    for candidate in (RADAR_ROOT / f"{relative}.py", RADAR_ROOT / relative / "__init__.py"):
         if candidate.exists():
             return candidate
     return None
@@ -345,10 +315,7 @@ def test_only_the_adapter_crosses_the_channel_boundary():
     crossing = [
         relative
         for relative in SPIKE_MODULES
-        if any(
-            name.startswith("witwin.channel")
-            for name in _imports_of(REPO_ROOT / relative, _module_name(relative))
-        )
+        if any(name.startswith("witwin.channel") for name in _imports_of(REPO_ROOT / relative, _module_name(relative)))
     ]
     assert crossing == ["witwin/radar/channel.py"], crossing
 
@@ -441,10 +408,7 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
     loops = [
         type(node).__name__
         for node in ast.walk(tree)
-        if isinstance(
-            node,
-            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
-        )
+        if isinstance(node, ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp)
     ]
     assert loops == [], loops
 
@@ -478,9 +442,7 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
         assert "tx_index" in passed, (helper, passed)
 
     for domain in ("beat", "spectrum"):
-        kernel = (
-            REPO_ROOT / f"witwin/radar/cuda/fmcw_{domain}.cu"
-        ).read_text(encoding="utf-8")
+        kernel = (REPO_ROOT / f"witwin/radar/cuda/fmcw_{domain}.cu").read_text(encoding="utf-8")
         for symbol in (
             f"__global__ void fmcw_{domain}_forward_kernel",
             f"__global__ void fmcw_{domain}_backward_kernel",
@@ -489,6 +451,7 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
             "slot_time",
         ):
             assert symbol in kernel, symbol
+
 
 def test_the_ofdm_hot_loop_is_native_not_torch():
     """The CFR sum is a kernel, and the OFDM family conjugates nothing.
@@ -506,10 +469,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     loops = [
         type(node).__name__
         for node in ast.walk(tree)
-        if isinstance(
-            node,
-            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
-        )
+        if isinstance(node, ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp)
     ]
     assert loops == [], loops
 
@@ -518,13 +478,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    for forbidden in (
-        "torch.exp",
-        "torch.sin",
-        "torch.cos",
-        "torch.cdist",
-        "torch.conj",
-    ):
+    for forbidden in ("torch.exp", "torch.sin", "torch.cos", "torch.cdist", "torch.conj"):
         assert forbidden not in called, forbidden
 
     source = facade.read_text(encoding="utf-8")
@@ -537,9 +491,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     # function and the other waveform on purpose, to say what this module does
     # NOT do, and a text scan would forbid the explanation along with the act.
     called_names = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } | {
         _dotted(node.func).rsplit(".", 1)[-1]
         for node in ast.walk(tree)
@@ -550,9 +502,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     imported = _imports_of(facade, "witwin.radar.synthesis.ofdm")
     assert not any("fmcw" in name for name in imported), sorted(imported)
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/ofdm_cfr.cu").read_text(
-        encoding="utf-8"
-    )
+    kernel = (REPO_ROOT / "witwin/radar/cuda/ofdm_cfr.cu").read_text(encoding="utf-8")
     for symbol in (
         "__global__ void ofdm_cfr_forward_kernel",
         "__global__ void ofdm_cfr_backward_kernel",
@@ -570,10 +520,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     # already carries that whole phase at the frozen delay, so it multiplies the
     # DRIFT. Indexing the weight per subcarrier without this switch would count
     # the n*df*tau_rt phase twice and put every tap at twice its delay.
-    assert (
-        "-(f_sub * sub_delay + carrier_rate_hz * tau_drift + carrier_hz * tau)"
-        in kernel
-    )
+    assert "-(f_sub * sub_delay + carrier_rate_hz * tau_drift + carrier_hz * tau)" in kernel
     assert "const double sub_delay = wideband ? tau_drift : tau;" in kernel
 
     # No TDM slot table: OFDM slow time is per symbol, shared by every pair.
@@ -597,10 +544,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     loops = [
         type(node).__name__
         for node in ast.walk(tree)
-        if isinstance(
-            node,
-            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
-        )
+        if isinstance(node, ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp)
     ]
     assert loops == [], loops
 
@@ -623,18 +567,12 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
 
     source = facade.read_text(encoding="utf-8")
     assert "_PulsedEchoSynthesis.apply(" in source
-    for operator in (
-        "pulsed_echo_forward",
-        "pulsed_echo_backward",
-        "pulsed_echo_jvp",
-    ):
+    for operator in ("pulsed_echo_forward", "pulsed_echo_backward", "pulsed_echo_jvp"):
         assert operator in source, operator
 
     # No conjugation site and no reach into either neighbouring waveform.
     called_names = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } | {
         _dotted(node.func).rsplit(".", 1)[-1]
         for node in ast.walk(tree)
@@ -650,9 +588,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     # inside the synthesis owner.
     assert not any("sigproc" in name for name in imported), sorted(imported)
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/pulsed_echo.cu").read_text(
-        encoding="utf-8"
-    )
+    kernel = (REPO_ROOT / "witwin/radar/cuda/pulsed_echo.cu").read_text(encoding="utf-8")
     for symbol in (
         "__global__ void pulsed_echo_forward_kernel",
         "__global__ void pulsed_echo_backward_kernel",
@@ -665,9 +601,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     # explains at length what the kernel must not do, naming the very tokens
     # this scan forbids, and a whole-file text scan would reject the
     # explanation along with the act.
-    code = "\n".join(
-        line for line in kernel.splitlines() if not line.lstrip().startswith("//")
-    )
+    code = "\n".join(line for line in kernel.splitlines() if not line.lstrip().startswith("//"))
 
     # The kernel's own sign: `cycles` is negated, which keeps the train in
     # Channel's exp(-j k d) convention rather than the beat convention.
@@ -706,9 +640,7 @@ def test_the_matched_filter_re_derives_no_geometry():
     module = REPO_ROOT / "witwin/radar/processing/range_doppler.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
 
-    attributes = {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-    }
+    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     for forbidden in (
         "carrier_hz",
         "carrier_rate_hz",
@@ -728,9 +660,7 @@ def test_the_matched_filter_re_derives_no_geometry():
     # row and no propagation module.
     imported = _imports_of(module, "witwin.radar.processing.range_doppler")
     witwin_edges = sorted(
-        name
-        for name in imported
-        if name.startswith("witwin") and "." in name.removeprefix("witwin.radar.")
+        name for name in imported if name.startswith("witwin") and "." in name.removeprefix("witwin.radar.")
     )
     allowed = "witwin.radar.processing.signal"
     assert all(name.startswith(allowed) for name in witwin_edges), witwin_edges
@@ -783,19 +713,12 @@ def test_the_two_way_join_hot_loop_is_native_not_torch():
 
     facade = REPO_ROOT / "witwin/radar/paths.py"
     tree = ast.parse(facade.read_text(encoding="utf-8"))
-    compose = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "compose"
-    )
+    compose = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "compose")
 
     loops = [
         type(node).__name__
         for node in ast.walk(compose)
-        if isinstance(
-            node,
-            ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp,
-        )
+        if isinstance(node, ast.For | ast.While | ast.ListComp | ast.GeneratorExp | ast.DictComp)
     ]
     assert loops == [], loops
 
@@ -809,16 +732,10 @@ def test_the_two_way_join_hot_loop_is_native_not_torch():
 
     source = facade.read_text(encoding="utf-8")
     assert "_TwoWayJoin.apply(" in source
-    for operator in (
-        "two_way_join_forward",
-        "two_way_join_backward",
-        "two_way_join_jvp",
-    ):
+    for operator in ("two_way_join_forward", "two_way_join_backward", "two_way_join_jvp"):
         assert operator in source, operator
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/two_way_join.cu").read_text(
-        encoding="utf-8"
-    )
+    kernel = (REPO_ROOT / "witwin/radar/cuda/two_way_join.cu").read_text(encoding="utf-8")
     for symbol in (
         "__global__ void two_way_join_forward_kernel",
         "__global__ void two_way_join_backward_kernel",
@@ -839,10 +756,7 @@ def test_test_support_resolves_inside_this_worktree():
 
     import witwin.radar
 
-    assert (
-        pathlib.Path(support.__file__).resolve().parent
-        == REPO_ROOT / "tests" / "support"
-    )
+    assert pathlib.Path(support.__file__).resolve().parent == REPO_ROOT / "tests" / "support"
     assert pathlib.Path(witwin.radar.__file__).resolve().is_relative_to(REPO_ROOT)
 
 
@@ -874,9 +788,5 @@ def test_the_consumer_contract_is_the_version_this_spike_was_built_against():
     # ADR-043: the components whose ``field_direction`` is graph-bearing under
     # a frozen topology. Radar's aspect chain (Deliverable 1) depends on this
     # covering everything Radar ever freezes.
-    assert capabilities.direction_differentiable_components == frozenset(
-        {"los", "reflection"}
-    )
-    assert capabilities.fixed_topology_components.issubset(
-        capabilities.direction_differentiable_components
-    )
+    assert capabilities.direction_differentiable_components == frozenset({"los", "reflection"})
+    assert capabilities.fixed_topology_components.issubset(capabilities.direction_differentiable_components)

@@ -52,7 +52,6 @@ from support import fd  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -83,9 +82,7 @@ DIRECTION_SIGNS = {
     ("pulsed", "receivers"): ((1, -1, 0), (-1, 1, 0)),
 }
 
-CELLS = tuple(
-    (waveform, leaf) for waveform in WAVEFORMS for leaf in LEAVES
-)
+CELLS = tuple((waveform, leaf) for waveform in WAVEFORMS for leaf in LEAVES)
 
 
 @pytest.fixture(scope="module")
@@ -107,9 +104,7 @@ def _bases(spike) -> dict:
 
 
 def _direction(waveform: str, leaf: str) -> torch.Tensor:
-    signs = torch.tensor(
-        DIRECTION_SIGNS[(waveform, leaf)], dtype=torch.float32, device="cuda"
-    )
+    signs = torch.tensor(DIRECTION_SIGNS[(waveform, leaf)], dtype=torch.float32, device="cuda")
     scale = torch.tensor(DIRECTION_SCALE, dtype=torch.float32, device="cuda")
     return signs * scale
 
@@ -137,19 +132,13 @@ def test_the_two_cubes_have_their_own_shapes_and_are_not_the_beat_cube(spike, sp
     below would still agree with its own finite difference.
     """
 
-    ofdm = wc.synthesize(
-        "ofdm", spike.frame(None, drv.make_response(), include_delay_rate=False)[0],
-        specs["ofdm"],
-    )
+    ofdm = wc.synthesize("ofdm", spike.frame(None, drv.make_response(), include_delay_rate=False)[0], specs["ofdm"])
     pulsed = wc.synthesize(
-        "pulsed", spike.frame(None, drv.make_response(), include_delay_rate=False)[0],
-        specs["pulsed"],
+        "pulsed", spike.frame(None, drv.make_response(), include_delay_rate=False)[0], specs["pulsed"]
     )
     pairs = specs["ofdm"].num_subcarriers
     assert tuple(ofdm.shape) == (specs["ofdm"].num_symbols, 4, pairs)
-    assert tuple(pulsed.shape) == (
-        specs["pulsed"].num_pulses, 4, specs["pulsed"].num_samples
-    )
+    assert tuple(pulsed.shape) == (specs["pulsed"].num_pulses, 4, specs["pulsed"].num_samples)
     assert ofdm.dtype == torch.complex64 and pulsed.dtype == torch.complex64
     assert float(ofdm.abs().max()) > 0.0 and float(pulsed.abs().max()) > 0.0
 
@@ -184,12 +173,8 @@ def test_the_pulsed_fixture_uses_an_lfm_and_says_why(spike, specs):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
-)
-def test_the_endpoint_gradient_matches_a_fourth_order_difference(
-    spike, specs, waveform, leaf
-):
+@pytest.mark.parametrize("waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS])
+def test_the_endpoint_gradient_matches_a_fourth_order_difference(spike, specs, waveform, leaf):
     spec = specs[waveform]
     base = _bases(spike)[leaf]
     direction = _direction(waveform, leaf)
@@ -206,11 +191,7 @@ def test_the_endpoint_gradient_matches_a_fourth_order_difference(
     assert bool((live > 0.0).all()) or bool((live < 0.0).all())
 
     samples = {
-        offset: float(
-            wc.chain_loss(
-                spike, waveform, spec, **{leaf: base + (offset * STEP_M) * direction}
-            )
-        )
+        offset: float(wc.chain_loss(spike, waveform, spec, **{leaf: base + (offset * STEP_M) * direction}))
         for offset in (-2, -1, 1, 2)
     }
     difference = fd.fourth_order_difference(samples, STEP_M)
@@ -222,12 +203,8 @@ def test_the_endpoint_gradient_matches_a_fourth_order_difference(
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
-)
-def test_the_forward_tangent_reproduces_the_reverse_directional_derivative(
-    spike, specs, waveform, leaf
-):
+@pytest.mark.parametrize("waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS])
+def test_the_forward_tangent_reproduces_the_reverse_directional_derivative(spike, specs, waveform, leaf):
     """``<grad, v>`` from one reverse pass against the jvp along the same ``v``.
 
     Both modes are exercised on ONE frozen topology - the same compiled scene,
@@ -245,9 +222,7 @@ def test_the_forward_tangent_reproduces_the_reverse_directional_derivative(
 
     with forward_ad.dual_level():
         duals = {
-            name: forward_ad.make_dual(
-                value, direction if name == leaf else torch.zeros_like(value)
-            )
+            name: forward_ad.make_dual(value, direction if name == leaf else torch.zeros_like(value))
             for name, value in bases.items()
         }
         loss = wc.chain_loss(spike, waveform, spec, ad_mode="jvp", **duals)
@@ -279,9 +254,7 @@ def test_the_silent_transmitter_has_an_exactly_zero_gradient(spike, specs, wavef
     assert float(gradient[1].abs().max()) == 0.0
 
 
-@pytest.mark.parametrize(
-    "waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS]
-)
+@pytest.mark.parametrize("waveform,leaf", CELLS, ids=[f"{w}-{leaf}" for w, leaf in CELLS])
 def test_the_out_of_plane_gradient_is_exactly_zero(spike, specs, waveform, leaf):
     """Every endpoint and the whole facet lie in ``z = 0``, so ``dL/dz`` is zero.
 
@@ -302,9 +275,7 @@ def test_a_detached_endpoint_tensor_carries_no_gradient(spike, specs, waveform):
 
     base = _bases(spike)["sites"]
     live = base.clone().requires_grad_(True)
-    loss = wc.chain_loss(
-        spike, waveform, specs[waveform], ad_mode="vjp", sites=live.detach()
-    )
+    loss = wc.chain_loss(spike, waveform, specs[waveform], ad_mode="vjp", sites=live.detach())
     assert not loss.requires_grad
     assert live.grad is None
 
@@ -314,9 +285,7 @@ def test_a_detached_endpoint_tensor_carries_no_gradient(spike, specs, waveform):
 # --------------------------------------------------------------------------
 
 
-def test_a_transmitter_only_forward_dual_is_refused_by_the_dead_tangent_guard(
-    spike, specs
-):
+def test_a_transmitter_only_forward_dual_is_refused_by_the_dead_tangent_guard(spike, specs):
     """An honest refusal, and the reason it is not a defect in this file.
 
     The outbound leg runs sites to receivers. A dual that covers only the
@@ -335,15 +304,11 @@ def test_a_transmitter_only_forward_dual_is_refused_by_the_dead_tangent_guard(
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(base, torch.ones_like(base))
         with pytest.raises(RuntimeError) as excinfo:
-            wc.chain_loss(
-                spike, "ofdm", specs["ofdm"], ad_mode="jvp", transmitters=dual
-            )
+            wc.chain_loss(spike, "ofdm", specs["ofdm"], ad_mode="jvp", transmitters=dual)
     assert "no delay_s tangent" in str(excinfo.value)
 
 
-def test_one_dual_level_over_all_three_endpoint_sets_is_the_supported_shape(
-    spike, specs
-):
+def test_one_dual_level_over_all_three_endpoint_sets_is_the_supported_shape(spike, specs):
     """A zero tangent is a statement, and it is the one both legs need.
 
     Covering all three endpoint sets in ONE ``dual_level`` - the transmitters
@@ -362,10 +327,7 @@ def test_one_dual_level_over_all_three_endpoint_sets_is_the_supported_shape(
     with forward_ad.dual_level():
         duals = {
             name: forward_ad.make_dual(
-                value,
-                torch.ones_like(value)
-                if name == "transmitters"
-                else torch.zeros_like(value),
+                value, torch.ones_like(value) if name == "transmitters" else torch.zeros_like(value)
             )
             for name, value in bases.items()
         }

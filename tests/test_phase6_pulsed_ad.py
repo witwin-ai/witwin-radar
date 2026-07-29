@@ -33,17 +33,11 @@ import math
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
 from support import fd  # noqa: E402
 from support import reference_pulsed as ref  # noqa: E402
-from support.pulsed_grid import (  # noqa: E402
-    F_REF_HZ,
-    SAMPLE_PERIOD_S,
-    reference_spec,
-    rect_spec,
-)
-from witwin.radar.synthesis.pulsed import synthesize_echo_rows  # noqa: E402
+from support.pulsed_grid import F_REF_HZ, SAMPLE_PERIOD_S, rect_spec, reference_spec  # noqa: E402
 
+from witwin.radar.synthesis.pulsed import synthesize_echo_rows  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -60,19 +54,11 @@ pytestmark = pytest.mark.gpu
 # deliberate - carrier_rate_hz is exactly what makes d(phi)/d(tau_rate) differ
 # from d(phi)/d(tau_rt) * t_l, and a spec with it zeroed would never exercise it.
 SPEC = reference_spec(
-    num_pulses=4,
-    num_samples=256,
-    pri_s=20.0e-6,
-    pulse_width_s=2.0e-6,
-    max_expected_delay_rate=1.0e-7,
+    num_pulses=4, num_samples=256, pri_s=20.0e-6, pulse_width_s=2.0e-6, max_expected_delay_rate=1.0e-7
 )
 
 RECT_SPEC = rect_spec(
-    num_pulses=4,
-    num_samples=256,
-    pri_s=20.0e-6,
-    pulse_width_s=2.0e-6,
-    max_expected_delay_rate=1.0e-7,
+    num_pulses=4, num_samples=256, pri_s=20.0e-6, pulse_width_s=2.0e-6, max_expected_delay_rate=1.0e-7
 )
 
 # Both pulses land entirely inside the 5.12 us gate, and neither sits on an
@@ -139,9 +125,7 @@ def _imaginary_central_difference(evaluate, value, index, step):
 @pytest.fixture(scope="module")
 def target_cube():
     torch.manual_seed(20260725)
-    return torch.randn(
-        (SPEC.num_pulses, 1, SPEC.num_samples), dtype=torch.complex128
-    )
+    return torch.randn((SPEC.num_pulses, 1, SPEC.num_samples), dtype=torch.complex128)
 
 
 # --------------------------------------------------------------------------
@@ -180,9 +164,7 @@ def test_oracle_gradients_agree_with_float64_finite_differences(target_cube):
 
     for index in range(len(DELAYS)):
         measured = fd.central_difference(
-            lambda value: _reference_loss(
-                value, rate.detach(), weight.detach(), offsets, target_cube
-            ),
+            lambda value: _reference_loss(value, rate.detach(), weight.detach(), offsets, target_cube),
             tau.detach(),
             index,
             STEP_TAU_S,
@@ -190,45 +172,30 @@ def test_oracle_gradients_agree_with_float64_finite_differences(target_cube):
         assert fd.relative_error(measured, float(tau.grad[index]), floor=1e-6) < 1e-4
 
         measured_rate = fd.central_difference(
-            lambda value: _reference_loss(
-                tau.detach(), value, weight.detach(), offsets, target_cube
-            ),
+            lambda value: _reference_loss(tau.detach(), value, weight.detach(), offsets, target_cube),
             rate.detach(),
             index,
             STEP_RATE,
         )
-        assert (
-            fd.relative_error(measured_rate, float(rate.grad[index]), floor=1e-6)
-            < 1e-4
-        )
+        assert fd.relative_error(measured_rate, float(rate.grad[index]), floor=1e-6) < 1e-4
 
         measured_re = fd.central_difference(
-            lambda value: _reference_loss(
-                tau.detach(), rate.detach(), value, offsets, target_cube
-            ),
+            lambda value: _reference_loss(tau.detach(), rate.detach(), value, offsets, target_cube),
             weight.detach(),
             index,
             STEP_WEIGHT,
         )
         # Torch's complex autograd convention: .grad holds the conjugate
         # Wirtinger derivative, so d(loss)/d(Re w) is +Re(grad).
-        assert (
-            fd.relative_error(measured_re, float(weight.grad[index].real), floor=1e-9)
-            < 1e-5
-        )
+        assert fd.relative_error(measured_re, float(weight.grad[index].real), floor=1e-9) < 1e-5
 
         measured_im = _imaginary_central_difference(
-            lambda value: _reference_loss(
-                tau.detach(), rate.detach(), value, offsets, target_cube
-            ),
+            lambda value: _reference_loss(tau.detach(), rate.detach(), value, offsets, target_cube),
             weight.detach(),
             index,
             STEP_WEIGHT,
         )
-        assert (
-            fd.relative_error(measured_im, float(weight.grad[index].imag), floor=1e-9)
-            < 1e-5
-        )
+        assert fd.relative_error(measured_im, float(weight.grad[index].imag), floor=1e-9) < 1e-5
 
 
 # --------------------------------------------------------------------------
@@ -250,34 +217,14 @@ def test_native_vjp_matches_the_oracle(target_cube):
     _reference_loss(o_tau, o_rate, o_weight, o_offsets, target_cube).backward()
 
     for index in range(len(DELAYS)):
-        assert (
-            fd.relative_error(
-                float(tau.grad[index]), float(o_tau.grad[index]), floor=1e-6
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(rate.grad[index]), float(o_rate.grad[index]), floor=1e-6
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(weight.grad[index].real),
-                float(o_weight.grad[index].real),
-                floor=1e-9,
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(weight.grad[index].imag),
-                float(o_weight.grad[index].imag),
-                floor=1e-9,
-            )
-            < 1e-3
-        ), index
+        assert fd.relative_error(float(tau.grad[index]), float(o_tau.grad[index]), floor=1e-6) < 1e-3, index
+        assert fd.relative_error(float(rate.grad[index]), float(o_rate.grad[index]), floor=1e-6) < 1e-3, index
+        assert fd.relative_error(float(weight.grad[index].real), float(o_weight.grad[index].real), floor=1e-9) < 1e-3, (
+            index
+        )
+        assert fd.relative_error(float(weight.grad[index].imag), float(o_weight.grad[index].imag), floor=1e-9) < 1e-3, (
+            index
+        )
 
     # Every row must actually be carrying gradient, or the comparison above is
     # satisfied by zeros on both sides.
@@ -298,10 +245,7 @@ MULTI_OFFSETS = (0, 2, 5, 5)
 @pytest.fixture(scope="module")
 def multi_target_cube():
     torch.manual_seed(20260726)
-    return torch.randn(
-        (SPEC.num_pulses, len(MULTI_OFFSETS) - 1, SPEC.num_samples),
-        dtype=torch.complex128,
-    )
+    return torch.randn((SPEC.num_pulses, len(MULTI_OFFSETS) - 1, SPEC.num_samples), dtype=torch.complex128)
 
 
 def test_multi_segment_vjp_matches_the_oracle(multi_target_cube):
@@ -335,34 +279,14 @@ def test_multi_segment_vjp_matches_the_oracle(multi_target_cube):
     ref.echo_loss(o_cube, multi_target_cube).backward()
 
     for index in range(len(MULTI_DELAYS)):
-        assert (
-            fd.relative_error(
-                float(tau.grad[index]), float(o_tau.grad[index]), floor=1e-6
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(rate.grad[index]), float(o_rate.grad[index]), floor=1e-6
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(weight.grad[index].real),
-                float(o_weight.grad[index].real),
-                floor=1e-9,
-            )
-            < 1e-3
-        ), index
-        assert (
-            fd.relative_error(
-                float(weight.grad[index].imag),
-                float(o_weight.grad[index].imag),
-                floor=1e-9,
-            )
-            < 1e-3
-        ), index
+        assert fd.relative_error(float(tau.grad[index]), float(o_tau.grad[index]), floor=1e-6) < 1e-3, index
+        assert fd.relative_error(float(rate.grad[index]), float(o_rate.grad[index]), floor=1e-6) < 1e-3, index
+        assert fd.relative_error(float(weight.grad[index].real), float(o_weight.grad[index].real), floor=1e-9) < 1e-3, (
+            index
+        )
+        assert fd.relative_error(float(weight.grad[index].imag), float(o_weight.grad[index].imag), floor=1e-9) < 1e-3, (
+            index
+        )
 
     assert float(weight.grad.abs().min()) > 1e-9
 
@@ -406,10 +330,7 @@ def test_native_jvp_matches_the_oracle_and_a_float64_finite_difference(target_cu
     # the realised geometry step, 1e-4 * 1e-9 s, stays three orders of magnitude
     # below the 3e-10 s envelope clearance.
     directional = fd.directional_derivative(
-        lambda t, r: _reference_loss(t, r, o_weight, o_offsets, target_cube),
-        (o_tau, o_rate),
-        (o_d_tau, o_d_rate),
-        1e-4,
+        lambda t, r: _reference_loss(t, r, o_weight, o_offsets, target_cube), (o_tau, o_rate), (o_d_tau, o_d_rate), 1e-4
     )
     assert fd.relative_error(directional, oracle, floor=1e-9) < 1e-4
     assert fd.relative_error(measured, oracle, floor=1e-9) < 2e-3
@@ -431,12 +352,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
     """
 
     tau, rate, weight, offsets = _cuda_inputs()
-    steps = {
-        "tau_rt": STEP_TAU_S,
-        "tau_rate": STEP_RATE,
-        "weight_re": STEP_WEIGHT,
-        "weight_im": STEP_WEIGHT,
-    }
+    steps = {"tau_rt": STEP_TAU_S, "tau_rate": STEP_RATE, "weight_re": STEP_WEIGHT, "weight_im": STEP_WEIGHT}
     step = steps[variable]
     direction = torch.tensor([1.0, -0.5], dtype=torch.float32, device="cuda")
 
@@ -489,13 +405,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
     expected = 0.5 * (evaluate(1.0) - evaluate(-1.0))
     scale = float(expected.abs().max())
     assert scale > 0.0, variable
-    torch.testing.assert_close(
-        jvp,
-        expected,
-        rtol=2e-3,
-        atol=2e-3 * scale,
-        msg=lambda text: f"{variable}: {text}",
-    )
+    torch.testing.assert_close(jvp, expected, rtol=2e-3, atol=2e-3 * scale, msg=lambda text: f"{variable}: {text}")
 
 
 def test_the_rate_derivative_is_not_the_delay_derivative_scaled_by_slow_time():
@@ -568,9 +478,7 @@ def test_the_rectangular_envelope_has_exactly_zero_delay_gradient():
 
     tau = torch.tensor(DELAYS, dtype=torch.float32, device="cuda").requires_grad_(True)
     rate = torch.tensor(RATES, dtype=torch.float32, device="cuda").requires_grad_(True)
-    weight = torch.tensor(
-        WEIGHTS, dtype=torch.complex64, device="cuda"
-    ).requires_grad_(True)
+    weight = torch.tensor(WEIGHTS, dtype=torch.complex64, device="cuda").requires_grad_(True)
     offsets = torch.tensor([0, len(DELAYS)], dtype=torch.int64, device="cuda")
 
     cube = synthesize_echo_rows(tau, rate, weight, offsets, RECT_SPEC)
@@ -585,9 +493,7 @@ def test_the_rectangular_envelope_has_exactly_zero_delay_gradient():
     # The same run with an LFM pulse has a nonzero delay gradient, which is what
     # makes the assertion above a statement about the ENVELOPE rather than about
     # a dead gradient path.
-    tau_lfm = torch.tensor(
-        DELAYS, dtype=torch.float32, device="cuda"
-    ).requires_grad_(True)
+    tau_lfm = torch.tensor(DELAYS, dtype=torch.float32, device="cuda").requires_grad_(True)
     lfm = synthesize_echo_rows(
         tau_lfm,
         torch.tensor(RATES, dtype=torch.float32, device="cuda"),
@@ -689,18 +595,12 @@ def test_gradcheck_corroborates_both_modes():
     """Corroboration only, at tiny size and with stated float32 tolerances."""
 
     spec = reference_spec(
-        num_pulses=2,
-        num_samples=64,
-        pri_s=20.0e-6,
-        pulse_width_s=0.5e-6,
-        max_expected_delay_rate=1.0e-7,
+        num_pulses=2, num_samples=64, pri_s=20.0e-6, pulse_width_s=0.5e-6, max_expected_delay_rate=1.0e-7
     )
     offsets = torch.tensor([0, 2], dtype=torch.int64, device="cuda")
     rate = torch.zeros(2, dtype=torch.float32, device="cuda")
     tau = torch.tensor([0.2003e-6, 0.5007e-6], dtype=torch.float32, device="cuda")
-    weight = torch.tensor(
-        [0.6 - 0.3j, -0.2 + 0.45j], dtype=torch.complex64, device="cuda"
-    ).requires_grad_(True)
+    weight = torch.tensor([0.6 - 0.3j, -0.2 + 0.45j], dtype=torch.complex64, device="cuda").requires_grad_(True)
 
     def run(w):
         return synthesize_echo_rows(tau, rate, w, offsets, spec)
@@ -710,9 +610,7 @@ def test_gradcheck_corroborates_both_modes():
     # rad/s AND through a support test, so it has no usable float32
     # perturbation scale at all; its derivative is covered against the float64
     # oracle above, which is the stronger check.
-    assert torch.autograd.gradcheck(
-        run, (weight,), eps=1e-3, atol=2e-2, rtol=2e-2, nondet_tol=1e-5
-    )
+    assert torch.autograd.gradcheck(run, (weight,), eps=1e-3, atol=2e-2, rtol=2e-2, nondet_tol=1e-5)
     assert torch.autograd.gradcheck(
         run,
         (weight,),

@@ -32,12 +32,7 @@ def test_mesh_to_mesh_is_differentiable_for_vertices_and_transform():
     from witwin.core import Mesh
 
     base_vertices = torch.tensor(
-        [
-            [-0.5, -0.5, 0.0],
-            [0.5, -0.5, 0.0],
-            [0.5, 0.5, 0.0],
-            [-0.5, 0.5, 0.0],
-        ],
+        [[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.5, 0.5, 0.0], [-0.5, 0.5, 0.0]],
         dtype=torch.float32,
         requires_grad=True,
     )

@@ -38,6 +38,7 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
+
 from witwin.radar.paths import (  # noqa: E402
     COMPONENT_NAMES,
     DIRECT_LEAKAGE,
@@ -50,19 +51,13 @@ from witwin.radar.paths import (  # noqa: E402
 from witwin.radar.processing import combine_incoherent  # noqa: E402
 from witwin.radar.synthesis import select_component, synthesize_fmcw  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 #: The fixture's partition, written down rather than derived from the code
 #: under test. Four line-of-sight round trips through the two sites, seven that
 #: bounce off the wall on one leg or both, no direct route in a two-way join and
 #: nothing deeper than one interaction per leg.
-EXPECTED_COUNTS = {
-    TARGET: 4,
-    ENVIRONMENT_CLUTTER: 7,
-    DIRECT_LEAKAGE: 0,
-    MULTI_INTERACTION: 0,
-}
+EXPECTED_COUNTS = {TARGET: 4, ENVIRONMENT_CLUTTER: 7, DIRECT_LEAKAGE: 0, MULTI_INTERACTION: 0}
 
 
 @pytest.fixture(scope="module")
@@ -80,9 +75,7 @@ def _cube(batch, spec):
 
 
 def _component_cubes(batch, index, spec):
-    return [
-        _cube(select_component(batch, index, name), spec) for name in index.names
-    ]
+    return [_cube(select_component(batch, index, name), spec) for name in index.names]
 
 
 # --------------------------------------------------------------------------
@@ -134,8 +127,7 @@ def test_a_site_left_out_of_the_declaration_is_a_loud_error(spike):
         cs.component_index(
             spike,
             ComponentDeclaration(
-                target_site_ids={geo.SITE_P_STABLE_ID},
-                clutter_material_slots={geo.REFLECTION_MATERIAL_SLOT},
+                target_site_ids={geo.SITE_P_STABLE_ID}, clutter_material_slots={geo.REFLECTION_MATERIAL_SLOT}
             ),
         )
 
@@ -144,10 +136,7 @@ def test_a_site_declared_both_target_and_clutter_is_refused(spike):
     """The declaration contradicts itself before it can classify anything."""
 
     with pytest.raises(ValueError, match="both target and clutter"):
-        ComponentDeclaration(
-            target_site_ids={geo.SITE_P_STABLE_ID},
-            clutter_site_ids={geo.SITE_P_STABLE_ID},
-        )
+        ComponentDeclaration(target_site_ids={geo.SITE_P_STABLE_ID}, clutter_site_ids={geo.SITE_P_STABLE_ID})
 
 
 def test_the_direct_route_separates_leakage_from_a_wall_return(spike):
@@ -311,20 +300,18 @@ def test_the_component_cubes_sum_to_the_full_cube(spike, index):
     assert float(parts[1].abs().max()) > 0.1 * scale
 
 
-def test_a_component_export_costs_one_synthesis_and_no_host_observation(
-    spike, index, monkeypatch
-):
+def test_a_component_export_costs_one_synthesis_and_no_host_observation(spike, index, monkeypatch):
     """What the separation actually costs, measured.
 
-    Two claims. The first is a contract: masking a weight and launching the
-    waveform kernel again reads NO device value, so exporting components adds
-    nothing to the frame's host-observation budget no matter how many classes
-    are declared. The second is a number and is reported rather than asserted,
-    because it is a property of this machine: exporting `
-`` components costs
-    `
-`` synthesis launches against the one an unseparated frame pays, and the
-    measured multiplier is what the pipeline budget has to absorb.
+        Two claims. The first is a contract: masking a weight and launching the
+        waveform kernel again reads NO device value, so exporting components adds
+        nothing to the frame's host-observation budget no matter how many classes
+        are declared. The second is a number and is reported rather than asserted,
+        because it is a property of this machine: exporting `
+    `` components costs
+        `
+    `` synthesis launches against the one an unseparated frame pays, and the
+        measured multiplier is what the pipeline budget has to absorb.
     """
 
     import time
@@ -369,11 +356,7 @@ def test_a_component_export_costs_one_synthesis_and_no_host_observation(
     populated = [name for name in index.names if index.count(name)]
     whole_ms = timed(lambda: _cube(batch, spec))
     parts_ms = timed(lambda: _component_cubes(batch, index, spec))
-    two_ms = timed(
-        lambda: [
-            _cube(select_component(batch, index, name), spec) for name in populated
-        ]
-    )
+    two_ms = timed(lambda: [_cube(select_component(batch, index, name), spec) for name in populated])
     print(
         f"\nsynthesis: {whole_ms:.4f} ms unseparated; "
         f"{two_ms:.4f} ms for the {len(populated)} populated components "
@@ -431,9 +414,7 @@ def test_a_masked_row_contributes_exactly_zero_and_no_gradient(spike, index):
     target_only = select_component(batch, index, TARGET)
     mask = index.mask(TARGET)
     weight = target_only.complex_transfer_ref
-    assert torch.equal(
-        weight[~mask], torch.zeros_like(weight[~mask])
-    )
+    assert torch.equal(weight[~mask], torch.zeros_like(weight[~mask]))
     assert torch.equal(weight[mask], batch.complex_transfer_ref[mask])
 
     # The clutter rows carry the target response too, so a live gradient there
@@ -487,10 +468,7 @@ def test_the_target_only_cube_matches_the_float64_oracle(spike, index):
     from witwin.radar.synthesis.assembly import pair_tx_index
 
     tx_index = pair_tx_index(
-        num_tx=spec.num_tx,
-        num_rx=spec.num_rx,
-        sensor_pair_count=batch.sensor_pair_count,
-        device=batch.device,
+        num_tx=spec.num_tx, num_rx=spec.num_rx, sensor_pair_count=batch.sensor_pair_count, device=batch.device
     )
     weight = ref.channel_to_beat(selected.complex_transfer_ref.detach().cpu())
     # This frame is composed without a Doppler rate, so the oracle is handed the
@@ -539,12 +517,7 @@ def test_incoherent_combination_adds_power_and_says_so(spike, index):
     power = combine_incoherent([target, clutter])
     assert power.dtype == torch.float32
     assert power.shape == target.shape
-    reference = (
-        target.real.square()
-        + target.imag.square()
-        + clutter.real.square()
-        + clutter.imag.square()
-    )
+    reference = target.real.square() + target.imag.square() + clutter.real.square() + clutter.imag.square()
     assert torch.allclose(power, reference, rtol=1.0e-6, atol=0.0)
 
     coherent = (target + clutter).abs().square()
@@ -554,9 +527,7 @@ def test_incoherent_combination_adds_power_and_says_so(spike, index):
 
     # A single component is its own power, exactly.
     alone = combine_incoherent([target])
-    assert torch.allclose(
-        alone, target.real.square() + target.imag.square(), rtol=0.0, atol=0.0
-    )
+    assert torch.allclose(alone, target.real.square() + target.imag.square(), rtol=0.0, atol=0.0)
 
 
 def test_incoherent_combination_of_disjoint_delays_is_the_magnitude_sum(spike, index):
@@ -593,9 +564,7 @@ def test_incoherent_combination_of_disjoint_delays_is_the_magnitude_sum(spike, i
     ratio = 1.0e4
     dominant = profiles[0].abs().square() > ratio * profiles[1].abs().square()
     assert bool(dominant.any())
-    relative = float(
-        (cross[dominant] / power[dominant]).max()
-    )
+    relative = float((cross[dominant] / power[dominant]).max())
     print(f"\ndominant-bin relative cross term: {relative:.3e}")
     assert relative <= 2.0 / math.sqrt(ratio) * (1.0 + 1.0e-3)
 

@@ -22,16 +22,10 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
-from witwin.radar.processing.signal import PROCESSING_UNITS, ProcessingAxes
-from witwin.radar.synthesis.assembly import (
-    BEAT_PHASOR,
-    CHANNEL_PHASOR,
-    SPEED_OF_LIGHT_M_PER_S,
-    SynthesisResult,
-)
 
+from witwin.radar.processing.signal import PROCESSING_UNITS, ProcessingAxes
+from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR, SPEED_OF_LIGHT_M_PER_S, SynthesisResult
 
 PAIRS = grid.FMCW_NUM_TX * grid.FMCW_NUM_RX
 
@@ -42,25 +36,19 @@ def _cube(slow: int, fast: int) -> torch.Tensor:
 
 def fmcw_axes(**kwargs) -> ProcessingAxes:
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw(
-        _cube(spec.num_chirps, spec.num_samples), spec
-    )
+    result = SynthesisResult.from_fmcw(_cube(spec.num_chirps, spec.num_samples), spec)
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
 
 
 def ofdm_axes(**kwargs) -> ProcessingAxes:
     spec = grid.ofdm_spec(num_symbols=8)
-    result = SynthesisResult.from_ofdm(
-        _cube(spec.num_symbols, spec.num_subcarriers), spec
-    )
+    result = SynthesisResult.from_ofdm(_cube(spec.num_symbols, spec.num_subcarriers), spec)
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
 
 
 def pulsed_axes(**kwargs) -> ProcessingAxes:
     spec = grid.pulsed_spec(num_pulses=8)
-    result = SynthesisResult.from_pulsed(
-        _cube(spec.num_pulses, spec.num_samples), spec
-    )
+    result = SynthesisResult.from_pulsed(_cube(spec.num_pulses, spec.num_samples), spec)
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
 
 
@@ -91,10 +79,7 @@ def test_an_unknown_phasor_is_refused_rather_than_defaulted():
     from dataclasses import replace
 
     spec = grid.fmcw_spec()
-    result = replace(
-        SynthesisResult.from_fmcw(_cube(spec.num_chirps, spec.num_samples), spec),
-        phasor="exp(+j*k*d)",
-    )
+    result = replace(SynthesisResult.from_fmcw(_cube(spec.num_chirps, spec.num_samples), spec), phasor="exp(+j*k*d)")
     with pytest.raises(ValueError, match="unknown phasor convention"):
         ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
 
@@ -123,9 +108,9 @@ def test_every_published_axis_is_si_float64_and_matches_its_bin_width():
         # next one up is exactly one velocity bin away.
         centre = record.doppler_bin_count // 2
         assert float(record.velocity_mps[centre]) == 0.0, record.waveform
-        assert float(record.velocity_mps[centre + 1]) == pytest.approx(
-            record.velocity_bin_mps, rel=1e-12
-        ), record.waveform
+        assert float(record.velocity_mps[centre + 1]) == pytest.approx(record.velocity_bin_mps, rel=1e-12), (
+            record.waveform
+        )
         # And the whole axis spans exactly twice the unambiguous speed.
         assert record.velocity_bin_mps * record.doppler_bin_count == pytest.approx(
             2.0 * record.max_unambiguous_speed_mps, rel=1e-12
@@ -177,33 +162,20 @@ def test_the_record_reproduces_the_spec_scalars_exactly():
     assert record.slow_time_period_s == ofdm.symbol_period_s
     assert record.range_bin_m == ofdm.range_resolution_m
     assert record.max_unambiguous_speed_mps == ofdm.max_unambiguous_speed_mps
-    assert record.max_unambiguous_range_m == (
-        SPEED_OF_LIGHT_M_PER_S * ofdm.max_unambiguous_delay_s / 2.0
-    )
+    assert record.max_unambiguous_range_m == (SPEED_OF_LIGHT_M_PER_S * ofdm.max_unambiguous_delay_s / 2.0)
 
     pulsed = grid.pulsed_spec(num_pulses=8)
     record = pulsed_axes()
     assert record.slow_time_period_s == pulsed.pri_s
     assert record.max_unambiguous_speed_mps == pulsed.max_unambiguous_speed_m_s
     assert record.max_unambiguous_range_m == pulsed.max_unambiguous_range_m
-    assert record.range_bin_m == (
-        SPEED_OF_LIGHT_M_PER_S * pulsed.sample_period_s / 2.0
-    )
+    assert record.range_bin_m == (SPEED_OF_LIGHT_M_PER_S * pulsed.sample_period_s / 2.0)
 
 
 def test_the_axis_names_follow_the_waveform_and_not_the_other_way_round():
-    assert (fmcw_axes().slow_time_name, fmcw_axes().fast_time_name) == (
-        "chirp",
-        "sample",
-    )
-    assert (ofdm_axes().slow_time_name, ofdm_axes().fast_time_name) == (
-        "symbol",
-        "subcarrier",
-    )
-    assert (pulsed_axes().slow_time_name, pulsed_axes().fast_time_name) == (
-        "pulse",
-        "sample",
-    )
+    assert (fmcw_axes().slow_time_name, fmcw_axes().fast_time_name) == ("chirp", "sample")
+    assert (ofdm_axes().slow_time_name, ofdm_axes().fast_time_name) == ("symbol", "subcarrier")
+    assert (pulsed_axes().slow_time_name, pulsed_axes().fast_time_name) == ("pulse", "sample")
 
 
 def test_a_pulsed_range_gate_moves_the_axis_origin_and_nothing_else():
@@ -212,13 +184,9 @@ def test_a_pulsed_range_gate_moves_the_axis_origin_and_nothing_else():
     from dataclasses import replace
 
     spec = replace(grid.pulsed_spec(num_pulses=8), range_gate_start_s=2.0e-8)
-    result = SynthesisResult.from_pulsed(
-        _cube(spec.num_pulses, spec.num_samples), spec
-    )
+    result = SynthesisResult.from_pulsed(_cube(spec.num_pulses, spec.num_samples), spec)
     record = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
-    assert record.range_origin_m == pytest.approx(
-        SPEED_OF_LIGHT_M_PER_S * 2.0e-8 / 2.0, rel=1e-15
-    )
+    assert record.range_origin_m == pytest.approx(SPEED_OF_LIGHT_M_PER_S * 2.0e-8 / 2.0, rel=1e-15)
     assert float(record.range_m[0]) == record.range_origin_m
     assert record.range_bin_m == pulsed_axes().range_bin_m
 
@@ -244,26 +212,12 @@ def test_a_cube_a_spec_and_an_array_must_describe_one_front_end():
     from dataclasses import replace
 
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw(
-        _cube(spec.num_chirps, spec.num_samples), spec
-    )
+    result = SynthesisResult.from_fmcw(_cube(spec.num_chirps, spec.num_samples), spec)
     array = grid.array_spec()
 
     with pytest.raises(ValueError, match="but the spec declares"):
-        ProcessingAxes.from_synthesis(
-            replace(result, reference_frequency_hz=76.0e9), spec, array
-        )
+        ProcessingAxes.from_synthesis(replace(result, reference_frequency_hz=76.0e9), spec, array)
     with pytest.raises(ValueError, match="element spacing is defined"):
-        ProcessingAxes.from_synthesis(
-            result, spec, replace(array, reference_frequency_hz=76.0e9)
-        )
+        ProcessingAxes.from_synthesis(result, spec, replace(array, reference_frequency_hz=76.0e9))
     with pytest.raises(ValueError, match="sensor pairs but the array"):
-        ProcessingAxes.from_synthesis(
-            result,
-            spec,
-            replace(
-                array,
-                num_rx=1,
-                rx_loc=(array.rx_loc[0],),
-            ),
-        )
+        ProcessingAxes.from_synthesis(result, spec, replace(array, num_rx=1, rx_loc=(array.rx_loc[0],)))

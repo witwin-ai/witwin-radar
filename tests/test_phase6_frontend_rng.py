@@ -25,11 +25,7 @@ BLOCK_ENV = "WITWIN_RADAR_FRONTEND_BLOCK"
 def _chain(noise, *, seed: int, lna=None):
     from witwin.radar.frontend import FrontendChain, FrontendSpec, PortSpec, SeedSpec
 
-    return FrontendChain(
-        FrontendSpec(
-            port=PortSpec(1.0), noise=noise, lna=lna, seed=SeedSpec(seed_base=seed)
-        )
-    )
+    return FrontendChain(FrontendSpec(port=PortSpec(1.0), noise=noise, lna=lna, seed=SeedSpec(seed_base=seed)))
 
 
 def _thermal_only():
@@ -95,12 +91,8 @@ def test_toggling_the_lna_leaves_the_thermal_realisation_a_pure_scaling():
 
     signal = _zeros()
     plain = _chain(_thermal_only(), seed=9).apply(signal).signal
-    amplified = _chain(_thermal_only(), seed=9, lna=LnaSpec(gain_db=12.0)).apply(
-        signal
-    ).signal
-    assert torch.allclose(
-        amplified, plain * LnaSpec(gain_db=12.0).voltage_gain, rtol=1e-6, atol=0.0
-    )
+    amplified = _chain(_thermal_only(), seed=9, lna=LnaSpec(gain_db=12.0)).apply(signal).signal
+    assert torch.allclose(amplified, plain * LnaSpec(gain_db=12.0).voltage_gain, rtol=1e-6, atol=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +113,7 @@ def test_the_same_seed_gives_the_same_realisation_and_a_different_seed_does_not(
 
 
 @pytest.mark.parametrize("block", ["64", "128", "512", "1024"])
-def test_the_realisation_does_not_depend_on_the_launch_configuration(
-    monkeypatch, block
-):
+def test_the_realisation_does_not_depend_on_the_launch_configuration(monkeypatch, block):
     """The Philox-versus-per-thread-state test, run at four launch widths.
 
     This is the assertion that forbids a ``curand`` state-per-thread scheme. Such
@@ -171,10 +161,11 @@ def test_the_realisation_does_not_depend_on_the_signal_it_is_added_to():
     """
 
     generator = torch.Generator(device="cpu").manual_seed(13)
-    base = torch.complex(
-        torch.randn(1 << 14, generator=generator),
-        torch.randn(1 << 14, generator=generator),
-    ).to(torch.complex64).cuda()
+    base = (
+        torch.complex(torch.randn(1 << 14, generator=generator), torch.randn(1 << 14, generator=generator))
+        .to(torch.complex64)
+        .cuda()
+    )
     chain = _chain(_thermal_only(), seed=17)
     first = chain.apply(base).signal
     second = chain.apply(2 * base).signal

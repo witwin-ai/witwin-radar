@@ -18,7 +18,6 @@ from . import phase4_geometry as geo
 from . import phase4_world as world
 from .synthesis_batch import to_synthesis
 
-
 # A target response strong enough that the synthesized IQ and the reference IQ
 # are the same order of magnitude. The absolute scale is arbitrary; keeping the
 # two comparable is what makes the loss, and therefore its finite difference,
@@ -32,9 +31,7 @@ def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
     from witwin.radar.synthesis import FmcwSpec
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwSpec.from_radar_config(
-        config, carrier_hz=carrier_hz, output_domain="beat"
-    )
+    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz, output_domain="beat")
     if num_chirps is not None:
         from dataclasses import replace
 
@@ -45,12 +42,7 @@ def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
 def make_response(*, requires_grad: bool = False, device: str = "cuda"):
     from witwin.radar.scattering import ScalarRcsResponse
 
-    return ScalarRcsResponse.from_values(
-        SPIKE_AMPLITUDE,
-        SPIKE_PHASE_RAD,
-        device=device,
-        requires_grad=requires_grad,
-    )
+    return ScalarRcsResponse.from_values(SPIKE_AMPLITUDE, SPIKE_PHASE_RAD, device=device, requires_grad=requires_grad)
 
 
 class Phase4Spike:
@@ -77,45 +69,32 @@ class Phase4Spike:
         max_depth: int = 0,
         compiled=None,
     ) -> None:
+        from witwin.radar.channel import ChannelPropagationAdapter
         from witwin.radar.paths import TwoWayComposer
-        from witwin.radar.channel import (
-            ChannelPropagationAdapter,
-        )
 
         self.device = device
         self.compiled = world.compile_fixture_scene() if compiled is None else compiled
         self.adapter = ChannelPropagationAdapter(
-            self.compiled,
-            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-            components=components,
-            max_depth=max_depth,
+            self.compiled, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=components, max_depth=max_depth
         )
         # Freeze once, outside every loop.
         self.inbound = self.adapter.freeze(
-            self._source(geo.TX_POSITION_M, geo.TX_STABLE_ID),
-            self._sink(geo.SITE_POSITION_M, geo.SITE_STABLE_ID),
+            self._source(geo.TX_POSITION_M, geo.TX_STABLE_ID), self._sink(geo.SITE_POSITION_M, geo.SITE_STABLE_ID)
         )
         self.outbound = self.adapter.freeze(
-            self._source(geo.SITE_POSITION_M, geo.SITE_STABLE_ID),
-            self._sink(geo.RX_POSITION_M, geo.RX_STABLE_ID),
+            self._source(geo.SITE_POSITION_M, geo.SITE_STABLE_ID), self._sink(geo.RX_POSITION_M, geo.RX_STABLE_ID)
         )
         self.composer = TwoWayComposer.freeze(
             self.inbound,
             self.outbound,
             torch.tensor([geo.SITE_STABLE_ID], dtype=torch.int64, device=device),
-            radar_source_ids=torch.tensor(
-                [geo.TX_STABLE_ID], dtype=torch.int64, device=device
-            ),
-            radar_sink_ids=torch.tensor(
-                [geo.RX_STABLE_ID], dtype=torch.int64, device=device
-            ),
+            radar_source_ids=torch.tensor([geo.TX_STABLE_ID], dtype=torch.int64, device=device),
+            radar_sink_ids=torch.tensor([geo.RX_STABLE_ID], dtype=torch.int64, device=device),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         )
 
     def _source(self, position, stable_id):
-        return world.endpoint_spec(
-            position, stable_id, power_w=geo.TX_POWER_W, device=self.device
-        )
+        return world.endpoint_spec(position, stable_id, power_w=geo.TX_POWER_W, device=self.device)
 
     def _sink(self, position, stable_id):
         return world.endpoint_spec(position, stable_id, device=self.device)
@@ -133,20 +112,12 @@ class Phase4Spike:
         """One frame: two reevaluations and one composition."""
 
         inbound = self.adapter.reevaluate(
-            self.inbound,
-            self._source(tx, geo.TX_STABLE_ID),
-            self._sink(site, geo.SITE_STABLE_ID),
-            ad_mode=ad_mode,
+            self.inbound, self._source(tx, geo.TX_STABLE_ID), self._sink(site, geo.SITE_STABLE_ID), ad_mode=ad_mode
         )
         outbound = self.adapter.reevaluate(
-            self.outbound,
-            self._source(site, geo.SITE_STABLE_ID),
-            self._sink(rx, geo.RX_STABLE_ID),
-            ad_mode=ad_mode,
+            self.outbound, self._source(site, geo.SITE_STABLE_ID), self._sink(rx, geo.RX_STABLE_ID), ad_mode=ad_mode
         )
-        composed = self.composer.compose(
-            inbound, outbound, response, include_delay_rate=include_delay_rate
-        )
+        composed = self.composer.compose(inbound, outbound, response, include_delay_rate=include_delay_rate)
         return composed, inbound, outbound
 
     def synthesize(
@@ -162,14 +133,7 @@ class Phase4Spike:
     ) -> torch.Tensor:
         from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-        composed, _, _ = self.paths(
-            tx,
-            site,
-            rx,
-            response,
-            ad_mode=ad_mode,
-            include_delay_rate=include_delay_rate,
-        )
+        composed, _, _ = self.paths(tx, site, rx, response, ad_mode=ad_mode, include_delay_rate=include_delay_rate)
         return synthesize_fmcw(to_synthesis(composed), spec)
 
     def loss(
@@ -184,15 +148,7 @@ class Phase4Spike:
         ad_mode: str = "vjp",
         include_delay_rate: bool = True,
     ) -> torch.Tensor:
-        iq = self.synthesize(
-            tx,
-            site,
-            rx,
-            response,
-            spec,
-            ad_mode=ad_mode,
-            include_delay_rate=include_delay_rate,
-        )
+        iq = self.synthesize(tx, site, rx, response, spec, ad_mode=ad_mode, include_delay_rate=include_delay_rate)
         return radar_loss(iq, reference_iq)
 
 
@@ -213,26 +169,16 @@ class DirectSpike:
         max_depth: int = 0,
         compiled=None,
     ) -> None:
+        from witwin.radar.channel import ChannelPropagationAdapter
         from witwin.radar.paths import DirectComposer
-        from witwin.radar.channel import (
-            ChannelPropagationAdapter,
-        )
 
         self.device = device
         self.compiled = world.compile_fixture_scene() if compiled is None else compiled
         self.adapter = ChannelPropagationAdapter(
-            self.compiled,
-            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-            components=components,
-            max_depth=max_depth,
+            self.compiled, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=components, max_depth=max_depth
         )
         self.leg = self.adapter.freeze(
-            world.endpoint_spec(
-                geo.TX_POSITION_M,
-                geo.TX_STABLE_ID,
-                power_w=geo.TX_POWER_W,
-                device=device,
-            ),
+            world.endpoint_spec(geo.TX_POSITION_M, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=device),
             world.endpoint_spec(geo.RX_POSITION_M, geo.RX_STABLE_ID, device=device),
         )
         self.composer = DirectComposer.freeze(
@@ -245,9 +191,7 @@ class DirectSpike:
     def paths(self, tx: torch.Tensor, rx: torch.Tensor, *, ad_mode: str = "none"):
         leg = self.adapter.reevaluate(
             self.leg,
-            world.endpoint_spec(
-                tx, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=self.device
-            ),
+            world.endpoint_spec(tx, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=self.device),
             world.endpoint_spec(rx, geo.RX_STABLE_ID, device=self.device),
             ad_mode=ad_mode,
         )
@@ -282,18 +226,12 @@ def make_reference_iq(spec, *, seed: int = 20260724, scale: float = 2.0e-3):
     return scale * torch.complex(real, imag)
 
 
-def positions(
-    *, requires_grad: bool = False, device: str = "cuda"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def positions(*, requires_grad: bool = False, device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     def make(value):
         tensor = torch.tensor([value], dtype=torch.float32, device=device)
         return tensor.requires_grad_(requires_grad)
 
-    return (
-        make(geo.TX_POSITION_M),
-        make(geo.SITE_POSITION_M),
-        make(geo.RX_POSITION_M),
-    )
+    return (make(geo.TX_POSITION_M), make(geo.SITE_POSITION_M), make(geo.RX_POSITION_M))
 
 
 def oracle_positions() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -8,8 +8,8 @@ everywhere, so it lives in a pure function and is checked without a GPU.
 from __future__ import annotations
 
 import pytest
-
 from support import phase4_geometry as geo
+
 from witwin.radar import RadarConfig
 from witwin.radar.synthesis import FmcwSpec
 
@@ -59,9 +59,7 @@ def test_the_two_carrier_homes_are_mutually_exclusive(spec):
     with pytest.raises(ValueError, match="double counts"):
         replace(spec, carrier_hz=geo.REFERENCE_FREQUENCY_HZ)
     # Stating both halves of the pair is how a caller switches placement.
-    switched = replace(
-        spec, carrier_hz=geo.REFERENCE_FREQUENCY_HZ, carrier_rate_hz=0.0
-    )
+    switched = replace(spec, carrier_hz=geo.REFERENCE_FREQUENCY_HZ, carrier_rate_hz=0.0)
     assert switched.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
 
 
@@ -69,9 +67,7 @@ def test_beat_frequency_has_no_factor_of_two(spec):
     tau_rt = geo.round_trip_delay_s()
     assert spec.beat_frequency_hz(tau_rt) == pytest.approx(60.012e12 * tau_rt)
     # The fixture round trip lands just under bin 47 of 256.
-    assert spec.beat_bin(tau_rt) == pytest.approx(
-        spec.beat_frequency_hz(tau_rt) * 256 / 4.4e6
-    )
+    assert spec.beat_bin(tau_rt) == pytest.approx(spec.beat_frequency_hz(tau_rt) * 256 / 4.4e6)
     assert 46.0 < spec.beat_bin(tau_rt) < 47.0
 
 
@@ -79,9 +75,7 @@ def test_round_trip_delay_is_the_sum_of_two_legs():
     d_in, d_out = geo.leg_distances_m()
     assert d_in == pytest.approx(4.36**0.5)
     assert d_out == pytest.approx(3.7825**0.5)
-    assert geo.round_trip_delay_s() == pytest.approx(
-        (d_in + d_out) / geo.C0_M_PER_S
-    )
+    assert geo.round_trip_delay_s() == pytest.approx((d_in + d_out) / geo.C0_M_PER_S)
 
 
 def test_spec_rejects_a_degenerate_grid():

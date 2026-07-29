@@ -18,9 +18,7 @@ import torch
 from . import multi_endpoint_geometry as geo
 
 
-def make_scene(
-    *, transmitter_positions=None, vertices=None, eps_r=None, sigma_e=None
-):
+def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None, sigma_e=None):
     """One narrow concrete wall plus one registered antenna endpoint.
 
     ``vertices``, ``eps_r`` and ``sigma_e`` accept a LIVE tensor and are passed
@@ -50,11 +48,7 @@ def make_scene(
     from witwin.core.identity import reserve_antenna_id
 
     mesh = Mesh(
-        vertices=(
-            torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32)
-            if vertices is None
-            else vertices
-        ),
+        vertices=(torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32) if vertices is None else vertices),
         faces=torch.tensor(geo.WALL_FACES, dtype=torch.int64),
         recenter=False,
         fill_mode="surface",
@@ -72,20 +66,10 @@ def make_scene(
         assignment_id=1,
         surface_id=1,
     )
-    anchor = (
-        geo.TX_A_POSITION_M
-        if transmitter_positions is None
-        else transmitter_positions[0]
-    )
+    anchor = geo.TX_A_POSITION_M if transmitter_positions is None else transmitter_positions[0]
     scene = Scene(
         structures=(wall,),
-        endpoints=[
-            AntennaState(
-                reserve_antenna_id(77101),
-                "tx",
-                torch.tensor(anchor, dtype=torch.float32),
-            )
-        ],
+        endpoints=[AntennaState(reserve_antenna_id(77101), "tx", torch.tensor(anchor, dtype=torch.float32))],
     )
     return scene, mesh
 
@@ -166,50 +150,24 @@ def make_dynamic_scene(
     scene, mesh = make_scene()
     assert_world_coordinates_survived(mesh)
     trajectories = {}
-    if any(
-        value is not None
-        for value in (
-            wall_velocity,
-            wall_origin,
-            wall_rotation,
-            wall_angular_velocity,
-        )
-    ):
+    if any(value is not None for value in (wall_velocity, wall_origin, wall_rotation, wall_angular_velocity)):
         trajectories[WALL_STRUCTURE_ID] = LinearTrajectory(
-            origin=torch.tensor(
-                (0.0, 0.0, 0.0) if wall_origin is None else wall_origin,
-                dtype=torch.float32,
-            ),
-            velocity=torch.tensor(
-                (0.0, 0.0, 0.0) if wall_velocity is None else wall_velocity,
-                dtype=torch.float32,
-            ),
-            rotation=(
-                None
-                if wall_rotation is None
-                else torch.tensor(wall_rotation, dtype=torch.float32)
-            ),
+            origin=torch.tensor((0.0, 0.0, 0.0) if wall_origin is None else wall_origin, dtype=torch.float32),
+            velocity=torch.tensor((0.0, 0.0, 0.0) if wall_velocity is None else wall_velocity, dtype=torch.float32),
+            rotation=(None if wall_rotation is None else torch.tensor(wall_rotation, dtype=torch.float32)),
             angular_velocity=(
-                None
-                if wall_angular_velocity is None
-                else torch.tensor(wall_angular_velocity, dtype=torch.float32)
+                None if wall_angular_velocity is None else torch.tensor(wall_angular_velocity, dtype=torch.float32)
             ),
         )
     return DynamicScene(
         scene,
         structure_trajectories=trajectories or None,
-        structure_deformations=(
-            None
-            if wall_deformation is None
-            else {WALL_STRUCTURE_ID: wall_deformation}
-        ),
+        structure_deformations=(None if wall_deformation is None else {WALL_STRUCTURE_ID: wall_deformation}),
         endpoint_trajectories=endpoint_trajectories,
     )
 
 
-def compile_snapshot(
-    snapshot, *, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-):
+def compile_snapshot(snapshot, *, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ):
     """Compile one ``SceneSnapshot`` at the fixture reference frequency.
 
     The keyword is spelled out so that this function is directly usable as
@@ -218,9 +176,7 @@ def compile_snapshot(
 
     from witwin.channel.scene import compile as compile_scene
 
-    return compile_scene(
-        snapshot, reference_frequency_hz=reference_frequency_hz
-    )
+    return compile_scene(snapshot, reference_frequency_hz=reference_frequency_hz)
 
 
 def endpoint_batch(positions, stable_ids, *, power_w=None, device="cuda"):
@@ -247,17 +203,11 @@ def endpoint_batch(positions, stable_ids, *, power_w=None, device="cuda"):
             "two must be permuted together"
         )
     rows = len(ids)
-    powers = (
-        None
-        if power_w is None
-        else torch.full((rows,), float(power_w), dtype=torch.float32, device=device)
-    )
+    powers = None if power_w is None else torch.full((rows,), float(power_w), dtype=torch.float32, device=device)
     return RadarEndpointSpec(
         stable_ids=torch.tensor(ids, dtype=torch.int64, device=device),
         positions_m=values,
-        polarizations=torch.tensor(
-            [geo.POLARIZATION] * rows, dtype=torch.float32, device=device
-        ),
+        polarizations=torch.tensor([geo.POLARIZATION] * rows, dtype=torch.float32, device=device),
         powers_w=powers,
     )
 

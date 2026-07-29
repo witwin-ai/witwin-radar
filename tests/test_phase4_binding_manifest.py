@@ -12,7 +12,6 @@ import re
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "ci" / "native-binding-manifest.json"
 EXTENSION = REPO_ROOT / "witwin" / "radar" / "cuda" / "extension.cpp"
@@ -41,9 +40,7 @@ def _implemented_operators() -> set[str]:
     kernels = REPO_ROOT / "witwin" / "radar" / "cuda"
     found: set[str] = set()
     for path in sorted(kernels.glob("*.cu")):
-        found.update(
-            re.findall(r'm\.impl\(\s*"(\w+)"', path.read_text(encoding="utf-8"))
-        )
+        found.update(re.findall(r'm\.impl\(\s*"(\w+)"', path.read_text(encoding="utf-8")))
     return found
 
 
@@ -133,10 +130,7 @@ def test_a_named_end_to_end_caller_resolves_to_something_that_exists(manifest):
 def test_every_manifested_source_is_a_build_input(manifest):
     from witwin.radar.cuda import runtime as build
 
-    sources = {
-        str(path.relative_to(REPO_ROOT)).replace("\\", "/")
-        for path in build.extension_sources()
-    }
+    sources = {str(path.relative_to(REPO_ROOT)).replace("\\", "/") for path in build.extension_sources()}
     assert sources == set(manifest["sources"]), (sorted(sources), manifest["sources"])
 
 
@@ -147,9 +141,7 @@ def test_the_load_check_covers_every_operator_family(manifest):
 
     families = {entry["family"] for entry in manifest["operators"]}
     checked_families = {
-        entry["family"]
-        for entry in manifest["operators"]
-        if entry["symbol"] in build._REQUIRED_OPERATORS
+        entry["family"] for entry in manifest["operators"] if entry["symbol"] in build._REQUIRED_OPERATORS
     }
     assert checked_families == families, sorted(families - checked_families)
 
@@ -205,8 +197,6 @@ def test_every_load_route_validates_the_required_operators(monkeypatch):
         build._require_operators(pathlib.Path("fake.pyd"))
 
     # And the JIT route goes through that same gate rather than around it.
-    source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "runtime.py").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "runtime.py").read_text(encoding="utf-8")
     assert "return _require_operators(Path(library_path))" in source
     assert "return _StableOpsModule(Path(library_path))" not in source

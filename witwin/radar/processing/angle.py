@@ -42,12 +42,13 @@ element table. Rebuilding the geometry inside every call was measured at
 quantity that does not change between frames.
 """
 
-
 import math
 from dataclasses import dataclass
 
 import torch
 
+from ..policy import refuse_derivative
+from .range_doppler import RangeDopplerMap
 from .signal import _require_complex
 
 
@@ -68,10 +69,7 @@ class BeamCube:
     def __post_init__(self) -> None:
         _require_complex("data", self.data)
         if self.data.dim() < 3:
-            raise ValueError(
-                "a beam cube is [*beam, doppler, range]; got shape "
-                f"{tuple(self.data.shape)}"
-            )
+            raise ValueError(f"a beam cube is [*beam, doppler, range]; got shape {tuple(self.data.shape)}")
         beam_shape = tuple(self.data.shape[:-2])
         if tuple(self.directions.shape) != (*beam_shape, 3):
             raise ValueError(
@@ -86,6 +84,7 @@ class BeamCube:
     @property
     def doppler_axis(self) -> torch.Tensor:
         return self.axes.velocity_mps
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ArrayGeometry:
@@ -109,8 +108,7 @@ class ArrayGeometry:
     def __post_init__(self) -> None:
         if not isinstance(self.element_positions_m, torch.Tensor):
             raise TypeError(
-                "element_positions_m must be a torch.Tensor, got "
-                f"{type(self.element_positions_m).__name__}"
+                f"element_positions_m must be a torch.Tensor, got {type(self.element_positions_m).__name__}"
             )
         if self.element_positions_m.dtype != torch.float64:
             raise TypeError(
@@ -129,9 +127,7 @@ class ArrayGeometry:
         if not self.wavelength_m > 0.0:
             raise ValueError(f"wavelength_m must be positive, got {self.wavelength_m}")
         if not self.element_spacing_m > 0.0:
-            raise ValueError(
-                f"element_spacing_m must be positive, got {self.element_spacing_m}"
-            )
+            raise ValueError(f"element_spacing_m must be positive, got {self.element_spacing_m}")
 
     @property
     def sensor_pair_count(self) -> int:
@@ -208,14 +204,10 @@ class ArrayGeometry:
 
         target = torch.device(device)
         transmitters = torch.tensor(
-            [[float(value) for value in row] for row in tx_loc],
-            dtype=torch.float64,
-            device=target,
+            [[float(value) for value in row] for row in tx_loc], dtype=torch.float64, device=target
         )
         receivers = torch.tensor(
-            [[float(value) for value in row] for row in rx_loc],
-            dtype=torch.float64,
-            device=target,
+            [[float(value) for value in row] for row in rx_loc], dtype=torch.float64, device=target
         )
         if transmitters.dim() != 2 or int(transmitters.shape[1]) != 3:
             raise ValueError(f"tx_loc must be [num_tx, 3], got {tuple(transmitters.shape)}")
@@ -224,9 +216,9 @@ class ArrayGeometry:
         num_tx = int(transmitters.shape[0])
         num_rx = int(receivers.shape[0])
         # TX major: element (tx, rx) sits at rank tx * num_rx + rx.
-        positions = (
-            transmitters.reshape(num_tx, 1, 3) + receivers.reshape(1, num_rx, 3)
-        ).reshape(num_tx * num_rx, 3) * float(element_spacing_m)
+        positions = (transmitters.reshape(num_tx, 1, 3) + receivers.reshape(1, num_rx, 3)).reshape(
+            num_tx * num_rx, 3
+        ) * float(element_spacing_m)
         return cls(
             element_positions_m=positions.contiguous(),
             num_tx=num_tx,
@@ -234,21 +226,13 @@ class ArrayGeometry:
             element_spacing_m=float(element_spacing_m),
             wavelength_m=float(wavelength_m),
             phase_sign=int(phase_sign),
-            tx_loc_half_wavelength=tuple(
-                tuple(float(value) for value in row) for row in tx_loc
-            ),
-            rx_loc_half_wavelength=tuple(
-                tuple(float(value) for value in row) for row in rx_loc
-            ),
+            tx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in tx_loc),
+            rx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in rx_loc),
         )
 
 
 def conventional_steering(
-    array: ArrayGeometry,
-    directions: torch.Tensor,
-    *,
-    normalize: bool = True,
-    dtype: torch.dtype = torch.complex64,
+    array: ArrayGeometry, directions: torch.Tensor, *, normalize: bool = True, dtype: torch.dtype = torch.complex64
 ) -> torch.Tensor:
     """``[P, *beam]`` phase-shift weights for a grid of LOCAL-frame directions.
 
@@ -273,13 +257,9 @@ def conventional_steering(
             f"{type(array).__name__}"
         )
     if not isinstance(directions, torch.Tensor):
-        raise TypeError(
-            f"directions must be a torch.Tensor, got {type(directions).__name__}"
-        )
+        raise TypeError(f"directions must be a torch.Tensor, got {type(directions).__name__}")
     if directions.dim() < 1 or int(directions.shape[-1]) != 3:
-        raise ValueError(
-            f"directions must be [*beam, 3]; got shape {tuple(directions.shape)}"
-        )
+        raise ValueError(f"directions must be [*beam, 3]; got shape {tuple(directions.shape)}")
     offsets = array.element_positions_m
     beam_shape = tuple(directions.shape[:-1])
     flat = directions.reshape(-1, 3).to(torch.float64).to(offsets.device)
@@ -296,12 +276,7 @@ def conventional_steering(
     return manifold.reshape(array.sensor_pair_count, *beam_shape).contiguous()
 
 
-def mvdr_weights(
-    covariance: torch.Tensor,
-    steering: torch.Tensor,
-    *,
-    diagonal_loading: float,
-) -> torch.Tensor:
+def mvdr_weights(covariance: torch.Tensor, steering: torch.Tensor, *, diagonal_loading: float) -> torch.Tensor:
     """Minimum-variance distortionless-response weights, ``[..., P, B]``.
 
     ``w = R^-1 a / (a^H R^-1 a)``, which minimises the output power subject to
@@ -327,9 +302,7 @@ def mvdr_weights(
     if not isinstance(steering, torch.Tensor) or not steering.is_complex():
         raise TypeError("steering must be a complex torch.Tensor")
     if covariance.dim() < 2 or int(covariance.shape[-1]) != int(covariance.shape[-2]):
-        raise ValueError(
-            f"covariance must be [..., P, P]; got shape {tuple(covariance.shape)}"
-        )
+        raise ValueError(f"covariance must be [..., P, P]; got shape {tuple(covariance.shape)}")
     pairs = int(covariance.shape[-1])
     if int(steering.shape[0]) != pairs:
         raise ValueError(
@@ -338,9 +311,7 @@ def mvdr_weights(
         )
     loading = float(diagonal_loading)
     if not loading >= 0.0:
-        raise ValueError(
-            f"diagonal_loading must be non-negative, got {diagonal_loading!r}"
-        )
+        raise ValueError(f"diagonal_loading must be non-negative, got {diagonal_loading!r}")
     beam_shape = tuple(steering.shape[1:])
     flat = steering.reshape(pairs, -1).to(covariance.dtype)
 
@@ -353,7 +324,6 @@ def mvdr_weights(
     normalisation = (flat.conj() * inverse_times_a).sum(dim=-2, keepdim=True)
     weights = inverse_times_a / normalisation
     return weights.reshape(*weights.shape[:-2], pairs, *beam_shape)
-
 
 
 """Angle of arrival: TDM compensation, two FFT routes, and MUSIC.
@@ -407,15 +377,6 @@ and then calls :func:`music_spectrum`. There is no peak pick in it to guard.
 """
 
 
-import math
-
-import torch
-
-from .signal import _require_complex
-
-from ..policy import refuse_derivative
-
-
 #: Why the two FFT routes have no derivative. Written once and quoted by both.
 _PEAK_BIN_REASON = (
     "the direction cosine is read off an argmax BIN INDEX, which is discrete: "
@@ -443,10 +404,7 @@ def _require_virtual(virtual_ant: torch.Tensor, array: ArrayGeometry) -> None:
     if not isinstance(virtual_ant, torch.Tensor) or not virtual_ant.is_complex():
         raise TypeError("virtual_ant must be a complex torch.Tensor")
     if virtual_ant.dim() != 2:
-        raise ValueError(
-            "virtual_ant is [P, N]: one column per detection; got shape "
-            f"{tuple(virtual_ant.shape)}"
-        )
+        raise ValueError(f"virtual_ant is [P, N]: one column per detection; got shape {tuple(virtual_ant.shape)}")
     if int(virtual_ant.shape[0]) != array.sensor_pair_count:
         raise ValueError(
             f"virtual_ant spans {int(virtual_ant.shape[0])} elements but the "
@@ -464,12 +422,7 @@ def _real_dtype(tensor: torch.Tensor) -> torch.dtype:
 # ---------------------------------------------------------------------------
 
 
-def tdm_compensate(
-    aoa_input: torch.Tensor,
-    velocities: torch.Tensor,
-    array: ArrayGeometry,
-    axes,
-) -> torch.Tensor:
+def tdm_compensate(aoa_input: torch.Tensor, velocities: torch.Tensor, array: ArrayGeometry, axes) -> torch.Tensor:
     """Remove the TDM slot phase a moving target writes across transmitters.
 
     ``aoa_input`` is ``[P, N]`` complex in the TX-major virtual-antenna order,
@@ -500,9 +453,7 @@ def tdm_compensate(
     array = _require_array(array)
     _require_virtual(aoa_input, array)
     if not isinstance(velocities, torch.Tensor):
-        raise TypeError(
-            f"velocities must be a torch.Tensor, got {type(velocities).__name__}"
-        )
+        raise TypeError(f"velocities must be a torch.Tensor, got {type(velocities).__name__}")
     if velocities.dim() != 1 or int(velocities.shape[0]) != int(aoa_input.shape[1]):
         raise ValueError(
             f"velocities must be [N] for the {int(aoa_input.shape[1])} detections "
@@ -528,9 +479,7 @@ def tdm_compensate(
 # ---------------------------------------------------------------------------
 
 
-def _finish_direction_cosines(
-    x_vector: torch.Tensor, z_vector: torch.Tensor, array: ArrayGeometry
-) -> torch.Tensor:
+def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor, array: ArrayGeometry) -> torch.Tensor:
     """``[3, N]``: reconcile the phasor, complete the unit vector, zero the rest.
 
     **The conjugation trap, for the third and last time.** A DFT peak measures
@@ -558,12 +507,7 @@ def _finish_direction_cosines(
     return torch.stack((x_vector, y_vector, z_vector), dim=0)
 
 
-def phase_comparison_aoa(
-    virtual_ant: torch.Tensor,
-    array: ArrayGeometry,
-    *,
-    fft_size: int = 64,
-) -> torch.Tensor:
+def phase_comparison_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor:
     """``[P, N]`` -> ``[3, N]`` direction cosines, by two one-dimensional FFTs.
 
     Azimuth comes from the ``2 * num_rx`` sub-aperture at the head of the
@@ -587,11 +531,7 @@ def phase_comparison_aoa(
     grid instead of correcting one with the other.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.angle.phase_comparison_aoa",
-        _PEAK_BIN_REASON,
-        virtual_ant=virtual_ant,
-    )
+    refuse_derivative("witwin.radar.processing.angle.phase_comparison_aoa", _PEAK_BIN_REASON, virtual_ant=virtual_ant)
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
     if type(fft_size) is not int or fft_size < 2:
@@ -609,9 +549,7 @@ def phase_comparison_aoa(
     column = torch.arange(detections, device=device)
 
     n_az = min(2 * num_rx, fft_size)
-    azimuth_padded = torch.zeros(
-        (fft_size, detections), dtype=virtual_ant.dtype, device=device
-    )
+    azimuth_padded = torch.zeros((fft_size, detections), dtype=virtual_ant.dtype, device=device)
     azimuth_padded[:n_az, :] = virtual_ant[:n_az, :]
     azimuth_fft = torch.fft.fft(azimuth_padded, dim=0)
     k_max = torch.argmax(torch.abs(azimuth_fft), dim=0).to(torch.int64)
@@ -628,9 +566,7 @@ def phase_comparison_aoa(
             f"{array.sensor_pair_count} virtual elements and the azimuth "
             f"sub-aperture already consumes {el_start}"
         )
-    elevation_padded = torch.zeros(
-        (fft_size, detections), dtype=virtual_ant.dtype, device=device
-    )
+    elevation_padded = torch.zeros((fft_size, detections), dtype=virtual_ant.dtype, device=device)
     elevation_padded[:n_el, :] = virtual_ant[el_start : el_start + n_el, :]
     elevation_fft = torch.fft.fft(elevation_padded, dim=0)
     elevation_max = torch.argmax(torch.abs(elevation_fft), dim=0).to(torch.int64)
@@ -641,27 +577,18 @@ def phase_comparison_aoa(
     # That offset is READ off the declared array rather than assumed to be two.
     tx_offsets = array.tx_loc_half_wavelength
     el_tx_dx = float(tx_offsets[2][0] - tx_offsets[0][0])
-    phase_adjust = torch.exp(
-        1j * torch.tensor(el_tx_dx, dtype=real_dtype, device=device) * wx
-    )
+    phase_adjust = torch.exp(1j * torch.tensor(el_tx_dx, dtype=real_dtype, device=device) * wx)
     # The ELEVATION aperture leads the azimuth one by the array's own z offset,
     # so the ratio is taken that way round. The deleted original took its
     # reciprocal and therefore published an elevation cosine that pointed the
     # opposite way to the array's z axis - which is why every legacy elevation
     # assertion in the tree was written on an absolute value. The adapter
     # negates this row back, once and by name.
-    wz = torch.angle(
-        peak_elevation * torch.conj(peak_azimuth) * torch.conj(phase_adjust)
-    )
+    wz = torch.angle(peak_elevation * torch.conj(peak_azimuth) * torch.conj(phase_adjust))
     return _finish_direction_cosines(x_vector, wz / torch.pi, array)
 
 
-def fft2_aoa(
-    virtual_ant: torch.Tensor,
-    array: ArrayGeometry,
-    *,
-    fft_size: int = 64,
-) -> torch.Tensor:
+def fft2_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor:
     """``[P, N]`` -> ``[3, N]`` direction cosines, by one zero-padded ``fft2``.
 
     For a virtual planar array: the odd and even transmitter rows are
@@ -670,11 +597,7 @@ def fft2_aoa(
     bin relation holds on both axes as in :func:`phase_comparison_aoa`.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.angle.fft2_aoa",
-        _PEAK_BIN_REASON,
-        virtual_ant=virtual_ant,
-    )
+    refuse_derivative("witwin.radar.processing.angle.fft2_aoa", _PEAK_BIN_REASON, virtual_ant=virtual_ant)
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
     if type(fft_size) is not int or fft_size < 2:
@@ -693,20 +616,14 @@ def fft2_aoa(
 
     reshaped = virtual_ant.reshape(num_tx, num_rx, detections)
     rows = num_tx // 2
-    grid = torch.zeros(
-        (rows, 2 * num_rx, detections), dtype=virtual_ant.dtype, device=device
-    )
+    grid = torch.zeros((rows, 2 * num_rx, detections), dtype=virtual_ant.dtype, device=device)
     grid[:, :num_rx, :] = reshaped[0::2][:rows]
     grid[:, num_rx:, :] = reshaped[1::2][:rows]
 
-    padded = torch.zeros(
-        (fft_size, fft_size, detections), dtype=virtual_ant.dtype, device=device
-    )
+    padded = torch.zeros((fft_size, fft_size, detections), dtype=virtual_ant.dtype, device=device)
     padded[:rows, : 2 * num_rx, :] = grid
     spectrum = torch.fft.fft2(padded, dim=(0, 1))
-    peak = torch.argmax(torch.abs(spectrum).reshape(-1, detections), dim=0).to(
-        torch.int64
-    )
+    peak = torch.argmax(torch.abs(spectrum).reshape(-1, detections), dim=0).to(torch.int64)
     k_el = peak // fft_size
     k_az = peak % fft_size
     k_az = torch.where(k_az > fft_size // 2 - 1, k_az - fft_size, k_az)
@@ -719,10 +636,7 @@ def fft2_aoa(
 #: The two FFT routes, by name. Route selection is EXPLICIT - the caller picks -
 #: because a dispatch on ``num_tx`` is how a change of front end silently
 #: changes the estimator.
-AOA_ROUTES = {
-    "phase_comparison": phase_comparison_aoa,
-    "fft2": fft2_aoa,
-}
+AOA_ROUTES = {"phase_comparison": phase_comparison_aoa, "fft2": fft2_aoa}
 
 
 # ---------------------------------------------------------------------------
@@ -759,9 +673,7 @@ def upa_steering(
     along_rows = torch.polar(torch.ones_like(elevation_phase), elevation_phase)
     along_columns = torch.polar(torch.ones_like(azimuth_phase), azimuth_phase)
     manifold = along_rows.unsqueeze(-1) * along_columns.unsqueeze(-2)
-    return manifold.reshape(
-        int(elevation_rad.shape[0]), int(azimuth_rad.shape[0]), rows * columns
-    ).to(dtype)
+    return manifold.reshape(int(elevation_rad.shape[0]), int(azimuth_rad.shape[0]), rows * columns).to(dtype)
 
 
 def music_spectrum(
@@ -802,54 +714,37 @@ def music_spectrum(
     if not isinstance(angle_data, torch.Tensor) or not angle_data.is_complex():
         raise TypeError("angle_data must be a complex torch.Tensor")
     if angle_data.dim() != 4:
-        raise ValueError(
-            "angle_data is [bins, rows, columns, snapshots]; got shape "
-            f"{tuple(angle_data.shape)}"
-        )
+        raise ValueError(f"angle_data is [bins, rows, columns, snapshots]; got shape {tuple(angle_data.shape)}")
     bins, rows, columns, snapshots = (int(size) for size in angle_data.shape)
     smoothing = int(spatial_smooth)
     if smoothing < 0 or smoothing >= min(rows, columns):
         raise ValueError(
-            f"spatial_smooth={spatial_smooth} must be in [0, min(rows, columns)) "
-            f"for a {rows} x {columns} array"
+            f"spatial_smooth={spatial_smooth} must be in [0, min(rows, columns)) for a {rows} x {columns} array"
         )
     effective_rows = rows - smoothing
     effective_columns = columns - smoothing
     elements = effective_rows * effective_columns
     if not 0 < int(num_signals) < elements:
         raise ValueError(
-            f"num_signals={num_signals} must leave a non-empty noise subspace of "
-            f"the {elements} effective elements"
+            f"num_signals={num_signals} must leave a non-empty noise subspace of the {elements} effective elements"
         )
 
     # [B, jj, kk, rows_eff, cols_eff, T] in the same sub-aperture order the
     # (L + 1) ** 2 list comprehension produced: row shift major.
     windows = angle_data.unfold(1, effective_rows, 1).unfold(2, effective_columns, 1)
-    sub_apertures = windows.permute(0, 1, 2, 4, 5, 3).reshape(
-        bins, (smoothing + 1) ** 2, elements, snapshots
+    sub_apertures = windows.permute(0, 1, 2, 4, 5, 3).reshape(bins, (smoothing + 1) ** 2, elements, snapshots)
+    covariance = torch.einsum("bijk,bilk->bjlk", sub_apertures, sub_apertures.conj()).sum(dim=-1) / (
+        snapshots * (smoothing + 1) ** 2
     )
-    covariance = torch.einsum(
-        "bijk,bilk->bjlk", sub_apertures, sub_apertures.conj()
-    ).sum(dim=-1) / (snapshots * (smoothing + 1) ** 2)
 
     eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
-    _, order = torch.topk(
-        eigenvalues, k=eigenvalues.size(-1), largest=True, sorted=True
-    )
+    _, order = torch.topk(eigenvalues, k=eigenvalues.size(-1), largest=True, sorted=True)
     noise = torch.gather(
-        eigenvectors,
-        2,
-        order[:, int(num_signals) :]
-        .unsqueeze(1)
-        .expand(-1, eigenvectors.size(1), -1),
+        eigenvectors, 2, order[:, int(num_signals) :].unsqueeze(1).expand(-1, eigenvectors.size(1), -1)
     ).to(torch.complex64)
 
     steering = upa_steering(
-        array,
-        rows=effective_rows,
-        columns=effective_columns,
-        elevation_rad=elevation_rad,
-        azimuth_rad=azimuth_rad,
+        array, rows=effective_rows, columns=effective_columns, elevation_rad=elevation_rad, azimuth_rad=azimuth_rad
     ).to(device=angle_data.device)
     # ``a^H P_n a``, with the conjugate on the LEFT. The deleted original put it
     # on the right, which evaluates the form at the CONJUGATE steering vector
@@ -859,10 +754,7 @@ def music_spectrum(
     # Corrected here, and the reflection is asserted against the pre-cutover
     # golden in tests/processing/test_adapters.py.
     projector = torch.matmul(noise, noise.transpose(-1, -2).conj())
-    quadratic = torch.matmul(
-        torch.einsum("ijk,akl->aijl", steering.conj(), projector),
-        steering.transpose(-1, -2),
-    )
+    quadratic = torch.matmul(torch.einsum("ijk,akl->aijl", steering.conj(), projector), steering.transpose(-1, -2))
     return torch.reciprocal(quadratic.diagonal(dim1=-2, dim2=-1)).reshape(
         bins, int(elevation_rad.shape[0]), int(azimuth_rad.shape[0])
     )
@@ -897,10 +789,7 @@ def music_image(
         )
     data = profile.data
     if data.dim() != 4:
-        raise ValueError(
-            "the profile must be [tx, rx, slow_time, range] for an image; got "
-            f"shape {tuple(data.shape)}"
-        )
+        raise ValueError(f"the profile must be [tx, rx, slow_time, range] for an image; got shape {tuple(data.shape)}")
     if range_bins is None:
         raise ValueError(
             "range_bins is required: an auto-detected peak is a modelling choice "
@@ -908,9 +797,7 @@ def music_image(
         )
     selected = range_bins.to(device=data.device, dtype=torch.int64)
     # [bins, tx, rx, snapshots]
-    angle_data = data[:, :, :num_snapshots, :].index_select(-1, selected).permute(
-        3, 0, 1, 2
-    )
+    angle_data = data[:, :, :num_snapshots, :].index_select(-1, selected).permute(3, 0, 1, 2)
     image = music_spectrum(
         angle_data.contiguous(),
         array,
@@ -920,7 +807,6 @@ def music_image(
         spatial_smooth=spatial_smooth,
     )
     return image.permute(1, 2, 0)
-
 
 
 """The beam / velocity / range cube.
@@ -946,16 +832,7 @@ its element table in.
 """
 
 
-import torch
-
-from .signal import _require_complex
-
-from .range_doppler import RangeDopplerMap
-
-
-def beam_cube(
-    rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.Tensor
-) -> BeamCube:
+def beam_cube(rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.Tensor) -> BeamCube:
     """``[*pair, D, R]`` and ``[P, *beam]`` -> ``BeamCube[*beam, D, R]``.
 
     A ``[TX, RX, D, R]`` map and a ``[P, D, R]`` one give the same cube, because
@@ -978,8 +855,7 @@ def beam_cube(
     data = rd.data
     if data.dim() < 3:
         raise ValueError(
-            "a Range-Doppler map to be beamformed is [*pair, doppler, range]; "
-            f"got shape {tuple(data.shape)}"
+            f"a Range-Doppler map to be beamformed is [*pair, doppler, range]; got shape {tuple(data.shape)}"
         )
     pairs = 1
     for size in data.shape[:-2]:
@@ -1000,11 +876,7 @@ def beam_cube(
             f"the steering matrix spans beams {beam_shape} but directions has "
             f"shape {tuple(directions.shape)}; the two are one statement"
         )
-    return BeamCube(
-        data=formed.reshape(*beam_shape, doppler, ranges),
-        axes=rd.axes,
-        directions=directions,
-    )
+    return BeamCube(data=formed.reshape(*beam_shape, doppler, ranges), axes=rd.axes, directions=directions)
 
 
 __all__ = ["beam_cube"]

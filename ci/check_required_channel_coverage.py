@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
 import sys
-
+from pathlib import Path
 
 INSTALL = re.compile(
     r"(?:pip|python\s+-m\s+pip)\s+install[^\n]*(?:"
@@ -47,9 +46,7 @@ def _run_text(text: str) -> str:
 
 
 def _active_yaml(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 def _consumed(name: str, *, commands: str, yaml_text: str) -> bool:
@@ -58,9 +55,7 @@ def _consumed(name: str, *, commands: str, yaml_text: str) -> bool:
 
 
 def audit(repo: Path) -> list[str]:
-    policy = json.loads(
-        (repo / "ci" / "required-integration-tests.json").read_text(encoding="utf-8")
-    )
+    policy = json.loads((repo / "ci" / "required-integration-tests.json").read_text(encoding="utf-8"))
     errors: list[str] = []
     for relative in policy["required_workflows"]:
         path = repo / relative
@@ -72,22 +67,11 @@ def audit(repo: Path) -> list[str]:
         active_yaml = _active_yaml(text)
         if not INSTALL.search(commands):
             errors.append(f"{relative} does not install the Channel dependency")
-        fingerprint_consumed = _consumed(
-            "WITWIN_CHANNEL_FINGERPRINT",
-            commands=commands,
-            yaml_text=active_yaml,
-        )
-        fingerprint_observed = all(
-            token in commands
-            for token in ("witwin.channel", "build_info", "build_fingerprint")
-        )
+        fingerprint_consumed = _consumed("WITWIN_CHANNEL_FINGERPRINT", commands=commands, yaml_text=active_yaml)
+        fingerprint_observed = all(token in commands for token in ("witwin.channel", "build_info", "build_fingerprint"))
         if not fingerprint_consumed or not fingerprint_observed:
             errors.append(f"{relative} does not record a Channel fingerprint")
-        if not _consumed(
-            "WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET",
-            commands=commands,
-            yaml_text=active_yaml,
-        ):
+        if not _consumed("WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET", commands=commands, yaml_text=active_yaml):
             errors.append(f"{relative} does not enforce a Channel skip budget")
     if int(policy["allowed_channel_skips"]) != 0:
         errors.append("required Channel skip budget must be exactly zero")

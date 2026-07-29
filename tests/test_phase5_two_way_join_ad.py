@@ -24,13 +24,11 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
-from witwin.radar.paths import TwoWayComposer
-
 from reference.two_way_torch import PerSiteResponse, join_reference  # noqa: E402
 from support import fd  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
 
 pytestmark = pytest.mark.gpu
 
@@ -62,12 +60,8 @@ def _composer(device: str = "cuda"):
 
 
 def _parameters(composer, *, device: str = "cuda"):
-    tau_in, rate_in, c_in = fx.payload(
-        composer.inbound_row_count, seed=101, device=device
-    )
-    tau_out, rate_out, c_out = fx.payload(
-        composer.outbound_row_count, seed=102, device=device
-    )
+    tau_in, rate_in, c_in = fx.payload(composer.inbound_row_count, seed=101, device=device)
+    tau_out, rate_out, c_out = fx.payload(composer.outbound_row_count, seed=102, device=device)
     _, _, site = fx.payload(composer.site_count, seed=103, device=device)
     return {
         "tau_in": tau_in,
@@ -85,15 +79,9 @@ def _loss_weights(composer, *, device: str = "cuda"):
     rows = composer.path_count
 
     def sample():
-        return (torch.rand(rows, generator=generator, dtype=torch.float64) - 0.5).to(
-            device=device
-        )
+        return (torch.rand(rows, generator=generator, dtype=torch.float64) - 0.5).to(device=device)
 
-    return {
-        "linear": sample(),
-        "quadratic": 1.0 + sample(),
-        "transfer": torch.complex(sample(), sample()),
-    }
+    return {"linear": sample(), "quadratic": 1.0 + sample(), "transfer": torch.complex(sample(), sample())}
 
 
 def _scalar_loss(tau_rt, transfer, weights):
@@ -106,12 +94,8 @@ def _scalar_loss(tau_rt, transfer, weights):
     """
 
     scaled = tau_rt.to(torch.float64) * DELAY_SCALE
-    delay_term = (weights["linear"] * scaled).sum() + 0.5 * (
-        weights["quadratic"] * scaled * scaled
-    ).sum()
-    transfer_term = (
-        torch.conj(weights["transfer"]) * transfer.to(torch.complex128)
-    ).real.sum()
+    delay_term = (weights["linear"] * scaled).sum() + 0.5 * (weights["quadratic"] * scaled * scaled).sum()
+    transfer_term = (torch.conj(weights["transfer"]) * transfer.to(torch.complex128)).real.sum()
     return delay_term + transfer_term
 
 
@@ -133,14 +117,10 @@ def _oracle_loss(composer, values, weights, row_valid):
 
 
 def _oracle_gradients(composer, base, weights, row_valid):
-    values = {
-        name: value.clone().requires_grad_(True) for name, value in base.items()
-    }
+    values = {name: value.clone().requires_grad_(True) for name, value in base.items()}
     loss = _oracle_loss(composer, values, weights, row_valid)
     loss.backward()
-    return {name: value.grad for name, value in values.items()}, float(
-        loss.detach()
-    )
+    return {name: value.grad for name, value in values.items()}, float(loss.detach())
 
 
 def _production_batch(composer, base, *, row_valid=None, requires_grad=False):
@@ -162,17 +142,9 @@ def _production_batch(composer, base, *, row_valid=None, requires_grad=False):
         "c_out": complex_("c_out"),
         "response": complex_("response"),
     }
-    inbound = fx.leg_batch(
-        live["tau_in"],
-        live["c_in"],
-        rate=base["rate_in"].to(torch.float32),
-        row_valid=valid_in,
-    )
+    inbound = fx.leg_batch(live["tau_in"], live["c_in"], rate=base["rate_in"].to(torch.float32), row_valid=valid_in)
     outbound = fx.leg_batch(
-        live["tau_out"],
-        live["c_out"],
-        rate=base["rate_out"].to(torch.float32),
-        row_valid=valid_out,
+        live["tau_out"], live["c_out"], rate=base["rate_out"].to(torch.float32), row_valid=valid_out
     )
     return live, inbound, outbound, PerSiteResponse(live["response"])
 
@@ -188,25 +160,20 @@ def test_the_float64_oracle_matches_its_own_finite_differences():
     weights = _loss_weights(composer)
     gradients, _ = _oracle_gradients(composer, base, weights, None)
 
-    for name, step in (
-        ("tau_in", STEP["tau"]),
-        ("tau_out", STEP["tau"]),
-    ):
+    for name, step in (("tau_in", STEP["tau"]), ("tau_out", STEP["tau"])):
         for index in (0, 3, int(base[name].shape[0]) - 1):
             measured = fd.central_difference(
-                lambda value, key=name: _oracle_loss(
-                    composer, {**base, key: value}, weights, None
-                ),
+                lambda value, key=name: _oracle_loss(composer, {**base, key: value}, weights, None),
                 base[name],
                 index,
                 step,
             )
-            assert (
-                fd.relative_error(
-                    measured, float(gradients[name][index]), floor=ZERO_FLOOR
-                )
-                < 1e-5
-            ), (name, index, measured, float(gradients[name][index]))
+            assert fd.relative_error(measured, float(gradients[name][index]), floor=ZERO_FLOOR) < 1e-5, (
+                name,
+                index,
+                measured,
+                float(gradients[name][index]),
+            )
 
     for name in ("c_in", "c_out", "response"):
         for index in (0, int(base[name].shape[0]) - 1):
@@ -219,19 +186,18 @@ def test_the_float64_oracle_matches_its_own_finite_differences():
                 def evaluate(value, key=name, offset=offset, index=index):
                     perturbed = base[key].clone()
                     perturbed[index] = base[key][index] + offset * value
-                    return _oracle_loss(
-                        composer, {**base, key: perturbed}, weights, None
-                    )
+                    return _oracle_loss(composer, {**base, key: perturbed}, weights, None)
 
                 measured = fd.central_difference(
-                    evaluate,
-                    torch.zeros(1, dtype=torch.float64, device=base[name].device),
-                    0,
-                    STEP["coefficient"],
+                    evaluate, torch.zeros(1, dtype=torch.float64, device=base[name].device), 0, STEP["coefficient"]
                 )
-                assert (
-                    fd.relative_error(measured, expected, floor=ZERO_FLOOR) < 1e-5
-                ), (name, index, part, measured, expected)
+                assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < 1e-5, (
+                    name,
+                    index,
+                    part,
+                    measured,
+                    expected,
+                )
 
 
 # --------------------------------------------------------------------------
@@ -245,9 +211,7 @@ def test_reverse_mode_join_gradients_match_the_oracle():
     weights = _loss_weights(composer)
     oracle, oracle_loss = _oracle_gradients(composer, base, weights, None)
 
-    live, inbound, outbound, response = _production_batch(
-        composer, base, requires_grad=True
-    )
+    live, inbound, outbound, response = _production_batch(composer, base, requires_grad=True)
     composed = composer.compose(inbound, outbound, response)
     loss = _scalar_loss(composed.total_delay_s, composed.complex_transfer_ref, weights)
     loss.backward()
@@ -273,14 +237,10 @@ def test_reverse_mode_join_gradients_match_the_oracle():
                         < 1e-4
                     ), (name, index, part)
             else:
-                assert (
-                    fd.relative_error(
-                        float(measured[index]),
-                        float(expected[index]),
-                        floor=ZERO_FLOOR,
-                    )
-                    < 1e-4
-                ), (name, index)
+                assert fd.relative_error(float(measured[index]), float(expected[index]), floor=ZERO_FLOOR) < 1e-4, (
+                    name,
+                    index,
+                )
 
 
 def test_each_coefficient_gradient_family_matches_a_hand_derived_reduction():
@@ -314,18 +274,14 @@ def test_each_coefficient_gradient_family_matches_a_hand_derived_reduction():
 
     valid_in = torch.ones(composer.inbound_row_count, dtype=torch.bool, device="cuda")
     valid_in[1] = False
-    valid_out = torch.ones(
-        composer.outbound_row_count, dtype=torch.bool, device="cuda"
-    )
+    valid_out = torch.ones(composer.outbound_row_count, dtype=torch.bool, device="cuda")
     valid_out[0] = False
 
     live, inbound, outbound, response = _production_batch(
         composer, base, row_valid=(valid_in, valid_out), requires_grad=True
     )
     composed = composer.compose(inbound, outbound, response)
-    _scalar_loss(
-        composed.total_delay_s, composed.complex_transfer_ref, weights
-    ).backward()
+    _scalar_loss(composed.total_delay_s, composed.complex_transfer_ref, weights).backward()
 
     # The join tables and the mask, read on the host: this is a test, and the
     # tables are freeze-time values the production path never reads back.
@@ -361,14 +317,11 @@ def test_each_coefficient_gradient_family_matches_a_hand_derived_reduction():
         for index in range(int(reference.shape[0])):
             for part in ("real", "imag"):
                 target = float(getattr(reference[index], part))
-                assert (
-                    fd.relative_error(
-                        float(getattr(measured[index], part)),
-                        target,
-                        floor=ZERO_FLOOR,
-                    )
-                    < 1e-4
-                ), (name, index, part)
+                assert fd.relative_error(float(getattr(measured[index], part)), target, floor=ZERO_FLOOR) < 1e-4, (
+                    name,
+                    index,
+                    part,
+                )
         # Every family must carry real signal somewhere, or "matches" would be
         # a comparison of zeros.
         assert float(reference.abs().max()) > 1.0e-3, name
@@ -386,20 +339,14 @@ def test_a_dead_row_carries_no_gradient_back_to_either_leg():
     base = _parameters(composer)
     weights = _loss_weights(composer)
 
-    valid_in = torch.ones(
-        composer.inbound_row_count, dtype=torch.bool, device="cuda"
-    )
+    valid_in = torch.ones(composer.inbound_row_count, dtype=torch.bool, device="cuda")
     valid_in[2] = False
-    valid_out = torch.ones(
-        composer.outbound_row_count, dtype=torch.bool, device="cuda"
-    )
+    valid_out = torch.ones(composer.outbound_row_count, dtype=torch.bool, device="cuda")
     live, inbound, outbound, response = _production_batch(
         composer, base, row_valid=(valid_in, valid_out), requires_grad=True
     )
     composed = composer.compose(inbound, outbound, response)
-    _scalar_loss(
-        composed.total_delay_s, composed.complex_transfer_ref, weights
-    ).backward()
+    _scalar_loss(composed.total_delay_s, composed.complex_transfer_ref, weights).backward()
 
     assert float(live["tau_in"].grad[2]) == 0.0
     assert complex(live["c_in"].grad[2]) == 0j
@@ -440,32 +387,20 @@ def test_forward_mode_join_tangent_matches_the_oracle_and_a_finite_difference():
     live, inbound, outbound, response = _production_batch(composer, base)
     with forward_ad.dual_level():
         dual_inbound = fx.leg_batch(
-            forward_ad.make_dual(
-                live["tau_in"], directions["tau_in"].to(torch.float32)
-            ),
-            forward_ad.make_dual(
-                live["c_in"], directions["c_in"].to(torch.complex64)
-            ),
+            forward_ad.make_dual(live["tau_in"], directions["tau_in"].to(torch.float32)),
+            forward_ad.make_dual(live["c_in"], directions["c_in"].to(torch.complex64)),
             rate=base["rate_in"].to(torch.float32),
         )
         dual_outbound = fx.leg_batch(
-            forward_ad.make_dual(
-                live["tau_out"], directions["tau_out"].to(torch.float32)
-            ),
-            forward_ad.make_dual(
-                live["c_out"], directions["c_out"].to(torch.complex64)
-            ),
+            forward_ad.make_dual(live["tau_out"], directions["tau_out"].to(torch.float32)),
+            forward_ad.make_dual(live["c_out"], directions["c_out"].to(torch.complex64)),
             rate=base["rate_out"].to(torch.float32),
         )
         dual_response = PerSiteResponse(
-            forward_ad.make_dual(
-                live["response"], directions["response"].to(torch.complex64)
-            )
+            forward_ad.make_dual(live["response"], directions["response"].to(torch.complex64))
         )
         composed = composer.compose(dual_inbound, dual_outbound, dual_response)
-        loss = _scalar_loss(
-            composed.total_delay_s, composed.complex_transfer_ref, weights
-        )
+        loss = _scalar_loss(composed.total_delay_s, composed.complex_transfer_ref, weights)
         tangent = forward_ad.unpack_dual(loss).tangent
         assert tangent is not None, "the forward tape did not reach the loss"
         measured = float(tangent)
@@ -488,12 +423,7 @@ def test_forward_mode_join_tangent_matches_the_oracle_and_a_finite_difference():
     # forward path is checked against a difference and not only against the
     # reverse path it is supposed to be independent of.
     def along(scale: float) -> float:
-        moved = {
-            name: base[name] + scale * directions[name]
-            if name in directions
-            else base[name]
-            for name in base
-        }
+        moved = {name: base[name] + scale * directions[name] if name in directions else base[name] for name in base}
         return float(_oracle_loss(composer, moved, weights, None))
 
     step = 1.0e-4

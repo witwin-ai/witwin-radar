@@ -47,16 +47,15 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
 from witwin.radar import Radar  # noqa: E402
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology  # noqa: E402
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.sensors import AntennaPatternSpec  # noqa: E402
 from witwin.radar.sensors import (  # noqa: E402
     ISOTROPIC_PATTERN,
+    AntennaPatternSpec,  # noqa: E402
     RoundTripPatternStage,
 )
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -98,23 +97,15 @@ def _pattern_config(pattern: AntennaPatternSpec) -> dict:
 def _radar(pattern: AntennaPatternSpec = ISOTROPIC_PATTERN) -> Radar:
     config = dict(geo.FIXTURE_RADAR_CONFIG)
     config["antenna_pattern"] = _pattern_config(pattern)
-    return Radar(
-        config,
-        position=(0.0, 0.0, 0.0),
-        target=LOOK_AT_M,
-    )
+    return Radar(config, position=(0.0, 0.0, 0.0), target=LOOK_AT_M)
 
 
 def _response(radar: Radar) -> ScalarRcsResponse:
-    return ScalarRcsResponse.from_values(
-        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
-    )
+    return ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
 
 
 def _sites(radar: Radar, *, requires_grad: bool = False):
-    positions = torch.tensor(
-        SITE_POSITIONS_M, dtype=torch.float32, device=radar.device
-    ).requires_grad_(requires_grad)
+    positions = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device).requires_grad_(requires_grad)
     return ScatterSitePolicy.explicit(positions), positions
 
 
@@ -126,13 +117,7 @@ def _static_scene():
 
 def _simulate(radar: Radar, *, times=(0.0,), **options):
     policy, _ = _sites(radar)
-    return radar.simulate(
-        _static_scene(),
-        times=times,
-        response=_response(radar),
-        sites=policy,
-        **options,
-    )
+    return radar.simulate(_static_scene(), times=times, response=_response(radar), sites=policy, **options)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +134,7 @@ def test_the_stored_default_dipole_is_applied_to_every_simulation():
     result = _simulate(_radar(AntennaPatternSpec.half_wave_dipole()))
     assert result.last_radar_paths.weight_includes_antenna_pattern is True
 
+
 # ---------------------------------------------------------------------------
 # 2. A directional pattern, against the independent Torch oracle
 # ---------------------------------------------------------------------------
@@ -160,9 +146,8 @@ def _pattern_gain_from_vectors(pattern: AntennaPatternSpec, vectors: torch.Tenso
     y_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 1], forward))
     return pattern.evaluate_xy(x_angles_deg, y_angles_deg)
 
-def _oracle_amplitude(
-    radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, pattern
-) -> torch.Tensor:
+
+def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, pattern) -> torch.Tensor:
     """``sqrt(G_t * G_r)`` per composed row, from the Torch pattern evaluator.
 
     Independent of the kernel in the way that matters: it resolves the row's
@@ -198,18 +183,13 @@ def test_a_directional_pattern_scales_each_row_by_its_own_gain():
     radar = _radar(DIRECTIONAL_PATTERN)
     rows = _simulate(radar).last_radar_paths
 
-    sites = torch.tensor(
-        SITE_POSITIONS_M, dtype=torch.float32, device=radar.device
-    )
+    sites = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device)
     expected = _oracle_amplitude(radar, rows, sites, DIRECTIONAL_PATTERN)
     assert float(expected.min()) > 0.0
     assert float(expected.max()) < 1.0
 
     torch.testing.assert_close(
-        rows.complex_transfer_ref,
-        plain_rows.complex_transfer_ref * expected.to(torch.complex64),
-        rtol=2e-6,
-        atol=0.0,
+        rows.complex_transfer_ref, plain_rows.complex_transfer_ref * expected.to(torch.complex64), rtol=2e-6, atol=0.0
     )
 
 
@@ -226,9 +206,7 @@ def test_the_two_sites_are_attenuated_differently():
 
     ratio = rows.complex_transfer_ref.abs() / plain.complex_transfer_ref.abs()
     by_site: dict[int, set[float]] = {}
-    for value, site in zip(
-        ratio.tolist(), rows.topology.site_id.tolist(), strict=True
-    ):
+    for value, site in zip(ratio.tolist(), rows.topology.site_id.tolist(), strict=True):
         by_site.setdefault(int(site), set()).add(round(float(value), 6))
     assert len(by_site) == 2, sorted(by_site)
     first, second = (sorted(values)[0] for values in by_site.values())
@@ -256,9 +234,7 @@ def test_the_stage_publishes_its_provenance_and_synthesis_carries_it():
     rows = _simulate(radar).last_radar_paths
 
     assert rows.weight_includes_antenna_pattern is True
-    batch = SynthesisPathBatch.from_radar_paths(
-        rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    batch = SynthesisPathBatch.from_radar_paths(rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     assert batch.weight_includes_antenna_pattern is True
     # The other three stay Channel's published contract.
     assert batch.weight_includes_reference_phase is True
@@ -269,9 +245,7 @@ def test_the_stage_publishes_its_provenance_and_synthesis_carries_it():
 def test_the_stored_pattern_provenance_reaches_synthesis():
     radar = _radar(ISOTROPIC_PATTERN)
     rows = _simulate(radar).last_radar_paths
-    batch = SynthesisPathBatch.from_radar_paths(
-        rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    batch = SynthesisPathBatch.from_radar_paths(rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     assert batch.weight_includes_antenna_pattern is True
 
 
@@ -295,9 +269,7 @@ def _unit_stage(radar: Radar, pattern) -> tuple[RoundTripPatternStage, RadarPath
     pairs = array.num_tx * array.num_rx
     sites = len(UNIT_SITE_POSITIONS_M)
     rows = pairs * sites
-    pair_index = torch.arange(pairs, device=device, dtype=torch.int64).repeat_interleave(
-        sites
-    )
+    pair_index = torch.arange(pairs, device=device, dtype=torch.int64).repeat_interleave(sites)
     response_slot = torch.arange(sites, device=device, dtype=torch.int64).repeat(pairs)
     join = types.SimpleNamespace(
         sensor_pair_index=pair_index,
@@ -307,10 +279,7 @@ def _unit_stage(radar: Radar, pattern) -> tuple[RoundTripPatternStage, RadarPath
         response_slot=response_slot,
     )
     stage = RoundTripPatternStage.freeze(
-        radar,
-        join,
-        site_ids=tuple(3_000_000 + index for index in range(sites)),
-        pattern=pattern,
+        radar, join, site_ids=tuple(3_000_000 + index for index in range(sites)), pattern=pattern
     )
     weight = torch.complex(
         torch.full((rows,), 0.75, dtype=torch.float32, device=device),
@@ -321,9 +290,7 @@ def _unit_stage(radar: Radar, pattern) -> tuple[RoundTripPatternStage, RadarPath
         sensor_pair_count=pairs,
         path_count=rows,
         sensor_pair_index=pair_index,
-        pair_offsets=torch.arange(
-            0, rows + 1, sites, device=device, dtype=torch.int64
-        ),
+        pair_offsets=torch.arange(0, rows + 1, sites, device=device, dtype=torch.int64),
         total_delay_s=torch.zeros(rows, dtype=torch.float32, device=device),
         delay_rate=None,
         complex_transfer_ref=weight,
@@ -342,15 +309,11 @@ def _unit_stage(radar: Radar, pattern) -> tuple[RoundTripPatternStage, RadarPath
 
 
 def _unit_sites(radar: Radar, *, requires_grad: bool = False) -> torch.Tensor:
-    return torch.tensor(
-        UNIT_SITE_POSITIONS_M, dtype=torch.float32, device=radar.device
-    ).requires_grad_(requires_grad)
+    return torch.tensor(UNIT_SITE_POSITIONS_M, dtype=torch.float32, device=radar.device).requires_grad_(requires_grad)
 
 
 def _unit_loss(stage, batch, sites, tx_pos, rx_pos) -> torch.Tensor:
-    weight = stage.apply(
-        batch, tx_pos=tx_pos, rx_pos=rx_pos, site_positions_m=sites
-    ).complex_transfer_ref
+    weight = stage.apply(batch, tx_pos=tx_pos, rx_pos=rx_pos, site_positions_m=sites).complex_transfer_ref
     # A squared magnitude, so the loss is real and smooth in the gain and has
     # no phase in it at all: the stage multiplies by a REAL scale.
     return weight.real.square().sum() + weight.imag.square().sum()
@@ -359,19 +322,9 @@ def _unit_loss(stage, batch, sites, tx_pos, rx_pos) -> torch.Tensor:
 def test_applying_the_stage_twice_is_refused():
     radar = _radar()
     stage, batch = _unit_stage(radar, DIRECTIONAL_PATTERN)
-    once = stage.apply(
-        batch,
-        tx_pos=radar.tx_pos,
-        rx_pos=radar.rx_pos,
-        site_positions_m=_unit_sites(radar),
-    )
+    once = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
     with pytest.raises(ValueError, match="weight_includes_antenna_pattern"):
-        stage.apply(
-            once,
-            tx_pos=radar.tx_pos,
-            rx_pos=radar.rx_pos,
-            site_positions_m=_unit_sites(radar),
-        )
+        stage.apply(once, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
 
 
 def test_a_direct_join_is_refused_by_name():
@@ -381,12 +334,7 @@ def test_a_direct_join_is_refused_by_name():
 
     direct = dataclasses.replace(batch, join_mode="direct")
     with pytest.raises(NotImplementedError, match="join_mode"):
-        stage.apply(
-            direct,
-            tx_pos=radar.tx_pos,
-            rx_pos=radar.rx_pos,
-            site_positions_m=_unit_sites(radar),
-        )
+        stage.apply(direct, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
 
 
 def test_a_batch_from_another_topology_is_refused():
@@ -401,8 +349,7 @@ def test_a_batch_from_another_topology_is_refused():
         total_delay_s=batch.total_delay_s[:-1],
         complex_transfer_ref=batch.complex_transfer_ref[:-1],
         pair_offsets=batch.pair_offsets.clone().index_put_(
-            (torch.tensor([-1], device=batch.pair_offsets.device),),
-            batch.pair_offsets[-1:] - 1,
+            (torch.tensor([-1], device=batch.pair_offsets.device),), batch.pair_offsets[-1:] - 1
         ),
         topology=RadarPathTopology(
             radar_source_id=batch.topology.radar_source_id[:-1],
@@ -413,12 +360,7 @@ def test_a_batch_from_another_topology_is_refused():
         ),
     )
     with pytest.raises(ValueError, match="frozen topology"):
-        stage.apply(
-            shrunk,
-            tx_pos=radar.tx_pos,
-            rx_pos=radar.rx_pos,
-            site_positions_m=_unit_sites(radar),
-        )
+        stage.apply(shrunk, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
 
 
 def test_a_pattern_that_is_not_a_spec_is_refused():
@@ -432,26 +374,14 @@ def test_a_pattern_that_is_not_a_spec_is_refused():
         response_slot=stage.site_slot,
     )
     with pytest.raises(TypeError, match="AntennaPatternSpec"):
-        RoundTripPatternStage.freeze(
-            radar,
-            join,
-            site_ids=(3_000_000, 3_000_001),
-            pattern={"kind": "separable"},
-        )
+        RoundTripPatternStage.freeze(radar, join, site_ids=(3_000_000, 3_000_001), pattern={"kind": "separable"})
 
 
 def test_the_isotropic_stage_is_the_identity_on_a_unit_batch():
     radar = _radar()
     stage, batch = _unit_stage(radar, ISOTROPIC_PATTERN)
-    published = stage.apply(
-        batch,
-        tx_pos=radar.tx_pos,
-        rx_pos=radar.rx_pos,
-        site_positions_m=_unit_sites(radar),
-    )
-    assert torch.equal(
-        published.complex_transfer_ref, batch.complex_transfer_ref
-    )
+    published = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+    assert torch.equal(published.complex_transfer_ref, batch.complex_transfer_ref)
 
 
 def test_the_reverse_gradient_of_a_site_matches_a_central_difference():
@@ -469,9 +399,7 @@ def test_the_reverse_gradient_of_a_site_matches_a_central_difference():
             for sign in (+1.0, -1.0):
                 shifted = _unit_sites(radar)
                 shifted[row, axis] += sign * step
-                values.append(
-                    float(_unit_loss(stage, batch, shifted, radar.tx_pos, radar.rx_pos))
-                )
+                values.append(float(_unit_loss(stage, batch, shifted, radar.tx_pos, radar.rx_pos)))
             expected[row, axis] = (values[0] - values[1]) / (2.0 * step)
 
     assert float(measured.abs().max()) > 1e-3
@@ -501,9 +429,7 @@ def test_the_reverse_gradient_of_a_transmit_element_matches_a_central_difference
             for sign in (+1.0, -1.0):
                 shifted = radar.tx_pos.detach().clone()
                 shifted[row, axis] += sign * step
-                values.append(
-                    float(_unit_loss(stage, batch, sites, shifted, radar.rx_pos))
-                )
+                values.append(float(_unit_loss(stage, batch, sites, shifted, radar.rx_pos)))
             expected[row, axis] = (values[0] - values[1]) / (2.0 * step)
 
     assert float(measured.abs().max()) > 1e-3
@@ -515,11 +441,7 @@ def test_the_forward_tangent_of_a_site_matches_a_central_difference():
 
     radar = _radar()
     stage, batch = _unit_stage(radar, DIRECTIONAL_PATTERN)
-    direction = torch.tensor(
-        [[0.3, -0.7, 0.5], [-0.4, 0.2, 0.9]],
-        dtype=torch.float32,
-        device=radar.device,
-    )
+    direction = torch.tensor([[0.3, -0.7, 0.5], [-0.4, 0.2, 0.9]], dtype=torch.float32, device=radar.device)
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(_unit_sites(radar), direction)
         loss = _unit_loss(stage, batch, dual, radar.tx_pos, radar.rx_pos)
@@ -531,9 +453,7 @@ def test_the_forward_tangent_of_a_site_matches_a_central_difference():
     values = []
     for sign in (+1.0, -1.0):
         shifted = _unit_sites(radar) + sign * step * direction
-        values.append(
-            float(_unit_loss(stage, batch, shifted, radar.tx_pos, radar.rx_pos))
-        )
+        values.append(float(_unit_loss(stage, batch, shifted, radar.tx_pos, radar.rx_pos)))
     expected = (values[0] - values[1]) / (2.0 * step)
 
     assert abs(measured) > 1e-3
@@ -552,13 +472,7 @@ def test_a_reverse_gradient_reaches_the_frame_cube_through_the_pattern():
 
     radar = _radar(DIRECTIONAL_PATTERN)
     policy, sites = _sites(radar, requires_grad=True)
-    result = radar.simulate(
-        _static_scene(),
-        times=(0.0,),
-        response=_response(radar),
-        sites=policy,
-        ad_mode="vjp",
-    )
+    result = radar.simulate(_static_scene(), times=(0.0,), response=_response(radar), sites=policy, ad_mode="vjp")
     result.cube.real.square().sum().backward()
 
     assert sites.grad is not None

@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,15 +38,15 @@ smoke = _load_smoke()
 
 class TestTheForbiddenRuntimeMatcher:
     def test_it_names_every_forbidden_runtime(self):
-        assert smoke._forbidden(
-            ["numpy", "rayd", "drjit", "mitsuba", "sionna", "torch"]
-        ) == ["drjit", "mitsuba", "rayd", "sionna"]
+        assert smoke._forbidden(["numpy", "rayd", "drjit", "mitsuba", "sionna", "torch"]) == [
+            "drjit",
+            "mitsuba",
+            "rayd",
+            "sionna",
+        ]
 
     def test_it_catches_a_dashed_distribution_of_a_forbidden_runtime(self):
-        assert smoke._forbidden(["rayd-torch", "rayd-drjit"]) == [
-            "rayd-drjit",
-            "rayd-torch",
-        ]
+        assert smoke._forbidden(["rayd-torch", "rayd-drjit"]) == ["rayd-drjit", "rayd-torch"]
 
     def test_it_does_not_fire_on_a_name_that_merely_starts_the_same(self):
         # ``raydium`` is not ``rayd``. A prefix match without the separator
@@ -67,11 +66,7 @@ class TestTheRequirementParser:
             "Requires-Dist: witwin-channel<0.5,>=0.4; extra == 'channel'\n"
             "Requires-Dist: pytest; extra == 'dev'\n"
         )
-        assert smoke._requirement_names(metadata) == [
-            "torch",
-            "witwin-channel",
-            "pytest",
-        ]
+        assert smoke._requirement_names(metadata) == ["torch", "witwin-channel", "pytest"]
 
     def test_it_normalizes_the_distribution_name(self):
         metadata = "Requires-Dist: Witwin_Channel >= 0.4\n"
@@ -95,12 +90,8 @@ class TestTheWheelReaders:
         with pytest.raises(smoke.CoexistenceError, match="no radar native member"):
             smoke._wheel_native_record(wheel)
 
-    def test_a_native_member_without_its_build_record_is_refused(
-        self, tmp_path: Path
-    ):
-        wheel = self._wheel(
-            tmp_path, {"witwin/radar/cuda/prebuilt/_radar_native.pyd": b"MZ"}
-        )
+    def test_a_native_member_without_its_build_record_is_refused(self, tmp_path: Path):
+        wheel = self._wheel(tmp_path, {"witwin/radar/cuda/prebuilt/_radar_native.pyd": b"MZ"})
         with pytest.raises(smoke.CoexistenceError, match="build-info.json"):
             smoke._wheel_native_record(wheel)
 
@@ -110,16 +101,12 @@ class TestTheWheelReaders:
             tmp_path,
             {
                 "witwin/radar/cuda/prebuilt/_radar_native.pyd": b"MZ",
-                "witwin/radar/cuda/prebuilt/_radar_native.build-info.json": json.dumps(
-                    record
-                ).encode("ascii"),
+                "witwin/radar/cuda/prebuilt/_radar_native.build-info.json": json.dumps(record).encode("ascii"),
             },
         )
         assert smoke._wheel_native_record(wheel) == record
 
-    def test_a_wheel_with_two_dist_info_metadata_members_is_refused(
-        self, tmp_path: Path
-    ):
+    def test_a_wheel_with_two_dist_info_metadata_members_is_refused(self, tmp_path: Path):
         wheel = self._wheel(
             tmp_path,
             {
@@ -138,11 +125,7 @@ class TestTheScenarioHarness:
         for directory in (scratch, temp_root, tmp_path / "target"):
             directory.mkdir(parents=True, exist_ok=True)
         return smoke._run_scenario(
-            name="X",
-            code=body,
-            target=tmp_path / "target",
-            scratch=scratch,
-            temp_root=temp_root,
+            name="X", code=body, target=tmp_path / "target", scratch=scratch, temp_root=temp_root
         )
 
     def test_a_scenario_that_raises_fails_the_smoke(self, tmp_path: Path):
@@ -166,21 +149,14 @@ class TestTheScenarioHarness:
 
     def test_the_subprocess_environment_carries_no_loader_override(self):
         env = smoke._scenario_env(Path("E:/nowhere"))
-        leaked = sorted(
-            name
-            for name in env
-            if name.startswith(smoke._SCRUBBED_ENV_PREFIXES)
-        )
+        leaked = sorted(name for name in env if name.startswith(smoke._SCRUBBED_ENV_PREFIXES))
         assert leaked == []
         assert env["PYTHONNOUSERSITE"] == "1"
         assert env["TMP"] == env["TEMP"] == str(Path("E:/nowhere"))
 
 
 class TestTheGeneratedScenarioScripts:
-    @pytest.mark.parametrize(
-        "name",
-        ["A", "B", "C", "D", "E", "F", "G", "I"],
-    )
+    @pytest.mark.parametrize("name", ["A", "B", "C", "D", "E", "F", "G", "I"])
     def test_every_scenario_script_is_valid_python(self, name: str, tmp_path: Path):
         bodies = {
             "A": smoke._scenario_a,
@@ -204,9 +180,7 @@ class TestTheGeneratedScenarioScripts:
     def test_the_scenarios_named_in_the_docstring_are_the_scenarios_run(self):
         # The nine-scenario claim in the module docstring and the set the runner
         # actually executes must not drift apart.
-        source = (REPOSITORY_ROOT / "ci" / "coexistence_smoke.py").read_text(
-            encoding="utf-8"
-        )
+        source = (REPOSITORY_ROOT / "ci" / "coexistence_smoke.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         generators = {
             node.name.rsplit("_", 1)[-1].upper()
@@ -229,9 +203,7 @@ class TestTheEvidenceContract:
     )
     def test_a_present_evidence_file_reports_all_nine_scenarios(self):
         evidence = json.loads(
-            (REPOSITORY_ROOT / "artifacts" / "phase10" / "coexistence.v1.json").read_text(
-                encoding="utf-8"
-            )
+            (REPOSITORY_ROOT / "artifacts" / "phase10" / "coexistence.v1.json").read_text(encoding="utf-8")
         )
         assert evidence["evidence_version"] == smoke.EVIDENCE_VERSION
         assert sorted(evidence["scenarios"]) == list("ABCDEFGHI")

@@ -127,7 +127,7 @@ def _arg(args: argparse.Namespace | Mapping[str, Any], name: str) -> Any:
 def _load_config(path: str | None) -> dict[str, Any]:
     if path is None:
         return dict(DEFAULT_RADAR_CONFIG)
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -166,10 +166,7 @@ def _load_numpy_sequence(path: pathlib.Path, args: argparse.Namespace) -> RGBDSe
             return RGBDSequence(depths=None, pointclouds=array, masks=None, fps=fps)
         if array.ndim == 3:
             return RGBDSequence(depths=array, pointclouds=None, masks=None, fps=fps)
-        raise ValueError(
-            ".npy input must have shape (T,H,W), (T,N,3), or (T,H,W,3); "
-            f"got {array.shape}."
-        )
+        raise ValueError(f".npy input must have shape (T,H,W), (T,N,3), or (T,H,W,3); got {array.shape}.")
 
     with np.load(path) as data:
         depth_key = _pick_npz_key(data, args.depth_key, DEPTH_KEYS)
@@ -386,12 +383,7 @@ def _depth_to_points(depth_samples: torch.Tensor, rays: torch.Tensor) -> torch.T
     return rays.unsqueeze(0) * depth_samples.unsqueeze(-1)
 
 
-def build_site_sampler(
-    sequence: RGBDSequence,
-    *,
-    args: argparse.Namespace | Mapping[str, Any],
-    device: str,
-):
+def build_site_sampler(sequence: RGBDSequence, *, args: argparse.Namespace | Mapping[str, Any], device: str):
     """Return ``(sample_sites, total_time, num_frames, source_fps)``.
 
     ``sample_sites(t)`` publishes the world positions of every valid depth
@@ -509,10 +501,7 @@ def build_site_sampler(
         points = p0 * (1.0 - alpha) + p1 * alpha
         depths = d0 * (1.0 - alpha) + d1 * alpha
         valid = (
-            torch.isfinite(depths)
-            & (depths >= depth_min)
-            & (depths <= depth_max)
-            & torch.isfinite(points).all(dim=-1)
+            torch.isfinite(depths) & (depths >= depth_min) & (depths <= depth_max) & torch.isfinite(points).all(dim=-1)
         )
         if sampled_masks is not None:
             mask0 = sampled_masks[0 if sampled_masks.shape[0] == 1 else i0]
@@ -574,9 +563,7 @@ def build_scene():
         structures=(),
         endpoints=[
             AntennaState(
-                reserve_antenna_id(SCENE_ANTENNA_ID),
-                "tx",
-                _torch.tensor((0.0, 0.0, 0.0), dtype=_torch.float32),
+                reserve_antenna_id(SCENE_ANTENNA_ID), "tx", _torch.tensor((0.0, 0.0, 0.0), dtype=_torch.float32)
             )
         ],
     )
@@ -595,14 +582,9 @@ def processing_axes(radar):
     from witwin.radar.processing import ProcessingAxes
     from witwin.radar.synthesis import SlowTimeMode
 
-    synthesis = radar._synthesize(
-        radar.last_radar_paths,
-        slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
-    )
+    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis,
-        radar.system_config.waveform_spec(),
-        radar.system_config.sensors.array,
+        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
     )
 
 
@@ -610,9 +592,9 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     import torch
 
     from witwin.radar import Radar, RadarConfig
-    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.processing import ProcessingCube, range_doppler_map, range_profile
     from witwin.radar.scattering import ScalarRcsResponse
+    from witwin.radar.simulation import ScatterSitePolicy
 
     input_path = pathlib.Path(args.input).expanduser().resolve()
     if not input_path.exists():
@@ -634,27 +616,17 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     device = args.device
     if device != "cuda":
         raise ValueError(
-            "The propagation solve runs entirely in native CUDA kernels and has "
-            "no CPU path; --device cuda is required."
+            "The propagation solve runs entirely in native CUDA kernels and has no CPU path; --device cuda is required."
         )
 
     sequence = load_rgbd_sequence(input_path, args)
     if args.mask is not None:
         sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
-    radar = Radar(
-        RadarConfig.from_dict(config),
-        device=device,
-        position=(0.0, 0.0, 0.0),
-        target=(0.0, 0.0, -1.0),
-    )
-    sample_sites, total_time, source_frames, source_fps = build_site_sampler(
-        sequence, args=args, device=radar.device
-    )
+    radar = Radar(RadarConfig.from_dict(config), device=device, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
+    sample_sites, total_time, source_frames, source_fps = build_site_sampler(sequence, args=args, device=radar.device)
     scene = build_scene()
     response = ScalarRcsResponse.from_rcs(
-        float(args.site_rcs),
-        reference_frequency_hz=radar.config.fc,
-        device=radar.device,
+        float(args.site_rcs), reference_frequency_hz=radar.config.fc, device=radar.device
     )
 
     chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
@@ -709,14 +681,10 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             # Static clutter removal is a SLOW-TIME mean subtraction. The range
             # stage owns the fast-time DC removal (``remove_dc=``); the
             # slow-time one has no exported owner, so it is spelled out here.
-            profile = dataclasses.replace(
-                profile, data=profile.data - profile.data.mean(dim=-2, keepdim=True)
-            )
+            profile = dataclasses.replace(profile, data=profile.data - profile.data.mean(dim=-2, keepdim=True))
         rd = range_doppler_map(profile, window="hann")
         cell = rd.data[int(args.tx), int(args.rx)]
-        rd_db = (
-            20.0 * torch.log10(cell.abs() + DECIBEL_FLOOR)
-        ).detach().cpu().numpy()
+        rd_db = (20.0 * torch.log10(cell.abs() + DECIBEL_FLOOR)).detach().cpu().numpy()
         rd_db = rd_db[:, : len(ranges)]
         rd_maps.append(rd_db.astype(np.float32, copy=False))
 
@@ -751,14 +719,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="Optional radar config JSON. Defaults to TI1843-like config.")
     parser.add_argument("--device", default="cuda", help="Torch device. The native propagation solve requires cuda.")
     parser.add_argument(
-        "--site-rcs",
-        type=float,
-        default=0.01,
-        help="Radar cross section in m^2 attributed to each depth sample.",
+        "--site-rcs", type=float, default=0.01, help="Radar cross section in m^2 attributed to each depth sample."
     )
     parser.add_argument("--num-frames", type=int, default=10, help="Number of radar frames to generate. Use 0 for all.")
     parser.add_argument("--start-frame", type=int, default=0, help="Source RGBD frame index to start from.")
-    parser.add_argument("--source-fps", type=float, default=None, help="RGBD source frame rate; defaults to npz fps or 30.")
+    parser.add_argument(
+        "--source-fps", type=float, default=None, help="RGBD source frame rate; defaults to npz fps or 30."
+    )
     parser.add_argument("--source-frame-stride", type=int, default=1, help="Keep every Nth frame when reading .mkv.")
     parser.add_argument("--max-source-frames", type=int, default=0, help="Limit .mkv frames loaded; 0 means no limit.")
     parser.add_argument("--depth-key", default=None, help="Depth array key for .npz inputs.")

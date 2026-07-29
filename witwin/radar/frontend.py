@@ -13,17 +13,10 @@ from dataclasses import dataclass
 
 import torch
 
+from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative, require_host_floats
 
-__all__ = [
-    "AdcSpec",
-    "AgcSpec",
-    "FrontendSpec",
-    "LnaSpec",
-    "NoiseSpec",
-    "PortSpec",
-    "SeedSpec",
-]
+__all__ = ["AdcSpec", "AgcSpec", "FrontendSpec", "LnaSpec", "NoiseSpec", "PortSpec", "SeedSpec"]
 
 #: Boltzmann's constant, exact in SI since 2019.
 BOLTZMANN_J_PER_K = 1.380649e-23
@@ -51,8 +44,7 @@ AGC_MODES = (AGC_MODE_GLOBAL, AGC_MODE_PER_RX)
 #: is a UNIT CONVENTION: differentiating a loss with respect to the units it is
 #: expressed in is not a question about the world.
 _PORT_REASON = (
-    "reference_impedance_ohm is the unit convention that turns sqrt(W) into "
-    "volts, applied exactly once at stage 0."
+    "reference_impedance_ohm is the unit convention that turns sqrt(W) into volts, applied exactly once at stage 0."
 )
 
 #: Why every noise scalar has no derivative. All four parameterise a
@@ -115,11 +107,7 @@ class PortSpec:
     reference_impedance_ohm: float = 50.0
 
     def __post_init__(self) -> None:
-        require_host_floats(
-            "PortSpec",
-            _PORT_REASON,
-            reference_impedance_ohm=self.reference_impedance_ohm,
-        )
+        require_host_floats("PortSpec", _PORT_REASON, reference_impedance_ohm=self.reference_impedance_ohm)
         if not self.reference_impedance_ohm > 0.0:
             raise ValueError("reference_impedance_ohm must be positive")
 
@@ -210,17 +198,13 @@ class NoiseSpec:
         every noise-figure datasheet quotes.
         """
 
-        return self.antenna_temperature_k + REFERENCE_TEMPERATURE_K * (
-            self.noise_factor - 1.0
-        )
+        return self.antenna_temperature_k + REFERENCE_TEMPERATURE_K * (self.noise_factor - 1.0)
 
     @property
     def noise_power_watts(self) -> float:
         """``k T_sys B``, the total noise power in the stated bandwidth."""
 
-        return (
-            BOLTZMANN_J_PER_K * self.system_noise_temperature_k * float(self.bandwidth_hz)
-        )
+        return BOLTZMANN_J_PER_K * self.system_noise_temperature_k * float(self.bandwidth_hz)
 
     def thermal_sigma_volts(self, port: PortSpec) -> float:
         """``sqrt(k T_sys B R / 2)``: the per-COMPONENT standard deviation.
@@ -232,9 +216,7 @@ class NoiseSpec:
         element and this is what it multiplies them by.
         """
 
-        return math.sqrt(
-            0.5 * self.noise_power_watts * port.reference_impedance_ohm
-        )
+        return math.sqrt(0.5 * self.noise_power_watts * port.reference_impedance_ohm)
 
     @property
     def phase_innovation_sigma_rad(self) -> float:
@@ -248,13 +230,7 @@ class NoiseSpec:
         if self.phase_noise_dbc_per_hz is None:
             return 0.0
         level = 10.0 ** (float(self.phase_noise_dbc_per_hz) / 10.0)
-        variance = (
-            level
-            * 4.0
-            * math.pi**2
-            * float(self.phase_offset_hz) ** 2
-            / float(self.phase_sample_rate_hz)
-        )
+        variance = level * 4.0 * math.pi**2 * float(self.phase_offset_hz) ** 2 / float(self.phase_sample_rate_hz)
         return math.sqrt(variance)
 
     def single_sideband_dbc_per_hz(self, offset_hz: float) -> float:
@@ -267,15 +243,8 @@ class NoiseSpec:
 
         sigma = self.phase_innovation_sigma_rad
         if sigma <= 0.0 or offset_hz <= 0.0:
-            raise ValueError(
-                "single_sideband_dbc_per_hz needs a configured phase noise and a "
-                "positive offset"
-            )
-        level = (
-            sigma**2
-            * float(self.phase_sample_rate_hz)
-            / (4.0 * math.pi**2 * float(offset_hz) ** 2)
-        )
+            raise ValueError("single_sideband_dbc_per_hz needs a configured phase noise and a positive offset")
+        level = sigma**2 * float(self.phase_sample_rate_hz) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
         return 10.0 * math.log10(level)
 
 
@@ -354,9 +323,7 @@ class AdcSpec:
     full_scale: float
 
     def __post_init__(self) -> None:
-        require_host_floats(
-            "AdcSpec", _ADC_REASON, bits=self.bits, full_scale=self.full_scale
-        )
+        require_host_floats("AdcSpec", _ADC_REASON, bits=self.bits, full_scale=self.full_scale)
         if self.bits < 1 or self.bits > 30:
             raise ValueError("bits must lie in [1, 30]")
         if not self.full_scale > 0.0:
@@ -366,7 +333,7 @@ class AdcSpec:
     def step(self) -> float:
         """``2 FS / (2^b - 1)``."""
 
-        return 2.0 * float(self.full_scale) / (2**int(self.bits) - 1)
+        return 2.0 * float(self.full_scale) / (2 ** int(self.bits) - 1)
 
     @property
     def quantization_variance(self) -> float:
@@ -469,25 +436,8 @@ def frontend_block_size() -> int:
         return _DEFAULT_BLOCK_SIZE
     block = int(raw)
     if block < 32 or block > 1024 or (block & (block - 1)) != 0:
-        raise ValueError(
-            f"{_BLOCK_SIZE_ENV} must be a power of two between 32 and 1024, got "
-            f"{block}"
-        )
+        raise ValueError(f"{_BLOCK_SIZE_ENV} must be a power of two between 32 and 1024, got {block}")
     return block
-
-
-_OPS = None
-
-
-def _ops():
-    """The native operator table, resolved once per process."""
-
-    global _OPS
-    if _OPS is None:
-        from .cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
 
 
 def _require_no_derivative(signal: torch.Tensor, stage: str) -> None:
@@ -541,9 +491,7 @@ class _FrontendNoise(torch.autograd.Function):
     def forward(x_re, x_im, plan):
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
-        phase_rad = torch.empty(
-            plan.num_phase, dtype=torch.float32, device=x_re.device
-        )
+        phase_rad = torch.empty(plan.num_phase, dtype=torch.float32, device=x_re.device)
         _ops().frontend_noise_forward(
             x_re,
             x_im,
@@ -580,11 +528,7 @@ class _FrontendNoise(torch.autograd.Function):
         plan = ctx.plan
         zeros = None
         if grad_out_re is None or grad_out_im is None:
-            zeros = torch.zeros(
-                (plan.num_outer, plan.num_phase),
-                dtype=torch.float32,
-                device=phase_rad.device,
-            )
+            zeros = torch.zeros((plan.num_outer, plan.num_phase), dtype=torch.float32, device=phase_rad.device)
         grad_re = zeros if grad_out_re is None else grad_out_re.contiguous()
         grad_im = zeros if grad_out_im is None else grad_out_im.contiguous()
         grad_x_re = torch.empty_like(grad_re)
@@ -738,10 +682,8 @@ class FrontendDiagnostics:
     clipped_components: torch.Tensor | None
 
     @classmethod
-    def empty(cls) -> "FrontendDiagnostics":
-        return cls(
-            phase_rad=None, agc_gain=None, agc_rms=None, clipped_components=None
-        )
+    def empty(cls) -> FrontendDiagnostics:
+        return cls(phase_rad=None, agc_gain=None, agc_rms=None, clipped_components=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -763,9 +705,7 @@ class FrontendChain:
 
     def __init__(self, spec: FrontendSpec) -> None:
         if not isinstance(spec, FrontendSpec):
-            raise TypeError(
-                f"FrontendChain needs a FrontendSpec, got {type(spec).__name__}"
-            )
+            raise TypeError(f"FrontendChain needs a FrontendSpec, got {type(spec).__name__}")
         self.spec = spec
 
     @property
@@ -815,15 +755,11 @@ class FrontendChain:
             block_size=frontend_block_size(),
         )
 
-    def apply(
-        self, signal: torch.Tensor, *, seed_base: int | None = None
-    ) -> FrontendOutput:
+    def apply(self, signal: torch.Tensor, *, seed_base: int | None = None) -> FrontendOutput:
         """Run the whole chain, in order, once."""
 
         if not signal.is_complex():
-            raise TypeError(
-                f"the frontend consumes a complex signal, got {signal.dtype}"
-            )
+            raise TypeError(f"the frontend consumes a complex signal, got {signal.dtype}")
         if signal.dtype != torch.complex64:
             raise TypeError(
                 f"the frontend consumes complex64, got {signal.dtype}; the "
@@ -844,17 +780,13 @@ class FrontendChain:
         if spec.applies_noise_stage:
             plan = self._noise_plan(working, seed_base=seed)
             flat = working.reshape(plan.num_outer, plan.num_phase)
-            out_re, out_im, phase_rad = _FrontendNoise.apply(
-                flat.real.contiguous(), flat.imag.contiguous(), plan
-            )
+            out_re, out_im, phase_rad = _FrontendNoise.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
             working = torch.complex(out_re, out_im).reshape(shape)
 
         if spec.agc is not None:
             plan = self._agc_plan(working, spec.agc)
             flat = working.reshape(plan.dim0, plan.num_groups, plan.dim2)
-            out_re, out_im, agc_gain, agc_rms = _FrontendAgc.apply(
-                flat.real.contiguous(), flat.imag.contiguous(), plan
-            )
+            out_re, out_im, agc_gain, agc_rms = _FrontendAgc.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
             working = torch.complex(out_re, out_im).reshape(shape)
 
         if spec.adc is not None:
@@ -863,17 +795,12 @@ class FrontendChain:
         return FrontendOutput(
             signal=working,
             diagnostics=FrontendDiagnostics(
-                phase_rad=phase_rad,
-                agc_gain=agc_gain,
-                agc_rms=agc_rms,
-                clipped_components=clipped,
+                phase_rad=phase_rad, agc_gain=agc_gain, agc_rms=agc_rms, clipped_components=clipped
             ),
             stages=self.enabled_stages,
         )
 
-    def _quantize(
-        self, signal: torch.Tensor, adc: AdcSpec
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _quantize(self, signal: torch.Tensor, adc: AdcSpec) -> tuple[torch.Tensor, torch.Tensor]:
         """The ONLY call site of the quantizer, in the whole package."""
 
         _require_no_derivative(signal, "ADC")
@@ -911,12 +838,4 @@ def _phase_run_length(signal: torch.Tensor) -> int:
     return int(signal.numel())
 
 
-__all__ = [
-    "AdcSpec",
-    "AgcSpec",
-    "FrontendSpec",
-    "LnaSpec",
-    "NoiseSpec",
-    "PortSpec",
-    "SeedSpec",
-]
+__all__ = ["AdcSpec", "AgcSpec", "FrontendSpec", "LnaSpec", "NoiseSpec", "PortSpec", "SeedSpec"]

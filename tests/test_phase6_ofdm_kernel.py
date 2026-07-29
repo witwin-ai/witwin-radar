@@ -26,12 +26,8 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.radar.synthesis.assembly import (  # noqa: E402
-    SPEED_OF_LIGHT_M_PER_S,
-    OfdmSpec,
-)
+from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S, OfdmSpec  # noqa: E402
 from witwin.radar.synthesis.ofdm import synthesize_cfr_rows  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -58,16 +54,16 @@ TAU_FAR_S = 2.0 * FAR_RANGE_M / C0
 def _spec(**overrides) -> OfdmSpec:
     """The production carrier placement unless a test says otherwise."""
 
-    fields = dict(
-        num_subcarriers=NUM_SUBCARRIERS,
-        num_symbols=1,
-        subcarrier_spacing_hz=DF_HZ,
-        cyclic_prefix_s=CYCLIC_PREFIX_S,
-        reference_frequency_hz=F_REF_HZ,
-        max_expected_delay_s=MAX_DELAY_S,
-        carrier_hz=0.0,
-        carrier_rate_hz=F_REF_HZ,
-    )
+    fields = {
+        "num_subcarriers": NUM_SUBCARRIERS,
+        "num_symbols": 1,
+        "subcarrier_spacing_hz": DF_HZ,
+        "cyclic_prefix_s": CYCLIC_PREFIX_S,
+        "reference_frequency_hz": F_REF_HZ,
+        "max_expected_delay_s": MAX_DELAY_S,
+        "carrier_hz": 0.0,
+        "carrier_rate_hz": F_REF_HZ,
+    }
     fields.update(overrides)
     return OfdmSpec(**fields)
 
@@ -108,9 +104,7 @@ def _stored(value: float) -> float:
 
 def _cube(spec, delays, weights, rates, offsets=None) -> torch.Tensor:
     tau, rate, transfer, table = _rows(delays, weights, rates, offsets)
-    return synthesize_cfr_rows(tau, rate, transfer, table, spec).cpu().to(
-        torch.complex128
-    )
+    return synthesize_cfr_rows(tau, rate, transfer, table, spec).cpu().to(torch.complex128)
 
 
 def _unwrapped(values: torch.Tensor) -> torch.Tensor:
@@ -151,9 +145,7 @@ def test_the_subcarrier_phase_slope_reports_the_round_trip_delay_in_seconds():
 
     analytic_step = -2.0 * math.pi * DF_HZ * _stored(TAU_RT_S)
     assert analytic_step == pytest.approx(-0.018611103798605002, rel=1e-9)
-    assert spec.subcarrier_phase_step_rad(_stored(TAU_RT_S)) == pytest.approx(
-        analytic_step, rel=1e-12
-    )
+    assert spec.subcarrier_phase_step_rad(_stored(TAU_RT_S)) == pytest.approx(analytic_step, rel=1e-12)
 
     steps = torch.angle(row[1:] * torch.conj(row[:-1]))
     assert steps.numel() == NUM_SUBCARRIERS - 1
@@ -179,18 +171,9 @@ def test_the_delay_is_round_trip_and_is_never_doubled():
     """
 
     spec = _spec()
-    single = _lsq_slope(
-        _unwrapped(_cube(spec, [TAU_RT_S], [_frozen_channel_weight()], [0.0])[0, 0])
-    )
+    single = _lsq_slope(_unwrapped(_cube(spec, [TAU_RT_S], [_frozen_channel_weight()], [0.0])[0, 0]))
     doubled = _lsq_slope(
-        _unwrapped(
-            _cube(
-                spec,
-                [2.0 * TAU_RT_S],
-                [_frozen_channel_weight(tau=2.0 * TAU_RT_S)],
-                [0.0],
-            )[0, 0]
-        )
+        _unwrapped(_cube(spec, [2.0 * TAU_RT_S], [_frozen_channel_weight(tau=2.0 * TAU_RT_S)], [0.0])[0, 0])
     )
     assert doubled == pytest.approx(2.0 * single, rel=1e-5)
     assert -single / (2.0 * math.pi * DF_HZ) == pytest.approx(TAU_RT_S, rel=1e-5)
@@ -222,9 +205,7 @@ def test_the_channel_impulse_response_peaks_at_the_delay_in_samples():
     assert m_peak == pytest.approx(5.1235445022436155, rel=1e-12)
     assert m_peak > 4.0
 
-    row = _cube(spec, [TAU_FAR_S], [_frozen_channel_weight(tau=TAU_FAR_S)], [0.0])[
-        0, 0
-    ]
+    row = _cube(spec, [TAU_FAR_S], [_frozen_channel_weight(tau=TAU_FAR_S)], [0.0])[0, 0]
 
     def _interpolated_peak(pad: int) -> float:
         magnitude = torch.fft.ifft(row, n=NUM_SUBCARRIERS * pad).abs()
@@ -239,9 +220,7 @@ def test_the_channel_impulse_response_peaks_at_the_delay_in_samples():
     assert abs(_interpolated_peak(1) - m_peak) / m_peak > 1e-2
 
     # And the delay resolution the bin is measured in, in metres.
-    assert C0 * spec.waveform_sample_period_s / 2.0 == pytest.approx(
-        spec.range_resolution_m, rel=1e-12
-    )
+    assert C0 * spec.waveform_sample_period_s / 2.0 == pytest.approx(spec.range_resolution_m, rel=1e-12)
 
 
 # --------------------------------------------------------------------------
@@ -291,26 +270,13 @@ def test_a_conjugated_cube_would_fail_the_reference_identity():
 def _analytic_symbol_slope(spec: OfdmSpec, subcarrier: int, rate: float) -> float:
     """``-2 pi (f_ref + n df) tau_rate T_sym`` radians per symbol."""
 
-    return (
-        -2.0
-        * math.pi
-        * spec.subcarrier_frequency_hz(subcarrier)
-        * rate
-        * spec.symbol_period_s
-    )
+    return -2.0 * math.pi * spec.subcarrier_frequency_hz(subcarrier) * rate * spec.symbol_period_s
 
 
 def _subcarrier_only_slope(spec: OfdmSpec, subcarrier: int, rate: float) -> float:
     """What a frozen weight with NO carrier-rate term would leave behind."""
 
-    return (
-        -2.0
-        * math.pi
-        * subcarrier
-        * spec.subcarrier_spacing_hz
-        * rate
-        * spec.symbol_period_s
-    )
+    return -2.0 * math.pi * subcarrier * spec.subcarrier_spacing_hz * rate * spec.symbol_period_s
 
 
 def _measured_symbol_slope(spec, subcarrier: int, rate: float) -> float:
@@ -342,9 +308,9 @@ def test_the_slow_time_slope_carries_the_whole_carrier_not_just_the_subcarrier()
 
     # And at the top subcarrier, where the bug leaves the most it ever can.
     top = NUM_SUBCARRIERS - 1
-    understatement = _analytic_symbol_slope(
+    understatement = _analytic_symbol_slope(spec, top, _stored(TAU_RATE)) / _subcarrier_only_slope(
         spec, top, _stored(TAU_RATE)
-    ) / _subcarrier_only_slope(spec, top, _stored(TAU_RATE))
+    )
     assert understatement == pytest.approx(10186.1852, rel=1e-6)
     assert F_REF_HZ / (top * DF_HZ) == pytest.approx(10185.1852, rel=1e-6)
     assert understatement > 1000.0
@@ -363,9 +329,7 @@ def test_the_slow_time_slope_carries_the_subcarrier_dependent_correction():
 
     spec = _spec(num_symbols=64)
     top = NUM_SUBCARRIERS - 1
-    measured = _measured_symbol_slope(spec, top, TAU_RATE) - _measured_symbol_slope(
-        spec, 0, TAU_RATE
-    )
+    measured = _measured_symbol_slope(spec, top, TAU_RATE) - _measured_symbol_slope(spec, 0, TAU_RATE)
     analytic = _subcarrier_only_slope(spec, top, _stored(TAU_RATE))
     assert analytic == pytest.approx(-3.929458e-05, rel=1e-5)
     assert measured == pytest.approx(analytic, rel=1e-4)
@@ -388,13 +352,7 @@ def test_both_carrier_homes_produce_the_same_slow_time_slope(subcarrier):
     assert kernel_owned.carrier_rate_hz == 0.0
 
     from_weight = _measured_symbol_slope(production, subcarrier, TAU_RATE)
-    from_kernel = _lsq_slope(
-        _unwrapped(
-            _cube(kernel_owned, [TAU_RT_S], [1.0 + 0.0j], [TAU_RATE])[
-                :, 0, subcarrier
-            ]
-        )
-    )
+    from_kernel = _lsq_slope(_unwrapped(_cube(kernel_owned, [TAU_RT_S], [1.0 + 0.0j], [TAU_RATE])[:, 0, subcarrier]))
     analytic = _analytic_symbol_slope(production, subcarrier, _stored(TAU_RATE))
     assert from_weight == pytest.approx(analytic, rel=1e-5)
     assert from_kernel == pytest.approx(analytic, rel=1e-5)
@@ -423,9 +381,7 @@ def test_a_receding_site_puts_the_cfr_tone_at_negative_doppler():
     slow = cube[:, 0, 0]
 
     spectrum = torch.fft.fftshift(torch.fft.fft(slow)).abs()
-    frequencies = torch.fft.fftshift(
-        torch.fft.fftfreq(num_symbols, d=spec.symbol_period_s)
-    )
+    frequencies = torch.fft.fftshift(torch.fft.fftfreq(num_symbols, d=spec.symbol_period_s))
     peak_hz = float(frequencies[int(spectrum.argmax())])
     bin_hz = float(frequencies[1] - frequencies[0])
 
@@ -440,9 +396,7 @@ def test_a_receding_site_puts_the_cfr_tone_at_negative_doppler():
     # that is asserted rather than left to the reader.
     from witwin.radar.synthesis.fmcw import channel_phasor_to_beat_weight
 
-    coefficient = torch.tensor(
-        [_frozen_channel_weight()], dtype=torch.complex64, device="cuda"
-    )
+    coefficient = torch.tensor([_frozen_channel_weight()], dtype=torch.complex64, device="cuda")
     beat = channel_phasor_to_beat_weight(coefficient)
     assert not torch.equal(beat, coefficient)
     assert torch.equal(beat, torch.conj(coefficient).resolve_conj())
@@ -472,9 +426,7 @@ def test_a_speed_past_the_unambiguous_bound_aliases():
     """
 
     spec = _spec(num_symbols=16)
-    assert spec.max_unambiguous_speed_mps == pytest.approx(
-        C0 / (4.0 * F_REF_HZ * spec.symbol_period_s), rel=1e-12
-    )
+    assert spec.max_unambiguous_speed_mps == pytest.approx(C0 / (4.0 * F_REF_HZ * spec.symbol_period_s), rel=1e-12)
 
     speed = 1.05 * spec.max_unambiguous_speed_mps
     rate = 2.0 * speed / C0
@@ -489,13 +441,9 @@ def test_a_speed_past_the_unambiguous_bound_aliases():
 
     # Just inside the bound the same estimator recovers the true slope.
     inside_rate = 2.0 * (0.95 * spec.max_unambiguous_speed_mps) / C0
-    inside = _cube(spec, [TAU_RT_S], [_frozen_channel_weight()], [inside_rate])[
-        :, 0, 0
-    ]
+    inside = _cube(spec, [TAU_RT_S], [_frozen_channel_weight()], [inside_rate])[:, 0, 0]
     measured = float(torch.angle(inside[1:] * torch.conj(inside[:-1])).mean())
-    assert measured == pytest.approx(
-        _analytic_symbol_slope(spec, 0, _stored(inside_rate)), rel=1e-5
-    )
+    assert measured == pytest.approx(_analytic_symbol_slope(spec, 0, _stored(inside_rate)), rel=1e-5)
 
 
 # --------------------------------------------------------------------------
@@ -513,6 +461,7 @@ def test_the_cyclic_prefix_is_checked_before_any_launch(monkeypatch):
     """
 
     from support import multi_endpoint_driver as drv  # noqa: F401  (import guard)
+
     import witwin.radar.synthesis.ofdm as ofdm
 
     launches = {"count": 0}
@@ -545,26 +494,15 @@ def _cuda_batch(*, row_valid=None, path_count: int = 1, pair_count: int = 1):
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     zeros = torch.zeros(path_count, dtype=torch.int64, device="cuda")
-    offsets = torch.tensor(
-        [0] + [path_count] * pair_count, dtype=torch.int64, device="cuda"
-    )
+    offsets = torch.tensor([0] + [path_count] * pair_count, dtype=torch.int64, device="cuda")
     return SynthesisPathBatch(
         sensor_pair_count=pair_count,
         path_count=path_count,
         sensor_pair_index=torch.zeros(path_count, dtype=torch.int64, device="cuda"),
         pair_offsets=offsets,
-        total_delay_s=torch.full(
-            (path_count,), TAU_RT_S, dtype=torch.float32, device="cuda"
-        ),
-        delay_rate=torch.full(
-            (path_count,), TAU_RATE, dtype=torch.float32, device="cuda"
-        ),
-        complex_transfer_ref=torch.full(
-            (path_count,),
-            _frozen_channel_weight(),
-            dtype=torch.complex64,
-            device="cuda",
-        ),
+        total_delay_s=torch.full((path_count,), TAU_RT_S, dtype=torch.float32, device="cuda"),
+        delay_rate=torch.full((path_count,), TAU_RATE, dtype=torch.float32, device="cuda"),
+        complex_transfer_ref=torch.full((path_count,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"),
         reference_frequency_hz=F_REF_HZ,
         frequency_response=None,
         frequency_offsets_hz=None,
@@ -589,9 +527,7 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
     from witwin.radar.synthesis.ofdm import synthesize_ofdm
 
     spec = _spec(num_symbols=4)
-    alive = _cuda_batch(
-        row_valid=torch.ones(1, dtype=torch.bool, device="cuda")
-    )
+    alive = _cuda_batch(row_valid=torch.ones(1, dtype=torch.bool, device="cuda"))
     dead = _cuda_batch(row_valid=torch.zeros(1, dtype=torch.bool, device="cuda"))
 
     assert float(synthesize_ofdm(alive, spec).abs().sum()) > 0.0
@@ -599,9 +535,7 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
 
     import dataclasses
 
-    weight = torch.full(
-        (1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"
-    ).requires_grad_(True)
+    weight = torch.full((1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda").requires_grad_(True)
     live = dataclasses.replace(dead, complex_transfer_ref=weight)
     cube = synthesize_ofdm(live, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
@@ -658,12 +592,7 @@ def test_the_cfr_is_linear_in_the_transfer_coefficients():
     spec = _spec(num_symbols=4)
     a = ([TAU_RT_S], [_frozen_channel_weight(0.75 - 0.2j)], [TAU_RATE])
     b = ([TAU_FAR_S], [0.3 + 0.9j], [-0.5 * TAU_RATE])
-    together = _cube(
-        spec,
-        a[0] + b[0],
-        a[1] + b[1],
-        a[2] + b[2],
-    )
+    together = _cube(spec, a[0] + b[0], a[1] + b[1], a[2] + b[2])
     separate = _cube(spec, *a) + _cube(spec, *b)
     scale = float(together.abs().max())
     assert scale > 0.0
@@ -682,12 +611,7 @@ def test_permuting_the_rows_of_one_segment_leaves_the_cube_unchanged():
     rates = [TAU_RATE, 0.0, -TAU_RATE]
     order = [2, 0, 1]
     straight = _cube(spec, delays, weights, rates)
-    permuted = _cube(
-        spec,
-        [delays[i] for i in order],
-        [weights[i] for i in order],
-        [rates[i] for i in order],
-    )
+    permuted = _cube(spec, [delays[i] for i in order], [weights[i] for i in order], [rates[i] for i in order])
     scale = float(straight.abs().max())
     torch.testing.assert_close(straight, permuted, rtol=1e-6, atol=1e-6 * scale)
 
@@ -710,13 +634,7 @@ def test_the_kernel_matches_the_float64_reference_cube():
 
     spec = _spec(num_symbols=5)
     delays = [TAU_RT_S, TAU_FAR_S, 3.0e-8, 1.1e-8, 7.0e-9]
-    weights = [
-        _frozen_channel_weight(),
-        0.5 + 0.25j,
-        -0.75 + 0.1j,
-        0.2 - 0.6j,
-        1.3 + 0.05j,
-    ]
+    weights = [_frozen_channel_weight(), 0.5 + 0.25j, -0.75 + 0.1j, 0.2 - 0.6j, 1.3 + 0.05j]
     rates = [TAU_RATE, -TAU_RATE, 0.0, 2.0 * TAU_RATE, -0.5 * TAU_RATE]
     offsets = [0, 2, 2, 5]
 
@@ -754,14 +672,11 @@ def test_the_carrier_rate_multiplies_the_drift_and_the_subcarrier_the_full_delay
 
     # Drift is zero at l = 0: the carrier-rate term contributes nothing.
     assert complex(cube[0, 0, 0]) == pytest.approx(
-        complex(torch.tensor(_frozen_channel_weight(), dtype=torch.complex64)),
-        rel=1e-6,
+        complex(torch.tensor(_frozen_channel_weight(), dtype=torch.complex64)), rel=1e-6
     )
     # ...while the subcarrier term is fully present at the same symbol.
     step = float(torch.angle(cube[0, 0, 1] * torch.conj(cube[0, 0, 0])))
-    assert step == pytest.approx(
-        -2.0 * math.pi * DF_HZ * _stored(TAU_RT_S), abs=2.0e-6
-    )
+    assert step == pytest.approx(-2.0 * math.pi * DF_HZ * _stored(TAU_RT_S), abs=2.0e-6)
     # A CFR with a drift-only subcarrier term would be flat across n.
     assert abs(step) > 1e-3
 
@@ -793,9 +708,7 @@ class _FrameLedger:
         for name in HOST_OBSERVERS:
             original_method = getattr(torch.Tensor, name)
 
-            def observing(
-                tensor, *args, _name=name, _original=original_method, **kwargs
-            ):
+            def observing(tensor, *args, _name=name, _original=original_method, **kwargs):
                 self.host[_name] += 1
                 return _original(tensor, *args, **kwargs)
 
@@ -842,6 +755,7 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
     """
 
     from support import multi_endpoint_driver as drv
+
     from witwin.radar.synthesis.assembly import assemble_frame_cube
     from witwin.radar.synthesis.ofdm import synthesize_ofdm
 
@@ -861,9 +775,7 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
         assert float(frame[1, rx].abs().sum()) == 0.0
 
 
-def test_one_ofdm_frame_is_one_launch_and_no_host_observation(
-    multi_endpoint_spike, monkeypatch
-):
+def test_one_ofdm_frame_is_one_launch_and_no_host_observation(multi_endpoint_spike, monkeypatch):
     """Acceptance: exactly one ``ofdm_cfr_forward`` per frame, and no D2H.
 
     The host budget is measured over synthesis and assembly only, because the
@@ -872,6 +784,7 @@ def test_one_ofdm_frame_is_one_launch_and_no_host_observation(
     """
 
     from support import multi_endpoint_driver as drv
+
     import witwin.radar.synthesis.ofdm as ofdm
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
@@ -884,23 +797,16 @@ def test_one_ofdm_frame_is_one_launch_and_no_host_observation(
     cube = ofdm.synthesize_ofdm(batch, spec)
     assemble_frame_cube(cube, num_tx=2, num_rx=2)
 
-    assert ledger.launches == {
-        "ofdm_cfr_forward": 1,
-        "ofdm_cfr_backward": 0,
-        "ofdm_cfr_jvp": 0,
-    }, ledger.launches
-    assert ledger.host == dict.fromkeys((*HOST_OBSERVERS, "synchronize"), 0), (
-        ledger.host
-    )
+    assert ledger.launches == {"ofdm_cfr_forward": 1, "ofdm_cfr_backward": 0, "ofdm_cfr_jvp": 0}, ledger.launches
+    assert ledger.host == dict.fromkeys((*HOST_OBSERVERS, "synchronize"), 0), ledger.host
 
 
 def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatch):
     from support import multi_endpoint_driver as drv
+
     import witwin.radar.synthesis.ofdm as ofdm
 
-    composed, _, _ = multi_endpoint_spike.frame(
-        response=drv.make_response(requires_grad=True)
-    )
+    composed, _, _ = multi_endpoint_spike.frame(response=drv.make_response(requires_grad=True))
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
     operators = ofdm._ops()
@@ -924,10 +830,7 @@ def test_the_forward_allocates_no_per_path_per_subcarrier_intermediate():
     spec = _spec(num_symbols=32)
     rows = 512
     generator = torch.Generator(device="cuda").manual_seed(20260725)
-    tau = (
-        torch.rand(rows, generator=generator, device="cuda", dtype=torch.float32)
-        * 5.0e-7
-    )
+    tau = torch.rand(rows, generator=generator, device="cuda", dtype=torch.float32) * 5.0e-7
     rate = torch.zeros(rows, dtype=torch.float32, device="cuda")
     transfer = torch.ones(rows, dtype=torch.complex64, device="cuda")
     offsets = torch.tensor([0, rows], dtype=torch.int64, device="cuda")

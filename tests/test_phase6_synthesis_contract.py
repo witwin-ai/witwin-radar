@@ -20,13 +20,7 @@ import pytest
 import torch
 
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology
-from witwin.radar.synthesis.assembly import (
-    SlowTimeMode,
-    SynthesisPathBatch,
-    WaveformSpecProtocol,
-    require_compatible,
-)
-
+from witwin.radar.synthesis.assembly import SlowTimeMode, SynthesisPathBatch, WaveformSpecProtocol, require_compatible
 
 F_REF = 77.0e9
 C0 = 299792458.0
@@ -69,8 +63,7 @@ def _topology(rows: int) -> RadarPathTopology:
 def _radar_paths(rows: int = 3, *, with_rate: bool = True) -> RadarPathBatch:
     delay = torch.linspace(1.0e-8, 3.0e-8, rows, dtype=torch.float32).contiguous()
     weight = torch.complex(
-        torch.linspace(0.25, 1.0, rows, dtype=torch.float32),
-        torch.linspace(-0.5, 0.5, rows, dtype=torch.float32),
+        torch.linspace(0.25, 1.0, rows, dtype=torch.float32), torch.linspace(-0.5, 0.5, rows, dtype=torch.float32)
     ).contiguous()
     return RadarPathBatch(
         sensor_pair_count=2,
@@ -78,9 +71,7 @@ def _radar_paths(rows: int = 3, *, with_rate: bool = True) -> RadarPathBatch:
         sensor_pair_index=torch.tensor([0] + [1] * (rows - 1), dtype=torch.int64),
         pair_offsets=torch.tensor([0, 1, rows], dtype=torch.int64),
         total_delay_s=delay,
-        delay_rate=(
-            torch.full((rows,), 1.0e-8, dtype=torch.float32) if with_rate else None
-        ),
+        delay_rate=(torch.full((rows,), 1.0e-8, dtype=torch.float32) if with_rate else None),
         complex_transfer_ref=weight,
         reference_frequency_hz=F_REF,
         row_valid=torch.ones(rows, dtype=torch.bool),
@@ -115,9 +106,7 @@ def test_from_radar_paths_is_zero_copy():
     """
 
     paths = _radar_paths()
-    batch = SynthesisPathBatch.from_radar_paths(
-        paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    batch = SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
 
     for name in (
         "total_delay_s",
@@ -152,9 +141,7 @@ def test_slow_time_mode_has_no_default():
 
 def test_from_radar_paths_refuses_a_foreign_type():
     with pytest.raises(TypeError, match="RadarPathBatch"):
-        SynthesisPathBatch.from_radar_paths(
-            object(), slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
-        )
+        SynthesisPathBatch.from_radar_paths(object(), slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE)
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +185,6 @@ def test_a_frequency_response_without_its_grid_is_refused():
         _channel_batch(frequency_response=torch.zeros(3, 4, dtype=torch.complex64))
 
 
-
-
 def test_construction_reads_no_tensor_value():
     """Validation must cost no device-to-host transfer.
 
@@ -236,8 +221,6 @@ def test_a_compatible_channel_pair_is_accepted():
     require_compatible(_channel_batch(), _Spec())
 
 
-
-
 def test_r1_a_channel_weight_with_a_kernel_carrier_is_refused():
     """The H5 guard: the moment the family gains complex Channel weights it
     inherits the carrier double-count, so this rule lands with them."""
@@ -246,14 +229,10 @@ def test_r1_a_channel_weight_with_a_kernel_carrier_is_refused():
         require_compatible(_channel_batch(), _Spec(carrier_hz=F_REF, carrier_rate_hz=0.0))
 
 
-
-
 def test_r3_a_frozen_channel_weight_needs_the_carrier_rate():
     batch = _channel_batch()
     with pytest.raises(ValueError, match="understated Doppler"):
         require_compatible(batch, _Spec(carrier_rate_hz=0.5 * F_REF))
-
-
 
 
 def test_r4_a_refreshed_weight_refuses_a_carrier_rate():
@@ -269,19 +248,13 @@ def test_r4_a_refreshed_weight_refuses_a_published_delay_rate():
 
 
 def test_r4_a_refreshed_weight_without_a_rate_is_accepted():
-    batch = _channel_batch(
-        slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE, delay_rate=None
-    )
+    batch = _channel_batch(slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE, delay_rate=None)
     require_compatible(batch, _Spec(carrier_rate_hz=0.0))
 
 
 def test_r5_spreading_applied_twice_is_refused():
     with pytest.raises(ValueError, match="double-counted free-space spreading"):
         require_compatible(_channel_batch(), _Spec(applies_spreading=True))
-
-
-
-
 
 
 def test_r7_a_reference_frequency_mismatch_is_refused():

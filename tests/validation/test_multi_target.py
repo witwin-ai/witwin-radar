@@ -15,10 +15,12 @@ separation instead, which is the property those tests were really about.
 import numpy as np
 import pytest
 import torch
-
 from conftest import (
-    FAST_CONFIG, STANDARD_CONFIG,
-    make_processing_axes, make_scene_radar_or_skip, simulate_point_targets,
+    FAST_CONFIG,
+    STANDARD_CONFIG,
+    make_processing_axes,
+    make_scene_radar_or_skip,
+    simulate_point_targets,
 )
 
 pytestmark = pytest.mark.gpu
@@ -61,7 +63,7 @@ class TestTwoTargetsDifferentRanges:
         floor = np.median(profile)
         for distance in (d1, d2):
             centre = int(np.argmin(np.abs(axis - distance)))
-            region = profile[max(0, centre - 2):centre + 3]
+            region = profile[max(0, centre - 2) : centre + 3]
             assert region.max() > floor * 4.0, (distance, region.max(), floor)
 
     def test_the_two_range_peaks_are_the_two_declared_distances(self):
@@ -83,7 +85,7 @@ class TestTwoTargetsDifferentRanges:
         first = int(profile.argmax())
         window = max(1, int(round(0.5 / frame.axes.range_bin_m)))
         masked = profile.clone()
-        masked[max(0, first - window):first + window + 1] = -1.0
+        masked[max(0, first - window) : first + window + 1] = -1.0
         second = int(masked.argmax())
 
         found = sorted((float(axis[first]), float(axis[second])))
@@ -108,11 +110,7 @@ class TestTwoTargetsDifferentVelocities:
         distance = 3.0
         v1, v2 = 1.0, -1.5  # closing and receding
         frame = simulate_point_targets(
-            radar,
-            [
-                (_local(distance), (0.0, 0.0, v1)),
-                (_local(distance, x=0.1), (0.0, 0.0, v2)),
-            ],
+            radar, [(_local(distance), (0.0, 0.0, v1)), (_local(distance, x=0.1), (0.0, 0.0, v2))]
         )
 
         combined = frame.combined_map().abs()
@@ -123,15 +121,10 @@ class TestTwoTargetsDifferentVelocities:
         first = int(slice_db.argmax())
         masked = slice_db.clone()
         window = max(1, int(round(0.5 / frame.axes.velocity_bin_mps)))
-        masked[max(0, first - window):first + window + 1] = -1.0
+        masked[max(0, first - window) : first + window + 1] = -1.0
         second = int(masked.argmax())
 
-        velocities = sorted(
-            (
-                float(frame.axes.velocity_mps[first]),
-                float(frame.axes.velocity_mps[second]),
-            )
-        )
+        velocities = sorted((float(frame.axes.velocity_mps[first]), float(frame.axes.velocity_mps[second])))
         tol = frame.axes.velocity_bin_mps * 3
         assert abs(velocities[0] - v2) < tol, velocities
         assert abs(velocities[1] - v1) < tol, velocities
@@ -145,9 +138,7 @@ class TestRangeResolutionLimit:
         centre = 3.0
         resolution = make_processing_axes(_VFAST).range_bin_m
         delta = frame_delta = resolution * 0.3
-        frame = simulate_point_targets(
-            radar, [_local(centre - delta), _local(centre + frame_delta)]
-        )
+        frame = simulate_point_targets(radar, [_local(centre - delta), _local(centre + frame_delta)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
         ranges = cloud.range_m.cpu().numpy()
@@ -155,8 +146,7 @@ class TestRangeResolutionLimit:
         assert near.size > 0, ranges
         spread = float(near.max() - near.min())
         assert spread < frame.axes.range_bin_m * 6, (
-            f"unresolvable targets have range spread {spread:.4f} m "
-            f"(resolution {frame.axes.range_bin_m:.4f} m)"
+            f"unresolvable targets have range spread {spread:.4f} m (resolution {frame.axes.range_bin_m:.4f} m)"
         )
 
     def test_resolvable_targets_separate(self):
@@ -165,9 +155,7 @@ class TestRangeResolutionLimit:
         radar = make_scene_radar_or_skip(_VFAST)
         d1 = 3.0
         resolution = make_processing_axes(_VFAST).range_bin_m
-        frame = simulate_point_targets(
-            radar, [_local(d1), _local(d1 + resolution * 5)]
-        )
+        frame = simulate_point_targets(radar, [_local(d1), _local(d1 + resolution * 5)])
         profile = _range_profile(frame)
         axis = frame.axes.range_m.cpu().numpy()
 
@@ -175,7 +163,7 @@ class TestRangeResolutionLimit:
         bin2 = int(np.argmin(np.abs(axis - (d1 + resolution * 5))))
         assert bin1 < bin2
         peak = max(profile[bin1], profile[bin2])
-        valley = profile[bin1:bin2 + 1].min()
+        valley = profile[bin1 : bin2 + 1].min()
         assert peak > valley, "no variation between resolvable targets"
 
 
@@ -196,9 +184,7 @@ class TestPointCloudOutputFormat:
         frame = simulate_point_targets(radar, [_local(2.0), _local(4.0)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
-        assert POINT_CLOUD_COLUMNS == (
-            "x", "y", "z", "velocity_mps", "energy", "range_m"
-        )
+        assert POINT_CLOUD_COLUMNS == ("x", "y", "z", "velocity_mps", "energy", "range_m")
         count = int(cloud.xyz.shape[0])
         assert count > 0
         assert tuple(cloud.xyz.shape) == (count, 3)

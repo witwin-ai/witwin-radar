@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-
 PIPELINE_NUM_TX = 3
 PIPELINE_NUM_RX = 4
 
@@ -67,22 +66,15 @@ def pipeline_inputs(*, num_chirps: int = 8):
     base_tx = geo.TX_A_POSITION_M
     base_rx = geo.RX_A_POSITION_M
     transmitters = tuple(
-        (900 + index, (base_tx[0] + 0.002 * index, base_tx[1], base_tx[2]))
-        for index in range(PIPELINE_NUM_TX)
+        (900 + index, (base_tx[0] + 0.002 * index, base_tx[1], base_tx[2])) for index in range(PIPELINE_NUM_TX)
     )
     receivers = tuple(
-        (950 + index, (base_rx[0] + 0.002 * index, base_rx[1], base_rx[2]))
-        for index in range(PIPELINE_NUM_RX)
+        (950 + index, (base_rx[0] + 0.002 * index, base_rx[1], base_rx[2])) for index in range(PIPELINE_NUM_RX)
     )
     spike = drv.MultiEndpointSpike(transmitters=transmitters, receivers=receivers)
     composed, _, _ = spike.frame()
     batch = drv.to_synthesis(composed)
-    spec = replace(
-        grid.fmcw_spec(num_chirps),
-        num_tx=PIPELINE_NUM_TX,
-        num_rx=PIPELINE_NUM_RX,
-        output_domain="spectrum",
-    )
+    spec = replace(grid.fmcw_spec(num_chirps), num_tx=PIPELINE_NUM_TX, num_rx=PIPELINE_NUM_RX, output_domain="spectrum")
     return batch, spec, array_spec()
 
 
@@ -117,16 +109,8 @@ def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar_fast"):
     profile = range_profile(processing)
     rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    cells = detectors[detector](
-        combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2
-    )
+    cells = detectors[detector](combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     return point_cloud(cells, rd, axes, array, max_points=64)
 
 
-__all__ = [
-    "PIPELINE_NUM_RX",
-    "PIPELINE_NUM_TX",
-    "array_spec",
-    "pipeline_inputs",
-    "run_pipeline",
-]
+__all__ = ["PIPELINE_NUM_RX", "PIPELINE_NUM_TX", "array_spec", "pipeline_inputs", "run_pipeline"]

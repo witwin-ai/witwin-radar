@@ -27,7 +27,6 @@ import platform
 import sys
 from typing import Any
 
-
 DEPLOYMENT_ABI = "witwin.radar.deployment.v1"
 
 #: The architectures the release build compiles SASS for, mirroring
@@ -71,21 +70,9 @@ def sm_support(sm: int) -> dict[str, Any]:
         "sm": sm,
         "declared_supported": declared,
         "runtime_verified": verified,
-        "status": (
-            "runtime_verified"
-            if verified
-            else "declared_unverified"
-            if declared
-            else "not_declared"
-        ),
+        "status": ("runtime_verified" if verified else "declared_unverified" if declared else "not_declared"),
         "evidence": [SM120_EVIDENCE] if verified else [],
-        "mode": (
-            "sass+ptx"
-            if sm == PTX_FORWARD_COMPATIBILITY_SM
-            else "sass"
-            if declared
-            else "not_available"
-        ),
+        "mode": ("sass+ptx" if sm == PTX_FORWARD_COMPATIBILITY_SM else "sass" if declared else "not_available"),
     }
 
 
@@ -114,16 +101,12 @@ def _torch_diagnostics(diagnostics: dict[str, Any]) -> None:
         return
     index = int(torch.cuda.current_device())
     if index < 0:
-        raise RuntimeError(
-            f"CUDA reports available but has invalid active device index {index}"
-        )
+        raise RuntimeError(f"CUDA reports available but has invalid active device index {index}")
     major, minor = torch.cuda.get_device_capability(index)
     support = sm_support(major * 10 + minor)
     diagnostics["device"] = {
         "name": torch.cuda.get_device_name(index),
-        "total_memory_bytes": int(
-            torch.cuda.get_device_properties(index).total_memory
-        ),
+        "total_memory_bytes": int(torch.cuda.get_device_properties(index).total_memory),
         **support,
     }
     diagnostics["sm_matrix_status"] = support["status"]
@@ -159,9 +142,7 @@ def runtime_diagnostics() -> dict[str, Any]:
     try:
         _torch_diagnostics(diagnostics)
     except Exception as error:  # noqa: BLE001 - see the docstring
-        diagnostics["errors"].append(
-            f"PyTorch runtime unavailable ({type(error).__name__}): {error}"
-        )
+        diagnostics["errors"].append(f"PyTorch runtime unavailable ({type(error).__name__}): {error}")
     try:
         diagnostics["native_build"] = build_info()
     except Exception as error:  # noqa: BLE001 - see the docstring
@@ -183,25 +164,16 @@ def require_supported_runtime() -> dict[str, Any]:
         errors.append("CUDA is unavailable; Radar has no CPU backend")
     device = diagnostics.get("device")
     if diagnostics.get("cuda_available", False) and not isinstance(device, dict):
-        errors.append(
-            "CUDA is available but runtime diagnostics has no valid active device"
-        )
+        errors.append("CUDA is available but runtime diagnostics has no valid active device")
     if isinstance(device, dict):
         if not device.get("declared_supported", False):
             errors.append(
-                f"GPU SM {device.get('sm')} is outside the declared build SM "
-                f"values {list(DECLARED_SM_ARCHITECTURES)}"
+                f"GPU SM {device.get('sm')} is outside the declared build SM values {list(DECLARED_SM_ARCHITECTURES)}"
             )
         else:
             native_build = diagnostics.get("native_build")
-            record = (
-                native_build.get("native_build")
-                if isinstance(native_build, dict)
-                else None
-            )
-            architectures = (
-                record.get("cuda_architectures") if isinstance(record, dict) else None
-            )
+            record = native_build.get("native_build") if isinstance(native_build, dict) else None
+            architectures = record.get("cuda_architectures") if isinstance(record, dict) else None
             sm = device.get("sm")
             if not isinstance(architectures, list) or not any(
                 entry.split("+", maxsplit=1)[0] == str(sm) for entry in architectures

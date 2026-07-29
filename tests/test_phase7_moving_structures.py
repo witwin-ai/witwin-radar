@@ -40,8 +40,8 @@ pytest.importorskip("witwin.channel")
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
-import witwin.radar.propagation as kin  # noqa: E402
 
+import witwin.radar.propagation as kin  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -71,9 +71,7 @@ def _kinematics(positions: torch.Tensor, velocities) -> kin.Kinematics:
         velocities_m_per_s=(
             velocities
             if isinstance(velocities, torch.Tensor)
-            else torch.tensor(
-                list(velocities), dtype=torch.float32, device="cuda"
-            )
+            else torch.tensor(list(velocities), dtype=torch.float32, device="cuda")
         ),
     )
 
@@ -87,24 +85,13 @@ def _body_frame(spike, site_velocities):
     """
 
     sites = _kinematics(spike.site_tensor(), site_velocities)
-    transmitters = _kinematics(
-        spike.transmitter_tensor(),
-        torch.zeros(len(spike.transmitters), 3, device="cuda"),
-    )
-    receivers = _kinematics(
-        spike.receiver_tensor(),
-        torch.zeros(len(spike.receivers), 3, device="cuda"),
-    )
-    with kin.two_way_duals(
-        sites=sites, transmitters=transmitters, receivers=receivers
-    ) as duals:
+    transmitters = _kinematics(spike.transmitter_tensor(), torch.zeros(len(spike.transmitters), 3, device="cuda"))
+    receivers = _kinematics(spike.receiver_tensor(), torch.zeros(len(spike.receivers), 3, device="cuda"))
+    with kin.two_way_duals(sites=sites, transmitters=transmitters, receivers=receivers) as duals:
         for tensor in (duals.transmitters, duals.sites, duals.receivers):
             assert forward_ad.unpack_dual(tensor).tangent is not None
         composed, _, _ = spike.frame(
-            duals.sites,
-            transmitters=duals.transmitters,
-            receivers=duals.receivers,
-            ad_mode="jvp",
+            duals.sites, transmitters=duals.transmitters, receivers=duals.receivers, ad_mode="jvp"
         )
         return composed.delay_rate.detach().clone()
 
@@ -119,16 +106,10 @@ def _line_fit_residual(values: list[float]) -> float:
     count = len(values)
     mean_index = (count - 1) / 2.0
     mean_value = sum(values) / count
-    sxy = sum(
-        (index - mean_index) * (value - mean_value)
-        for index, value in enumerate(values)
-    )
+    sxy = sum((index - mean_index) * (value - mean_value) for index, value in enumerate(values))
     sxx = sum((index - mean_index) ** 2 for index in range(count))
     slope = sxy / sxx
-    residual = sum(
-        (value - (mean_value + slope * (index - mean_index))) ** 2
-        for index, value in enumerate(values)
-    )
+    residual = sum((value - (mean_value + slope * (index - mean_index))) ** 2 for index, value in enumerate(values))
     total = sum((value - mean_value) ** 2 for value in values)
     return residual / total
 
@@ -140,11 +121,7 @@ def _line_fit_residual(values: list[float]) -> float:
 
 @pytest.fixture(scope="module")
 def rotor():
-    return drv.MultiEndpointSpike(
-        transmitters=AXIAL_TRANSMITTERS,
-        sites=ROTOR_SITES,
-        receivers=AXIAL_RECEIVERS,
-    )
+    return drv.MultiEndpointSpike(transmitters=AXIAL_TRANSMITTERS, sites=ROTOR_SITES, receivers=AXIAL_RECEIVERS)
 
 
 def test_a_rotating_rigid_body_gives_equal_and_opposite_shifts(rotor):
@@ -165,26 +142,18 @@ def test_a_rotating_rigid_body_gives_equal_and_opposite_shifts(rotor):
     velocities = geo.rotor_site_velocities(ROTOR_SITES)
     # The production seam, not the oracle, builds the tangent that is measured.
     seam = kin.rigid_site_velocities(
-        rotor.site_tensor(),
-        angular_velocity=geo.ROTOR_ANGULAR_VELOCITY,
-        centre_m=geo.ROTOR_CENTRE_M,
+        rotor.site_tensor(), angular_velocity=geo.ROTOR_ANGULAR_VELOCITY, centre_m=geo.ROTOR_CENTRE_M
     )
     for index, (stable_id, _) in enumerate(ROTOR_SITES):
         for axis in range(3):
-            assert float(seam[index, axis]) == pytest.approx(
-                velocities[stable_id][axis], abs=1e-6
-            )
+            assert float(seam[index, axis]) == pytest.approx(velocities[stable_id][axis], abs=1e-6)
 
     rate = _body_frame(rotor, seam)
     rows = rotor.predicted_combined_rows()
-    reference = geo.combined_delay_rate_s_per_s(
-        rows, velocities, AXIAL_TRANSMITTERS, ROTOR_SITES, AXIAL_RECEIVERS
-    )
+    reference = geo.combined_delay_rate_s_per_s(rows, velocities, AXIAL_TRANSMITTERS, ROTOR_SITES, AXIAL_RECEIVERS)
     measured = {row.key: float(rate[index]) for index, row in enumerate(rows)}
 
-    for index, (value, expected) in enumerate(
-        zip(rate.tolist(), reference, strict=True)
-    ):
+    for index, (value, expected) in enumerate(zip(rate.tolist(), reference, strict=True)):
         assert value == pytest.approx(expected, rel=RATE_RTOL), index
 
     pairs = 0
@@ -216,9 +185,7 @@ def test_the_rotor_pair_spread_matches_the_blade_flash_formula(rotor):
 
     velocities = geo.rotor_site_velocities(ROTOR_SITES)
     seam = kin.rigid_site_velocities(
-        rotor.site_tensor(),
-        angular_velocity=geo.ROTOR_ANGULAR_VELOCITY,
-        centre_m=geo.ROTOR_CENTRE_M,
+        rotor.site_tensor(), angular_velocity=geo.ROTOR_ANGULAR_VELOCITY, centre_m=geo.ROTOR_CENTRE_M
     )
     shifts = _doppler(_body_frame(rotor, seam))
     rows = rotor.predicted_combined_rows()
@@ -227,24 +194,16 @@ def test_the_rotor_pair_spread_matches_the_blade_flash_formula(rotor):
     los = ("los", "los")
     spread = (
         by_key[(geo.TRANSMITTERS[0][0], geo.SITE_P_STABLE_ID, geo.RECEIVERS[0][0], *los)]
-        - by_key[
-            (geo.TRANSMITTERS[0][0], geo.SITE_R_STABLE_ID, geo.RECEIVERS[0][0], *los)
-        ]
+        - by_key[(geo.TRANSMITTERS[0][0], geo.SITE_R_STABLE_ID, geo.RECEIVERS[0][0], *los)]
     )
     exact = [
         -geo.REFERENCE_FREQUENCY_HZ * value
-        for value in geo.combined_delay_rate_s_per_s(
-            rows, velocities, AXIAL_TRANSMITTERS, ROTOR_SITES, AXIAL_RECEIVERS
-        )
+        for value in geo.combined_delay_rate_s_per_s(rows, velocities, AXIAL_TRANSMITTERS, ROTOR_SITES, AXIAL_RECEIVERS)
     ]
     exact_by_key = {row.key: exact[index] for index, row in enumerate(rows)}
     exact_spread = (
-        exact_by_key[
-            (geo.TRANSMITTERS[0][0], geo.SITE_P_STABLE_ID, geo.RECEIVERS[0][0], *los)
-        ]
-        - exact_by_key[
-            (geo.TRANSMITTERS[0][0], geo.SITE_R_STABLE_ID, geo.RECEIVERS[0][0], *los)
-        ]
+        exact_by_key[(geo.TRANSMITTERS[0][0], geo.SITE_P_STABLE_ID, geo.RECEIVERS[0][0], *los)]
+        - exact_by_key[(geo.TRANSMITTERS[0][0], geo.SITE_R_STABLE_ID, geo.RECEIVERS[0][0], *los)]
     )
     assert spread == pytest.approx(exact_spread, rel=RATE_RTOL)
 
@@ -261,26 +220,14 @@ def test_the_rotor_pair_spread_matches_the_blade_flash_formula(rotor):
 
 @pytest.fixture(scope="module")
 def hinge():
-    return drv.MultiEndpointSpike(
-        transmitters=AXIAL_TRANSMITTERS,
-        sites=geo.HINGE_SITES,
-        receivers=AXIAL_RECEIVERS,
-    )
+    return drv.MultiEndpointSpike(transmitters=AXIAL_TRANSMITTERS, sites=geo.HINGE_SITES, receivers=AXIAL_RECEIVERS)
 
 
 @pytest.fixture(scope="module")
 def hinge_descriptor():
     return kin.LinearDeformation(
-        vertices_m=torch.tensor(
-            [position for _, position in geo.HINGE_SITES],
-            dtype=torch.float32,
-            device="cuda",
-        ),
-        velocities_m_per_s=torch.tensor(
-            list(geo.HINGE_VELOCITIES_M_PER_S),
-            dtype=torch.float32,
-            device="cuda",
-        ),
+        vertices_m=torch.tensor([position for _, position in geo.HINGE_SITES], dtype=torch.float32, device="cuda"),
+        velocities_m_per_s=torch.tensor(list(geo.HINGE_VELOCITIES_M_PER_S), dtype=torch.float32, device="cuda"),
     )
 
 
@@ -302,9 +249,7 @@ def test_a_hinge_deformation_gives_a_linear_doppler_band(hinge, hinge_descriptor
     the velocity field the descriptor publishes.
     """
 
-    kinematics = kin.deformation_kinematics(
-        hinge.site_tensor(), hinge_descriptor, 0.0
-    )
+    kinematics = kin.deformation_kinematics(hinge.site_tensor(), hinge_descriptor, 0.0)
     speeds = kinematics.velocities_m_per_s[:, 0].tolist()
     # Exactly linear, because that is what the descriptor claims to be.
     assert speeds[0] - 2.0 * speeds[1] + speeds[2] == 0.0
@@ -314,15 +259,10 @@ def test_a_hinge_deformation_gives_a_linear_doppler_band(hinge, hinge_descriptor
     rate = _body_frame(hinge, kinematics.velocities_m_per_s)
     rows = hinge.predicted_combined_rows()
     velocities = {
-        stable_id: geo.HINGE_VELOCITIES_M_PER_S[index]
-        for index, (stable_id, _) in enumerate(geo.HINGE_SITES)
+        stable_id: geo.HINGE_VELOCITIES_M_PER_S[index] for index, (stable_id, _) in enumerate(geo.HINGE_SITES)
     }
-    reference = geo.combined_delay_rate_s_per_s(
-        rows, velocities, AXIAL_TRANSMITTERS, geo.HINGE_SITES, AXIAL_RECEIVERS
-    )
-    for index, (value, expected) in enumerate(
-        zip(rate.tolist(), reference, strict=True)
-    ):
+    reference = geo.combined_delay_rate_s_per_s(rows, velocities, AXIAL_TRANSMITTERS, geo.HINGE_SITES, AXIAL_RECEIVERS)
+    for index, (value, expected) in enumerate(zip(rate.tolist(), reference, strict=True)):
         assert value == pytest.approx(expected, rel=RATE_RTOL), index
 
     shifts = _doppler(rate)
@@ -346,16 +286,12 @@ def test_a_hinge_deformation_gives_a_linear_doppler_band(hinge, hinge_descriptor
     assert width == pytest.approx(exact_band[-1] - exact_band[0], rel=RATE_RTOL)
     # The idealised one-leg band, and how much of it the projection keeps.
     idealised = (
-        geo.REFERENCE_FREQUENCY_HZ
-        * (geo.HINGE_TIP_SPEED_M_PER_S - geo.HINGE_ROOT_SPEED_M_PER_S)
-        / geo.C0_M_PER_S
+        geo.REFERENCE_FREQUENCY_HZ * (geo.HINGE_TIP_SPEED_M_PER_S - geo.HINGE_ROOT_SPEED_M_PER_S) / geo.C0_M_PER_S
     )
     assert 0.80 < width / (2.0 * idealised) < 0.85, width / (2.0 * idealised)
 
 
-def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(
-    hinge_descriptor,
-):
+def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(hinge_descriptor):
     """The independent oracle for the C2 workaround, on both descriptors.
 
     Core has no velocity on ``DeformationState``, so a deforming mesh has no
@@ -375,9 +311,7 @@ def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(
 
     step = 1.0e-4
     analytic = hinge_descriptor.velocity_at(0.0)
-    difference = (
-        hinge_descriptor.vertices_at(step) - hinge_descriptor.vertices_at(-step)
-    ) / (2.0 * step)
+    difference = (hinge_descriptor.vertices_at(step) - hinge_descriptor.vertices_at(-step)) / (2.0 * step)
     assert torch.allclose(difference, analytic, rtol=1.0e-4, atol=1.0e-6)
 
     smpl = pytest.importorskip("smplpytorch")
@@ -392,19 +326,12 @@ def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(
     # whole body: a global rotation would make every vertex agree trivially.
     pose_rate[3 * 18 + 2] = 3.0
     pose_rate[3 * 4 + 0] = -2.0
-    body = SMPLBody(
-        pose=torch.zeros(72),
-        shape=torch.zeros(10),
-        model_root=model_root,
-        device="cuda",
-    )
+    body = SMPLBody(pose=torch.zeros(72), shape=torch.zeros(10), model_root=model_root, device="cuda")
     deformation = SmplPoseDeformation(body, pose_rate=pose_rate)
     velocity = deformation.velocity_at(0.0)
     fastest = float(velocity.norm(dim=1).max())
     assert fastest > 0.5, fastest
-    fd = (
-        deformation.vertices_at(step) - deformation.vertices_at(-step)
-    ) / (2.0 * step)
+    fd = (deformation.vertices_at(step) - deformation.vertices_at(-step)) / (2.0 * step)
     error = float((fd - velocity).norm(dim=1).max()) / fastest
     assert error < 5.0e-3, error
 
@@ -418,10 +345,7 @@ def _smpl_model_root() -> str | None:
         pathlib.Path(smpl_module._default_smpl_model_root()),
         # A git worktree sits one level deeper than the checkout the default
         # path is written against, so the models live beside the main checkout.
-        pathlib.Path(__file__).resolve().parents[3]
-        / "radar"
-        / "models"
-        / "smpl_models",
+        pathlib.Path(__file__).resolve().parents[3] / "radar" / "models" / "smpl_models",
     ]
     for candidate in candidates:
         if candidate.is_dir() and any(candidate.glob("*.pkl")):
@@ -443,6 +367,7 @@ def test_a_deforming_mesh_is_a_core_deformation_not_a_reposed_geometry():
     pytest.importorskip("smplpytorch")
     from witwin.core import PhysicalMaterial, Scene, Structure
     from witwin.core.dynamics import DeformationState, DynamicScene
+
     from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
 
     model_root = _smpl_model_root()
@@ -450,12 +375,7 @@ def test_a_deforming_mesh_is_a_core_deformation_not_a_reposed_geometry():
         pytest.skip("no SMPL model files available in this checkout")
     pose_rate = torch.zeros(72, device="cuda")
     pose_rate[3 * 18 + 2] = 3.0
-    body = SMPLBody(
-        pose=torch.zeros(72),
-        shape=torch.zeros(10),
-        model_root=model_root,
-        device="cuda",
-    )
+    body = SMPLBody(pose=torch.zeros(72), shape=torch.zeros(10), model_root=model_root, device="cuda")
     deformation = SmplPoseDeformation(body, pose_rate=pose_rate)
     state = deformation.at(0.1)
     assert isinstance(state, DeformationState)
@@ -506,15 +426,12 @@ def test_rotation_and_deformation_preserve_topology_version():
     """
 
     quarter_turn = (0.0, 0.0, 0.35)
-    rotated = world.make_dynamic_scene(
-        wall_rotation=quarter_turn, wall_angular_velocity=(0.0, 0.0, 1.0)
-    )
+    rotated = world.make_dynamic_scene(wall_rotation=quarter_turn, wall_angular_velocity=(0.0, 0.0, 1.0))
     deformed = world.make_dynamic_scene(
         wall_deformation=kin.LinearDeformation(
             vertices_m=torch.tensor(geo.WALL_VERTICES_M, dtype=torch.float32),
             velocities_m_per_s=torch.tensor(
-                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.3, 0.0, 0.0), (0.3, 0.0, 0.0)],
-                dtype=torch.float32,
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.3, 0.0, 0.0), (0.3, 0.0, 0.0)], dtype=torch.float32
             ),
         )
     )
@@ -542,22 +459,14 @@ def _static_legs(spike):
     sites = spike.site_tensor()
     inbound = spike.adapter.reevaluate(
         spike.inbound,
-        spike._stacked_ids(
-            spike.stacked([p for _, p in spike.transmitters], 1),
-            spike.transmitter_ids,
-            geo.TX_POWER_W,
-        ),
+        spike._stacked_ids(spike.stacked([p for _, p in spike.transmitters], 1), spike.transmitter_ids, geo.TX_POWER_W),
         spike._stacked_ids(sites, spike.site_ids, None),
         ad_mode="none",
     )
     outbound = spike.adapter.reevaluate(
         spike.outbound,
         spike._stacked_ids(sites, spike.site_ids, geo.SITE_POWER_W),
-        spike._stacked_ids(
-            spike.stacked([p for _, p in spike.receivers], 1),
-            spike.receiver_ids,
-            None,
-        ),
+        spike._stacked_ids(spike.stacked([p for _, p in spike.receivers], 1), spike.receiver_ids, None),
         ad_mode="none",
     )
     return inbound, outbound
@@ -591,25 +500,16 @@ def test_a_translating_wall_moves_only_the_reflection_row():
 
     delays = {}
     for time_s in (-step, step):
-        spike.adapter.refreeze(
-            world.compile_snapshot(dynamic.at(time_s)),
-            world_motion="fixed_winner_replay",
-        )
+        spike.adapter.refreeze(world.compile_snapshot(dynamic.at(time_s)), world_motion="fixed_winner_replay")
         assert spike.adapter.world_motion == "fixed_winner_replay"
         inbound, outbound = _static_legs(spike)
         # Every frozen row still exists: the wall slid along its own normal by
         # 8 mm and no specular point left the facet.
         assert bool(inbound.row_valid.all()) and bool(outbound.row_valid.all())
-        delays[time_s] = (
-            inbound.delay_s.double().clone(),
-            outbound.delay_s.double().clone(),
-        )
+        delays[time_s] = (inbound.delay_s.double().clone(), outbound.delay_s.double().clone())
 
     for index, (leg_name, rows) in enumerate(
-        (
-            ("inbound", spike.predicted_inbound_rows()),
-            ("outbound", spike.predicted_outbound_rows()),
-        )
+        (("inbound", spike.predicted_inbound_rows()), ("outbound", spike.predicted_outbound_rows()))
     ):
         early = delays[-step][index]
         late = delays[step][index]
@@ -621,19 +521,13 @@ def test_a_translating_wall_moves_only_the_reflection_row():
         assert torch.equal(early[mask], late[mask]), leg_name
         for row_index, row in enumerate(rows):
             expected = geo.wall_motion_leg_delay_rate_s_per_s(
-                positions[row.source_id],
-                positions[row.sink_id],
-                row.component,
-                geo.WALL_VELOCITY_M_PER_S,
+                positions[row.source_id], positions[row.sink_id], row.component, geo.WALL_VELOCITY_M_PER_S
             )
             measured = float(rate[row_index])
             if row.component == "los":
                 assert measured == 0.0, (leg_name, row_index)
             else:
-                assert measured == pytest.approx(expected, rel=RATE_RTOL), (
-                    leg_name,
-                    row_index,
-                )
+                assert measured == pytest.approx(expected, rel=RATE_RTOL), (leg_name, row_index)
                 # Non-vacuity: the reflection really is moving.
                 assert abs(measured) > 1.0e-9
 
@@ -657,22 +551,16 @@ def test_structure_motion_does_not_reach_the_endpoint_delay_rate():
 
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
     spike = drv.MultiEndpointSpike(compiled=world.compile_snapshot(dynamic.at(0.0)))
-    sites = _kinematics(
-        spike.site_tensor(), torch.zeros(len(spike.sites), 3, device="cuda")
-    )
+    sites = _kinematics(spike.site_tensor(), torch.zeros(len(spike.sites), 3, device="cuda"))
     with kin.two_way_duals(sites=sites) as duals:
         inbound = spike.adapter.reevaluate(
             spike.inbound,
             spike._stacked_ids(
-                spike.stacked([p for _, p in spike.transmitters], 1),
-                spike.transmitter_ids,
-                geo.TX_POWER_W,
+                spike.stacked([p for _, p in spike.transmitters], 1), spike.transmitter_ids, geo.TX_POWER_W
             ),
             spike._stacked_ids(duals.sites, spike.site_ids, None),
             ad_mode="jvp",
         )
         rate = inbound.delay_rate.detach().clone()
     assert torch.equal(rate, torch.zeros_like(rate))
-    assert any(
-        row.component == "reflection" for row in spike.predicted_inbound_rows()
-    )
+    assert any(row.component == "reflection" for row in spike.predicted_inbound_rows())

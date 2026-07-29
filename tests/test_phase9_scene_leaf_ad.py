@@ -56,7 +56,6 @@ from support.synthesis_batch import to_synthesis  # noqa: E402
 
 from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -65,17 +64,14 @@ BASE_EPS_R = float(geo.WALL_EPS_R)
 
 #: Translate the whole facet along its normal. Every vertex moves, so this is
 #: the plane displacement the reflection geometry actually depends on.
-PLANE_DIRECTION = torch.tensor(
-    [[1.0, 0.0, 0.0]] * 4, dtype=torch.float32
-)
+PLANE_DIRECTION = torch.tensor([[1.0, 0.0, 0.0]] * 4, dtype=torch.float32)
 
 #: Tilt: three vertices move along the normal by different amounts, so the two
 #: triangles stop being coplanar and each specular point moves differently. The
 #: plane direction alone could be reproduced by a model that only knew the
 #: wall's offset.
 TILT_DIRECTION = torch.tensor(
-    [[1.0, 0.0, 0.0], [-0.5, 0.0, 0.0], [0.3, 0.0, 0.0], [0.0, 0.0, 0.0]],
-    dtype=torch.float32,
+    [[1.0, 0.0, 0.0], [-0.5, 0.0, 0.0], [0.3, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32
 )
 
 #: Metres, and the permittivity is dimensionless. See the module docstring.
@@ -89,9 +85,7 @@ EPS_R_FD_RTOL = 5.0e-3
 #: 5.6e-4 and -4.4e-4 and their sum is a 4x amplification of each one's noise.
 #: Measured at 2e-4: sum-of-parts against all-at-once 8.4e-5 relative, analytic
 #: against all-at-once 0.27%.
-SITE_DIRECTION = torch.tensor(
-    [[-0.4, 0.8, 0.0], [0.6, -0.3, 0.0]], dtype=torch.float32, device="cuda"
-)
+SITE_DIRECTION = torch.tensor([[-0.4, 0.8, 0.0], [0.6, -0.3, 0.0]], dtype=torch.float32, device="cuda")
 COMBINED_STEP = 2.0e-4
 COMBINED_FD_RTOL = 2.0e-2
 
@@ -108,9 +102,7 @@ def _chain(spec, *, vertices=None, eps_r=None, sites=None, ad_mode="none"):
 
     compiled = world.compile_fixture_scene(vertices=vertices, eps_r=eps_r)
     spike = drv.MultiEndpointSpike(compiled=compiled)
-    composed, _, _ = spike.frame(
-        sites, drv.make_response(), ad_mode=ad_mode, include_delay_rate=False
-    )
+    composed, _, _ = spike.frame(sites, drv.make_response(), ad_mode=ad_mode, include_delay_rate=False)
     cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum(), spike
 
@@ -166,22 +158,15 @@ def test_a_mesh_vertex_gradient_reaches_a_synthesized_fmcw_loss(spec):
     assert torch.isfinite(gradient).all()
     assert float(gradient[:, 0].abs().min()) > ZERO_FLOOR
 
-    for name, direction in (
-        ("plane", PLANE_DIRECTION),
-        ("tilt", TILT_DIRECTION),
-    ):
+    for name, direction in (("plane", PLANE_DIRECTION), ("tilt", TILT_DIRECTION)):
         expected = float((gradient * direction).sum())
         samples = {
-            offset: _value(
-                spec, vertices=BASE_VERTICES + offset * VERTEX_STEP_M * direction
-            )
+            offset: _value(spec, vertices=BASE_VERTICES + offset * VERTEX_STEP_M * direction)
             for offset in (-2, -1, 1, 2)
         }
         measured = fd.fourth_order_difference(samples, VERTEX_STEP_M)
         assert abs(expected) > ZERO_FLOOR, name
-        assert fd.relative_error(
-            measured, expected, floor=ZERO_FLOOR
-        ) < VERTEX_FD_RTOL, (name, measured, expected)
+        assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < VERTEX_FD_RTOL, (name, measured, expected)
 
 
 def test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct(spec):
@@ -207,9 +192,7 @@ def test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct(spec):
     loss, _ = _chain(spec, vertices=vertices, ad_mode="vjp")
     loss.backward()
     gradient = vertices.grad
-    torch.testing.assert_close(
-        gradient[:, 1:], torch.zeros_like(gradient[:, 1:]), rtol=0.0, atol=0.0
-    )
+    torch.testing.assert_close(gradient[:, 1:], torch.zeros_like(gradient[:, 1:]), rtol=0.0, atol=0.0)
 
     baseline = _value(spec, vertices=BASE_VERTICES)
 
@@ -221,9 +204,7 @@ def test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct(spec):
     # Still inside the smooth neighbourhood: bit for bit unchanged.
     assert _value(spec, vertices=narrowed(0.7)) == baseline
     # Past it: a row stops existing and the answer moves.
-    assert abs(_value(spec, vertices=narrowed(0.5)) - baseline) > 1.0e-3 * abs(
-        baseline
-    )
+    assert abs(_value(spec, vertices=narrowed(0.5)) - baseline) > 1.0e-3 * abs(baseline)
 
 
 def test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient(spec):
@@ -241,9 +222,7 @@ def test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient(spec):
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(BASE_VERTICES.clone(), PLANE_DIRECTION)
         assert not dual.requires_grad
-        tangent = forward_ad.unpack_dual(
-            _chain(spec, vertices=dual, ad_mode="jvp")[0]
-        ).tangent
+        tangent = forward_ad.unpack_dual(_chain(spec, vertices=dual, ad_mode="jvp")[0]).tangent
         assert tangent is not None
         forward = float(tangent)
 
@@ -271,14 +250,9 @@ def test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss(spec):
     expected = float(eps_r.grad)
     assert abs(expected) > ZERO_FLOOR
 
-    samples = {
-        offset: _value(spec, eps_r=BASE_EPS_R + offset * EPS_R_STEP)
-        for offset in (-2, -1, 1, 2)
-    }
+    samples = {offset: _value(spec, eps_r=BASE_EPS_R + offset * EPS_R_STEP) for offset in (-2, -1, 1, 2)}
     measured = fd.fourth_order_difference(samples, EPS_R_STEP)
-    assert fd.relative_error(
-        measured, expected, floor=ZERO_FLOOR
-    ) < EPS_R_FD_RTOL, (measured, expected)
+    assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < EPS_R_FD_RTOL, (measured, expected)
 
     # The delays really are untouched: a material leaf moves the coefficient
     # only, which is what makes the forward-mode cell below refuse.
@@ -309,9 +283,7 @@ def test_a_material_only_forward_dual_is_refused_by_the_dead_tangent_guard(spec)
     """
 
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            torch.tensor(BASE_EPS_R), torch.tensor(1.0)
-        )
+        dual = forward_ad.make_dual(torch.tensor(BASE_EPS_R), torch.tensor(1.0))
         with pytest.raises(RuntimeError) as raised:
             _chain(spec, eps_r=dual, ad_mode="jvp")
     assert "produced no delay_s tangent" in str(raised.value)
@@ -322,9 +294,7 @@ def test_a_material_only_forward_dual_is_refused_by_the_dead_tangent_guard(spec)
 # --------------------------------------------------------------------------
 
 
-def test_vertices_permittivity_and_endpoints_are_live_in_one_call(
-    spec, site_base
-):
+def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_base):
     """The combined-input test: three leaves at once against three differences.
 
     A scene leaf, a material leaf and an endpoint leaf reach the same scalar
@@ -338,9 +308,7 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(
     vertices = BASE_VERTICES.clone().requires_grad_(True)
     eps_r = torch.tensor(BASE_EPS_R).requires_grad_(True)
     sites = site_base.clone().requires_grad_(True)
-    loss, _ = _chain(
-        spec, vertices=vertices, eps_r=eps_r, sites=sites, ad_mode="vjp"
-    )
+    loss, _ = _chain(spec, vertices=vertices, eps_r=eps_r, sites=sites, ad_mode="vjp")
     loss.backward()
     parts = (
         float((vertices.grad * PLANE_DIRECTION).sum()),
@@ -366,29 +334,17 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(
             )
         return fd.fourth_order_difference(samples, COMBINED_STEP)
 
-    singles = (
-        difference(1.0, 0.0, 0.0),
-        difference(0.0, 1.0, 0.0),
-        difference(0.0, 0.0, 1.0),
-    )
+    singles = (difference(1.0, 0.0, 0.0), difference(0.0, 1.0, 0.0), difference(0.0, 0.0, 1.0))
     all_at_once = difference(1.0, 1.0, 1.0)
-    assert fd.relative_error(
-        sum(singles), all_at_once, floor=ZERO_FLOOR
-    ) < COMBINED_FD_RTOL
-    assert fd.relative_error(
-        combined, all_at_once, floor=ZERO_FLOOR
-    ) < COMBINED_FD_RTOL
+    assert fd.relative_error(sum(singles), all_at_once, floor=ZERO_FLOOR) < COMBINED_FD_RTOL
+    assert fd.relative_error(combined, all_at_once, floor=ZERO_FLOOR) < COMBINED_FD_RTOL
 
     with forward_ad.dual_level():
         tangent = forward_ad.unpack_dual(
             _chain(
                 spec,
-                vertices=forward_ad.make_dual(
-                    BASE_VERTICES.clone(), PLANE_DIRECTION
-                ),
-                eps_r=forward_ad.make_dual(
-                    torch.tensor(BASE_EPS_R), torch.tensor(1.0)
-                ),
+                vertices=forward_ad.make_dual(BASE_VERTICES.clone(), PLANE_DIRECTION),
+                eps_r=forward_ad.make_dual(torch.tensor(BASE_EPS_R), torch.tensor(1.0)),
                 sites=forward_ad.make_dual(site_base.clone(), SITE_DIRECTION),
                 ad_mode="jvp",
             )[0]

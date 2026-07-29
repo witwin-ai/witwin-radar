@@ -34,11 +34,7 @@ import torch
 
 pytest.importorskip("witwin.channel")
 
-from conftest import (  # noqa: E402
-    STANDARD_CONFIG,
-    make_scene_radar_or_skip,
-    simulate_point_targets,
-)
+from conftest import STANDARD_CONFIG, make_scene_radar_or_skip, simulate_point_targets  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -59,9 +55,7 @@ def _radar():
 
 
 def _frame(radar, closing_speed):
-    return simulate_point_targets(
-        radar, [((0.0, 0.0, -_RANGE_M), (0.0, 0.0, closing_speed))]
-    )
+    return simulate_point_targets(radar, [((0.0, 0.0, -_RANGE_M), (0.0, 0.0, closing_speed))])
 
 
 def _rd(cube):
@@ -101,9 +95,7 @@ def _relative_phase(moving_vector, static_vector):
     """
 
     difference = torch.angle(moving_vector * static_vector.conj())
-    per_tx = torch.angle(
-        torch.exp(1j * difference.to(torch.complex64)).mean(dim=1)
-    )
+    per_tx = torch.angle(torch.exp(1j * difference.to(torch.complex64)).mean(dim=1))
     return (per_tx - per_tx[0]).cpu().numpy()
 
 
@@ -125,14 +117,7 @@ def _theta(axes, array, closing_speed):
     """
 
     chirp_period_s = float(axes.slow_time_period_s) / int(axes.num_tx)
-    return (
-        -int(array.phase_sign)
-        * 4.0
-        * math.pi
-        * float(closing_speed)
-        * chirp_period_s
-        / float(axes.wavelength_m)
-    )
+    return -int(array.phase_sign) * 4.0 * math.pi * float(closing_speed) * chirp_period_s / float(axes.wavelength_m)
 
 
 def test_the_slot_period_is_the_chirp_period_times_the_transmitter_count():
@@ -146,12 +131,8 @@ def test_the_slot_period_is_the_chirp_period_times_the_transmitter_count():
 
     radar = _radar()
     frame = _frame(radar, 0.0)
-    chirp_period_s = (
-        radar.config.idle_time + radar.config.ramp_end_time
-    ) * 1.0e-6
-    assert float(frame.axes.slow_time_period_s) == pytest.approx(
-        chirp_period_s * radar.config.num_tx, rel=1e-9
-    )
+    chirp_period_s = (radar.config.idle_time + radar.config.ramp_end_time) * 1.0e-6
+    assert float(frame.axes.slow_time_period_s) == pytest.approx(chirp_period_s * radar.config.num_tx, rel=1e-9)
 
 
 def test_a_still_target_writes_no_per_transmitter_phase():
@@ -213,19 +194,12 @@ def test_the_processing_compensation_removes_what_the_kernel_wrote():
     # ordering, which is a question ``processing.range_doppler`` owns.
     combined = moving.combined_map().abs()
     flat = int(combined.argmax())
-    velocity = moving.axes.velocity_mps[flat // combined.shape[1]].to(
-        dtype=torch.float32, device=moving.cube.device
-    )
-    assert float(velocity) == pytest.approx(
-        _SPEED, abs=moving.axes.velocity_bin_mps
-    )
+    velocity = moving.axes.velocity_mps[flat // combined.shape[1]].to(dtype=torch.float32, device=moving.cube.device)
+    assert float(velocity) == pytest.approx(_SPEED, abs=moving.axes.velocity_bin_mps)
 
-    compensated = tdm_compensate(
-        moving_vector.reshape(-1, 1),
-        velocity.reshape(1),
-        moving.array,
-        moving.axes,
-    ).reshape(moving.array.num_tx, moving.array.num_rx)
+    compensated = tdm_compensate(moving_vector.reshape(-1, 1), velocity.reshape(1), moving.array, moving.axes).reshape(
+        moving.array.num_tx, moving.array.num_rx
+    )
 
     theta = abs(_theta(moving.axes, moving.array, _SPEED))
     before = np.abs(_relative_phase(moving_vector, static_vector)).max()

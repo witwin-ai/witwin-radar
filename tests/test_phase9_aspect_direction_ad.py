@@ -67,7 +67,6 @@ from support.synthesis_batch import to_synthesis  # noqa: E402
 from witwin.radar.scattering import AspectScatterResponse  # noqa: E402
 from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -82,10 +81,7 @@ RECEIVERS = ((32, (6.0, 3.0, 0.0)), (30, (0.15, 0.0, 0.0)))
 #: Exactly on it would put the lobe at its peak, where the derivative with
 #: respect to a UNIT direction is zero by construction and a finite difference
 #: would be comparing two zeros.
-_AXIS_RAW = (
-    (0.9659258, 0.2588190, 0.0),
-    (-0.4188792, -0.9080614, 0.0),
-)
+_AXIS_RAW = ((0.9659258, 0.2588190, 0.0), (-0.4188792, -0.9080614, 0.0))
 
 ASPECT_EXPONENT = 2.0
 COHERENT_INTERVAL_S = 1.0e-3
@@ -128,11 +124,7 @@ ZERO_FLOOR = 1.0e-9
 def spike():
     """2 TX x 2 sites x 2 RX, inbound multipath, outbound line of sight."""
 
-    return drv.MultiEndpointSpike(
-        receivers=RECEIVERS,
-        outbound_components=frozenset({"los"}),
-        outbound_max_depth=0,
-    )
+    return drv.MultiEndpointSpike(receivers=RECEIVERS, outbound_components=frozenset({"los"}), outbound_max_depth=0)
 
 
 def _axis(device: str = "cuda") -> torch.Tensor:
@@ -165,19 +157,13 @@ def _cotangent(rows: int, *, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def _aspect_rows(spike, sites=None, transmitters=None, *, ad_mode: str = "none"):
-    inbound, outbound = spike.legs(
-        sites, transmitters=transmitters, ad_mode=ad_mode
-    )
-    rows = _response().evaluate_rows(
-        spike.composer, inbound, outbound, _flags(spike)
-    )
+    inbound, outbound = spike.legs(sites, transmitters=transmitters, ad_mode=ad_mode)
+    rows = _response().evaluate_rows(spike.composer, inbound, outbound, _flags(spike))
     return rows, inbound, outbound
 
 
 def _aspect_loss(spike, weights, sites=None, transmitters=None, *, ad_mode="none"):
-    (real, imaginary), _, _ = _aspect_rows(
-        spike, sites, transmitters, ad_mode=ad_mode
-    )
+    (real, imaginary), _, _ = _aspect_rows(spike, sites, transmitters, ad_mode=ad_mode)
     w_re, w_im = weights
     return (w_re * real + w_im * imaginary).sum()
 
@@ -236,12 +222,8 @@ def test_the_adapter_only_ever_freezes_direction_differentiable_components(spike
     from witwin.channel.propagation import consumer
 
     capabilities = consumer.capabilities()
-    assert capabilities.fixed_topology_components.issubset(
-        capabilities.direction_differentiable_components
-    )
-    assert frozenset({"los", "reflection"}).issubset(
-        capabilities.direction_differentiable_components
-    )
+    assert capabilities.fixed_topology_components.issubset(capabilities.direction_differentiable_components)
+    assert frozenset({"los", "reflection"}).issubset(capabilities.direction_differentiable_components)
 
 
 # --------------------------------------------------------------------------
@@ -249,9 +231,7 @@ def test_the_adapter_only_ever_freezes_direction_differentiable_components(spike
 # --------------------------------------------------------------------------
 
 
-def test_the_fixture_puts_one_reflection_row_and_one_line_of_sight_row_in_the_lobe(
-    spike,
-):
+def test_the_fixture_puts_one_reflection_row_and_one_line_of_sight_row_in_the_lobe(spike):
     """Exactly two live composed rows, and they carry different components.
 
     Everything below attributes site P's gradient to a reflection arrival and
@@ -300,9 +280,7 @@ def test_a_reverse_aspect_gradient_reaches_the_site_positions(spike):
     assert float(gradient[1, :2].abs().min()) > ZERO_FLOOR
     # z is structurally zero: every endpoint and the wall are coplanar in z,
     # and the lobe axes have no z component.
-    torch.testing.assert_close(
-        gradient[:, 2], torch.zeros_like(gradient[:, 2]), rtol=0.0, atol=0.0
-    )
+    torch.testing.assert_close(gradient[:, 2], torch.zeros_like(gradient[:, 2]), rtol=0.0, atol=0.0)
 
     base = spike.site_tensor()
     for site in range(base.shape[0]):
@@ -312,19 +290,19 @@ def test_a_reverse_aspect_gradient_reaches_the_site_positions(spike):
             plus[site, axis] += ASPECT_STEP_M
             minus[site, axis] -= ASPECT_STEP_M
             realized = float(plus[site, axis] - minus[site, axis]) / 2.0
-            measured = (
-                float(_aspect_loss(spike, weights, plus))
-                - float(_aspect_loss(spike, weights, minus))
-            ) / (2.0 * realized)
+            measured = (float(_aspect_loss(spike, weights, plus)) - float(_aspect_loss(spike, weights, minus))) / (
+                2.0 * realized
+            )
             expected = float(gradient[site, axis])
-            assert abs(measured - expected) <= ASPECT_FD_RTOL * max(
-                abs(expected), ZERO_FLOOR
-            ), (site, axis, measured, expected)
+            assert abs(measured - expected) <= ASPECT_FD_RTOL * max(abs(expected), ZERO_FLOOR), (
+                site,
+                axis,
+                measured,
+                expected,
+            )
 
 
-def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(
-    spike,
-):
+def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(spike):
     """The falsifier the whole module rests on.
 
     ``evaluate_rows`` reads the two legs' ``field_direction`` and nothing else
@@ -338,12 +316,9 @@ def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(
     sites = spike.site_tensor(requires_grad=True)
     inbound, outbound = spike.legs(sites, ad_mode="vjp")
     severed = tuple(
-        dataclasses.replace(leg, field_direction=leg.field_direction.detach())
-        for leg in (inbound, outbound)
+        dataclasses.replace(leg, field_direction=leg.field_direction.detach()) for leg in (inbound, outbound)
     )
-    real, imaginary = _response().evaluate_rows(
-        spike.composer, severed[0], severed[1], _flags(spike)
-    )
+    real, imaginary = _response().evaluate_rows(spike.composer, severed[0], severed[1], _flags(spike))
     w_re, w_im = weights
     loss = (w_re * real + w_im * imaginary).sum()
 
@@ -351,9 +326,7 @@ def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(
     assert sites.grad is None
 
 
-def test_a_reverse_aspect_gradient_reaches_the_transmitter_through_a_reflection_row(
-    spike,
-):
+def test_a_reverse_aspect_gradient_reaches_the_transmitter_through_a_reflection_row(spike):
     """The reflection half of ADR-043, on its own.
 
     The loss is a one-hot on the reflection row, and the leaf is the
@@ -371,9 +344,7 @@ def test_a_reverse_aspect_gradient_reaches_the_transmitter_through_a_reflection_
     weights = (w_re, w_im)
 
     transmitters = spike.transmitter_tensor().requires_grad_(True)
-    _aspect_loss(
-        spike, weights, transmitters=transmitters, ad_mode="vjp"
-    ).backward()
+    _aspect_loss(spike, weights, transmitters=transmitters, ad_mode="vjp").backward()
 
     gradient = transmitters.grad
     assert gradient is not None
@@ -381,9 +352,7 @@ def test_a_reverse_aspect_gradient_reaches_the_transmitter_through_a_reflection_
     # TX_A owns the reflection row; TX_B publishes no rows at all, so its
     # gradient is exactly zero and that is the correct complete answer.
     assert float(gradient[0, :2].abs().min()) > ZERO_FLOOR
-    torch.testing.assert_close(
-        gradient[1], torch.zeros_like(gradient[1]), rtol=0.0, atol=0.0
-    )
+    torch.testing.assert_close(gradient[1], torch.zeros_like(gradient[1]), rtol=0.0, atol=0.0)
 
     base = spike.transmitter_tensor()
     for axis in range(2):
@@ -397,9 +366,7 @@ def test_a_reverse_aspect_gradient_reaches_the_transmitter_through_a_reflection_
             - float(_aspect_loss(spike, weights, transmitters=minus))
         ) / (2.0 * realized)
         expected = float(gradient[0, axis])
-        assert abs(measured - expected) <= ASPECT_FD_RTOL * max(
-            abs(expected), ZERO_FLOOR
-        ), (axis, measured, expected)
+        assert abs(measured - expected) <= ASPECT_FD_RTOL * max(abs(expected), ZERO_FLOOR), (axis, measured, expected)
 
 
 # --------------------------------------------------------------------------
@@ -416,9 +383,7 @@ def test_a_forward_tangent_on_the_sites_reaches_the_aspect_response(spike):
     """
 
     weights = _cotangent(spike.composer.path_count, seed=901)
-    direction = torch.tensor(
-        [[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda"
-    )
+    direction = torch.tensor([[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda")
 
     base = spike.site_tensor()
     with forward_ad.dual_level():
@@ -449,9 +414,7 @@ def test_a_forward_tangent_on_the_sites_reaches_the_aspect_response(spike):
 
 
 def _cube_loss(spike, spec, sites, *, ad_mode: str = "none"):
-    composed, _, _ = spike.frame(
-        sites, _response(), ad_mode=ad_mode, include_delay_rate=False
-    )
+    composed, _, _ = spike.frame(sites, _response(), ad_mode=ad_mode, include_delay_rate=False)
     cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum()
 
@@ -490,22 +453,19 @@ def test_the_aspect_direction_gradient_reaches_a_synthesized_fmcw_loss(spike, sp
                 moved[site, axis] += offset * CUBE_STEP_M
                 samples[offset] = float(_cube_loss(spike, spec, moved))
                 realized[offset] = float(moved[site, axis])
-            measured = fd.fourth_order_difference(
-                samples, (realized[1] - realized[-1]) / 2.0
-            )
+            measured = fd.fourth_order_difference(samples, (realized[1] - realized[-1]) / 2.0)
             expected = float(gradient[site, axis])
-            assert fd.relative_error(
-                measured, expected, floor=ZERO_FLOOR
-            ) < CUBE_FD_RTOL, (site, axis, measured, expected)
+            assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < CUBE_FD_RTOL, (
+                site,
+                axis,
+                measured,
+                expected,
+            )
 
-    direction = torch.tensor(
-        [[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda"
-    )
+    direction = torch.tensor([[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda")
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(base.clone(), direction)
-        tangent = forward_ad.unpack_dual(
-            _cube_loss(spike, spec, dual, ad_mode="jvp")
-        ).tangent
+        tangent = forward_ad.unpack_dual(_cube_loss(spike, spec, dual, ad_mode="jvp")).tangent
         assert tangent is not None
         forward = float(tangent)
     projected = float((gradient * direction).sum())
@@ -530,14 +490,9 @@ def test_the_direction_term_is_load_bearing_in_the_synthesized_loss(spike, spec)
         inbound, outbound = spike.legs(sites, ad_mode="vjp")
         if sever:
             inbound, outbound = (
-                dataclasses.replace(
-                    leg, field_direction=leg.field_direction.detach()
-                )
-                for leg in (inbound, outbound)
+                dataclasses.replace(leg, field_direction=leg.field_direction.detach()) for leg in (inbound, outbound)
             )
-        composed = spike.composer.compose(
-            inbound, outbound, _response(), include_delay_rate=False
-        )
+        composed = spike.composer.compose(inbound, outbound, _response(), include_delay_rate=False)
         cube = synthesize_fmcw(to_synthesis(composed), spec)
         cube.abs().square().sum().backward()
         return sites.grad

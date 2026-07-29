@@ -100,7 +100,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 EVIDENCE_VERSION = 1
 
 #: Runtimes that must never be loaded by, or required by, an installed Radar.
@@ -108,11 +107,7 @@ FORBIDDEN_RUNTIMES = ("rayd", "drjit", "mitsuba", "sionna")
 
 #: Editable-install finders in this development environment. ``-I`` leaves them
 #: registered, and each one would shadow the wheel it is named after.
-_EDITABLE_FINDER_PREFIXES = (
-    "_editable_impl_witwin",
-    "_witwin_channel_editable",
-    "__editable__",
-)
+_EDITABLE_FINDER_PREFIXES = ("_editable_impl_witwin", "_witwin_channel_editable", "__editable__")
 
 #: Environment variables that would redirect either loader away from the
 #: installed artifact. Scrubbed from every scenario subprocess: a smoke that
@@ -121,10 +116,7 @@ _EDITABLE_FINDER_PREFIXES = (
 _SCRUBBED_ENV_PREFIXES = ("WITWIN_RADAR_", "WITWIN_CHANNEL_", "RAYD_", "OPTIX_")
 
 _RADAR_NATIVE_MEMBER = "witwin/radar/cuda/prebuilt/_radar_native.pyd"
-_RADAR_NATIVE_MEMBERS = (
-    _RADAR_NATIVE_MEMBER,
-    "witwin/radar/cuda/prebuilt/_radar_native.so",
-)
+_RADAR_NATIVE_MEMBERS = (_RADAR_NATIVE_MEMBER, "witwin/radar/cuda/prebuilt/_radar_native.so")
 
 #: The nine translation units the Radar library is built from, as wheel members.
 #: ``source_fingerprint`` hashes each file's NAME and content in this order.
@@ -162,9 +154,7 @@ def _resolve_wheel(path: Path) -> Path:
     if path.is_dir():
         wheels = sorted(path.glob("*.whl"))
         if len(wheels) != 1:
-            raise ValueError(
-                f"{path} must contain exactly one .whl file; found {len(wheels)}"
-            )
+            raise ValueError(f"{path} must contain exactly one .whl file; found {len(wheels)}")
         return wheels[0]
     if path.suffix != ".whl" or not path.is_file():
         raise ValueError(f"wheel does not exist: {path}")
@@ -226,7 +216,7 @@ def emit(**fields):
 
 
 def _scenario_a() -> str:
-    return '''
+    return """
 import types
 
 # Prove the detector fires before trusting it to report nothing. An empty
@@ -275,11 +265,11 @@ emit(
     torch_imported=torch is not None,
     cuda_initialized=cuda_initialized,
 )
-'''
+"""
 
 
 def _scenario_b() -> str:
-    return '''
+    return """
 import witwin.radar
 
 origin = Path(witwin.radar.__file__).resolve()
@@ -308,11 +298,11 @@ emit(
     forbidden_modules=runtimes,
     cuda_loader_modules=loader,
 )
-'''
+"""
 
 
 def _scenario_c() -> str:
-    return '''
+    return """
 import witwin.radar.channel as adapter
 
 origin = Path(adapter.__file__).resolve()
@@ -343,11 +333,11 @@ emit(
     channel_native_modules=native,
     forbidden_modules=runtimes,
 )
-'''
+"""
 
 
 def _scenario_d() -> str:
-    return '''
+    return """
 import witwin.radar
 
 info = witwin.radar.build_info()
@@ -391,11 +381,11 @@ emit(
     cuda_architectures=record["cuda_architectures"],
     operator_count=len(record["operator_symbols"]),
 )
-'''
+"""
 
 
 def _scenario_e() -> str:
-    return '''
+    return """
 import witwin.channel
 
 info = witwin.channel.build_info()
@@ -424,7 +414,7 @@ emit(
     rayd_commit=info["rayd_commit"],
     consumer_contract_version=consumer.CONTRACT_VERSION,
 )
-'''
+"""
 
 
 def _scenario_f() -> str:
@@ -437,7 +427,7 @@ def _scenario_f() -> str:
     in between.
     """
 
-    return '''
+    return """
 import math
 
 import torch
@@ -614,13 +604,13 @@ emit(
     crossing_predicted_phase_increment_rad=predicted,
     crossing_perturbed_max_abs_delta=float((cube - perturbed).abs().max()),
 )
-'''
+"""
 
 
 def _scenario_g(temp_root: Path) -> str:
     """The packaged binary is hidden by the parent before this runs."""
 
-    return f'''
+    return f"""
 import tempfile
 
 build_root = Path(tempfile.gettempdir()).resolve() / "_radar_native"
@@ -662,13 +652,13 @@ emit(
     build_root_entries_before=before,
     build_root_entries_after=after,
 )
-'''
+"""
 
 
 def _scenario_i(records: dict[str, str]) -> str:
     """Re-hash the installed sources with an independent implementation."""
 
-    return f'''
+    return f"""
 import hashlib
 
 expected = {records["source_fingerprint"]!r}
@@ -700,17 +690,13 @@ emit(
     member_count=len(members),
     member_sizes=sizes,
 )
-'''
+"""
 
 
 def _scenario_env(temp_root: Path) -> dict[str, str]:
     """A subprocess environment that cannot reach a non-wheel artifact."""
 
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith(_SCRUBBED_ENV_PREFIXES)
-    }
+    env = {key: value for key, value in os.environ.items() if not key.startswith(_SCRUBBED_ENV_PREFIXES)}
     env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     # ``-I`` ignores PYTHONPATH; it is exported only so an inherited value can
@@ -724,9 +710,7 @@ def _scenario_env(temp_root: Path) -> dict[str, str]:
     return env
 
 
-def _run_scenario(
-    *, name: str, code: str, target: Path, scratch: Path, temp_root: Path
-) -> dict[str, object]:
+def _run_scenario(*, name: str, code: str, target: Path, scratch: Path, temp_root: Path) -> dict[str, object]:
     script = scratch / f"scenario_{name.lower()}.py"
     script.write_text(_preamble(target) + code, encoding="ascii")
     result = subprocess.run(
@@ -739,14 +723,12 @@ def _run_scenario(
     )
     if result.returncode != 0:
         raise CoexistenceError(
-            f"scenario {name} failed (exit {result.returncode})\n"
-            f"{result.stdout.strip()}\n{result.stderr.strip()}"
+            f"scenario {name} failed (exit {result.returncode})\n{result.stdout.strip()}\n{result.stderr.strip()}"
         )
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         raise CoexistenceError(
-            f"scenario {name} printed {len(lines)} lines, expected exactly one "
-            f"JSON object:\n{result.stdout}"
+            f"scenario {name} printed {len(lines)} lines, expected exactly one JSON object:\n{result.stdout}"
         )
     try:
         detail = json.loads(lines[0])
@@ -763,8 +745,7 @@ def _wheel_native_record(radar_wheel: Path) -> dict[str, object]:
         member = next((name for name in _RADAR_NATIVE_MEMBERS if name in names), None)
         if member is None:
             raise CoexistenceError(
-                f"{radar_wheel.name} ships no radar native member; "
-                "it is not an artifact this smoke can validate"
+                f"{radar_wheel.name} ships no radar native member; it is not an artifact this smoke can validate"
             )
         sidecar = f"{member.rsplit('.', 1)[0]}.build-info.json"
         if sidecar not in names:
@@ -774,15 +755,9 @@ def _wheel_native_record(radar_wheel: Path) -> dict[str, object]:
 
 def _wheel_metadata(wheel: Path) -> str:
     with zipfile.ZipFile(wheel) as archive:
-        names = [
-            name
-            for name in archive.namelist()
-            if name.endswith(".dist-info/METADATA") and name.count("/") == 1
-        ]
+        names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA") and name.count("/") == 1]
         if len(names) != 1:
-            raise CoexistenceError(
-                f"{wheel.name} carries {len(names)} dist-info METADATA members"
-            )
+            raise CoexistenceError(f"{wheel.name} carries {len(names)} dist-info METADATA members")
         return archive.read(names[0]).decode("utf-8")
 
 
@@ -800,16 +775,11 @@ def _forbidden(names) -> list[str]:
     return sorted(
         name
         for name in names
-        if any(
-            name == runtime or name.startswith(runtime + "-")
-            for runtime in FORBIDDEN_RUNTIMES
-        )
+        if any(name == runtime or name.startswith(runtime + "-") for runtime in FORBIDDEN_RUNTIMES)
     )
 
 
-def _scenario_h(
-    *, wheels: dict[str, Path], radar_wheel: Path, wheel_dir: Path, temp_root: Path
-) -> dict[str, object]:
+def _scenario_h(*, wheels: dict[str, Path], radar_wheel: Path, wheel_dir: Path, temp_root: Path) -> dict[str, object]:
     """Dependency closure, declared and resolved.
 
     Two halves, because they answer different questions and have different
@@ -836,9 +806,7 @@ def _scenario_h(
     every = sorted({name for names in declared.values() for name in names})
     declared_forbidden = _forbidden(every)
     if declared_forbidden:
-        raise CoexistenceError(
-            f"the witwin wheels declare forbidden requirements: {declared_forbidden}"
-        )
+        raise CoexistenceError(f"the witwin wheels declare forbidden requirements: {declared_forbidden}")
     if "witwin-channel" not in declared["radar"]:
         raise CoexistenceError(
             "the radar wheel declares no witwin-channel requirement at all, so "
@@ -868,23 +836,16 @@ def _scenario_h(
             "resolved": None,
             "resolved_forbidden": None,
             "resolver_status": "unresolved",
-            "resolver_detail": result.stderr.strip().splitlines()[-3:]
-            or ["(no stderr)"],
+            "resolver_detail": result.stderr.strip().splitlines()[-3:] or ["(no stderr)"],
         }
     payload = json.loads(report.read_text(encoding="utf-8"))
-    resolved = sorted(
-        entry["metadata"]["name"].lower().replace("_", "-")
-        for entry in payload.get("install", [])
-    )
+    resolved = sorted(entry["metadata"]["name"].lower().replace("_", "-") for entry in payload.get("install", []))
     resolved_forbidden = _forbidden(resolved)
     if resolved_forbidden:
-        raise CoexistenceError(
-            f"installing witwin-radar[channel] would pull {resolved_forbidden}"
-        )
+        raise CoexistenceError(f"installing witwin-radar[channel] would pull {resolved_forbidden}")
     if "witwin-channel" not in resolved:
         raise CoexistenceError(
-            "the channel extra resolved without witwin-channel; the extra is "
-            f"not doing anything: {resolved}"
+            f"the channel extra resolved without witwin-channel; the extra is not doing anything: {resolved}"
         )
     return {
         "declared_requirements": declared,
@@ -911,20 +872,11 @@ def _install(target: Path, wheels: list[Path]) -> None:
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        raise CoexistenceError(
-            f"installing the three wheels failed:\n{result.stdout}\n{result.stderr}"
-        )
+        raise CoexistenceError(f"installing the three wheels failed:\n{result.stdout}\n{result.stderr}")
 
 
 def _hide_radar_binary(target: Path) -> Path:
-    binary = next(
-        (
-            target / member
-            for member in _RADAR_NATIVE_MEMBERS
-            if (target / member).is_file()
-        ),
-        None,
-    )
+    binary = next((target / member for member in _RADAR_NATIVE_MEMBERS if (target / member).is_file()), None)
     if binary is None:
         raise CoexistenceError("the installed target has no radar native binary to hide")
     hidden = binary.with_suffix(binary.suffix + ".hidden")
@@ -932,13 +884,7 @@ def _hide_radar_binary(target: Path) -> Path:
     return hidden
 
 
-def run(
-    *,
-    core_wheel: Path,
-    channel_wheel: Path,
-    radar_wheel: Path,
-    workspace: Path,
-) -> dict[str, object]:
+def run(*, core_wheel: Path, channel_wheel: Path, radar_wheel: Path, workspace: Path) -> dict[str, object]:
     target = workspace / "site-packages"
     scratch = workspace / "scenarios"
     temp_root = workspace / "temp"
@@ -958,9 +904,7 @@ def run(
         ("F", _scenario_f()),
         ("I", _scenario_i(record)),
     ):
-        scenarios[name] = _run_scenario(
-            name=name, code=code, target=target, scratch=scratch, temp_root=temp_root
-        )
+        scenarios[name] = _run_scenario(name=name, code=code, target=target, scratch=scratch, temp_root=temp_root)
 
     scenarios["H"] = _scenario_h(
         wheels={"core": core_wheel, "channel": channel_wheel, "radar": radar_wheel},
@@ -973,11 +917,7 @@ def run(
     hidden = _hide_radar_binary(target)
     try:
         scenarios["G"] = _run_scenario(
-            name="G",
-            code=_scenario_g(temp_root),
-            target=target,
-            scratch=scratch,
-            temp_root=temp_root,
+            name="G", code=_scenario_g(temp_root), target=target, scratch=scratch, temp_root=temp_root
         )
     finally:
         hidden.rename(hidden.with_suffix(""))
@@ -986,11 +926,7 @@ def run(
         "evidence_version": EVIDENCE_VERSION,
         "python": sys.version.split()[0],
         "platform": sys.platform,
-        "wheels": {
-            "core": core_wheel.name,
-            "channel": channel_wheel.name,
-            "radar": radar_wheel.name,
-        },
+        "wheels": {"core": core_wheel.name, "channel": channel_wheel.name, "radar": radar_wheel.name},
         "wheel_sizes_bytes": {
             "core": core_wheel.stat().st_size,
             "channel": channel_wheel.stat().st_size,
@@ -1024,11 +960,7 @@ def main() -> int:
     args = parser.parse_args()
 
     wheels = {}
-    for label, given in (
-        ("core", args.core_wheel),
-        ("channel", args.channel_wheel),
-        ("radar", args.radar_wheel),
-    ):
+    for label, given in (("core", args.core_wheel), ("channel", args.channel_wheel), ("radar", args.radar_wheel)):
         try:
             wheels[label] = _resolve_wheel(given)
         except ValueError as error:
@@ -1044,10 +976,7 @@ def main() -> int:
 
     try:
         evidence = run(
-            core_wheel=wheels["core"],
-            channel_wheel=wheels["channel"],
-            radar_wheel=wheels["radar"],
-            workspace=workspace,
+            core_wheel=wheels["core"], channel_wheel=wheels["channel"], radar_wheel=wheels["radar"], workspace=workspace
         )
     except CoexistenceError as exc:
         print(str(exc), file=sys.stderr)

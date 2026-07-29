@@ -67,10 +67,7 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-from witwin.radar.channel import (  # noqa: E402
-    ChannelPropagationAdapter,
-)
-
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -94,9 +91,7 @@ PIPELINE_BACKWARD_BUDGET_MS = MEASURED_PIPELINE_BACKWARD_MS * BACKWARD_TIME_HEAD
 #: 3.5x the forward's peak and that ratio is the number worth watching.
 MEASURED_PIPELINE_BACKWARD_MB = 149504 / (1024.0 * 1024.0)
 BACKWARD_MEMORY_HEADROOM = 1.25
-PIPELINE_BACKWARD_PEAK_BUDGET_MB = (
-    MEASURED_PIPELINE_BACKWARD_MB * BACKWARD_MEMORY_HEADROOM
-)
+PIPELINE_BACKWARD_PEAK_BUDGET_MB = MEASURED_PIPELINE_BACKWARD_MB * BACKWARD_MEMORY_HEADROOM
 
 #: The Channel ``reevaluate`` inner loop is pinned as a RATIO rather than as two
 #: wall times, and that is a measurement result rather than a preference.
@@ -198,9 +193,7 @@ def _banded(narrow, columns: int):
         reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         components=drv.MULTIPATH_COMPONENTS,
         max_depth=1,
-        frequency_offsets_hz=tuple(
-            float(index * SUBCARRIER_SPACING_HZ) for index in range(columns)
-        ),
+        frequency_offsets_hz=tuple(float(index * SUBCARRIER_SPACING_HZ) for index in range(columns)),
     )
     return drv.MultiEndpointSpike(compiled=narrow.compiled, adapter=adapter)
 
@@ -218,19 +211,12 @@ def _band_tape(spike, columns: int):
         # Read the identities NOW: the storage is released with the graph, so a
         # pointer collected afterwards would be a use-after-free dressed up as a
         # measurement.
-        saved.append(
-            tuple(
-                (tensor.data_ptr(), tensor.numel() * tensor.element_size())
-                for tensor in ctx.to_save
-            )
-        )
+        saved.append(tuple((tensor.data_ptr(), tensor.numel() * tensor.element_size()) for tensor in ctx.to_save))
 
     two_way._TwoWayJoin.setup_context = staticmethod(recording)
     try:
         sites = spike.site_tensor(requires_grad=True)
-        composed, _, _ = spike.frame(
-            sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False
-        )
+        composed, _, _ = spike.frame(sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False)
         assert composed.frequency_response.shape[1] == columns
     finally:
         two_way._TwoWayJoin.setup_context = staticmethod(original)
@@ -296,14 +282,11 @@ def test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on(narrow):
     contexts, total, distinct = _band_tape(_banded(narrow, columns), columns)
     assert contexts == columns + 1
     expected_distinct = (
-        8 * narrow.composer.site_count
-        + 28 * narrow.composer.path_count
-        + 8 * (rows_in + rows_out) * contexts
+        8 * narrow.composer.site_count + 28 * narrow.composer.path_count + 8 * (rows_in + rows_out) * contexts
     )
     assert distinct == expected_distinct, (distinct, expected_distinct)
     assert total == contexts * (
-        8 * rows_in + 8 * rows_out + 8 * narrow.composer.site_count
-        + 28 * narrow.composer.path_count
+        8 * rows_in + 8 * rows_out + 8 * narrow.composer.site_count + 28 * narrow.composer.path_count
     )
 
 
@@ -317,23 +300,11 @@ def test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on(narrow):
 #: its own family and nothing at all from another's.
 BOUNDARY_OPERATORS = {
     "two_way": ("two_way_join_forward", "two_way_join_backward", "two_way_join_jvp"),
-    "aspect": (
-        "scatter_response_aspect_forward",
-        "scatter_response_aspect_backward",
-        "scatter_response_aspect_jvp",
-    ),
-    "fmcw": (
-        "fmcw_spectrum_forward",
-        "fmcw_spectrum_backward",
-        "fmcw_spectrum_jvp",
-    ),
+    "aspect": ("scatter_response_aspect_forward", "scatter_response_aspect_backward", "scatter_response_aspect_jvp"),
+    "fmcw": ("fmcw_spectrum_forward", "fmcw_spectrum_backward", "fmcw_spectrum_jvp"),
     "ofdm": ("ofdm_cfr_forward", "ofdm_cfr_backward", "ofdm_cfr_jvp"),
     "pulsed": ("pulsed_echo_forward", "pulsed_echo_backward", "pulsed_echo_jvp"),
-    "sensor_weight": (
-        "sensor_weight_forward",
-        "sensor_weight_backward",
-        "sensor_weight_jvp",
-    ),
+    "sensor_weight": ("sensor_weight_forward", "sensor_weight_backward", "sensor_weight_jvp"),
 }
 
 
@@ -482,14 +453,10 @@ def test_the_full_fmcw_pipeline_backward_meets_its_time_budget(pipeline, capsys)
             f"(budget {PIPELINE_BACKWARD_BUDGET_MS:.4f} ms, "
             f"{BACKWARD_TIME_HEADROOM:.2f}x of {MEASURED_PIPELINE_BACKWARD_MS} ms)"
         )
-    assert median < PIPELINE_BACKWARD_BUDGET_MS, (
-        f"{median:.4f} ms exceeds {PIPELINE_BACKWARD_BUDGET_MS:.4f} ms"
-    )
+    assert median < PIPELINE_BACKWARD_BUDGET_MS, f"{median:.4f} ms exceeds {PIPELINE_BACKWARD_BUDGET_MS:.4f} ms"
 
 
-def test_the_full_fmcw_pipeline_backward_meets_its_peak_memory_budget(
-    pipeline, capsys
-):
+def test_the_full_fmcw_pipeline_backward_meets_its_peak_memory_budget(pipeline, capsys):
     """Peak ALLOCATION over forward plus backward, which is what a tape costs.
 
     Allocation rather than reservation: reserved memory is an allocator
@@ -510,10 +477,7 @@ def test_the_full_fmcw_pipeline_backward_meets_its_peak_memory_budget(
     peak_mb = (torch.cuda.max_memory_allocated() - before) / (1024.0 * 1024.0)
 
     with capsys.disabled():
-        print(
-            f"\nfmcw pipeline backward peak: {peak_mb:.4f} MB "
-            f"(budget {PIPELINE_BACKWARD_PEAK_BUDGET_MB:.4f} MB)"
-        )
+        print(f"\nfmcw pipeline backward peak: {peak_mb:.4f} MB (budget {PIPELINE_BACKWARD_PEAK_BUDGET_MB:.4f} MB)")
     assert peak_mb < PIPELINE_BACKWARD_PEAK_BUDGET_MB, peak_mb
 
 
@@ -538,11 +502,7 @@ def test_the_backward_peak_is_larger_than_the_forward_peak(pipeline):
         torch.cuda.synchronize()
         return float(torch.cuda.max_memory_allocated() - before)
 
-    forward = peak(
-        lambda: wc.synthesize(
-            "fmcw", mx.replay(spike, values, ad_mode="none"), wc.make_spec("fmcw")
-        )
-    )
+    forward = peak(lambda: wc.synthesize("fmcw", mx.replay(spike, values, ad_mode="none"), wc.make_spec("fmcw")))
     reverse = peak(lambda: _pipeline_loss(spike, values).backward())
     assert reverse > 2.0 * forward, (reverse, forward)
 
@@ -554,17 +514,10 @@ def test_the_backward_peak_is_larger_than_the_forward_peak(pipeline):
 
 def _legs(spike, values, *, ad_mode: str, leaf=None):
     sites = values["sites"] if leaf is None else leaf
-    return spike.legs(
-        sites,
-        transmitters=values["transmitters"],
-        receivers=values["receivers"],
-        ad_mode=ad_mode,
-    )
+    return spike.legs(sites, transmitters=values["transmitters"], receivers=values["receivers"], ad_mode=ad_mode)
 
 
-def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(
-    pipeline, capsys
-):
+def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(pipeline, capsys):
     """The Channel inner loop's reverse cost, as a ratio taken in one process.
 
     Measured on the Radar side rather than in Channel's own
@@ -605,8 +558,7 @@ def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(
             f"measured range {MEASURED_REEVALUATE_VJP_RATIO_RANGE})"
         )
     assert ratio > 1.0, (
-        f"ratio {ratio:.4f}: a reverse pass that cost no more than the forward "
-        "would mean the backward is not running"
+        f"ratio {ratio:.4f}: a reverse pass that cost no more than the forward would mean the backward is not running"
     )
     assert ratio < REEVALUATE_VJP_RATIO_BUDGET, (
         f"ratio {ratio:.4f} exceeds {REEVALUATE_VJP_RATIO_BUDGET}: the reverse "
@@ -662,12 +614,7 @@ def test_a_primal_only_reevaluate_builds_no_tape_at_all(pipeline):
 #: fixture-derived band law, so no enforcement was weakened, but the document
 #: that explains them was free to drift. That is the exact rot the capability
 #: matrix has a parser for, so the ledger gets one too.
-LEDGER = (
-    pathlib.Path(__file__).resolve().parents[1]
-    / "docs"
-    / "dev"
-    / "ad-tape-and-budget-ledger.md"
-)
+LEDGER = pathlib.Path(__file__).resolve().parents[1] / "docs" / "dev" / "ad-tape-and-budget-ledger.md"
 
 
 def _ledger_row(label: str) -> list[str]:
@@ -732,9 +679,7 @@ def test_the_ledger_budget_table_quotes_the_live_constants() -> None:
     assert memory[2] == f"{PIPELINE_BACKWARD_PEAK_BUDGET_MB:.4f} MB", memory
     assert memory[3] == f"{BACKWARD_MEMORY_HEADROOM:.2f}x", memory
 
-    ratio = _ledger_row(
-        "Channel `reevaluate`, two legs, reverse cost as a RATIO to the forward"
-    )
+    ratio = _ledger_row("Channel `reevaluate`, two legs, reverse cost as a RATIO to the forward")
     low, high = MEASURED_REEVALUATE_VJP_RATIO_RANGE
     assert ratio[1].startswith(f"{low} to {high}"), ratio
     assert ratio[2].startswith(f"{REEVALUATE_VJP_RATIO_BUDGET}"), ratio
@@ -749,20 +694,13 @@ def test_the_ledger_channel_accounting_table_quotes_the_live_constants() -> None
         for line in text.splitlines()
         if line.strip().startswith("| `reevaluate`")
     ]
-    accounting = {
-        (row[0], row[1].strip("`")): (int(row[3]), int(row[4]))
-        for row in rows
-        if len(row) == 5
-    }
+    accounting = {(row[0], row[1].strip("`")): (int(row[3]), int(row[4])) for row in rows if len(row) == 5}
     assert accounting, "the Channel accounting table lost its rows"
 
     launches = {value[0] for key, value in accounting.items() if key[1] == "vjp"}
     assert launches == {REEVALUATE_AD_LAUNCHES_PER_LEG}, accounting
     tapes = {value[1] for key, value in accounting.items() if key[1] == "vjp"}
-    assert tapes == {
-        REEVALUATE_INBOUND_TAPE_BYTES,
-        REEVALUATE_OUTBOUND_TAPE_BYTES,
-    }, accounting
+    assert tapes == {REEVALUATE_INBOUND_TAPE_BYTES, REEVALUATE_OUTBOUND_TAPE_BYTES}, accounting
     for key, value in accounting.items():
         if key[1] == "none":
             assert value == (0, 0), accounting

@@ -65,7 +65,6 @@ from reference.two_way_torch import PerSiteResponse  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 DELAY_RTOL = 1.0e-6
@@ -83,9 +82,7 @@ SITE_RESPONSE_VALUES = ((3.0e4 + 1.0e4j), (-7.0e4 + 5.0e4j))
 
 
 def _site_response(*, requires_grad: bool = False) -> PerSiteResponse:
-    value = torch.tensor(
-        SITE_RESPONSE_VALUES, dtype=torch.complex64, device="cuda"
-    )
+    value = torch.tensor(SITE_RESPONSE_VALUES, dtype=torch.complex64, device="cuda")
     if requires_grad:
         value = value.clone().requires_grad_(True)
     return PerSiteResponse(value)
@@ -119,9 +116,7 @@ def test_the_composed_rows_are_the_ones_the_geometry_predicts(spike):
     assert len(predicted) == 11
     assert drv.composed_keys(spike, composed) == [row.key for row in predicted]
     for index, row in enumerate(predicted):
-        assert float(composed.total_delay_s[index]) == pytest.approx(
-            row.total_delay_s, rel=DELAY_RTOL
-        ), row.key
+        assert float(composed.total_delay_s[index]) == pytest.approx(row.total_delay_s, rel=DELAY_RTOL), row.key
     assert bool(composed.row_valid.all())
     # Not vacuous: the two mixed round trips through site P and RX_A are 20 ps
     # apart, so identity - not a sorted delay list - is what named them.
@@ -141,9 +136,7 @@ def test_rows_are_sorted_into_a_valid_pair_partition(spike):
     assert composed.sensor_pair_count == 4
     offsets = composed.pair_offsets.tolist()
     assert offsets == [0, 5, 5, 11, 11]
-    assert offsets == geo.combined_pair_offsets(
-        spike.predicted_combined_rows(), sensor_pair_count=4
-    )
+    assert offsets == geo.combined_pair_offsets(spike.predicted_combined_rows(), sensor_pair_count=4)
     assert offsets[0] == 0
     assert offsets[-1] == composed.path_count
     assert offsets == sorted(offsets)
@@ -153,13 +146,7 @@ def test_rows_are_sorted_into_a_valid_pair_partition(spike):
     # SINK-MAJOR over the DECLARED endpoint lists, mirroring Channel's own pair
     # index. The two occupied ranks are 0 = (TX_A, RX_A) and 2 = (TX_A, RX_B).
     assert set(ranks) == {0, 2}
-    pairs = list(
-        zip(
-            composed.topology.radar_source_id.tolist(),
-            composed.topology.radar_sink_id.tolist(),
-            strict=True,
-        )
-    )
+    pairs = list(zip(composed.topology.radar_source_id.tolist(), composed.topology.radar_sink_id.tolist(), strict=True))
     assert set(pairs) == {(10, 30), (10, 31)}
 
 
@@ -177,11 +164,7 @@ def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows(spike):
 
     composed, _, _ = spike.frame()
     offsets = composed.pair_offsets.tolist()
-    empty = [
-        rank
-        for rank in range(composed.sensor_pair_count)
-        if offsets[rank] == offsets[rank + 1]
-    ]
+    empty = [rank for rank in range(composed.sensor_pair_count) if offsets[rank] == offsets[rank + 1]]
     assert empty == [1, 3]
 
     spec = drv.make_spec(num_chirps=2)
@@ -222,16 +205,9 @@ def test_channel_really_does_publish_a_different_row_order_for_the_swap():
     # The legs themselves are published in a different order.
     assert straight.inbound.sink_id.tolist() == [20, 20, 21]
     assert swapped.inbound.sink_id.tolist() == [21, 20, 20]
-    assert (
-        straight.composer.topology.inbound_row.tolist()
-        != swapped.composer.topology.inbound_row.tolist()
-    )
-    assert straight.composer.topology.inbound_row.tolist() == [
-        0, 0, 1, 1, 2, 0, 0, 1, 1, 2, 2
-    ]
-    assert swapped.composer.topology.inbound_row.tolist() == [
-        1, 1, 2, 2, 0, 1, 1, 2, 2, 0, 0
-    ]
+    assert straight.composer.topology.inbound_row.tolist() != swapped.composer.topology.inbound_row.tolist()
+    assert straight.composer.topology.inbound_row.tolist() == [0, 0, 1, 1, 2, 0, 0, 1, 1, 2, 2]
+    assert swapped.composer.topology.inbound_row.tolist() == [1, 1, 2, 2, 0, 1, 1, 2, 2, 0, 0]
 
 
 def test_the_swapped_batch_order_composes_to_an_elementwise_identical_frame():
@@ -260,9 +236,7 @@ def test_the_swapped_batch_order_composes_to_an_elementwise_identical_frame():
     for name in ("total_delay_s", "complex_transfer_ref", "row_valid"):
         assert torch.equal(getattr(first, name), getattr(second, name)), name
     # And the raw leg row indices differ, so the join genuinely had to reorder.
-    assert (
-        first.topology.inbound_row.tolist() != second.topology.inbound_row.tolist()
-    )
+    assert first.topology.inbound_row.tolist() != second.topology.inbound_row.tolist()
 
 
 def test_the_swapped_batch_order_produces_bit_identical_gradients():
@@ -287,9 +261,7 @@ def test_the_swapped_batch_order_produces_bit_identical_gradients():
         response = _site_response(requires_grad=True)
         composed, _, _ = run.frame(positions, response, ad_mode="vjp")
         assert composed.path_count == 11
-        loss = (weights * composed.total_delay_s * 1.0e8).sum() + (
-            weights * composed.complex_transfer_ref.real
-        ).sum()
+        loss = (weights * composed.total_delay_s * 1.0e8).sum() + (weights * composed.complex_transfer_ref.real).sum()
         loss.backward()
         return positions.grad, response.value.grad
 
@@ -343,9 +315,7 @@ def test_the_multi_site_delay_gradient_is_the_closed_form_one():
     assert bool(composed.row_valid.all())
     (weights * composed.total_delay_s * DELAY_SCALE).sum().backward()
 
-    expected = geo.combined_delay_gradient_s_per_m(
-        run.predicted_combined_rows(), weights.tolist()
-    )
+    expected = geo.combined_delay_gradient_s_per_m(run.predicted_combined_rows(), weights.tolist())
     measured = positions.grad.tolist()
     assert len(measured) == 2
     for row, stable_id in enumerate(run.site_ids):
@@ -377,12 +347,8 @@ def test_each_site_response_reaches_that_sites_rows_and_no_others(spike):
     ratio is exact arithmetic on the same inputs rather than a re-derivation.
     """
 
-    unit = PerSiteResponse(
-        torch.tensor([1.0 + 0.0j, 1.0 + 0.0j], dtype=torch.complex64, device="cuda")
-    )
-    scaled = PerSiteResponse(
-        torch.tensor([2.0 + 0.0j, -3.0 + 0.0j], dtype=torch.complex64, device="cuda")
-    )
+    unit = PerSiteResponse(torch.tensor([1.0 + 0.0j, 1.0 + 0.0j], dtype=torch.complex64, device="cuda"))
+    scaled = PerSiteResponse(torch.tensor([2.0 + 0.0j, -3.0 + 0.0j], dtype=torch.complex64, device="cuda"))
     base, _, _ = spike.frame(response=unit)
     moved, _, _ = spike.frame(response=scaled)
 
@@ -420,10 +386,7 @@ def test_every_composed_row_agrees_with_a_single_pair_single_site_run(spike):
     composed, _, _ = spike.frame()
     keys = drv.composed_keys(spike, composed)
     reference = {
-        key: (
-            float(composed.total_delay_s[index]),
-            complex(composed.complex_transfer_ref[index]),
-        )
+        key: (float(composed.total_delay_s[index]), complex(composed.complex_transfer_ref[index]))
         for index, key in enumerate(keys)
     }
     assert len(reference) == composed.path_count == 11
@@ -467,25 +430,17 @@ def test_rows_that_die_under_motion_are_data_in_a_multi_pair_frame(spike):
     """
 
     moved = ((geo.SITE_P_STABLE_ID, geo.SITE_P_MOVED_POSITION_M), geo.SITES[1])
-    positions = {stable_id: position for stable_id, position in moved}
-    positions.update(
-        {stable_id: position for stable_id, position in geo.TRANSMITTERS}
-    )
-    positions.update({stable_id: position for stable_id, position in geo.RECEIVERS})
+    positions = dict(moved)
+    positions.update(dict(geo.TRANSMITTERS))
+    positions.update(dict(geo.RECEIVERS))
 
     static, _, _ = spike.frame()
     static_keys = drv.composed_keys(spike, static)
-    composed, inbound, outbound = spike.frame(
-        spike.site_tensor([position for _, position in moved])
-    )
+    composed, inbound, outbound = spike.frame(spike.site_tensor([position for _, position in moved]))
 
     def expected(rows):
         return [
-            True
-            if row.component == "los"
-            else _reflection_survives(
-                positions[row.source_id], positions[row.sink_id]
-            )
+            True if row.component == "los" else _reflection_survives(positions[row.source_id], positions[row.sink_id])
             for row in rows
         ]
 
@@ -495,10 +450,7 @@ def test_rows_that_die_under_motion_are_data_in_a_multi_pair_frame(spike):
     assert outbound.row_valid.tolist() == [True, False, True, True, True, True, True]
 
     validity = composed.row_valid.tolist()
-    assert validity == [
-        True, False, False, False, True,
-        True, True, False, False, True, True,
-    ]
+    assert validity == [True, False, False, False, True, True, True, False, False, True, True]
     assert sum(validity) == 6
 
     # Dead rows carry exact zeros, not a partial composition.
@@ -520,15 +472,9 @@ def test_rows_that_die_under_motion_are_data_in_a_multi_pair_frame(spike):
     changed = 0
     for index, key in enumerate(static_keys):
         if key[1] == geo.SITE_Q_STABLE_ID:
-            assert float(composed.total_delay_s[index]) == float(
-                static.total_delay_s[index]
-            ), key
-            assert complex(composed.complex_transfer_ref[index]) == complex(
-                static.complex_transfer_ref[index]
-            ), key
-        elif validity[index] and float(composed.total_delay_s[index]) != float(
-            static.total_delay_s[index]
-        ):
+            assert float(composed.total_delay_s[index]) == float(static.total_delay_s[index]), key
+            assert complex(composed.complex_transfer_ref[index]) == complex(static.complex_transfer_ref[index]), key
+        elif validity[index] and float(composed.total_delay_s[index]) != float(static.total_delay_s[index]):
             changed += 1
     assert changed > 0
 
@@ -546,20 +492,11 @@ def test_two_sites_moving_apart_give_eleven_analytic_doppler_shifts(spike):
     rather than one path counted eleven times.
     """
 
-    velocities = {
-        geo.SITE_P_STABLE_ID: geo.SITE_P_VELOCITY_M_PER_S,
-        geo.SITE_Q_STABLE_ID: geo.SITE_Q_VELOCITY_M_PER_S,
-    }
-    tangent = torch.tensor(
-        [velocities[stable_id] for stable_id in spike.site_ids],
-        dtype=torch.float32,
-        device="cuda",
-    )
+    velocities = {geo.SITE_P_STABLE_ID: geo.SITE_P_VELOCITY_M_PER_S, geo.SITE_Q_STABLE_ID: geo.SITE_Q_VELOCITY_M_PER_S}
+    tangent = torch.tensor([velocities[stable_id] for stable_id in spike.site_ids], dtype=torch.float32, device="cuda")
     positions = spike.site_tensor()
     with forward_ad.dual_level():
-        composed, inbound, outbound = spike.frame(
-            forward_ad.make_dual(positions, tangent), ad_mode="jvp"
-        )
+        composed, inbound, outbound = spike.frame(forward_ad.make_dual(positions, tangent), ad_mode="jvp")
         rate = composed.delay_rate.clone()
         assert inbound.delay_rate is not None
         assert outbound.delay_rate is not None
@@ -567,9 +504,7 @@ def test_two_sites_moving_apart_give_eleven_analytic_doppler_shifts(spike):
     expected = geo.combined_doppler_hz(spike.predicted_combined_rows(), velocities)
     measured = [-geo.REFERENCE_FREQUENCY_HZ * value for value in rate.tolist()]
     assert len(measured) == 11
-    for index, (value, reference) in enumerate(
-        zip(measured, expected, strict=True)
-    ):
+    for index, (value, reference) in enumerate(zip(measured, expected, strict=True)):
         assert value == pytest.approx(reference, rel=1e-5), index
 
     assert any(value < 0.0 for value in measured)
@@ -609,9 +544,7 @@ def test_freeze_host_reads_are_counted_at_multi_pair_width(spike):
         TwoWayComposer.freeze(
             spike.inbound,
             spike.outbound,
-            torch.tensor(
-                sorted(spike.site_ids), dtype=torch.int64, device="cuda"
-            ),
+            torch.tensor(sorted(spike.site_ids), dtype=torch.int64, device="cuda"),
             radar_source_ids=list(spike.transmitter_ids),
             radar_sink_ids=list(spike.receiver_ids),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,

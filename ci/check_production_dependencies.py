@@ -37,12 +37,12 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import sys
-import tomllib
+from dataclasses import dataclass
+from pathlib import Path
 
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,10 +84,7 @@ def _dotted(node: ast.AST) -> str:
 
 
 def _is_forbidden_module(module: str) -> bool:
-    return any(
-        module == forbidden or module.startswith(f"{forbidden}.")
-        for forbidden in FORBIDDEN_MODULES
-    )
+    return any(module == forbidden or module.startswith(f"{forbidden}.") for forbidden in FORBIDDEN_MODULES)
 
 
 def _imported_modules(node: ast.Import | ast.ImportFrom) -> list[str]:
@@ -107,11 +104,7 @@ def production_modules(root: Path) -> list[Path]:
     """Every Python file that ships inside the `witwin` package."""
 
     package = root / "witwin"
-    return sorted(
-        path
-        for path in package.rglob("*.py")
-        if "__pycache__" not in path.parts
-    )
+    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def scan_module(path: Path, root: Path) -> tuple[list[Violation], dict[str, int]]:
@@ -127,22 +120,15 @@ def scan_module(path: Path, root: Path) -> tuple[list[Violation], dict[str, int]
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for module in _imported_modules(node):
                 if _is_forbidden_module(module):
-                    violations.append(
-                        Violation(relative, node.lineno, "import", module)
-                    )
+                    violations.append(Violation(relative, node.lineno, "import", module))
             continue
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for decorator in node.decorator_list:
                 target = decorator.func if isinstance(decorator, ast.Call) else decorator
                 name = _dotted(target)
-                if any(
-                    name == suffix or name.endswith(f".{suffix}")
-                    for suffix in FORBIDDEN_DECORATOR_SUFFIXES
-                ):
-                    violations.append(
-                        Violation(relative, node.lineno, "decorator", f"@{name}")
-                    )
+                if any(name == suffix or name.endswith(f".{suffix}") for suffix in FORBIDDEN_DECORATOR_SUFFIXES):
+                    violations.append(Violation(relative, node.lineno, "decorator", f"@{name}"))
             continue
 
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -181,18 +167,11 @@ def declared_distributions(root: Path) -> list[tuple[str, str]]:
 
     data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     project = data.get("project", {})
-    declared = [
-        ("project.dependencies", requirement)
-        for requirement in project.get("dependencies", [])
-    ]
+    declared = [("project.dependencies", requirement) for requirement in project.get("dependencies", [])]
     for extra, requirements in project.get("optional-dependencies", {}).items():
-        declared.extend(
-            (f"project.optional-dependencies.{extra}", requirement)
-            for requirement in requirements
-        )
+        declared.extend((f"project.optional-dependencies.{extra}", requirement) for requirement in requirements)
     declared.extend(
-        ("build-system.requires", requirement)
-        for requirement in data.get("build-system", {}).get("requires", [])
+        ("build-system.requires", requirement) for requirement in data.get("build-system", {}).get("requires", [])
     )
     return declared
 
@@ -217,10 +196,7 @@ def check_declared_dependencies(root: Path) -> list[str]:
     failures = []
     for where, requirement in declared_distributions(root):
         name = _distribution_name(requirement)
-        if any(
-            name == forbidden or name.startswith(f"{forbidden}-")
-            for forbidden in FORBIDDEN_MODULES
-        ):
+        if any(name == forbidden or name.startswith(f"{forbidden}-") for forbidden in FORBIDDEN_MODULES):
             failures.append(
                 f"pyproject.toml [{where}] declares {requirement!r}: a "
                 f"ray-tracing runtime distribution ({name}) must never be a "
@@ -259,10 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     root = arguments.root.resolve()
     failures = check(root)
     if failures:
-        print(
-            f"check_production_dependencies: {len(failures)} violation(s) under {root}",
-            file=sys.stderr,
-        )
+        print(f"check_production_dependencies: {len(failures)} violation(s) under {root}", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1

@@ -33,7 +33,6 @@ from support import phase4_world as world  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 MULTIPATH_COMPONENTS = frozenset({"los", "reflection"})
@@ -51,10 +50,7 @@ def multipath():
 def _component_order(frozen) -> list[str]:
     """Map each frozen row to its component name, from the published IDs."""
 
-    names = {
-        geo.LOS_COMPONENT_ID: "los",
-        geo.REFLECTION_COMPONENT_ID: "reflection",
-    }
+    names = {geo.LOS_COMPONENT_ID: "los", geo.REFLECTION_COMPONENT_ID: "reflection"}
     return [names[int(value)] for value in frozen.component_id.tolist()]
 
 
@@ -64,10 +60,7 @@ def _component_order(frozen) -> list[str]:
 
 
 def test_each_leg_freezes_one_line_of_sight_and_one_reflection_row(multipath):
-    for name, frozen in (
-        ("inbound", multipath.inbound),
-        ("outbound", multipath.outbound),
-    ):
+    for name, frozen in (("inbound", multipath.inbound), ("outbound", multipath.outbound)):
         assert frozen.row_count == 2, name
         assert frozen.components == ("los", "reflection"), name
         assert _component_order(frozen) == ["los", "reflection"], name
@@ -85,9 +78,10 @@ def test_leg_delays_match_the_image_source_closed_form(multipath):
     for leg_name, legs in (("inbound", inbound), ("outbound", outbound)):
         components = _component_order(legs)
         for row, component in enumerate(components):
-            assert float(legs.delay_s[row]) == pytest.approx(
-                expected[(leg_name, component)], rel=DELAY_RTOL
-            ), (leg_name, component)
+            assert float(legs.delay_s[row]) == pytest.approx(expected[(leg_name, component)], rel=DELAY_RTOL), (
+                leg_name,
+                component,
+            )
 
 
 def test_the_specular_points_are_where_the_image_source_puts_them():
@@ -128,9 +122,7 @@ def test_the_frozen_row_identity_is_the_same_storage_on_every_frame(multipath):
             "material_sequence",
             "interaction_type",
         ):
-            assert (
-                getattr(a, name).data_ptr() == getattr(b, name).data_ptr()
-            ), name
+            assert getattr(a, name).data_ptr() == getattr(b, name).data_ptr(), name
 
 
 # --------------------------------------------------------------------------
@@ -140,16 +132,10 @@ def test_the_frozen_row_identity_is_the_same_storage_on_every_frame(multipath):
 
 def _legs(spike, tx, site, rx, *, ad_mode: str = "none"):
     inbound = spike.adapter.reevaluate(
-        spike.inbound,
-        spike._source(tx, geo.TX_STABLE_ID),
-        spike._sink(site, geo.SITE_STABLE_ID),
-        ad_mode=ad_mode,
+        spike.inbound, spike._source(tx, geo.TX_STABLE_ID), spike._sink(site, geo.SITE_STABLE_ID), ad_mode=ad_mode
     )
     outbound = spike.adapter.reevaluate(
-        spike.outbound,
-        spike._source(site, geo.SITE_STABLE_ID),
-        spike._sink(rx, geo.RX_STABLE_ID),
-        ad_mode=ad_mode,
+        spike.outbound, spike._source(site, geo.SITE_STABLE_ID), spike._sink(rx, geo.RX_STABLE_ID), ad_mode=ad_mode
     )
     return inbound, outbound
 
@@ -198,23 +184,14 @@ def test_four_combined_paths_carry_the_analytic_round_trip_delays(multipath):
 def test_the_combined_doppler_shifts_match_the_analytic_projections(multipath):
     """Four combined paths, four distinct Doppler shifts, all closed form."""
 
-    velocity = torch.tensor(
-        [geo.SITE_VELOCITY_M_PER_S], dtype=torch.float32, device="cuda"
-    )
+    velocity = torch.tensor([geo.SITE_VELOCITY_M_PER_S], dtype=torch.float32, device="cuda")
     tx, site, rx = drv.positions()
     with forward_ad.dual_level():
         composed, inbound, outbound = multipath.paths(
-            tx,
-            forward_ad.make_dual(site, velocity),
-            rx,
-            drv.make_response(),
-            ad_mode="jvp",
+            tx, forward_ad.make_dual(site, velocity), rx, drv.make_response(), ad_mode="jvp"
         )
         rate = composed.delay_rate.clone()
-        keys = [
-            _combined_key(multipath, composed, row)
-            for row in range(composed.path_count)
-        ]
+        keys = [_combined_key(multipath, composed, row) for row in range(composed.path_count)]
         assert inbound.delay_rate is not None
         assert outbound.delay_rate is not None
 
@@ -248,11 +225,7 @@ def test_a_dying_reflection_row_is_data_and_flows_into_the_join():
 
     assert inbound.row_valid.tolist() == [True, False]
     assert outbound.row_valid is not None
-    dead = [
-        row
-        for row in range(composed.path_count)
-        if not bool(composed.row_valid[row])
-    ]
+    dead = [row for row in range(composed.path_count) if not bool(composed.row_valid[row])]
     # Both specular points leave the facet at this site - the outbound one at
     # y = 3.29, the inbound at y = 3.33, against a facet edge at y = 3 - so
     # three of the four combined paths die and only line-of-sight survives.
@@ -262,9 +235,7 @@ def test_a_dying_reflection_row_is_data_and_flows_into_the_join():
         assert float(composed.total_delay_s[row]) == 0.0
         assert complex(composed.complex_transfer_ref[row]) == 0j
     alive = [row for row in range(composed.path_count) if row not in dead]
-    assert [_combined_key(spike, composed, row) for row in alive] == [
-        ("los", "los")
-    ]
+    assert [_combined_key(spike, composed, row) for row in alive] == [("los", "los")]
     assert float(composed.total_delay_s[alive[0]]) > 0.0
 
 
@@ -281,9 +252,7 @@ def test_a_site_behind_the_wall_kills_every_row_and_the_frame_is_still_valid():
 
     from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-    iq = synthesize_fmcw(
-        drv.to_synthesis(composed), drv.make_spec(num_chirps=2)
-    )
+    iq = synthesize_fmcw(drv.to_synthesis(composed), drv.make_spec(num_chirps=2))
     assert torch.count_nonzero(iq) == 0
 
 
@@ -295,18 +264,10 @@ def test_a_site_behind_the_wall_kills_every_row_and_the_frame_is_still_valid():
 def _moving_frame(spike):
     """A four-row multipath frame whose rows all carry a live Doppler rate."""
 
-    velocity = torch.tensor(
-        [geo.SITE_VELOCITY_M_PER_S], dtype=torch.float32, device="cuda"
-    )
+    velocity = torch.tensor([geo.SITE_VELOCITY_M_PER_S], dtype=torch.float32, device="cuda")
     tx, site, rx = drv.positions()
     with forward_ad.dual_level():
-        composed, _, _ = spike.paths(
-            tx,
-            forward_ad.make_dual(site, velocity),
-            rx,
-            drv.make_response(),
-            ad_mode="jvp",
-        )
+        composed, _, _ = spike.paths(tx, forward_ad.make_dual(site, velocity), rx, drv.make_response(), ad_mode="jvp")
         # Out of the dual level with primal payloads: the rate is a PRIMAL
         # Doppler value by contract, and synthesis consumes it as one.
         return (
@@ -333,9 +294,7 @@ def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipat
 
     spec = drv.make_spec(num_chirps=4)
     delay, rate, transfer, composed = _moving_frame(multipath)
-    frame = replace(
-        composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer
-    )
+    frame = replace(composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer)
     assert frame.path_count == 4
     assert bool(frame.row_valid.all())
 
@@ -350,18 +309,12 @@ def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipat
     # Not vacuous: the four rows interfere, so the cube is not one path's
     # magnitude and its phase is the thing being compared.
     assert float(expected.abs().max()) > 0.0
-    torch.testing.assert_close(
-        measured.cpu().to(torch.complex128), expected, rtol=2e-5, atol=2e-5
-    )
+    torch.testing.assert_close(measured.cpu().to(torch.complex128), expected, rtol=2e-5, atol=2e-5)
 
     # And the conjugation is load bearing here, not merely present: the same
     # cube built from the UNCONJUGATED transfer disagrees grossly.
     inverted = ref.beat_samples(
-        delay.cpu(),
-        rate.cpu(),
-        transfer.cpu().to(torch.complex128),
-        frame.pair_offsets.cpu(),
-        spec,
+        delay.cpu(), rate.cpu(), transfer.cpu().to(torch.complex128), frame.pair_offsets.cpu(), spec
     )
     assert float((inverted - expected).abs().max()) > 0.1 * float(expected.abs().max())
 
@@ -389,21 +342,15 @@ def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
     assert spec.carrier_hz == 0.0
     assert spec.carrier_rate_hz == geo.REFERENCE_FREQUENCY_HZ
     delay, rate, transfer, composed = _moving_frame(multipath)
-    frame = replace(
-        composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer
-    )
+    frame = replace(composed, total_delay_s=delay, delay_rate=rate, complex_transfer_ref=transfer)
 
     seen = set()
     for row in range(frame.path_count):
         alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
         alone[row] = True
-        iq = synthesize_fmcw(
-            drv.to_synthesis(replace(frame, row_valid=alone)), spec
-        )
+        iq = synthesize_fmcw(drv.to_synthesis(replace(frame, row_valid=alone)), spec)
         chirps = iq[:, 0, 0].cpu().to(torch.complex128)
-        measured = float(
-            torch.angle(chirps[1:] * torch.conj(chirps[:-1])).mean()
-        )
+        measured = float(torch.angle(chirps[1:] * torch.conj(chirps[:-1])).mean())
         tau = float(delay[row])
         expected = (
             2.0
@@ -412,11 +359,7 @@ def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
             * float(rate[row])
             * spec.chirp_period_s
         )
-        assert measured == pytest.approx(expected, abs=1e-4), (
-            _combined_key(multipath, frame, row),
-            measured,
-            expected,
-        )
+        assert measured == pytest.approx(expected, abs=1e-4), (_combined_key(multipath, frame, row), measured, expected)
         # A receding site advances the slow-time phase. Asserted per row so a
         # sign that flips for one path cannot hide behind three that do not.
         assert measured > 0.0
@@ -442,9 +385,7 @@ def test_a_rough_scene_refuses_reflection_reevaluation_rather_than_smoothing_it(
 
     compiled = world.compile_fixture_scene(rough=True)
     with pytest.raises(NotImplementedError, match="smooth scene"):
-        spike = drv.Phase4Spike(
-            components=MULTIPATH_COMPONENTS, max_depth=1, compiled=compiled
-        )
+        spike = drv.Phase4Spike(components=MULTIPATH_COMPONENTS, max_depth=1, compiled=compiled)
         tx, site, rx = drv.positions()
         spike.paths(tx, site, rx, drv.make_response())
 

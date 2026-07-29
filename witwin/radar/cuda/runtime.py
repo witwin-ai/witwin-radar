@@ -15,15 +15,19 @@ before it hands it to ``torch.ops.load_library``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 import sysconfig
+import tempfile
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 
+import torch
 
 #: Bumped whenever the sidecar schema or the loader contract changes shape.
 #: A packaged artifact whose record carries a different value is rejected; it is
@@ -67,9 +71,7 @@ BUILD_INFO_FIELDS: tuple[tuple[str, type], ...] = (
 #: Everything except ``build_fingerprint`` itself, which is the digest over
 #: these. Sorted canonical JSON, identical recipe to Channel's
 #: ``runtime/extension.py::_expected_fingerprint``.
-FINGERPRINT_FIELDS: tuple[str, ...] = tuple(
-    name for name, _ in BUILD_INFO_FIELDS if name != "build_fingerprint"
-)
+FINGERPRINT_FIELDS: tuple[str, ...] = tuple(name for name, _ in BUILD_INFO_FIELDS if name != "build_fingerprint")
 
 BUILD_TYPES = ("release", "developer")
 
@@ -143,13 +145,9 @@ def compute_build_fingerprint(info: Mapping[str, object]) -> str:
 
     missing = [name for name in FINGERPRINT_FIELDS if name not in info]
     if missing:
-        raise RadarExtensionABIError(
-            "the radar build record is missing " + ", ".join(sorted(missing))
-        )
+        raise RadarExtensionABIError("the radar build record is missing " + ", ".join(sorted(missing)))
     payload = {name: info[name] for name in FINGERPRINT_FIELDS}
-    canonical = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -260,9 +258,7 @@ def _require_field(info: Mapping[str, object], name: str, expected: type) -> obj
         raise RadarExtensionABIError(f"the radar build record is missing {name!r}")
     value = info[name]
     if type(value) is not expected:
-        raise RadarExtensionABIError(
-            f"the radar build record field {name!r} must be {expected.__name__}"
-        )
+        raise RadarExtensionABIError(f"the radar build record field {name!r} must be {expected.__name__}")
     return value
 
 
@@ -287,19 +283,14 @@ def read_build_info(binary_path: Path) -> dict[str, object]:
     known = {name for name, _ in BUILD_INFO_FIELDS}
     unknown = sorted(set(info) - known)
     if unknown:
-        raise RadarExtensionABIError(
-            f"{sidecar} carries unknown fields: " + ", ".join(unknown)
-        )
+        raise RadarExtensionABIError(f"{sidecar} carries unknown fields: " + ", ".join(unknown))
     for name, expected in BUILD_INFO_FIELDS:
         _require_field(info, name, expected)
     return info
 
 
 def validate_identity(
-    binary_path: Path,
-    source_paths: Sequence[Path],
-    *,
-    expected_fingerprint: str | None = None,
+    binary_path: Path, source_paths: Sequence[Path], *, expected_fingerprint: str | None = None
 ) -> dict[str, object]:
     """Validate a radar native artifact before anything loads it.
 
@@ -309,55 +300,37 @@ def validate_identity(
     """
 
     if not binary_path.is_file():
-        raise RadarExtensionLoadError(
-            f"the radar native library {binary_path} does not exist"
-        )
+        raise RadarExtensionLoadError(f"the radar native library {binary_path} does not exist")
     info = read_build_info(binary_path)
 
     abi_version = info["radar_abi_version"]
     if abi_version != RADAR_ABI_VERSION:
         raise RadarExtensionABIError(
-            "radar native ABI mismatch: expected "
-            f"{RADAR_ABI_VERSION}, {binary_path} reports {abi_version}"
+            f"radar native ABI mismatch: expected {RADAR_ABI_VERSION}, {binary_path} reports {abi_version}"
         )
     if info["build_type"] not in BUILD_TYPES:
-        raise RadarExtensionABIError(
-            f"{binary_path} reports an unknown build_type {info['build_type']!r}"
-        )
+        raise RadarExtensionABIError(f"{binary_path} reports an unknown build_type {info['build_type']!r}")
 
     architectures = info["cuda_architectures"]
-    if not architectures or not all(
-        isinstance(entry, str) and entry for entry in architectures
-    ):
-        raise RadarExtensionABIError(
-            f"{binary_path} must record a non-empty list of CUDA architectures"
-        )
+    if not architectures or not all(isinstance(entry, str) and entry for entry in architectures):
+        raise RadarExtensionABIError(f"{binary_path} must record a non-empty list of CUDA architectures")
     symbols = info["operator_symbols"]
     if not symbols or not all(isinstance(entry, str) and entry for entry in symbols):
-        raise RadarExtensionABIError(
-            f"{binary_path} must record a non-empty list of operator symbols"
-        )
+        raise RadarExtensionABIError(f"{binary_path} must record a non-empty list of operator symbols")
     if list(symbols) != sorted(symbols) or len(set(symbols)) != len(symbols):
-        raise RadarExtensionABIError(
-            f"{binary_path} must record operator_symbols sorted and unique"
-        )
+        raise RadarExtensionABIError(f"{binary_path} must record operator_symbols sorted and unique")
 
     git_sha = str(info["radar_git_sha"])
     if git_sha != "unknown" and _GIT_SHA_PATTERN.fullmatch(git_sha) is None:
-        raise RadarExtensionABIError(
-            "the recorded radar Git SHA must be 40 lowercase hex digits"
-        )
+        raise RadarExtensionABIError("the recorded radar Git SHA must be 40 lowercase hex digits")
 
     fingerprint = str(info["build_fingerprint"])
     if _SHA256_PATTERN.fullmatch(fingerprint) is None:
-        raise RadarExtensionABIError(
-            "the recorded build_fingerprint must be a SHA-256 digest"
-        )
+        raise RadarExtensionABIError("the recorded build_fingerprint must be a SHA-256 digest")
     recomputed = compute_build_fingerprint(info)
     if fingerprint != recomputed:
         raise RadarExtensionABIError(
-            f"{binary_path} carries an invalid build_fingerprint: the record "
-            "does not hash to the value it declares"
+            f"{binary_path} carries an invalid build_fingerprint: the record does not hash to the value it declares"
         )
 
     sidecar = fingerprint_sidecar_path(binary_path)
@@ -375,27 +348,21 @@ def validate_identity(
         raise RadarExtensionABIError(f"{sidecar} must contain one SHA-256 digest")
     if declared != fingerprint:
         raise RadarExtensionABIError(
-            f"{sidecar} disagrees with the build_fingerprint recorded in "
-            f"{build_info_sidecar_path(binary_path)}"
+            f"{sidecar} disagrees with the build_fingerprint recorded in {build_info_sidecar_path(binary_path)}"
         )
 
     binary_sha256 = str(info["binary_sha256"])
     if _SHA256_PATTERN.fullmatch(binary_sha256) is None:
-        raise RadarExtensionABIError(
-            "the recorded binary_sha256 must be a SHA-256 digest"
-        )
+        raise RadarExtensionABIError("the recorded binary_sha256 must be a SHA-256 digest")
     actual_binary = file_digest(binary_path)
     if actual_binary != binary_sha256:
         raise RadarExtensionABIError(
-            f"{binary_path} does not match its recorded binary_sha256: "
-            f"expected {binary_sha256}, found {actual_binary}"
+            f"{binary_path} does not match its recorded binary_sha256: expected {binary_sha256}, found {actual_binary}"
         )
 
     recorded_sources = str(info["source_fingerprint"])
     if _SHA256_PATTERN.fullmatch(recorded_sources) is None:
-        raise RadarExtensionABIError(
-            "the recorded source_fingerprint must be a SHA-256 digest"
-        )
+        raise RadarExtensionABIError("the recorded source_fingerprint must be a SHA-256 digest")
     actual_sources = source_digest(source_paths)
     if actual_sources != recorded_sources:
         raise RadarExtensionABIError(
@@ -405,22 +372,14 @@ def validate_identity(
         )
 
     live = runtime_identity()
-    mismatched = sorted(
-        name for name, value in live.items() if info.get(name) != value
-    )
+    mismatched = sorted(name for name, value in live.items() if info.get(name) != value)
     if mismatched:
-        detail = ", ".join(
-            f"{name}: record {info.get(name)!r} vs runtime {live[name]!r}"
-            for name in mismatched
-        )
-        raise RadarExtensionABIError(
-            f"{binary_path} does not match the active runtime ({detail})"
-        )
+        detail = ", ".join(f"{name}: record {info.get(name)!r} vs runtime {live[name]!r}" for name in mismatched)
+        raise RadarExtensionABIError(f"{binary_path} does not match the active runtime ({detail})")
 
     if expected_fingerprint is not None and fingerprint != expected_fingerprint:
         raise RadarExtensionABIError(
-            f"{binary_path} has build_fingerprint {fingerprint}, but the "
-            f"expected fingerprint is {expected_fingerprint}"
+            f"{binary_path} has build_fingerprint {fingerprint}, but the expected fingerprint is {expected_fingerprint}"
         )
     return info
 
@@ -474,16 +433,10 @@ def write_sidecars(binary_path: Path, info: Mapping[str, object]) -> tuple[Path,
 
     record = {name: info[name] for name, _ in BUILD_INFO_FIELDS}
     info_path = build_info_sidecar_path(binary_path)
-    info_path.write_text(
-        json.dumps(record, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
+    info_path.write_text(json.dumps(record, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
     fingerprint_path = fingerprint_sidecar_path(binary_path)
-    fingerprint_path.write_text(
-        str(record["build_fingerprint"]) + "\n", encoding="ascii"
-    )
+    fingerprint_path.write_text(str(record["build_fingerprint"]) + "\n", encoding="ascii")
     return info_path, fingerprint_path
-
 
 
 """Select, validate and load the radar native library.
@@ -501,17 +454,6 @@ unbounded ``PATH`` growth surfaces much later as unrelated CUDA failures. While
 the JIT route was the silent fallback for a missing or stale prebuilt, an
 ordinary ``import witwin.radar.paths`` could reach it.
 """
-
-
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-
-import torch
-
 
 
 EXTENSION_NAME = "_radar_native"
@@ -592,10 +534,7 @@ def _load_vcvars64_environment() -> bool:
         probe.write_text(f'@echo off\ncall "{vcvars}" >nul\nset\n', encoding="utf-8")
         try:
             output = subprocess.check_output(
-                ["cmd.exe", "/d", "/c", str(probe)],
-                text=True,
-                encoding="mbcs",
-                errors="replace",
+                ["cmd.exe", "/d", "/c", str(probe)], text=True, encoding="mbcs", errors="replace"
             )
         except (OSError, subprocess.CalledProcessError):
             continue
@@ -629,9 +568,7 @@ def _ensure_windows_build_tools_on_path() -> None:
     # process PATH wholesale; a caller that reaches it without asking for a
     # build has made a mistake that must not silently mutate the environment.
     if not _build_requested():
-        raise RadarExtensionLoadError(
-            f"preparing MSVC build tools requires {_BUILD_ENV}=1"
-        )
+        raise RadarExtensionLoadError(f"preparing MSVC build tools requires {_BUILD_ENV}=1")
     if os.name != "nt":
         return
     # Keep MSVC diagnostics ASCII/English so PyTorch's compiler-version probe
@@ -661,9 +598,7 @@ def _ensure_windows_build_tools_on_path() -> None:
 
 def _ensure_cuda_home_from_nvcc() -> None:
     if not _build_requested():
-        raise RadarExtensionLoadError(
-            f"locating CUDA_HOME for a build requires {_BUILD_ENV}=1"
-        )
+        raise RadarExtensionLoadError(f"locating CUDA_HOME for a build requires {_BUILD_ENV}=1")
     if os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH"):
         return
     nvcc = shutil.which("nvcc")
@@ -738,13 +673,7 @@ def _conda_torch_ldflags() -> list[str]:
 class _StableOpsModule:
     """Attribute-compatible view of the dispatcher operators."""
 
-    def __init__(
-        self,
-        library_path: Path,
-        *,
-        origin: str,
-        info: dict[str, object] | None = None,
-    ) -> None:
+    def __init__(self, library_path: Path, *, origin: str, info: dict[str, object] | None = None) -> None:
         self.__file__ = str(library_path)
         self._origin = origin
         self._info = dict(info) if info is not None else None
@@ -813,24 +742,16 @@ def _require_operators(
     """
 
     required = tuple(symbols) if symbols is not None else _REQUIRED_OPERATORS
-    missing = [
-        name
-        for name in required
-        if not hasattr(torch.ops._radar_native, name)
-    ]
+    missing = [name for name in required if not hasattr(torch.ops._radar_native, name)]
     if missing:
         raise RadarExtensionSymbolError(
-            f"{library_path} does not register the Stable ABI radar operators "
-            f"{missing}; the binary is stale."
+            f"{library_path} does not register the Stable ABI radar operators {missing}; the binary is stale."
         )
     return _StableOpsModule(library_path, origin=origin, info=info)
 
 
 def _load_validated_extension(
-    library_path: Path,
-    *,
-    origin: str,
-    expected_fingerprint: str | None = None,
+    library_path: Path, *, origin: str, expected_fingerprint: str | None = None
 ) -> _StableOpsModule:
     """Validate the identity chain, then load. Never the other way round.
 
@@ -840,18 +761,9 @@ def _load_validated_extension(
     report a problem the process can no longer avoid.
     """
 
-    info = validate_identity(
-        library_path,
-        extension_sources(),
-        expected_fingerprint=expected_fingerprint,
-    )
+    info = validate_identity(library_path, extension_sources(), expected_fingerprint=expected_fingerprint)
     torch.ops.load_library(str(library_path))
-    return _require_operators(
-        library_path,
-        list(info["operator_symbols"]),
-        origin=origin,
-        info=info,
-    )
+    return _require_operators(library_path, list(info["operator_symbols"]), origin=origin, info=info)
 
 
 def _developer_override_config() -> tuple[Path, str] | None:
@@ -875,22 +787,17 @@ def _developer_override_config() -> tuple[Path, str] | None:
             f"SHA-256 {_OVERRIDE_FINGERPRINT_ENV}"
         )
     if not is_sha256(fingerprint):
-        raise RadarExtensionLoadError(
-            f"{_OVERRIDE_FINGERPRINT_ENV} must be a SHA-256 digest"
-        )
+        raise RadarExtensionLoadError(f"{_OVERRIDE_FINGERPRINT_ENV} must be a SHA-256 digest")
     path = Path(raw_path)
     if not path.is_absolute():
         raise RadarExtensionLoadError(f"{_OVERRIDE_PATH_ENV} must be an absolute path")
     try:
         resolved = path.resolve(strict=True)
     except OSError as exc:
-        raise RadarExtensionLoadError(
-            f"the developer radar native library does not exist: {path}"
-        ) from exc
+        raise RadarExtensionLoadError(f"the developer radar native library does not exist: {path}") from exc
     if not resolved.is_file() or resolved.suffix != extension_suffix():
         raise RadarExtensionLoadError(
-            "the developer radar native library must be a "
-            f"{extension_suffix()} file: {resolved}"
+            f"the developer radar native library must be a {extension_suffix()} file: {resolved}"
         )
     return resolved, fingerprint
 
@@ -937,11 +844,7 @@ def source_fingerprint() -> str:
 
 
 def default_build_directory() -> Path:
-    return (
-        Path(tempfile.gettempdir())
-        / EXTENSION_NAME
-        / f"stable_abi_v1_{source_fingerprint()}"
-    )
+    return Path(tempfile.gettempdir()) / EXTENSION_NAME / f"stable_abi_v1_{source_fingerprint()}"
 
 
 def _build_extension(*, verbose: bool = False):
@@ -978,11 +881,7 @@ def _build_extension(*, verbose: bool = False):
 
     if override is not None:
         override_path, expected_fingerprint = override
-        return _load_validated_extension(
-            override_path,
-            origin="developer",
-            expected_fingerprint=expected_fingerprint,
-        )
+        return _load_validated_extension(override_path, origin="developer", expected_fingerprint=expected_fingerprint)
 
     raise RadarExtensionLoadError(
         f"no radar native library is available: {packaged} does not exist. "
@@ -1006,9 +905,7 @@ def _jit_build_extension(*, verbose: bool = False):
     from torch.utils.cpp_extension import load
 
     root = source_root()
-    build_directory = Path(
-        os.environ.get(_BUILD_DIR_ENV, default_build_directory())
-    )
+    build_directory = Path(os.environ.get(_BUILD_DIR_ENV, default_build_directory()))
     _ensure_windows_build_tools_on_path()
     _ensure_cuda_home_from_nvcc()
     build_directory.mkdir(parents=True, exist_ok=True)
@@ -1018,21 +915,10 @@ def _jit_build_extension(*, verbose: bool = False):
         sources=[str(path) for path in extension_sources()],
         build_directory=str(build_directory),
         extra_include_paths=[str(root)],
-        extra_cflags=(
-            ["/O2", f"/D{target_flag}"]
-            if os.name == "nt"
-            else ["-O3", f"-D{target_flag}"]
-        ),
-        extra_cuda_cflags=[
-            "-O3",
-            f"-D{target_flag}",
-            "-DUSE_CUDA",
-            *_cuda_gencode_flags(),
-        ],
+        extra_cflags=(["/O2", f"/D{target_flag}"] if os.name == "nt" else ["-O3", f"-D{target_flag}"]),
+        extra_cuda_cflags=["-O3", f"-D{target_flag}", "-DUSE_CUDA", *_cuda_gencode_flags()],
         extra_ldflags=_conda_torch_ldflags(),
         is_python_module=False,
         verbose=verbose,
     )
     return _require_operators(Path(library_path))
-
-

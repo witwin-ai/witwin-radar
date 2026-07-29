@@ -33,28 +33,16 @@ def frozen_leg(rows, *, device: str = "cuda"):
     pair that differ in a single tie-break column.
     """
 
-    keyed = [
-        row
-        if len(row) == 6
-        else (row[0], row[1], row[2], row[2], (row[2],), (row[2],))
-        for row in rows
-    ]
+    keyed = [row if len(row) == 6 else (row[0], row[1], row[2], row[2], (row[2],), (row[2],)) for row in rows]
     widths = {(len(row[4]), len(row[5])) for row in keyed}
     if len(widths) != 1:
-        raise ValueError(
-            "every fabricated row must carry the same interaction sequence "
-            f"width, got {sorted(widths)}"
-        )
+        raise ValueError(f"every fabricated row must carry the same interaction sequence width, got {sorted(widths)}")
 
     def column(index: int, dtype: torch.dtype) -> torch.Tensor:
-        return torch.tensor(
-            [row[index] for row in keyed], dtype=dtype, device=device
-        )
+        return torch.tensor([row[index] for row in keyed], dtype=dtype, device=device)
 
     def sequence(index: int) -> torch.Tensor:
-        return torch.tensor(
-            [list(row[index]) for row in keyed], dtype=torch.int32, device=device
-        )
+        return torch.tensor([list(row[index]) for row in keyed], dtype=torch.int32, device=device)
 
     return SimpleNamespace(
         source_id=column(0, torch.int64),
@@ -67,12 +55,7 @@ def frozen_leg(rows, *, device: str = "cuda"):
 
 
 def leg_rows(sources, sinks, components) -> list[tuple[int, int, int]]:
-    return [
-        (source, sink, component)
-        for source in sources
-        for sink in sinks
-        for component in components
-    ]
+    return [(source, sink, component) for source in sources for sink in sinks for component in components]
 
 
 def leg_batch(

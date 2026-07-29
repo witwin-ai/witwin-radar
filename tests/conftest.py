@@ -8,8 +8,8 @@ Run:
     pytest tests/processing/ -v           # processing owners
 """
 
-import sys
 import os
+import sys
 
 import pytest
 
@@ -21,10 +21,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # pytest plugins
 # ---------------------------------------------------------------------------
 
+
 def pytest_addoption(parser):
     try:
         parser.addoption(
-            "--gpu", action="store_true", default=False,
+            "--gpu",
+            action="store_true",
+            default=False,
             help="Run GPU-only tests (solver cross-validation, end-to-end validation)",
         )
     except ValueError:
@@ -53,31 +56,43 @@ def pytest_collection_modifyitems(config, items):
 # ---------------------------------------------------------------------------
 
 STANDARD_CONFIG = {
-    "num_tx": 3, "num_rx": 4,
-    "fc": 77e9, "slope": 60.012,
-    "adc_samples": 256, "adc_start_time": 6,
-    "sample_rate": 4400, "idle_time": 7, "ramp_end_time": 58,
-    "chirp_per_frame": 128, "frame_per_second": 10,
-    "num_doppler_bins": 128, "num_range_bins": 256,
-    "num_angle_bins": 64, "power": 12,
+    "num_tx": 3,
+    "num_rx": 4,
+    "fc": 77e9,
+    "slope": 60.012,
+    "adc_samples": 256,
+    "adc_start_time": 6,
+    "sample_rate": 4400,
+    "idle_time": 7,
+    "ramp_end_time": 58,
+    "chirp_per_frame": 128,
+    "frame_per_second": 10,
+    "num_doppler_bins": 128,
+    "num_range_bins": 256,
+    "num_angle_bins": 64,
+    "power": 12,
     "tx_loc": [[0, 0, 0], [2, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
 
-FAST_CONFIG = {
-    **STANDARD_CONFIG,
-    "chirp_per_frame": 32,
-    "num_doppler_bins": 32,
-}
+FAST_CONFIG = {**STANDARD_CONFIG, "chirp_per_frame": 32, "num_doppler_bins": 32}
 
 MINIMAL_CONFIG = {
-    "num_tx": 1, "num_rx": 1,
-    "fc": 77e9, "slope": 60.012,
-    "adc_samples": 256, "adc_start_time": 0,
-    "sample_rate": 4400, "idle_time": 7, "ramp_end_time": 58,
-    "chirp_per_frame": 2, "frame_per_second": 10,
-    "num_doppler_bins": 2, "num_range_bins": 256,
-    "num_angle_bins": 64, "power": 12,
+    "num_tx": 1,
+    "num_rx": 1,
+    "fc": 77e9,
+    "slope": 60.012,
+    "adc_samples": 256,
+    "adc_start_time": 0,
+    "sample_rate": 4400,
+    "idle_time": 7,
+    "ramp_end_time": 58,
+    "chirp_per_frame": 2,
+    "frame_per_second": 10,
+    "num_doppler_bins": 2,
+    "num_range_bins": 256,
+    "num_angle_bins": 64,
+    "power": 12,
     "tx_loc": [[0, 0, 0]],
     "rx_loc": [[0, 0, 0]],
 }
@@ -106,8 +121,8 @@ def make_processing_axes(config=None, *, doppler_bins: int | None = None):
     import torch
 
     from witwin.radar import RadarConfig
-    from witwin.radar.radar import RadarSystemConfig
     from witwin.radar.processing import ProcessingAxes
+    from witwin.radar.radar import RadarSystemConfig
     from witwin.radar.synthesis.assembly import SynthesisResult
 
     raw = PROCESSING_CONFIG if config is None else config
@@ -117,22 +132,22 @@ def make_processing_axes(config=None, *, doppler_bins: int | None = None):
     if doppler_bins is not None:
         spec = replace(spec, num_chirps=int(doppler_bins))
     array = system.sensors.array
-    cube = torch.zeros(
-        (spec.num_chirps, array.sensor_pair_count, spec.num_samples),
-        dtype=torch.complex64,
-    )
+    cube = torch.zeros((spec.num_chirps, array.sensor_pair_count, spec.num_samples), dtype=torch.complex64)
     result = SynthesisResult.from_fmcw(cube, spec)
     return ProcessingAxes.from_synthesis(result, spec, array)
+
 
 # ---------------------------------------------------------------------------
 # CPU-only Radar contract fixture
 # ---------------------------------------------------------------------------
+
 
 class MockRadar:
     """Lightweight CPU-only radar contract fixture."""
 
     def __init__(self, config=None):
         import torch
+
         from witwin.radar import RadarConfig
 
         self.c0 = 299792458
@@ -157,12 +172,7 @@ class MockRadar:
         self.system_config = RadarSystemConfig.from_radar_config(cfg)
         spec = self.system_config.waveform_spec()
         array = self.system_config.sensors.array
-        cube = torch.zeros(
-            spec.num_chirps,
-            array.sensor_pair_count,
-            spec.num_samples,
-            dtype=torch.complex64,
-        )
+        cube = torch.zeros(spec.num_chirps, array.sensor_pair_count, spec.num_samples, dtype=torch.complex64)
         result = SynthesisResult.from_fmcw(cube, spec)
         self.axes = ProcessingAxes.from_synthesis(result, spec, array)
         self.gain = 1.0
@@ -209,21 +219,25 @@ class MockRadar:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def standard_config():
     from witwin.radar import RadarConfig
+
     return RadarConfig.from_dict(STANDARD_CONFIG)
 
 
 @pytest.fixture
 def fast_config():
     from witwin.radar import RadarConfig
+
     return RadarConfig.from_dict(FAST_CONFIG)
 
 
 @pytest.fixture
 def minimal_config():
     from witwin.radar import RadarConfig
+
     return RadarConfig.from_dict(MINIMAL_CONFIG)
 
 
@@ -299,11 +313,7 @@ def make_scene_radar_or_skip(config, **pose):
 
     if not isinstance(config, RadarConfig):
         config = RadarConfig.from_dict(dict(config))
-    options = {
-        "position": (0.0, 0.0, 0.0),
-        "target": SCENE_DRIVEN_LOOK_AT_M,
-        "up": SCENE_DRIVEN_UP,
-    }
+    options = {"position": (0.0, 0.0, 0.0), "target": SCENE_DRIVEN_LOOK_AT_M, "up": SCENE_DRIVEN_UP}
     options.update(pose)
     try:
         return Radar(config, **options)
@@ -359,6 +369,7 @@ class PointTargetFrame:
 
     def assert_axes_describe_the_cube(self):
         import torch
+
         from witwin.radar.processing import ProcessingCube
 
         packed = ProcessingCube.from_synthesis(self.synthesis, self.axes)
@@ -368,9 +379,7 @@ class PointTargetFrame:
         from witwin.radar.processing import range_doppler_map, range_profile
 
         range_window = "rectangular" if self.axes.output_domain == "spectrum" else window
-        return range_doppler_map(
-            range_profile(self.processing_cube(), window=range_window), window=window
-        )
+        return range_doppler_map(range_profile(self.processing_cube(), window=range_window), window=window)
 
     def range_profile_db(self, *, window="hann"):
         """Peak-over-Doppler magnitude per range bin, summed over the array."""
@@ -382,23 +391,15 @@ class PointTargetFrame:
         """The coherently combined ``[doppler, range]`` map the detector reads."""
 
         rd = self.range_doppler(window=window)
-        return rd.data.reshape(
-            self.array.sensor_pair_count, *rd.data.shape[-2:]
-        ).sum(dim=0)
+        return rd.data.reshape(self.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
 
     def point_cloud(self, *, window="hann", pfa=1e-2, max_points=64, **options):
         from witwin.radar.processing import ca_cfar_fast, point_cloud
 
         rd = self.range_doppler(window=window)
-        combined = rd.data.reshape(
-            self.array.sensor_pair_count, *rd.data.shape[-2:]
-        ).sum(dim=0)
-        cells = ca_cfar_fast(
-            combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa
-        )
-        return point_cloud(
-            cells, rd, self.axes, self.array, max_points=max_points, **options
-        )
+        combined = rd.data.reshape(self.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
+        cells = ca_cfar_fast(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa)
+        return point_cloud(cells, rd, self.axes, self.array, max_points=max_points, **options)
 
 
 def _target_tensors(radar, targets):
@@ -420,12 +421,8 @@ def _target_tensors(radar, targets):
     # ``reshape(-1, 3)`` so that an EMPTY target list is a genuine (0, 3)
     # tensor rather than a rank-1 empty one: the empty case has to reach the
     # production refusal, not die in a shape error here.
-    local_positions = torch.tensor(
-        positions, dtype=torch.float32, device=radar.device
-    ).reshape(-1, 3)
-    local_velocities = torch.tensor(
-        velocities, dtype=torch.float32, device=radar.device
-    ).reshape(-1, 3)
+    local_positions = torch.tensor(positions, dtype=torch.float32, device=radar.device).reshape(-1, 3)
+    local_velocities = torch.tensor(velocities, dtype=torch.float32, device=radar.device).reshape(-1, 3)
     return local_positions, local_velocities, moving
 
 
@@ -442,18 +439,16 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     Returns a :class:`PointTargetFrame`.
     """
 
-    from witwin.radar.simulation import ScatterSitePolicy
-    from witwin.radar.processing import ArrayGeometry, ProcessingAxes
     import witwin.radar.propagation as kin
+    from witwin.radar.processing import ArrayGeometry, ProcessingAxes
     from witwin.radar.scattering import ScalarRcsResponse
+    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.synthesis import SlowTimeMode
 
     local_positions, local_velocities, moving = _target_tensors(radar, targets)
     world_positions = radar._world_from_local_points(local_positions)
     response = ScalarRcsResponse.from_rcs(
-        sigma_m2,
-        reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz,
-        device=radar.device,
+        sigma_m2, reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz, device=radar.device
     )
 
     def solve(sites, ad_mode):
@@ -469,8 +464,7 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
 
     if moving:
         track = kin.Kinematics(
-            positions_m=world_positions,
-            velocities_m_per_s=radar._world_from_local_vectors(local_velocities),
+            positions_m=world_positions, velocities_m_per_s=radar._world_from_local_vectors(local_velocities)
         )
         with kin.two_way_duals(sites=track) as duals:
             result = solve(duals.sites, "jvp")
@@ -482,22 +476,18 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
             # carrier.
             cube = _primal(result.cube).detach().clone()
             synthesis = radar._synthesize(
-                radar.last_radar_paths,
-                slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
+                radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
             )
             synthesis = _detached_synthesis(synthesis)
     else:
         result = solve(world_positions, "none")
         cube = result.cube
         synthesis = radar._synthesize(
-            radar.last_radar_paths,
-            slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
+            radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
         )
 
     axes = ProcessingAxes.from_synthesis(
-        synthesis,
-        radar.system_config.waveform_spec(),
-        radar.system_config.sensors.array,
+        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
     )
     return PointTargetFrame(
         result=result,
@@ -519,9 +509,7 @@ def _detached_synthesis(synthesis):
 
     import dataclasses
 
-    return dataclasses.replace(
-        synthesis, cube=_primal(synthesis.cube).detach().clone()
-    )
+    return dataclasses.replace(synthesis, cube=_primal(synthesis.cube).detach().clone())
 
 
 def make_radar_or_skip(config):

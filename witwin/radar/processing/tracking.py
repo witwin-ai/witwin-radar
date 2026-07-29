@@ -45,14 +45,13 @@ Two Phase-9 corrections to that enforcement, both of which mattered:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import torch
 
 from ..policy import refuse_derivative
 from .detection import POINT_CLOUD_COLUMNS, PointCloud
-
 
 #: Why a detection frame has no derivative.
 _ASSOCIATION_REASON = (
@@ -91,28 +90,19 @@ class DetectionFrame:
         for name in ("velocity_mps", "energy"):
             value = getattr(self, name)
             if value.dim() != 1 or int(value.shape[0]) != count:
-                raise ValueError(
-                    f"{name} must be [{count}] to match xyz; got "
-                    f"{tuple(value.shape)}"
-                )
+                raise ValueError(f"{name} must be [{count}] to match xyz; got {tuple(value.shape)}")
         if type(self.frame_index) is not int or self.frame_index < 0:
-            raise ValueError(
-                f"frame_index must be a non-negative int, got {self.frame_index!r}"
-            )
+            raise ValueError(f"frame_index must be a non-negative int, got {self.frame_index!r}")
 
     def __len__(self) -> int:
         return int(self.xyz.shape[0])
 
     @classmethod
-    def from_point_cloud(
-        cls, cloud: PointCloud, *, time_s: float, frame_index: int
-    ) -> "DetectionFrame":
+    def from_point_cloud(cls, cloud: PointCloud, *, time_s: float, frame_index: int) -> DetectionFrame:
         """The bridge from the point-cloud stage. No values are recomputed."""
 
         if not isinstance(cloud, PointCloud):
-            raise TypeError(
-                f"from_point_cloud takes a PointCloud, got {type(cloud).__name__}"
-            )
+            raise TypeError(f"from_point_cloud takes a PointCloud, got {type(cloud).__name__}")
         return cls(
             time_s=float(time_s),
             xyz=cloud.xyz,
@@ -121,9 +111,7 @@ class DetectionFrame:
             frame_index=int(frame_index),
         )
 
-    def as_fixed_size(
-        self, size: int, *, generator: torch.Generator | None = None
-    ) -> torch.Tensor:
+    def as_fixed_size(self, size: int, *, generator: torch.Generator | None = None) -> torch.Tensor:
         """``[size, 6]`` in :data:`POINT_CLOUD_COLUMNS` order.
 
         The fixed-shape batch a learned consumer wants, replacing ``reg_data``'s
@@ -165,12 +153,7 @@ class DetectionFrame:
         if count < size:
             slots = torch.randperm(size, generator=generator, device=device)
             batch[slots[:count]] = data
-            duplicates = torch.randint(
-                count,
-                (size - count,),
-                generator=generator,
-                device=device,
-            )
+            duplicates = torch.randint(count, (size - count,), generator=generator, device=device)
             batch[slots[count:]] = data.index_select(0, duplicates)
             return batch
         chosen = torch.randperm(count, generator=generator, device=device)[:size]
@@ -179,9 +162,7 @@ class DetectionFrame:
 
 #: An associator takes the previous frame, the next frame, and the elapsed time,
 #: and returns ``[N_next]`` int64 track ids, ``-1`` for "no continuation".
-Associator = Callable[
-    [DetectionFrame | None, DetectionFrame, float], torch.Tensor
-]
+Associator = Callable[[DetectionFrame | None, DetectionFrame, float], torch.Tensor]
 
 
 @dataclass(slots=True, eq=False)
@@ -206,9 +187,7 @@ class TrackHandoff:
         """Append a frame and return its ``[N]`` int64 track assignment."""
 
         if not isinstance(frame, DetectionFrame):
-            raise TypeError(
-                f"push takes a DetectionFrame, got {type(frame).__name__}"
-            )
+            raise TypeError(f"push takes a DetectionFrame, got {type(frame).__name__}")
         if self.frames and frame.time_s <= self.frames[-1].time_s:
             raise ValueError(
                 f"frame {frame.frame_index} is stamped {frame.time_s} s, which is "
@@ -226,16 +205,11 @@ class TrackHandoff:
             )
         if int(continued.shape[0]) != len(frame):
             raise ValueError(
-                f"the associator returned {int(continued.shape[0])} assignments "
-                f"for {len(frame)} detections"
+                f"the associator returned {int(continued.shape[0])} assignments for {len(frame)} detections"
             )
-        assignment = torch.full(
-            (len(frame),), -1, dtype=torch.int64, device=continued.device
-        )
+        assignment = torch.full((len(frame),), -1, dtype=torch.int64, device=continued.device)
         previous_ids = (
-            self.assignments[-1]
-            if self.assignments
-            else torch.zeros((0,), dtype=torch.int64, device=continued.device)
+            self.assignments[-1] if self.assignments else torch.zeros((0,), dtype=torch.int64, device=continued.device)
         )
         for index in range(len(frame)):
             source = int(continued[index])
@@ -266,11 +240,7 @@ class TrackHandoff:
 
 
 def nearest_neighbour_associator(
-    previous: DetectionFrame | None,
-    current: DetectionFrame,
-    elapsed_s: float,
-    *,
-    gate_m: float = 1.0,
+    previous: DetectionFrame | None, current: DetectionFrame, elapsed_s: float, *, gate_m: float = 1.0
 ) -> torch.Tensor:
     """REFERENCE constant-velocity nearest-neighbour association.
 
@@ -295,15 +265,11 @@ def nearest_neighbour_associator(
     # is the unit vector from the array to where it was.
     radius = previous.xyz.square().sum(dim=1, keepdim=True).sqrt().clamp(min=1e-12)
     direction = previous.xyz / radius
-    predicted = previous.xyz - direction * (
-        previous.velocity_mps.reshape(-1, 1) * float(elapsed_s)
-    )
+    predicted = previous.xyz - direction * (previous.velocity_mps.reshape(-1, 1) * float(elapsed_s))
     # Written out rather than through ``torch.cdist``: a pairwise distance is
     # arithmetic here, and this package does not reach for a geometry primitive
     # that the physics packages are statically forbidden from naming.
-    distance = (
-        (current.xyz.unsqueeze(1) - predicted.unsqueeze(0)).square().sum(dim=-1).sqrt()
-    )
+    distance = (current.xyz.unsqueeze(1) - predicted.unsqueeze(0)).square().sum(dim=-1).sqrt()
     claimed = torch.zeros((len(previous),), dtype=torch.bool, device=device)
     order = torch.argsort(distance.reshape(-1))
     columns = int(distance.shape[1])
@@ -318,9 +284,4 @@ def nearest_neighbour_associator(
     return result
 
 
-__all__ = [
-    "Associator",
-    "DetectionFrame",
-    "TrackHandoff",
-    "nearest_neighbour_associator",
-]
+__all__ = ["Associator", "DetectionFrame", "TrackHandoff", "nearest_neighbour_associator"]

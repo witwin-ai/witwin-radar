@@ -6,7 +6,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 EXPECTED_SASS = ("70", "75", "80", "86", "87", "89", "90", "100", "101", "120")
 EXPECTED_PTX_TARGET = "sm_120"
 
@@ -46,16 +45,11 @@ def _collect_binaries(inputs: list[Path], stems: tuple[str, ...], extract_root: 
             continue
         if _matches(input_path, stems):
             binaries.append(input_path)
-    return sorted(set(path.resolve() for path in binaries))
+    return sorted({path.resolve() for path in binaries})
 
 
 def _cuobjdump(flag: str, binary: Path) -> str:
-    result = subprocess.run(
-        ["cuobjdump", flag, str(binary)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run(["cuobjdump", flag, str(binary)], check=True, capture_output=True, text=True)
     return f"{result.stdout}\n{result.stderr}"
 
 
@@ -79,9 +73,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     stems = tuple(args.stem) if args.stem else (DEFAULT_STEM,)
-    expected_sass = tuple(
-        entry.strip() for entry in args.expected_sass.split(",") if entry.strip()
-    )
+    expected_sass = tuple(entry.strip() for entry in args.expected_sass.split(",") if entry.strip())
     if not expected_sass:
         raise SystemExit("--expected-sass must name at least one architecture.")
     expected_ptx_target = f"sm_{args.expected_ptx.strip()}"
@@ -99,9 +91,7 @@ def main() -> None:
 
             ptx_dump = _cuobjdump("--dump-ptx", binary)
             if f".target {expected_ptx_target}" not in ptx_dump:
-                raise SystemExit(
-                    f"{binary} is missing {expected_ptx_target.replace('sm_', 'compute ')} PTX."
-                )
+                raise SystemExit(f"{binary} is missing {expected_ptx_target.replace('sm_', 'compute ')} PTX.")
 
             print(
                 f"Verified CUDA architectures in {binary}: SASS "

@@ -11,15 +11,11 @@ import math
 
 import pytest
 import torch
-
 from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
-from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
-from witwin.radar.synthesis.fmcw import (  # noqa: E402
-    channel_phasor_to_beat_weight,
-    synthesize_fmcw_rows,
-)
 
+from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
+from witwin.radar.synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_rows  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -50,32 +46,22 @@ def _spec(**overrides) -> FmcwSpec:
 def _rows(delays, weights, *, rates=None, segments=1):
     device = "cuda"
     tau = torch.tensor(delays, dtype=torch.float32, device=device)
-    rate = torch.zeros_like(tau) if rates is None else torch.tensor(
-        rates, dtype=torch.float32, device=device
-    )
+    rate = torch.zeros_like(tau) if rates is None else torch.tensor(rates, dtype=torch.float32, device=device)
     weight = torch.tensor(weights, dtype=torch.complex64, device=device)
     count = tau.numel()
     per = count // segments
-    offsets = torch.tensor(
-        [per * i for i in range(segments)] + [count], dtype=torch.int64, device=device
-    )
+    offsets = torch.tensor([per * i for i in range(segments)] + [count], dtype=torch.int64, device=device)
     return tau, rate, weight, offsets
 
 
 def test_primal_matches_the_float64_oracle():
     spec = _spec(num_chirps=3)
     tau, rate, weight, offsets = _rows(
-        [geo.round_trip_delay_s(), 2.1e-8],
-        [0.5 + 0.25j, -0.125 + 0.75j],
-        rates=[1.0e-9, -4.0e-10],
+        [geo.round_trip_delay_s(), 2.1e-8], [0.5 + 0.25j, -0.125 + 0.75j], rates=[1.0e-9, -4.0e-10]
     )
     measured = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
-    expected = ref.beat_samples(
-        tau.cpu(), rate.cpu(), weight.cpu(), offsets.cpu(), spec
-    )
-    torch.testing.assert_close(
-        measured.cpu().to(torch.complex128), expected, rtol=2e-5, atol=2e-5
-    )
+    expected = ref.beat_samples(tau.cpu(), rate.cpu(), weight.cpu(), offsets.cpu(), spec)
+    torch.testing.assert_close(measured.cpu().to(torch.complex128), expected, rtol=2e-5, atol=2e-5)
 
 
 def test_beat_frequency_and_peak_bin_match_the_closed_form():
@@ -106,18 +92,10 @@ def test_tau_is_the_round_trip_delay_and_is_never_doubled():
     doubled, rate2, weight2, offsets2 = _rows([2.0 * tau_rt], [1.0 + 0.0j])
 
     peak_single = int(
-        torch.fft.fft(
-            synthesize_fmcw_rows(single, rate, weight, offsets, spec)[0, 0].cpu()
-        )
-        .abs()
-        .argmax()
+        torch.fft.fft(synthesize_fmcw_rows(single, rate, weight, offsets, spec)[0, 0].cpu()).abs().argmax()
     )
     peak_doubled = int(
-        torch.fft.fft(
-            synthesize_fmcw_rows(doubled, rate2, weight2, offsets2, spec)[0, 0].cpu()
-        )
-        .abs()
-        .argmax()
+        torch.fft.fft(synthesize_fmcw_rows(doubled, rate2, weight2, offsets2, spec)[0, 0].cpu()).abs().argmax()
     )
     assert abs(peak_single - spec.beat_bin(tau_rt)) <= 1.0
     assert abs(peak_doubled - 2 * peak_single) <= 1.0
@@ -136,9 +114,7 @@ def test_multi_chirp_slow_time_phase_slope_carries_doppler():
     spec = _spec(num_chirps=16, carrier_hz=carrier)
     tau_rt = geo.round_trip_delay_s()
     rate_value = 2.385e-8
-    tau, rate, weight, offsets = _rows(
-        [tau_rt], [1.0 + 0.0j], rates=[rate_value]
-    )
+    tau, rate, weight, offsets = _rows([tau_rt], [1.0 + 0.0j], rates=[rate_value])
     iq = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
 
     # Take one fast-time sample and look at how its phase walks across chirps.
@@ -150,9 +126,7 @@ def test_multi_chirp_slow_time_phase_slope_carries_doppler():
     # ramp contributes slope * (t_start - tau), which is 0.47% of the carrier
     # here and is far larger than the tolerance. Keeping the carrier-only
     # approximation would have made this test fail against a correct kernel.
-    dphi_dtau = 2.0 * math.pi * (
-        carrier + spec.slope_hz_per_s * (spec.t_start_s - tau_rt)
-    )
+    dphi_dtau = 2.0 * math.pi * (carrier + spec.slope_hz_per_s * (spec.t_start_s - tau_rt))
     expected = dphi_dtau * rate_value * spec.chirp_period_s
     assert abs(math.remainder(measured - expected, 2.0 * math.pi)) < 1e-4
     assert expected > 0.0  # positive slow-time slope for a receding site
@@ -188,9 +162,7 @@ def test_production_carrier_placement_carries_the_same_doppler():
     assert production.carrier_rate_hz == pytest.approx(carrier)
 
     def slow_time_slope(spec, weight_value):
-        tau, rate, weight, offsets = _rows(
-            [tau_rt], [weight_value], rates=[rate_value]
-        )
+        tau, rate, weight, offsets = _rows([tau_rt], [weight_value], rates=[rate_value])
         iq = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
         slow = iq[:, 0, 0].to(torch.complex128)
         steps = slow[1:] * torch.conj(slow[:-1])
@@ -248,9 +220,7 @@ def test_the_two_carrier_homes_cannot_both_be_used():
 def test_segments_are_independent_and_offsets_partition_the_rows():
     spec = _spec(num_chirps=2)
     tau, rate, weight, offsets = _rows(
-        [1.0e-8, 2.0e-8, 3.0e-8, 4.0e-8],
-        [1.0 + 0.0j, 0.5 - 0.5j, -0.25 + 0.0j, 0.75 + 0.25j],
-        segments=2,
+        [1.0e-8, 2.0e-8, 3.0e-8, 4.0e-8], [1.0 + 0.0j, 0.5 - 0.5j, -0.25 + 0.0j, 0.75 + 0.25j], segments=2
     )
     both = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
     assert tuple(both.shape) == (2, 2, spec.num_samples)
@@ -301,9 +271,7 @@ def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
     tau = torch.tensor([tau_rt], dtype=torch.float32, device="cuda")
     rate = torch.zeros_like(tau)
     offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
-    measured = complex(
-        synthesize_fmcw_rows(tau, rate, beat, offsets, spec)[0, 0, 0].cpu()
-    )
+    measured = complex(synthesize_fmcw_rows(tau, rate, beat, offsets, spec)[0, 0, 0].cpu())
 
     # By hand: conj(0 + 1j) = -1j, and exp(+j 2 pi * 0.25) = +1j.
     # (-1j) * (+1j) = +1. An inverted conjugation would give -1 instead.
@@ -347,9 +315,7 @@ def test_loading_the_extension_is_free_and_side_effect_free_after_the_first_call
 
 def test_zero_weight_row_contributes_exactly_zero():
     spec = _spec(num_chirps=2)
-    tau, rate, weight, offsets = _rows(
-        [1.0e-8, 2.0e-8], [1.0 + 0.0j, 0.0 + 0.0j]
-    )
+    tau, rate, weight, offsets = _rows([1.0e-8, 2.0e-8], [1.0 + 0.0j, 0.0 + 0.0j])
     with_dead = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
     alive = synthesize_fmcw_rows(
         tau[:1].contiguous(),

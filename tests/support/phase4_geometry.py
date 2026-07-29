@@ -85,10 +85,7 @@ def leg_distances_m() -> tuple[float, float]:
     def distance(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
         return sum((x - y) ** 2 for x, y in zip(a, b, strict=True)) ** 0.5
 
-    return (
-        distance(SITE_POSITION_M, TX_POSITION_M),
-        distance(RX_POSITION_M, SITE_POSITION_M),
-    )
+    return (distance(SITE_POSITION_M, TX_POSITION_M), distance(RX_POSITION_M, SITE_POSITION_M))
 
 
 def round_trip_delay_s() -> float:
@@ -151,13 +148,9 @@ def leg_lengths_m() -> dict[tuple[str, str], float]:
 
     return {
         ("inbound", "los"): _distance(TX_POSITION_M, SITE_POSITION_M),
-        ("inbound", "reflection"): reflection_length_m(
-            TX_POSITION_M, SITE_POSITION_M
-        ),
+        ("inbound", "reflection"): reflection_length_m(TX_POSITION_M, SITE_POSITION_M),
         ("outbound", "los"): _distance(SITE_POSITION_M, RX_POSITION_M),
-        ("outbound", "reflection"): reflection_length_m(
-            RX_POSITION_M, SITE_POSITION_M
-        ),
+        ("outbound", "reflection"): reflection_length_m(RX_POSITION_M, SITE_POSITION_M),
     }
 
 
@@ -165,9 +158,7 @@ def leg_delays_s() -> dict[tuple[str, str], float]:
     return {key: value / C0_M_PER_S for key, value in leg_lengths_m().items()}
 
 
-def leg_delay_rates_s_per_s(
-    velocity: Point = SITE_VELOCITY_M_PER_S,
-) -> dict[tuple[str, str], float]:
+def leg_delay_rates_s_per_s(velocity: Point = SITE_VELOCITY_M_PER_S) -> dict[tuple[str, str], float]:
     """``d(delay)/dt`` per leg for a moving SITE, both endpoints static.
 
     One formula covers both components, which is the point of the image
@@ -183,13 +174,9 @@ def leg_delay_rates_s_per_s(
     }
     rates: dict[tuple[str, str], float] = {}
     for key, origin in endpoints.items():
-        offset = tuple(
-            SITE_POSITION_M[axis] - origin[axis] for axis in range(3)
-        )
+        offset = tuple(SITE_POSITION_M[axis] - origin[axis] for axis in range(3))
         length = sum(value**2 for value in offset) ** 0.5
-        projection = sum(
-            offset[axis] * velocity[axis] for axis in range(3)
-        )
+        projection = sum(offset[axis] * velocity[axis] for axis in range(3))
         rates[key] = projection / length / C0_M_PER_S
     return rates
 
@@ -203,16 +190,13 @@ def combined_delays_s() -> dict[tuple[str, str], float]:
 
     legs = leg_delays_s()
     return {
-        (inbound, outbound): legs[("inbound", inbound)]
-        + legs[("outbound", outbound)]
+        (inbound, outbound): legs[("inbound", inbound)] + legs[("outbound", outbound)]
         for inbound in ("los", "reflection")
         for outbound in ("los", "reflection")
     }
 
 
-def combined_doppler_hz(
-    velocity: Point = SITE_VELOCITY_M_PER_S,
-) -> dict[tuple[str, str], float]:
+def combined_doppler_hz(velocity: Point = SITE_VELOCITY_M_PER_S) -> dict[tuple[str, str], float]:
     """Doppler shift of each combined path at the reference frequency.
 
     ``f_D = -f_c * d(tau_rt)/dt``: the sign follows Channel's
@@ -221,8 +205,7 @@ def combined_doppler_hz(
 
     rates = leg_delay_rates_s_per_s(velocity)
     return {
-        (inbound, outbound): -REFERENCE_FREQUENCY_HZ
-        * (rates[("inbound", inbound)] + rates[("outbound", outbound)])
+        (inbound, outbound): -REFERENCE_FREQUENCY_HZ * (rates[("inbound", inbound)] + rates[("outbound", outbound)])
         for inbound in ("los", "reflection")
         for outbound in ("los", "reflection")
     }

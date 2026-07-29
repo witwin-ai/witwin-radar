@@ -27,7 +27,6 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 # A nanosecond-scale delay held in float32 carries about 1e-7 relative
@@ -105,10 +104,7 @@ def test_the_specular_points_are_where_the_image_source_puts_them():
         (geo.SITE_P_STABLE_ID, geo.RX_B_STABLE_ID): (-0.6307692307692307, True),
         (geo.SITE_Q_STABLE_ID, geo.RX_B_STABLE_ID): (0.5538461538461539, True),
     }
-    positions = {
-        stable_id: position
-        for stable_id, position in (*geo.TRANSMITTERS, *geo.SITES, *geo.RECEIVERS)
-    }
+    positions = dict((*geo.TRANSMITTERS, *geo.SITES, *geo.RECEIVERS))
     margins = []
     for (source, sink), (y, on_facet) in expected.items():
         point = geo.specular_point_m(positions[source], positions[sink])
@@ -124,9 +120,7 @@ def test_the_specular_points_are_where_the_image_source_puts_them():
     # facet size. That is a different absence from a facet miss and the fixture
     # relies on both.
     for site, _ in geo.SITES:
-        assert (
-            geo.specular_point_m(geo.TX_B_POSITION_M, positions[site]) is None
-        )
+        assert geo.specular_point_m(geo.TX_B_POSITION_M, positions[site]) is None
 
     # No float32 knife edges: the closest call is 0.379 m from the facet edge,
     # nine orders of magnitude above a float32 ULP at these coordinates.
@@ -141,20 +135,11 @@ def test_the_wall_blocks_exactly_the_two_transmitter_b_lines_of_sight():
     the same side of the plane and is never blocked.
     """
 
-    legs = [
-        (source, sink)
-        for source in geo.TRANSMITTERS
-        for sink in geo.SITES
-    ] + [(source, sink) for source in geo.SITES for sink in geo.RECEIVERS]
-    blocked = {
-        (source[0], sink[0])
-        for source, sink in legs
-        if geo.line_of_sight_is_blocked(source[1], sink[1])
-    }
-    assert blocked == {
-        (geo.TX_B_STABLE_ID, geo.SITE_P_STABLE_ID),
-        (geo.TX_B_STABLE_ID, geo.SITE_Q_STABLE_ID),
-    }
+    legs = [(source, sink) for source in geo.TRANSMITTERS for sink in geo.SITES] + [
+        (source, sink) for source in geo.SITES for sink in geo.RECEIVERS
+    ]
+    blocked = {(source[0], sink[0]) for source, sink in legs if geo.line_of_sight_is_blocked(source[1], sink[1])}
+    assert blocked == {(geo.TX_B_STABLE_ID, geo.SITE_P_STABLE_ID), (geo.TX_B_STABLE_ID, geo.SITE_Q_STABLE_ID)}
 
 
 # --------------------------------------------------------------------------
@@ -177,9 +162,7 @@ def test_the_legs_carry_the_row_counts_and_identity_the_geometry_predicts(spike)
     assert spike.inbound.components == ("los", "reflection")
     assert spike.outbound.components == ("los", "reflection")
     assert _columns(spike.inbound) == _predicted_columns(spike.predicted_inbound_rows())
-    assert _columns(spike.outbound) == _predicted_columns(
-        spike.predicted_outbound_rows()
-    )
+    assert _columns(spike.outbound) == _predicted_columns(spike.predicted_outbound_rows())
     # Spelled out, because these exact lists are what the join tests build on.
     assert spike.inbound.source_id.tolist() == [10, 10, 10]
     assert spike.inbound.sink_id.tolist() == [20, 20, 21]
@@ -202,9 +185,7 @@ def test_one_reflection_row_lands_on_the_second_triangle(spike):
     primitives = spike.outbound.primitive_sequence.tolist()
     components = spike.outbound.component_id.tolist()
     reflections = [
-        primitives[row][0]
-        for row in range(spike.outbound.row_count)
-        if components[row] == geo.REFLECTION_COMPONENT_ID
+        primitives[row][0] for row in range(spike.outbound.row_count) if components[row] == geo.REFLECTION_COMPONENT_ID
     ]
     assert sorted(reflections) == [0, 0, 1]
     assert len(set(reflections)) == 2
@@ -225,14 +206,8 @@ def test_the_channel_leg_publishes_an_empty_pair_segment_of_its_own(spike):
     assert outbound.pair_count == 4
     assert outbound.pair_offsets.tolist() == [0, 2, 3, 5, 7]
     assert outbound.pair_index.tolist() == [0, 0, 1, 2, 2, 3, 3]
-    assert (
-        inbound.pair_offsets.tolist()
-        == geo.pair_offsets(spike.predicted_inbound_rows(), 4)
-    )
-    assert (
-        outbound.pair_offsets.tolist()
-        == geo.pair_offsets(spike.predicted_outbound_rows(), 4)
-    )
+    assert inbound.pair_offsets.tolist() == geo.pair_offsets(spike.predicted_inbound_rows(), 4)
+    assert outbound.pair_offsets.tolist() == geo.pair_offsets(spike.predicted_outbound_rows(), 4)
 
 
 def test_leg_delays_match_the_image_source_closed_form(spike):
@@ -244,9 +219,11 @@ def test_leg_delays_match_the_image_source_closed_form(spike):
         assert batch.leg_count == len(rows), name
         assert bool(batch.row_valid.all()), name
         for index, row in enumerate(rows):
-            assert float(batch.delay_s[index]) == pytest.approx(
-                row.delay_s, rel=DELAY_RTOL
-            ), (name, index, row.component)
+            assert float(batch.delay_s[index]) == pytest.approx(row.delay_s, rel=DELAY_RTOL), (
+                name,
+                index,
+                row.component,
+            )
         # Not vacuous: every row carries a nonzero coefficient.
         assert float(batch.coefficient.abs().min()) > 0.0, name
 
@@ -260,17 +237,12 @@ def test_the_occlusion_is_load_bearing_rather_than_a_broken_endpoint():
     sites cross ``x = 4`` outside the facet and two line-of-sight rows appear.
     """
 
-    moved = (
-        (geo.TX_A_STABLE_ID, geo.TX_A_POSITION_M),
-        (geo.TX_B_STABLE_ID, geo.TX_B_UNOCCLUDED_POSITION_M),
-    )
+    moved = ((geo.TX_A_STABLE_ID, geo.TX_A_POSITION_M), (geo.TX_B_STABLE_ID, geo.TX_B_UNOCCLUDED_POSITION_M))
     unoccluded = drv.MultiEndpointSpike(transmitters=moved)
     assert unoccluded.inbound.row_count == 5
     assert unoccluded.inbound.source_id.tolist() == [10, 10, 11, 10, 11]
     assert unoccluded.inbound.sink_id.tolist() == [20, 20, 20, 21, 21]
-    assert _columns(unoccluded.inbound) == _predicted_columns(
-        unoccluded.predicted_inbound_rows()
-    )
+    assert _columns(unoccluded.inbound) == _predicted_columns(unoccluded.predicted_inbound_rows())
     # And no pair is empty any more, which is the control for the empty-segment
     # assertions above.
     _, _ = unoccluded.legs()
@@ -316,9 +288,7 @@ def test_freezing_a_multi_endpoint_leg_costs_what_a_one_pair_leg_costs(spike):
     numbers that happen to match.
     """
 
-    single = spike.single_pair(
-        geo.TRANSMITTERS[0], geo.SITES[0], geo.RECEIVERS[0]
-    )
+    single = spike.single_pair(geo.TRANSMITTERS[0], geo.SITES[0], geo.RECEIVERS[0])
     for frozen in (spike.inbound, spike.outbound, single.inbound, single.outbound):
         assert frozen.prepare_d2h_copies == 4
         assert frozen.prepare_d2h_bytes == 33
@@ -327,9 +297,7 @@ def test_freezing_a_multi_endpoint_leg_costs_what_a_one_pair_leg_costs(spike):
     assert single.outbound.row_count == 2
 
 
-def test_a_multi_endpoint_frame_costs_exactly_two_host_observations(
-    spike, monkeypatch
-):
+def test_a_multi_endpoint_frame_costs_exactly_two_host_observations(spike, monkeypatch):
     """Eleven composed rows over four sensor pairs, and nothing crosses back.
 
     One validation copy per leg, exactly as at one row per leg. The empty pair
@@ -361,10 +329,4 @@ def test_a_multi_endpoint_frame_costs_exactly_two_host_observations(
     composed, _, _ = spike.frame(response=response)
     assert composed.path_count == 11
     assert composed.sensor_pair_count == 4
-    assert counts == {
-        "item": 2,
-        "cpu": 0,
-        "tolist": 0,
-        "numpy": 0,
-        "synchronize": 0,
-    }, counts
+    assert counts == {"item": 2, "cpu": 0, "tolist": 0, "numpy": 0, "synchronize": 0}, counts

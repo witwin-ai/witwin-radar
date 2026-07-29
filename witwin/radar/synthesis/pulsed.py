@@ -48,41 +48,22 @@ every pair and there is no per-segment time offset to carry.
 from __future__ import annotations
 
 import torch
-from ..policy import first_order_only
 
-from .assembly import segment_of_each_row
+from ..cuda import native_ops as _ops
+from ..policy import first_order_only
 from .assembly import (
     PULSE_KIND_LFM,
     PULSE_KIND_RECT,
     PulsedSpec,
     SynthesisPathBatch,
     require_pulsed_compatible,
+    segment_of_each_row,
 )
-
 
 #: The kernel's pulse-kind selector, mirroring the constants on the spec. An
 #: integer crosses the ABI because a string would need an allocation and a
 #: comparison per launch to say something the spec already validated once.
 _PULSE_KIND_CODE = {PULSE_KIND_RECT: 0, PULSE_KIND_LFM: 1}
-
-
-_OPS = None
-
-
-def _ops():
-    """The native operator table, resolved once per process.
-
-    Held here as well as in the build module because this runs on every
-    synthesis call, forward and backward: a per-launch import plus function call
-    is pure overhead on the hot path.
-    """
-
-    global _OPS
-    if _OPS is None:
-        from ..cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
 
 
 def _kernel_arguments(spec: PulsedSpec) -> tuple:
@@ -116,9 +97,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
-            (spec.num_pulses, num_segments, spec.num_samples),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_pulses, num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         out_im = torch.empty_like(out_re)
         _ops().pulsed_echo_forward(
@@ -137,15 +116,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (
-            tau_rt,
-            tau_rate,
-            weight_re,
-            weight_im,
-            offsets,
-            segment,
-            spec,
-        ) = inputs
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
         ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment)
@@ -176,27 +147,10 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             ctx.num_segments,
             *_kernel_arguments(spec),
         )
-        return (
-            grad_tau_rt,
-            grad_tau_rate,
-            grad_weight_re,
-            grad_weight_im,
-            None,
-            None,
-            None,
-        )
+        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None)
 
     @staticmethod
-    def jvp(
-        ctx,
-        tan_tau_rt,
-        tan_tau_rate,
-        tan_weight_re,
-        tan_weight_im,
-        tan_offsets,
-        tan_segment,
-        tan_spec,
-    ):
+    def jvp(ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_spec):
         tau_rt, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
@@ -205,9 +159,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         tan_weight_re = zero if tan_weight_re is None else tan_weight_re.contiguous()
         tan_weight_im = zero if tan_weight_im is None else tan_weight_im.contiguous()
         tan_out_re = torch.empty(
-            (spec.num_pulses, ctx.num_segments, spec.num_samples),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_pulses, ctx.num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         tan_out_im = torch.empty_like(tan_out_re)
         _ops().pulsed_echo_jvp(
@@ -280,9 +232,7 @@ def synthesize_echo_rows(
     return torch.complex(out_re, out_im)
 
 
-def synthesize_pulsed(
-    batch: SynthesisPathBatch, spec: PulsedSpec
-) -> torch.Tensor:
+def synthesize_pulsed(batch: SynthesisPathBatch, spec: PulsedSpec) -> torch.Tensor:
     """Synthesize one coherent processing interval's received pulse train.
 
     Returns ``complex64[num_pulses, sensor_pair_count, num_samples]`` in the
@@ -306,20 +256,8 @@ def synthesize_pulsed(
     require_pulsed_compatible(batch, spec)
     transfer = batch.complex_transfer_ref
     if batch.row_valid is not None:
-        transfer = torch.where(
-            batch.row_valid, transfer, torch.zeros_like(transfer)
-        )
-    return synthesize_echo_rows(
-        batch.total_delay_s,
-        batch.delay_rate,
-        transfer,
-        batch.pair_offsets,
-        spec,
-    )
+        transfer = torch.where(batch.row_valid, transfer, torch.zeros_like(transfer))
+    return synthesize_echo_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
 
 
-__all__ = [
-    "PulsedSpec",
-    "synthesize_echo_rows",
-    "synthesize_pulsed",
-]
+__all__ = ["PulsedSpec", "synthesize_echo_rows", "synthesize_pulsed"]

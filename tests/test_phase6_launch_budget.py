@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from support import multi_endpoint_driver as drv
 
 pytestmark = pytest.mark.gpu
@@ -52,11 +51,7 @@ SYNTHESIS_OPERATORS = (
     "sensor_weight_jvp",
 )
 
-FRONTEND_OPERATORS = (
-    "frontend_noise_forward",
-    "frontend_agc_forward",
-    "frontend_quantize_forward",
-)
+FRONTEND_OPERATORS = ("frontend_noise_forward", "frontend_agc_forward", "frontend_quantize_forward")
 
 
 class Ledger:
@@ -76,9 +71,7 @@ class Ledger:
         for name in HOST_OBSERVERS:
             original_method = getattr(torch.Tensor, name)
 
-            def observing(
-                tensor, *args, _name=name, _original=original_method, **kwargs
-            ):
+            def observing(tensor, *args, _name=name, _original=original_method, **kwargs):
                 self.host[_name] += 1
                 return _original(tensor, *args, **kwargs)
 
@@ -114,11 +107,8 @@ def _waveforms():
     """The three synthesis entry points, each with its own fixture spec."""
 
     from test_phase6_cross_waveform import fmcw_spec, ofdm_spec, pulsed_spec
-    from witwin.radar.synthesis import (
-        synthesize_fmcw,
-        synthesize_ofdm,
-        synthesize_pulsed,
-    )
+
+    from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
     return (
         ("fmcw_beat", synthesize_fmcw, fmcw_spec(4)),
@@ -127,9 +117,7 @@ def _waveforms():
     )
 
 
-def test_each_waveform_costs_exactly_one_forward_launch_per_frame(
-    batch, monkeypatch, capsys
-):
+def test_each_waveform_costs_exactly_one_forward_launch_per_frame(batch, monkeypatch, capsys):
     """One launch each, and nothing from the other two families.
 
     The cross-family assertion is the one a per-family test cannot make: a
@@ -146,9 +134,7 @@ def test_each_waveform_costs_exactly_one_forward_launch_per_frame(
         reported[family] = dict(ledger.launches)
         assert ledger.launches[f"{family}_forward"] == 1, ledger.launches
         assert sum(ledger.launches.values()) == 1, ledger.launches
-        assert ledger.host == dict.fromkeys(
-            (*HOST_OBSERVERS, "synchronize"), 0
-        ), ledger.host
+        assert ledger.host == dict.fromkeys((*HOST_OBSERVERS, "synchronize"), 0), ledger.host
         monkeypatch.undo()
 
     with capsys.disabled():
@@ -167,10 +153,10 @@ def test_the_launch_count_is_flat_in_slot_count(spike, monkeypatch, capsys):
     count; a per-slot synthesis would multiply the second.
     """
 
-    from witwin.channel.propagation import consumer
-    from witwin.radar.synthesis import synthesize_fmcw
-
     from test_phase6_cross_waveform import fmcw_spec
+    from witwin.channel.propagation import consumer
+
+    from witwin.radar.synthesis import synthesize_fmcw
 
     operators = _operators()
     spec = fmcw_spec(4)
@@ -183,16 +169,14 @@ def test_the_launch_count_is_flat_in_slot_count(spike, monkeypatch, capsys):
         replays = {"count": 0}
         original = consumer.reevaluate
 
-        def counting(*args, _original=original, **kwargs):
-            replays["count"] += 1
+        def counting(*args, _original=original, _replays=replays, **kwargs):
+            _replays["count"] += 1
             return _original(*args, **kwargs)
 
         monkeypatch.setattr(consumer, "reevaluate", counting)
         ledger = Ledger(monkeypatch, operators, SYNTHESIS_OPERATORS)
         inbound, outbound = spike.slot_legs(stack, slot_count=slots)
-        composed = spike.composer.compose(
-            inbound.slot(0), outbound.slot(0), drv.make_response()
-        )
+        composed = spike.composer.compose(inbound.slot(0), outbound.slot(0), drv.make_response())
         synthesize_fmcw(drv.to_synthesis(composed), spec)
         reported[slots] = (replays["count"], dict(ledger.launches))
         monkeypatch.undo()
@@ -249,9 +233,9 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
     from support import multi_endpoint_world as world
 
     from witwin.radar import Radar
-    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.scattering import ScalarRcsResponse
     from witwin.radar.sensors import ISOTROPIC_PATTERN
+    from witwin.radar.simulation import ScatterSitePolicy
 
     config = dict(geo.FIXTURE_RADAR_CONFIG)
     config["antenna_pattern"] = {
@@ -261,31 +245,16 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
         "x_values": list(ISOTROPIC_PATTERN.x_values),
         "y_values": list(ISOTROPIC_PATTERN.y_values),
     }
-    radar = Radar(
-        config,
-        position=(0.0, 0.0, 0.0),
-        target=(1.0, 0.0, 0.0),
-    )
+    radar = Radar(config, position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
     sites = ScatterSitePolicy.explicit(
-        torch.tensor(
-            (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M),
-            dtype=torch.float32,
-            device=radar.device,
-        )
+        torch.tensor((geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device)
     )
-    response = ScalarRcsResponse.from_values(
-        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
-    )
+    response = ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
 
     def simulate(times):
-        return radar.simulate(
-            scene,
-            times=times,
-            response=response,
-            sites=sites,
-        )
+        return radar.simulate(scene, times=times, response=response, sites=sites)
 
     simulate((0.0,))  # resolve every lazy import and table before wrapping
 
@@ -294,10 +263,7 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
     ledger = Ledger(monkeypatch, operators, SYNTHESIS_OPERATORS)
     simulate(tuple(index * 1.0e-3 for index in range(frames)))
     with capsys.disabled():
-        print(
-            "\n  sensor_weight  "
-            f"{ {name: value for name, value in ledger.launches.items() if value} }"
-        )
+        print(f"\n  sensor_weight  { {name: value for name, value in ledger.launches.items() if value} }")
     assert ledger.launches["sensor_weight_forward"] == frames, ledger.launches
     assert ledger.launches["sensor_weight_backward"] == 0, ledger.launches
     assert ledger.launches["sensor_weight_jvp"] == 0, ledger.launches
@@ -337,9 +303,7 @@ def test_the_frontend_costs_at_most_three_launches_per_frame(monkeypatch, capsys
             phase_sample_rate_hz=5.0e6,
         ),
         lna=LnaSpec(gain_db=20.0),
-        agc=AgcSpec(
-            target_rms=0.2, mode="global", min_gain_db=-40.0, max_gain_db=40.0
-        ),
+        agc=AgcSpec(target_rms=0.2, mode="global", min_gain_db=-40.0, max_gain_db=40.0),
         adc=AdcSpec(bits=10, full_scale=1.0),
         seed=SeedSpec(seed_base=7),
     )
@@ -381,12 +345,7 @@ def test_no_waveform_materialises_a_row_by_sample_intermediate(batch, capsys):
         output_bytes = cube.numel() * cube.element_size()
         input_bytes = sum(
             tensor.numel() * tensor.element_size()
-            for tensor in (
-                batch.total_delay_s,
-                batch.complex_transfer_ref,
-                batch.sensor_pair_index,
-                batch.pair_offsets,
-            )
+            for tensor in (batch.total_delay_s, batch.complex_transfer_ref, batch.sensor_pair_index, batch.pair_offsets)
         )
         # The bound is derived, not fitted. A synthesis family writes its two
         # REAL buffers (together exactly one output) and `torch.complex`
@@ -404,7 +363,4 @@ def test_no_waveform_materialises_a_row_by_sample_intermediate(batch, capsys):
     with capsys.disabled():
         print("\nT5.9 peak allocation, bytes")
         for family, (peak, output, inputs, bound) in reported.items():
-            print(
-                f"  {family:14s} peak={peak:>9} output={output:>9} "
-                f"inputs={inputs:>6} bound={bound:>10.0f}"
-            )
+            print(f"  {family:14s} peak={peak:>9} output={output:>9} inputs={inputs:>6} bound={bound:>10.0f}")

@@ -14,13 +14,12 @@ from dataclasses import replace
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
+
 from witwin.radar.processing import ProcessingAxes, ProcessingCube
 from witwin.radar.synthesis import synthesize_fmcw
-from witwin.radar.synthesis.assembly import assemble_frame_cube
-from witwin.radar.synthesis.assembly import SynthesisResult
+from witwin.radar.synthesis.assembly import SynthesisResult, assemble_frame_cube
 
 pytestmark = pytest.mark.gpu
 
@@ -45,16 +44,9 @@ def test_the_cube_is_the_frame_assembly_transpose_and_not_a_second_packer(frame)
     _, _, batch = frame
     spec = grid.fmcw_spec(2)
     cube, result, axes = _cube(batch, spec)
-    expected = assemble_frame_cube(
-        result.cube, num_tx=axes.num_tx, num_rx=axes.num_rx
-    )
+    expected = assemble_frame_cube(result.cube, num_tx=axes.num_tx, num_rx=axes.num_rx)
     assert torch.equal(cube.data, expected)
-    assert tuple(cube.data.shape) == (
-        axes.num_tx,
-        axes.num_rx,
-        spec.num_chirps,
-        spec.num_samples,
-    )
+    assert tuple(cube.data.shape) == (axes.num_tx, axes.num_rx, spec.num_chirps, spec.num_samples)
     assert cube.axes is axes
 
 
@@ -87,9 +79,7 @@ def _select(batch, keep):
     index = torch.nonzero(keep, as_tuple=False).flatten()
     pair = batch.sensor_pair_index[index].contiguous()
     counts = torch.bincount(pair, minlength=batch.sensor_pair_count)
-    offsets = torch.zeros(
-        batch.sensor_pair_count + 1, dtype=torch.int64, device=pair.device
-    )
+    offsets = torch.zeros(batch.sensor_pair_count + 1, dtype=torch.int64, device=pair.device)
     offsets[1:] = torch.cumsum(counts, dim=0)
     topology = batch.topology
     return replace(
@@ -98,9 +88,7 @@ def _select(batch, keep):
         sensor_pair_index=pair,
         pair_offsets=offsets.contiguous(),
         total_delay_s=batch.total_delay_s[index].contiguous(),
-        delay_rate=(
-            None if batch.delay_rate is None else batch.delay_rate[index].contiguous()
-        ),
+        delay_rate=(None if batch.delay_rate is None else batch.delay_rate[index].contiguous()),
         complex_transfer_ref=batch.complex_transfer_ref[index].contiguous(),
         topology=RadarPathTopology(
             radar_source_id=topology.radar_source_id[index].contiguous(),
@@ -122,13 +110,9 @@ def test_the_cube_refuses_a_result_its_metadata_record_does_not_describe(frame):
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
 
     with pytest.raises(ValueError, match="output_domain=.*disagrees"):
-        ProcessingCube.from_synthesis(
-            replace(result, axes=("symbol", "sensor_pair", "subcarrier")), axes
-        )
+        ProcessingCube.from_synthesis(replace(result, axes=("symbol", "sensor_pair", "subcarrier")), axes)
     with pytest.raises(ValueError, match="reconciled backwards"):
-        ProcessingCube.from_synthesis(
-            replace(result, phasor="exp(-j*k*d)"), axes
-        )
+        ProcessingCube.from_synthesis(replace(result, phasor="exp(-j*k*d)"), axes)
 
 
 def test_the_cube_refuses_a_real_tensor(frame):

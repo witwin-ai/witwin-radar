@@ -31,14 +31,9 @@ from support import clutter_scenes as cs  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
-from witwin.radar.paths import ENVIRONMENT_CLUTTER, TARGET  # noqa: E402
-from witwin.radar.propagation import (  # noqa: E402
-    FIRST_FRAME,
-    MOTION_EVENT_CADENCE,
-    ClutterComponentSpec,
-    epoch_policy,
-)
 
+from witwin.radar.paths import ENVIRONMENT_CLUTTER, TARGET  # noqa: E402
+from witwin.radar.propagation import FIRST_FRAME, MOTION_EVENT_CADENCE, ClutterComponentSpec, epoch_policy  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -87,12 +82,8 @@ def test_each_mobility_mix_resolves_to_one_loop_configuration():
 
     static = ClutterComponentSpec("wall", "static")
     replay = ClutterComponentSpec("vehicle", "replay")
-    rediscover = ClutterComponentSpec(
-        "foliage", "rediscover", rediscovery_period_frames=4
-    )
-    faster = ClutterComponentSpec(
-        "rotor", "rediscover", rediscovery_period_frames=2
-    )
+    rediscover = ClutterComponentSpec("foliage", "rediscover", rediscovery_period_frames=4)
+    faster = ClutterComponentSpec("rotor", "rediscover", rediscovery_period_frames=2)
 
     assert _policy(static) == _policy(static)
     for specs, expected in (
@@ -115,9 +106,7 @@ def test_a_non_freezable_component_may_not_declare_a_replay():
     """
 
     for mobility in ("static", "replay"):
-        spec = ClutterComponentSpec(
-            "edge", mobility, components=frozenset({"diffraction"})
-        )
+        spec = ClutterComponentSpec("edge", mobility, components=frozenset({"diffraction"}))
         with pytest.raises(NotImplementedError) as excinfo:
             _policy(spec)
         message = str(excinfo.value)
@@ -127,12 +116,7 @@ def test_a_non_freezable_component_may_not_declare_a_replay():
 
     # The same component IS expressible with a declared cadence.
     allowed = _policy(
-        ClutterComponentSpec(
-            "edge",
-            "rediscover",
-            components=frozenset({"diffraction"}),
-            rediscovery_period_frames=3,
-        )
+        ClutterComponentSpec("edge", "rediscover", components=frozenset({"diffraction"}), rediscovery_period_frames=3)
     )
     assert allowed.motion_event_period_frames == 3
 
@@ -147,10 +131,7 @@ def test_a_cadence_belongs_to_a_rediscovering_component_and_to_nothing_else():
     with pytest.raises(ValueError, match="mobility must be one of"):
         ClutterComponentSpec("wall", "frozen")
     with pytest.raises(ValueError, match="declared twice"):
-        _policy(
-            ClutterComponentSpec("wall", "static"),
-            ClutterComponentSpec("wall", "replay"),
-        )
+        _policy(ClutterComponentSpec("wall", "static"), ClutterComponentSpec("wall", "replay"))
 
 
 # --------------------------------------------------------------------------
@@ -172,17 +153,10 @@ def test_static_clutter_never_recompiles_and_never_rediscovers():
 
     def counting_compile(snapshot, *, reference_frequency_hz):
         compiles.append(float(snapshot.time_s))
-        return world.compile_snapshot(
-            snapshot, reference_frequency_hz=reference_frequency_hz
-        )
+        return world.compile_snapshot(snapshot, reference_frequency_hz=reference_frequency_hz)
 
-    policy = _policy(
-        ClutterComponentSpec("wall", "static"),
-        ClutterComponentSpec("sites", "static"),
-    )
-    loop, state = cs.clutter_epoch_loop(
-        cs.static_clutter_scene(), policy, compile_scene=counting_compile
-    )
+    policy = _policy(ClutterComponentSpec("wall", "static"), ClutterComponentSpec("sites", "static"))
+    loop, state = cs.clutter_epoch_loop(cs.static_clutter_scene(), policy, compile_scene=counting_compile)
     assert loop.structures_move is False
     frames = [loop.frame(index * 1.0e-3) for index in range(8)]
 
@@ -244,10 +218,7 @@ def test_replayed_clutter_evolves_without_a_single_rediscovery():
     assert torch.equal(delays[0][target], delays[-1][target])
     moved = (delays[-1][clutter] - delays[0][clutter]).abs()
     assert float(moved.min()) > 0.0
-    print(
-        f"\nreplayed clutter delay drift over 3 ms: "
-        f"{float(moved.min()):.3e} to {float(moved.max()):.3e} s"
-    )
+    print(f"\nreplayed clutter delay drift over 3 ms: {float(moved.min()):.3e} to {float(moved.max()):.3e} s")
 
 
 def test_a_dying_clutter_row_is_a_complete_answer_and_keeps_its_class():
@@ -278,10 +249,7 @@ def test_a_dying_clutter_row_is_a_complete_answer_and_keeps_its_class():
     assert bool((clutter & dead).any())
     payload = replayed.complex_transfer_ref[clutter & dead]
     assert torch.equal(payload, torch.zeros_like(payload))
-    assert torch.equal(
-        replayed.total_delay_s[clutter & dead],
-        torch.zeros_like(replayed.total_delay_s[clutter & dead]),
-    )
+    assert torch.equal(replayed.total_delay_s[clutter & dead], torch.zeros_like(replayed.total_delay_s[clutter & dead]))
     # The class survives the death: the mask is unchanged and still names those
     # rows clutter.
     assert torch.equal(clutter, state.index.mask(ENVIRONMENT_CLUTTER))
@@ -307,9 +275,7 @@ def test_replay_cannot_gain_a_clutter_row_and_a_cadence_recovers_it():
     """
 
     replay_only = _policy(ClutterComponentSpec("wall", "replay"))
-    loop, state = cs.clutter_epoch_loop(
-        cs.path_gaining_clutter_scene(), replay_only
-    )
+    loop, state = cs.clutter_epoch_loop(cs.path_gaining_clutter_scene(), replay_only)
     loop.frame(0.0)
     parked, parked_keys = _keys(state)
     assert parked.path_count == 13
@@ -319,11 +285,7 @@ def test_replay_cannot_gain_a_clutter_row_and_a_cadence_recovers_it():
     replayed, replayed_keys = _keys(state)
     assert replayed.path_count == 13
     assert replayed_keys == parked_keys
-    alive = {
-        key
-        for key, valid in zip(replayed_keys, replayed.row_valid.tolist(), strict=True)
-        if valid
-    }
+    alive = {key for key, valid in zip(replayed_keys, replayed.row_valid.tolist(), strict=True) if valid}
 
     # The same world, discovered fresh, has rows the replay does not have.
     mixed = _policy(
@@ -332,9 +294,7 @@ def test_replay_cannot_gain_a_clutter_row_and_a_cadence_recovers_it():
     )
     assert mixed.world_motion == "fixed_winner_replay"
     assert mixed.motion_event_period_frames == 1
-    rediscovering, fresh_state = cs.clutter_epoch_loop(
-        cs.path_gaining_clutter_scene(), mixed
-    )
+    rediscovering, fresh_state = cs.clutter_epoch_loop(cs.path_gaining_clutter_scene(), mixed)
     rediscovering.frame(0.0)
     assert set(_keys(fresh_state)[1]) == set(parked_keys)
     recovered = rediscovering.frame(1.0)
@@ -346,13 +306,7 @@ def test_replay_cannot_gain_a_clutter_row_and_a_cadence_recovers_it():
     # The born rows are the arriving wall's, and they are CLUTTER.
     for key in born:
         assert "reflection" in key[3:], key
-    assert (
-        geo.TX_A_STABLE_ID,
-        geo.SITE_P_STABLE_ID,
-        geo.RX_A_STABLE_ID,
-        "los",
-        "reflection",
-    ) in born
+    assert (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_A_STABLE_ID, "los", "reflection") in born
     # Nothing in the replay reported them: the alive set is a strict subset of
     # what a fresh discovery finds, and no replayed row names a born one.
     assert alive < set(fresh_keys)

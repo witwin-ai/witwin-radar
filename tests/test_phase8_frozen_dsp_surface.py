@@ -42,7 +42,6 @@ import pathlib
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROCESSING = REPO_ROOT / "witwin" / "radar" / "processing"
 
@@ -52,9 +51,7 @@ PROCESSING = REPO_ROOT / "witwin" / "radar" / "processing"
 # ---------------------------------------------------------------------------
 
 #: Transforms. Exactly the six the design named.
-FROZEN_TORCH_FFT = frozenset(
-    {"fft", "ifft", "fft2", "fftshift", "ifftshift", "fftfreq"}
-)
+FROZEN_TORCH_FFT = frozenset({"fft", "ifft", "fft2", "fftshift", "ifftshift", "fftfreq"})
 
 #: Pooling, padding and patch extraction, from ``torch.nn.functional``.
 FROZEN_FUNCTIONAL = frozenset({"avg_pool2d", "unfold", "pad"})
@@ -76,17 +73,7 @@ FROZEN_TORCH_LINALG = frozenset({"eigh", "solve"})
 #:   view and the micro-Doppler framing. It replaced an ``(L + 1) ** 2``-way
 #:   ``torch.stack`` over a list comprehension.
 FROZEN_SELECTION = frozenset(
-    {
-        "argsort",
-        "argwhere",
-        "cumsum",
-        "gather",
-        "index_select",
-        "sort",
-        "topk",
-        "unfold",
-        "where",
-    }
+    {"argsort", "argwhere", "cumsum", "gather", "index_select", "sort", "topk", "unfold", "where"}
 )
 
 #: The vocabulary the selection scan looks for. A name in here that appears in
@@ -124,14 +111,7 @@ SELECTION_VOCABULARY = frozenset(
 #: Vendor calls that are NOT DSP primitives but that a reader could mistake for
 #: them. Recorded by equality so a change is deliberate, not so it is forbidden.
 RECORDED_ADJACENT_CALLS = frozenset(
-    {
-        "torch.angle",
-        "torch.einsum",
-        "torch.polar",
-        "torch.randint",
-        "torch.randperm",
-        "torch.tensordot",
-    }
+    {"torch.angle", "torch.einsum", "torch.polar", "torch.randint", "torch.randperm", "torch.tensordot"}
 )
 
 
@@ -161,9 +141,7 @@ def _calls() -> list[tuple[pathlib.Path, ast.Call, str]]:
 
 def _namespace(prefix: str) -> set[str]:
     return {
-        name[len(prefix) :]
-        for _, _, name in _calls()
-        if name.startswith(prefix) and "." not in name[len(prefix) :]
+        name[len(prefix) :] for _, _, name in _calls() if name.startswith(prefix) and "." not in name[len(prefix) :]
     }
 
 
@@ -319,13 +297,9 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
                 name = _dotted(node.func)
                 if name.startswith("torch.fft."):
                     offenders.append((relative, name))
-                if name.startswith("torch.linalg.") and name.split(".")[-1] in (
-                    FROZEN_TORCH_LINALG
-                ):
+                if name.startswith("torch.linalg.") and name.split(".")[-1] in (FROZEN_TORCH_LINALG):
                     offenders.append((relative, name))
-                if name.startswith(("F.", "torch.nn.functional.")) and name.split(".")[
-                    -1
-                ] in FROZEN_FUNCTIONAL:
+                if name.startswith(("F.", "torch.nn.functional.")) and name.split(".")[-1] in FROZEN_FUNCTIONAL:
                     offenders.append((relative, name))
     assert offenders == [], offenders
     # Non-vacuity follows from each exact concept owner being present and non-empty.
@@ -428,12 +402,8 @@ def test_the_channel_capability_record_publishes_exactly_these_fields():
     pytest.importorskip("witwin.channel")
     from witwin.channel.propagation import consumer
 
-    fields = frozenset(
-        field.name for field in dataclasses.fields(consumer.capabilities())
-    )
-    assert fields == EXPECTED_CAPABILITY_FIELDS, sorted(
-        fields ^ EXPECTED_CAPABILITY_FIELDS
-    )
+    fields = frozenset(field.name for field in dataclasses.fields(consumer.capabilities()))
+    assert fields == EXPECTED_CAPABILITY_FIELDS, sorted(fields ^ EXPECTED_CAPABILITY_FIELDS)
 
 
 def test_no_processing_vocabulary_appears_anywhere_in_the_channel_capabilities():
@@ -481,9 +451,7 @@ def test_the_native_binding_manifest_carries_no_processing_symbol():
 
     import json
 
-    manifest = json.loads(
-        (REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
     blob = json.dumps(manifest).lower()
     for token in (
         "cfar",

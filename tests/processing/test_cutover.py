@@ -23,7 +23,6 @@ import tokenize
 
 import torch
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RADAR_ROOT = REPO_ROOT / "witwin" / "radar"
 PROCESSING = RADAR_ROOT / "processing"
@@ -84,11 +83,7 @@ def _dotted(node: ast.AST) -> str:
 
 
 def _modules_outside_processing() -> list[pathlib.Path]:
-    return sorted(
-        path
-        for path in RADAR_ROOT.rglob("*.py")
-        if PROCESSING not in path.parents and path != PROCESSING
-    )
+    return sorted(path for path in RADAR_ROOT.rglob("*.py") if PROCESSING not in path.parents and path != PROCESSING)
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +161,7 @@ def test_retired_compatibility_modules_are_absent():
     assert not (RADAR_ROOT / "sigproc").exists()
     assert not (PROCESSING / "adapters.py").exists()
 
+
 # ---------------------------------------------------------------------------
 # Deletion completeness, item by item
 # ---------------------------------------------------------------------------
@@ -190,7 +186,7 @@ def test_item_8_no_numpy_survives_in_the_processing_facade():
             if isinstance(node, ast.ImportFrom):
                 assert not (node.module or "").startswith("numpy"), path.name
             if isinstance(node, ast.Attribute) and _dotted(node).startswith("np."):
-                assert False, (path.name, _dotted(node))
+                raise AssertionError((path.name, _dotted(node)))
 
 
 def test_item_9_the_tdm_compensation_has_no_python_transmitter_loop():
@@ -227,6 +223,7 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
     import math
 
     from conftest import PROCESSING_CONFIG, make_processing_axes
+
     from witwin.radar.processing import (
         ArrayGeometry,
         DetectionFrame,
@@ -251,53 +248,30 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
 
     generator = torch.Generator().manual_seed(2026)
     rank3 = torch.complex(
-        torch.randn(
-            (axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count),
-            generator=generator,
-        ),
-        torch.randn(
-            (axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count),
-            generator=generator,
-        ),
+        torch.randn((axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count), generator=generator),
+        torch.randn((axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count), generator=generator),
     ).to(torch.complex64)
 
-    cube = ProcessingCube(
-        data=assemble_frame_cube(rank3, num_tx=axes.num_tx, num_rx=axes.num_rx),
-        axes=axes,
-    )
+    cube = ProcessingCube(data=assemble_frame_cube(rank3, num_tx=axes.num_tx, num_rx=axes.num_rx), axes=axes)
     profile = range_profile(cube)
     rd = range_doppler_map(profile, window="hann")
 
     directions = torch.tensor(
-        [
-            [math.sin(angle), math.cos(angle), 0.0]
-            for angle in (-0.4, -0.2, 0.0, 0.2, 0.4)
-        ],
-        dtype=torch.float64,
+        [[math.sin(angle), math.cos(angle), 0.0] for angle in (-0.4, -0.2, 0.0, 0.2, 0.4)], dtype=torch.float64
     )
     weights = conventional_steering(array, directions)
     beams = beam_cube(rd, weights, directions=directions)
-    assert tuple(beams.data.shape) == (
-        5,
-        axes.doppler_bin_count,
-        axes.range_bin_count,
-    )
+    assert tuple(beams.data.shape) == (5, axes.doppler_bin_count, axes.range_bin_count)
 
     # The batched detector runs on the whole beam cube at once, which is the
     # capability that did not exist: three rank-2 detectors and a loop.
-    detected = ca_cfar_fast(
-        beams.data.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2
-    )
+    detected = ca_cfar_fast(beams.data.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     assert tuple(detected.mask.shape) == tuple(beams.data.shape)
 
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    cells = ca_cfar_fast(
-        combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2
-    )
+    cells = ca_cfar_fast(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     cloud = point_cloud(cells, rd, axes, array, max_points=8)
     handoff = TrackHandoff()
-    assignment = handoff.push(
-        DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0)
-    )
+    assignment = handoff.push(DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0))
     assert int(assignment.shape[0]) == len(cloud)
     assert handoff.track_count == len(cloud)

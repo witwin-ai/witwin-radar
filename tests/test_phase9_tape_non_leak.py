@@ -37,7 +37,6 @@ import pathlib
 import pytest
 import torch
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "witwin" / "radar"
 
@@ -64,11 +63,7 @@ TAPE_READER_METHODS = frozenset({"backward", "jvp"})
 
 
 def _production_modules():
-    return sorted(
-        path
-        for path in PACKAGE.rglob("*.py")
-        if "__pycache__" not in path.parts
-    )
+    return sorted(path for path in PACKAGE.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +82,7 @@ def _saved_tensor_reads(path: pathlib.Path):
                 enclosing.setdefault(id(child), node.name)
     reads = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in {
-            "saved_tensors",
-            "saved_for_forward",
-            "to_save",
-        }:
+        if isinstance(node, ast.Attribute) and node.attr in {"saved_tensors", "saved_for_forward", "to_save"}:
             reads.append((enclosing.get(id(node), "<module>"), node.lineno, node.attr))
     return reads
 
@@ -123,10 +114,7 @@ def test_the_context_scan_is_not_vacuous():
     silently matched nothing would make the assertion above pass forever.
     """
 
-    found = {
-        path.relative_to(PACKAGE).as_posix(): _saved_tensor_reads(path)
-        for path in _production_modules()
-    }
+    found = {path.relative_to(PACKAGE).as_posix(): _saved_tensor_reads(path) for path in _production_modules()}
     live = {name: reads for name, reads in found.items() if reads}
     assert set(live) == TAPE_OWNER_FILES, sorted(live)
     total = sum(len(reads) for reads in live.values())
@@ -218,9 +206,7 @@ def frame():
 
     spike = drv.MultiEndpointSpike()
     sites = spike.site_tensor(requires_grad=True)
-    composed, inbound, outbound = spike.frame(
-        sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False
-    )
+    composed, inbound, outbound = spike.frame(sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False)
     return spike, composed, inbound, outbound
 
 
@@ -261,6 +247,7 @@ def test_the_synthesis_and_sensor_results_carry_no_tape(frame):
 
     from support import ad_boundaries as ab
     from support import multi_endpoint_driver as drv
+
     from witwin.radar.synthesis import synthesize_fmcw
     from witwin.radar.synthesis.assembly import SynthesisResult
 
@@ -299,17 +286,9 @@ def test_the_synthesis_and_sensor_results_carry_no_tape(frame):
     _assert_clean("sensor_weight", captured[0])
 
     frontend = ab.boundary("frontend")
-    from witwin.radar.frontend import (
-        FrontendChain,
-        FrontendSpec,
-        LnaSpec,
-        PortSpec,
-        SeedSpec,
-    )
+    from witwin.radar.frontend import FrontendChain, FrontendSpec, LnaSpec, PortSpec, SeedSpec
 
-    chain = FrontendChain(
-        FrontendSpec(port=PortSpec(50.0), lna=LnaSpec(gain_db=10.0), seed=SeedSpec(5))
-    )
+    chain = FrontendChain(FrontendSpec(port=PortSpec(50.0), lna=LnaSpec(gain_db=10.0), seed=SeedSpec(5)))
     output = chain.apply(frontend.leaf.detach().clone().requires_grad_(True))
     assert output.signal.requires_grad
     _assert_clean("frontend", output)
@@ -327,14 +306,12 @@ def test_the_processing_results_carry_no_tape():
 
     pytest.importorskip("witwin.channel")
     from support.pipeline_chain import pipeline_inputs, run_pipeline
+
     from witwin.radar.processing.tracking import DetectionFrame
 
     cloud = run_pipeline(*pipeline_inputs(num_chirps=4))
     _assert_clean("point_cloud", cloud)
-    _assert_clean(
-        "detection_frame",
-        DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0),
-    )
+    _assert_clean("detection_frame", DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0))
 
 
 def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
@@ -344,29 +321,22 @@ def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
     from support import multi_endpoint_driver as drv
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
+
     from witwin.radar import Radar
-    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.scattering import ScalarRcsResponse
+    from witwin.radar.simulation import ScatterSitePolicy
 
     if radar is None:
-        radar = Radar(
-            dict(geo.FIXTURE_RADAR_CONFIG),
-            position=(0.0, 0.0, 0.0),
-            target=(1.0, 0.0, 0.0),
-        )
+        radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
     sites = torch.tensor(
-        (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M),
-        dtype=torch.float32,
-        device=radar.device,
+        (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device
     ).requires_grad_(ad_mode != "none")
     result = radar.simulate(
         scene,
         times=(0.0,),
-        response=ScalarRcsResponse.from_values(
-            drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
-        ),
+        response=ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device),
         sites=ScatterSitePolicy.explicit(sites),
         ad_mode=ad_mode,
     )
@@ -406,12 +376,7 @@ def test_the_simulate_diagnostics_carry_no_tape(simulated):
 
     radar, result = simulated
     assert result.cube.requires_grad, "the fixture must be live"
-    for name in (
-        "last_snapshot",
-        "last_compiled_scene",
-        "last_propagation",
-        "last_radar_paths",
-    ):
+    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):
         value = getattr(radar, name)
         assert value is not None, name
         _assert_clean(f"radar.{name}", value)

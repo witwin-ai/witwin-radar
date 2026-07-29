@@ -17,13 +17,12 @@ import argparse
 import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
 import tempfile
+from pathlib import Path
 
 import torch
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "ci" / "native-binding-manifest.json"
@@ -58,6 +57,7 @@ def _load_cuda_build_module():
     cuda_dir = REPO_ROOT / "witwin" / "radar" / "cuda"
     return _load_module("witwin_radar_cuda_runtime_build", cuda_dir / "runtime.py")
 
+
 def _manifest_symbols() -> list[str]:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     symbols = sorted({entry["symbol"] for entry in manifest["operators"]})
@@ -67,9 +67,7 @@ def _manifest_symbols() -> list[str]:
 
 
 def _resolved_cuda_architectures(identity) -> list[str]:
-    raw = os.environ.get("WITWIN_CUDA_GENCODE_ARCHES") or os.environ.get(
-        "TORCH_CUDA_ARCH_LIST", ""
-    )
+    raw = os.environ.get("WITWIN_CUDA_GENCODE_ARCHES") or os.environ.get("TORCH_CUDA_ARCH_LIST", "")
     architectures = identity.normalize_cuda_architectures(raw)
     if not architectures:
         raise SystemExit(
@@ -81,9 +79,7 @@ def _resolved_cuda_architectures(identity) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Build the packaged radar native library and stamp its identity."
-    )
+    parser = argparse.ArgumentParser(description="Build the packaged radar native library and stamp its identity.")
     parser.add_argument("--verbose", action="store_true")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -109,9 +105,7 @@ def main() -> None:
     build_dir = Path(
         os.environ.get(
             "WITWIN_RADAR_NATIVE_BUILD_DIR",
-            Path(tempfile.gettempdir())
-            / f"{cuda_build.EXTENSION_NAME}_wheel"
-            / "stable_abi_v1",
+            Path(tempfile.gettempdir()) / f"{cuda_build.EXTENSION_NAME}_wheel" / "stable_abi_v1",
         )
     )
     os.environ["WITWIN_RADAR_NATIVE_BUILD_DIR"] = str(build_dir)
@@ -127,11 +121,7 @@ def main() -> None:
     # Refuse to publish a library the manifest does not describe. Doing this on
     # the freshly built object, before anything is copied, keeps a partial
     # artifact out of the package directory entirely.
-    missing = [
-        name
-        for name in symbols
-        if not hasattr(torch.ops._radar_native, name)
-    ]
+    missing = [name for name in symbols if not hasattr(torch.ops._radar_native, name)]
     if missing:
         raise SystemExit(
             f"The freshly built library {module_file} does not register "
@@ -143,11 +133,7 @@ def main() -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for suffix in (".pyd", ".so"):
         stale = target_dir / f"{cuda_build.EXTENSION_NAME}{suffix}"
-        for path in (
-            stale,
-            identity.build_info_sidecar_path(stale),
-            identity.fingerprint_sidecar_path(stale),
-        ):
+        for path in (stale, identity.build_info_sidecar_path(stale), identity.fingerprint_sidecar_path(stale)):
             if path.exists():
                 path.unlink()
 

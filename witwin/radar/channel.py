@@ -48,11 +48,9 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.autograd.forward_ad as forward_ad
-
 from witwin.channel.propagation import consumer
 
 from .propagation import RadarEndpointSpec, RadarLegBatch, require_endpoint_role
-
 
 #: How much per-column phase error the native float32 frequency grid may
 #: introduce across a frozen topology before this adapter refuses the band.
@@ -161,14 +159,10 @@ def _require_host_offsets(offsets: object) -> None:
         raise TypeError(_OFFSETS_ARE_HOST)
     for index, value in enumerate(offsets):
         if isinstance(value, torch.Tensor):
-            raise TypeError(
-                f"{_OFFSETS_ARE_HOST} (entry {index} is a torch.Tensor)"
-            )
+            raise TypeError(f"{_OFFSETS_ARE_HOST} (entry {index} is a torch.Tensor)")
 
 
-def _declared_offsets(
-    offsets: object, components: frozenset[str], capabilities: object
-) -> tuple[float, ...] | None:
+def _declared_offsets(offsets: object, components: frozenset[str], capabilities: object) -> tuple[float, ...] | None:
     """Normalise a declared band and hold it against the capability record.
 
     Structural validation of the grid itself - a tensor, an empty tuple, a
@@ -206,10 +200,7 @@ def _declared_offsets(
         )
     limit = capabilities.max_frequency_offset_count
     if limit is not None and len(grid) > limit:
-        raise ValueError(
-            f"the declared band has {len(grid)} columns but the consumer "
-            f"publishes at most {limit}"
-        )
+        raise ValueError(f"the declared band has {len(grid)} columns but the consumer publishes at most {limit}")
     return grid
 
 
@@ -241,9 +232,7 @@ def _detached(spec: RadarEndpointSpec) -> RadarEndpointSpec:
     )
 
 
-def compile_scene(
-    scene_or_snapshot: object, *, reference_frequency_hz: float
-) -> object:
+def compile_scene(scene_or_snapshot: object, *, reference_frequency_hz: float) -> object:
     """Compile one Core ``Scene`` or ``SceneSnapshot`` at one frequency.
 
     The production spelling of what ``tests/support`` used to be the only caller
@@ -268,16 +257,12 @@ def compile_scene(
 
     from witwin.channel.scene import compile as channel_compile
 
-    compiled = channel_compile(
-        scene_or_snapshot, reference_frequency_hz=reference_frequency_hz
-    )
+    compiled = channel_compile(scene_or_snapshot, reference_frequency_hz=reference_frequency_hz)
     require_reference_frequency(compiled, reference_frequency_hz)
     return compiled
 
 
-def require_reference_frequency(
-    compiled_scene: object, reference_frequency_hz: float
-) -> None:
+def require_reference_frequency(compiled_scene: object, reference_frequency_hz: float) -> None:
     """Refuse a compiled scene that was not compiled at this frequency.
 
     Host-only: it compares two numbers and launches nothing. A driver that
@@ -292,10 +277,7 @@ def require_reference_frequency(
 
     check = getattr(compiled_scene, "require_reference_frequency", None)
     if check is None:
-        raise TypeError(
-            "compiled_scene must expose require_reference_frequency; pass a "
-            "witwin.channel CompiledScene"
-        )
+        raise TypeError("compiled_scene must expose require_reference_frequency; pass a witwin.channel CompiledScene")
     check(reference_frequency_hz)
 
 
@@ -330,10 +312,7 @@ class ChannelPropagationAdapter:
         capabilities = consumer.capabilities()
         unsupported = frozenset(components) - capabilities.components
         if unsupported:
-            raise NotImplementedError(
-                f"the propagation consumer does not support components "
-                f"{sorted(unsupported)}"
-            )
+            raise NotImplementedError(f"the propagation consumer does not support components {sorted(unsupported)}")
         not_freezable = frozenset(components) - capabilities.fixed_topology_components
         if not_freezable:
             raise NotImplementedError(
@@ -348,9 +327,7 @@ class ChannelPropagationAdapter:
         self._capabilities = capabilities
         self._epoch = 0
         self._world_motion = "frozen_world"
-        self._offsets = _declared_offsets(
-            frequency_offsets_hz, self._components, capabilities
-        )
+        self._offsets = _declared_offsets(frequency_offsets_hz, self._components, capabilities)
         # Built once per device, never per frame. The grid is a declaration, so
         # rebuilding it on the frame path would be an avoidable host-to-device
         # copy in the inner loop for a table that never changes.
@@ -401,9 +378,7 @@ class ChannelPropagationAdapter:
 
         return self._world_motion
 
-    def refreeze(
-        self, compiled_scene: object, *, world_motion: str = "frozen_world"
-    ) -> None:
+    def refreeze(self, compiled_scene: object, *, world_motion: str = "frozen_world") -> None:
         """Rebind to a new compiled scene, declaring what moved.
 
         A moving structure, a deformed mesh or a new ``DynamicScene`` snapshot
@@ -452,18 +427,13 @@ class ChannelPropagationAdapter:
         # is the published route to the same frozen set.
         supported = self._capabilities.world_motions
         if world_motion not in supported:
-            raise ValueError(
-                f"unsupported world_motion {world_motion!r}; supported values "
-                f"are {sorted(supported)}"
-            )
+            raise ValueError(f"unsupported world_motion {world_motion!r}; supported values are {sorted(supported)}")
         self._compiled = compiled_scene
         self._world_motion = world_motion
         if world_motion == "frozen_world":
             self._epoch += 1
 
-    def rediscovery_required(
-        self, frozen: FrozenLegTopology, *, revalidate_source: bool = False
-    ) -> str | None:
+    def rediscovery_required(self, frozen: FrozenLegTopology, *, revalidate_source: bool = False) -> str | None:
         """Name the world version domain that moved, or ``None``.
 
         A host-only integer comparison against the versions the compiled scene
@@ -477,13 +447,9 @@ class ChannelPropagationAdapter:
         rediscover actually wants to know.
         """
 
-        return consumer.rediscovery_required(
-            self._compiled, frozen.prepared, revalidate_source=revalidate_source
-        )
+        return consumer.rediscovery_required(self._compiled, frozen.prepared, revalidate_source=revalidate_source)
 
-    def freeze(
-        self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec
-    ) -> FrozenLegTopology:
+    def freeze(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> FrozenLegTopology:
         """Discover one leg's topology and partition it once.
 
         Call this OUTSIDE the per-frame loop. It runs full discovery and it
@@ -511,8 +477,7 @@ class ChannelPropagationAdapter:
         unsupported = frozenset(components) - self._capabilities.fixed_topology_components
         if unsupported:
             raise NotImplementedError(
-                f"the discovered topology carries components {sorted(unsupported)} "
-                f"that cannot be reevaluated"
+                f"the discovered topology carries components {sorted(unsupported)} that cannot be reevaluated"
             )
         return FrozenLegTopology(
             prepared=prepared,
@@ -531,12 +496,7 @@ class ChannelPropagationAdapter:
         )
 
     def reevaluate(
-        self,
-        frozen: FrozenLegTopology,
-        sources: RadarEndpointSpec,
-        sinks: RadarEndpointSpec,
-        *,
-        ad_mode: str,
+        self, frozen: FrozenLegTopology, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, *, ad_mode: str
     ) -> RadarLegBatch:
         """Replay a frozen leg at new endpoint positions.
 
@@ -575,9 +535,7 @@ class ChannelPropagationAdapter:
         the square of it.
         """
 
-        return self._replay(
-            frozen, sources, sinks, ad_mode=ad_mode, slot_count=slot_count
-        )
+        return self._replay(frozen, sources, sinks, ad_mode=ad_mode, slot_count=slot_count)
 
     def _replay(
         self,
@@ -590,13 +548,10 @@ class ChannelPropagationAdapter:
     ) -> RadarLegBatch:
         if ad_mode not in consumer.AD_MODES:
             raise NotImplementedError(
-                f"unsupported ad_mode {ad_mode!r}; supported values are "
-                f"{sorted(consumer.AD_MODES)}"
+                f"unsupported ad_mode {ad_mode!r}; supported values are {sorted(consumer.AD_MODES)}"
             )
         if type(slot_count) is not int or slot_count < 1:
-            raise ValueError(
-                f"slot_count must be a positive int, got {slot_count!r}"
-            )
+            raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
         self._require_current_epoch(frozen)
         topology = self._slot_topology(frozen, sources, sinks, slot_count)
         result = consumer.reevaluate(
@@ -662,9 +617,7 @@ class ChannelPropagationAdapter:
             # once. Neither is copied, so a gradient reaches the endpoints
             # through every column exactly as it does through the reference one.
             frequency_response=response,
-            frequency_offsets_hz=(
-                None if response is None else self._offset_grid(geometry.delay_s.device)
-            ),
+            frequency_offsets_hz=(None if response is None else self._offset_grid(geometry.delay_s.device)),
         )
 
     def _require_frequency_resolution_budget(self, delay_s: torch.Tensor) -> None:
@@ -686,9 +639,7 @@ class ChannelPropagationAdapter:
             return
         if delay_s.numel() == 0:
             return
-        resolution_hz = consumer.native_frequency_resolution_hz(
-            self._reference_frequency_hz
-        )
+        resolution_hz = consumer.native_frequency_resolution_hz(self._reference_frequency_hz)
         max_delay_s = float(delay_s.detach().max())
         error_rad = math.pi * resolution_hz * max_delay_s
         if error_rad > WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD:
@@ -725,11 +676,7 @@ class ChannelPropagationAdapter:
         if frozen.epoch == self._epoch:
             return
         moved = consumer.rediscovery_required(self._compiled, frozen.prepared)
-        cause = (
-            f"{moved} changed"
-            if moved is not None
-            else "no world version domain moved, but the scene object did"
-        )
+        cause = f"{moved} changed" if moved is not None else "no world version domain moved, but the scene object did"
         raise ValueError(
             f"this frozen leg topology was frozen at adapter epoch "
             f"{frozen.epoch} and the adapter is now at epoch {self._epoch} "
@@ -738,11 +685,7 @@ class ChannelPropagationAdapter:
         )
 
     def _slot_topology(
-        self,
-        frozen: FrozenLegTopology,
-        sources: RadarEndpointSpec,
-        sinks: RadarEndpointSpec,
-        slot_count: int,
+        self, frozen: FrozenLegTopology, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, slot_count: int
     ) -> object:
         """The block-diagonal replication of a frozen handle, built once.
 
@@ -761,10 +704,7 @@ class ChannelPropagationAdapter:
         cached = frozen.slot_topologies.get(key)
         if cached is None:
             cached = consumer.replicate_over_slots(
-                frozen.prepared,
-                slot_count,
-                source_count=source_count,
-                sink_count=sink_count,
+                frozen.prepared, slot_count, source_count=source_count, sink_count=sink_count
             )
             frozen.slot_topologies[key] = cached
         return cached

@@ -45,21 +45,11 @@ from . import multi_endpoint_geometry as geo
 from . import multi_endpoint_world as world
 from . import waveform_chains as wc
 
-
 WAVEFORMS = ("fmcw", "ofdm", "pulsed")
 
 #: Every supported leaf of the scenario, in the order a combined backward marks
 #: them. The order is the order the assertions report in, nothing more.
-LEAF_NAMES = (
-    "vertices",
-    "eps_r",
-    "sigma_e",
-    "sites",
-    "transmitters",
-    "receivers",
-    "sigma_m2",
-    "phase_rad",
-)
+LEAF_NAMES = ("vertices", "eps_r", "sigma_e", "sites", "transmitters", "receivers", "sigma_m2", "phase_rad")
 
 #: The scene leaves must be inside the compile; the rest are per-frame inputs.
 SCENE_LEAVES = ("vertices", "eps_r", "sigma_e")
@@ -92,12 +82,8 @@ def base_values(spike) -> dict:
         "sites": spike.site_tensor(),
         "transmitters": spike.transmitter_tensor(),
         "receivers": spike.receiver_tensor(),
-        "sigma_m2": torch.tensor(
-            BASE_SIGMA_M2, dtype=torch.float32, device=spike.device
-        ),
-        "phase_rad": torch.tensor(
-            BASE_PHASE_RAD, dtype=torch.float32, device=spike.device
-        ),
+        "sigma_m2": torch.tensor(BASE_SIGMA_M2, dtype=torch.float32, device=spike.device),
+        "phase_rad": torch.tensor(BASE_PHASE_RAD, dtype=torch.float32, device=spike.device),
     }
 
 
@@ -123,9 +109,7 @@ def response_of(values: dict):
     from witwin.radar.scattering import ScalarRcsResponse
 
     amplitude = ScalarRcsResponse.from_rcs(
-        values["sigma_m2"],
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        device=values["sigma_m2"].device,
+        values["sigma_m2"], reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, device=values["sigma_m2"].device
     ).amplitude
     return ScalarRcsResponse(amplitude=amplitude, phase_rad=values["phase_rad"])
 
@@ -135,9 +119,7 @@ def build_spike(values: dict):
 
     return drv.MultiEndpointSpike(
         compiled=world.compile_fixture_scene(
-            vertices=values["vertices"],
-            eps_r=values["eps_r"],
-            sigma_e=values["sigma_e"],
+            vertices=values["vertices"], eps_r=values["eps_r"], sigma_e=values["sigma_e"]
         )
     )
 
@@ -192,11 +174,7 @@ def replay(spike, values: dict, *, ad_mode: str = "none"):
 def cube_of(kind: str, values: dict, *, ad_mode: str = "none", spike=None) -> torch.Tensor:
     """The synthesized cube for one waveform at ``values``."""
 
-    composed = (
-        frame(values, ad_mode=ad_mode)[0]
-        if spike is None
-        else replay(spike, values, ad_mode=ad_mode)
-    )
+    composed = frame(values, ad_mode=ad_mode)[0] if spike is None else replay(spike, values, ad_mode=ad_mode)
     return wc.synthesize(kind, composed, wc.make_spec(kind))
 
 
@@ -255,9 +233,7 @@ def direction(name: str, like: torch.Tensor, gradient: torch.Tensor) -> torch.Te
     property directly so it cannot rot.
     """
 
-    scale = torch.as_tensor(
-        DIRECTION_SCALES[name], dtype=like.dtype, device=like.device
-    )
+    scale = torch.as_tensor(DIRECTION_SCALES[name], dtype=like.dtype, device=like.device)
     return torch.sign(gradient) * scale
 
 
@@ -266,9 +242,7 @@ def perturbed(values: dict, directions: dict, active, offset: float, step: float
 
     moved = dict(values)
     for name in active:
-        moved[name] = values[name] + (offset * step) * directions[name].to(
-            values[name].device
-        )
+        moved[name] = values[name] + (offset * step) * directions[name].to(values[name].device)
     return moved
 
 

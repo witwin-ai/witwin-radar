@@ -13,8 +13,8 @@ from .angle import (
     tdm_compensate,
 )
 from .detection import (
-    Detections,
     POINT_CLOUD_COLUMNS,
+    Detections,
     PointCloud,
     ca_cfar,
     ca_cfar_1d,
@@ -33,10 +33,7 @@ from .range_doppler import (
     range_doppler_map,
     range_profile,
 )
-from .signal import (
-    ProcessingAxes,
-    ProcessingCube,
-)
+from .signal import ProcessingAxes, ProcessingCube
 from .tracking import DetectionFrame, TrackHandoff, nearest_neighbour_associator
 
 __all__ = [

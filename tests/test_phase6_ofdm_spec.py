@@ -35,7 +35,6 @@ from witwin.radar.synthesis.assembly import (
     require_single_carrier_home,
 )
 
-
 C0 = SPEED_OF_LIGHT_M_PER_S
 F_REF = 77.0e9
 DF_HZ = 120.0e3
@@ -46,16 +45,16 @@ MAX_DELAY_S = 1.0e-6
 
 
 def _spec(**overrides) -> OfdmSpec:
-    fields = dict(
-        num_subcarriers=NUM_SUBCARRIERS,
-        num_symbols=NUM_SYMBOLS,
-        subcarrier_spacing_hz=DF_HZ,
-        cyclic_prefix_s=CYCLIC_PREFIX_S,
-        reference_frequency_hz=F_REF,
-        max_expected_delay_s=MAX_DELAY_S,
-        carrier_hz=0.0,
-        carrier_rate_hz=F_REF,
-    )
+    fields = {
+        "num_subcarriers": NUM_SUBCARRIERS,
+        "num_symbols": NUM_SYMBOLS,
+        "subcarrier_spacing_hz": DF_HZ,
+        "cyclic_prefix_s": CYCLIC_PREFIX_S,
+        "reference_frequency_hz": F_REF,
+        "max_expected_delay_s": MAX_DELAY_S,
+        "carrier_hz": 0.0,
+        "carrier_rate_hz": F_REF,
+    }
     fields.update(overrides)
     return OfdmSpec(**fields)
 
@@ -80,21 +79,15 @@ def test_the_symbol_period_includes_the_cyclic_prefix():
     """
 
     spec = _spec()
-    assert spec.symbol_period_s == pytest.approx(
-        1.0 / DF_HZ + CYCLIC_PREFIX_S, rel=1e-12
-    )
+    assert spec.symbol_period_s == pytest.approx(1.0 / DF_HZ + CYCLIC_PREFIX_S, rel=1e-12)
     assert spec.symbol_period_s == pytest.approx(1.0333333333333333e-5, rel=1e-12)
     assert spec.symbol_period_s > spec.useful_symbol_time_s
 
 
 def test_the_waveform_sample_period_is_the_reciprocal_bandwidth():
     spec = _spec()
-    assert spec.occupied_bandwidth_hz == pytest.approx(
-        NUM_SUBCARRIERS * DF_HZ, rel=1e-12
-    )
-    assert spec.waveform_sample_period_s == pytest.approx(
-        1.302083333333333e-7, rel=1e-12
-    )
+    assert spec.occupied_bandwidth_hz == pytest.approx(NUM_SUBCARRIERS * DF_HZ, rel=1e-12)
+    assert spec.waveform_sample_period_s == pytest.approx(1.302083333333333e-7, rel=1e-12)
     assert spec.delay_resolution_s == spec.waveform_sample_period_s
 
 
@@ -107,12 +100,8 @@ def test_the_range_resolution_halves_the_delay_resolution():
     """
 
     spec = _spec()
-    assert spec.range_resolution_m == pytest.approx(
-        C0 / (2.0 * NUM_SUBCARRIERS * DF_HZ), rel=1e-12
-    )
-    assert spec.range_resolution_m == pytest.approx(
-        0.5 * C0 * spec.waveform_sample_period_s, rel=1e-12
-    )
+    assert spec.range_resolution_m == pytest.approx(C0 / (2.0 * NUM_SUBCARRIERS * DF_HZ), rel=1e-12)
+    assert spec.range_resolution_m == pytest.approx(0.5 * C0 * spec.waveform_sample_period_s, rel=1e-12)
     assert spec.range_resolution_m == pytest.approx(19.517738151041666, rel=1e-12)
 
 
@@ -133,15 +122,9 @@ def test_the_unambiguous_speed_is_the_closed_form(monkeypatch):
     """
 
     spec = _spec()
-    assert spec.max_unambiguous_speed_mps == pytest.approx(
-        C0 / (4.0 * F_REF * spec.symbol_period_s), rel=1e-12
-    )
-    assert spec.max_unambiguous_speed_mps == pytest.approx(
-        spec.wavelength_m / (4.0 * spec.symbol_period_s), rel=1e-12
-    )
-    assert spec.max_unambiguous_speed_mps == pytest.approx(
-        94.19536803519063, rel=1e-12
-    )
+    assert spec.max_unambiguous_speed_mps == pytest.approx(C0 / (4.0 * F_REF * spec.symbol_period_s), rel=1e-12)
+    assert spec.max_unambiguous_speed_mps == pytest.approx(spec.wavelength_m / (4.0 * spec.symbol_period_s), rel=1e-12)
+    assert spec.max_unambiguous_speed_mps == pytest.approx(94.19536803519063, rel=1e-12)
 
 
 def test_the_subcarrier_grid_is_pinned_to_the_reference_frequency():
@@ -162,12 +145,8 @@ def test_the_subcarrier_phase_step_is_negative_and_names_the_delay():
     spec = _spec()
     tau = 2.0 * 3.7 / C0
     assert spec.subcarrier_phase_step_rad(tau) < 0.0
-    assert spec.subcarrier_phase_step_rad(tau) == pytest.approx(
-        -2.0 * 3.141592653589793 * DF_HZ * tau, rel=1e-12
-    )
-    assert spec.cir_peak_sample(tau) == pytest.approx(
-        tau * NUM_SUBCARRIERS * DF_HZ, rel=1e-12
-    )
+    assert spec.subcarrier_phase_step_rad(tau) == pytest.approx(-2.0 * 3.141592653589793 * DF_HZ * tau, rel=1e-12)
+    assert spec.cir_peak_sample(tau) == pytest.approx(tau * NUM_SUBCARRIERS * DF_HZ, rel=1e-12)
 
 
 def test_the_published_convention_is_carried_as_data():
@@ -254,36 +233,24 @@ def test_there_is_no_clamping_path_in_the_ofdm_contract():
     text scan would forbid the explanation along with the act.
     """
 
-    module = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "witwin/radar/synthesis/assembly.py"
-    )
+    module = pathlib.Path(__file__).resolve().parents[1] / "witwin/radar/synthesis/assembly.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
     function = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "require_ofdm_compatible"
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "require_ofdm_compatible"
     )
 
     called = {
         node.func.id if isinstance(node.func, ast.Name) else node.func.attr
         for node in ast.walk(function)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name | ast.Attribute)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
     }
     for forbidden in ("clamp", "clip", "min", "max", "warn", "replace"):
         assert forbidden not in called, forbidden
 
     # The only two outcomes are "return None" and "raise". Nothing is returned,
     # nothing is mutated, and nothing is written back onto the spec.
-    assert not any(
-        isinstance(node, ast.Return) and node.value is not None
-        for node in ast.walk(function)
-    )
-    assert not any(
-        isinstance(node, ast.Assign | ast.AugAssign) for node in ast.walk(function)
-    )
+    assert not any(isinstance(node, ast.Return) and node.value is not None for node in ast.walk(function))
+    assert not any(isinstance(node, ast.Assign | ast.AugAssign) for node in ast.walk(function))
     # Three refusals, counted rather than described, so that a fourth has to be
     # added here deliberately: the foreign-spec TypeError, the wideband
     # column-count mismatch, and the cyclic-prefix bound. The count went from
@@ -313,10 +280,7 @@ def test_the_cyclic_prefix_check_reads_configuration_and_never_a_tensor():
     from witwin.radar.synthesis.assembly import require_ofdm_compatible
 
     batch = _batch()
-    long_echo = dataclasses.replace(
-        batch,
-        total_delay_s=torch.full((1,), 5.0e-6, dtype=torch.float32),
-    )
+    long_echo = dataclasses.replace(batch, total_delay_s=torch.full((1,), 5.0e-6, dtype=torch.float32))
     require_ofdm_compatible(long_echo, _spec(max_expected_delay_s=1.0e-6))
 
 
@@ -345,21 +309,12 @@ def test_the_carrier_home_rule_is_one_helper_and_not_two_copies():
     neither raises a carrier error of its own.
     """
 
-    module = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "witwin/radar/synthesis/assembly.py"
-    )
+    module = pathlib.Path(__file__).resolve().parents[1] / "witwin/radar/synthesis/assembly.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
     for spec_name in ("FmcwSpec", "OfdmSpec"):
-        cls = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef) and node.name == spec_name
-        )
+        cls = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == spec_name)
         post_init = next(
-            node
-            for node in ast.walk(cls)
-            if isinstance(node, ast.FunctionDef) and node.name == "__post_init__"
+            node for node in ast.walk(cls) if isinstance(node, ast.FunctionDef) and node.name == "__post_init__"
         )
         calls = {
             node.func.id

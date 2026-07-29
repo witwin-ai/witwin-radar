@@ -26,14 +26,13 @@ invokes it, and an in-process call can pass while `main()` returns 0 anyway.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_ROOT = REPO_ROOT / "ci"
@@ -45,7 +44,6 @@ import check_production_dependencies  # noqa: E402
 import check_raw_native_access  # noqa: E402
 import check_test_oracle_isolation  # noqa: E402
 import check_torch_physics_allowlist  # noqa: E402
-
 
 GATE_SCRIPTS = (
     "check_production_dependencies.py",
@@ -74,11 +72,7 @@ def _mirror(destination: Path) -> Path:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.is_dir():
-            shutil.copytree(
-                source,
-                target,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyd", "*.so"),
-            )
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyd", "*.so"))
         else:
             shutil.copy2(source, target)
     return destination
@@ -130,9 +124,7 @@ def test_every_gate_passes_on_the_untouched_mirror(script: str, mirror: Path) ->
 
 def test_g1_fires_on_a_forbidden_import(mirror: Path) -> None:
     target = mirror / "witwin" / "radar" / "radar.py"
-    target.write_text(
-        "import drjit\n" + target.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    target.write_text("import drjit\n" + target.read_text(encoding="utf-8"), encoding="utf-8")
     completed = _run("check_production_dependencies.py", mirror)
     assert completed.returncode == 1
     assert "import: drjit" in completed.stderr
@@ -193,11 +185,7 @@ def test_g1_fires_on_a_ray_tracing_extra(mirror: Path) -> None:
 
     target = mirror / "pyproject.toml"
     source = target.read_text(encoding="utf-8")
-    mutated = source.replace(
-        '"witwin-channel>=0.4,<0.5",',
-        '"witwin-channel>=0.4,<0.5",\n    "rayd-torch>=0.1",',
-        1,
-    )
+    mutated = source.replace('"witwin-channel>=0.4,<0.5",', '"witwin-channel>=0.4,<0.5",\n    "rayd-torch>=0.1",', 1)
     assert mutated != source
     target.write_text(mutated, encoding="utf-8")
     completed = _run("check_production_dependencies.py", mirror)
@@ -208,12 +196,7 @@ def test_g1_fires_on_a_ray_tracing_extra(mirror: Path) -> None:
 def test_g1_accepts_the_channel_extra_it_is_meant_to_allow() -> None:
     """The one dependency that reaches RayD - through Channel's own build."""
 
-    declared = [
-        requirement
-        for _, requirement in check_production_dependencies.declared_distributions(
-            REPO_ROOT
-        )
-    ]
+    declared = [requirement for _, requirement in check_production_dependencies.declared_distributions(REPO_ROOT)]
     assert "witwin-channel>=0.4,<0.5" in declared
     assert check_production_dependencies.check_declared_dependencies(REPO_ROOT) == []
 
@@ -226,9 +209,7 @@ def test_g1_accepts_the_channel_extra_it_is_meant_to_allow() -> None:
 def test_g2_fires_on_a_production_import_of_the_oracle(mirror: Path) -> None:
     target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
-        "from tests.reference import dsp_oracles\n"
-        + target.read_text(encoding="utf-8"),
-        encoding="utf-8",
+        "from tests.reference import dsp_oracles\n" + target.read_text(encoding="utf-8"), encoding="utf-8"
     )
     completed = _run("check_test_oracle_isolation.py", mirror)
     assert completed.returncode == 1
@@ -238,9 +219,7 @@ def test_g2_fires_on_a_production_import_of_the_oracle(mirror: Path) -> None:
 def test_g2_fires_when_the_wheel_configuration_would_ship_tests(mirror: Path) -> None:
     target = mirror / "pyproject.toml"
     target.write_text(
-        target.read_text(encoding="utf-8").replace(
-            'packages = ["witwin"]', 'packages = ["witwin", "tests"]'
-        ),
+        target.read_text(encoding="utf-8").replace('packages = ["witwin"]', 'packages = ["witwin", "tests"]'),
         encoding="utf-8",
     )
     completed = _run("check_test_oracle_isolation.py", mirror)
@@ -248,9 +227,7 @@ def test_g2_fires_when_the_wheel_configuration_would_ship_tests(mirror: Path) ->
     assert "wheel packages are ['witwin', 'tests']" in completed.stderr
 
 
-def test_g2_fires_on_a_wheel_that_carries_a_test_member(
-    mirror: Path, tmp_path: Path
-) -> None:
+def test_g2_fires_on_a_wheel_that_carries_a_test_member(mirror: Path, tmp_path: Path) -> None:
     """The configuration and the artifact are different questions.
 
     A build hook runs between them. This is the half that would catch a hook
@@ -274,8 +251,7 @@ def test_g2_fires_on_a_wheel_that_carries_a_test_member(
 def test_g3_fires_on_a_direct_dispatcher_call(mirror: Path) -> None:
     target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
-        target.read_text(encoding="utf-8")
-        + "\n\ndef _straight_to_the_dispatcher(x):\n"
+        target.read_text(encoding="utf-8") + "\n\ndef _straight_to_the_dispatcher(x):\n"
         "    import torch\n\n"
         "    return torch.ops._radar_native.two_way_join_forward(x)\n",
         encoding="utf-8",
@@ -288,8 +264,7 @@ def test_g3_fires_on_a_direct_dispatcher_call(mirror: Path) -> None:
 def test_g3_fires_on_an_unrecorded_loader_consumer(mirror: Path) -> None:
     target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
-        target.read_text(encoding="utf-8")
-        + "\n\ndef _tenth_handle():\n"
+        target.read_text(encoding="utf-8") + "\n\ndef _tenth_handle():\n"
         "    from ..cuda import runtime as build\n\n"
         "    return build.build_extension()\n",
         encoding="utf-8",
@@ -304,9 +279,7 @@ def test_g3_fires_on_an_unrecorded_loader_consumer(mirror: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_g4_fires_on_torch_physics_in_a_previously_unscanned_package(
-    mirror: Path,
-) -> None:
+def test_g4_fires_on_torch_physics_in_a_previously_unscanned_package(mirror: Path) -> None:
     """The exact hit the old one-package scan could not see.
 
     `processing/` was outside the Phase-6 scan entirely, so this expression
@@ -398,10 +371,7 @@ def test_g4_fires_when_a_pytest_constant_drifts_from_the_record(mirror: Path) ->
     target = mirror / "tests" / "test_phase6_no_torch_physics.py"
     source = target.read_text(encoding="utf-8")
     assert '("_set_pose_fields", "torch.linalg.norm"),' in source
-    target.write_text(
-        source.replace('("_set_pose_fields", "torch.linalg.norm"),', ""),
-        encoding="utf-8",
-    )
+    target.write_text(source.replace('("_set_pose_fields", "torch.linalg.norm"),', ""), encoding="utf-8")
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
     assert "RADAR_FACADE_TORCH_PHYSICS disagrees with the allowlist" in completed.stderr
@@ -420,11 +390,7 @@ def test_g4_fires_when_the_fence_allowance_list_drifts(mirror: Path) -> None:
     source = target.read_text(encoding="utf-8")
     empty = "FENCE_ALLOWANCES = {}"
     assert empty in source
-    smuggled = (
-        "FENCE_ALLOWANCES = {\n"
-        '    "witwin/radar/processing/angle.py": "smuggled in",\n'
-        "}"
-    )
+    smuggled = 'FENCE_ALLOWANCES = {\n    "witwin/radar/processing/angle.py": "smuggled in",\n}'
     target.write_text(source.replace(empty, smuggled, 1), encoding="utf-8")
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
@@ -443,9 +409,7 @@ def test_the_allowlist_records_every_measured_expression_with_a_reason() -> None
     allowlist entry that nobody had to justify is how the list grows.
     """
 
-    document = json.loads(
-        (REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8"))
     measured = check_torch_physics_allowlist.scan(
         REPO_ROOT,
         scanned_root=document["scanned_root"],
@@ -453,9 +417,7 @@ def test_the_allowlist_records_every_measured_expression_with_a_reason() -> None
         forbidden=tuple(document["forbidden_torch_calls"]),
     )
     assert len(document["entries"]) == len(measured)
-    assert sum(entry["occurrences"] for entry in document["entries"]) == sum(
-        measured.values()
-    )
+    assert sum(entry["occurrences"] for entry in document["entries"]) == sum(measured.values())
     for entry in document["entries"]:
         assert len(entry["reason"]) > 30, entry
         assert entry["adr"].startswith("R-ADR-"), entry
@@ -464,9 +426,7 @@ def test_the_allowlist_records_every_measured_expression_with_a_reason() -> None
 def test_the_torch_policy_contains_no_debt_categories() -> None:
     """Every surviving Torch expression has an accepted, named owner boundary."""
 
-    document = json.loads(
-        (REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8"))
     categories = document["categories"]
     recorded = {entry["category"] for entry in document["entries"]}
     assert recorded <= set(categories)
@@ -475,10 +435,9 @@ def test_the_torch_policy_contains_no_debt_categories() -> None:
     assert "legacy_pose_authoring" not in categories
     assert "work_item_8_survivor" not in categories
 
+
 def test_the_dispatcher_owner_set_is_a_single_module() -> None:
-    assert check_raw_native_access.DISPATCHER_OWNERS == frozenset(
-        {"witwin/radar/cuda/runtime.py"}
-    )
+    assert check_raw_native_access.DISPATCHER_OWNERS == frozenset({"witwin/radar/cuda/runtime.py"})
     dispatcher, consumers = check_raw_native_access.scan(REPO_ROOT)
     assert set(dispatcher) == check_raw_native_access.DISPATCHER_OWNERS
     assert consumers == set(check_raw_native_access.EXPECTED_LOADER_CONSUMERS)

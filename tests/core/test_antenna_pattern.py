@@ -29,9 +29,7 @@ import torch
 
 from witwin.radar import Radar, RadarConfig
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology
-from witwin.radar.sensors import AntennaPatternSpec
-from witwin.radar.sensors import RoundTripPatternStage
-
+from witwin.radar.sensors import AntennaPatternSpec, RoundTripPatternStage
 
 pytestmark = pytest.mark.gpu
 
@@ -69,14 +67,7 @@ def _make_radar(*, antenna_pattern=None) -> Radar:
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
-    direction = torch.tensor(
-        [
-            math.tan(math.radians(x_deg)),
-            math.tan(math.radians(y_deg)),
-            -1.0,
-        ],
-        dtype=torch.float32,
-    )
+    direction = torch.tensor([math.tan(math.radians(x_deg)), math.tan(math.radians(y_deg)), -1.0], dtype=torch.float32)
     direction = direction / torch.linalg.norm(direction)
     return direction * radius
 
@@ -92,17 +83,10 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
     device = radar.device
     zeros = torch.zeros(1, dtype=torch.int64, device=device)
     join = types.SimpleNamespace(
-        sensor_pair_index=zeros,
-        sensor_pair_count=1,
-        site_count=1,
-        path_count=1,
-        response_slot=zeros,
+        sensor_pair_index=zeros, sensor_pair_count=1, site_count=1, path_count=1, response_slot=zeros
     )
     stage = RoundTripPatternStage.freeze(
-        radar,
-        join,
-        site_ids=(_SITE_STABLE_ID,),
-        pattern=AntennaPatternSpec.from_config(radar.config.antenna_pattern),
+        radar, join, site_ids=(_SITE_STABLE_ID,), pattern=AntennaPatternSpec.from_config(radar.config.antenna_pattern)
     )
     batch = RadarPathBatch(
         sensor_pair_count=1,
@@ -126,16 +110,12 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
     return stage, batch
 
 
-def _signal_peak(
-    radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.0
-) -> torch.Tensor:
+def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
     """The composed weight's magnitude for a target at that off-boresight angle."""
 
     stage, batch = _one_row_stage(radar)
     site = _target_position(x_deg, y_deg, radius).to(device=radar.device).unsqueeze(0)
-    published = stage.apply(
-        batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=site
-    )
+    published = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=site)
     return published.complex_transfer_ref.abs().max()
 
 
@@ -163,12 +143,7 @@ def _bilinear_value(
 ) -> float:
     tx = (x_deg - x0) / (x1 - x0)
     ty = (y_deg - y0) / (y1 - y0)
-    return (
-        (1.0 - tx) * (1.0 - ty) * v00
-        + tx * (1.0 - ty) * v10
-        + (1.0 - tx) * ty * v01
-        + tx * ty * v11
-    )
+    return (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v10 + (1.0 - tx) * ty * v01 + tx * ty * v11
 
 
 def test_missing_antenna_pattern_uses_default_dipole_runtime():
@@ -187,10 +162,7 @@ def test_missing_antenna_pattern_uses_default_dipole_runtime():
     )
 
     assert torch.allclose(
-        center_gain,
-        torch.tensor([1.0], dtype=torch.float32, device=radar.device),
-        atol=1e-6,
-        rtol=1e-6,
+        center_gain, torch.tensor([1.0], dtype=torch.float32, device=radar.device), atol=1e-6, rtol=1e-6
     )
     assert edge_gain.item() < 0.05
 
@@ -210,9 +182,7 @@ def test_default_dipole_signal_matches_expected_gain(angle_deg: float):
     off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
     measured_ratio = (off_axis_peak / center_peak).item()
 
-    assert measured_ratio == pytest.approx(
-        _half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3
-    )
+    assert measured_ratio == pytest.approx(_half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3)
 
 
 def test_flat_custom_pattern_keeps_signal_constant():
@@ -229,9 +199,7 @@ def test_flat_custom_pattern_keeps_signal_constant():
     center_peak = _signal_peak(radar, x_deg=0.0, y_deg=0.0)
     for angle_deg in (15.0, 45.0, 70.0):
         off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
-        assert (off_axis_peak / center_peak).item() == pytest.approx(
-            1.0, rel=5e-3, abs=5e-3
-        )
+        assert (off_axis_peak / center_peak).item() == pytest.approx(1.0, rel=5e-3, abs=5e-3)
 
 
 def test_2d_map_signal_matches_bilinear_gain():
@@ -240,10 +208,7 @@ def test_2d_map_signal_matches_bilinear_gain():
             "kind": "map",
             "x_angles_deg": [0, 40],
             "y_angles_deg": [0, 20],
-            "values": [
-                [1.0, 0.8],
-                [0.6, 0.2],
-            ],
+            "values": [[1.0, 0.8], [0.6, 0.2]],
         }
     )
 
@@ -254,15 +219,6 @@ def test_2d_map_signal_matches_bilinear_gain():
     measured_ratio = (query_peak / center_peak).item()
 
     expected = _bilinear_value(
-        x_deg=x_deg,
-        y_deg=y_deg,
-        x0=0.0,
-        x1=40.0,
-        y0=0.0,
-        y1=20.0,
-        v00=1.0,
-        v10=0.8,
-        v01=0.6,
-        v11=0.2,
+        x_deg=x_deg, y_deg=y_deg, x0=0.0, x1=40.0, y0=0.0, y1=20.0, v00=1.0, v10=0.8, v01=0.6, v11=0.2
     )
     assert measured_ratio == pytest.approx(expected, rel=5e-3, abs=5e-3)

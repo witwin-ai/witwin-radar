@@ -30,7 +30,6 @@ import torch.autograd.forward_ad as forward_ad
 
 import witwin.radar.propagation as kin
 
-
 # --------------------------------------------------------------------------
 # v = v_cm + omega x (p - c)
 # --------------------------------------------------------------------------
@@ -46,24 +45,11 @@ def test_angular_velocity_produces_the_expected_site_velocity():
     velocity and could not produce a Doppler SPREAD at all, only a shift.
     """
 
-    positions = torch.tensor(
-        [[2.0, 0.6, 0.0], [2.0, -0.6, 0.0], [2.9, 0.0, 0.0]],
-        dtype=torch.float32,
-    )
+    positions = torch.tensor([[2.0, 0.6, 0.0], [2.0, -0.6, 0.0], [2.9, 0.0, 0.0]], dtype=torch.float32)
     velocities = kin.rigid_site_velocities(
-        positions,
-        velocity=(0.5, 0.0, -0.25),
-        angular_velocity=(0.0, 0.0, 2.0),
-        centre_m=(2.0, 0.0, 0.0),
+        positions, velocity=(0.5, 0.0, -0.25), angular_velocity=(0.0, 0.0, 2.0), centre_m=(2.0, 0.0, 0.0)
     )
-    expected = torch.tensor(
-        [
-            [0.5 - 1.2, 0.0, -0.25],
-            [0.5 + 1.2, 0.0, -0.25],
-            [0.5, 1.8, -0.25],
-        ],
-        dtype=torch.float32,
-    )
+    expected = torch.tensor([[0.5 - 1.2, 0.0, -0.25], [0.5 + 1.2, 0.0, -0.25], [0.5, 1.8, -0.25]], dtype=torch.float32)
     torch.testing.assert_close(velocities, expected, rtol=1e-6, atol=1e-7)
 
     # The spin term alone is antisymmetric about the centre, which is the
@@ -90,9 +76,7 @@ def test_a_body_with_no_declared_motion_is_exactly_stationary():
         rigid_motion = None
 
     kinematics = kin.structure_site_kinematics(_State(), positions)
-    assert torch.equal(
-        kinematics.velocities_m_per_s, torch.zeros_like(positions)
-    )
+    assert torch.equal(kinematics.velocities_m_per_s, torch.zeros_like(positions))
     assert torch.equal(kinematics.positions_m, positions)
 
 
@@ -113,9 +97,7 @@ def test_the_rotation_centre_is_the_translation_not_the_authored_pose():
     here, because the thing being differenced is a closed-form pose.
     """
 
-    authored = torch.tensor(
-        [[3.0, 1.0, 0.0], [3.0, -1.0, 0.5]], dtype=torch.float64
-    )
+    authored = torch.tensor([[3.0, 1.0, 0.0], [3.0, -1.0, 0.5]], dtype=torch.float64)
     omega = 0.75
     origin = torch.tensor([2.0, -0.5, 0.0], dtype=torch.float64)
     speed = torch.tensor([0.4, 0.1, -0.2], dtype=torch.float64)
@@ -123,11 +105,7 @@ def test_the_rotation_centre_is_the_translation_not_the_authored_pose():
     def posed(time_s: float) -> torch.Tensor:
         angle = omega * time_s
         rotation = torch.tensor(
-            [
-                [math.cos(angle), -math.sin(angle), 0.0],
-                [math.sin(angle), math.cos(angle), 0.0],
-                [0.0, 0.0, 1.0],
-            ],
+            [[math.cos(angle), -math.sin(angle), 0.0], [math.sin(angle), math.cos(angle), 0.0], [0.0, 0.0, 1.0]],
             dtype=torch.float64,
         )
         return authored @ rotation.T + (origin + speed * time_s)
@@ -146,12 +124,8 @@ def test_the_rotation_centre_is_the_translation_not_the_authored_pose():
     centre = kin.rotation_centre_m(_Motion())
     torch.testing.assert_close(centre, origin.to(torch.float32), rtol=1e-6, atol=1e-7)
 
-    measured = kin.structure_site_kinematics(
-        _State(), posed(0.0).to(torch.float32)
-    ).velocities_m_per_s
-    torch.testing.assert_close(
-        measured.to(torch.float64), reference, rtol=1e-5, atol=1e-7
-    )
+    measured = kin.structure_site_kinematics(_State(), posed(0.0).to(torch.float32)).velocities_m_per_s
+    torch.testing.assert_close(measured.to(torch.float64), reference, rtol=1e-5, atol=1e-7)
 
     # And the authored pose centre is a DIFFERENT, wrong answer here, so the
     # assertion above is a choice rather than a coincidence.
@@ -174,20 +148,11 @@ def _dynamic_endpoint_snapshot(time_s: float):
     from witwin.core.dynamics import DynamicScene, LinearTrajectory
     from witwin.core.identity import reserve_antenna_id
 
-    moving = AntennaState(
-        reserve_antenna_id(77201), "tx", torch.tensor([1.0, 2.0, 3.0])
-    )
-    still = AntennaState(
-        reserve_antenna_id(77202), "rx", torch.tensor([-1.0, 0.0, 0.5])
-    )
+    moving = AntennaState(reserve_antenna_id(77201), "tx", torch.tensor([1.0, 2.0, 3.0]))
+    still = AntennaState(reserve_antenna_id(77202), "rx", torch.tensor([-1.0, 0.0, 0.5]))
     scene = Scene(structures=(), endpoints=[moving, still])
     dynamic = DynamicScene(
-        scene,
-        endpoint_trajectories={
-            77201: LinearTrajectory(
-                origin=(0.0, 0.0, 0.0), velocity=(4.0, 0.0, -1.0)
-            )
-        },
+        scene, endpoint_trajectories={77201: LinearTrajectory(origin=(0.0, 0.0, 0.0), velocity=(4.0, 0.0, -1.0))}
     )
     return dynamic.at(time_s)
 
@@ -202,9 +167,7 @@ def test_endpoint_velocity_comes_from_the_core_rigid_motion():
     """
 
     snapshot = _dynamic_endpoint_snapshot(2.0)
-    kinematics = kin.endpoint_kinematics(
-        snapshot, (77201, 77202), device="cpu"
-    )
+    kinematics = kin.endpoint_kinematics(snapshot, (77201, 77202), device="cpu")
     torch.testing.assert_close(
         kinematics.positions_m,
         torch.tensor([[9.0, 2.0, 1.0], [-1.0, 0.0, 0.5]], dtype=torch.float32),
@@ -217,22 +180,13 @@ def test_endpoint_velocity_comes_from_the_core_rigid_motion():
         rtol=1e-6,
         atol=1e-7,
     )
-    assert torch.equal(
-        kinematics.velocities_m_per_s[1], torch.zeros(3, dtype=torch.float32)
-    )
+    assert torch.equal(kinematics.velocities_m_per_s[1], torch.zeros(3, dtype=torch.float32))
 
     # The declared order IS the endpoint batch order, so reversing it reverses
     # both tensors together. Reversing only one is the failure this pins.
-    reversed_kinematics = kin.endpoint_kinematics(
-        snapshot, (77202, 77201), device="cpu"
-    )
-    assert torch.equal(
-        reversed_kinematics.positions_m, kinematics.positions_m.flip(0)
-    )
-    assert torch.equal(
-        reversed_kinematics.velocities_m_per_s,
-        kinematics.velocities_m_per_s.flip(0),
-    )
+    reversed_kinematics = kin.endpoint_kinematics(snapshot, (77202, 77201), device="cpu")
+    assert torch.equal(reversed_kinematics.positions_m, kinematics.positions_m.flip(0))
+    assert torch.equal(reversed_kinematics.velocities_m_per_s, kinematics.velocities_m_per_s.flip(0))
 
 
 def test_an_endpoint_the_snapshot_does_not_declare_is_named():
@@ -243,10 +197,7 @@ def test_an_endpoint_the_snapshot_does_not_declare_is_named():
 
 def test_the_position_and_the_tangent_must_name_the_same_endpoints():
     with pytest.raises(ValueError, match="same endpoints in the same order"):
-        kin.Kinematics(
-            positions_m=torch.zeros(3, 3),
-            velocities_m_per_s=torch.zeros(2, 3),
-        )
+        kin.Kinematics(positions_m=torch.zeros(3, 3), velocities_m_per_s=torch.zeros(2, 3))
 
 
 # --------------------------------------------------------------------------
@@ -271,28 +222,19 @@ class _HingeVelocity:
     def velocity_at(self, time_s: float) -> torch.Tensor:
         scale = self._tip_speed * math.cos(float(time_s))
         rows = torch.arange(self._vertices, dtype=torch.float32)
-        return torch.stack(
-            [torch.zeros_like(rows), rows * scale, torch.zeros_like(rows)], dim=1
-        )
+        return torch.stack([torch.zeros_like(rows), rows * scale, torch.zeros_like(rows)], dim=1)
 
 
 def test_the_deformation_protocol_supplies_the_velocity():
     descriptor = _HingeVelocity(tip_speed=3.0, vertices=5)
     assert isinstance(descriptor, kin.DeformationVelocity)
 
-    positions = torch.tensor(
-        [[2.0, 0.2, 0.0], [2.0, 1.0, 0.0], [2.0, 1.8, 0.0]], dtype=torch.float32
-    )
+    positions = torch.tensor([[2.0, 0.2, 0.0], [2.0, 1.0, 0.0], [2.0, 1.8, 0.0]], dtype=torch.float32)
     tracked = torch.tensor([1, 2, 4], dtype=torch.int64)
-    kinematics = kin.deformation_kinematics(
-        positions, descriptor, 0.0, vertex_index=tracked
-    )
+    kinematics = kin.deformation_kinematics(positions, descriptor, 0.0, vertex_index=tracked)
     torch.testing.assert_close(
         kinematics.velocities_m_per_s,
-        torch.tensor(
-            [[0.0, 3.0, 0.0], [0.0, 6.0, 0.0], [0.0, 12.0, 0.0]],
-            dtype=torch.float32,
-        ),
+        torch.tensor([[0.0, 3.0, 0.0], [0.0, 6.0, 0.0], [0.0, 12.0, 0.0]], dtype=torch.float32),
         rtol=1e-6,
         atol=1e-7,
     )
@@ -301,15 +243,8 @@ def test_the_deformation_protocol_supplies_the_velocity():
     # The velocity is a function of time, so a later instant is a different
     # answer: a descriptor that ignored ``time_s`` would pass every shape check
     # and freeze the deformation rate at whatever it was authored with.
-    later = kin.deformation_kinematics(
-        positions, descriptor, math.pi / 3.0, vertex_index=tracked
-    )
-    torch.testing.assert_close(
-        later.velocities_m_per_s,
-        kinematics.velocities_m_per_s * 0.5,
-        rtol=1e-6,
-        atol=1e-7,
-    )
+    later = kin.deformation_kinematics(positions, descriptor, math.pi / 3.0, vertex_index=tracked)
+    torch.testing.assert_close(later.velocities_m_per_s, kinematics.velocities_m_per_s * 0.5, rtol=1e-6, atol=1e-7)
 
 
 def test_a_descriptor_that_returns_the_wrong_type_is_refused():
@@ -318,9 +253,7 @@ def test_a_descriptor_that_returns_the_wrong_type_is_refused():
             return [(0.0, 0.0, 0.0)]
 
     with pytest.raises(TypeError, match="velocity_at must return"):
-        kin.deformation_kinematics(
-            torch.zeros(1, 3, dtype=torch.float32), _Broken(), 0.0
-        )
+        kin.deformation_kinematics(torch.zeros(1, 3, dtype=torch.float32), _Broken(), 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -338,9 +271,7 @@ def test_slot_replication_keeps_the_tangent_alive():
     """
 
     positions = torch.tensor([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]], dtype=torch.float32)
-    velocities = torch.tensor(
-        [[-3.0, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=torch.float32
-    )
+    velocities = torch.tensor([[-3.0, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=torch.float32)
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(positions, velocities)
         stacked = kin.replicate_slots(dual, 3)
@@ -356,9 +287,7 @@ def test_slot_replication_keeps_the_tangent_alive():
 
         # And the rebuild-from-values route is the trap, demonstrated rather
         # than described.
-        rebuilt = torch.tensor(
-            stacked.detach().tolist(), dtype=torch.float32
-        )
+        rebuilt = torch.tensor(stacked.detach().tolist(), dtype=torch.float32)
         assert forward_ad.unpack_dual(rebuilt).tangent is None
 
     assert kin.replicate_slots(positions, 1) is positions
@@ -383,14 +312,8 @@ def test_all_three_endpoint_tensors_are_dualised_in_one_level():
     sites = track([[2.0, 0.6, 0.0]], [[-12.0, 0.0, 0.0]])
     receivers = track([[0.15, 0.0, 0.0]], [[0.0, -3.0, 0.0]])
 
-    with kin.two_way_duals(
-        sites=sites, transmitters=transmitters, receivers=receivers, slot_count=2
-    ) as duals:
-        for tensor, source in (
-            (duals.transmitters, transmitters),
-            (duals.sites, sites),
-            (duals.receivers, receivers),
-        ):
+    with kin.two_way_duals(sites=sites, transmitters=transmitters, receivers=receivers, slot_count=2) as duals:
+        for tensor, source in ((duals.transmitters, transmitters), (duals.sites, sites), (duals.receivers, receivers)):
             primal, tangent = forward_ad.unpack_dual(tensor)
             assert tangent is not None
             assert torch.equal(primal, source.positions_m.repeat(2, 1))
@@ -470,41 +393,24 @@ def test_a_dead_tangent_is_detectable():
     spike = drv.MultiEndpointSpike()
 
     def still(positions):
-        return kin.Kinematics(
-            positions_m=positions,
-            velocities_m_per_s=torch.zeros_like(positions),
-        )
+        return kin.Kinematics(positions_m=positions, velocities_m_per_s=torch.zeros_like(positions))
 
     sites = kin.Kinematics(
         positions_m=spike.site_tensor(),
         velocities_m_per_s=torch.tensor(
-            [geo.SITE_P_RADIAL_VELOCITY_M_PER_S, geo.STATIONARY],
-            dtype=torch.float32,
-            device="cuda",
+            [geo.SITE_P_RADIAL_VELOCITY_M_PER_S, geo.STATIONARY], dtype=torch.float32, device="cuda"
         ),
     )
     with kin.two_way_duals(
-        sites=sites,
-        transmitters=still(spike.transmitter_tensor()),
-        receivers=still(spike.receiver_tensor()),
+        sites=sites, transmitters=still(spike.transmitter_tensor()), receivers=still(spike.receiver_tensor())
     ) as duals:
         assert forward_ad.unpack_dual(duals.sites).tangent is not None
-        live, _, _ = spike.frame(
-            duals.sites,
-            transmitters=duals.transmitters,
-            receivers=duals.receivers,
-            ad_mode="jvp",
-        )
+        live, _, _ = spike.frame(duals.sites, transmitters=duals.transmitters, receivers=duals.receivers, ad_mode="jvp")
         live_rate = live.delay_rate.clone()
 
         rebuilt = spike.site_tensor()
         assert forward_ad.unpack_dual(rebuilt).tangent is None
-        dead, _, _ = spike.frame(
-            rebuilt,
-            transmitters=duals.transmitters,
-            receivers=duals.receivers,
-            ad_mode="jvp",
-        )
+        dead, _, _ = spike.frame(rebuilt, transmitters=duals.transmitters, receivers=duals.receivers, ad_mode="jvp")
         dead_rate = dead.delay_rate.clone()
 
     assert float(live_rate.abs().max()) > 1.0e-9

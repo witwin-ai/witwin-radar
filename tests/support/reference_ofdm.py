@@ -26,11 +26,7 @@ import torch
 
 
 def cfr_cube(
-    total_delay_s: torch.Tensor,
-    delay_rate: torch.Tensor,
-    transfer_ref: torch.Tensor,
-    pair_offsets: torch.Tensor,
-    spec,
+    total_delay_s: torch.Tensor, delay_rate: torch.Tensor, transfer_ref: torch.Tensor, pair_offsets: torch.Tensor, spec
 ) -> torch.Tensor:
     """The CFR sum, in the CHANNEL convention, evaluated in float64.
 
@@ -61,23 +57,14 @@ def cfr_cube(
     t_l = (symbols * spec.symbol_period_s).reshape(-1, 1)
     f_sub = (subcarriers * spec.subcarrier_spacing_hz).reshape(1, -1)
 
-    out = torch.zeros(
-        (spec.num_symbols, num_segments, spec.num_subcarriers),
-        dtype=torch.complex128,
-    )
+    out = torch.zeros((spec.num_symbols, num_segments, spec.num_subcarriers), dtype=torch.complex128)
     for segment in range(num_segments):
         for row in range(offsets[segment], offsets[segment + 1]):
             drift = delay_rate[row].to(torch.float64) * t_l
             tau = total_delay_s[row].to(torch.float64) + drift
-            cycles = -(
-                f_sub * tau
-                + spec.carrier_rate_hz * drift
-                + spec.carrier_hz * tau
-            )
+            cycles = -(f_sub * tau + spec.carrier_rate_hz * drift + spec.carrier_hz * tau)
             phasor = torch.exp(2j * math.pi * cycles.to(torch.complex128))
-            out[:, segment, :] = out[:, segment, :] + transfer_ref[row].to(
-                torch.complex128
-            ) * phasor
+            out[:, segment, :] = out[:, segment, :] + transfer_ref[row].to(torch.complex128) * phasor
     return out
 
 

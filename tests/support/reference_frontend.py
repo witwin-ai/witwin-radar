@@ -32,7 +32,7 @@ def quantize(signal: torch.Tensor, *, bits: int, full_scale: float) -> torch.Ten
       the same direction, which shows up as a DC offset rather than as noise.
     """
 
-    levels = 2**int(bits)
+    levels = 2 ** int(bits)
     step = (2.0 * float(full_scale)) / (levels - 1)
 
     def _one(component: torch.Tensor) -> torch.Tensor:
@@ -43,11 +43,7 @@ def quantize(signal: torch.Tensor, *, bits: int, full_scale: float) -> torch.Ten
 
 
 def thermal_sigma_volts(
-    *,
-    noise_figure_db: float,
-    antenna_temperature_k: float,
-    bandwidth_hz: float,
-    reference_impedance_ohm: float,
+    *, noise_figure_db: float, antenna_temperature_k: float, bandwidth_hz: float, reference_impedance_ohm: float
 ) -> float:
     """``sqrt(k T_sys B R / 2)``, derived here independently of production.
 
@@ -67,15 +63,11 @@ def thermal_sigma_volts(
     return math.sqrt(0.5 * noise_power * float(reference_impedance_ohm))
 
 
-def wiener_innovation_sigma_rad(
-    *, level_dbc_per_hz: float, offset_hz: float, sample_rate_hz: float
-) -> float:
+def wiener_innovation_sigma_rad(*, level_dbc_per_hz: float, offset_hz: float, sample_rate_hz: float) -> float:
     """``sqrt(10^(L/10) 4 pi^2 f_off^2 / fs)``, derived here independently."""
 
     level = 10.0 ** (float(level_dbc_per_hz) / 10.0)
-    return math.sqrt(
-        level * 4.0 * math.pi**2 * float(offset_hz) ** 2 / float(sample_rate_hz)
-    )
+    return math.sqrt(level * 4.0 * math.pi**2 * float(offset_hz) ** 2 / float(sample_rate_hz))
 
 
 def single_sideband_psd(
@@ -112,9 +104,7 @@ def single_sideband_psd(
     return frequencies, two_sided / 2.0
 
 
-def agc_gain(
-    signal: torch.Tensor, *, target_rms: float, min_gain: float, max_gain: float
-) -> tuple[float, float]:
+def agc_gain(signal: torch.Tensor, *, target_rms: float, min_gain: float, max_gain: float) -> tuple[float, float]:
     """The reference gain and measured RMS for a whole group, in float64."""
 
     magnitude_sq = signal.real.double() ** 2 + signal.imag.double() ** 2
@@ -123,10 +113,4 @@ def agc_gain(
     return min(max(gain, float(min_gain)), float(max_gain)), measured
 
 
-__all__ = [
-    "agc_gain",
-    "quantize",
-    "single_sideband_psd",
-    "thermal_sigma_volts",
-    "wiener_innovation_sigma_rad",
-]
+__all__ = ["agc_gain", "quantize", "single_sideband_psd", "thermal_sigma_volts", "wiener_innovation_sigma_rad"]

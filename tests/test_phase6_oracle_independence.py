@@ -25,7 +25,6 @@ import pathlib
 
 import pytest
 
-
 TESTS_ROOT = pathlib.Path(__file__).resolve().parent
 REFERENCE_ROOT = TESTS_ROOT / "reference"
 
@@ -68,17 +67,12 @@ def test_the_reference_package_has_the_modules_this_scan_assumes():
     assert "dsp_oracles.py" not in names
 
 
-@pytest.mark.parametrize(
-    "module", _reference_modules(), ids=lambda path: path.name
-)
+@pytest.mark.parametrize("module", _reference_modules(), ids=lambda path: path.name)
 def test_no_reference_oracle_imports_the_module_it_checks(module: pathlib.Path):
     offenders = sorted(
         name
         for name in _imported_module_names(module)
-        if any(
-            name == prefix or name.startswith(prefix + ".")
-            for prefix in FORBIDDEN_PREFIXES
-        )
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in FORBIDDEN_PREFIXES)
     )
     assert offenders == [], (module.name, offenders)
 
@@ -98,18 +92,12 @@ def test_the_copy_is_still_a_real_expression_and_has_a_live_consumer():
 
     from reference import path_math
 
-    names = (
-        "compute_total_path_lengths",
-        "compute_total_path_length_rates",
-        "compute_antenna_pattern_gains",
-    )
+    names = ("compute_total_path_lengths", "compute_total_path_length_rates", "compute_antenna_pattern_gains")
     for name in names:
         assert callable(getattr(path_math, name)), name
         assert inspect.getmodule(getattr(path_math, name)) is path_math, name
 
-    consumer = (TESTS_ROOT / "test_phase6_sensor_weight.py").read_text(
-        encoding="utf-8"
-    )
+    consumer = (TESTS_ROOT / "test_phase6_sensor_weight.py").read_text(encoding="utf-8")
     for name in names:
         assert name in consumer, name
 
@@ -124,11 +112,7 @@ SUPPORT_ROOT = TESTS_ROOT / "support"
 #: per waveform. An oracle that imported the module it validates would be
 #: checking that module against itself, which is the defect this whole file
 #: exists to prevent - and it was a real one until Phase 6.
-WAVEFORM_ORACLES = (
-    "reference_chain.py",
-    "reference_ofdm.py",
-    "reference_pulsed.py",
-)
+WAVEFORM_ORACLES = ("reference_chain.py", "reference_ofdm.py", "reference_pulsed.py")
 
 FORBIDDEN_ORACLE_PREFIXES = ("witwin.radar.sensors", "witwin.radar.synthesis")
 
@@ -150,17 +134,11 @@ def test_no_waveform_oracle_imports_the_domain_it_validates(oracle: str):
     name and forbids everything else in that package.
     """
 
-    allowed = {
-        "witwin.radar.synthesis.assembly",
-        "witwin.radar.synthesis",
-    }
+    allowed = {"witwin.radar.synthesis.assembly", "witwin.radar.synthesis"}
     offenders = sorted(
         name
         for name in _imported_module_names(SUPPORT_ROOT / oracle)
-        if any(
-            name == prefix or name.startswith(prefix + ".")
-            for prefix in FORBIDDEN_ORACLE_PREFIXES
-        )
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in FORBIDDEN_ORACLE_PREFIXES)
         and name not in allowed
         and not name.startswith("witwin.radar.synthesis.assembly.")
     )

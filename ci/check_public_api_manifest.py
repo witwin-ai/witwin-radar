@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import importlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def _exposures(manifest: dict[str, object]) -> dict[str, str]:
@@ -26,9 +26,7 @@ def audit_manifest(manifest: dict[str, object]) -> list[str]:
         for name, target in exports.items():
             key = f"{module}.{name}"
             if target in seen_targets:
-                errors.append(
-                    f"target {target} exposed twice: {seen_targets[target]} and {key}"
-                )
+                errors.append(f"target {target} exposed twice: {seen_targets[target]} and {key}")
             seen_targets[target] = key
     for class_name, members in manifest["root_class_members"].items():
         if len(members) != len(set(members)):
@@ -95,14 +93,9 @@ def audit_live(manifest: dict[str, object]) -> list[str]:
             obj = getattr(module, name)
             if exposure in value_exports:
                 continue
-            actual_target = (
-                f"{getattr(obj, '__module__', '')}."
-                f"{getattr(obj, '__qualname__', '')}"
-            )
+            actual_target = f"{getattr(obj, '__module__', '')}.{getattr(obj, '__qualname__', '')}"
             if actual_target != target:
-                errors.append(
-                    f"{exposure}: expected owner {target}, got {actual_target}"
-                )
+                errors.append(f"{exposure}: expected owner {target}, got {actual_target}")
     for dotted, expected_members in manifest["root_class_members"].items():
         module_name, _, name = dotted.rpartition(".")
         try:
@@ -112,17 +105,13 @@ def audit_live(manifest: dict[str, object]) -> list[str]:
             continue
         actual = sorted(member for member in vars(cls) if not member.startswith("_"))
         if actual != sorted(expected_members):
-            errors.append(
-                f"{dotted} public members: expected {sorted(expected_members)}, got {actual}"
-            )
+            errors.append(f"{dotted} public members: expected {sorted(expected_members)}, got {actual}")
     return errors
 
 
 def main(argv: list[str] | None = None) -> int:
     repo = Path(__file__).resolve().parents[1]
-    manifest = json.loads(
-        (repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8"))
     errors = []
     if manifest.get("schema_version") != 2:
         errors.append("public API manifest schema_version must be 2")

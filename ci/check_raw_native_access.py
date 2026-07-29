@@ -1,11 +1,12 @@
 """G3: exactly one module reaches the dispatcher, and the callers are frozen.
 
 Phase 10 work item 7 forbids raw native access. Radar has no
-`runtime.symbols`-style indirection the way Channel does; every consumer holds
-its own module-global `_OPS` and reaches symbols by attribute. That is fine,
-and it is fine only for as long as those consumers get their handle from the
-one loader that validates identity first. The failure this gate exists to stop
-is a tenth module writing `torch.ops._radar_native.<x>` directly, which loads
+`runtime.symbols`-style indirection the way Channel does; every kernel facade
+imports
+ative_ops as _ops` from the lazy CUDA boundary and reaches symbols
+through the validated table it returns. That is fine only while the imported callable is
+the loader that validates identity first. The failure this gate exists to stop
+is a new module writing `torch.ops._radar_native.<x>` directly, which loads
 nothing, validates nothing, and works - right up to the first stale binary.
 
 Two frozen statements, both by EQUALITY rather than containment:
@@ -33,9 +34,8 @@ from __future__ import annotations
 
 import argparse
 import ast
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,11 +47,12 @@ DISPATCHER_OWNERS = frozenset({"witwin/radar/cuda/runtime.py"})
 #: before the library is loaded and must import without CUDA.
 
 #: Every module that takes a handle from the loader, and why. Frozen by
-#: equality. Seven are kernel facades that keep the handle in a module global
-#: `_OPS`; `deployment.py` is the identity reporter - `build_info()` must come from
-#: the loader that VALIDATED the record, not from a re-read of the sidecar,
-#: which would answer a different question.
+#: equality. Seven kernel facades bind the lazy `native_ops` bridge as `_ops`;
+#: `deployment.py` is the identity reporter - `build_info()` must come from the
+#: loader that VALIDATED the record, not from a re-read of the sidecar, which
+#: would answer a different question.
 EXPECTED_LOADER_CONSUMERS = {
+    "witwin/radar/cuda/__init__.py": "single lazy bridge from kernel facades to the validated runtime",
     "witwin/radar/deployment.py": "public build_info(), from the validated record",
     "witwin/radar/frontend.py": "frontend_chain facade",
     "witwin/radar/paths.py": "two_way_join facade",
@@ -75,9 +76,7 @@ def _dotted(node: ast.AST) -> str:
 
 def production_modules(root: Path) -> list[Path]:
     package = root / "witwin"
-    return sorted(
-        path for path in package.rglob("*.py") if "__pycache__" not in path.parts
-    )
+    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def _dispatcher_references(tree: ast.Module) -> list[tuple[int, str]]:
@@ -87,9 +86,7 @@ def _dispatcher_references(tree: ast.Module) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
             name = _dotted(node)
-            if name.startswith("torch.ops") or name.startswith(
-                "torch.utils.cpp_extension"
-            ):
+            if name.startswith("torch.ops") or name.startswith("torch.utils.cpp_extension"):
                 found.append((node.lineno, name))
             continue
         if isinstance(node, ast.Import):
@@ -101,9 +98,7 @@ def _dispatcher_references(tree: ast.Module) -> list[tuple[int, str]]:
             base = node.module or ""
             if base.startswith("torch.utils.cpp_extension") or base == "torch.utils":
                 for alias in node.names:
-                    if base.startswith("torch.utils.cpp_extension") or (
-                        alias.name == "cpp_extension"
-                    ):
+                    if base.startswith("torch.utils.cpp_extension") or (alias.name == "cpp_extension"):
                         found.append((node.lineno, f"{base}.{alias.name}"))
     # `torch.ops.x.y` yields nested Attribute nodes; keep the outermost per line.
     longest: dict[int, str] = {}
@@ -122,11 +117,19 @@ def _calls_build_extension(tree: ast.Module) -> bool:
     owner as its own tenth consumer.
     """
 
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        for alias in node.names:
+            if (module, alias.name) in {("cuda.runtime", "build_extension"), ("cuda", "native_ops")}:
+                imported_names.add(alias.asname or alias.name)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted(node.func)
-        if name == "build_extension" or name.endswith(".build_extension"):
+        if name in imported_names or name == "build_extension" or name.endswith(".build_extension"):
             return True
     return False
 
@@ -163,7 +166,6 @@ def check(root: Path) -> list[str]:
             "torch.ops nor torch.utils.cpp_extension; the record is stale"
         )
 
-
     expected = set(EXPECTED_LOADER_CONSUMERS)
     for module in sorted(consumers - expected):
         failures.append(
@@ -187,10 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     root = arguments.root.resolve()
     failures = check(root)
     if failures:
-        print(
-            f"check_raw_native_access: {len(failures)} violation(s) under {root}",
-            file=sys.stderr,
-        )
+        print(f"check_raw_native_access: {len(failures)} violation(s) under {root}", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1

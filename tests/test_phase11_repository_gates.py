@@ -8,24 +8,20 @@ signatures/defaults without preserving removed compatibility names.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORPHAN_GATE = REPO_ROOT / "ci" / "check_orphan_modules.py"
 SNAPSHOT = REPO_ROOT / "ci" / "public-api-snapshot.json"
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(ORPHAN_GATE), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    return subprocess.run([sys.executable, str(ORPHAN_GATE), *args], capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -110,8 +106,6 @@ def test_the_snapshot_notices_a_new_export() -> None:
 
     frozen = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     mutated = json.loads(json.dumps(frozen))
-    mutated["modules"][0]["exports"].append(
-        {"name": "Tracer", "kind": "class", "target": "witwin.radar.trace.Tracer"}
-    )
+    mutated["modules"][0]["exports"].append({"name": "Tracer", "kind": "class", "target": "witwin.radar.trace.Tracer"})
     assert build_snapshot() != mutated
     assert build_snapshot() == frozen

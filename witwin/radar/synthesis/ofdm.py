@@ -36,48 +36,21 @@ every pair and there is no per-segment time offset to carry.
 from __future__ import annotations
 
 import torch
+
+from ..cuda import native_ops as _ops
 from ..policy import first_order_only
-
-from .assembly import segment_of_each_row
-from .assembly import (
-    OfdmSpec,
-    SynthesisPathBatch,
-    require_ofdm_compatible,
-)
-
-
-_OPS = None
-
-
-def _ops():
-    """The native operator table, resolved once per process.
-
-    Held here as well as in the build module because this runs on every
-    synthesis call, forward and backward: a per-launch import plus function call
-    is pure overhead on the hot path.
-    """
-
-    global _OPS
-    if _OPS is None:
-        from ..cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
+from .assembly import OfdmSpec, SynthesisPathBatch, require_ofdm_compatible, segment_of_each_row
 
 
 class _OfdmCfrSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native CFR operators."""
 
     @staticmethod
-    def forward(
-        tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec, columns
-    ):
+    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec, columns):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
-            (spec.num_symbols, num_segments, spec.num_subcarriers),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_symbols, num_segments, spec.num_subcarriers), dtype=torch.float32, device=tau_rt.device
         )
         out_im = torch.empty_like(out_re)
         _ops().ofdm_cfr_forward(
@@ -102,16 +75,7 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (
-            tau_rt,
-            tau_rate,
-            weight_re,
-            weight_im,
-            offsets,
-            segment,
-            spec,
-            columns,
-        ) = inputs
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec, columns) = inputs
         ctx.spec = spec
         ctx.columns = columns
         ctx.num_segments = int(offsets.shape[0]) - 1
@@ -149,28 +113,11 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
             spec.carrier_hz,
             spec.carrier_rate_hz,
         )
-        return (
-            grad_tau_rt,
-            grad_tau_rate,
-            grad_weight_re,
-            grad_weight_im,
-            None,
-            None,
-            None,
-            None,
-        )
+        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_rt,
-        tan_tau_rate,
-        tan_weight_re,
-        tan_weight_im,
-        tan_offsets,
-        tan_segment,
-        tan_spec,
-        tan_columns,
+        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_spec, tan_columns
     ):
         tau_rt, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
         spec = ctx.spec
@@ -178,16 +125,10 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
         zero_weight = torch.zeros_like(weight_re)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
         tan_tau_rate = zero if tan_tau_rate is None else tan_tau_rate.contiguous()
-        tan_weight_re = (
-            zero_weight if tan_weight_re is None else tan_weight_re.contiguous()
-        )
-        tan_weight_im = (
-            zero_weight if tan_weight_im is None else tan_weight_im.contiguous()
-        )
+        tan_weight_re = zero_weight if tan_weight_re is None else tan_weight_re.contiguous()
+        tan_weight_im = zero_weight if tan_weight_im is None else tan_weight_im.contiguous()
         tan_out_re = torch.empty(
-            (spec.num_symbols, ctx.num_segments, spec.num_subcarriers),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_symbols, ctx.num_segments, spec.num_subcarriers), dtype=torch.float32, device=tau_rt.device
         )
         tan_out_im = torch.empty_like(tan_out_re)
         _ops().ofdm_cfr_jvp(
@@ -302,9 +243,7 @@ def synthesize_cfr_rows(
     return torch.complex(out_re, out_im)
 
 
-def synthesize_ofdm(
-    batch: SynthesisPathBatch, spec: OfdmSpec
-) -> torch.Tensor:
+def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     """Synthesize one OFDM frame's channel frequency response cube.
 
     Returns ``complex64[num_symbols, sensor_pair_count, num_subcarriers]`` in
@@ -342,17 +281,7 @@ def synthesize_ofdm(
         mask = None if batch.row_valid is None else batch.row_valid.unsqueeze(1)
     if mask is not None:
         transfer = torch.where(mask, transfer, torch.zeros_like(transfer))
-    return synthesize_cfr_rows(
-        batch.total_delay_s,
-        batch.delay_rate,
-        transfer,
-        batch.pair_offsets,
-        spec,
-    )
+    return synthesize_cfr_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
 
 
-__all__ = [
-    "OfdmSpec",
-    "synthesize_cfr_rows",
-    "synthesize_ofdm",
-]
+__all__ = ["OfdmSpec", "synthesize_cfr_rows", "synthesize_ofdm"]

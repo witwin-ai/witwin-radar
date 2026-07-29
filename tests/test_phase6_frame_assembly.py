@@ -22,7 +22,6 @@ from witwin.radar.synthesis.assembly import (  # noqa: E402
     pair_tx_index,
 )
 
-
 NUM_TX = 3
 NUM_RX = 4
 NUM_CHIRPS = 2
@@ -38,15 +37,11 @@ def _pair_rank(tx: int, rx: int) -> int:
 def _labelled_cube() -> torch.Tensor:
     """``[chirp, pair, sample]`` where every entry names its own coordinates."""
 
-    cube = torch.empty(
-        (NUM_CHIRPS, NUM_TX * NUM_RX, NUM_SAMPLES), dtype=torch.complex64
-    )
+    cube = torch.empty((NUM_CHIRPS, NUM_TX * NUM_RX, NUM_SAMPLES), dtype=torch.complex64)
     for chirp in range(NUM_CHIRPS):
         for pair in range(NUM_TX * NUM_RX):
             for sample in range(NUM_SAMPLES):
-                cube[chirp, pair, sample] = complex(
-                    pair * 1000 + chirp * 10 + sample, 0.0
-                )
+                cube[chirp, pair, sample] = complex(pair * 1000 + chirp * 10 + sample, 0.0)
     return cube
 
 
@@ -77,18 +72,8 @@ def test_the_declared_pair_numbering_is_the_composers_own():
 
 
 def test_the_transmitter_and_receiver_tables_invert_the_pair_rank():
-    tx_index = pair_tx_index(
-        num_tx=NUM_TX,
-        num_rx=NUM_RX,
-        sensor_pair_count=NUM_TX * NUM_RX,
-        device="cpu",
-    )
-    rx_index = pair_rx_index(
-        num_tx=NUM_TX,
-        num_rx=NUM_RX,
-        sensor_pair_count=NUM_TX * NUM_RX,
-        device="cpu",
-    )
+    tx_index = pair_tx_index(num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=NUM_TX * NUM_RX, device="cpu")
+    rx_index = pair_rx_index(num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=NUM_TX * NUM_RX, device="cpu")
     assert tx_index.dtype is torch.int32
     assert rx_index.dtype is torch.int32
     for tx in range(NUM_TX):
@@ -99,9 +84,7 @@ def test_the_transmitter_and_receiver_tables_invert_the_pair_rank():
 
     # The transposed derivation, which is the natural wrong answer, does not
     # agree - so the test above is discriminating rather than tautological.
-    transposed = torch.div(
-        torch.arange(NUM_TX * NUM_RX), NUM_RX, rounding_mode="floor"
-    ).to(torch.int32)
+    transposed = torch.div(torch.arange(NUM_TX * NUM_RX), NUM_RX, rounding_mode="floor").to(torch.int32)
     assert not torch.equal(tx_index, transposed)
 
 
@@ -142,12 +125,8 @@ def test_assembly_is_a_transpose_and_not_a_bare_reshape():
 
     cube = _labelled_cube()
     correct = assemble_frame_cube(cube, num_tx=NUM_TX, num_rx=NUM_RX)
-    bare_view = (
-        cube.permute(1, 0, 2)
-        .reshape(NUM_RX, NUM_TX, NUM_CHIRPS, NUM_SAMPLES)
-        .contiguous()
-    )
-    assert not torch.equal(correct, bare_view.permute(0, 1, 2, 3)[: NUM_TX])
+    bare_view = cube.permute(1, 0, 2).reshape(NUM_RX, NUM_TX, NUM_CHIRPS, NUM_SAMPLES).contiguous()
+    assert not torch.equal(correct, bare_view.permute(0, 1, 2, 3)[:NUM_TX])
     assert torch.equal(correct, bare_view.permute(1, 0, 2, 3).contiguous())
 
 
@@ -172,9 +151,7 @@ def test_a_square_array_still_transposes():
 def test_assembly_keeps_the_gradient_and_touches_no_value():
     """Structural packing, so the tape passes straight through it."""
 
-    cube = torch.zeros(
-        (NUM_CHIRPS, NUM_TX * NUM_RX, NUM_SAMPLES), dtype=torch.float32
-    ).requires_grad_(True)
+    cube = torch.zeros((NUM_CHIRPS, NUM_TX * NUM_RX, NUM_SAMPLES), dtype=torch.float32).requires_grad_(True)
     frame = assemble_frame_cube(cube, num_tx=NUM_TX, num_rx=NUM_RX)
     assert frame.requires_grad
     frame.sum().backward()
@@ -193,13 +170,9 @@ def test_a_cube_whose_pair_axis_is_not_the_array_is_refused():
 
 def test_a_pair_count_that_is_not_the_array_is_refused_by_the_tables():
     with pytest.raises(ValueError, match="the same front end"):
-        pair_tx_index(
-            num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=7, device="cpu"
-        )
+        pair_tx_index(num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=7, device="cpu")
     with pytest.raises(ValueError, match="the same front end"):
-        pair_rx_index(
-            num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=7, device="cpu"
-        )
+        pair_rx_index(num_tx=NUM_TX, num_rx=NUM_RX, sensor_pair_count=7, device="cpu")
 
 
 # --------------------------------------------------------------------------
@@ -237,12 +210,8 @@ def test_pair_ordering_refuses_a_shuffled_or_out_of_range_partition():
 
     out_of_range = torch.tensor([0, 1, 9], dtype=torch.int64)
     with pytest.raises(ValueError, match="outside the"):
-        validate_pair_ordering(
-            out_of_range, num_tx=2, num_rx=2, sensor_pair_count=4
-        )
+        validate_pair_ordering(out_of_range, num_tx=2, num_rx=2, sensor_pair_count=4)
 
     wrong_dtype = torch.tensor([0, 1], dtype=torch.int32)
     with pytest.raises(TypeError, match="must be int64"):
-        validate_pair_ordering(
-            wrong_dtype, num_tx=2, num_rx=2, sensor_pair_count=4
-        )
+        validate_pair_ordering(wrong_dtype, num_tx=2, num_rx=2, sensor_pair_count=4)

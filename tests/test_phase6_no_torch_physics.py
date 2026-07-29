@@ -50,21 +50,12 @@ import pathlib
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: Torch calls that evaluate GEOMETRY or a PHASE. ``torch.fft`` is deliberately
 #: absent: it is the allowlisted DSP exception, and the range and Doppler
 #: transforms in ``processing/`` are real production callers.
-FORBIDDEN_TORCH_CALLS = (
-    "cdist",
-    "exp",
-    "sin",
-    "cos",
-    "polar",
-    "atan2",
-    "linalg.norm",
-)
+FORBIDDEN_TORCH_CALLS = ("cdist", "exp", "sin", "cos", "polar", "atan2", "linalg.norm")
 
 #: The four Phase-6 owner packages. ``sigproc`` is NOT here: the plan's
 #: Torch/DSP exception is what it exists under.
@@ -116,11 +107,7 @@ def test_the_migrated_expressions_did_not_come_back_under_another_owner():
 
     assert not (REPO_ROOT / "witwin" / "radar" / "solvers").exists()
 
-    migrated = (
-        "compute_total_path_lengths",
-        "compute_antenna_pattern_gains",
-        "compute_slot_path_tensors",
-    )
+    migrated = ("compute_total_path_lengths", "compute_antenna_pattern_gains", "compute_slot_path_tensors")
     offenders = []
     scanned = 0
     for package in OWNER_PACKAGES:
@@ -191,7 +178,7 @@ def test_the_radar_facade_carries_no_unrecorded_torch_physics():
         if not isinstance(node, ast.Call):
             continue
         name = _dotted(node.func)
-        if not name.startswith("torch.") or name[len("torch."):] not in FORBIDDEN_TORCH_CALLS:
+        if not name.startswith("torch.") or name[len("torch.") :] not in FORBIDDEN_TORCH_CALLS:
             continue
         found.add((functions.get(node.lineno, "<module>"), name))
     assert found == RADAR_FACADE_TORCH_PHYSICS, sorted(found ^ RADAR_FACADE_TORCH_PHYSICS)
@@ -217,12 +204,9 @@ def test_no_owner_gates_a_route_on_requires_grad():
                 if not isinstance(node, ast.If):
                     continue
                 mentioned = any(
-                    isinstance(inner, ast.Attribute) and inner.attr == "requires_grad"
-                    for inner in ast.walk(node.test)
+                    isinstance(inner, ast.Attribute) and inner.attr == "requires_grad" for inner in ast.walk(node.test)
                 )
-                refuses = all(
-                    isinstance(statement, ast.Raise) for statement in node.body
-                ) and not node.orelse
+                refuses = all(isinstance(statement, ast.Raise) for statement in node.body) and not node.orelse
                 if mentioned and not refuses:
                     offenders.append((package, path.name, node.lineno))
     assert offenders == [], offenders
@@ -300,11 +284,7 @@ PHASE9_GUARD_OWNERS = ("policy.py",)
 #: Everything the policy module is allowed to ask Torch. Every entry is a
 #: PREDICATE or a decorator; none of them constructs, allocates or computes.
 PHASE9_GUARD_TORCH_CALLS = frozenset(
-    {
-        "torch.is_grad_enabled",
-        "torch.autograd.forward_ad.unpack_dual",
-        "torch.autograd.function.once_differentiable",
-    }
+    {"torch.is_grad_enabled", "torch.autograd.forward_ad.unpack_dual", "torch.autograd.function.once_differentiable"}
 )
 
 #: The ONE arithmetic Torch expression Phase 9 added to the production graph,
@@ -380,18 +360,14 @@ def _selects_on_requires_grad(node: ast.If) -> bool:
     recorded route.
     """
 
-    if not any(
-        isinstance(inner, ast.Attribute) and inner.attr == "requires_grad"
-        for inner in ast.walk(node.test)
-    ):
+    if not any(isinstance(inner, ast.Attribute) and inner.attr == "requires_grad" for inner in ast.walk(node.test)):
         return False
     if node.orelse:
         return True
     if all(isinstance(item, ast.Raise) for item in node.body):
         return False
     if all(
-        isinstance(item, ast.Return)
-        and (item.value is None or isinstance(item.value, (ast.Constant, ast.Name)))
+        isinstance(item, ast.Return) and (item.value is None or isinstance(item.value, (ast.Constant, ast.Name)))
         for item in node.body
     ):
         return False
@@ -425,9 +401,7 @@ def test_the_phase9_guard_scan_is_not_vacuous():
 
     calls = set()
     for name in PHASE9_GUARD_OWNERS:
-        calls |= {
-            call for _, call in _torch_calls(REPO_ROOT / "witwin" / "radar" / name)
-        }
+        calls |= {call for _, call in _torch_calls(REPO_ROOT / "witwin" / "radar" / name)}
     assert "torch.is_grad_enabled" in calls
     assert "torch.autograd.forward_ad.unpack_dual" in calls
     assert "torch.autograd.function.once_differentiable" in calls
@@ -444,6 +418,7 @@ def test_scattering_torch_calls_are_an_exact_audited_set():
     path = REPO_ROOT / "witwin" / "radar" / "scattering.py"
     found = _torch_calls(path)
     assert found == SCATTERING_TORCH_CALLS, sorted(found ^ SCATTERING_TORCH_CALLS)
+
 
 def test_no_phase9_guarded_package_gates_a_route_on_requires_grad():
     """The Phase-6 rule, over every package Phase 9 touched.
@@ -480,10 +455,9 @@ def test_no_phase9_guard_branches_on_requires_grad():
             functions = _enclosing_functions(tree)
             for node in ast.walk(tree):
                 if isinstance(node, ast.If) and _selects_on_requires_grad(node):
-                    found.add(
-                        (package, path.name, functions.get(node.lineno, "<module>"))
-                    )
+                    found.add((package, path.name, functions.get(node.lineno, "<module>")))
     assert found == set(), sorted(found)
+
 
 def test_no_phase9_guard_answers_with_a_detach_or_a_zero():
     """The refusal owners must not sever a graph instead of refusing.

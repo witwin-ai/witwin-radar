@@ -21,7 +21,6 @@ pytest.importorskip("witwin.channel")
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 

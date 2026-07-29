@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import pytest
 import torch
-
-from witwin.radar.paths import DirectComposer, TwoWayComposer
-
 from reference.two_way_torch import PerSiteResponse  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import DirectComposer, TwoWayComposer
 
 pytestmark = pytest.mark.gpu
 
@@ -63,15 +61,9 @@ def _legs(composer, *, inbound_rows=None, outbound_rows=None, row_valid=None):
     valid_in = valid_out = None
     if row_valid is not None:
         valid_in, valid_out = row_valid
-    inbound = _batch(
-        composer.inbound_row_count if inbound_rows is None else inbound_rows,
-        seed=101,
-        row_valid=valid_in,
-    )
+    inbound = _batch(composer.inbound_row_count if inbound_rows is None else inbound_rows, seed=101, row_valid=valid_in)
     outbound = _batch(
-        composer.outbound_row_count if outbound_rows is None else outbound_rows,
-        seed=102,
-        row_valid=valid_out,
+        composer.outbound_row_count if outbound_rows is None else outbound_rows, seed=102, row_valid=valid_out
     )
     return inbound, outbound
 
@@ -90,9 +82,7 @@ def test_the_matching_frame_still_composes():
 @pytest.mark.parametrize("delta", [-1, 1])
 def test_an_inbound_leg_of_the_wrong_length_is_refused(delta):
     composer = _composer()
-    inbound, outbound = _legs(
-        composer, inbound_rows=composer.inbound_row_count + delta
-    )
+    inbound, outbound = _legs(composer, inbound_rows=composer.inbound_row_count + delta)
     with pytest.raises(ValueError, match="does not belong to this frozen topology"):
         composer.compose(inbound, outbound, _response(composer))
 
@@ -100,9 +90,7 @@ def test_an_inbound_leg_of_the_wrong_length_is_refused(delta):
 @pytest.mark.parametrize("delta", [-1, 1])
 def test_an_outbound_leg_of_the_wrong_length_is_refused(delta):
     composer = _composer()
-    inbound, outbound = _legs(
-        composer, outbound_rows=composer.outbound_row_count + delta
-    )
+    inbound, outbound = _legs(composer, outbound_rows=composer.outbound_row_count + delta)
     with pytest.raises(ValueError, match="does not belong to this frozen topology"):
         composer.compose(inbound, outbound, _response(composer))
 
@@ -139,9 +127,7 @@ def test_the_refusal_does_not_depend_on_a_leg_carrying_row_valid():
     ):
         inbound, outbound = _legs(composer, inbound_rows=short, row_valid=mask)
         assert (inbound.row_valid is None) == (mask is None)
-        with pytest.raises(
-            ValueError, match="does not belong to this frozen topology"
-        ):
+        with pytest.raises(ValueError, match="does not belong to this frozen topology"):
             composer.compose(inbound, outbound, _response(composer))
 
 
@@ -210,7 +196,5 @@ def test_a_direct_leg_of_the_wrong_length_is_refused():
     assert composer.path_count == len(SOURCES) * len(SINKS) * len(COMPONENTS)
     composer.compose(_batch(composer.path_count, seed=201))
     for rows in (composer.path_count - 1, composer.path_count + 1):
-        with pytest.raises(
-            ValueError, match="does not belong to this frozen topology"
-        ):
+        with pytest.raises(ValueError, match="does not belong to this frozen topology"):
             composer.compose(_batch(rows, seed=201))

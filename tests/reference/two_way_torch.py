@@ -51,14 +51,10 @@ def join_reference(
 
     total_delay = tau_in.index_select(0, idx_in) + tau_out.index_select(0, idx_out)
     total_rate = rate_in.index_select(0, idx_in) + rate_out.index_select(0, idx_out)
-    transfer = (
-        c_out.index_select(0, idx_out) * response.index_select(0, idx_s)
-    ) * c_in.index_select(0, idx_in)
+    transfer = (c_out.index_select(0, idx_out) * response.index_select(0, idx_s)) * c_in.index_select(0, idx_in)
 
     if row_valid is not None:
-        total_delay = torch.where(
-            row_valid, total_delay, torch.zeros_like(total_delay)
-        )
+        total_delay = torch.where(row_valid, total_delay, torch.zeros_like(total_delay))
         total_rate = torch.where(row_valid, total_rate, torch.zeros_like(total_rate))
         transfer = torch.where(row_valid, transfer, torch.zeros_like(transfer))
     return total_delay, total_rate, transfer
@@ -82,10 +78,7 @@ class PerSiteResponse:
 
     def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
         if int(self.value.shape[0]) != row_count:
-            raise ValueError(
-                f"this response holds {int(self.value.shape[0])} sites, asked "
-                f"for {row_count}"
-            )
+            raise ValueError(f"this response holds {int(self.value.shape[0])} sites, asked for {row_count}")
         return self.value.to(device=device)
 
 

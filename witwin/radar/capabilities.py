@@ -30,10 +30,9 @@ places, one direction of truth, and a test in between.
 
 from __future__ import annotations
 
-from copy import deepcopy
 import sys
+from copy import deepcopy
 from typing import Any
-
 
 CONSUMER_MODULE = "witwin.channel.propagation.consumer"
 
@@ -158,11 +157,7 @@ _CAPABILITIES: dict[str, Any] = {
 
 
 def _deployment_record() -> dict[str, Any]:
-    from .deployment import (
-        DECLARED_SM_ARCHITECTURES,
-        PTX_FORWARD_COMPATIBILITY_SM,
-        VERIFIED_SM_ARCHITECTURES,
-    )
+    from .deployment import DECLARED_SM_ARCHITECTURES, PTX_FORWARD_COMPATIBILITY_SM, VERIFIED_SM_ARCHITECTURES
 
     return {
         "declared_sm_architectures": list(DECLARED_SM_ARCHITECTURES),

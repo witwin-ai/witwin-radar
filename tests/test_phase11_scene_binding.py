@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
@@ -41,7 +40,6 @@ from witwin.radar.simulation import (
     bind_radar_world,
 )
 
-
 # ---------------------------------------------------------------------------
 # The allocator - host only, no CUDA, no Channel
 # ---------------------------------------------------------------------------
@@ -49,18 +47,11 @@ from witwin.radar.simulation import (
 
 def test_stable_ids_are_a_function_of_role_and_index_only():
     allocator = StableIdAllocator()
-    first = allocator.allocate(
-        transmitter_count=2, receiver_count=2, site_count=3
-    )
-    second = StableIdAllocator().allocate(
-        transmitter_count=2, receiver_count=2, site_count=3
-    )
+    first = allocator.allocate(transmitter_count=2, receiver_count=2, site_count=3)
+    second = StableIdAllocator().allocate(transmitter_count=2, receiver_count=2, site_count=3)
     assert first == second
     transmitters, receivers, sites = first
-    assert transmitters == (
-        DEFAULT_TRANSMITTER_ID_BASE,
-        DEFAULT_TRANSMITTER_ID_BASE + 1,
-    )
+    assert transmitters == (DEFAULT_TRANSMITTER_ID_BASE, DEFAULT_TRANSMITTER_ID_BASE + 1)
     assert receivers == (DEFAULT_RECEIVER_ID_BASE, DEFAULT_RECEIVER_ID_BASE + 1)
     assert sites == tuple(DEFAULT_SITE_ID_BASE + k for k in range(3))
 
@@ -68,21 +59,15 @@ def test_stable_ids_are_a_function_of_role_and_index_only():
 def test_overlapping_id_blocks_are_refused_rather_than_renumbered():
     """Two endpoints sharing an ID join the wrong rows and still answer."""
 
-    allocator = StableIdAllocator(
-        transmitter_base=0, receiver_base=4, site_base=100
-    )
-    assert allocator.allocate(
-        transmitter_count=4, receiver_count=2, site_count=1
-    )
+    allocator = StableIdAllocator(transmitter_base=0, receiver_base=4, site_base=100)
+    assert allocator.allocate(transmitter_count=4, receiver_count=2, site_count=1)
     with pytest.raises(ValueError, match="overlaps the receiver block"):
         allocator.allocate(transmitter_count=5, receiver_count=2, site_count=1)
 
 
 def test_an_empty_endpoint_block_is_refused():
     with pytest.raises(ValueError, match="site_count must be a positive int"):
-        StableIdAllocator().allocate(
-            transmitter_count=1, receiver_count=1, site_count=0
-        )
+        StableIdAllocator().allocate(transmitter_count=1, receiver_count=1, site_count=0)
 
 
 # ---------------------------------------------------------------------------
@@ -106,16 +91,12 @@ def test_a_structure_without_a_world_anchor_names_the_mesh_deferral():
 
 
 def test_a_moving_structure_publishes_its_core_owned_world_anchor():
-    dynamic = world.make_dynamic_scene(
-        wall_origin=(1.0, 2.0, 3.0), wall_velocity=(4.0, 0.0, 0.0)
-    )
+    dynamic = world.make_dynamic_scene(wall_origin=(1.0, 2.0, 3.0), wall_velocity=(4.0, 0.0, 0.0))
     policy = ScatterSitePolicy.structure_anchor()
     anchors = policy.resolve(dynamic.at(0.5), device=torch.device("cpu"))
     assert anchors.shape == (1, 3)
     assert anchors.dtype == torch.float32
-    torch.testing.assert_close(
-        anchors[0], torch.tensor((3.0, 2.0, 3.0), dtype=torch.float32)
-    )
+    torch.testing.assert_close(anchors[0], torch.tensor((3.0, 2.0, 3.0), dtype=torch.float32))
 
 
 def test_a_structure_anchor_policy_refuses_an_unknown_structure():
@@ -128,9 +109,7 @@ def test_a_structure_anchor_policy_refuses_an_unknown_structure():
 def test_an_explicit_policy_passes_a_live_tensor_through_untouched():
     """The tape is the point: a rebuilt tensor is a different AD leaf."""
 
-    positions = torch.tensor(
-        [geo.SITE_P_POSITION_M], dtype=torch.float32
-    ).requires_grad_(True)
+    positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float32).requires_grad_(True)
     policy = ScatterSitePolicy.explicit(positions)
     resolved = policy.resolve(None, device=torch.device("cpu"))
     assert resolved is positions
@@ -145,11 +124,7 @@ def test_an_explicit_policy_refuses_a_silent_cast():
 
 def test_the_two_site_sources_cannot_be_declared_together():
     with pytest.raises(ValueError, match="belongs to the structure_anchor"):
-        ScatterSitePolicy(
-            source="explicit",
-            positions_m=[geo.SITE_P_POSITION_M],
-            structure_ids=(1,),
-        )
+        ScatterSitePolicy(source="explicit", positions_m=[geo.SITE_P_POSITION_M], structure_ids=(1,))
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +155,7 @@ def test_core_mesh_still_rewrites_authored_world_coordinates_by_default():
     faces = torch.tensor(geo.WALL_FACES, dtype=torch.int64)
 
     def _mesh(**overrides):
-        return Mesh(
-            vertices=vertices,
-            faces=faces,
-            fill_mode="surface",
-            topology_diagnostics=False,
-            **overrides,
-        )
+        return Mesh(vertices=vertices, faces=faces, fill_mode="surface", topology_diagnostics=False, **overrides)
 
     recentred = _mesh().world_vertices
     assert float(recentred[:, 0].min()) != pytest.approx(geo.WALL_PLANE_X_M)
@@ -211,15 +180,10 @@ def test_components_and_max_depth_reach_the_propagation_block():
     assert default.propagation.components == frozenset({"los", "reflection"})
     assert default.propagation.max_depth == 1
 
-    narrowed = RadarSystemConfig.from_radar_config(
-        flat, components=frozenset({"los"}), max_depth=0
-    )
+    narrowed = RadarSystemConfig.from_radar_config(flat, components=frozenset({"los"}), max_depth=0)
     assert narrowed.propagation.components == frozenset({"los"})
     assert narrowed.propagation.max_depth == 0
-    assert (
-        narrowed.propagation.reference_frequency_hz
-        == default.propagation.reference_frequency_hz
-    )
+    assert narrowed.propagation.reference_frequency_hz == default.propagation.reference_frequency_hz
 
 
 def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
@@ -236,12 +200,7 @@ def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
 
 def test_the_waveform_block_is_selectable_rather_than_inferred():
     from witwin.radar import RadarConfig
-    from witwin.radar.radar import (
-        WAVEFORM_FMCW,
-        WAVEFORM_OFDM,
-        OfdmWaveformConfig,
-        RadarSystemConfig,
-    )
+    from witwin.radar.radar import WAVEFORM_FMCW, WAVEFORM_OFDM, OfdmWaveformConfig, RadarSystemConfig
 
     flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
     assert RadarSystemConfig.from_radar_config(flat).kind == WAVEFORM_FMCW
@@ -259,10 +218,7 @@ def test_the_waveform_block_is_selectable_rather_than_inferred():
     assert ofdm.kind == WAVEFORM_OFDM
     spec = ofdm.waveform_spec()
     assert spec.num_subcarriers == 64
-    assert (
-        spec.reference_frequency_hz
-        == ofdm.propagation.reference_frequency_hz
-    )
+    assert spec.reference_frequency_hz == ofdm.propagation.reference_frequency_hz
 
 
 # ---------------------------------------------------------------------------
@@ -282,21 +238,13 @@ def radar():
 
 @pytest.mark.gpu
 def test_the_compile_facade_produces_the_scene_the_adapter_consumes():
-    from witwin.radar.channel import (
-        ChannelPropagationAdapter,
-        compile_scene,
-    )
+    from witwin.radar.channel import ChannelPropagationAdapter, compile_scene
 
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
-    compiled = compile_scene(
-        scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-    )
+    compiled = compile_scene(scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
     adapter = ChannelPropagationAdapter(
-        compiled,
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        components=frozenset({"los"}),
-        max_depth=0,
+        compiled, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=frozenset({"los"}), max_depth=0
     )
     assert adapter.compiled_scene is compiled
 
@@ -310,25 +258,16 @@ def test_a_reference_frequency_mismatch_is_refused_not_recompiled():
     and would say nothing about the frequency at all.
     """
 
-    from witwin.radar.channel import (
-        compile_scene,
-        require_reference_frequency,
-    )
+    from witwin.radar.channel import compile_scene, require_reference_frequency
 
-    compiled = compile_scene(
-        world.make_scene()[0], reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-    )
+    compiled = compile_scene(world.make_scene()[0], reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
     require_reference_frequency(compiled, geo.REFERENCE_FREQUENCY_HZ)
-    with pytest.raises(
-        ValueError, match="reference_frequency_hz does not exactly match"
-    ):
+    with pytest.raises(ValueError, match="reference_frequency_hz does not exactly match"):
         require_reference_frequency(compiled, 24.0e9)
 
 
 def test_require_reference_frequency_refuses_a_non_compiled_scene():
-    from witwin.radar.channel import (
-        require_reference_frequency,
-    )
+    from witwin.radar.channel import require_reference_frequency
 
     with pytest.raises(TypeError, match="require_reference_frequency"):
         require_reference_frequency(object(), geo.REFERENCE_FREQUENCY_HZ)
@@ -336,9 +275,7 @@ def test_require_reference_frequency_refuses_a_non_compiled_scene():
 
 @pytest.mark.gpu
 def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
-    sites = ScatterSitePolicy.explicit(
-        [geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M]
-    )
+    sites = ScatterSitePolicy.explicit([geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M])
     binding = bind_radar_world(radar, radar_snapshot(), sites=sites)
 
     assert isinstance(binding, RadarWorldBinding)
@@ -350,30 +287,18 @@ def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
     expected_w = radar.system_config.sensors.tx_power.transmit_power_watts
     torch.testing.assert_close(
         binding.transmitters.powers_w,
-        torch.full(
-            (binding.transmitters.count,),
-            float(expected_w),
-            dtype=torch.float32,
-            device=binding.device,
-        ),
+        torch.full((binding.transmitters.count,), float(expected_w), dtype=torch.float32, device=binding.device),
     )
     torch.testing.assert_close(
         binding.site_sources.powers_w,
-        torch.full(
-            (2,),
-            SITE_EXCITATION_POWER_W,
-            dtype=torch.float32,
-            device=binding.device,
-        ),
+        torch.full((2,), SITE_EXCITATION_POWER_W, dtype=torch.float32, device=binding.device),
     )
 
 
 @pytest.mark.gpu
 def test_two_bindings_of_one_snapshot_agree_on_every_stable_id(radar):
     snapshot = radar_snapshot()
-    sites = ScatterSitePolicy.explicit(
-        [geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M]
-    )
+    sites = ScatterSitePolicy.explicit([geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M])
     first = bind_radar_world(radar, snapshot, sites=sites)
     second = bind_radar_world(radar, snapshot, sites=sites)
 
@@ -383,24 +308,14 @@ def test_two_bindings_of_one_snapshot_agree_on_every_stable_id(radar):
     assert torch.equal(first.transmitters.stable_ids, second.transmitters.stable_ids)
     assert torch.equal(first.site_sinks.stable_ids, second.site_sinks.stable_ids)
 
-    every_id = set(first.transmitter_ids) | set(first.receiver_ids) | set(
-        first.site_ids
-    )
-    assert len(every_id) == (
-        len(first.transmitter_ids)
-        + len(first.receiver_ids)
-        + len(first.site_ids)
-    )
+    every_id = set(first.transmitter_ids) | set(first.receiver_ids) | set(first.site_ids)
+    assert len(every_id) == (len(first.transmitter_ids) + len(first.receiver_ids) + len(first.site_ids))
 
 
 @pytest.mark.gpu
 def test_the_two_site_roles_share_one_position_tensor(radar):
-    positions = torch.tensor(
-        [geo.SITE_P_POSITION_M], dtype=torch.float32, device=radar.device
-    ).requires_grad_(True)
-    binding = bind_radar_world(
-        radar, radar_snapshot(), sites=ScatterSitePolicy.explicit(positions)
-    )
+    positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float32, device=radar.device).requires_grad_(True)
+    binding = bind_radar_world(radar, radar_snapshot(), sites=ScatterSitePolicy.explicit(positions))
     assert binding.site_sources.positions_m is positions
     assert binding.site_sinks.positions_m is positions
     assert binding.site_positions_m is positions
@@ -410,10 +325,7 @@ def test_the_two_site_roles_share_one_position_tensor(radar):
 
 @pytest.mark.gpu
 def test_the_binding_refuses_a_site_id_that_collides_with_the_array(radar):
-    sites = ScatterSitePolicy.explicit(
-        [geo.SITE_P_POSITION_M],
-        stable_ids=(DEFAULT_TRANSMITTER_ID_BASE,),
-    )
+    sites = ScatterSitePolicy.explicit([geo.SITE_P_POSITION_M], stable_ids=(DEFAULT_TRANSMITTER_ID_BASE,))
     with pytest.raises(ValueError, match="collide with the transmitter"):
         bind_radar_world(radar, radar_snapshot(), sites=sites)
 
@@ -422,9 +334,7 @@ def test_the_binding_refuses_a_site_id_that_collides_with_the_array(radar):
 def test_the_binding_refuses_a_site_tensor_from_another_device(radar):
     positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float32)
     with pytest.raises(ValueError, match="but this binding is on"):
-        bind_radar_world(
-            radar, radar_snapshot(), sites=ScatterSitePolicy.explicit(positions)
-        )
+        bind_radar_world(radar, radar_snapshot(), sites=ScatterSitePolicy.explicit(positions))
 
 
 def radar_snapshot():

@@ -38,22 +38,15 @@ from support import multi_endpoint_world as world  # noqa: E402
 
 import witwin.radar as wr  # noqa: E402
 from witwin.radar import Radar  # noqa: E402
-from witwin.radar.simulation import (  # noqa: E402
+from witwin.radar.paths import RadarPathBatch  # noqa: E402
+from witwin.radar.propagation import RadarLegBatch, RadarPropagationLegs  # noqa: E402
+from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
+from witwin.radar.sensors import ISOTROPIC_PATTERN  # noqa: E402
+from witwin.radar.simulation import (  # noqa: E402  # noqa: E402
+    RadarSimulationResult,
     ScatterSitePolicy,
     StableIdAllocator,
 )
-from witwin.radar.paths import RadarPathBatch  # noqa: E402
-from witwin.radar.propagation import (  # noqa: E402
-    RadarLegBatch,
-    RadarPropagationLegs,
-)
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.sensors import ISOTROPIC_PATTERN  # noqa: E402
-from witwin.radar.simulation import (  # noqa: E402
-    DRIVER_SLOW_TIME_MODE,
-    RadarSimulationResult,
-)
-
 
 pytestmark = pytest.mark.gpu
 
@@ -75,26 +68,17 @@ def _radar() -> Radar:
         "x_values": list(ISOTROPIC_PATTERN.x_values),
         "y_values": list(ISOTROPIC_PATTERN.y_values),
     }
-    return Radar(
-        config,
-        position=(0.0, 0.0, 0.0),
-        target=LOOK_AT_M,
-    )
+    return Radar(config, position=(0.0, 0.0, 0.0), target=LOOK_AT_M)
 
 
 def _response(radar: Radar, *, requires_grad: bool = False) -> ScalarRcsResponse:
     return ScalarRcsResponse.from_values(
-        drv.FIXTURE_AMPLITUDE,
-        drv.FIXTURE_PHASE_RAD,
-        device=radar.device,
-        requires_grad=requires_grad,
+        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device, requires_grad=requires_grad
     )
 
 
 def _sites(radar: Radar, *, requires_grad: bool = False) -> ScatterSitePolicy:
-    positions = torch.tensor(
-        SITE_POSITIONS_M, dtype=torch.float32, device=radar.device
-    ).requires_grad_(requires_grad)
+    positions = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device).requires_grad_(requires_grad)
     return ScatterSitePolicy.explicit(positions)
 
 
@@ -105,13 +89,7 @@ def _static_scene():
 
 
 def _simulate(radar: Radar, scene, times, **options) -> RadarSimulationResult:
-    return radar.simulate(
-        scene,
-        times=times,
-        response=_response(radar),
-        sites=_sites(radar),
-        **options,
-    )
+    return radar.simulate(scene, times=times, response=_response(radar), sites=_sites(radar), **options)
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +105,7 @@ def test_simulate_runs_the_whole_pipeline_and_publishes_a_frame_cube():
 
     array = radar.system_config.sensors.array
     waveform = radar.system_config.waveform
-    assert result.cube.shape == (
-        3,
-        array.num_tx,
-        array.num_rx,
-        waveform.chirp_per_frame,
-        waveform.adc_samples,
-    )
+    assert result.cube.shape == (3, array.num_tx, array.num_rx, waveform.chirp_per_frame, waveform.adc_samples)
     assert result.cube.dtype == torch.complex64
     assert result.cube.device.type == radar.device.type
     assert result.axes == ("frame", "tx", "rx", "chirp", "range_bin")
@@ -200,34 +172,21 @@ def test_the_composed_rows_agree_with_the_reference_orchestration():
     produced = radar.last_radar_paths
 
     spike = drv.MultiEndpointSpike(
-        transmitters=tuple(
-            zip(transmitter_ids, [tuple(row) for row in radar.tx_pos.tolist()])
-        ),
-        sites=tuple(zip(site_ids, SITE_POSITIONS_M)),
-        receivers=tuple(
-            zip(receiver_ids, [tuple(row) for row in radar.rx_pos.tolist()])
-        ),
+        transmitters=tuple(zip(transmitter_ids, [tuple(row) for row in radar.tx_pos.tolist()], strict=True)),
+        sites=tuple(zip(site_ids, SITE_POSITIONS_M, strict=True)),
+        receivers=tuple(zip(receiver_ids, [tuple(row) for row in radar.rx_pos.tolist()], strict=True)),
     )
     reference, _, _ = spike.frame(response=_response(radar))
 
     assert produced.path_count == reference.path_count
     assert produced.sensor_pair_count == reference.sensor_pair_count
     for name in ("radar_source_id", "site_id", "radar_sink_id"):
-        assert torch.equal(
-            getattr(produced.topology, name), getattr(reference.topology, name)
-        ), name
+        assert torch.equal(getattr(produced.topology, name), getattr(reference.topology, name)), name
     assert torch.equal(produced.total_delay_s, reference.total_delay_s)
 
-    expected = (
-        radar.system_config.sensors.tx_power.transmit_power_watts / geo.TX_POWER_W
-    ) ** 0.5
+    expected = (radar.system_config.sensors.tx_power.transmit_power_watts / geo.TX_POWER_W) ** 0.5
     ratio = produced.complex_transfer_ref.abs() / reference.complex_transfer_ref.abs()
-    torch.testing.assert_close(
-        ratio,
-        torch.full_like(ratio, float(expected)),
-        rtol=1e-5,
-        atol=0.0,
-    )
+    torch.testing.assert_close(ratio, torch.full_like(ratio, float(expected)), rtol=1e-5, atol=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +198,7 @@ def test_the_diagnostics_are_none_before_the_first_simulate():
     """The pinned answer. Raising would make "has it run" a try/except."""
 
     radar = _radar()
-    for name in (
-        "last_snapshot",
-        "last_compiled_scene",
-        "last_propagation",
-        "last_radar_paths",
-        "last_result",
-    ):
+    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
         assert getattr(radar, name) is None, name
 
 
@@ -293,19 +246,8 @@ def test_a_failed_simulate_leaves_no_stale_diagnostics():
     _simulate(radar, _static_scene(), (0.0,))
     assert radar.last_radar_paths is not None
     with pytest.raises(ValueError):
-        radar.simulate(
-            _static_scene(),
-            times=(),
-            response=_response(radar),
-            sites=_sites(radar),
-        )
-    for name in (
-        "last_snapshot",
-        "last_compiled_scene",
-        "last_propagation",
-        "last_radar_paths",
-        "last_result",
-    ):
+        radar.simulate(_static_scene(), times=(), response=_response(radar), sites=_sites(radar))
+    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
         assert getattr(radar, name) is None, name
 
 
@@ -411,11 +353,7 @@ def test_a_moving_world_discovers_exactly_once_per_epoch(monkeypatch):
     result = _simulate(radar, dynamic, (0.0, 1.0e-3, 2.0e-3))
 
     assert result.epochs == (0, 1, 2)
-    assert result.rediscovery_reasons == (
-        "first_frame",
-        "structure_motion",
-        "structure_motion",
-    )
+    assert result.rediscovery_reasons == ("first_frame", "structure_motion", "structure_motion")
     assert result.compile_count == 3
     assert result.discovery_count == len(set(result.epochs)) == 3
     assert len(freezes) == 2 * result.discovery_count, freezes
@@ -433,9 +371,7 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
     freezes = _count_freezes(monkeypatch)
     radar = _radar()
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
-    result = _simulate(
-        radar, dynamic, (0.0, 1.0e-3, 2.0e-3), world_motion="fixed_winner_replay"
-    )
+    result = _simulate(radar, dynamic, (0.0, 1.0e-3, 2.0e-3), world_motion="fixed_winner_replay")
 
     assert result.epochs == (0, 0, 0)
     assert result.discovery_count == 1
@@ -463,13 +399,7 @@ def test_the_published_cube_is_differentiable_through_the_site_positions():
 
     radar = _radar()
     policy = _sites(radar, requires_grad=True)
-    result = radar.simulate(
-        _static_scene(),
-        times=(0.0,),
-        response=_response(radar),
-        sites=policy,
-        ad_mode="vjp",
-    )
+    result = radar.simulate(_static_scene(), times=(0.0,), response=_response(radar), sites=policy, ad_mode="vjp")
     assert result.cube.requires_grad
     result.cube.abs().square().sum().backward()
     grad = policy.positions_m.grad
@@ -486,19 +416,11 @@ def test_components_and_max_depth_override_one_solve_and_not_the_radar():
     full_rows = radar.last_radar_paths.path_count
     assert full.cube.shape == full.cube.shape
 
-    narrowed = _simulate(
-        radar,
-        _static_scene(),
-        (0.0,),
-        components=frozenset({"los"}),
-        max_depth=0,
-    )
+    narrowed = _simulate(radar, _static_scene(), (0.0,), components=frozenset({"los"}), max_depth=0)
     assert narrowed.cube.shape == full.cube.shape
     assert radar.last_radar_paths.path_count < full_rows
     # The radar's stored configuration never moved.
-    assert radar.system_config.propagation.components == frozenset(
-        {"los", "reflection"}
-    )
+    assert radar.system_config.propagation.components == frozenset({"los", "reflection"})
     assert radar.system_config.propagation.max_depth == 1
 
 
@@ -519,15 +441,11 @@ def test_slow_time_mode_is_not_a_public_simulation_choice():
 
     assert "slow_time_mode" not in inspect.signature(Radar.simulate).parameters
 
+
 def test_an_empty_time_sequence_is_refused():
     radar = _radar()
     with pytest.raises(ValueError, match="at least one frame instant"):
-        radar.simulate(
-            _static_scene(),
-            times=(),
-            response=_response(radar),
-            sites=_sites(radar),
-        )
+        radar.simulate(_static_scene(), times=(), response=_response(radar), sites=_sites(radar))
 
 
 def test_a_site_declaration_that_is_not_a_policy_is_refused():
@@ -554,6 +472,4 @@ def test_a_static_world_has_no_core_owned_site_anchor():
 
     radar = _radar()
     with pytest.raises(NotImplementedError, match="named Phase-11 deferral"):
-        radar.simulate(
-            _static_scene(), times=(0.0,), response=_response(radar)
-        )
+        radar.simulate(_static_scene(), times=(0.0,), response=_response(radar))

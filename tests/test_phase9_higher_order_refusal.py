@@ -46,9 +46,7 @@ import pathlib
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
 from support import ad_boundaries as ab
-
 
 #: Only the per-boundary tests need a device. The structural scan, the
 #: Torch-owned nested-forward pin and the decorator-ordering measurement are
@@ -100,32 +98,21 @@ def test_every_registered_backward_is_decorated_by_the_one_owner():
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.ClassDef)
-            and any(
-                isinstance(base, ast.Attribute) and base.attr == "Function"
-                for base in node.bases
-            )
+            and any(isinstance(base, ast.Attribute) and base.attr == "Function" for base in node.bases)
         ]
         assert len(functions) == expected, (relative, len(functions))
         total_functions += len(functions)
         for function in functions:
             backwards = [
-                node
-                for node in function.body
-                if isinstance(node, ast.FunctionDef) and node.name == "backward"
+                node for node in function.body if isinstance(node, ast.FunctionDef) and node.name == "backward"
             ]
             assert len(backwards) == 1, (relative, function.name)
-            names = {
-                decorator.id
-                for decorator in backwards[0].decorator_list
-                if isinstance(decorator, ast.Name)
-            }
+            names = {decorator.id for decorator in backwards[0].decorator_list if isinstance(decorator, ast.Name)}
             assert "first_order_only" in names, (relative, function.name)
             # The raw decorator cannot be left beside it: applying both would
             # put the grad-mode check inside the no_grad body and disarm it.
             assert "once_differentiable" not in names, (relative, function.name)
-        assert "once_differentiable" not in source.replace(
-            "``once_differentiable``", ""
-        ), relative
+        assert "once_differentiable" not in source.replace("``once_differentiable``", ""), relative
     assert total_functions == 8, total_functions
 
 
@@ -136,9 +123,7 @@ def test_the_package_names_no_second_higher_order_rule():
 
     assert policy.first_order_only.__module__ == "witwin.radar.policy"
     owners = [
-        path
-        for path in _radar_root().rglob("*.py")
-        if "def first_order_only" in path.read_text(encoding="utf-8")
+        path for path in _radar_root().rglob("*.py") if "def first_order_only" in path.read_text(encoding="utf-8")
     ]
     assert [path.name for path in owners] == ["policy.py"], owners
 
@@ -207,9 +192,7 @@ def test_a_cotangent_carrying_a_forward_tangent_is_refused(name):
     leaf = boundary.leaf.detach().clone().requires_grad_(True)
     loss = boundary.loss(leaf)
     with forward_ad.dual_level():
-        cotangent = forward_ad.make_dual(
-            torch.ones_like(loss.detach()), torch.ones_like(loss.detach())
-        )
+        cotangent = forward_ad.make_dual(torch.ones_like(loss.detach()), torch.ones_like(loss.detach()))
         with pytest.raises(NotImplementedError, match="first-order only") as raised:
             torch.autograd.grad(loss, leaf, grad_outputs=cotangent)
     assert "a forward tangent" in str(raised.value)
@@ -259,11 +242,7 @@ def test_a_cotangent_that_itself_requires_grad_is_refused():
     # The measurement: one intermediate Torch operation is enough for Torch to
     # strip the cotangent's own graph before it reaches the boundary.
     composed = direct.square().sum()
-    torch.autograd.grad(
-        composed,
-        leaf,
-        grad_outputs=torch.ones_like(composed.detach()).requires_grad_(True),
-    )
+    torch.autograd.grad(composed, leaf, grad_outputs=torch.ones_like(composed.detach()).requires_grad_(True))
     assert arrived == [False], arrived
 
 
@@ -339,13 +318,7 @@ def test_once_differentiable_cannot_replace_the_grad_mode_check():
     leaf = torch.tensor([1.0], requires_grad=True)
     out = Inner.apply(leaf)
     torch.autograd.grad(out, leaf, grad_outputs=torch.ones_like(out), retain_graph=True)
-    torch.autograd.grad(
-        out,
-        leaf,
-        grad_outputs=torch.ones_like(out),
-        create_graph=True,
-        retain_graph=True,
-    )
+    torch.autograd.grad(out, leaf, grad_outputs=torch.ones_like(out), create_graph=True, retain_graph=True)
     # Both calls, including the create_graph one, saw grad mode OFF.
     assert observed == [False, False], observed
 
@@ -373,12 +346,6 @@ def test_once_differentiable_cannot_replace_the_grad_mode_check():
     out = Outer.apply(leaf)
     torch.autograd.grad(out, leaf, grad_outputs=torch.ones_like(out), retain_graph=True)
     with pytest.raises(NotImplementedError, match="first-order only"):
-        torch.autograd.grad(
-            out,
-            leaf,
-            grad_outputs=torch.ones_like(out),
-            create_graph=True,
-            retain_graph=True,
-        )
+        torch.autograd.grad(out, leaf, grad_outputs=torch.ones_like(out), create_graph=True, retain_graph=True)
     # The body ran once, for the first-order call, and never for the second.
     assert seen == [False], seen

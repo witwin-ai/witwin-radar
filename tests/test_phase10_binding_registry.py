@@ -16,12 +16,11 @@ binary.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "ci" / "native-binding-manifest.json"
@@ -135,15 +134,14 @@ def test_the_manifest_symbol_set_matches_the_packaged_sidecar(manifest):
     """Registry, shipped binary and loader agree, or this fails (A4)."""
 
     from witwin.radar.cuda import runtime as build
+
     identity = build
 
     binary = build.prebuilt_extension_path()
     if not binary.is_file():
         pytest.skip("no packaged prebuilt in this checkout")
     record = identity.read_build_info(binary)
-    assert set(record["operator_symbols"]) == {
-        entry["symbol"] for entry in manifest["operators"]
-    }
+    assert set(record["operator_symbols"]) == {entry["symbol"] for entry in manifest["operators"]}
 
 
 def test_the_gate_passes_on_the_real_manifest():
@@ -244,9 +242,7 @@ def test_a_contract_test_that_names_neither_the_symbol_nor_its_owner_fails(tmp_p
     """
 
     def mutate(data):
-        entry = next(
-            item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward"
-        )
+        entry = next(item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward")
         entry["contract_test"] = "tests/test_phase10_diagnostics.py"
         entry.pop("contract_test_note", None)
 
@@ -267,9 +263,7 @@ def test_a_facade_row_may_declare_the_gap_but_not_fake_it(tmp_path):
     """
 
     def mutate(data):
-        entry = next(
-            item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward"
-        )
+        entry = next(item for item in data["operators"] if item["symbol"] == "fmcw_beat_forward")
         entry["contract_test_note"] = []
 
     completed = _run_gate(_mutated(tmp_path, mutate))
@@ -293,9 +287,9 @@ def test_every_facade_row_that_uses_the_note_says_why(manifest):
             continue
         text = (REPO_ROOT / entry["contract_test"]).read_text(encoding="utf-8")
         owner_module = Path(entry["python_owner"]).stem
-        assert not gate._references(
-            text, symbol=entry["symbol"], owner_module=owner_module
-        ), f"{entry['symbol']}: the note is unnecessary, the test names it"
+        assert not gate._references(text, symbol=entry["symbol"], owner_module=owner_module), (
+            f"{entry['symbol']}: the note is unnecessary, the test names it"
+        )
         assert len(" ".join(note)) > 80, entry["symbol"]
         noted.append(entry["symbol"])
     assert noted == [], noted

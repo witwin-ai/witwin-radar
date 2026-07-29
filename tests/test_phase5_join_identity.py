@@ -22,12 +22,10 @@ from __future__ import annotations
 
 import pytest
 import torch
-
-from witwin.radar.paths import TwoWayComposer
-
 from reference.two_way_torch import PerSiteResponse  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
 
 pytestmark = pytest.mark.gpu
 
@@ -80,10 +78,7 @@ def _run(inbound_order, outbound_order, *, requires_grad=False):
         "response": site_value.to(torch.complex64),
     }
     if requires_grad:
-        leaves = {
-            name: value.clone().requires_grad_(True)
-            for name, value in leaves.items()
-        }
+        leaves = {name: value.clone().requires_grad_(True) for name, value in leaves.items()}
     inbound = fx.leg_batch(
         leaves["tau_in"],
         leaves["c_in"],
@@ -96,9 +91,7 @@ def _run(inbound_order, outbound_order, *, requires_grad=False):
         rate=take(rate_out, outbound_order).to(torch.float32),
         row_valid=take(valid_out, outbound_order),
     )
-    composed = composer.compose(
-        inbound, outbound, PerSiteResponse(leaves["response"])
-    )
+    composed = composer.compose(inbound, outbound, PerSiteResponse(leaves["response"]))
     return composer, composed, leaves, (inbound_order, outbound_order)
 
 
@@ -132,30 +125,19 @@ def test_a_permuted_leg_order_composes_to_an_elementwise_identical_frame():
     assert straight.path_count == permuted.path_count
     assert straight.sensor_pair_count == permuted.sensor_pair_count
     assert straight.pair_offsets.tolist() == permuted.pair_offsets.tolist()
-    assert (
-        straight.sensor_pair_index.tolist() == permuted.sensor_pair_index.tolist()
-    )
-    assert _identity_columns(straight, straight_maps) == _identity_columns(
-        permuted, permuted_maps
-    )
+    assert straight.sensor_pair_index.tolist() == permuted.sensor_pair_index.tolist()
+    assert _identity_columns(straight, straight_maps) == _identity_columns(permuted, permuted_maps)
     # The permutation really did reorder the legs: the raw row indices differ.
-    assert (
-        straight.topology.inbound_row.tolist()
-        != permuted.topology.inbound_row.tolist()
-    )
+    assert straight.topology.inbound_row.tolist() != permuted.topology.inbound_row.tolist()
 
     for name in ("total_delay_s", "delay_rate", "complex_transfer_ref", "row_valid"):
-        assert torch.equal(
-            getattr(straight, name), getattr(permuted, name)
-        ), name
+        assert torch.equal(getattr(straight, name), getattr(permuted, name)), name
 
 
 def test_a_permuted_leg_order_produces_bit_identical_gradients():
     weights_generator = torch.Generator().manual_seed(808)
     rows = 32
-    weight = (
-        torch.rand(rows, generator=weights_generator, dtype=torch.float32) - 0.5
-    ).cuda()
+    weight = (torch.rand(rows, generator=weights_generator, dtype=torch.float32) - 0.5).cuda()
     transfer_weight = torch.complex(
         torch.rand(rows, generator=weights_generator, dtype=torch.float32) - 0.5,
         torch.rand(rows, generator=weights_generator, dtype=torch.float32) - 0.5,

@@ -27,7 +27,6 @@ from . import multi_endpoint_driver as drv
 from . import multi_endpoint_geometry as geo
 from . import multi_endpoint_world as world
 
-
 #: The wall arriving from where it was parked. Same value as the Phase-7
 #: invalidation fixture, which is the point: the scene that births a row is the
 #: same scene, seen through the component taxonomy.
@@ -51,10 +50,7 @@ def component_index(spike, decl=None):
     from witwin.radar.paths import RadarComponentIndex
 
     return RadarComponentIndex.from_two_way(
-        spike.composer,
-        spike.inbound,
-        spike.outbound,
-        declaration() if decl is None else decl,
+        spike.composer, spike.inbound, spike.outbound, declaration() if decl is None else decl
     )
 
 
@@ -79,11 +75,7 @@ def direct_route(spike, decl=None):
             power_w=geo.TX_POWER_W,
             device=spike.device,
         ),
-        world.endpoint_batch(
-            [position for _, position in spike.receivers],
-            spike.receiver_ids,
-            device=spike.device,
-        ),
+        world.endpoint_batch([position for _, position in spike.receivers], spike.receiver_ids, device=spike.device),
     )
     composer = DirectComposer.freeze(
         leg,
@@ -91,9 +83,7 @@ def direct_route(spike, decl=None):
         radar_sink_ids=list(spike.receiver_ids),
         reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
     )
-    index = RadarComponentIndex.from_direct(
-        composer, leg, declaration() if decl is None else decl
-    )
+    index = RadarComponentIndex.from_direct(composer, leg, declaration() if decl is None else decl)
     return composer, leg, index
 
 
@@ -122,9 +112,7 @@ def path_gaining_clutter_scene():
     which a fixed-winner replay cannot report at all.
     """
 
-    return world.make_dynamic_scene(
-        wall_origin=geo.WALL_PARKED_OFFSET_M, wall_velocity=ARRIVING_WALL_VELOCITY
-    )
+    return world.make_dynamic_scene(wall_origin=geo.WALL_PARKED_OFFSET_M, wall_velocity=ARRIVING_WALL_VELOCITY)
 
 
 class ClutterEpochState:
@@ -153,15 +141,10 @@ def clutter_epoch_loop(dynamic, policy, *, compile_scene=None, decl=None):
     def bind(compiled, snapshot, previous):
         del snapshot
         state.binds += 1
-        state.spike = drv.MultiEndpointSpike(
-            compiled=compiled,
-            adapter=None if previous is None else previous.adapter,
-        )
+        state.spike = drv.MultiEndpointSpike(compiled=compiled, adapter=None if previous is None else previous.adapter)
         state.index = component_index(state.spike, state.decl)
         return FrozenEpoch(
-            adapter=state.spike.adapter,
-            handles=(state.spike.inbound, state.spike.outbound),
-            payload=state.spike,
+            adapter=state.spike.adapter, handles=(state.spike.inbound, state.spike.outbound), payload=state.spike
         )
 
     loop = SceneEpochLoop(

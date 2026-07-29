@@ -28,13 +28,7 @@ from __future__ import annotations
 
 import torch
 
-from witwin.radar.synthesis.assembly import (
-    PULSE_KIND_LFM,
-    PULSE_KIND_RECT,
-    SPEED_OF_LIGHT_M_PER_S,
-    PulsedSpec,
-)
-
+from witwin.radar.synthesis.assembly import PULSE_KIND_LFM, PULSE_KIND_RECT, SPEED_OF_LIGHT_M_PER_S, PulsedSpec
 
 C0 = SPEED_OF_LIGHT_M_PER_S
 
@@ -65,20 +59,20 @@ ON_GRID_TAU_S = ON_GRID_SAMPLE * SAMPLE_PERIOD_S
 def reference_spec(**overrides) -> PulsedSpec:
     """The shared grid at the PRODUCTION carrier placement, LFM pulse."""
 
-    fields = dict(
-        num_pulses=NUM_PULSES,
-        num_samples=NUM_SAMPLES,
-        sample_period_s=SAMPLE_PERIOD_S,
-        pri_s=PRI_S,
-        range_gate_start_s=RANGE_GATE_START_S,
-        pulse_kind=PULSE_KIND_LFM,
-        pulse_width_s=PULSE_WIDTH_S,
-        bandwidth_hz=BANDWIDTH_HZ,
-        reference_frequency_hz=F_REF_HZ,
-        max_expected_delay_rate=abs(TAU_RATE),
-        carrier_hz=0.0,
-        carrier_rate_hz=F_REF_HZ,
-    )
+    fields = {
+        "num_pulses": NUM_PULSES,
+        "num_samples": NUM_SAMPLES,
+        "sample_period_s": SAMPLE_PERIOD_S,
+        "pri_s": PRI_S,
+        "range_gate_start_s": RANGE_GATE_START_S,
+        "pulse_kind": PULSE_KIND_LFM,
+        "pulse_width_s": PULSE_WIDTH_S,
+        "bandwidth_hz": BANDWIDTH_HZ,
+        "reference_frequency_hz": F_REF_HZ,
+        "max_expected_delay_rate": abs(TAU_RATE),
+        "carrier_hz": 0.0,
+        "carrier_rate_hz": F_REF_HZ,
+    }
     fields.update(overrides)
     return PulsedSpec(**fields)
 
@@ -91,7 +85,7 @@ def rect_spec(**overrides) -> PulsedSpec:
     range cell and the migration bound mean the same thing for both kinds.
     """
 
-    fields = dict(pulse_kind=PULSE_KIND_RECT, bandwidth_hz=1.0 / PULSE_WIDTH_S)
+    fields = {"pulse_kind": PULSE_KIND_RECT, "bandwidth_hz": 1.0 / PULSE_WIDTH_S}
     fields.update(overrides)
     return reference_spec(**fields)
 

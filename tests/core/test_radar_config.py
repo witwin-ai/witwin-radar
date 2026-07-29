@@ -5,10 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
+from conftest import STANDARD_CONFIG, MockRadar
 
-from conftest import MockRadar, STANDARD_CONFIG
 from witwin.radar import RadarConfig
-
 
 C0 = 299792458
 
@@ -94,16 +93,11 @@ class TestRadarConfigSchema:
                 "kind": "map",
                 "x_angles_deg": [-60, 0, 60],
                 "y_angles_deg": [-30, 0, 30],
-                "values": [
-                    [0.1, 0.2, 0.1],
-                    [0.5, 1.0],
-                    [0.1, 0.2, 0.1],
-                ],
+                "values": [[0.1, 0.2, 0.1], [0.5, 1.0], [0.1, 0.2, 0.1]],
             },
         }
         with pytest.raises(ValueError, match="must contain exactly 3 entries"):
             RadarConfig.from_dict(broken)
-
 
 
 class TestParameterFormulas:
@@ -139,8 +133,7 @@ class TestParameterFormulas:
     def test_max_range_equals_resolution_times_adc(self):
         mock = MockRadar(STANDARD_CONFIG)
         assert mock.axes.max_unambiguous_range_m == pytest.approx(
-            mock.axes.range_bin_m * STANDARD_CONFIG["adc_samples"],
-            rel=1e-10,
+            mock.axes.range_bin_m * STANDARD_CONFIG["adc_samples"], rel=1e-10
         )
 
     def test_max_doppler(self):
@@ -214,15 +207,17 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
     from witwin.radar import Radar
 
     radar = Radar(
-        RadarConfig.from_dict({
-            **STANDARD_CONFIG,
-            "antenna_pattern": {
-                "x_angles_deg": [-60, 0, 60],
-                "x_values": [0.25, 1.0, 0.25],
-                "y_angles_deg": [-30, 0, 30],
-                "y_values": [0.5, 1.0, 0.5],
-            },
-        }),
+        RadarConfig.from_dict(
+            {
+                **STANDARD_CONFIG,
+                "antenna_pattern": {
+                    "x_angles_deg": [-60, 0, 60],
+                    "x_values": [0.25, 1.0, 0.25],
+                    "y_angles_deg": [-30, 0, 30],
+                    "y_values": [0.5, 1.0, 0.5],
+                },
+            }
+        ),
         device="cpu",
     )
     assert radar.antenna_pattern_kind == "separable"
@@ -253,17 +248,15 @@ class TestRadarConstruction:
         radar = Radar(standard_config)
         mock = MockRadar(standard_config)
         spec = radar.system_config.waveform_spec()
-        assert spec.max_unambiguous_speed_mps == pytest.approx(
-            mock.axes.max_unambiguous_speed_mps, rel=1e-10
-        )
+        assert spec.max_unambiguous_speed_mps == pytest.approx(mock.axes.max_unambiguous_speed_mps, rel=1e-10)
 
     def test_radar_has_no_processing_axis_state(self, standard_config):
         from witwin.radar import Radar
 
         radar = Radar(standard_config)
-        assert not hasattr(radar, 'axes')
-        assert not hasattr(radar, 'ranges')
-        assert not hasattr(radar, 'velocities')
+        assert not hasattr(radar, "axes")
+        assert not hasattr(radar, "ranges")
+        assert not hasattr(radar, "velocities")
 
     def test_no_solver_and_no_fft_state_hang_off_the_radar(self, standard_config):
         """This used to assert where the FFT state LIVED; now there is none.

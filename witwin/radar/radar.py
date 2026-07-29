@@ -12,26 +12,23 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Iterable
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
 from .frontend import FrontendSpec
 from .sensors import (
+    DEFAULT_DIPOLE_ANGLES_DEG,
+    DEFAULT_DIPOLE_VALUES,
     AntennaPatternSpec,
     SensorArraySpec,
     TxPowerSpec,
-)
-from .sensors import (
-    DEFAULT_DIPOLE_ANGLES_DEG,
-    DEFAULT_DIPOLE_VALUES,
     evaluate_antenna_pattern_xy,
 )
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_ENERGY,
-    SPEED_OF_LIGHT_M_PER_S,
     SUBCARRIER_ORIGIN_F_REF_AT_N0,
     FmcwSpec,
     OfdmSpec,
@@ -70,12 +67,7 @@ class FmcwWaveformConfig:
     output_domain: str = "spectrum"
 
     def to_spec(
-        self,
-        *,
-        reference_frequency_hz: float,
-        num_tx: int = 1,
-        num_rx: int = 1,
-        carrier_hz: float = 0.0,
+        self, *, reference_frequency_hz: float, num_tx: int = 1, num_rx: int = 1, carrier_hz: float = 0.0
     ) -> FmcwSpec:
         carrier = float(carrier_hz)
         return FmcwSpec(
@@ -112,9 +104,7 @@ class OfdmWaveformConfig:
     max_expected_delay_s: float
     subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
 
-    def to_spec(
-        self, *, reference_frequency_hz: float, carrier_hz: float = 0.0
-    ) -> OfdmSpec:
+    def to_spec(self, *, reference_frequency_hz: float, carrier_hz: float = 0.0) -> OfdmSpec:
         carrier = float(carrier_hz)
         return OfdmSpec(
             num_subcarriers=int(self.num_subcarriers),
@@ -151,9 +141,7 @@ class PulsedWaveformConfig:
     max_expected_delay_rate: float = 0.0
     pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
 
-    def to_spec(
-        self, *, reference_frequency_hz: float, carrier_hz: float = 0.0
-    ) -> PulsedSpec:
+    def to_spec(self, *, reference_frequency_hz: float, carrier_hz: float = 0.0) -> PulsedSpec:
         carrier = float(carrier_hz)
         return PulsedSpec(
             num_pulses=int(self.num_pulses),
@@ -231,14 +219,8 @@ class RadarSystemConfig:
 
     def __post_init__(self) -> None:
         if self.waveform.kind not in WAVEFORM_KINDS:
-            raise ValueError(
-                f"waveform.kind must be one of {list(WAVEFORM_KINDS)}, got "
-                f"{self.waveform.kind!r}"
-            )
-        if (
-            self.sensors.array.reference_frequency_hz
-            != self.propagation.reference_frequency_hz
-        ):
+            raise ValueError(f"waveform.kind must be one of {list(WAVEFORM_KINDS)}, got {self.waveform.kind!r}")
+        if self.sensors.array.reference_frequency_hz != self.propagation.reference_frequency_hz:
             raise ValueError(
                 "the array's reference frequency and the propagation reference "
                 "frequency are the same physical quantity and must agree; the "
@@ -262,15 +244,10 @@ class RadarSystemConfig:
         reference = self.propagation.reference_frequency_hz
         if self.waveform.kind == WAVEFORM_FMCW:
             return self.waveform.to_spec(
-                reference_frequency_hz=reference,
-                num_tx=array.num_tx,
-                num_rx=array.num_rx,
-                carrier_hz=carrier_hz,
+                reference_frequency_hz=reference, num_tx=array.num_tx, num_rx=array.num_rx, carrier_hz=carrier_hz
             )
         if self.waveform.kind in (WAVEFORM_OFDM, WAVEFORM_PULSED):
-            return self.waveform.to_spec(
-                reference_frequency_hz=reference, carrier_hz=carrier_hz
-            )
+            return self.waveform.to_spec(reference_frequency_hz=reference, carrier_hz=carrier_hz)
         raise ValueError(
             f"no synthesis owner for waveform kind {self.waveform.kind!r}; a "
             "waveform without an owner has no physics and this dispatch has no "
@@ -278,11 +255,8 @@ class RadarSystemConfig:
         )
 
     def with_propagation(
-        self,
-        *,
-        components: frozenset[str] | None = None,
-        max_depth: int | None = None,
-    ) -> "RadarSystemConfig":
+        self, *, components: frozenset[str] | None = None, max_depth: int | None = None
+    ) -> RadarSystemConfig:
         """A copy whose propagation block carries these two knobs.
 
         The scene-driven entry's ``components=`` / ``max_depth=`` keywords land
@@ -302,12 +276,8 @@ class RadarSystemConfig:
         current = self.propagation
         replacement = PropagationConfig(
             reference_frequency_hz=current.reference_frequency_hz,
-            components=(
-                current.components if components is None else frozenset(components)
-            ),
-            max_depth=(
-                current.max_depth if max_depth is None else int(max_depth)
-            ),
+            components=(current.components if components is None else frozenset(components)),
+            max_depth=(current.max_depth if max_depth is None else int(max_depth)),
         )
         return replace(self, propagation=replacement)
 
@@ -361,11 +331,7 @@ class RadarSystemConfig:
             ),
             propagation=PropagationConfig(
                 reference_frequency_hz=float(config.fc),
-                **(
-                    {}
-                    if components is None
-                    else {"components": frozenset(components)}
-                ),
+                **({} if components is None else {"components": frozenset(components)}),
                 **({} if max_depth is None else {"max_depth": int(max_depth)}),
             ),
             processing=ProcessingConfig(
@@ -377,9 +343,11 @@ class RadarSystemConfig:
             frontend=frontend,
         )
 
+
 # ---------------------------------------------------------------------------
 # Primitive validators
 # ---------------------------------------------------------------------------
+
 
 def _finite_float(name: str, value: Any, prefix: str) -> float:
     try:
@@ -426,25 +394,17 @@ def _require_keys(config: dict[str, Any], keys: Iterable[str], label: str) -> No
 
 
 def _parse_vector3(
-    name: str,
-    value: Any,
-    *,
-    prefix: str,
-    aliases: dict[str, tuple[float, float, float]] | None = None,
+    name: str, value: Any, *, prefix: str, aliases: dict[str, tuple[float, float, float]] | None = None
 ) -> tuple[float, float, float]:
     if isinstance(value, str):
         if aliases is None or value.lower() not in aliases:
             raise ValueError(
-                f"{prefix} '{name}' must be a 3-element vector"
-                + (" or an alias string." if aliases else ".")
+                f"{prefix} '{name}' must be a 3-element vector" + (" or an alias string." if aliases else ".")
             )
         return aliases[value.lower()]
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise ValueError(f"{prefix} '{name}' must be a 3-element vector.")
-    vector = tuple(
-        _finite_float(f"{name}[{i}]", component, prefix)
-        for i, component in enumerate(value)
-    )
+    vector = tuple(_finite_float(f"{name}[{i}]", component, prefix) for i, component in enumerate(value))
     norm_sq = sum(c * c for c in vector)
     if norm_sq <= 1e-24:
         raise ValueError(f"{prefix} '{name}' must be non-zero.")
@@ -474,9 +434,7 @@ def _validate_values_1d(name: str, value: Any, expected_count: int) -> tuple[flo
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be a sequence of gain values.")
     if len(value) != expected_count:
-        raise ValueError(
-            f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}."
-        )
+        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}.")
     gains = []
     for i, item in enumerate(value):
         gain = _finite_float(f"{name}[{i}]", item, _ANTENNA_PREFIX)
@@ -486,15 +444,11 @@ def _validate_values_1d(name: str, value: Any, expected_count: int) -> tuple[flo
     return tuple(gains)
 
 
-def _validate_values_2d(
-    name: str, value: Any, expected_rows: int, expected_cols: int
-) -> tuple[tuple[float, ...], ...]:
+def _validate_values_2d(name: str, value: Any, expected_rows: int, expected_cols: int) -> tuple[tuple[float, ...], ...]:
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be a 2D sequence of gain values.")
     if len(value) != expected_rows:
-        raise ValueError(
-            f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_rows} rows; got {len(value)}."
-        )
+        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_rows} rows; got {len(value)}.")
     rows = []
     for row_index, row in enumerate(value):
         if not isinstance(row, (list, tuple)):
@@ -507,9 +461,7 @@ def _validate_values_2d(
         for col_index, item in enumerate(row):
             gain = _finite_float(f"{name}[{row_index}][{col_index}]", item, _ANTENNA_PREFIX)
             if gain < 0.0:
-                raise ValueError(
-                    f"{_ANTENNA_PREFIX} '{name}[{row_index}][{col_index}]' must be non-negative."
-                )
+                raise ValueError(f"{_ANTENNA_PREFIX} '{name}[{row_index}][{col_index}]' must be non-negative.")
             parsed_row.append(gain)
         rows.append(tuple(parsed_row))
     return tuple(rows)
@@ -618,15 +570,11 @@ def _reject_unknown_radar_keys(config: dict[str, Any]) -> None:
         )
 
 
-def _validate_antenna_locations(
-    name: str, value: Any, expected_count: int
-) -> tuple[tuple[float, float, float], ...]:
+def _validate_antenna_locations(name: str, value: Any, expected_count: int) -> tuple[tuple[float, float, float], ...]:
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{_RADAR_PREFIX} '{name}' must be a sequence of 3D coordinates.")
     if len(value) != expected_count:
-        raise ValueError(
-            f"{_RADAR_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}."
-        )
+        raise ValueError(f"{_RADAR_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}.")
     coords: list[tuple[float, float, float]] = []
     for index, coord in enumerate(value):
         if not isinstance(coord, (list, tuple)) or len(coord) != 3:
@@ -702,13 +650,7 @@ _FMCW_REQUIRED = (
     "ramp_end_time",
     "chirp_per_frame",
 )
-_OFDM_REQUIRED = (
-    "subcarrier_spacing_hz",
-    "num_subcarriers",
-    "cyclic_prefix_s",
-    "num_symbols",
-    "max_expected_delay_s",
-)
+_OFDM_REQUIRED = ("subcarrier_spacing_hz", "num_subcarriers", "cyclic_prefix_s", "num_symbols", "max_expected_delay_s")
 _PULSED_REQUIRED = (
     "pulse_kind",
     "pulse_width_s",
@@ -720,12 +662,7 @@ _PULSED_REQUIRED = (
     "range_gate_start_s",
 )
 _PROPAGATION_REQUIRED = ("reference_frequency_hz",)
-_PROCESSING_REQUIRED = (
-    "frame_per_second",
-    "num_doppler_bins",
-    "num_range_bins",
-    "num_angle_bins",
-)
+_PROCESSING_REQUIRED = ("frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins")
 _SENSOR_REQUIRED = ("num_tx", "num_rx", "fc", "tx_loc", "rx_loc", "power")
 
 
@@ -749,43 +686,23 @@ def validate_waveform_config(config: dict[str, Any]):
         _require_keys(config, _FMCW_REQUIRED, "FMCW waveform config")
         return FmcwWaveformConfig(
             slope=_finite_float("slope", config["slope"], _WAVEFORM_PREFIX),
-            adc_samples=_positive_int(
-                "adc_samples", config["adc_samples"], _WAVEFORM_PREFIX
-            ),
-            adc_start_time=_finite_float(
-                "adc_start_time", config["adc_start_time"], _WAVEFORM_PREFIX
-            ),
-            sample_rate=_positive_float(
-                "sample_rate", config["sample_rate"], _WAVEFORM_PREFIX
-            ),
-            idle_time=_non_negative_float(
-                "idle_time", config["idle_time"], _WAVEFORM_PREFIX
-            ),
-            ramp_end_time=_positive_float(
-                "ramp_end_time", config["ramp_end_time"], _WAVEFORM_PREFIX
-            ),
-            chirp_per_frame=_positive_int(
-                "chirp_per_frame", config["chirp_per_frame"], _WAVEFORM_PREFIX
-            ),
+            adc_samples=_positive_int("adc_samples", config["adc_samples"], _WAVEFORM_PREFIX),
+            adc_start_time=_finite_float("adc_start_time", config["adc_start_time"], _WAVEFORM_PREFIX),
+            sample_rate=_positive_float("sample_rate", config["sample_rate"], _WAVEFORM_PREFIX),
+            idle_time=_non_negative_float("idle_time", config["idle_time"], _WAVEFORM_PREFIX),
+            ramp_end_time=_positive_float("ramp_end_time", config["ramp_end_time"], _WAVEFORM_PREFIX),
+            chirp_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"], _WAVEFORM_PREFIX),
             output_domain=str(config.get("output_domain", "spectrum")),
         )
     if kind == WAVEFORM_OFDM:
         _require_keys(config, _OFDM_REQUIRED, "OFDM waveform config")
         return OfdmWaveformConfig(
             subcarrier_spacing_hz=_positive_float(
-                "subcarrier_spacing_hz",
-                config["subcarrier_spacing_hz"],
-                _WAVEFORM_PREFIX,
+                "subcarrier_spacing_hz", config["subcarrier_spacing_hz"], _WAVEFORM_PREFIX
             ),
-            num_subcarriers=_positive_int(
-                "num_subcarriers", config["num_subcarriers"], _WAVEFORM_PREFIX
-            ),
-            cyclic_prefix_s=_positive_float(
-                "cyclic_prefix_s", config["cyclic_prefix_s"], _WAVEFORM_PREFIX
-            ),
-            num_symbols=_positive_int(
-                "num_symbols", config["num_symbols"], _WAVEFORM_PREFIX
-            ),
+            num_subcarriers=_positive_int("num_subcarriers", config["num_subcarriers"], _WAVEFORM_PREFIX),
+            cyclic_prefix_s=_positive_float("cyclic_prefix_s", config["cyclic_prefix_s"], _WAVEFORM_PREFIX),
+            num_symbols=_positive_int("num_symbols", config["num_symbols"], _WAVEFORM_PREFIX),
             max_expected_delay_s=_non_negative_float(
                 "max_expected_delay_s", config["max_expected_delay_s"], _WAVEFORM_PREFIX
             ),
@@ -793,27 +710,15 @@ def validate_waveform_config(config: dict[str, Any]):
     _require_keys(config, _PULSED_REQUIRED, "Pulsed waveform config")
     return PulsedWaveformConfig(
         pulse_kind=str(config["pulse_kind"]),
-        pulse_width_s=_positive_float(
-            "pulse_width_s", config["pulse_width_s"], _WAVEFORM_PREFIX
-        ),
-        bandwidth_hz=_positive_float(
-            "bandwidth_hz", config["bandwidth_hz"], _WAVEFORM_PREFIX
-        ),
+        pulse_width_s=_positive_float("pulse_width_s", config["pulse_width_s"], _WAVEFORM_PREFIX),
+        bandwidth_hz=_positive_float("bandwidth_hz", config["bandwidth_hz"], _WAVEFORM_PREFIX),
         pri_s=_positive_float("pri_s", config["pri_s"], _WAVEFORM_PREFIX),
         num_pulses=_positive_int("num_pulses", config["num_pulses"], _WAVEFORM_PREFIX),
-        sample_rate_hz=_positive_float(
-            "sample_rate_hz", config["sample_rate_hz"], _WAVEFORM_PREFIX
-        ),
-        num_samples=_positive_int(
-            "num_samples", config["num_samples"], _WAVEFORM_PREFIX
-        ),
-        range_gate_start_s=_non_negative_float(
-            "range_gate_start_s", config["range_gate_start_s"], _WAVEFORM_PREFIX
-        ),
+        sample_rate_hz=_positive_float("sample_rate_hz", config["sample_rate_hz"], _WAVEFORM_PREFIX),
+        num_samples=_positive_int("num_samples", config["num_samples"], _WAVEFORM_PREFIX),
+        range_gate_start_s=_non_negative_float("range_gate_start_s", config["range_gate_start_s"], _WAVEFORM_PREFIX),
         max_expected_delay_rate=_non_negative_float(
-            "max_expected_delay_rate",
-            config.get("max_expected_delay_rate", 0.0),
-            _WAVEFORM_PREFIX,
+            "max_expected_delay_rate", config.get("max_expected_delay_rate", 0.0), _WAVEFORM_PREFIX
         ),
     )
 
@@ -826,11 +731,7 @@ def validate_sensor_config(config: dict[str, Any]):
     carries ``sqrt(P_tx)``, so a second one would count the power twice and mix
     sqrt(W) with sqrt(W ohm).
     """
-    from .sensors import (
-        AntennaPatternSpec,
-        SensorArraySpec,
-        TxPowerSpec,
-    )
+    from .sensors import AntennaPatternSpec, SensorArraySpec, TxPowerSpec
 
     _require_keys(config, _SENSOR_REQUIRED, "Sensor config")
     num_tx = _positive_int("num_tx", config["num_tx"], _SENSOR_PREFIX)
@@ -849,9 +750,7 @@ def validate_sensor_config(config: dict[str, Any]):
             reference_frequency_hz=_positive_float("fc", config["fc"], _SENSOR_PREFIX),
         ),
         pattern=AntennaPatternSpec.from_config(pattern),
-        tx_power=TxPowerSpec(
-            power_dbm=_finite_float("power", config["power"], _SENSOR_PREFIX)
-        ),
+        tx_power=TxPowerSpec(power_dbm=_finite_float("power", config["power"], _SENSOR_PREFIX)),
     )
 
 
@@ -862,19 +761,14 @@ def validate_propagation_config(config: dict[str, Any]):
     components = config.get("components", ("los", "reflection"))
     if isinstance(components, str):
         raise ValueError(
-            f"{_PROPAGATION_PREFIX} 'components' must be a collection of "
-            "component names, not a single string"
+            f"{_PROPAGATION_PREFIX} 'components' must be a collection of component names, not a single string"
         )
     return PropagationConfig(
         reference_frequency_hz=_positive_float(
-            "reference_frequency_hz",
-            config["reference_frequency_hz"],
-            _PROPAGATION_PREFIX,
+            "reference_frequency_hz", config["reference_frequency_hz"], _PROPAGATION_PREFIX
         ),
         components=frozenset(str(name) for name in components),
-        max_depth=_positive_int(
-            "max_depth", config.get("max_depth", 1), _PROPAGATION_PREFIX
-        ),
+        max_depth=_positive_int("max_depth", config.get("max_depth", 1), _PROPAGATION_PREFIX),
     )
 
 
@@ -883,18 +777,10 @@ def validate_processing_config(config: dict[str, Any]):
 
     _require_keys(config, _PROCESSING_REQUIRED, "Processing config")
     return ProcessingConfig(
-        frame_per_second=_positive_float(
-            "frame_per_second", config["frame_per_second"], _PROCESSING_PREFIX
-        ),
-        num_doppler_bins=_positive_int(
-            "num_doppler_bins", config["num_doppler_bins"], _PROCESSING_PREFIX
-        ),
-        num_range_bins=_positive_int(
-            "num_range_bins", config["num_range_bins"], _PROCESSING_PREFIX
-        ),
-        num_angle_bins=_positive_int(
-            "num_angle_bins", config["num_angle_bins"], _PROCESSING_PREFIX
-        ),
+        frame_per_second=_positive_float("frame_per_second", config["frame_per_second"], _PROCESSING_PREFIX),
+        num_doppler_bins=_positive_int("num_doppler_bins", config["num_doppler_bins"], _PROCESSING_PREFIX),
+        num_range_bins=_positive_int("num_range_bins", config["num_range_bins"], _PROCESSING_PREFIX),
+        num_angle_bins=_positive_int("num_angle_bins", config["num_angle_bins"], _PROCESSING_PREFIX),
     )
 
 
@@ -913,15 +799,7 @@ def validate_frontend_config(config: dict[str, Any]):
     three quietly disagree.
     """
 
-    from .frontend import (
-        AdcSpec,
-        AgcSpec,
-        FrontendSpec,
-        LnaSpec,
-        NoiseSpec,
-        PortSpec,
-        SeedSpec,
-    )
+    from .frontend import AdcSpec, AgcSpec, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec
 
     allowed = {"port", "noise", "lna", "agc", "adc", "seed"}
     unknown = sorted(set(config) - allowed)
@@ -931,18 +809,14 @@ def validate_frontend_config(config: dict[str, Any]):
     port_config = config.get("port") or {}
     port = PortSpec(
         reference_impedance_ohm=_positive_float(
-            "port.reference_impedance_ohm",
-            port_config.get("reference_impedance_ohm", 50.0),
-            _FRONTEND_PREFIX,
+            "port.reference_impedance_ohm", port_config.get("reference_impedance_ohm", 50.0), _FRONTEND_PREFIX
         )
     )
 
     noise = None
     if config.get("noise") is not None:
         raw = config["noise"]
-        thermal = (
-            raw.get("noise_figure_db") is not None or raw.get("bandwidth_hz") is not None
-        )
+        thermal = raw.get("noise_figure_db") is not None or raw.get("bandwidth_hz") is not None
         if thermal and raw.get("bandwidth_hz") is None:
             raise ValueError(
                 f"{_FRONTEND_PREFIX} 'noise.bandwidth_hz' is required when thermal "
@@ -951,61 +825,37 @@ def validate_frontend_config(config: dict[str, Any]):
             )
         noise = NoiseSpec(
             noise_figure_db=_non_negative_float(
-                "noise.noise_figure_db",
-                raw.get("noise_figure_db", 0.0),
-                _FRONTEND_PREFIX,
+                "noise.noise_figure_db", raw.get("noise_figure_db", 0.0), _FRONTEND_PREFIX
             ),
             antenna_temperature_k=_non_negative_float(
-                "noise.antenna_temperature_k",
-                raw.get("antenna_temperature_k", 290.0),
-                _FRONTEND_PREFIX,
+                "noise.antenna_temperature_k", raw.get("antenna_temperature_k", 290.0), _FRONTEND_PREFIX
             ),
-            bandwidth_hz=_non_negative_float(
-                "noise.bandwidth_hz", raw.get("bandwidth_hz", 0.0), _FRONTEND_PREFIX
-            ),
+            bandwidth_hz=_non_negative_float("noise.bandwidth_hz", raw.get("bandwidth_hz", 0.0), _FRONTEND_PREFIX),
             phase_noise_dbc_per_hz=(
                 None
                 if raw.get("phase_noise_dbc_per_hz") is None
-                else _finite_float(
-                    "noise.phase_noise_dbc_per_hz",
-                    raw["phase_noise_dbc_per_hz"],
-                    _FRONTEND_PREFIX,
-                )
+                else _finite_float("noise.phase_noise_dbc_per_hz", raw["phase_noise_dbc_per_hz"], _FRONTEND_PREFIX)
             ),
             phase_offset_hz=_non_negative_float(
-                "noise.phase_offset_hz",
-                raw.get("phase_offset_hz", 0.0),
-                _FRONTEND_PREFIX,
+                "noise.phase_offset_hz", raw.get("phase_offset_hz", 0.0), _FRONTEND_PREFIX
             ),
             phase_sample_rate_hz=_non_negative_float(
-                "noise.phase_sample_rate_hz",
-                raw.get("phase_sample_rate_hz", 0.0),
-                _FRONTEND_PREFIX,
+                "noise.phase_sample_rate_hz", raw.get("phase_sample_rate_hz", 0.0), _FRONTEND_PREFIX
             ),
         )
 
     lna = None
     if config.get("lna") is not None:
-        lna = LnaSpec(
-            gain_db=_finite_float(
-                "lna.gain_db", config["lna"].get("gain_db", 0.0), _FRONTEND_PREFIX
-            )
-        )
+        lna = LnaSpec(gain_db=_finite_float("lna.gain_db", config["lna"].get("gain_db", 0.0), _FRONTEND_PREFIX))
 
     agc = None
     if config.get("agc") is not None:
         raw = config["agc"]
         agc = AgcSpec(
-            target_rms=_positive_float(
-                "agc.target_rms", raw.get("target_rms"), _FRONTEND_PREFIX
-            ),
+            target_rms=_positive_float("agc.target_rms", raw.get("target_rms"), _FRONTEND_PREFIX),
             mode=str(raw.get("mode", "per_rx")).lower(),
-            min_gain_db=_finite_float(
-                "agc.min_gain_db", raw.get("min_gain_db", -60.0), _FRONTEND_PREFIX
-            ),
-            max_gain_db=_finite_float(
-                "agc.max_gain_db", raw.get("max_gain_db", 60.0), _FRONTEND_PREFIX
-            ),
+            min_gain_db=_finite_float("agc.min_gain_db", raw.get("min_gain_db", -60.0), _FRONTEND_PREFIX),
+            max_gain_db=_finite_float("agc.max_gain_db", raw.get("max_gain_db", 60.0), _FRONTEND_PREFIX),
         )
 
     adc = None
@@ -1013,36 +863,25 @@ def validate_frontend_config(config: dict[str, Any]):
         raw = config["adc"]
         adc = AdcSpec(
             bits=_positive_int("adc.bits", raw.get("bits"), _FRONTEND_PREFIX),
-            full_scale=_positive_float(
-                "adc.full_scale", raw.get("full_scale", 1.0), _FRONTEND_PREFIX
-            ),
+            full_scale=_positive_float("adc.full_scale", raw.get("full_scale", 1.0), _FRONTEND_PREFIX),
         )
 
-    seed = SeedSpec(
-        seed_base=_optional_seed(config.get("seed"), "seed", _FRONTEND_PREFIX) or 0
-    )
+    seed = SeedSpec(seed_base=_optional_seed(config.get("seed"), "seed", _FRONTEND_PREFIX) or 0)
     return FrontendSpec(port=port, noise=noise, lna=lna, agc=agc, adc=adc, seed=seed)
 
 
 def validate_radar_system_config(config: dict[str, Any]):
     """Build all five blocks from a block-shaped mapping."""
 
-    _require_keys(
-        config,
-        ("waveform", "sensors", "propagation", "processing"),
-        "Radar system config",
-    )
+    _require_keys(config, ("waveform", "sensors", "propagation", "processing"), "Radar system config")
     return RadarSystemConfig(
         waveform=validate_waveform_config(config["waveform"]),
         sensors=validate_sensor_config(config["sensors"]),
         propagation=validate_propagation_config(config["propagation"]),
         processing=validate_processing_config(config["processing"]),
-        frontend=(
-            validate_frontend_config(config["frontend"])
-            if config.get("frontend") is not None
-            else None
-        ),
+        frontend=(validate_frontend_config(config["frontend"]) if config.get("frontend") is not None else None),
     )
+
 
 def vec3_tensor(value, *, name: str) -> torch.Tensor:
     """Coerce to a CPU float32 tensor of shape (3,)."""
@@ -1053,6 +892,7 @@ def vec3_tensor(value, *, name: str) -> torch.Tensor:
     if tensor.shape != (3,):
         raise ValueError(f"{name} must contain exactly three values.")
     return tensor
+
 
 @dataclass(frozen=True)
 class RadarConfig:
@@ -1081,15 +921,15 @@ class RadarConfig:
     #: can disagree about where the LNA sits. It is ``None`` by default: noise
     #: is optional and OFF unless a caller asks for it, and every physics test
     #: runs without it.
-    frontend: "FrontendSpec | None" = None
+    frontend: FrontendSpec | None = None
 
     @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "RadarConfig":
+    def from_dict(cls, config: dict[str, Any]) -> RadarConfig:
         return validate_radar_config(config)
 
     @classmethod
-    def from_json(cls, path: str | os.PathLike[str]) -> "RadarConfig":
-        with open(path, "r", encoding="utf-8") as handle:
+    def from_json(cls, path: str | os.PathLike[str]) -> RadarConfig:
+        with open(path, encoding="utf-8") as handle:
             return cls.from_dict(json.load(handle))
 
 
@@ -1156,9 +996,7 @@ class Radar:
         ``slope``.
         """
 
-        self.system_config = RadarSystemConfig.from_radar_config(
-            cfg, frontend=cfg.frontend
-        )
+        self.system_config = RadarSystemConfig.from_radar_config(cfg, frontend=cfg.frontend)
 
     def _init_antenna_locations(self, cfg: RadarConfig) -> None:
         self._lambda = self.c0 / cfg.fc
@@ -1212,8 +1050,12 @@ class Radar:
 
     def _build_antenna_pattern_runtime(self, config: dict[str, Any]) -> None:
         self.antenna_pattern_kind = config["kind"]
-        self.antenna_pattern_x_angles_deg = torch.tensor(config["x_angles_deg"], dtype=torch.float32, device=self.device)
-        self.antenna_pattern_y_angles_deg = torch.tensor(config["y_angles_deg"], dtype=torch.float32, device=self.device)
+        self.antenna_pattern_x_angles_deg = torch.tensor(
+            config["x_angles_deg"], dtype=torch.float32, device=self.device
+        )
+        self.antenna_pattern_y_angles_deg = torch.tensor(
+            config["y_angles_deg"], dtype=torch.float32, device=self.device
+        )
         self.antenna_pattern_x_values = None
         self.antenna_pattern_y_values = None
         self.antenna_pattern_values = None
@@ -1235,7 +1077,7 @@ class Radar:
             y_angles_deg,
         )
 
-    def set_pose(self, *, position=None, target=None, up=None, fov=None) -> "Radar":
+    def set_pose(self, *, position=None, target=None, up=None, fov=None) -> Radar:
         """Mutate radar pose and refresh pose-dependent antenna state."""
         new_position = self.position if position is None else vec3_tensor(position, name="Radar.position")
         if target is None:
@@ -1282,20 +1124,20 @@ class Radar:
     def _apply_signal_models(self, signal: torch.Tensor) -> torch.Tensor:
         """Run the receive chain, if one is configured.
 
-        This used to CHOOSE between two owners: the frontend block, or the
-        legacy `
-oise_model`` / ``receiver_chain`` pair, with a constructor
-        refusal for the configuration that named both. A refusal is not the
-        same as having one owner, and a runtime choice between two chains is
-        the shadow mode acceptance criterion 6 forbids. The pair is deleted, so
-        the only question left is whether a chain exists.
+                This used to CHOOSE between two owners: the frontend block, or the
+                legacy `
+        oise_model`` / ``receiver_chain`` pair, with a constructor
+                refusal for the configuration that named both. A refusal is not the
+                same as having one owner, and a runtime choice between two chains is
+                the shadow mode acceptance criterion 6 forbids. The pair is deleted, so
+                the only question left is whether a chain exists.
         """
 
         if self.frontend is None:
             return signal
         return self.frontend.apply(signal).signal
 
-    def _synthesize(self, paths, *, slow_time_mode) -> "SynthesisResult":
+    def _synthesize(self, paths, *, slow_time_mode) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.
 
         Dispatch is a dict lookup on the STORED ``waveform.kind``. It is not a
@@ -1312,13 +1154,7 @@ oise_model`` / ``receiver_chain`` pair, with a constructor
         slot, and defaulting it makes the Phase-7 collision a silent wrong
         answer instead of a refusal.
         """
-        from .synthesis import (
-            SynthesisPathBatch,
-            SynthesisResult,
-            synthesize_fmcw,
-            synthesize_ofdm,
-            synthesize_pulsed,
-        )
+        from .synthesis import SynthesisPathBatch, SynthesisResult, synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
         owners = {
             WAVEFORM_FMCW: (synthesize_fmcw, SynthesisResult.from_fmcw),
@@ -1335,9 +1171,7 @@ oise_model`` / ``receiver_chain`` pair, with a constructor
         batch = (
             paths
             if isinstance(paths, SynthesisPathBatch)
-            else SynthesisPathBatch.from_radar_paths(
-                paths, slow_time_mode=slow_time_mode
-            )
+            else SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=slow_time_mode)
         )
         synthesize, build_result = owners[kind]
         spec = self.system_config.waveform_spec()
@@ -1357,7 +1191,7 @@ oise_model`` / ``receiver_chain`` pair, with a constructor
         motion_event_period_frames: int | None = None,
         ids=None,
         polarization=None,
-    ) -> "RadarSimulationResult":
+    ) -> RadarSimulationResult:
         """Simulate this radar over a Core world and return the frame cubes.
 
         The scene-driven entry point. ``scene`` is a ``witwin.core.Scene`` or a
@@ -1416,7 +1250,7 @@ oise_model`` / ``receiver_chain`` pair, with a constructor
     # would make "has this radar run yet" a try/except.
 
     @property
-    def last_result(self) -> "RadarSimulationResult | None":
+    def last_result(self) -> RadarSimulationResult | None:
         """The whole of the last :meth:`simulate` call, or ``None``."""
 
         return self._last_result
@@ -1431,28 +1265,21 @@ oise_model`` / ``receiver_chain`` pair, with a constructor
     def last_compiled_scene(self):
         """The Channel ``CompiledScene`` that frame's legs were replayed on."""
 
-        return (
-            None
-            if self._last_result is None
-            else self._last_result.last_compiled_scene
-        )
+        return None if self._last_result is None else self._last_result.last_compiled_scene
 
     @property
     def last_propagation(self):
         """That frame's two legs, as a typed
         :class:`~witwin.radar.propagation.RadarPropagationLegs`."""
 
-        return (
-            None if self._last_result is None else self._last_result.last_propagation
-        )
+        return None if self._last_result is None else self._last_result.last_propagation
 
     @property
     def last_radar_paths(self):
         """That frame's composed
         :class:`~witwin.radar.paths.RadarPathBatch`."""
 
-        return (
-            None if self._last_result is None else self._last_result.last_radar_paths
-        )
+        return None if self._last_result is None else self._last_result.last_radar_paths
+
 
 __all__ = ["Radar", "RadarConfig"]

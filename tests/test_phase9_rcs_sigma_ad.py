@@ -52,13 +52,12 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
 from witwin.radar.scattering import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
+    ScalarRcsResponse,  # noqa: E402
     rcs_amplitude,
 )
 from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -93,9 +92,7 @@ def spike():
 def _loss(spike, spec, response) -> torch.Tensor:
     """freeze -> reevaluate -> compose -> synthesize -> scalar, once."""
 
-    composed, _, _ = spike.frame(
-        None, response, ad_mode="none", include_delay_rate=False
-    )
+    composed, _, _ = spike.frame(None, response, ad_mode="none", include_delay_rate=False)
     cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum()
 
@@ -106,11 +103,7 @@ def _sigma_tensor(value: float, *, requires_grad: bool = False) -> torch.Tensor:
 
 
 def _response_from_sigma(sigma: torch.Tensor) -> ScalarRcsResponse:
-    return ScalarRcsResponse.from_rcs(
-        sigma,
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        phase_rad=PHASE_RAD,
-    )
+    return ScalarRcsResponse.from_rcs(sigma, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, phase_rad=PHASE_RAD)
 
 
 # --------------------------------------------------------------------------
@@ -190,15 +183,11 @@ def test_the_cross_section_gradient_matches_a_central_difference(spike, spec, re
     def value(sigma: float) -> float:
         return float(_loss(spike, spec, _response_from_sigma(_sigma_tensor(sigma))))
 
-    difference = (
-        value(SIGMA_M2 + SIGMA_STEP) - value(SIGMA_M2 - SIGMA_STEP)
-    ) / (2.0 * SIGMA_STEP)
+    difference = (value(SIGMA_M2 + SIGMA_STEP) - value(SIGMA_M2 - SIGMA_STEP)) / (2.0 * SIGMA_STEP)
     assert difference == pytest.approx(gradient, rel=SIGMA_FD_RTOL)
 
 
-def test_the_gradient_is_the_amplitude_gradient_through_the_square_root(
-    spike, spec, reverse
-):
+def test_the_gradient_is_the_amplitude_gradient_through_the_square_root(spike, spec, reverse):
     """The brief's explicit check: ``dL/dsigma = dL/damp * 0.5 * amp / sigma``.
 
     This is what actually pins the ``0.5 / sqrt(sigma)`` factor. The closed form
@@ -214,9 +203,7 @@ def test_the_gradient_is_the_amplitude_gradient_through_the_square_root(
 
     _, gradient = reverse
     amplitude = float(rcs_amplitude(SIGMA_M2, WAVELENGTH_M))
-    response = ScalarRcsResponse.from_values(
-        amplitude, PHASE_RAD, device="cuda", requires_grad=True
-    )
+    response = ScalarRcsResponse.from_values(amplitude, PHASE_RAD, device="cuda", requires_grad=True)
     _loss(spike, spec, response).backward()
     d_loss_d_amplitude = float(response.amplitude.grad)
 
@@ -302,9 +289,7 @@ def test_a_non_scalar_cross_section_is_refused():
 
     vector = torch.tensor([1.0, 2.0], dtype=torch.float32, device="cuda")
     with pytest.raises(ValueError) as excinfo:
-        ScalarRcsResponse.from_rcs(
-            vector, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-        )
+        ScalarRcsResponse.from_rcs(vector, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
     assert "0-dim" in str(excinfo.value)
 
 
@@ -312,7 +297,5 @@ def test_the_host_float_route_keeps_its_negative_refusal():
     """Unchanged behaviour for scalar callers, including the error they get."""
 
     with pytest.raises(ValueError) as excinfo:
-        ScalarRcsResponse.from_rcs(
-            -1.0, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-        )
+        ScalarRcsResponse.from_rcs(-1.0, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
     assert "cannot be negative" in str(excinfo.value)

@@ -25,29 +25,10 @@ Two structural contracts, each with a test:
 from __future__ import annotations
 
 import torch
+
+from ..cuda import native_ops as _ops
 from ..policy import first_order_only
-
-from .assembly import pair_tx_index
-from .assembly import FmcwSpec, SynthesisPathBatch, require_compatible
-
-
-_OPS = None
-
-
-def _ops():
-    """The native operator table, resolved once per process.
-
-    Held here as well as in the build module because this runs on every
-    synthesis call, forward and backward: a per-launch import plus function call
-    is pure overhead on the hot path.
-    """
-
-    global _OPS
-    if _OPS is None:
-        from ..cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
+from .assembly import FmcwSpec, SynthesisPathBatch, pair_tx_index, require_compatible
 
 
 def _forward_op(domain: str):
@@ -64,6 +45,7 @@ def _jvp_op(domain: str):
     ops = _ops()
     return ops.fmcw_spectrum_jvp if domain == "spectrum" else ops.fmcw_beat_jvp
 
+
 def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     """Convert a Channel transfer coefficient into an FMCW beat weight.
 
@@ -79,15 +61,11 @@ def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     """
 
     if coefficient.dtype not in (torch.complex64, torch.complex128):
-        raise TypeError(
-            f"a Channel transfer coefficient must be complex, got {coefficient.dtype}"
-        )
+        raise TypeError(f"a Channel transfer coefficient must be complex, got {coefficient.dtype}")
     return torch.conj(coefficient).resolve_conj()
 
 
-def _segment_of_each_path(
-    path_offsets: torch.Tensor, path_count: int
-) -> torch.Tensor:
+def _segment_of_each_path(path_offsets: torch.Tensor, path_count: int) -> torch.Tensor:
     """Map each compact row to its sensor-pair segment.
 
     ``right=True`` is required: an offsets table is a half-open partition, so
@@ -104,15 +82,11 @@ class _FmcwSynthesis(torch.autograd.Function):
     """Autograd bridge for the selected native FMCW output domain."""
 
     @staticmethod
-    def forward(
-        tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec
-    ):
+    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
-            (spec.num_chirps, num_segments, spec.num_samples),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_chirps, num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         out_im = torch.empty_like(out_re)
         _forward_op(spec.output_domain)(
@@ -140,36 +114,16 @@ class _FmcwSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (
-            tau_rt,
-            tau_rate,
-            weight_re,
-            weight_im,
-            offsets,
-            segment,
-            tx_index,
-            spec,
-        ) = inputs
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(
-            tau_rt, tau_rate, weight_re, weight_im, segment, tx_index
-        )
-        ctx.save_for_forward(
-            tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index
-        )
+        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, tx_index)
+        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        (
-            tau_rt,
-            tau_rate,
-            weight_re,
-            weight_im,
-            segment,
-            tx_index,
-        ) = ctx.saved_tensors
+        (tau_rt, tau_rate, weight_re, weight_im, segment, tx_index) = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
         grad_tau_rate = torch.empty_like(tau_rate)
@@ -200,37 +154,13 @@ class _FmcwSynthesis(torch.autograd.Function):
             spec.carrier_rate_hz,
             spec.t_start_s,
         )
-        return (
-            grad_tau_rt,
-            grad_tau_rate,
-            grad_weight_re,
-            grad_weight_im,
-            None,
-            None,
-            None,
-            None,
-        )
+        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_rt,
-        tan_tau_rate,
-        tan_weight_re,
-        tan_weight_im,
-        tan_offsets,
-        tan_segment,
-        tan_tx_index,
-        tan_spec,
+        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_tx_index, tan_spec
     ):
-        (
-            tau_rt,
-            tau_rate,
-            weight_re,
-            weight_im,
-            offsets,
-            tx_index,
-        ) = ctx.saved_tensors
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index) = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -238,9 +168,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         tan_weight_re = zero if tan_weight_re is None else tan_weight_re.contiguous()
         tan_weight_im = zero if tan_weight_im is None else tan_weight_im.contiguous()
         tan_out_re = torch.empty(
-            (spec.num_chirps, ctx.num_segments, spec.num_samples),
-            dtype=torch.float32,
-            device=tau_rt.device,
+            (spec.num_chirps, ctx.num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         tan_out_im = torch.empty_like(tan_out_re)
         _jvp_op(spec.output_domain)(
@@ -324,9 +252,7 @@ def synthesize_fmcw_rows(
                 "segment_tx_index (witwin.radar.synthesis.assembly.pair_tx_index "
                 "derives it from the array layout)"
             )
-        tx_index = torch.zeros(
-            num_segments, dtype=torch.int32, device=total_delay_s.device
-        )
+        tx_index = torch.zeros(num_segments, dtype=torch.int32, device=total_delay_s.device)
     else:
         if tuple(segment_tx_index.shape) != (num_segments,):
             raise ValueError(
@@ -351,9 +277,7 @@ def synthesize_fmcw_rows(
     return torch.complex(out_re, out_im)
 
 
-def synthesize_fmcw(
-    batch: SynthesisPathBatch, spec: FmcwSpec
-) -> torch.Tensor:
+def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
     """Synthesize one FMCW frame; direct spectrum is the default domain.
 
     Returns ``complex64[num_chirps, sensor_pair_count, num_samples]``, one
@@ -374,9 +298,7 @@ def synthesize_fmcw(
     require_compatible(batch, spec)
     weight = channel_phasor_to_beat_weight(batch.complex_transfer_ref)
     if batch.row_valid is not None:
-        weight = torch.where(
-            batch.row_valid, weight, torch.zeros_like(weight)
-        )
+        weight = torch.where(batch.row_valid, weight, torch.zeros_like(weight))
     return synthesize_fmcw_rows(
         batch.total_delay_s,
         batch.delay_rate,
@@ -384,17 +306,9 @@ def synthesize_fmcw(
         batch.pair_offsets,
         spec,
         segment_tx_index=pair_tx_index(
-            num_tx=spec.num_tx,
-            num_rx=spec.num_rx,
-            sensor_pair_count=batch.sensor_pair_count,
-            device=batch.device,
+            num_tx=spec.num_tx, num_rx=spec.num_rx, sensor_pair_count=batch.sensor_pair_count, device=batch.device
         ),
     )
 
 
-__all__ = [
-    "FmcwSpec",
-    "channel_phasor_to_beat_weight",
-    "synthesize_fmcw_rows",
-    "synthesize_fmcw",
-]
+__all__ = ["FmcwSpec", "channel_phasor_to_beat_weight", "synthesize_fmcw_rows", "synthesize_fmcw"]

@@ -5,14 +5,11 @@ from __future__ import annotations
 
 import ast
 import json
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
-
-PATH_TOKEN = re.compile(
-    r"`((?:witwin/radar|ci|tests|examples|docs)/[^`\s:]+(?:\.[A-Za-z0-9]+)?)"
-)
+PATH_TOKEN = re.compile(r"`((?:witwin/radar|ci|tests|examples|docs)/[^`\s:]+(?:\.[A-Za-z0-9]+)?)")
 
 
 def _python_symbols(path: Path) -> set[str]:
@@ -74,10 +71,9 @@ def _audit_symbol_owner_tables(repo: Path, manifest: dict) -> list[str]:
                 errors.append(f"{relative}:{number} owner symbol is missing: {owner!r}")
     return errors
 
+
 def audit(repo: Path) -> list[str]:
-    manifest = json.loads(
-        (repo / "ci" / "documentation-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((repo / "ci" / "documentation-manifest.json").read_text(encoding="utf-8"))
     errors: list[str] = []
     living = manifest["living"]
     for relative in living:
@@ -109,9 +105,7 @@ def audit(repo: Path) -> list[str]:
 
     prefixes = tuple(manifest["historical_prefixes"])
     overlap = [
-        relative
-        for relative in living
-        if any(relative == prefix or relative.startswith(prefix) for prefix in prefixes)
+        relative for relative in living if any(relative == prefix or relative.startswith(prefix) for prefix in prefixes)
     ]
     if overlap:
         errors.append(f"documents classified as both living and historical: {overlap}")

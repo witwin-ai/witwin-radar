@@ -32,11 +32,11 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import subprocess
 import sys
-import tomllib
+from pathlib import Path
 
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR_ENV = "WITWIN_CORE_SOURCE_DIR"
@@ -73,10 +73,7 @@ def resolve_core_source(environ: dict[str, str]) -> Path:
             )
         return candidate
 
-    candidates = [
-        (REPO_ROOT.parent / "core").resolve(),
-        (REPO_ROOT.parent.parent / "core").resolve(),
-    ]
+    candidates = [(REPO_ROOT.parent / "core").resolve(), (REPO_ROOT.parent.parent / "core").resolve()]
     for candidate in candidates:
         if _declares_core(candidate):
             return candidate
@@ -101,10 +98,7 @@ def build_core_wheel(source: Path, outdir: Path, *, isolated: bool) -> Path:
     subprocess.run(command, check=True)
     wheels = sorted(outdir.glob("*.whl"))
     if len(wheels) != 1:
-        raise CoreSourceError(
-            f"expected exactly one Core wheel in {outdir}, found "
-            f"{[wheel.name for wheel in wheels]}"
-        )
+        raise CoreSourceError(f"expected exactly one Core wheel in {outdir}, found {[wheel.name for wheel in wheels]}")
     return wheels[0]
 
 
@@ -114,18 +108,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-isolation",
         action="store_true",
-        help=(
-            "reuse the active environment's build backend, matching how the "
-            "Channel wheel itself is built locally"
-        ),
+        help=("reuse the active environment's build backend, matching how the Channel wheel itself is built locally"),
     )
     arguments = parser.parse_args(argv)
 
     try:
         source = resolve_core_source(dict(os.environ))
-        wheel = build_core_wheel(
-            source, arguments.outdir.resolve(), isolated=not arguments.no_isolation
-        )
+        wheel = build_core_wheel(source, arguments.outdir.resolve(), isolated=not arguments.no_isolation)
     except CoreSourceError as error:
         print(f"core wheel build failed: {error}", file=sys.stderr)
         return 2

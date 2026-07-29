@@ -21,19 +21,11 @@ import math
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
-from witwin.radar.processing import (
-    ProcessingAxes,
-    ProcessingCube,
-    range_profile,
-)
-from witwin.radar.synthesis import (
-    synthesize_fmcw,
-    synthesize_ofdm,
-    synthesize_pulsed,
-)
+
+from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_profile
+from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 from witwin.radar.synthesis.assembly import PULSE_KIND_RECT, SynthesisResult
 
 pytestmark = pytest.mark.gpu
@@ -82,22 +74,16 @@ def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target, capsys):
     """
 
     batch, row, segment = target
-    profile, axes = _profile(
-        batch, grid.fmcw_spec(1), SynthesisResult.from_fmcw, synthesize_fmcw
-    )
+    profile, axes = _profile(batch, grid.fmcw_spec(1), SynthesisResult.from_fmcw, synthesize_fmcw)
     magnitude = _row_of(profile, segment).abs()
     peak = int(magnitude.argmax())
     assert peak == grid.FMCW_RANGE_BIN, (peak, grid.FMCW_RANGE_BIN)
 
     top = float(magnitude[peak])
-    sidelobes = [
-        20.0 * math.log10(float(magnitude[peak + offset]) / top)
-        for offset in (-1, 1)
-    ]
+    sidelobes = [20.0 * math.log10(float(magnitude[peak + offset]) / top) for offset in (-1, 1)]
     assert max(sidelobes) < -40.0, sidelobes
     with capsys.disabled():
-        print(f"\nFMCW bin {peak}, neighbours {sidelobes[0]:.1f} / "
-              f"{sidelobes[1]:.1f} dB")
+        print(f"\nFMCW bin {peak}, neighbours {sidelobes[0]:.1f} / {sidelobes[1]:.1f} dB")
 
     # And the bin means the right number of metres, through the axis and not
     # through a formula restated here.
@@ -112,13 +98,13 @@ def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target, capsys):
 def test_the_ofdm_cir_peaks_on_the_solved_sample_and_anchors_the_amplitude(target):
     """CIR sample 4, and ``H[0][p][0] == C_rt`` EXACTLY.
 
-    The subcarrier origin is pinned at `
- = 0 -> f_ref``, so subcarrier zero of
-    a stationary row is the Channel coefficient itself with no phase offset at
-    all. That identity is the cross-waveform amplitude anchor and it is asserted
-    bitwise, not to a tolerance: anything else would mean the CFR kernel applied
-    something at `
- = 0``.
+       The subcarrier origin is pinned at `
+    = 0 -> f_ref``, so subcarrier zero of
+       a stationary row is the Channel coefficient itself with no phase offset at
+       all. That identity is the cross-waveform amplitude anchor and it is asserted
+       bitwise, not to a tolerance: anything else would mean the CFR kernel applied
+       something at `
+    = 0``.
     """
 
     batch, row, segment = target
@@ -168,9 +154,7 @@ def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
     assert spec.range_gate_end_s <= spec.pri_s
     assert spec.range_migration_delay_s < spec.range_cell_delay_s
 
-    profile, axes = _profile(
-        batch, spec, SynthesisResult.from_pulsed, synthesize_pulsed
-    )
+    profile, axes = _profile(batch, spec, SynthesisResult.from_pulsed, synthesize_pulsed)
     magnitude = _row_of(profile, segment).abs()
     peak = int(magnitude.argmax())
     assert peak == grid.PULSED_LAG_SAMPLE, (peak, grid.PULSED_LAG_SAMPLE)
@@ -180,8 +164,7 @@ def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
     ratio = float(magnitude[peak]) / coefficient
     assert 0.95 < ratio <= 1.0, ratio
     with capsys.disabled():
-        print(f"\npulsed LFM lag {peak}, peak / |C_rt| = {ratio:.6f} "
-              f"(31/32 = {31 / 32:.6f})")
+        print(f"\npulsed LFM lag {peak}, peak / |C_rt| = {ratio:.6f} (31/32 = {31 / 32:.6f})")
 
     # The rect pulse on the same grid: a triangle whose neighbours are
     # 20 log10(31/32) = -0.2757 dB down, which is why it is not the exact-bin
@@ -196,9 +179,7 @@ def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
     apex = int(rect.argmax())
     assert abs(apex - grid.PULSED_LAG_SAMPLE) <= 1, apex
     neighbour = 20.0 * math.log10(float(rect[apex - 1]) / float(rect[apex]))
-    assert neighbour == pytest.approx(20.0 * math.log10(31.0 / 32.0), abs=0.02), (
-        neighbour
-    )
+    assert neighbour == pytest.approx(20.0 * math.log10(31.0 / 32.0), abs=0.02), neighbour
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +213,7 @@ def test_remove_dc_defaults_to_off_and_removes_the_fast_time_mean_when_asked(tar
     assert float(kept.data[tx, rx, 0, 0].abs()) > 3.0
     assert float(dropped.data[tx, rx, 0, 0].abs()) < 1e-4
     torch.testing.assert_close(
-        kept.data[tx, rx, 0, grid.FMCW_RANGE_BIN],
-        dropped.data[tx, rx, 0, grid.FMCW_RANGE_BIN],
-        rtol=1e-5,
-        atol=0.0,
+        kept.data[tx, rx, 0, grid.FMCW_RANGE_BIN], dropped.data[tx, rx, 0, grid.FMCW_RANGE_BIN], rtol=1e-5, atol=0.0
     )
 
     # The default is off. Asserted through the entry point rather than by
@@ -279,13 +257,7 @@ def test_a_window_scales_the_peak_by_its_published_coherent_gain(target):
     batch, row, segment = target
     coefficient = float(batch.complex_transfer_ref[row].abs())
     for window, gain in (("rectangular", 1.0), ("hann", 0.5), ("hamming", 0.54)):
-        profile, _ = _profile(
-            batch,
-            grid.fmcw_spec(1),
-            SynthesisResult.from_fmcw,
-            synthesize_fmcw,
-            window=window,
-        )
+        profile, _ = _profile(batch, grid.fmcw_spec(1), SynthesisResult.from_fmcw, synthesize_fmcw, window=window)
         assert profile.window == window
         assert profile.window_coherent_gain == pytest.approx(gain, rel=1e-12)
         peak = float(_row_of(profile, segment).abs()[grid.FMCW_RANGE_BIN])

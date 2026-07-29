@@ -18,17 +18,10 @@ import math
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
-from witwin.radar.processing import (
-    ArrayGeometry,
-    ProcessingAxes,
-    RangeDopplerMap,
-    beam_cube,
-    conventional_steering,
-)
-from witwin.radar.synthesis.assembly import SynthesisResult
 
+from witwin.radar.processing import ArrayGeometry, ProcessingAxes, RangeDopplerMap, beam_cube, conventional_steering
+from witwin.radar.synthesis.assembly import SynthesisResult
 
 PAIRS = grid.FMCW_NUM_TX * grid.FMCW_NUM_RX
 DOPPLER = 8
@@ -43,9 +36,7 @@ def _axes(waveform: str = "fmcw") -> ProcessingAxes:
         result = SynthesisResult.from_fmcw(cube, spec)
     else:
         spec = grid.ofdm_spec(num_symbols=DOPPLER)
-        cube = torch.zeros(
-            (DOPPLER, PAIRS, spec.num_subcarriers), dtype=torch.complex64
-        )
+        cube = torch.zeros((DOPPLER, PAIRS, spec.num_subcarriers), dtype=torch.complex64)
         result = SynthesisResult.from_ofdm(cube, spec)
     return ProcessingAxes.from_synthesis(result, spec, array)
 
@@ -55,15 +46,11 @@ def _array(waveform: str = "fmcw") -> ArrayGeometry:
 
 
 def _directions(angles_rad) -> torch.Tensor:
-    return torch.tensor(
-        [[math.sin(a), 0.0, math.cos(a)] for a in angles_rad], dtype=torch.float64
-    )
+    return torch.tensor([[math.sin(a), 0.0, math.cos(a)] for a in angles_rad], dtype=torch.float64)
 
 
 def _map(axes, data) -> RangeDopplerMap:
-    return RangeDopplerMap(
-        data=data, axes=axes, window="rectangular", window_coherent_gain=1.0
-    )
+    return RangeDopplerMap(data=data, axes=axes, window="rectangular", window_coherent_gain=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -121,12 +108,7 @@ def test_normalized_weights_give_a_unit_response_to_a_matched_wavefront():
     weights = conventional_steering(ArrayGeometry.from_axes(axes), directions)
     manifold = conventional_steering(ArrayGeometry.from_axes(axes), directions, normalize=False)
     response = (weights.conj() * manifold).sum(dim=0)
-    torch.testing.assert_close(
-        response,
-        torch.ones_like(response),
-        rtol=1e-6,
-        atol=1e-6,
-    )
+    torch.testing.assert_close(response, torch.ones_like(response), rtol=1e-6, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -179,12 +161,8 @@ def test_a_tx_rx_map_and_a_flat_pair_map_form_the_same_cube():
 def test_a_planar_beam_grid_keeps_both_of_its_axes():
     axes = _axes()
     azimuth = _directions((-0.2, 0.0, 0.2))
-    elevation = torch.tensor(
-        [[0.0, math.sin(a), math.cos(a)] for a in (-0.1, 0.1)], dtype=torch.float64
-    )
-    planar = torch.nn.functional.normalize(
-        azimuth.reshape(3, 1, 3) + elevation.reshape(1, 2, 3), dim=-1
-    )
+    elevation = torch.tensor([[0.0, math.sin(a), math.cos(a)] for a in (-0.1, 0.1)], dtype=torch.float64)
+    planar = torch.nn.functional.normalize(azimuth.reshape(3, 1, 3) + elevation.reshape(1, 2, 3), dim=-1)
     weights = conventional_steering(ArrayGeometry.from_axes(axes), planar)
     assert tuple(weights.shape) == (PAIRS, 3, 2)
 

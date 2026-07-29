@@ -20,7 +20,6 @@ import pathlib
 
 import pytest
 import torch
-
 from support.reference_frontend import (
     agc_gain,
     quantize,
@@ -47,16 +46,7 @@ def _specs():
         SeedSpec,
     )
 
-    return (
-        AdcSpec,
-        AgcSpec,
-        FrontendChain,
-        FrontendSpec,
-        LnaSpec,
-        NoiseSpec,
-        PortSpec,
-        SeedSpec,
-    )
+    return (AdcSpec, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec)
 
 
 def _zeros(count: int) -> torch.Tensor:
@@ -82,18 +72,11 @@ def test_the_thermal_noise_level_is_kTsysBR():
     _, _, FrontendChain, FrontendSpec, _, NoiseSpec, PortSpec, SeedSpec = _specs()
 
     port = PortSpec(reference_impedance_ohm=IMPEDANCE)
-    noise = NoiseSpec(
-        noise_figure_db=6.0, antenna_temperature_k=290.0, bandwidth_hz=5e6
-    )
-    assert math.isclose(
-        noise.system_noise_temperature_k, 290.0 * noise.noise_factor, rel_tol=1e-12
-    )
+    noise = NoiseSpec(noise_figure_db=6.0, antenna_temperature_k=290.0, bandwidth_hz=5e6)
+    assert math.isclose(noise.system_noise_temperature_k, 290.0 * noise.noise_factor, rel_tol=1e-12)
 
     sigma = thermal_sigma_volts(
-        noise_figure_db=6.0,
-        antenna_temperature_k=290.0,
-        bandwidth_hz=5e6,
-        reference_impedance_ohm=IMPEDANCE,
+        noise_figure_db=6.0, antenna_temperature_k=290.0, bandwidth_hz=5e6, reference_impedance_ohm=IMPEDANCE
     )
     assert math.isclose(noise.thermal_sigma_volts(port), sigma, rel_tol=1e-12)
 
@@ -132,25 +115,13 @@ def test_thermal_noise_is_input_referred_so_the_lna_amplifies_it():
     lna = LnaSpec(gain_db=20.0)
     signal = _zeros(1 << 20)
 
-    plain = FrontendChain(
-        FrontendSpec(port=port, noise=noise, seed=SeedSpec(7))
-    ).apply(signal).signal
-    amplified = FrontendChain(
-        FrontendSpec(port=port, noise=noise, lna=lna, seed=SeedSpec(7))
-    ).apply(signal).signal
+    plain = FrontendChain(FrontendSpec(port=port, noise=noise, seed=SeedSpec(7))).apply(signal).signal
+    amplified = FrontendChain(FrontendSpec(port=port, noise=noise, lna=lna, seed=SeedSpec(7))).apply(signal).signal
 
     plain_power = float((plain.real.double() ** 2 + plain.imag.double() ** 2).mean())
-    amplified_power = float(
-        (amplified.real.double() ** 2 + amplified.imag.double() ** 2).mean()
-    )
-    assert math.isclose(
-        amplified_power / plain_power, lna.voltage_gain**2, rel_tol=1e-6
-    )
-    assert math.isclose(
-        amplified_power,
-        lna.voltage_gain**2 * noise.noise_power_watts * IMPEDANCE,
-        rel_tol=3e-3,
-    )
+    amplified_power = float((amplified.real.double() ** 2 + amplified.imag.double() ** 2).mean())
+    assert math.isclose(amplified_power / plain_power, lna.voltage_gain**2, rel_tol=1e-6)
+    assert math.isclose(amplified_power, lna.voltage_gain**2 * noise.noise_power_watts * IMPEDANCE, rel_tol=3e-3)
 
 
 def test_the_stage_order_is_published_and_the_runtime_follows_it():
@@ -183,10 +154,7 @@ def test_the_stage_order_is_published_and_the_runtime_follows_it():
     # stream, so the thermal realisation is unchanged either way, and reporting
     # a silent stage as enabled would suggest the two were coupled.
     quiet = FrontendChain(
-        FrontendSpec(
-            port=PortSpec(IMPEDANCE),
-            noise=NoiseSpec(noise_figure_db=3.0, bandwidth_hz=1e6),
-        )
+        FrontendSpec(port=PortSpec(IMPEDANCE), noise=NoiseSpec(noise_figure_db=3.0, bandwidth_hz=1e6))
     )
     assert quiet.enabled_stages == ("port", "thermal")
 
@@ -201,9 +169,7 @@ def test_the_port_conversion_happens_exactly_once():
 
     _, _, FrontendChain, FrontendSpec, _, _, PortSpec, _ = _specs()
 
-    signal = torch.complex(
-        torch.randn(256, device="cuda"), torch.randn(256, device="cuda")
-    ).to(torch.complex64)
+    signal = torch.complex(torch.randn(256, device="cuda"), torch.randn(256, device="cuda")).to(torch.complex64)
     out = FrontendChain(FrontendSpec(port=PortSpec(IMPEDANCE))).apply(signal).signal
     assert torch.allclose(out, signal * math.sqrt(IMPEDANCE), rtol=1e-6, atol=1e-7)
 
@@ -219,25 +185,18 @@ def test_the_quantization_error_variance_is_the_step_squared_over_twelve():
 
     adc = AdcSpec(bits=10, full_scale=1.0)
     generator = torch.Generator(device="cpu").manual_seed(19)
-    busy = torch.complex(
-        torch.rand(1 << 20, generator=generator) * 1.2 - 0.6,
-        torch.rand(1 << 20, generator=generator) * 1.2 - 0.6,
-    ).to(torch.complex64).cuda()
+    busy = (
+        torch.complex(
+            torch.rand(1 << 20, generator=generator) * 1.2 - 0.6, torch.rand(1 << 20, generator=generator) * 1.2 - 0.6
+        )
+        .to(torch.complex64)
+        .cuda()
+    )
 
-    output = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), adc=adc)
-    ).apply(busy)
+    output = FrontendChain(FrontendSpec(port=PortSpec(1.0), adc=adc)).apply(busy)
     error = output.signal - busy
-    assert math.isclose(
-        float(error.real.double().var(unbiased=False)),
-        adc.quantization_variance,
-        rel_tol=1e-2,
-    )
-    assert math.isclose(
-        float(error.imag.double().var(unbiased=False)),
-        adc.quantization_variance,
-        rel_tol=1e-2,
-    )
+    assert math.isclose(float(error.real.double().var(unbiased=False)), adc.quantization_variance, rel_tol=1e-2)
+    assert math.isclose(float(error.imag.double().var(unbiased=False)), adc.quantization_variance, rel_tol=1e-2)
     # The busy signal is inside full scale, so nothing clips. The count is a
     # DEVICE tensor and it is published rather than suppressed, because a
     # nonzero value is the only visible symptom of an AGC misconfiguration.
@@ -307,9 +266,7 @@ def test_the_full_scale_sine_sqnr_matches_the_textbook_figure():
     adc = AdcSpec(bits=10, full_scale=1.0)
     count = 1 << 16
     phase = 2 * math.pi * 97 * torch.arange(count, dtype=torch.float64) / count
-    signal = torch.complex(
-        phase.cos().float(), phase.sin().float()
-    ).to(torch.complex64).cuda()
+    signal = torch.complex(phase.cos().float(), phase.sin().float()).to(torch.complex64).cuda()
     output = FrontendChain(FrontendSpec(port=PortSpec(1.0), adc=adc)).apply(signal).signal
     error_power = float(((output.real - signal.real).double() ** 2).mean())
     signal_power = float((signal.real.double() ** 2).mean())
@@ -351,19 +308,13 @@ def test_the_phase_noise_spectrum_follows_the_free_running_asymptote():
     expected_sigma = wiener_innovation_sigma_rad(
         level_dbc_per_hz=level_dbc, offset_hz=offset, sample_rate_hz=sample_rate
     )
-    assert math.isclose(
-        noise.phase_innovation_sigma_rad, expected_sigma, rel_tol=1e-12
-    )
+    assert math.isclose(noise.phase_innovation_sigma_rad, expected_sigma, rel_tol=1e-12)
 
-    output = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), noise=noise, seed=SeedSpec(11))
-    ).apply(_zeros(1 << 20))
+    output = FrontendChain(FrontendSpec(port=PortSpec(1.0), noise=noise, seed=SeedSpec(11))).apply(_zeros(1 << 20))
     phase = output.diagnostics.phase_rad
     assert phase is not None and phase.device.type == "cuda"
 
-    frequencies, psd = single_sideband_psd(
-        phase, sample_rate_hz=sample_rate, segment=4096
-    )
+    frequencies, psd = single_sideband_psd(phase, sample_rate_hz=sample_rate, segment=4096)
     deviations = []
     for target in (offset / 4, offset / 2, offset, 2 * offset, 4 * offset):
         index = int(torch.argmin((frequencies - target).abs()))
@@ -372,9 +323,7 @@ def test_the_phase_noise_spectrum_follows_the_free_running_asymptote():
         # averaging, and the band is flat enough over seven bins to make this a
         # variance reduction rather than a bias.
         measured = float(psd[max(index - 3, 1) : index + 4].mean())
-        predicted = 10.0 ** (
-            noise.single_sideband_dbc_per_hz(float(frequencies[index])) / 10.0
-        )
+        predicted = 10.0 ** (noise.single_sideband_dbc_per_hz(float(frequencies[index])) / 10.0)
         deviations.append(10.0 * math.log10(measured / predicted))
     assert max(abs(value) for value in deviations) < 1.0, deviations
 
@@ -410,18 +359,12 @@ def test_there_is_exactly_one_call_site_of_the_quantizer():
             if not isinstance(node, ast.Call):
                 continue
             function = node.func
-            name = (
-                function.attr
-                if isinstance(function, ast.Attribute)
-                else getattr(function, "id", "")
-            )
+            name = function.attr if isinstance(function, ast.Attribute) else getattr(function, "id", "")
             if name == "frontend_quantize_forward":
                 call_sites.append(path.name)
     assert call_sites == ["frontend.py"], call_sites
 
-    radar_source = (REPO_ROOT / "witwin" / "radar" / "radar.py").read_text(
-        encoding="utf-8"
-    )
+    radar_source = (REPO_ROOT / "witwin" / "radar" / "radar.py").read_text(encoding="utf-8")
     assert "frontend_quantize_forward" not in radar_source
 
 
@@ -442,25 +385,18 @@ def test_the_agc_is_nonlinear_and_the_chain_without_it_is_linear():
     _, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, _, PortSpec, _ = _specs()
 
     generator = torch.Generator(device="cpu").manual_seed(23)
-    signal = torch.complex(
-        torch.randn(1024, generator=generator), torch.randn(1024, generator=generator)
-    ).to(torch.complex64).cuda()
-
-    with_agc = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), agc=AgcSpec(target_rms=1.0, mode="global"))
-    )
-    assert not torch.allclose(
-        with_agc.apply(2 * signal).signal, 2 * with_agc.apply(signal).signal, rtol=1e-3
+    signal = (
+        torch.complex(torch.randn(1024, generator=generator), torch.randn(1024, generator=generator))
+        .to(torch.complex64)
+        .cuda()
     )
 
-    without_agc = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), lna=LnaSpec(gain_db=6.0))
-    )
+    with_agc = FrontendChain(FrontendSpec(port=PortSpec(1.0), agc=AgcSpec(target_rms=1.0, mode="global")))
+    assert not torch.allclose(with_agc.apply(2 * signal).signal, 2 * with_agc.apply(signal).signal, rtol=1e-3)
+
+    without_agc = FrontendChain(FrontendSpec(port=PortSpec(1.0), lna=LnaSpec(gain_db=6.0)))
     assert torch.allclose(
-        without_agc.apply(2 * signal).signal,
-        2 * without_agc.apply(signal).signal,
-        rtol=1e-6,
-        atol=1e-7,
+        without_agc.apply(2 * signal).signal, 2 * without_agc.apply(signal).signal, rtol=1e-6, atol=1e-7
     )
 
 
@@ -469,10 +405,7 @@ def test_the_agc_gain_matches_the_reference_and_hits_the_target_rms():
 
     generator = torch.Generator(device="cpu").manual_seed(29)
     signal = (
-        torch.complex(
-            torch.randn(4096, generator=generator),
-            torch.randn(4096, generator=generator),
-        )
+        torch.complex(torch.randn(4096, generator=generator), torch.randn(4096, generator=generator))
         .to(torch.complex64)
         .cuda()
     )
@@ -485,17 +418,9 @@ def test_the_agc_gain_matches_the_reference_and_hits_the_target_rms():
     expected_gain, expected_rms = agc_gain(
         signal, target_rms=agc.target_rms, min_gain=agc.min_gain, max_gain=agc.max_gain
     )
-    assert math.isclose(
-        float(output.diagnostics.agc_gain[0]), expected_gain, rel_tol=1e-5
-    )
-    assert math.isclose(
-        float(output.diagnostics.agc_rms[0]), expected_rms, rel_tol=1e-5
-    )
-    achieved = float(
-        (output.signal.real.double() ** 2 + output.signal.imag.double() ** 2)
-        .mean()
-        .sqrt()
-    )
+    assert math.isclose(float(output.diagnostics.agc_gain[0]), expected_gain, rel_tol=1e-5)
+    assert math.isclose(float(output.diagnostics.agc_rms[0]), expected_rms, rel_tol=1e-5)
+    achieved = float((output.signal.real.double() ** 2 + output.signal.imag.double() ** 2).mean().sqrt())
     assert math.isclose(achieved, agc.target_rms, rel_tol=1e-5)
 
 
@@ -532,21 +457,11 @@ def test_the_agc_reads_nothing_to_the_host(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "synchronize", _synchronize)
 
-    signal = torch.complex(
-        torch.randn(2048, device="cuda"), torch.randn(2048, device="cuda")
-    ).to(torch.complex64)
-    chain = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), agc=AgcSpec(target_rms=1.0, mode="global"))
-    )
+    signal = torch.complex(torch.randn(2048, device="cuda"), torch.randn(2048, device="cuda")).to(torch.complex64)
+    chain = FrontendChain(FrontendSpec(port=PortSpec(1.0), agc=AgcSpec(target_rms=1.0, mode="global")))
     output = chain.apply(signal)
     assert output.diagnostics.agc_gain.device.type == "cuda"
-    assert counters == {
-        "item": 0,
-        "cpu": 0,
-        "tolist": 0,
-        "numpy": 0,
-        "synchronize": 0,
-    }, counters
+    assert counters == {"item": 0, "cpu": 0, "tolist": 0, "numpy": 0, "synchronize": 0}, counters
 
 
 # ---------------------------------------------------------------------------
@@ -565,9 +480,7 @@ def test_the_frontend_jvp_matches_a_central_finite_difference():
 
     from torch.autograd.forward_ad import dual_level, make_dual, unpack_dual
 
-    _, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec = (
-        _specs()
-    )
+    _, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec = _specs()
 
     chain = FrontendChain(
         FrontendSpec(
@@ -588,10 +501,7 @@ def test_the_frontend_jvp_matches_a_central_finite_difference():
 
     def _random(scale: float) -> torch.Tensor:
         return (
-            torch.complex(
-                torch.randn(4096, generator=generator),
-                torch.randn(4096, generator=generator),
-            )
+            torch.complex(torch.randn(4096, generator=generator), torch.randn(4096, generator=generator))
             .to(torch.complex64)
             .cuda()
             * scale
@@ -605,10 +515,7 @@ def test_the_frontend_jvp_matches_a_central_finite_difference():
     assert jvp is not None, "the forward-mode tangent was swallowed"
 
     step = 1e-3
-    difference = (
-        chain.apply(base + step * tangent).signal
-        - chain.apply(base - step * tangent).signal
-    ) / (2 * step)
+    difference = (chain.apply(base + step * tangent).signal - chain.apply(base - step * tangent).signal) / (2 * step)
     assert float((jvp - difference).abs().max() / difference.abs().max()) < 2e-3
 
 
@@ -622,9 +529,7 @@ def test_the_frontend_vjp_is_the_adjoint_of_its_jvp():
 
     from torch.autograd.forward_ad import dual_level, make_dual, unpack_dual
 
-    _, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec = (
-        _specs()
-    )
+    _, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec = _specs()
 
     chain = FrontendChain(
         FrontendSpec(
@@ -639,10 +544,7 @@ def test_the_frontend_vjp_is_the_adjoint_of_its_jvp():
 
     def _random(scale: float) -> torch.Tensor:
         return (
-            torch.complex(
-                torch.randn(2048, generator=generator),
-                torch.randn(2048, generator=generator),
-            )
+            torch.complex(torch.randn(2048, generator=generator), torch.randn(2048, generator=generator))
             .to(torch.complex64)
             .cuda()
             * scale
@@ -654,18 +556,14 @@ def test_the_frontend_vjp_is_the_adjoint_of_its_jvp():
 
     with dual_level():
         jvp = unpack_dual(chain.apply(make_dual(base, tangent)).signal).tangent
-        forward = float(
-            (jvp.real * cotangent.real).sum() + (jvp.imag * cotangent.imag).sum()
-        )
+        forward = float((jvp.real * cotangent.real).sum() + (jvp.imag * cotangent.imag).sum())
 
     real = base.real.contiguous().clone().requires_grad_(True)
     imag = base.imag.contiguous().clone().requires_grad_(True)
     output = chain.apply(torch.complex(real, imag)).signal
     loss = (output.real * cotangent.real).sum() + (output.imag * cotangent.imag).sum()
     loss.backward()
-    reverse = float(
-        (real.grad * tangent.real).sum() + (imag.grad * tangent.imag).sum()
-    )
+    reverse = float((real.grad * tangent.real).sum() + (imag.grad * tangent.imag).sum())
     assert math.isclose(forward, reverse, rel_tol=2e-5)
 
 
@@ -682,12 +580,8 @@ def test_the_quantizer_refuses_a_differentiable_input():
     _, _, FrontendChain, FrontendSpec, _, _, PortSpec, _ = _specs()
     from witwin.radar.frontend import AdcSpec
 
-    chain = FrontendChain(
-        FrontendSpec(port=PortSpec(1.0), adc=AdcSpec(bits=8, full_scale=1.0))
-    )
-    signal = torch.complex(
-        torch.randn(64, device="cuda"), torch.randn(64, device="cuda")
-    ).to(torch.complex64)
+    chain = FrontendChain(FrontendSpec(port=PortSpec(1.0), adc=AdcSpec(bits=8, full_scale=1.0)))
+    signal = torch.complex(torch.randn(64, device="cuda"), torch.randn(64, device="cuda")).to(torch.complex64)
 
     with pytest.raises(RuntimeError, match="Phase-9"):
         chain.apply(signal.clone().requires_grad_(True))

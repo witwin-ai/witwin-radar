@@ -16,10 +16,10 @@ gets reintroduced without anyone deciding to add one.
 from __future__ import annotations
 
 import inspect
-import tomllib
 from pathlib import Path
 
 import pytest
+import tomllib
 
 
 def test_solver_backend_selector_is_not_public_api():
@@ -66,7 +66,5 @@ def test_runtime_and_optional_dependencies_do_not_include_slangtorch():
     groups = [pyproject["project"]["dependencies"]]
     groups.extend(pyproject["project"].get("optional-dependencies", {}).values())
     assert not any(
-        dependency.split("[", 1)[0].split(">=", 1)[0] == "slangtorch"
-        for group in groups
-        for dependency in group
+        dependency.split("[", 1)[0].split(">=", 1)[0] == "slangtorch" for group in groups for dependency in group
     )

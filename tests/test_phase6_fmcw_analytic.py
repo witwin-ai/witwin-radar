@@ -25,12 +25,8 @@ import math
 import pytest
 import torch
 
-from witwin.radar.synthesis.assembly import (  # noqa: E402
-    SPEED_OF_LIGHT_M_PER_S,
-    FmcwSpec,
-)
+from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S, FmcwSpec  # noqa: E402
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -52,18 +48,18 @@ TAU_RATE = 2.0 * RADIAL_SPEED_MPS / C0
 def _spec(**overrides) -> FmcwSpec:
     """The production carrier placement unless a test says otherwise."""
 
-    fields = dict(
-        num_samples=NUM_SAMPLES,
-        num_chirps=1,
-        sample_period_s=1.0 / SAMPLE_RATE_HZ,
-        chirp_period_s=CHIRP_PERIOD_S,
-        slope_hz_per_s=SLOPE_HZ_PER_S,
-        t_start_s=T_START_S,
-        reference_frequency_hz=FC_HZ,
-        carrier_hz=0.0,
-        carrier_rate_hz=FC_HZ,
-        output_domain="beat",
-    )
+    fields = {
+        "num_samples": NUM_SAMPLES,
+        "num_chirps": 1,
+        "sample_period_s": 1.0 / SAMPLE_RATE_HZ,
+        "chirp_period_s": CHIRP_PERIOD_S,
+        "slope_hz_per_s": SLOPE_HZ_PER_S,
+        "t_start_s": T_START_S,
+        "reference_frequency_hz": FC_HZ,
+        "carrier_hz": 0.0,
+        "carrier_rate_hz": FC_HZ,
+        "output_domain": "beat",
+    }
     fields.update(overrides)
     return FmcwSpec(**fields)
 
@@ -157,9 +153,7 @@ def test_the_beat_tone_reports_the_round_trip_delay_in_seconds():
     f_beat = SLOPE_HZ_PER_S * TAU_RT_S
     assert f_beat == pytest.approx(1481024.582679795, rel=1e-12)
     assert spec.beat_frequency_hz(TAU_RT_S) == pytest.approx(f_beat, rel=1e-12)
-    assert spec.beat_bin(TAU_RT_S) == pytest.approx(
-        f_beat * NUM_SAMPLES / SAMPLE_RATE_HZ, rel=1e-12
-    )
+    assert spec.beat_bin(TAU_RT_S) == pytest.approx(f_beat * NUM_SAMPLES / SAMPLE_RATE_HZ, rel=1e-12)
 
     exact = _phase_slope_beat_frequency(samples)
     # Against the delay the kernel was HANDED: this is the kernel's own
@@ -178,12 +172,8 @@ def test_the_beat_tone_reports_the_round_trip_delay_in_seconds():
     assert abs(raw - f_beat) / f_beat > 1e-4
 
     # The resolution the tolerance sits inside, stated rather than assumed.
-    assert C0 * SAMPLE_RATE_HZ / (2.0 * SLOPE_HZ_PER_S * NUM_SAMPLES) == pytest.approx(
-        0.048794345377604166, rel=1e-12
-    )
-    assert C0 * SAMPLE_RATE_HZ / (2.0 * SLOPE_HZ_PER_S) == pytest.approx(
-        12.491352416666667, rel=1e-12
-    )
+    assert C0 * SAMPLE_RATE_HZ / (2.0 * SLOPE_HZ_PER_S * NUM_SAMPLES) == pytest.approx(0.048794345377604166, rel=1e-12)
+    assert C0 * SAMPLE_RATE_HZ / (2.0 * SLOPE_HZ_PER_S) == pytest.approx(12.491352416666667, rel=1e-12)
 
 
 def test_the_delay_is_round_trip_and_is_never_doubled():
@@ -204,13 +194,9 @@ def test_the_delay_is_round_trip_and_is_never_doubled():
     assert 2.0 * SLOPE_HZ_PER_S * short_delay < 0.5 * SAMPLE_RATE_HZ
 
     single = _phase_slope_beat_frequency(_fast_time(spec, short_delay, 1.0 + 0.0j))
-    doubled = _phase_slope_beat_frequency(
-        _fast_time(spec, 2.0 * short_delay, 1.0 + 0.0j)
-    )
+    doubled = _phase_slope_beat_frequency(_fast_time(spec, 2.0 * short_delay, 1.0 + 0.0j))
     assert single == pytest.approx(SLOPE_HZ_PER_S * _stored(short_delay), rel=1e-8)
-    assert doubled == pytest.approx(
-        SLOPE_HZ_PER_S * _stored(2.0 * short_delay), rel=1e-8
-    )
+    assert doubled == pytest.approx(SLOPE_HZ_PER_S * _stored(2.0 * short_delay), rel=1e-8)
     assert doubled == pytest.approx(2.0 * single, rel=1e-6)
 
 
@@ -237,9 +223,7 @@ def test_an_on_grid_beat_tone_peaks_at_exactly_n_times_the_weight():
 
         magnitude = torch.fft.fft(_fast_time(spec, delay, weight)).abs()
         assert int(magnitude.argmax()) == target_bin
-        assert float(magnitude[target_bin]) == pytest.approx(
-            NUM_SAMPLES * abs(weight), rel=1e-5
-        )
+        assert float(magnitude[target_bin]) == pytest.approx(NUM_SAMPLES * abs(weight), rel=1e-5)
 
 
 # --------------------------------------------------------------------------
@@ -346,16 +330,12 @@ def test_a_receding_site_puts_the_beat_cube_tone_at_positive_doppler():
 
     num_chirps = 64
     spec = _spec(num_chirps=num_chirps)
-    tau, rate, weight, offsets = _one_row(
-        TAU_RT_S, _frozen_channel_weight(), TAU_RATE
-    )
+    tau, rate, weight, offsets = _one_row(TAU_RT_S, _frozen_channel_weight(), TAU_RATE)
     cube = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
     slow = cube[:, 0, 0].to(torch.complex128)
 
     spectrum = torch.fft.fftshift(torch.fft.fft(slow)).abs()
-    frequencies = torch.fft.fftshift(
-        torch.fft.fftfreq(num_chirps, d=CHIRP_PERIOD_S)
-    )
+    frequencies = torch.fft.fftshift(torch.fft.fftfreq(num_chirps, d=CHIRP_PERIOD_S))
     peak_hz = float(frequencies[int(spectrum.argmax())])
     bin_hz = float(frequencies[1] - frequencies[0])
 
@@ -383,19 +363,16 @@ def test_the_unambiguous_speed_bound_is_owned_by_the_fmcw_spec():
     The spec is the only owner of this bound; both fixture arrays pin its formula.
     """
 
-    from witwin.radar import RadarConfig
     from support import multi_endpoint_geometry as multi
     from support import phase4_geometry as single
 
-    assert _spec().max_unambiguous_speed_mps == pytest.approx(
-        16.222535606060607, rel=1e-12
-    )
+    from witwin.radar import RadarConfig
+
+    assert _spec().max_unambiguous_speed_mps == pytest.approx(16.222535606060607, rel=1e-12)
 
     for geometry in (single, multi):
         config = RadarConfig.from_dict(dict(geometry.FIXTURE_RADAR_CONFIG))
         spec = FmcwSpec.from_radar_config(config)
         assert spec.num_tx == config.num_tx
         assert spec.num_rx == config.num_rx
-        assert spec.slot_period_s == pytest.approx(
-            spec.chirp_period_s * config.num_tx, rel=1e-12
-        )
+        assert spec.slot_period_s == pytest.approx(spec.chirp_period_s * config.num_tx, rel=1e-12)

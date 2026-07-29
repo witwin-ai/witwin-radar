@@ -34,6 +34,7 @@ pytest.importorskip("witwin.channel")
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
+
 import witwin.radar.propagation as kin  # noqa: E402
 from witwin.radar.propagation import (  # noqa: E402
     FIRST_FRAME,
@@ -43,7 +44,6 @@ from witwin.radar.propagation import (  # noqa: E402
     FrozenEpoch,
     SceneEpochLoop,
 )
-
 
 pytestmark = pytest.mark.gpu
 
@@ -55,53 +55,32 @@ RADIAL = geo.SITE_P_RADIAL_VELOCITY_M_PER_S
 
 
 def _arriving_wall():
-    return world.make_dynamic_scene(
-        wall_origin=geo.WALL_PARKED_OFFSET_M,
-        wall_velocity=ARRIVING_WALL_VELOCITY,
-    )
+    return world.make_dynamic_scene(wall_origin=geo.WALL_PARKED_OFFSET_M, wall_velocity=ARRIVING_WALL_VELOCITY)
 
 
 def _transmitter_spec(spike):
     return spike._stacked_ids(
-        spike.stacked([p for _, p in spike.transmitters], 1),
-        spike.transmitter_ids,
-        geo.TX_POWER_W,
+        spike.stacked([p for _, p in spike.transmitters], 1), spike.transmitter_ids, geo.TX_POWER_W
     )
 
 
 def _site_spec(spike, sites=None):
-    return spike._stacked_ids(
-        spike.site_tensor() if sites is None else sites, spike.site_ids, None
-    )
+    return spike._stacked_ids(spike.site_tensor() if sites is None else sites, spike.site_ids, None)
 
 
 def _inbound(spike, sites=None, *, ad_mode="none"):
-    return spike.adapter.reevaluate(
-        spike.inbound,
-        _transmitter_spec(spike),
-        _site_spec(spike, sites),
-        ad_mode=ad_mode,
-    )
+    return spike.adapter.reevaluate(spike.inbound, _transmitter_spec(spike), _site_spec(spike, sites), ad_mode=ad_mode)
 
 
 def _row_identities(leg) -> list[tuple[int, int, int]]:
-    return list(
-        zip(
-            leg.source_id.tolist(),
-            leg.sink_id.tolist(),
-            leg.component_id.tolist(),
-            strict=True,
-        )
-    )
+    return list(zip(leg.source_id.tolist(), leg.sink_id.tolist(), leg.component_id.tolist(), strict=True))
 
 
 class _HostObservations:
     """Count every route by which a device value could reach the host."""
 
     def __init__(self, monkeypatch):
-        self.counts = dict.fromkeys(
-            ("item", "cpu", "tolist", "numpy", "synchronize"), 0
-        )
+        self.counts = dict.fromkeys(("item", "cpu", "tolist", "numpy", "synchronize"), 0)
         for name in ("item", "cpu", "tolist", "numpy"):
             original = getattr(torch.Tensor, name)
 
@@ -159,20 +138,12 @@ def test_a_stale_compiled_scene_never_answers(monkeypatch):
     assert baseline.counts["item"] == 1, baseline.counts
 
     on_late = ChannelPropagationAdapter(
-        late,
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        components=drv.MULTIPATH_COMPONENTS,
-        max_depth=1,
+        late, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=drv.MULTIPATH_COMPONENTS, max_depth=1
     )
     assert on_late.epoch == spike.inbound.epoch
     counter = _HostObservations(monkeypatch)
     with pytest.raises(ValueError, match="geometry_version"):
-        on_late.reevaluate(
-            spike.inbound,
-            _transmitter_spec(spike),
-            _site_spec(spike),
-            ad_mode="none",
-        )
+        on_late.reevaluate(spike.inbound, _transmitter_spec(spike), _site_spec(spike), ad_mode="none")
     assert counter.counts == dict.fromkeys(counter.counts, 0), counter.counts
 
     spike.adapter.refreeze(late)
@@ -206,16 +177,11 @@ def test_a_declared_fixed_winner_replay_keeps_its_handles():
     spike = drv.MultiEndpointSpike(compiled=world.compile_snapshot(dynamic.at(0.0)))
     before = _inbound(spike).delay_s.clone()
 
-    spike.adapter.refreeze(
-        world.compile_snapshot(dynamic.at(1.0)),
-        world_motion="fixed_winner_replay",
-    )
+    spike.adapter.refreeze(world.compile_snapshot(dynamic.at(1.0)), world_motion="fixed_winner_replay")
     assert spike.adapter.epoch == 0
     after = _inbound(spike)
     rows = spike.predicted_inbound_rows()
-    los = torch.tensor(
-        [row.component == "los" for row in rows], device=before.device
-    )
+    los = torch.tensor([row.component == "los" for row in rows], device=before.device)
     assert torch.equal(before[los], after.delay_s[los])
     assert not torch.equal(before[~los], after.delay_s[~los])
 
@@ -241,16 +207,11 @@ def test_invalidation_never_produces_a_detached_gradient():
 
     dynamic = _arriving_wall()
     spike = drv.MultiEndpointSpike(compiled=world.compile_snapshot(dynamic.at(0.0)))
-    spike.adapter.refreeze(
-        world.compile_snapshot(dynamic.at(1.0)),
-        world_motion="fixed_winner_replay",
-    )
+    spike.adapter.refreeze(world.compile_snapshot(dynamic.at(1.0)), world_motion="fixed_winner_replay")
 
     sites = kin.Kinematics(
         positions_m=spike.site_tensor(),
-        velocities_m_per_s=torch.tensor(
-            [RADIAL, RADIAL], dtype=torch.float32, device="cuda"
-        ),
+        velocities_m_per_s=torch.tensor([RADIAL, RADIAL], dtype=torch.float32, device="cuda"),
     )
     with kin.two_way_duals(sites=sites) as duals:
         leg = _inbound(spike, duals.sites, ad_mode="jvp")
@@ -263,9 +224,7 @@ def test_invalidation_never_produces_a_detached_gradient():
     dead = ~valid
     assert torch.equal(rate[dead], torch.zeros_like(rate[dead]))
     assert torch.equal(delay[dead], torch.zeros_like(delay[dead]))
-    assert torch.equal(
-        coefficient[dead], torch.zeros_like(coefficient[dead])
-    )
+    assert torch.equal(coefficient[dead], torch.zeros_like(coefficient[dead]))
     assert float(rate[valid].abs().min()) > 1.0e-12
     assert float(coefficient[valid].abs().min()) > 0.0
 
@@ -309,9 +268,7 @@ def test_a_born_row_forces_an_explicit_rediscovery():
 
     assert replayed < fresh_rows, (sorted(replayed), sorted(fresh_rows))
     born = fresh_rows - replayed
-    assert born == {
-        (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.REFLECTION_COMPONENT_ID)
-    }, sorted(born)
+    assert born == {(geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.REFLECTION_COMPONENT_ID)}, sorted(born)
     # Three rows died, and the two lines of sight among them are TX_B's.
     assert len(dead) == 3, dead
     assert (geo.TX_B_STABLE_ID, geo.SITE_P_STABLE_ID, geo.LOS_COMPONENT_ID) in dead
@@ -342,14 +299,9 @@ def _epoch_loop(dynamic, *, period, world_motion="frozen_world", compile_scene=N
     def bind(compiled, snapshot, previous):
         del snapshot
         state.binds += 1
-        state.spike = drv.MultiEndpointSpike(
-            compiled=compiled,
-            adapter=None if previous is None else previous.adapter,
-        )
+        state.spike = drv.MultiEndpointSpike(compiled=compiled, adapter=None if previous is None else previous.adapter)
         return FrozenEpoch(
-            adapter=state.spike.adapter,
-            handles=(state.spike.inbound, state.spike.outbound),
-            payload=state.spike,
+            adapter=state.spike.adapter, handles=(state.spike.inbound, state.spike.outbound), payload=state.spike
         )
 
     loop = SceneEpochLoop(
@@ -386,11 +338,7 @@ def test_endpoint_only_motion_does_not_recompile():
     from witwin.core.dynamics import LinearTrajectory
 
     dynamic = world.make_dynamic_scene(
-        endpoint_trajectories={
-            77101: LinearTrajectory(
-                origin=torch.zeros(3), velocity=torch.tensor([0.0, 1.0, 0.0])
-            )
-        }
+        endpoint_trajectories={77101: LinearTrajectory(origin=torch.zeros(3), velocity=torch.tensor([0.0, 1.0, 0.0]))}
     )
     assert not dynamic.structure_trajectories
     assert not dynamic.structure_deformations
@@ -399,9 +347,7 @@ def test_endpoint_only_motion_does_not_recompile():
 
     def counting_compile(snapshot, *, reference_frequency_hz):
         compiles.append(float(snapshot.time_s))
-        return world.compile_snapshot(
-            snapshot, reference_frequency_hz=reference_frequency_hz
-        )
+        return world.compile_snapshot(snapshot, reference_frequency_hz=reference_frequency_hz)
 
     loop, state = _epoch_loop(dynamic, period=None, compile_scene=counting_compile)
     assert loop.structures_move is False
@@ -419,10 +365,7 @@ def test_endpoint_only_motion_does_not_recompile():
     # The Core gap this routes around, as a minimal repro: the same endpoint
     # motion over a completely static wall reports a different geometry version
     # at every instant, so a version-driven loop would recompile per frame.
-    versions = {
-        world.compile_snapshot(dynamic.at(index * 1.0e-3)).geometry_version
-        for index in range(4)
-    }
+    versions = {world.compile_snapshot(dynamic.at(index * 1.0e-3)).geometry_version for index in range(4)}
     assert len(versions) == 4
 
 
@@ -477,9 +420,7 @@ def test_the_motion_event_cadence_costs_what_it_says(monkeypatch):
 
     event_ms, frame = timed(loop.frame, 1.0e-3)
     assert frame.rediscovered
-    replay_ms, legs = timed(
-        state.spike.slot_legs, stack, slot_count=slots
-    )
+    replay_ms, legs = timed(state.spike.slot_legs, stack, slot_count=slots)
     inbound, outbound = legs
     for leg in (inbound, outbound):
         assert leg.diagnostics.discovery_launch_count == 0
@@ -598,13 +539,8 @@ def test_a_declared_trajectory_never_reports_a_source_mutation():
     ``frozen_world`` reaches it having recompiled.
     """
 
-    for world_motion, expected in (
-        ("fixed_winner_replay", MOTION_EVENT_CADENCE),
-        ("frozen_world", STRUCTURE_MOTION),
-    ):
-        dynamic = world.make_dynamic_scene(
-            wall_velocity=geo.WALL_VELOCITY_M_PER_S
-        )
+    for world_motion, expected in (("fixed_winner_replay", MOTION_EVENT_CADENCE), ("frozen_world", STRUCTURE_MOTION)):
+        dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
         loop, _ = _epoch_loop(dynamic, period=1, world_motion=world_motion)
         loop.frame(0.0)
         frames = [loop.frame(0.05), loop.frame(0.10)]
@@ -641,9 +577,7 @@ def test_the_epoch_loop_refuses_a_bind_that_freezes_nothing():
     loop = SceneEpochLoop(
         dynamic,
         reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        bind=lambda compiled, snapshot, previous: FrozenEpoch(
-            adapter=None, handles=()
-        ),
+        bind=lambda compiled, snapshot, previous: FrozenEpoch(adapter=None, handles=()),
         compile_scene=world.compile_snapshot,
     )
     with pytest.raises(ValueError, match="no handles"):

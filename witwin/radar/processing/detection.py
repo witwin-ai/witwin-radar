@@ -48,14 +48,14 @@ choose. ``docs/dev/radar-ad-capability-matrix.md`` carries the same reason as
 four ``REF`` rows.
 """
 
-
 from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
 
 from ..policy import refuse_derivative
-
+from .angle import AOA_ROUTES, ArrayGeometry, tdm_compensate
+from .range_doppler import RangeDopplerMap
 
 #: Why no detector here has a derivative. Written once and quoted by all four
 #: entries, so the four cannot drift into four explanations of one decision.
@@ -105,11 +105,7 @@ def _alpha(n_train: int, pfa: float) -> float:
 
 
 def _real_values(data: torch.Tensor) -> torch.Tensor:
-    real_dtype = (
-        torch.float64
-        if data.dtype in {torch.float64, torch.complex128}
-        else torch.float32
-    )
+    real_dtype = torch.float64 if data.dtype in {torch.float64, torch.complex128} else torch.float32
     values = torch.abs(data) if torch.is_complex(data) else data
     return values.to(real_dtype)
 
@@ -117,10 +113,9 @@ def _real_values(data: torch.Tensor) -> torch.Tensor:
 def _as_batch(values: torch.Tensor, rank: int) -> tuple[torch.Tensor, tuple[int, ...]]:
     if values.dim() < rank:
         raise ValueError(
-            f"the map must be [..., {'doppler, range' if rank == 2 else 'range'}]; "
-            f"got shape {tuple(values.shape)}"
+            f"the map must be [..., {'doppler, range' if rank == 2 else 'range'}]; got shape {tuple(values.shape)}"
         )
-    leading = tuple(values.shape[: -rank])
+    leading = tuple(values.shape[:-rank])
     return values.reshape(-1, *values.shape[-rank:]), leading
 
 
@@ -129,18 +124,9 @@ def _replicate_pad_2d(data: torch.Tensor, pad_h: int, pad_w: int) -> torch.Tenso
 
 
 def _rect_sum(
-    integral: torch.Tensor,
-    r0: torch.Tensor,
-    c0: torch.Tensor,
-    r1: torch.Tensor,
-    c1: torch.Tensor,
+    integral: torch.Tensor, r0: torch.Tensor, c0: torch.Tensor, r1: torch.Tensor, c1: torch.Tensor
 ) -> torch.Tensor:
-    return (
-        integral[..., r1 + 1, c1 + 1]
-        - integral[..., r0, c1 + 1]
-        - integral[..., r1 + 1, c0]
-        + integral[..., r0, c0]
-    )
+    return integral[..., r1 + 1, c1 + 1] - integral[..., r0, c1 + 1] - integral[..., r1 + 1, c0] + integral[..., r0, c0]
 
 
 def ca_cfar(
@@ -158,9 +144,7 @@ def ca_cfar(
     smaller and therefore noisier one.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.detection.ca_cfar", _CFAR_REASON, rd_map=rd_map
-    )
+    refuse_derivative("witwin.radar.processing.detection.ca_cfar", _CFAR_REASON, rd_map=rd_map)
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
@@ -176,19 +160,13 @@ def ca_cfar(
     alpha = _alpha(n_train, pfa)
 
     padded = _replicate_pad_2d(flat, outer_d, outer_r)
-    integral = (
-        F.pad(padded, (1, 0, 1, 0), mode="constant", value=0)
-        .cumsum(dim=-2)
-        .cumsum(dim=-1)
-    )
+    integral = F.pad(padded, (1, 0, 1, 0), mode="constant", value=0).cumsum(dim=-2).cumsum(dim=-1)
     device = flat.device
     row = torch.arange(doppler, device=device, dtype=torch.int64).reshape(-1, 1)
     col = torch.arange(ranges, device=device, dtype=torch.int64).reshape(1, -1)
     pi = row + outer_d
     pj = col + outer_r
-    outer_sum = _rect_sum(
-        integral, pi - outer_d, pj - outer_r, pi + outer_d, pj + outer_r
-    )
+    outer_sum = _rect_sum(integral, pi - outer_d, pj - outer_r, pi + outer_d, pj + outer_r)
     guard_sum = _rect_sum(integral, pi - gd, pj - gr, pi + gd, pj + gr)
     noise = (outer_sum - guard_sum) / n_train
     threshold = (alpha * noise).squeeze(1).reshape(*leading, doppler, ranges)
@@ -210,9 +188,7 @@ def ca_cfar_fast(
     where the summed-area route is three passes plus two gathers.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.detection.ca_cfar_fast", _CFAR_REASON, rd_map=rd_map
-    )
+    refuse_derivative("witwin.radar.processing.detection.ca_cfar_fast", _CFAR_REASON, rd_map=rd_map)
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
@@ -283,8 +259,7 @@ def os_cfar(
 
     refuse_derivative(
         "witwin.radar.processing.detection.os_cfar",
-        _CFAR_REASON
-        + " The ordered statistic adds a second discrete decision on top of it: "
+        _CFAR_REASON + " The ordered statistic adds a second discrete decision on top of it: "
         "which training sample the threshold is read from is chosen by a sort.",
         rd_map=rd_map,
     )
@@ -306,15 +281,11 @@ def os_cfar(
 
     # A POSITION mask, not a value threshold: the guard band is where it is, not
     # wherever the values happen to be large.
-    keep = torch.ones(
-        (2 * outer_d + 1, 2 * outer_r + 1), dtype=torch.bool, device=flat.device
-    )
+    keep = torch.ones((2 * outer_d + 1, 2 * outer_r + 1), dtype=torch.bool, device=flat.device)
     keep[td : td + 2 * gd + 1, tr : tr + 2 * gr + 1] = False
 
     padded = _replicate_pad_2d(flat, outer_d, outer_r)
-    patches = F.unfold(
-        padded, kernel_size=(2 * outer_d + 1, 2 * outer_r + 1), stride=1
-    ).transpose(1, 2)
+    patches = F.unfold(padded, kernel_size=(2 * outer_d + 1, 2 * outer_r + 1), stride=1).transpose(1, 2)
     training, _ = torch.sort(patches[:, :, keep.reshape(-1)], dim=-1)
     index = min(int(rank_fraction * n_train), int(training.shape[-1]) - 1)
     threshold = (alpha * training[:, :, index]).reshape(batch, doppler, ranges)
@@ -323,11 +294,7 @@ def os_cfar(
 
 
 def ca_cfar_1d(
-    profile: torch.Tensor,
-    *,
-    guard_cells: int = 2,
-    training_cells: int = 8,
-    pfa: float = 1e-3,
+    profile: torch.Tensor, *, guard_cells: int = 2, training_cells: int = 8, pfa: float = 1e-3
 ) -> Detections:
     """Range-only cell-averaging CFAR over ``[..., R]``.
 
@@ -336,9 +303,7 @@ def ca_cfar_1d(
     detection at the first range bin is not systematically favoured.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.detection.ca_cfar_1d", _CFAR_REASON, profile=profile
-    )
+    refuse_derivative("witwin.radar.processing.detection.ca_cfar_1d", _CFAR_REASON, profile=profile)
     values = _real_values(profile)
     flat, leading = _as_batch(values, 1)
     ranges = int(flat.shape[-1])
@@ -347,10 +312,7 @@ def ca_cfar_1d(
     outer = guard + train
     n_train = 2 * train
     if n_train < 1:
-        raise ValueError(
-            f"training_cells={training_cells} leaves no training cells to "
-            "estimate the noise from"
-        )
+        raise ValueError(f"training_cells={training_cells} leaves no training cells to estimate the noise from")
     alpha = _alpha(n_train, pfa)
 
     padded = F.pad(flat.unsqueeze(1), (outer, outer), mode="replicate")
@@ -362,7 +324,6 @@ def ca_cfar_1d(
     noise = (outer_sum - guard_sum) / n_train
     threshold = (alpha * noise).squeeze(1).reshape(*leading, ranges)
     return Detections(mask=values > threshold, threshold=threshold)
-
 
 
 """Detections plus a Range-Doppler map become points in metres.
@@ -396,16 +357,6 @@ enough for the selection to change and the derivative predicts nothing about
 the new point list, including its length. Item 4 of the Phase-9 plan names peak
 selection as explicitly non-differentiable.
 """
-
-
-from dataclasses import dataclass
-
-import torch
-
-from ..policy import refuse_derivative
-from .angle import AOA_ROUTES, tdm_compensate
-from .angle import ArrayGeometry
-from .range_doppler import RangeDopplerMap
 
 
 #: Why the point-cloud stage has no derivative. One statement, quoted by the
@@ -444,10 +395,7 @@ class PointCloud:
         for name in ("velocity_mps", "energy", "range_m"):
             value = getattr(self, name)
             if value.dim() != 1 or int(value.shape[0]) != count:
-                raise ValueError(
-                    f"{name} must be [{count}] to match xyz; got "
-                    f"{tuple(value.shape)}"
-                )
+                raise ValueError(f"{name} must be [{count}] to match xyz; got {tuple(value.shape)}")
 
     def __len__(self) -> int:
         return int(self.xyz.shape[0])
@@ -465,15 +413,7 @@ class PointCloud:
         """
 
         return torch.stack(
-            (
-                self.xyz[:, 0],
-                self.xyz[:, 1],
-                self.xyz[:, 2],
-                self.velocity_mps,
-                self.energy,
-                self.range_m,
-            ),
-            dim=1,
+            (self.xyz[:, 0], self.xyz[:, 1], self.xyz[:, 2], self.velocity_mps, self.energy, self.range_m), dim=1
         )
 
     @classmethod
@@ -508,9 +448,7 @@ def range_gate_mask(axes, gate_m: tuple[float, float] | None) -> torch.Tensor | 
         return None
     low, high = float(gate_m[0]), float(gate_m[1])
     if not high > low:
-        raise ValueError(
-            f"the range gate must be (low_m, high_m) with high > low, got {gate_m!r}"
-        )
+        raise ValueError(f"the range gate must be (low_m, high_m) with high > low, got {gate_m!r}")
     return (axes.range_m >= low) & (axes.range_m < high)
 
 
@@ -542,21 +480,13 @@ def point_cloud(
     """
 
     if not isinstance(detections, Detections):
-        raise TypeError(
-            f"detections must be a Detections record, got {type(detections).__name__}"
-        )
+        raise TypeError(f"detections must be a Detections record, got {type(detections).__name__}")
     if not isinstance(rd, RangeDopplerMap):
-        raise TypeError(
-            f"rd must be a RangeDopplerMap, got {type(rd).__name__}"
-        )
+        raise TypeError(f"rd must be a RangeDopplerMap, got {type(rd).__name__}")
     if not isinstance(array, ArrayGeometry):
-        raise TypeError(
-            f"array must be an ArrayGeometry, got {type(array).__name__}"
-        )
+        raise TypeError(f"array must be an ArrayGeometry, got {type(array).__name__}")
     if route not in AOA_ROUTES:
-        raise ValueError(
-            f"route must be one of {tuple(sorted(AOA_ROUTES))}, got {route!r}"
-        )
+        raise ValueError(f"route must be one of {tuple(sorted(AOA_ROUTES))}, got {route!r}")
     # Before the shape checks and before any arithmetic, so the refusal fires
     # with no PointCloud in existence and no transform paid for. The type
     # checks above are all that precede it, and only because the guard has to
@@ -575,14 +505,10 @@ def point_cloud(
         )
     data = rd.data
     if data.dim() < 3:
-        raise ValueError(
-            "the map must be [*pair, doppler, range]; got shape "
-            f"{tuple(data.shape)}"
-        )
+        raise ValueError(f"the map must be [*pair, doppler, range]; got shape {tuple(data.shape)}")
     if tuple(data.shape[-2:]) != tuple(mask.shape):
         raise ValueError(
-            f"the map is {tuple(data.shape[-2:])} but the mask is "
-            f"{tuple(mask.shape)}; they describe different grids"
+            f"the map is {tuple(data.shape[-2:])} but the mask is {tuple(mask.shape)}; they describe different grids"
         )
     pairs = array.sensor_pair_count
     flat = data.reshape(pairs, int(mask.shape[0]), int(mask.shape[1]))
@@ -625,9 +551,7 @@ def point_cloud(
     return cloud
 
 
-def _keep_strongest(
-    mask: torch.Tensor, energy: torch.Tensor, max_points: int
-) -> torch.Tensor:
+def _keep_strongest(mask: torch.Tensor, energy: torch.Tensor, max_points: int) -> torch.Tensor:
     """Thin a detection mask to its ``max_points`` strongest cells.
 
     Done on the DEVICE with ``topk`` over the flattened map rather than by
@@ -640,25 +564,18 @@ def _keep_strongest(
     names by that name.
     """
 
-    refuse_derivative(
-        "witwin.radar.processing.detection._keep_strongest",
-        _SELECTION_REASON,
-        energy=energy,
-    )
+    refuse_derivative("witwin.radar.processing.detection._keep_strongest", _SELECTION_REASON, energy=energy)
     if max_points < 0:
         raise ValueError(f"max_points must be non-negative, got {max_points}")
     flat_mask = mask.reshape(-1)
     total = int(flat_mask.shape[0])
     if max_points >= total:
         return mask
-    scored = torch.where(
-        flat_mask, energy.reshape(-1), torch.full_like(energy.reshape(-1), -torch.inf)
-    )
+    scored = torch.where(flat_mask, energy.reshape(-1), torch.full_like(energy.reshape(-1), -torch.inf))
     keep = torch.zeros_like(flat_mask)
     if max_points > 0:
         keep[torch.topk(scored, max_points).indices] = True
     return (keep & flat_mask).reshape(mask.shape)
-
 
 
 """Combine per-component results, coherently or in power.
@@ -694,9 +611,6 @@ with an undeclared seed.
 """
 
 
-import torch
-
-
 def combine_incoherent(cubes) -> torch.Tensor:
     """``sum_j |cube_j|^2``: the power sum of independently exported components.
 
@@ -720,9 +634,7 @@ def combine_incoherent(cubes) -> torch.Tensor:
     total = None
     for index, cube in enumerate(listed):
         if not isinstance(cube, torch.Tensor):
-            raise TypeError(
-                f"cube {index} must be a torch.Tensor, got {type(cube).__name__}"
-            )
+            raise TypeError(f"cube {index} must be a torch.Tensor, got {type(cube).__name__}")
         if cube.shape != listed[0].shape:
             raise ValueError(
                 f"cube {index} has shape {tuple(cube.shape)} but cube 0 has "
@@ -730,15 +642,8 @@ def combine_incoherent(cubes) -> torch.Tensor:
                 "components must share their axes"
             )
         if cube.device != listed[0].device:
-            raise ValueError(
-                f"cube {index} is on {cube.device} but cube 0 is on "
-                f"{listed[0].device}"
-            )
-        power = (
-            cube.real * cube.real + cube.imag * cube.imag
-            if cube.is_complex()
-            else cube * cube
-        )
+            raise ValueError(f"cube {index} is on {cube.device} but cube 0 is on {listed[0].device}")
+        power = cube.real * cube.real + cube.imag * cube.imag if cube.is_complex() else cube * cube
         total = power if total is None else total + power
     return total
 

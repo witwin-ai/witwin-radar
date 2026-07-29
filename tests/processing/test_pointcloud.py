@@ -18,8 +18,8 @@ import math
 
 import pytest
 import torch
-
 from conftest import PROCESSING_CONFIG, make_processing_axes
+
 from witwin.radar.processing import (
     ArrayGeometry,
     PointCloud,
@@ -31,7 +31,6 @@ from witwin.radar.processing import (
     range_profile,
 )
 from witwin.radar.processing.detection import Detections, range_gate_mask
-
 
 #: Transmitters at 0 and 4 half wavelengths make the first ``2 * num_rx``
 #: virtual elements a uniform line, which is what the phase-comparison relation
@@ -73,12 +72,10 @@ def _cube(axes, array, *, cosine: float = AZIMUTH_COSINE) -> torch.Tensor:
 
     samples = int(axes.range_bin_count)
     chirps = int(axes.doppler_bin_count)
-    direction = torch.tensor(
-        [[cosine, math.sqrt(1.0 - cosine**2), 0.0]], dtype=torch.float64
+    direction = torch.tensor([[cosine, math.sqrt(1.0 - cosine**2), 0.0]], dtype=torch.float64)
+    manifold = conventional_steering(array, direction, normalize=False, dtype=torch.complex64).reshape(
+        array.num_tx, array.num_rx, 1, 1
     )
-    manifold = conventional_steering(
-        array, direction, normalize=False, dtype=torch.complex64
-    ).reshape(array.num_tx, array.num_rx, 1, 1)
 
     chirp_period_s = axes.slow_time_period_s / axes.num_tx
     closing = DOPPLER_BIN * axes.velocity_bin_mps
@@ -91,38 +88,33 @@ def _cube(axes, array, *, cosine: float = AZIMUTH_COSINE) -> torch.Tensor:
         * chirp_period_s
         / array.wavelength_m
     )
-    slot = torch.polar(torch.ones_like(slot_phase), slot_phase).to(
-        torch.complex64
-    ).reshape(array.num_tx, 1, 1, 1)
+    slot = torch.polar(torch.ones_like(slot_phase), slot_phase).to(torch.complex64).reshape(array.num_tx, 1, 1, 1)
 
     fast = torch.arange(samples, dtype=torch.float64)
     slow = torch.arange(chirps, dtype=torch.float64)
-    tone = torch.polar(
-        torch.ones(samples, dtype=torch.float64),
-        2.0 * math.pi * RANGE_BIN * fast / samples,
-    ).to(torch.complex64)
-    walk = torch.polar(
-        torch.ones(chirps, dtype=torch.float64),
-        -2.0 * math.pi * DOPPLER_BIN * slow / chirps,
-    ).to(torch.complex64)
+    tone = torch.polar(torch.ones(samples, dtype=torch.float64), 2.0 * math.pi * RANGE_BIN * fast / samples).to(
+        torch.complex64
+    )
+    walk = torch.polar(torch.ones(chirps, dtype=torch.float64), -2.0 * math.pi * DOPPLER_BIN * slow / chirps).to(
+        torch.complex64
+    )
 
     generator = torch.Generator().manual_seed(606)
-    floor = torch.complex(
-        torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
-        torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
-    ).to(torch.complex64) * 1e-3
-    signal = (
-        manifold * slot * walk.reshape(1, 1, -1, 1) * tone.reshape(1, 1, 1, -1)
+    floor = (
+        torch.complex(
+            torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
+            torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
+        ).to(torch.complex64)
+        * 1e-3
     )
+    signal = manifold * slot * walk.reshape(1, 1, -1, 1) * tone.reshape(1, 1, 1, -1)
     return signal * COEFFICIENT + floor
 
 
 def _chain(array, cube: ProcessingCube):
     rd = range_doppler_map(range_profile(cube))
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    detected = ca_cfar_fast(
-        combined.abs(), guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6
-    )
+    detected = ca_cfar_fast(combined.abs(), guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6)
     return rd, detected
 
 
@@ -145,9 +137,7 @@ def test_one_target_lands_on_its_own_three_bins_and_becomes_one_point():
     assert abs(float(cloud.range_m[0]) - expected_range) <= 0.5 * axes.range_bin_m
 
     expected_velocity = DOPPLER_BIN * axes.velocity_bin_mps
-    assert abs(float(cloud.velocity_mps[0]) - expected_velocity) <= (
-        0.5 * axes.velocity_bin_mps
-    )
+    assert abs(float(cloud.velocity_mps[0]) - expected_velocity) <= (0.5 * axes.velocity_bin_mps)
     # Closing positive, and the sign is the thing: an unreconciled cube would
     # publish the same magnitude with the opposite sign.
     assert float(cloud.velocity_mps[0]) > 0.0
@@ -155,19 +145,12 @@ def test_one_target_lands_on_its_own_three_bins_and_becomes_one_point():
     direction = cloud.xyz[0] / float(cloud.range_m[0])
     assert float(direction[0]) == pytest.approx(AZIMUTH_COSINE, abs=1e-3)
     assert float(direction[2]) == pytest.approx(0.0, abs=1e-3)
-    assert float(direction[1]) == pytest.approx(
-        math.sqrt(1.0 - AZIMUTH_COSINE**2), abs=1e-3
-    )
+    assert float(direction[1]) == pytest.approx(math.sqrt(1.0 - AZIMUTH_COSINE**2), abs=1e-3)
     # The xyz row is the direction times the range, which is the only place a
     # bin index becomes a position. The residual is the float32 estimator's:
     # its three cosines close to one only to single precision, and the range
     # itself is float64 and exact.
-    torch.testing.assert_close(
-        cloud.xyz[0].square().sum().sqrt(),
-        cloud.range_m[0],
-        rtol=1e-6,
-        atol=1e-9,
-    )
+    torch.testing.assert_close(cloud.xyz[0].square().sum().sqrt(), cloud.range_m[0], rtol=1e-6, atol=1e-9)
 
 
 def test_the_published_columns_are_the_named_fields_in_the_published_order():
@@ -199,21 +182,11 @@ def test_the_range_gate_is_a_distance_and_not_a_bin_index():
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
     target = float(axes.range_m[RANGE_BIN])
 
-    inside = point_cloud(
-        detected,
-        rd,
-        axes,
-        array,
-        range_gate_m=(target - axes.range_bin_m, target + axes.range_bin_m),
-    )
+    inside = point_cloud(detected, rd, axes, array, range_gate_m=(target - axes.range_bin_m, target + axes.range_bin_m))
     assert len(inside) == 1
 
     outside = point_cloud(
-        detected,
-        rd,
-        axes,
-        array,
-        range_gate_m=(target + 2.0 * axes.range_bin_m, target + 20.0 * axes.range_bin_m),
+        detected, rd, axes, array, range_gate_m=(target + 2.0 * axes.range_bin_m, target + 20.0 * axes.range_bin_m)
     )
     assert len(outside) == 0
 
@@ -242,10 +215,9 @@ def test_the_strongest_detections_survive_a_max_points_thinning():
     # amplitude so which one is stronger is decided by the amplitude alone.
     samples = int(axes.range_bin_count)
     fast = torch.arange(samples, dtype=torch.float64)
-    shift = torch.polar(
-        torch.ones(samples, dtype=torch.float64),
-        2.0 * math.pi * 6.0 * fast / samples,
-    ).to(torch.complex64)
+    shift = torch.polar(torch.ones(samples, dtype=torch.float64), 2.0 * math.pi * 6.0 * fast / samples).to(
+        torch.complex64
+    )
     cube = cube + 0.2 * _cube(axes, array) * shift.reshape(1, 1, 1, -1)
 
     rd, detected = _chain(array, ProcessingCube(cube, axes))
@@ -253,21 +225,15 @@ def test_the_strongest_detections_survive_a_max_points_thinning():
 
     thinned = point_cloud(detected, rd, axes, array, max_points=1)
     assert len(thinned) == 1
-    assert abs(
-        float(thinned.range_m[0]) - float(axes.range_m[RANGE_BIN])
-    ) <= 0.5 * axes.range_bin_m
+    assert abs(float(thinned.range_m[0]) - float(axes.range_m[RANGE_BIN])) <= 0.5 * axes.range_bin_m
 
 
 def test_an_empty_detection_mask_gives_an_empty_cloud_and_not_a_crash():
     axes, array = _records()
     rd, _ = _chain(array, ProcessingCube(_cube(axes, array), axes))
     empty = Detections(
-        mask=torch.zeros(
-            (axes.doppler_bin_count, axes.range_bin_count), dtype=torch.bool
-        ),
-        threshold=torch.zeros(
-            (axes.doppler_bin_count, axes.range_bin_count), dtype=torch.float32
-        ),
+        mask=torch.zeros((axes.doppler_bin_count, axes.range_bin_count), dtype=torch.bool),
+        threshold=torch.zeros((axes.doppler_bin_count, axes.range_bin_count), dtype=torch.float32),
     )
     cloud = point_cloud(empty, rd, axes, array)
     assert len(cloud) == 0
@@ -284,12 +250,7 @@ def test_the_route_is_named_by_the_caller_and_an_unknown_one_is_refused():
         point_cloud(detected.mask, rd, axes, array)
     with pytest.raises(ValueError, match=r"\[doppler, range\]"):
         point_cloud(
-            Detections(
-                mask=detected.mask.unsqueeze(0), threshold=detected.threshold.unsqueeze(0)
-            ),
-            rd,
-            axes,
-            array,
+            Detections(mask=detected.mask.unsqueeze(0), threshold=detected.threshold.unsqueeze(0)), rd, axes, array
         )
 
 
@@ -326,25 +287,17 @@ def test_the_cube_former_and_the_chain_agree_on_the_same_target():
     sink_major = (
         cube.permute(2, 0, 1, 3)
         .permute(0, 2, 1, 3)
-        .reshape(
-            axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count
-        )
+        .reshape(axes.doppler_bin_count, array.sensor_pair_count, axes.range_bin_count)
         .contiguous()
     )
-    packed = assemble_frame_cube(
-        sink_major, num_tx=axes.num_tx, num_rx=axes.num_rx
-    )
+    packed = assemble_frame_cube(sink_major, num_tx=axes.num_tx, num_rx=axes.num_rx)
     assert torch.equal(packed, cube)
 
     rd, detected = _chain(array, ProcessingCube(data=packed, axes=axes))
     cloud = point_cloud(detected, rd, axes, array)
     assert len(cloud) == 1
-    assert abs(
-        float(cloud.range_m[0]) - float(axes.range_m[RANGE_BIN])
-    ) <= 0.5 * axes.range_bin_m
-    assert float(cloud.xyz[0, 0] / cloud.range_m[0]) == pytest.approx(
-        AZIMUTH_COSINE, abs=1e-3
-    )
+    assert abs(float(cloud.range_m[0]) - float(axes.range_m[RANGE_BIN])) <= 0.5 * axes.range_bin_m
+    assert float(cloud.xyz[0, 0] / cloud.range_m[0]) == pytest.approx(AZIMUTH_COSINE, abs=1e-3)
 
 
 def test_the_chain_runs_on_a_processing_cube_record_as_well_as_a_tensor():
@@ -352,9 +305,4 @@ def test_the_chain_runs_on_a_processing_cube_record_as_well_as_a_tensor():
     cube = ProcessingCube(data=_cube(axes, array), axes=axes)
     profile = range_profile(cube)
     rd = range_doppler_map(profile)
-    assert tuple(rd.data.shape) == (
-        axes.num_tx,
-        axes.num_rx,
-        axes.doppler_bin_count,
-        axes.range_bin_count,
-    )
+    assert tuple(rd.data.shape) == (axes.num_tx, axes.num_rx, axes.doppler_bin_count, axes.range_bin_count)

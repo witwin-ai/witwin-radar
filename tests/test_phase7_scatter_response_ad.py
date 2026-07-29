@@ -18,13 +18,11 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
-from witwin.radar.paths import TwoWayComposer
-from witwin.radar.scattering import AspectScatterResponse
-
 from support import aspect_oracle as oracle  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
+from witwin.radar.scattering import AspectScatterResponse
 
 pytestmark = pytest.mark.gpu
 
@@ -66,10 +64,7 @@ def _composer(device: str = "cuda") -> TwoWayComposer:
 def _unit(rows: int, *, seed: int, sign: float) -> torch.Tensor:
     generator = torch.Generator().manual_seed(seed)
     raw = torch.rand(rows, 3, generator=generator, dtype=torch.float64)
-    vectors = torch.stack(
-        [0.7 + 0.3 * raw[:, 0], 0.5 * (raw[:, 1] - 0.5), 0.5 * (raw[:, 2] - 0.5)],
-        dim=1,
-    )
+    vectors = torch.stack([0.7 + 0.3 * raw[:, 0], 0.5 * (raw[:, 1] - 0.5), 0.5 * (raw[:, 2] - 0.5)], dim=1)
     vectors = sign * vectors / torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
     return vectors
 
@@ -84,17 +79,9 @@ def _state(device: str = "cuda"):
     composer = _composer(device)
     dir_in = _unit(composer.inbound_row_count, seed=71, sign=-1.0)
     dir_out = _unit(composer.outbound_row_count, seed=72, sign=1.0)
-    axis = oracle.unit_rows(
-        [(1.0, 0.2 * index, -0.15 * index) for index in range(composer.site_count)]
-    )
-    amplitude = torch.tensor(
-        [1.3 + 0.4 * index for index in range(composer.site_count)],
-        dtype=torch.float64,
-    )
-    phase = torch.tensor(
-        [0.35 + 0.25 * index for index in range(composer.site_count)],
-        dtype=torch.float64,
-    )
+    axis = oracle.unit_rows([(1.0, 0.2 * index, -0.15 * index) for index in range(composer.site_count)])
+    amplitude = torch.tensor([1.3 + 0.4 * index for index in range(composer.site_count)], dtype=torch.float64)
+    phase = torch.tensor([0.35 + 0.25 * index for index in range(composer.site_count)], dtype=torch.float64)
     return composer, dir_in, dir_out, axis, amplitude, phase
 
 
@@ -205,9 +192,7 @@ def test_the_aspect_kernel_vjp_matches_finite_differences():
         "dir_in": torch.empty(dir_in.shape, dtype=torch.float32, device="cuda"),
         "dir_out": torch.empty(dir_out.shape, dtype=torch.float32, device="cuda"),
         "axis": torch.empty(axis.shape, dtype=torch.float32, device="cuda"),
-        "amplitude": torch.empty(
-            amplitude.shape, dtype=torch.float32, device="cuda"
-        ),
+        "amplitude": torch.empty(amplitude.shape, dtype=torch.float32, device="cuda"),
         "phase": torch.empty(phase.shape, dtype=torch.float32, device="cuda"),
     }
     _ops().scatter_response_aspect_backward(
@@ -240,24 +225,13 @@ def test_the_aspect_kernel_vjp_matches_finite_differences():
         composer.site_count,
     )
 
-    inputs = {
-        "dir_in": dir_in,
-        "dir_out": dir_out,
-        "axis": axis,
-        "amplitude": amplitude,
-        "phase": phase,
-    }
+    inputs = {"dir_in": dir_in, "dir_out": dir_out, "axis": axis, "amplitude": amplitude, "phase": phase}
 
     def loss(overrides) -> float:
         values = dict(inputs)
         values.update(overrides)
         response = _reference(
-            composer,
-            values["dir_in"],
-            values["dir_out"],
-            values["axis"],
-            values["amplitude"],
-            values["phase"],
+            composer, values["dir_in"], values["dir_out"], values["axis"], values["amplitude"], values["phase"]
         )
         return float((w_re * response.real + w_im * response.imag).sum())
 
@@ -270,25 +244,18 @@ def test_the_aspect_kernel_vjp_matches_finite_differences():
             minus = value.clone().reshape(-1)
             plus[index] += FD_STEP
             minus[index] -= FD_STEP
-            flat[index] = (
-                loss({name: plus.reshape(value.shape)})
-                - loss({name: minus.reshape(value.shape)})
-            ) / (2.0 * FD_STEP)
+            flat[index] = (loss({name: plus.reshape(value.shape)}) - loss({name: minus.reshape(value.shape)})) / (
+                2.0 * FD_STEP
+            )
         assert float(differenced.abs().max()) > 1.0e-4, name
-        torch.testing.assert_close(
-            analytic, differenced, rtol=FD_RTOL, atol=1.0e-5, msg=name
-        )
+        torch.testing.assert_close(analytic, differenced, rtol=FD_RTOL, atol=1.0e-5, msg=name)
 
 
 def _frame(composer, dir_in, dir_out):
     tau_in, _, c_in = fx.payload(composer.inbound_row_count, seed=21)
     tau_out, _, c_out = fx.payload(composer.outbound_row_count, seed=22)
-    inbound = fx.leg_batch(
-        tau_in.float(), c_in.to(torch.complex64), direction=_cuda(dir_in)
-    )
-    outbound = fx.leg_batch(
-        tau_out.float(), c_out.to(torch.complex64), direction=_cuda(dir_out)
-    )
+    inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=_cuda(dir_in))
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=_cuda(dir_out))
     return inbound, outbound
 
 
@@ -351,14 +318,7 @@ def test_a_forward_tangent_on_the_aspect_axis_reaches_the_composed_transfer():
     # through the float64 reference reproduces it, up to the join's constant
     # per-row leg product.
     def response_rows(step: float) -> torch.Tensor:
-        return _reference(
-            composer,
-            dir_in,
-            dir_out,
-            axis + step * rate.double().cpu(),
-            amplitude,
-            phase,
-        )
+        return _reference(composer, dir_in, dir_out, axis + step * rate.double().cpu(), amplitude, phase)
 
     differenced = (response_rows(FD_STEP) - response_rows(-FD_STEP)) / (2.0 * FD_STEP)
     _, _, c_in = fx.payload(composer.inbound_row_count, seed=21)
@@ -372,6 +332,4 @@ def test_a_forward_tangent_on_the_aspect_axis_reaches_the_composed_transfer():
             for row in range(composer.path_count)
         ]
     )
-    torch.testing.assert_close(
-        measured.cpu().to(torch.complex128), expected, rtol=FD_RTOL, atol=1.0e-6
-    )
+    torch.testing.assert_close(measured.cpu().to(torch.complex128), expected, rtol=FD_RTOL, atol=1.0e-6)

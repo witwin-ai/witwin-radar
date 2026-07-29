@@ -31,10 +31,7 @@ from . import phase4_geometry as geo
 
 
 def leg_transfer(
-    source: torch.Tensor,
-    sink: torch.Tensor,
-    power_w: float,
-    frequency_hz: float,
+    source: torch.Tensor, sink: torch.Tensor, power_w: float, frequency_hz: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Delay and complex free-space transfer of one line-of-sight leg.
 
@@ -51,14 +48,10 @@ def leg_transfer(
     return delay, amplitude * torch.exp(1j * phase.to(torch.complex128))
 
 
-def target_response(
-    amplitude: torch.Tensor, phase_rad: torch.Tensor
-) -> torch.Tensor:
+def target_response(amplitude: torch.Tensor, phase_rad: torch.Tensor) -> torch.Tensor:
     """Scalar target response, authored in the Channel convention."""
 
-    return amplitude.to(torch.complex128) * torch.exp(
-        -1j * phase_rad.to(torch.complex128)
-    )
+    return amplitude.to(torch.complex128) * torch.exp(-1j * phase_rad.to(torch.complex128))
 
 
 def round_trip(
@@ -86,18 +79,13 @@ def round_trip(
 
 
 def round_trip_delay_rate(
-    tx: torch.Tensor,
-    site: torch.Tensor,
-    rx: torch.Tensor,
-    site_velocity: torch.Tensor,
+    tx: torch.Tensor, site: torch.Tensor, rx: torch.Tensor, site_velocity: torch.Tensor
 ) -> torch.Tensor:
     """Two-way ``d(tau)/dt`` from the site velocity projected on both legs."""
 
     unit_in = (site - tx) / torch.linalg.norm(site - tx)
     unit_out = (site - rx) / torch.linalg.norm(site - rx)
-    return (
-        torch.dot(unit_in, site_velocity) + torch.dot(unit_out, site_velocity)
-    ) / geo.C0_M_PER_S
+    return (torch.dot(unit_in, site_velocity) + torch.dot(unit_out, site_velocity)) / geo.C0_M_PER_S
 
 
 def beat_samples(
@@ -139,9 +127,7 @@ def beat_samples(
     samples = torch.arange(spec.num_samples, dtype=torch.float64)
     t_m = samples * spec.sample_period_s
 
-    out = torch.zeros(
-        (spec.num_chirps, num_segments, spec.num_samples), dtype=torch.complex128
-    )
+    out = torch.zeros((spec.num_chirps, num_segments, spec.num_samples), dtype=torch.complex128)
     for segment in range(num_segments):
         t_c = (chirps * num_tx + tx_of_segment[segment]) * spec.chirp_period_s
         for row in range(offsets[segment], offsets[segment + 1]):
@@ -154,9 +140,7 @@ def beat_samples(
                 + spec.slope_hz_per_s * tau * t_m.reshape(1, -1)
             )
             phasor = torch.exp(2j * math.pi * cycles.to(torch.complex128))
-            out[:, segment, :] = out[:, segment, :] + beat_weight[row].to(
-                torch.complex128
-            ) * phasor
+            out[:, segment, :] = out[:, segment, :] + beat_weight[row].to(torch.complex128) * phasor
     return out
 
 
@@ -174,14 +158,7 @@ def synthesize(
     spec,
     segment_tx_index=None,
 ) -> torch.Tensor:
-    return beat_samples(
-        total_delay_s,
-        delay_rate,
-        channel_to_beat(transfer_ref),
-        pair_offsets,
-        spec,
-        segment_tx_index,
-    )
+    return beat_samples(total_delay_s, delay_rate, channel_to_beat(transfer_ref), pair_offsets, spec, segment_tx_index)
 
 
 def radar_loss(iq: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
@@ -212,11 +189,7 @@ def full_chain_loss(
     total_delay, transfer = round_trip(tx, site, rx, amplitude, phase_rad)
     rate = torch.zeros(1, dtype=torch.float64) if delay_rate is None else delay_rate
     iq = synthesize(
-        total_delay.reshape(1),
-        rate.reshape(1),
-        transfer.reshape(1),
-        torch.tensor([0, 1], dtype=torch.int64),
-        spec,
+        total_delay.reshape(1), rate.reshape(1), transfer.reshape(1), torch.tensor([0, 1], dtype=torch.int64), spec
     )
     return radar_loss(iq, reference_iq)
 

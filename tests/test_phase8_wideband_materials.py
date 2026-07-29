@@ -22,15 +22,10 @@ import math
 
 import pytest
 import torch
-
-from witwin.channel.propagation import consumer
-from witwin.radar.channel import (
-    WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD,
-    ChannelPropagationAdapter,
-)
-
 from support import wideband_world as ww  # noqa: E402
+from witwin.channel.propagation import consumer
 
+from witwin.radar.channel import WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD, ChannelPropagationAdapter
 
 pytestmark = pytest.mark.gpu
 
@@ -54,16 +49,10 @@ def _sweep(fringes: float = 2.4) -> tuple[float, ...]:
 
 def _band(compiled, offsets):
     adapter = ChannelPropagationAdapter(
-        compiled,
-        reference_frequency_hz=F_REF,
-        components=COMPONENTS,
-        max_depth=1,
-        frequency_offsets_hz=offsets,
+        compiled, reference_frequency_hz=F_REF, components=COMPONENTS, max_depth=1, frequency_offsets_hz=offsets
     )
     frozen = adapter.freeze(ww.source_spec(), ww.sink_spec())
-    leg = adapter.reevaluate(
-        frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none"
-    )
+    leg = adapter.reevaluate(frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none")
     return adapter, leg
 
 
@@ -96,8 +85,7 @@ def test_the_half_space_fixture_really_is_a_half_space():
     assert worst < 1.0e-8, worst
 
 
-def test_the_half_space_reflection_follows_the_fresnel_coefficient(
-):
+def test_the_half_space_reflection_follows_the_fresnel_coefficient():
     """``H(f) = sqrt(P) lambda/(4 pi d) exp(-j k d) * r_TE(f)``.
 
     Smooth and monotone: no fringes, so this isolates the
@@ -113,12 +101,10 @@ def test_the_half_space_reflection_follows_the_fresnel_coefficient(
     worst = 0.0
     for index, offset in enumerate(offsets):
         frequency = F_REF + offset
-        expected = ww.free_space_coefficient(
-            frequency, distance
-        ) * ww.slab_reflection_te(frequency, material="half_space")
-        worst = max(
-            worst, abs(complex(row[index]) - expected) / abs(expected)
+        expected = ww.free_space_coefficient(frequency, distance) * ww.slab_reflection_te(
+            frequency, material="half_space"
         )
+        worst = max(worst, abs(complex(row[index]) - expected) / abs(expected))
     assert worst < 2.0e-4, worst
 
 
@@ -162,9 +148,7 @@ def test_the_slab_reflection_follows_the_airy_stack_across_two_fringes():
     worst = 0.0
     for index, offset in enumerate(offsets):
         frequency = F_REF + offset
-        expected = ww.free_space_coefficient(
-            frequency, distance
-        ) * ww.slab_reflection_te(frequency)
+        expected = ww.free_space_coefficient(frequency, distance) * ww.slab_reflection_te(frequency)
         worst = max(worst, abs(complex(row[index]) - expected) / abs(expected))
     assert worst < 2.0e-4, worst
 
@@ -182,10 +166,7 @@ def test_the_slab_fringes_land_where_the_analytic_period_says():
     offsets = _sweep()
     _, leg = _band(ww.compile_slab(), offsets)
     measured = _row(leg, 1).abs()
-    analytic = torch.tensor(
-        [abs(ww.slab_reflection_te(F_REF + offset)) for offset in offsets],
-        dtype=torch.float64,
-    )
+    analytic = torch.tensor([abs(ww.slab_reflection_te(F_REF + offset)) for offset in offsets], dtype=torch.float64)
 
     def minima(values: torch.Tensor) -> list[int]:
         return [
@@ -200,16 +181,12 @@ def test_the_slab_fringes_land_where_the_analytic_period_says():
     distance = ww.reflection_length_m()
     isolated = torch.tensor(
         [
-            float(measured[index])
-            / abs(ww.free_space_coefficient(F_REF + offset, distance))
+            float(measured[index]) / abs(ww.free_space_coefficient(F_REF + offset, distance))
             for index, offset in enumerate(offsets)
         ],
         dtype=torch.float64,
     )
-    assert minima(isolated) == minima(analytic), (
-        minima(isolated),
-        minima(analytic),
-    )
+    assert minima(isolated) == minima(analytic), (minima(isolated), minima(analytic))
     assert len(minima(analytic)) >= 2, "the sweep must cross at least two fringes"
     assert float(analytic.max() / analytic.min()) > 5.0
 
@@ -233,9 +210,7 @@ def test_the_narrowband_law_is_measurably_wrong_on_the_slab():
     for index, offset in enumerate(offsets):
         cycles = -offset * delay_s
         fraction = cycles - math.floor(cycles)
-        law = reference * complex(
-            math.cos(2.0 * math.pi * fraction), math.sin(2.0 * math.pi * fraction)
-        )
+        law = reference * complex(math.cos(2.0 * math.pi * fraction), math.sin(2.0 * math.pi * fraction))
         worst = max(worst, abs(complex(row[index]) - law) / abs(complex(row[index])))
     assert worst > 1.0, worst
 
@@ -278,13 +253,7 @@ def _idft(spectrum: torch.Tensor) -> torch.Tensor:
 
     count = int(spectrum.shape[-1])
     index = torch.arange(count, dtype=torch.float64)
-    kernel = torch.exp(
-        2.0j
-        * math.pi
-        * index.reshape(-1, 1)
-        * index.reshape(1, -1)
-        / count
-    )
+    kernel = torch.exp(2.0j * math.pi * index.reshape(-1, 1) * index.reshape(1, -1) / count)
     return (kernel @ spectrum.to(torch.complex128)) / count
 
 
@@ -297,11 +266,7 @@ def _single_reflection_cube(offsets):
     """
 
     from witwin.radar.paths import DirectComposer
-    from witwin.radar.synthesis import (
-        SlowTimeMode,
-        SynthesisPathBatch,
-        synthesize_ofdm,
-    )
+    from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch, synthesize_ofdm
 
     adapter = ChannelPropagationAdapter(
         ww.compile_slab(),
@@ -312,31 +277,21 @@ def _single_reflection_cube(offsets):
     )
     frozen = adapter.freeze(ww.source_spec(), ww.sink_spec())
     assert frozen.row_count == 1, frozen.row_count
-    leg = adapter.reevaluate(
-        frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none"
-    )
+    leg = adapter.reevaluate(frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none")
     composer = DirectComposer.freeze(
-        frozen,
-        radar_source_ids=[ww.SOURCE_STABLE_ID],
-        radar_sink_ids=[ww.SINK_STABLE_ID],
-        reference_frequency_hz=F_REF,
+        frozen, radar_source_ids=[ww.SOURCE_STABLE_ID], radar_sink_ids=[ww.SINK_STABLE_ID], reference_frequency_hz=F_REF
     )
     composed = composer.compose(leg, include_delay_rate=False)
 
     spec = _profile_spec()
     wide = synthesize_ofdm(
-        SynthesisPathBatch.from_radar_paths(
-            composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-        ),
-        spec,
+        SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE), spec
     )
     import dataclasses
 
     narrow = synthesize_ofdm(
         SynthesisPathBatch.from_radar_paths(
-            dataclasses.replace(
-                composed, frequency_response=None, frequency_offsets_hz=None
-            ),
+            dataclasses.replace(composed, frequency_response=None, frequency_offsets_hz=None),
             slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
         ),
         spec,
@@ -378,8 +333,7 @@ def test_a_narrowband_tap_is_the_pure_delay_kernel_and_a_wideband_one_is_not():
 
     analytic = torch.tensor(
         [
-            ww.free_space_coefficient(F_REF + offset, distance)
-            * ww.slab_reflection_te(F_REF + offset)
+            ww.free_space_coefficient(F_REF + offset, distance) * ww.slab_reflection_te(F_REF + offset)
             for offset in offsets
         ],
         dtype=torch.complex128,
@@ -387,16 +341,12 @@ def test_a_narrowband_tap_is_the_pure_delay_kernel_and_a_wideband_one_is_not():
     expected_wide = _idft(analytic)
     measured_wide = _idft(wide_cfr)
     wide_scale = float(expected_wide.abs().max())
-    assert (
-        float((measured_wide - expected_wide).abs().max()) / wide_scale < 2.0e-4
-    )
+    assert float((measured_wide - expected_wide).abs().max()) / wide_scale < 2.0e-4
 
     # (b): the wideband tap is not the pure delay kernel, normalised the same
     # way. Compared shape to shape, so the spreading tilt alone cannot carry it.
     wide_ideal = _idft(complex(wide_cfr[0]) * kernel)
-    departure = float(
-        (measured_wide - wide_ideal).abs().max() / wide_ideal.abs().max()
-    )
+    departure = float((measured_wide - wide_ideal).abs().max() / wide_ideal.abs().max())
     assert departure > 1.0e-2, departure
 
     # And the smear is asymmetric, which a symmetric loss of resolution is not.
@@ -427,9 +377,7 @@ def test_a_dispersive_scene_refuses_the_band_with_the_channel_message_intact():
     )
     frozen = adapter.freeze(ww.source_spec(), ww.sink_spec())
     with pytest.raises(NotImplementedError) as caught:
-        adapter.reevaluate(
-            frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none"
-        )
+        adapter.reevaluate(frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none")
     message = str(caught.value)
     assert "dispersive" in message.lower() or "frequency_dependent" in message
     assert "compile" in message.lower()
@@ -475,9 +423,7 @@ def test_a_rough_scene_refuses_the_band():
     )
     frozen = adapter.freeze(ww.source_spec(), ww.sink_spec())
     with pytest.raises(NotImplementedError):
-        adapter.reevaluate(
-            frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none"
-        )
+        adapter.reevaluate(frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none")
 
 
 def test_an_unresolvable_grid_spacing_is_refused_by_channel():
@@ -498,9 +444,7 @@ def test_an_unresolvable_grid_spacing_is_refused_by_channel():
     )
     frozen = adapter.freeze(ww.source_spec(), ww.sink_spec())
     with pytest.raises(ValueError, match="resolution"):
-        adapter.reevaluate(
-            frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none"
-        )
+        adapter.reevaluate(frozen, ww.source_spec(), ww.sink_spec(), ad_mode="none")
 
 
 # ---------------------------------------------------------------------------
@@ -512,9 +456,7 @@ def _budget_delay_s(fraction: float) -> float:
     """A round-trip delay at ``fraction`` of the budget, at 77 GHz."""
 
     resolution = consumer.native_frequency_resolution_hz(77.0e9)
-    return fraction * WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD / (
-        math.pi * resolution
-    )
+    return fraction * WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD / (math.pi * resolution)
 
 
 def test_the_budget_binds_where_the_published_law_says_it_does():
@@ -529,9 +471,7 @@ def test_the_budget_binds_where_the_published_law_says_it_does():
 
     resolution = consumer.native_frequency_resolution_hz(77.0e9)
     assert resolution == 8192.0, resolution
-    bound_s = WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD / (
-        math.pi * resolution
-    )
+    bound_s = WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD / (math.pi * resolution)
     assert 3.8e-6 < bound_s < 4.0e-6, bound_s
     # A 150 m round trip sits comfortably inside it, at 2.6e-2 rad.
     assert math.pi * resolution * 1.0e-6 == pytest.approx(2.573e-2, rel=1.0e-3)
@@ -552,9 +492,7 @@ def test_a_topology_whose_delays_exceed_the_budget_is_refused_by_name():
         max_depth=1,
         frequency_offsets_hz=(0.0, 1.0e7),
     )
-    over = torch.tensor(
-        [_budget_delay_s(1.01)], dtype=torch.float32, device="cuda"
-    )
+    over = torch.tensor([_budget_delay_s(1.01)], dtype=torch.float32, device="cuda")
     with pytest.raises(ValueError, match="WIDEBAND_FREQUENCY_RESOLUTION_PHASE"):
         adapter._require_frequency_resolution_budget(over)
 
@@ -566,9 +504,7 @@ def test_a_topology_whose_delays_exceed_the_budget_is_refused_by_name():
     assert "8192.0" in message
     assert "native_frequency_resolution_hz" in message
 
-    under = torch.tensor(
-        [_budget_delay_s(0.99)], dtype=torch.float32, device="cuda"
-    )
+    under = torch.tensor([_budget_delay_s(0.99)], dtype=torch.float32, device="cuda")
     adapter._require_frequency_resolution_budget(under)
 
 
@@ -576,10 +512,7 @@ def test_a_narrowband_adapter_never_evaluates_the_budget():
     """No band, no bound: the check is a property of the band, not of the scene."""
 
     adapter = ChannelPropagationAdapter(
-        ww.compile_slab(),
-        reference_frequency_hz=77.0e9,
-        components=COMPONENTS,
-        max_depth=1,
+        ww.compile_slab(), reference_frequency_hz=77.0e9, components=COMPONENTS, max_depth=1
     )
     enormous = torch.tensor([1.0e-3], dtype=torch.float32, device="cuda")
     adapter._require_frequency_resolution_budget(enormous)
@@ -628,9 +561,7 @@ def test_a_component_outside_the_wideband_cell_is_refused_by_name():
     assert sorted(record.wideband_components)[0] in message
 
 
-def test_the_adapter_refuses_a_band_when_the_record_withdraws_support(
-    monkeypatch,
-):
+def test_the_adapter_refuses_a_band_when_the_record_withdraws_support(monkeypatch):
     import dataclasses
 
     record = consumer.capabilities()

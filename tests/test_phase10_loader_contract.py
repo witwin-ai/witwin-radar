@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from witwin.radar.cuda import runtime as build
+
 identity = build
 
 
@@ -74,11 +75,7 @@ print("PHASE10RESULT " + json.dumps(result))
 
 
 def _run_driver(cuda_dir: Path, env: dict[str, str]) -> dict:
-    child_env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("WITWIN_RADAR_")
-    }
+    child_env = {key: value for key, value in os.environ.items() if not key.startswith("WITWIN_RADAR_")}
     child_env.update(env)
     completed = subprocess.run(
         [sys.executable, "-c", _DRIVER, str(cuda_dir)],
@@ -91,10 +88,7 @@ def _run_driver(cuda_dir: Path, env: dict[str, str]) -> dict:
     for line in completed.stdout.splitlines():
         if line.startswith("PHASE10RESULT "):
             return json.loads(line[len("PHASE10RESULT ") :])
-    raise AssertionError(
-        f"driver produced no result\nstdout:\n{completed.stdout}\n"
-        f"stderr:\n{completed.stderr}"
-    )
+    raise AssertionError(f"driver produced no result\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}")
 
 
 def _copy_cuda_tree(destination: Path) -> Path:
@@ -107,11 +101,7 @@ def _copy_cuda_tree(destination: Path) -> Path:
     """
 
     cuda_dir = destination / "cuda"
-    shutil.copytree(
-        CUDA_DIR,
-        cuda_dir,
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
+    shutil.copytree(CUDA_DIR, cuda_dir, ignore=shutil.ignore_patterns("__pycache__"))
     return cuda_dir
 
 
@@ -138,9 +128,7 @@ def _rewrite_record(binary: Path, **changes: object) -> None:
 def packaged_binary() -> Path:
     binary = build.prebuilt_extension_path()
     if not binary.exists():
-        pytest.skip(
-            "no packaged radar prebuilt; run scripts/build_radar_cuda_prebuilt.py"
-        )
+        pytest.skip("no packaged radar prebuilt; run scripts/build_radar_cuda_prebuilt.py")
     return binary
 
 
@@ -152,9 +140,7 @@ def test_the_packaged_prebuilt_is_the_normal_load_source(packaged_binary):
     assert result["origin"] == "packaged"
     assert Path(result["extension_path"]) == packaged_binary
     assert result["radar_abi_version"] == identity.RADAR_ABI_VERSION
-    manifest = json.loads(
-        (REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
     assert result["symbols"] == len({entry["symbol"] for entry in manifest["operators"]})
     assert result["cpp_extension_imported"] is False
 
@@ -173,10 +159,7 @@ def test_a_missing_prebuilt_raises_and_does_not_compile(tmp_path, packaged_binar
     scratch_temp = tmp_path / "temp"
     scratch_temp.mkdir()
 
-    result = _run_driver(
-        cuda_dir,
-        {"TMP": str(scratch_temp), "TEMP": str(scratch_temp), "TMPDIR": str(scratch_temp)},
-    )
+    result = _run_driver(cuda_dir, {"TMP": str(scratch_temp), "TEMP": str(scratch_temp), "TMPDIR": str(scratch_temp)})
     assert result["ok"] is False, result
     assert result["type"] == "RadarExtensionLoadError", result
     for variable in (
@@ -186,9 +169,7 @@ def test_a_missing_prebuilt_raises_and_does_not_compile(tmp_path, packaged_binar
     ):
         assert variable in result["message"], result["message"]
     assert result["cpp_extension_imported"] is False
-    assert not list(scratch_temp.glob(f"{build.EXTENSION_NAME}*")), sorted(
-        path.name for path in scratch_temp.iterdir()
-    )
+    assert not list(scratch_temp.glob(f"{build.EXTENSION_NAME}*")), sorted(path.name for path in scratch_temp.iterdir())
 
 
 def test_a_binary_without_its_record_is_refused(tmp_path, packaged_binary):
@@ -277,10 +258,7 @@ def test_a_record_built_for_another_torch_is_refused(tmp_path, packaged_binary):
 
 def test_a_record_from_another_abi_version_is_refused(tmp_path, packaged_binary):
     cuda_dir = _copy_cuda_tree(tmp_path)
-    _rewrite_record(
-        _prebuilt_in(cuda_dir),
-        radar_abi_version=identity.RADAR_ABI_VERSION + 1,
-    )
+    _rewrite_record(_prebuilt_in(cuda_dir), radar_abi_version=identity.RADAR_ABI_VERSION + 1)
 
     result = _run_driver(cuda_dir, {})
     assert result["ok"] is False, result
@@ -309,10 +287,7 @@ def test_a_record_with_an_unknown_field_is_refused(tmp_path, packaged_binary):
         {"WITWIN_RADAR_NATIVE_DEVELOPER_OVERRIDE": "1"},
         {"WITWIN_RADAR_NATIVE_EXTENSION_PATH": "C:/nowhere/x.pyd"},
         {"WITWIN_RADAR_NATIVE_EXPECTED_FINGERPRINT": "0" * 64},
-        {
-            "WITWIN_RADAR_NATIVE_DEVELOPER_OVERRIDE": "1",
-            "WITWIN_RADAR_NATIVE_EXTENSION_PATH": "C:/nowhere/x.pyd",
-        },
+        {"WITWIN_RADAR_NATIVE_DEVELOPER_OVERRIDE": "1", "WITWIN_RADAR_NATIVE_EXTENSION_PATH": "C:/nowhere/x.pyd"},
     ],
 )
 def test_a_partial_developer_override_is_refused(override_env, packaged_binary):
@@ -345,9 +320,7 @@ def test_a_complete_developer_override_loads(tmp_path, packaged_binary):
         identity.fingerprint_sidecar_path(developer_binary),
     ):
         shutil.move(str(source), str(packaged_copy / source.name))
-    fingerprint = (
-        identity.fingerprint_sidecar_path(moved).read_text(encoding="ascii").strip()
-    )
+    fingerprint = identity.fingerprint_sidecar_path(moved).read_text(encoding="ascii").strip()
 
     result = _run_driver(
         cuda_dir,
@@ -363,9 +336,7 @@ def test_a_complete_developer_override_loads(tmp_path, packaged_binary):
     assert result["cpp_extension_imported"] is False
 
 
-def test_a_developer_override_with_the_wrong_fingerprint_is_refused(
-    tmp_path, packaged_binary
-):
+def test_a_developer_override_with_the_wrong_fingerprint_is_refused(tmp_path, packaged_binary):
     cuda_dir = _copy_cuda_tree(tmp_path)
     developer_binary = _prebuilt_in(cuda_dir)
     packaged_copy = tmp_path / "developer"
@@ -443,9 +414,7 @@ print("PHASE10RESULT " + json.dumps(result))
 """
 
 
-def test_the_jit_route_is_reachable_only_when_the_build_script_asks(
-    tmp_path, packaged_binary
-):
+def test_the_jit_route_is_reachable_only_when_the_build_script_asks(tmp_path, packaged_binary):
     """``WITWIN_RADAR_NATIVE_BUILD=1`` means "compile from these sources".
 
     It therefore bypasses the packaged artifact: a stale prebuilt that the
@@ -456,11 +425,7 @@ def test_the_jit_route_is_reachable_only_when_the_build_script_asks(
     cuda_dir = _copy_cuda_tree(tmp_path)
 
     def _probe(env: dict[str, str]) -> dict:
-        child_env = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("WITWIN_RADAR_")
-        }
+        child_env = {key: value for key, value in os.environ.items() if not key.startswith("WITWIN_RADAR_")}
         child_env.update(env)
         completed = subprocess.run(
             [sys.executable, "-c", _JIT_ROUTE_DRIVER, str(cuda_dir)],
@@ -518,19 +483,11 @@ def test_the_loader_does_not_import_the_compiler_machinery_at_module_scope():
             module_scope_imports.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             module_scope_imports.add(node.module)
-    assert not any(
-        "cpp_extension" in name for name in module_scope_imports
-    ), sorted(module_scope_imports)
+    assert not any("cpp_extension" in name for name in module_scope_imports), sorted(module_scope_imports)
 
-    jit = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_jit_build_extension"
-    )
+    jit = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_jit_build_extension")
     assert any(
-        isinstance(node, ast.ImportFrom)
-        and node.module == "torch.utils.cpp_extension"
-        for node in ast.walk(jit)
+        isinstance(node, ast.ImportFrom) and node.module == "torch.utils.cpp_extension" for node in ast.walk(jit)
     )
 
 
@@ -538,12 +495,8 @@ def test_the_recorded_symbol_set_matches_the_binding_manifest(packaged_binary):
     """Manifest, binary and loader agree, or the artifact is not publishable."""
 
     record = identity.read_build_info(packaged_binary)
-    manifest = json.loads(
-        (REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8")
-    )
-    assert set(record["operator_symbols"]) == {
-        entry["symbol"] for entry in manifest["operators"]
-    }
+    manifest = json.loads((REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
+    assert set(record["operator_symbols"]) == {entry["symbol"] for entry in manifest["operators"]}
 
 
 def test_the_packaged_record_validates_against_this_checkout(packaged_binary):

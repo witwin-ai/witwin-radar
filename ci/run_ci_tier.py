@@ -47,10 +47,10 @@ inside `quick.cpu-tests`.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from pathlib import Path
 import subprocess
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +65,12 @@ class Gate:
 WHEEL_ROOT = "artifacts/nightly/wheels"
 
 QUICK_GATES = (
-    Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "tools", "ci", "scripts")),
+    Gate(
+        "quick.format",
+        ("-m", "ruff", "format", "--check", "witwin/radar", "tests", "examples", "tools", "ci", "scripts"),
+    ),
+    Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "examples", "tools", "ci", "scripts")),
+    Gate("quick.duplicate-code", ("ci/check_duplicate_code.py",)),
     Gate("quick.native-bindings", ("ci/check_native_bindings.py",)),
     # The four production static gates (Phase-10 work item 7). They are here
     # rather than in `cuda` on purpose: none of them imports the package,
@@ -103,38 +108,20 @@ CUDA_GATES = (
     # replaced a 75% gate with a 50% one would be a silent weakening dressed as
     # a consolidation. The GPU run overwrites the CPU run's `.coverage`, which
     # is the pre-existing behaviour: the 75% floor describes the GPU suite.
-    Gate(
-        "cuda.gpu-tests",
-        ("-m", "coverage", "run", "-m", "pytest", "tests", "--gpu", "-q"),
-    ),
+    Gate("cuda.gpu-tests", ("-m", "coverage", "run", "-m", "pytest", "tests", "--gpu", "-q")),
     Gate("cuda.gpu-coverage", ("-m", "coverage", "report", "--fail-under=75")),
-    Gate(
-        "cuda.loader-contract",
-        ("-m", "pytest", "-q", "tests/test_phase10_loader_contract.py"),
-    ),
+    Gate("cuda.loader-contract", ("-m", "pytest", "-q", "tests/test_phase10_loader_contract.py")),
     Gate("cuda.extension-boundary", ("ci/check_extension_boundary.py",)),
 )
 
 NIGHTLY_GATES = (
-    Gate(
-        "nightly.core-wheel-build",
-        ("ci/build_core_wheel.py", "--outdir", f"{WHEEL_ROOT}/core", "--no-isolation"),
-    ),
-    Gate(
-        "nightly.native-prebuild",
-        ("scripts/build_radar_cuda_prebuilt.py", "--developer"),
-    ),
-    Gate(
-        "nightly.wheel-build",
-        ("-m", "build", "--wheel", "--no-isolation", "--outdir", f"{WHEEL_ROOT}/radar"),
-    ),
+    Gate("nightly.core-wheel-build", ("ci/build_core_wheel.py", "--outdir", f"{WHEEL_ROOT}/core", "--no-isolation")),
+    Gate("nightly.native-prebuild", ("scripts/build_radar_cuda_prebuilt.py", "--developer")),
+    Gate("nightly.wheel-build", ("-m", "build", "--wheel", "--no-isolation", "--outdir", f"{WHEEL_ROOT}/radar")),
     # `quick.oracle-isolation` can only check the CONFIGURATION - what the
     # build was asked for. This checks what came out, on the wheel that was
     # just built, which is a different question once a build hook is involved.
-    Gate(
-        "nightly.oracle-isolation-wheel",
-        ("ci/check_test_oracle_isolation.py", "--wheel", f"{WHEEL_ROOT}/radar"),
-    ),
+    Gate("nightly.oracle-isolation-wheel", ("ci/check_test_oracle_isolation.py", "--wheel", f"{WHEEL_ROOT}/radar")),
     Gate(
         "nightly.wheel-smoke",
         (
@@ -169,12 +156,7 @@ RELEASE_GATES = (
     # pass it, and that is what makes it a release gate.
     Gate(
         "release.arch-verification",
-        (
-            "scripts/verify_cuda_binary_arches.py",
-            "--stem",
-            "_radar_native",
-            "witwin/radar/cuda/prebuilt",
-        ),
+        ("scripts/verify_cuda_binary_arches.py", "--stem", "_radar_native", "witwin/radar/cuda/prebuilt"),
     ),
 )
 
@@ -188,9 +170,7 @@ TIER_GATES = {
     "quick": _tier("quick", QUICK_GATES),
     "cuda": _tier("cuda", QUICK_GATES, CUDA_GATES),
     "nightly": _tier("nightly", QUICK_GATES, CUDA_GATES, NIGHTLY_GATES),
-    "release": _tier(
-        "release", QUICK_GATES, CUDA_GATES, NIGHTLY_GATES, RELEASE_GATES
-    ),
+    "release": _tier("release", QUICK_GATES, CUDA_GATES, NIGHTLY_GATES, RELEASE_GATES),
 }
 
 
@@ -198,9 +178,7 @@ def format_gate(gate: Gate, python: str) -> str:
     return subprocess.list2cmdline(gate.argv(python))
 
 
-def run_gates(
-    gates: tuple[Gate, ...], *, python: str, root: Path, dry_run: bool = False
-) -> int:
+def run_gates(gates: tuple[Gate, ...], *, python: str, root: Path, dry_run: bool = False) -> int:
     for gate in gates:
         command = format_gate(gate, python)
         prefix = "DRY-RUN" if dry_run else "RUN"
@@ -209,11 +187,7 @@ def run_gates(
             continue
         completed = subprocess.run(gate.argv(python), cwd=root, check=False)
         if completed.returncode:
-            print(
-                f"[FAIL] {gate.id}: exit code {completed.returncode}",
-                file=sys.stderr,
-                flush=True,
-            )
+            print(f"[FAIL] {gate.id}: exit code {completed.returncode}", file=sys.stderr, flush=True)
             return completed.returncode
     return 0
 
@@ -233,9 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         for gate in gates:
             print(f"{gate.id}: {format_gate(gate, arguments.python)}")
         return 0
-    return run_gates(
-        gates, python=arguments.python, root=root, dry_run=arguments.dry_run
-    )
+    return run_gates(gates, python=arguments.python, root=root, dry_run=arguments.dry_run)
 
 
 if __name__ == "__main__":

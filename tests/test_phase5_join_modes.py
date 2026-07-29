@@ -18,13 +18,11 @@ import torch
 
 pytest.importorskip("witwin.channel")
 
-from witwin.radar.paths import JOIN_MODES, DirectComposer  # noqa: E402
-from witwin.radar.paths import NO_OUTBOUND_ROW, NO_SITE  # noqa: E402
-from witwin.radar.synthesis.fmcw import synthesize_fmcw  # noqa: E402
-
 from support import phase4_geometry as geo  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
 
+from witwin.radar.paths import JOIN_MODES, NO_OUTBOUND_ROW, NO_SITE, DirectComposer  # noqa: E402  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -45,16 +43,8 @@ def test_the_direct_path_delay_is_the_tx_to_rx_distance(direct):
 
     assert composed.path_count == 1
     assert composed.join_mode == "direct"
-    distance = (
-        sum(
-            (a - b) ** 2
-            for a, b in zip(geo.TX_POSITION_M, geo.RX_POSITION_M, strict=True)
-        )
-        ** 0.5
-    )
-    assert float(composed.total_delay_s[0]) == pytest.approx(
-        distance / geo.C0_M_PER_S, rel=1e-6
-    )
+    distance = sum((a - b) ** 2 for a, b in zip(geo.TX_POSITION_M, geo.RX_POSITION_M, strict=True)) ** 0.5
+    assert float(composed.total_delay_s[0]) == pytest.approx(distance / geo.C0_M_PER_S, rel=1e-6)
     # A gather, not a computation: the leg's transport IS the direct transfer.
     assert torch.equal(composed.complex_transfer_ref, leg.coefficient)
 
@@ -69,9 +59,7 @@ def test_a_direct_row_says_it_has_no_site_and_no_second_leg(direct):
     assert topology.radar_sink_id.tolist() == [geo.RX_STABLE_ID]
 
 
-def test_both_modes_publish_the_same_contract_to_the_same_synthesis(
-    direct, multipath
-):
+def test_both_modes_publish_the_same_contract_to_the_same_synthesis(direct, multipath):
     """One result type, one synthesis entry, no branch anywhere downstream."""
 
     spec = drv.make_spec(num_chirps=2)
@@ -90,20 +78,14 @@ def test_both_modes_publish_the_same_contract_to_the_same_synthesis(
         assert torch.isfinite(iq.real).all() and torch.isfinite(iq.imag).all()
 
     # And they are genuinely different paths: the direct one is far shorter.
-    assert float(direct_batch.total_delay_s[0]) < float(
-        multipath_batch.total_delay_s[0]
-    )
+    assert float(direct_batch.total_delay_s[0]) < float(multipath_batch.total_delay_s[0])
 
 
 def test_the_direct_gradient_reaches_both_endpoints(direct):
     """A pass-through composer must still be a pass-through for the tape."""
 
-    tx = torch.tensor(
-        [geo.TX_POSITION_M], dtype=torch.float32, device="cuda", requires_grad=True
-    )
-    rx = torch.tensor(
-        [geo.RX_POSITION_M], dtype=torch.float32, device="cuda", requires_grad=True
-    )
+    tx = torch.tensor([geo.TX_POSITION_M], dtype=torch.float32, device="cuda", requires_grad=True)
+    rx = torch.tensor([geo.RX_POSITION_M], dtype=torch.float32, device="cuda", requires_grad=True)
     composed, _ = direct.paths(tx, rx, ad_mode="vjp")
     (composed.total_delay_s.sum() + composed.complex_transfer_ref.real.sum()).backward()
     for endpoint in (tx, rx):

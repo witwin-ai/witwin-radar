@@ -26,7 +26,6 @@ from pathlib import Path
 
 import pytest
 
-
 RADAR_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -186,7 +185,7 @@ def _make_wheel(wheel_smoke, path: Path, *, mutate=None) -> Path:
     """A minimal archive carrying only what ``_audit_identity`` reads."""
 
     binary = b"MZ" + b"\x00" * 512
-    sources = {member: f"// {member}\n".encode("utf-8") for member in wheel_smoke._SOURCE_MEMBERS}
+    sources = {member: f"// {member}\n".encode() for member in wheel_smoke._SOURCE_MEMBERS}
     record = {
         "binary_sha256": hashlib.sha256(binary).hexdigest(),
         "build_type": "developer",
@@ -215,9 +214,7 @@ def _make_wheel(wheel_smoke, path: Path, *, mutate=None) -> Path:
     }
     if mutate is not None:
         mutate(record, members)
-    members["witwin/radar/cuda/prebuilt/_radar_native.build-info.json"] = json.dumps(
-        record
-    ).encode("utf-8")
+    members["witwin/radar/cuda/prebuilt/_radar_native.build-info.json"] = json.dumps(record).encode("utf-8")
     if members["witwin/radar/cuda/prebuilt/_radar_native.build-fingerprint"] is None:
         members["witwin/radar/cuda/prebuilt/_radar_native.build-fingerprint"] = (
             record["build_fingerprint"].encode("ascii") + b"\n"
@@ -231,9 +228,7 @@ def _make_wheel(wheel_smoke, path: Path, *, mutate=None) -> Path:
 
 def _audit(wheel_smoke, path: Path):
     with zipfile.ZipFile(path) as archive:
-        return wheel_smoke._audit_identity(
-            archive, "witwin/radar/cuda/prebuilt/_radar_native.pyd"
-        )
+        return wheel_smoke._audit_identity(archive, "witwin/radar/cuda/prebuilt/_radar_native.pyd")
 
 
 def test_a_consistent_wheel_passes_the_identity_audit(wheel_smoke, tmp_path):
@@ -268,9 +263,7 @@ def test_repacked_sources_are_caught_by_the_source_fingerprint(wheel_smoke, tmp_
 
 def test_a_fingerprint_sidecar_that_disagrees_is_refused(wheel_smoke, tmp_path):
     def mutate(record, members):
-        members["witwin/radar/cuda/prebuilt/_radar_native.build-fingerprint"] = (
-            b"f" * 64 + b"\n"
-        )
+        members["witwin/radar/cuda/prebuilt/_radar_native.build-fingerprint"] = b"f" * 64 + b"\n"
 
     wheel = _make_wheel(wheel_smoke, tmp_path / "fingerprint.whl", mutate=mutate)
     with pytest.raises(wheel_smoke.WheelSmokeError, match="build_fingerprint"):
@@ -307,6 +300,4 @@ def test_the_native_member_is_discovered_by_suffix_not_by_name(wheel_smoke):
     with pytest.raises(wheel_smoke.WheelSmokeError, match="exactly one native member"):
         wheel_smoke._native_member(good + ["witwin/radar/vendored_runtime.dll"])
     with pytest.raises(wheel_smoke.WheelSmokeError, match="native member must be"):
-        wheel_smoke._native_member(
-            ["witwin/radar/cuda/prebuilt/witwin_radar_dirichlet_cuda.pyd"]
-        )
+        wheel_smoke._native_member(["witwin/radar/cuda/prebuilt/witwin_radar_dirichlet_cuda.pyd"])

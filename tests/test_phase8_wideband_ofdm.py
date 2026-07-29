@@ -20,19 +20,12 @@ import math
 
 import pytest
 import torch
-
-from witwin.radar.channel import ChannelPropagationAdapter
-from witwin.radar.synthesis import (
-    OfdmSpec,
-    SlowTimeMode,
-    SynthesisPathBatch,
-    synthesize_ofdm,
-)
-from witwin.radar.synthesis.ofdm import synthesize_cfr_rows
-
 from support import multi_endpoint_driver as driver  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 
+from witwin.radar.channel import ChannelPropagationAdapter
+from witwin.radar.synthesis import OfdmSpec, SlowTimeMode, SynthesisPathBatch, synthesize_ofdm
+from witwin.radar.synthesis.ofdm import synthesize_cfr_rows
 
 pytestmark = pytest.mark.gpu
 
@@ -47,16 +40,16 @@ NUM_SYMBOLS = 4
 
 
 def _spec(**overrides) -> OfdmSpec:
-    fields = dict(
-        num_subcarriers=NUM_SUBCARRIERS,
-        num_symbols=NUM_SYMBOLS,
-        subcarrier_spacing_hz=SUBCARRIER_SPACING_HZ,
-        cyclic_prefix_s=1.0e-6,
-        reference_frequency_hz=F_REF,
-        max_expected_delay_s=5.0e-7,
-        carrier_hz=0.0,
-        carrier_rate_hz=F_REF,
-    )
+    fields = {
+        "num_subcarriers": NUM_SUBCARRIERS,
+        "num_symbols": NUM_SYMBOLS,
+        "subcarrier_spacing_hz": SUBCARRIER_SPACING_HZ,
+        "cyclic_prefix_s": 1.0e-6,
+        "reference_frequency_hz": F_REF,
+        "max_expected_delay_s": 5.0e-7,
+        "carrier_hz": 0.0,
+        "carrier_rate_hz": F_REF,
+    }
     fields.update(overrides)
     return OfdmSpec(**fields)
 
@@ -78,17 +71,13 @@ def _spikes(spec: OfdmSpec):
         max_depth=1,
         frequency_offsets_hz=spec.frequency_offsets_hz,
     )
-    banded = driver.MultiEndpointSpike(
-        compiled=narrow.compiled, adapter=banded_adapter
-    )
+    banded = driver.MultiEndpointSpike(compiled=narrow.compiled, adapter=banded_adapter)
     return narrow, banded
 
 
 def _cube(spike, spec, response):
     composed, _, _ = spike.frame(response=response, include_delay_rate=False)
-    batch = SynthesisPathBatch.from_radar_paths(
-        composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return synthesize_ofdm(batch, spec), composed
 
 
@@ -120,9 +109,7 @@ def test_an_adapter_without_a_band_publishes_exactly_what_it_did_before():
     assert composed.frequency_response is None
     assert composed.band_count == 0
 
-    batch = SynthesisPathBatch.from_radar_paths(
-        composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     assert batch.frequency_response is None
 
 
@@ -143,13 +130,8 @@ def test_a_banded_batch_reproduces_the_reference_column_bitwise():
     banded_composed, _, _ = banded.frame(response=response, include_delay_rate=False)
 
     assert banded_composed.band_count == NUM_SUBCARRIERS
-    assert torch.equal(
-        narrow_composed.complex_transfer_ref, banded_composed.complex_transfer_ref
-    )
-    assert torch.equal(
-        banded_composed.frequency_response[:, 0],
-        banded_composed.complex_transfer_ref,
-    )
+    assert torch.equal(narrow_composed.complex_transfer_ref, banded_composed.complex_transfer_ref)
+    assert torch.equal(banded_composed.frequency_response[:, 0], banded_composed.complex_transfer_ref)
 
 
 def test_the_ofdm_anchor_survives_the_wideband_route():
@@ -188,9 +170,7 @@ def test_the_wideband_cube_differs_from_the_narrowband_one_across_the_band():
     narrow_cube, _ = _cube(narrow, spec, response)
     banded_cube, _ = _cube(banded, spec, response)
 
-    difference = (banded_cube - narrow_cube).abs() / narrow_cube.abs().clamp_min(
-        1.0e-30
-    )
+    difference = (banded_cube - narrow_cube).abs() / narrow_cube.abs().clamp_min(1.0e-30)
     assert float(difference[:, :, 0].max()) == 0.0
     assert float(difference[:, :, 1:].max()) > 1.0e-2
 
@@ -198,9 +178,7 @@ def test_the_wideband_cube_differs_from_the_narrowband_one_across_the_band():
     # Airy fringe and the deviation is not monotone in n. What IS monotone is
     # that the first half of the band deviates less than the second.
     per_column = difference[0, 0]
-    assert float(per_column[1 : NUM_SUBCARRIERS // 2].mean()) < float(
-        per_column[NUM_SUBCARRIERS // 2 :].mean()
-    )
+    assert float(per_column[1 : NUM_SUBCARRIERS // 2].mean()) < float(per_column[NUM_SUBCARRIERS // 2 :].mean())
 
 
 def test_the_line_of_sight_column_follows_the_exact_spreading_tilt():
@@ -228,12 +206,11 @@ def test_the_line_of_sight_column_follows_the_exact_spreading_tilt():
     for index in range(NUM_SUBCARRIERS):
         expected = F_REF / (F_REF + index * SUBCARRIER_SPACING_HZ)
         measured = band[:, index] / band[:, 0]
-        assert torch.allclose(
-            measured,
-            torch.full_like(measured, expected),
-            rtol=1.0e-5,
-            atol=0.0,
-        ), (index, measured.tolist(), expected)
+        assert torch.allclose(measured, torch.full_like(measured, expected), rtol=1.0e-5, atol=0.0), (
+            index,
+            measured.tolist(),
+            expected,
+        )
 
 
 def test_a_wideband_column_is_not_the_delay_phase_applied_twice():
@@ -251,12 +228,7 @@ def test_a_wideband_column_is_not_the_delay_phase_applied_twice():
     rate = torch.zeros_like(tau)
     offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
     columns = torch.tensor(
-        [
-            [
-                _channel_style_column(float(tau), index)
-                for index in range(NUM_SUBCARRIERS)
-            ]
-        ],
+        [[_channel_style_column(float(tau), index) for index in range(NUM_SUBCARRIERS)]],
         dtype=torch.complex64,
         device="cuda",
     )
@@ -283,9 +255,7 @@ def _channel_style_column(delay_s: float, subcarrier: int) -> complex:
     frequency = F_REF + subcarrier * SUBCARRIER_SPACING_HZ
     cycles = -frequency * delay_s
     fraction = cycles - math.floor(cycles)
-    return complex(
-        math.cos(2.0 * math.pi * fraction), math.sin(2.0 * math.pi * fraction)
-    )
+    return complex(math.cos(2.0 * math.pi * fraction), math.sin(2.0 * math.pi * fraction))
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +274,7 @@ def test_the_join_composes_each_column_as_the_product_of_the_two_legs():
     spec = _spec()
     _, banded = _spikes(spec)
     response = driver.make_response()
-    composed, inbound, outbound = banded.frame(
-        response=response, include_delay_rate=False
-    )
+    composed, inbound, outbound = banded.frame(response=response, include_delay_rate=False)
 
     site = response.evaluate(banded.composer.site_count, composed.device)
     reference = (
@@ -315,13 +283,9 @@ def test_the_join_composes_each_column_as_the_product_of_the_two_legs():
         * site.index_select(0, banded.composer.response_slot).unsqueeze(1)
     )
     if composed.row_valid is not None:
-        reference = torch.where(
-            composed.row_valid.unsqueeze(1), reference, torch.zeros_like(reference)
-        )
+        reference = torch.where(composed.row_valid.unsqueeze(1), reference, torch.zeros_like(reference))
 
-    error = (composed.frequency_response - reference).abs() / reference.abs().clamp_min(
-        1.0e-30
-    )
+    error = (composed.frequency_response - reference).abs() / reference.abs().clamp_min(1.0e-30)
     assert float(error.max()) < 1.0e-5, float(error.max())
 
 
@@ -332,10 +296,7 @@ def test_the_reference_column_of_the_join_matches_the_narrowband_join_bitwise():
     narrow_composed, _, _ = narrow.frame(response=response, include_delay_rate=False)
     banded_composed, _, _ = banded.frame(response=response, include_delay_rate=False)
 
-    assert torch.equal(
-        banded_composed.frequency_response[:, 0],
-        narrow_composed.complex_transfer_ref,
-    )
+    assert torch.equal(banded_composed.frequency_response[:, 0], narrow_composed.complex_transfer_ref)
 
 
 def test_a_banded_leg_cannot_be_joined_with_a_narrowband_one():
@@ -379,12 +340,13 @@ def test_the_join_loop_costs_one_launch_per_column_and_no_host_observation():
                 return counting
             return getattr(operators, name)
 
-    saved = two_way._OPS
-    two_way._OPS = _Patched()
+    saved = two_way._ops
+    patched = _Patched()
+    two_way._ops = lambda: patched
     try:
         banded.frame(response=driver.make_response(), include_delay_rate=False)
     finally:
-        two_way._OPS = saved
+        two_way._ops = saved
 
     assert launches == 1 + NUM_SUBCARRIERS, launches
 
@@ -409,9 +371,7 @@ def test_the_wideband_cfr_vjp_matches_central_differences():
     tau = torch.rand(paths, device="cuda", dtype=torch.float32) * 1.0e-8 + 1.0e-9
     rate = (torch.rand(paths, device="cuda", dtype=torch.float32) - 0.5) * 2.0e-8
     offsets = torch.tensor([0, 2, paths], dtype=torch.int64, device="cuda")
-    band = torch.randn(
-        paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda"
-    )
+    band = torch.randn(paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda")
 
     live = band.clone().requires_grad_(True)
     out = synthesize_cfr_rows(tau, rate, live, offsets, spec)
@@ -427,9 +387,7 @@ def test_the_wideband_cfr_vjp_matches_central_differences():
             plus = synthesize_cfr_rows(tau, rate, band + bump, offsets, spec)
             minus = synthesize_cfr_rows(tau, rate, band - bump, offsets, spec)
             derivative = (plus - minus) / (2.0 * step)
-            expected = float(
-                (derivative.real * seed.real + derivative.imag * seed.imag).sum()
-            )
+            expected = float((derivative.real * seed.real + derivative.imag * seed.imag).sum())
             measured = float(live.grad[row, column].real)
             worst = max(worst, abs(measured - expected) / max(abs(expected), 1.0e-12))
     assert worst < 1.0e-3, worst
@@ -451,9 +409,7 @@ def test_the_wideband_cfr_jvp_and_vjp_agree_with_each_other():
     tau = torch.rand(paths, device="cuda", dtype=torch.float32) * 1.0e-8 + 1.0e-9
     rate = (torch.rand(paths, device="cuda", dtype=torch.float32) - 0.5) * 2.0e-8
     offsets = torch.tensor([0, 2, paths], dtype=torch.int64, device="cuda")
-    band = torch.randn(
-        paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda"
-    )
+    band = torch.randn(paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda")
     tangent = torch.randn_like(band)
 
     with forward_ad.dual_level():
@@ -466,14 +422,8 @@ def test_the_wideband_cfr_jvp_and_vjp_agree_with_each_other():
     seed = torch.randn_like(primal)
     (primal.real * seed.real + primal.imag * seed.imag).sum().backward()
 
-    left = float(
-        (forward.real * seed.real + forward.imag * seed.imag).sum()
-    )
-    right = float(
-        (
-            live.grad.real * tangent.real + live.grad.imag * tangent.imag
-        ).sum()
-    )
+    left = float((forward.real * seed.real + forward.imag * seed.imag).sum())
+    right = float((live.grad.real * tangent.real + live.grad.imag * tangent.imag).sum())
     assert abs(left - right) <= 1.0e-5 * max(abs(left), abs(right)), (left, right)
 
 
@@ -492,14 +442,10 @@ def test_the_columns_carry_genuinely_different_derivatives():
     tau = torch.rand(paths, device="cuda", dtype=torch.float32) * 1.0e-8 + 1.0e-9
     rate = torch.zeros_like(tau)
     offsets = torch.tensor([0, 1, paths], dtype=torch.int64, device="cuda")
-    band = torch.randn(
-        paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda"
-    ).requires_grad_(True)
+    band = torch.randn(paths, NUM_SUBCARRIERS, dtype=torch.complex64, device="cuda").requires_grad_(True)
 
     out = synthesize_cfr_rows(tau, rate, band, offsets, spec)
-    weight = torch.arange(
-        1, NUM_SUBCARRIERS + 1, dtype=torch.float32, device="cuda"
-    )
+    weight = torch.arange(1, NUM_SUBCARRIERS + 1, dtype=torch.float32, device="cuda")
     (out.real * weight).sum().backward()
 
     columns = band.grad.abs()
@@ -522,15 +468,9 @@ def test_a_band_whose_width_is_not_the_subcarrier_count_is_refused():
         max_depth=1,
         frequency_offsets_hz=spec.frequency_offsets_hz[: NUM_SUBCARRIERS - 2],
     )
-    short = driver.MultiEndpointSpike(
-        compiled=narrow.compiled, adapter=short_adapter
-    )
-    composed, _, _ = short.frame(
-        response=driver.make_response(), include_delay_rate=False
-    )
-    batch = SynthesisPathBatch.from_radar_paths(
-        composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    short = driver.MultiEndpointSpike(compiled=narrow.compiled, adapter=short_adapter)
+    composed, _, _ = short.frame(response=driver.make_response(), include_delay_rate=False)
+    batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     with pytest.raises(ValueError, match="one column per subcarrier|column wideband"):
         synthesize_ofdm(batch, spec)
 
@@ -546,17 +486,11 @@ def test_fmcw_refuses_the_band_it_cannot_index():
 
     spec = _spec()
     _, banded = _spikes(spec)
-    composed, _, _ = banded.frame(
-        response=driver.make_response(), include_delay_rate=False
-    )
-    batch = SynthesisPathBatch.from_radar_paths(
-        composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    composed, _, _ = banded.frame(response=driver.make_response(), include_delay_rate=False)
+    batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     from witwin.radar import RadarConfig
 
-    beat = FmcwSpec.from_radar_config(
-        RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)), carrier_hz=0.0
-    )
+    beat = FmcwSpec.from_radar_config(RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)), carrier_hz=0.0)
     with pytest.raises(ValueError, match="does not consume a wideband response"):
         synthesize_fmcw(batch, beat)
 

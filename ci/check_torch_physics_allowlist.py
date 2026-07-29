@@ -43,9 +43,8 @@ import argparse
 import ast
 import hashlib
 import json
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST_PATH = REPO_ROOT / "ci" / "torch-physics-allowlist.json"
@@ -54,9 +53,7 @@ ALLOWLIST_PATH = REPO_ROOT / "ci" / "torch-physics-allowlist.json"
 #: here rather than inside the JSON on purpose: a digest a document carries is
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
-FROZEN_BASELINE_DIGEST = (
-    "1d880903bf776ffa018da8a6bc99d4b647d4ddbbc718882ab65833fcdfbbd7d0"
-)
+FROZEN_BASELINE_DIGEST = "1d880903bf776ffa018da8a6bc99d4b647d4ddbbc718882ab65833fcdfbbd7d0"
 
 SCHEMA_VERSION = 1
 
@@ -74,9 +71,7 @@ TOP_LEVEL_KEYS = frozenset(
     }
 )
 
-ENTRY_KEYS = frozenset(
-    {"module", "function", "call", "occurrences", "category", "reason", "adr"}
-)
+ENTRY_KEYS = frozenset({"module", "function", "call", "occurrences", "category", "reason", "adr"})
 
 
 def _dotted(node: ast.AST) -> str:
@@ -106,21 +101,14 @@ def scanned_modules(root: Path, scanned_root: str, excluded: tuple[str, ...]):
         if "__pycache__" in path.parts:
             continue
         relative = path.relative_to(root).as_posix()
-        if any(
-            relative == item or relative.startswith(f"{item.rstrip('/')}/")
-            for item in excluded
-        ):
+        if any(relative == item or relative.startswith(f"{item.rstrip('/')}/") for item in excluded):
             continue
         modules.append(path)
     return modules
 
 
 def scan(
-    root: Path,
-    *,
-    scanned_root: str,
-    excluded: tuple[str, ...],
-    forbidden: tuple[str, ...],
+    root: Path, *, scanned_root: str, excluded: tuple[str, ...], forbidden: tuple[str, ...]
 ) -> dict[tuple[str, str, str], int]:
     """`(module, function, call) -> occurrences` over the scanned scope."""
 
@@ -136,7 +124,7 @@ def scan(
             name = _dotted(node.func)
             if not name.startswith("torch."):
                 continue
-            if name[len("torch."):] not in forbidden:
+            if name[len("torch.") :] not in forbidden:
                 continue
             key = (relative, functions.get(node.lineno, "<module>"), name)
             counts[key] = counts.get(key, 0) + 1
@@ -144,19 +132,14 @@ def scan(
 
 
 def allowlist_digest(document: dict) -> str:
-    canonical = json.dumps(
-        document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
 
 def _check_schema(document: dict) -> list[str]:
     failures: list[str] = []
     if document.get("schema_version") != SCHEMA_VERSION:
-        failures.append(
-            f"schema_version is {document.get('schema_version')!r}, "
-            f"expected {SCHEMA_VERSION}"
-        )
+        failures.append(f"schema_version is {document.get('schema_version')!r}, expected {SCHEMA_VERSION}")
     unknown = sorted(set(document) - TOP_LEVEL_KEYS)
     if unknown:
         failures.append(f"unknown top-level key(s): {unknown}")
@@ -169,19 +152,14 @@ def _check_schema(document: dict) -> list[str]:
     for index, entry in enumerate(document.get("entries", [])):
         label = f"entries[{index}]"
         if set(entry) != ENTRY_KEYS:
-            failures.append(
-                f"{label}: keys {sorted(entry)}, expected {sorted(ENTRY_KEYS)}"
-            )
+            failures.append(f"{label}: keys {sorted(entry)}, expected {sorted(ENTRY_KEYS)}")
             continue
         key = (entry["module"], entry["function"], entry["call"])
         if key in seen:
             failures.append(f"{label}: duplicate entry for {key}")
         seen.add(key)
         if entry["category"] not in categories:
-            failures.append(
-                f"{label}: category {entry['category']!r} is not described in "
-                "'categories'"
-            )
+            failures.append(f"{label}: category {entry['category']!r} is not described in 'categories'")
         if not str(entry["reason"]).strip():
             failures.append(f"{label}: empty reason")
         if not str(entry["adr"]).strip():
@@ -204,8 +182,7 @@ def _check_pytest_constants(root: Path, document: dict) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == name
-                for target in node.targets
+                isinstance(target, ast.Name) and target.id == name for target in node.targets
             ):
                 return ast.literal_eval(node.value)
         raise KeyError(f"{path}: {name} not found")
@@ -222,14 +199,9 @@ def _check_pytest_constants(root: Path, document: dict) -> list[str]:
         )
 
     facade = {tuple(pair) for pair in literals(physics, "RADAR_FACADE_TORCH_PHYSICS")}
-    recorded_facade = {
-        tuple(pair) for pair in document["radar_facade_torch_physics"]
-    }
+    recorded_facade = {tuple(pair) for pair in document["radar_facade_torch_physics"]}
     if facade != recorded_facade:
-        failures.append(
-            "RADAR_FACADE_TORCH_PHYSICS disagrees with the allowlist: "
-            f"{sorted(facade ^ recorded_facade)}"
-        )
+        failures.append(f"RADAR_FACADE_TORCH_PHYSICS disagrees with the allowlist: {sorted(facade ^ recorded_facade)}")
 
     fence = set(literals(cutover, "FENCE_ALLOWANCES"))
     recorded_fence = set(document["fence_allowances"])
@@ -264,8 +236,7 @@ def check(root: Path, allowlist_path: Path) -> list[str]:
         forbidden=tuple(document["forbidden_torch_calls"]),
     )
     recorded = {
-        (entry["module"], entry["function"], entry["call"]): entry["occurrences"]
-        for entry in document["entries"]
+        (entry["module"], entry["function"], entry["call"]): entry["occurrences"] for entry in document["entries"]
     }
 
     for key in sorted(set(measured) - set(recorded)):
@@ -285,8 +256,7 @@ def check(root: Path, allowlist_path: Path) -> list[str]:
         if recorded[key] != measured[key]:
             module, function, call = key
             failures.append(
-                f"{module}: {function}() calls {call} {measured[key]} time(s), "
-                f"the allowlist records {recorded[key]}"
+                f"{module}: {function}() calls {call} {measured[key]} time(s), the allowlist records {recorded[key]}"
             )
 
     failures.extend(_check_pytest_constants(root, document))
@@ -308,20 +278,13 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = check(root, allowlist_path)
     if failures:
-        print(
-            f"check_torch_physics_allowlist: {len(failures)} violation(s) under {root}",
-            file=sys.stderr,
-        )
+        print(f"check_torch_physics_allowlist: {len(failures)} violation(s) under {root}", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1
 
     document = json.loads(allowlist_path.read_text(encoding="utf-8"))
-    modules = scanned_modules(
-        root,
-        str(document["scanned_root"]),
-        tuple(document["excluded_paths"]),
-    )
+    modules = scanned_modules(root, str(document["scanned_root"]), tuple(document["excluded_paths"]))
     total = sum(entry["occurrences"] for entry in document["entries"])
     print(
         f"check_torch_physics_allowlist: {len(modules)} modules scanned under "

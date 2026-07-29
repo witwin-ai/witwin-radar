@@ -42,13 +42,20 @@ wants the pre-cutover behaviour asks for ``torch.complex128`` and can be seen
 asking.
 """
 
-
-import torch
 from dataclasses import dataclass
 
-from .signal import DEFAULT_WINDOW, _require_complex
+import torch
+
+from .signal import (
+    DEFAULT_WINDOW,
+    ProcessingCube,
+    _require_complex,
+    pulse_replica,
+    remove_mean,
+    taper,
+    window_coherent_gain,
+)
 from .signal import matched_filter as _correlate
-from .signal import pulse_replica
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -76,10 +83,7 @@ class RangeProfile:
     def __post_init__(self) -> None:
         _require_complex("data", self.data)
         if self.data.dim() < 2:
-            raise ValueError(
-                "a range profile is [..., slow_time, range]; got shape "
-                f"{tuple(self.data.shape)}"
-            )
+            raise ValueError(f"a range profile is [..., slow_time, range]; got shape {tuple(self.data.shape)}")
         if int(self.data.shape[-1]) != int(self.axes.range_bin_count):
             raise ValueError(
                 f"the profile has {int(self.data.shape[-1])} range bins but its "
@@ -110,10 +114,7 @@ class RangeDopplerMap:
     def __post_init__(self) -> None:
         _require_complex("data", self.data)
         if self.data.dim() < 2:
-            raise ValueError(
-                "a Range-Doppler map is [..., doppler, range]; got shape "
-                f"{tuple(self.data.shape)}"
-            )
+            raise ValueError(f"a Range-Doppler map is [..., doppler, range]; got shape {tuple(self.data.shape)}")
         if int(self.data.shape[-1]) != int(self.axes.range_bin_count):
             raise ValueError(
                 f"the map has {int(self.data.shape[-1])} range bins but its axes "
@@ -134,6 +135,7 @@ class RangeDopplerMap:
         """``[D]`` float64 metres per second, positive for a closing target."""
 
         return self.axes.velocity_mps
+
 
 def pulse_samples(spec, device: torch.device | str = "cpu") -> torch.Tensor:
     """The transmitted replica on the ADC grid, as ``complex128[M_p]``.
@@ -165,52 +167,43 @@ def pulse_samples(spec, device: torch.device | str = "cpu") -> torch.Tensor:
 
 
 def matched_filter(
-    signal: torch.Tensor,
-    spec,
-    *,
-    oversample: int = 1,
-    dtype: torch.dtype | None = None,
+    signal: torch.Tensor, spec, *, oversample: int = 1, dtype: torch.dtype | None = None
 ) -> torch.Tensor:
     """Correlate the fast-time axis against ``conj(p)``. Same rank as ``signal``.
 
-    ``signal`` is the received train ``[..., num_samples]`` from the pulsed
-    synthesis owner. The result is ``[..., num_samples * oversample]``, indexed
-    by lag from the range-gate start.
+        ``signal`` is the received train ``[..., num_samples]`` from the pulsed
+        synthesis owner. The result is ``[..., num_samples * oversample]``, indexed
+        by lag from the range-gate start.
 
-    The transform length is `
-um_samples + M_p`` rather than `
-um_samples``, so
-    that the negative lags - the correlation's left tail, which is real and
-    extends a full pulse width - do not wrap around onto the positive ones. A
-    circular correlation over `
-um_samples`` would fold that tail onto the far
-    end of the gate and invent an echo there.
+        The transform length is `
+    um_samples + M_p`` rather than `
+    um_samples``, so
+        that the negative lags - the correlation's left tail, which is real and
+        extends a full pulse width - do not wrap around onto the positive ones. A
+        circular correlation over `
+    um_samples`` would fold that tail onto the far
+        end of the gate and invent an echo there.
 
-    ``oversample`` inserts zeros in the middle of the lag spectrum, which is
-    exact band-limited interpolation of the sampled correlation rather than a
-    smoothing. It exists because the range cell can be a couple of samples wide:
-    a three-point parabolic fit on the raw grid then measures its own truncation
-    error instead of the peak. It changes only the lag GRID, never the values on
-    the original grid.
+        ``oversample`` inserts zeros in the middle of the lag spectrum, which is
+        exact band-limited interpolation of the sampled correlation rather than a
+        smoothing. It exists because the range cell can be a couple of samples wide:
+        a three-point parabolic fit on the raw grid then measures its own truncation
+        error instead of the peak. It changes only the lag GRID, never the values on
+        the original grid.
 
-    ``dtype`` is the working precision. ``None`` means the input's own, which is
-    the honest default; pass ``torch.complex128`` to reproduce the pre-cutover
-    behaviour exactly.
+        ``dtype`` is the working precision. ``None`` means the input's own, which is
+        the honest default; pass ``torch.complex128`` to reproduce the pre-cutover
+        behaviour exactly.
     """
 
     if signal.shape[-1] != spec.num_samples:
         raise ValueError(
-            f"the fast-time axis holds {signal.shape[-1]} samples but the spec "
-            f"declares num_samples={spec.num_samples}"
+            f"the fast-time axis holds {signal.shape[-1]} samples but the spec declares num_samples={spec.num_samples}"
         )
     working = signal if dtype is None else signal.to(dtype)
     replica = pulse_samples(spec, device=signal.device)
     return _correlate(
-        working,
-        replica,
-        sample_period_s=float(spec.sample_period_s),
-        oversample=oversample,
-        window=DEFAULT_WINDOW,
+        working, replica, sample_period_s=float(spec.sample_period_s), oversample=oversample, window=DEFAULT_WINDOW
     )
 
 
@@ -226,11 +219,8 @@ def lag_axis(spec, *, oversample: int = 1, device: torch.device | str = "cpu"):
 
     if oversample < 1:
         raise ValueError(f"oversample must be at least 1, got {oversample}")
-    steps = torch.arange(
-        spec.num_samples * oversample, dtype=torch.float64, device=device
-    )
+    steps = torch.arange(spec.num_samples * oversample, dtype=torch.float64, device=device)
     return spec.range_gate_start_s + steps * (spec.sample_period_s / oversample)
-
 
 
 """One range-profile entry, three waveform backends, one owner.
@@ -272,18 +262,6 @@ amplitude comparison a per-waveform bookkeeping exercise.
 """
 
 
-import torch
-from dataclasses import dataclass
-
-from .signal import ProcessingCube
-from .signal import (
-    DEFAULT_WINDOW,
-    remove_mean,
-    taper,
-    window_coherent_gain,
-)
-
-
 def _unpack(cube: ProcessingCube):
     if not isinstance(cube, ProcessingCube):
         raise TypeError(
@@ -293,12 +271,7 @@ def _unpack(cube: ProcessingCube):
     return cube.data, cube.axes
 
 
-def range_profile(
-    cube: ProcessingCube,
-    *,
-    window: str | None = None,
-    remove_dc: bool = False,
-) -> RangeProfile:
+def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc: bool = False) -> RangeProfile:
     """Convert one typed synthesis/processing cube to a range profile.
 
     `ProcessingCube` carries waveform, output-domain and physical-axis
@@ -309,15 +282,9 @@ def range_profile(
 
     data, record = _unpack(cube)
     if not data.is_complex():
-        raise TypeError(
-            "a range profile is formed from complex IQ; got a real tensor of "
-            f"dtype {data.dtype}"
-        )
+        raise TypeError(f"a range profile is formed from complex IQ; got a real tensor of dtype {data.dtype}")
     if data.dim() < 2:
-        raise ValueError(
-            "the input is [..., slow_time, fast_time]; got shape "
-            f"{tuple(data.shape)}"
-        )
+        raise ValueError(f"the input is [..., slow_time, fast_time]; got shape {tuple(data.shape)}")
     name = DEFAULT_WINDOW if window is None else str(window)
 
     if record.waveform == "fmcw":
@@ -333,10 +300,7 @@ def range_profile(
             if remove_dc:
                 data = remove_mean(data, dim=-1)
         else:
-            raise ValueError(
-                f"unsupported FMCW output_domain {record.output_domain!r}; "
-                "expected spectrum or beat"
-            )
+            raise ValueError(f"unsupported FMCW output_domain {record.output_domain!r}; expected spectrum or beat")
     elif remove_dc:
         data = remove_mean(data, dim=-1)
 
@@ -355,9 +319,7 @@ def range_profile(
             oversample=record.range_oversample,
             window=name,
         )
-        taper_length = int(data.shape[-1]) + int(
-            record.matched_filter_replica.shape[0]
-        )
+        taper_length = int(data.shape[-1]) + int(record.matched_filter_replica.shape[0])
     else:
         if int(data.shape[-1]) != record.range_bin_count:
             raise ValueError(
@@ -380,12 +342,8 @@ def range_profile(
             profile = torch.fft.ifft(windowed, dim=-1)
 
     return RangeProfile(
-        data=profile,
-        axes=record,
-        window=name,
-        window_coherent_gain=window_coherent_gain(name, taper_length),
+        data=profile, axes=record, window=name, window_coherent_gain=window_coherent_gain(name, taper_length)
     )
-
 
 
 """The slow-time transform, and the ONE place a Doppler sign is reconciled.
@@ -420,15 +378,7 @@ would move every bin by one).
 """
 
 
-import torch
-from dataclasses import dataclass
-
-from .signal import DEFAULT_WINDOW, _require_complex, taper, window_coherent_gain
-
-
-def range_doppler_map(
-    profile: RangeProfile, *, window: str | None = None
-) -> RangeDopplerMap:
+def range_doppler_map(profile: RangeProfile, *, window: str | None = None) -> RangeDopplerMap:
     """``RangeProfile[..., C, R]`` -> ``RangeDopplerMap[..., D, R]``.
 
     Rank generic with an arbitrary leading batch, so ``[P, C, R]`` and
@@ -461,9 +411,7 @@ def range_doppler_map(
         # negated canonical frequency. Reverse the frequency index - a gather,
         # not arithmetic - and every waveform below this line is in one sign.
         bins = int(record.doppler_bin_count)
-        reversed_index = torch.remainder(
-            -torch.arange(bins, device=spectrum.device), bins
-        )
+        reversed_index = torch.remainder(-torch.arange(bins, device=spectrum.device), bins)
         spectrum = spectrum.index_select(-2, reversed_index)
     spectrum = torch.fft.fftshift(spectrum, dim=-2)
 
@@ -471,11 +419,8 @@ def range_doppler_map(
         data=spectrum,
         axes=record,
         window=name,
-        window_coherent_gain=window_coherent_gain(
-            name, int(record.doppler_bin_count)
-        ),
+        window_coherent_gain=window_coherent_gain(name, int(record.doppler_bin_count)),
     )
-
 
 
 """Micro-Doppler analysis: slow-time spectra and spectrograms, in Torch.
@@ -509,10 +454,6 @@ Conventions, both of which change the answer:
   caller to permute and would silently transform range instead of Doppler on a
   cube that happened to be square.
 """
-
-
-import torch
-from dataclasses import dataclass
 
 
 #: The window this module applies by default.
@@ -550,9 +491,7 @@ def doppler_frequencies_hz(slot_count: int, slot_period_s: float, *, device=None
         raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
     if not float(slot_period_s) > 0.0:
         raise ValueError(f"slot_period_s must be positive, got {slot_period_s}")
-    bins = torch.fft.fftshift(
-        torch.fft.fftfreq(slot_count, d=float(slot_period_s), device=device)
-    )
+    bins = torch.fft.fftshift(torch.fft.fftfreq(slot_count, d=float(slot_period_s), device=device))
     return bins
 
 
@@ -579,12 +518,7 @@ def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann"):
 
 
 def microdoppler_spectrogram(
-    samples: torch.Tensor,
-    *,
-    slot_period_s: float,
-    window_slots: int,
-    hop_slots: int,
-    window: str = "hann",
+    samples: torch.Tensor, *, slot_period_s: float, window_slots: int, hop_slots: int, window: str = "hann"
 ):
     """A short-time slow-time transform: the micro-Doppler spectrogram.
 
@@ -623,14 +557,11 @@ def microdoppler_spectrogram(
     # unfold gives [..., frames, window_slots] already; the transform is over
     # the window axis, which slow_time_spectrum takes as the trailing one.
     spectrum = slow_time_spectrum(framed, window=window)
-    frequencies = doppler_frequencies_hz(
-        window_slots, slot_period_s, device=samples.device
-    )
+    frequencies = doppler_frequencies_hz(window_slots, slot_period_s, device=samples.device)
     centre = (window_slots - 1) / 2.0
-    times = (
-        torch.arange(frames, dtype=torch.float64, device=samples.device) * hop_slots
-        + centre
-    ) * float(slot_period_s)
+    times = (torch.arange(frames, dtype=torch.float64, device=samples.device) * hop_slots + centre) * float(
+        slot_period_s
+    )
     return times, frequencies, spectrum
 
 

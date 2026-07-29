@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def audit(repo: Path) -> list[str]:
-    policy = json.loads(
-        (repo / "ci" / "release-policy.json").read_text(encoding="utf-8")
-    )
+    policy = json.loads((repo / "ci" / "release-policy.json").read_text(encoding="utf-8"))
     errors: list[str] = []
     living = {
         "README.md": (repo / "README.md").read_text(encoding="utf-8"),
@@ -30,24 +28,14 @@ def audit(repo: Path) -> list[str]:
         for name in ("README.md", "FEATURE_LIST.md"):
             if "stable abi" in living[name].lower():
                 errors.append(f"{name} presents cross-Torch Stable ABI as supported")
-    workflow = (
-        repo / ".github" / "workflows" / "publish-witwin-radar.yml"
-    ).read_text(encoding="utf-8")
-    refusal_is_success = (
-        "expected_refusal" in workflow and "exit 0" in workflow
-    ) or (
-        "This cell measures deviation P3, not a passing Stable ABI cell."
-        in workflow
+    workflow = (repo / ".github" / "workflows" / "publish-witwin-radar.yml").read_text(encoding="utf-8")
+    refusal_is_success = ("expected_refusal" in workflow and "exit 0" in workflow) or (
+        "This cell measures deviation P3, not a passing Stable ABI cell." in workflow
         and "except build.RadarExtensionABIError" in workflow
         and "raise SystemExit(0)" in workflow
     )
-    if (
-        not policy["expected_loader_refusal_is_release_success"]
-        and refusal_is_success
-    ):
-        errors.append(
-            "publish workflow treats expected loader refusal as successful release evidence"
-        )
+    if not policy["expected_loader_refusal_is_release_success"] and refusal_is_success:
+        errors.append("publish workflow treats expected loader refusal as successful release evidence")
     return errors
 
 

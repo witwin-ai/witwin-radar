@@ -9,21 +9,18 @@ are intentionally not retained.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import torch
 import torch.autograd.forward_ad as forward_ad
 
+from .cuda import native_ops as _ops
 from .paths import RadarPathBatch
 from .policy import first_order_only
 
-__all__ = [
-    "AntennaPatternSpec",
-    "ISOTROPIC_PATTERN",
-    "SensorArraySpec",
-    "TxPowerSpec",
-]
+__all__ = ["AntennaPatternSpec", "ISOTROPIC_PATTERN", "SensorArraySpec", "TxPowerSpec"]
 
 DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
 
@@ -63,11 +60,7 @@ def interp1d_zero_outside(axis: torch.Tensor, values: torch.Tensor, query: torch
 
 
 def interp2d_zero_outside(
-    x_axis: torch.Tensor,
-    y_axis: torch.Tensor,
-    values: torch.Tensor,
-    x_query: torch.Tensor,
-    y_query: torch.Tensor,
+    x_axis: torch.Tensor, y_axis: torch.Tensor, values: torch.Tensor, x_query: torch.Tensor, y_query: torch.Tensor
 ) -> torch.Tensor:
     flat_x = x_query.reshape(-1)
     flat_y = y_query.reshape(-1)
@@ -91,18 +84,8 @@ def interp2d_zero_outside(
     v01 = values[y_high, x_left]
     v11 = values[y_high, x_right]
 
-    interpolated = (
-        (1.0 - tx) * (1.0 - ty) * v00
-        + tx * (1.0 - ty) * v10
-        + (1.0 - tx) * ty * v01
-        + tx * ty * v11
-    )
-    inside = (
-        (flat_x >= x_axis[0])
-        & (flat_x <= x_axis[-1])
-        & (flat_y >= y_axis[0])
-        & (flat_y <= y_axis[-1])
-    )
+    interpolated = (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v10 + (1.0 - tx) * ty * v01 + tx * ty * v11
+    inside = (flat_x >= x_axis[0]) & (flat_x <= x_axis[-1]) & (flat_y >= y_axis[0]) & (flat_y <= y_axis[-1])
     return torch.where(inside, interpolated, torch.zeros_like(interpolated)).reshape(x_query.shape)
 
 
@@ -118,12 +101,9 @@ def evaluate_antenna_pattern_xy(
 ) -> torch.Tensor:
     if pattern_kind == "separable":
         return interp1d_zero_outside(x_axis, x_values, x_angles_deg) * interp1d_zero_outside(
-            y_axis,
-            y_values,
-            y_angles_deg,
+            y_axis, y_values, y_angles_deg
         )
     return interp2d_zero_outside(x_axis, y_axis, values_2d, x_angles_deg, y_angles_deg)
-
 
 
 #: Exact SI definition, in metres per second. Quoted rather than imported from
@@ -145,9 +125,7 @@ PATTERN_KINDS = (PATTERN_KIND_SEPARABLE, PATTERN_KIND_MAP)
 PATTERN_KIND_CODE = {PATTERN_KIND_SEPARABLE: 0, PATTERN_KIND_MAP: 1}
 
 
-def _float_tensor(
-    values: Sequence[Any], *, device: torch.device, name: str, shape: tuple[int, ...]
-) -> torch.Tensor:
+def _float_tensor(values: Sequence[Any], *, device: torch.device, name: str, shape: tuple[int, ...]) -> torch.Tensor:
     tensor = torch.as_tensor(values, dtype=torch.float32, device=device).contiguous()
     if tuple(tensor.shape) != shape:
         raise ValueError(f"{name} must have shape {shape}, got {tuple(tensor.shape)}")
@@ -178,19 +156,12 @@ class SensorArraySpec:
             raise ValueError("num_rx must be positive")
         if not self.reference_frequency_hz > 0.0:
             raise ValueError(
-                "reference_frequency_hz must be positive; it is what turns a "
-                "half-wavelength element offset into metres"
+                "reference_frequency_hz must be positive; it is what turns a half-wavelength element offset into metres"
             )
         if len(self.tx_loc) != self.num_tx:
-            raise ValueError(
-                f"tx_loc must hold exactly num_tx={self.num_tx} offsets, got "
-                f"{len(self.tx_loc)}"
-            )
+            raise ValueError(f"tx_loc must hold exactly num_tx={self.num_tx} offsets, got {len(self.tx_loc)}")
         if len(self.rx_loc) != self.num_rx:
-            raise ValueError(
-                f"rx_loc must hold exactly num_rx={self.num_rx} offsets, got "
-                f"{len(self.rx_loc)}"
-            )
+            raise ValueError(f"rx_loc must hold exactly num_rx={self.num_rx} offsets, got {len(self.rx_loc)}")
         for name, rows in (("tx_loc", self.tx_loc), ("rx_loc", self.rx_loc)):
             for index, row in enumerate(rows):
                 if len(row) != 3:
@@ -212,9 +183,7 @@ class SensorArraySpec:
 
         return self.num_tx * self.num_rx
 
-    def local_offsets_m(
-        self, *, device: torch.device | str = "cpu"
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def local_offsets_m(self, *, device: torch.device | str = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
         """The element offsets in metres, still in the radar's LOCAL frame.
 
         Placing them in the world needs a pose, which belongs to the radar and
@@ -224,16 +193,12 @@ class SensorArraySpec:
 
         target = torch.device(device)
         spacing = self.element_spacing_m
-        tx = _float_tensor(
-            self.tx_loc, device=target, name="tx_loc", shape=(self.num_tx, 3)
-        )
-        rx = _float_tensor(
-            self.rx_loc, device=target, name="rx_loc", shape=(self.num_rx, 3)
-        )
+        tx = _float_tensor(self.tx_loc, device=target, name="tx_loc", shape=(self.num_tx, 3))
+        rx = _float_tensor(self.rx_loc, device=target, name="rx_loc", shape=(self.num_rx, 3))
         return (tx * spacing).contiguous(), (rx * spacing).contiguous()
 
     @classmethod
-    def from_radar_config(cls, config) -> "SensorArraySpec":
+    def from_radar_config(cls, config) -> SensorArraySpec:
         return cls(
             num_tx=int(config.num_tx),
             num_rx=int(config.num_rx),
@@ -271,9 +236,7 @@ class AntennaPatternSpec:
 
     def __post_init__(self) -> None:
         if self.kind not in PATTERN_KINDS:
-            raise ValueError(
-                f"kind must be one of {list(PATTERN_KINDS)}, got {self.kind!r}"
-            )
+            raise ValueError(f"kind must be one of {list(PATTERN_KINDS)}, got {self.kind!r}")
         if len(self.x_angles_deg) < 2 or len(self.y_angles_deg) < 2:
             raise ValueError("both pattern axes need at least two samples")
         if self.kind == PATTERN_KIND_SEPARABLE:
@@ -297,7 +260,7 @@ class AntennaPatternSpec:
         return PATTERN_KIND_CODE[self.kind]
 
     @classmethod
-    def half_wave_dipole(cls) -> "AntennaPatternSpec":
+    def half_wave_dipole(cls) -> AntennaPatternSpec:
         """The default: a half-wave dipole cut in both planes."""
 
         return cls(
@@ -309,7 +272,7 @@ class AntennaPatternSpec:
         )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | None) -> "AntennaPatternSpec":
+    def from_config(cls, config: dict[str, Any] | None) -> AntennaPatternSpec:
         """Adopt a validated antenna-pattern mapping, or the dipole default."""
 
         if config is None:
@@ -344,47 +307,32 @@ class AntennaPatternSpec:
         target = torch.device(device)
         num_x = len(self.x_angles_deg)
         num_y = len(self.y_angles_deg)
-        x_axis = _float_tensor(
-            self.x_angles_deg, device=target, name="x_angles_deg", shape=(num_x,)
-        )
-        y_axis = _float_tensor(
-            self.y_angles_deg, device=target, name="y_angles_deg", shape=(num_y,)
-        )
+        x_axis = _float_tensor(self.x_angles_deg, device=target, name="x_angles_deg", shape=(num_x,))
+        y_axis = _float_tensor(self.y_angles_deg, device=target, name="y_angles_deg", shape=(num_y,))
         placeholder = torch.zeros(1, dtype=torch.float32, device=target)
         if self.kind == PATTERN_KIND_SEPARABLE:
-            x_values = _float_tensor(
-                self.x_values, device=target, name="x_values", shape=(num_x,)
-            )
-            y_values = _float_tensor(
-                self.y_values, device=target, name="y_values", shape=(num_y,)
-            )
+            x_values = _float_tensor(self.x_values, device=target, name="x_values", shape=(num_x,))
+            y_values = _float_tensor(self.y_values, device=target, name="y_values", shape=(num_y,))
             return x_axis, y_axis, x_values, y_values, placeholder
-        values = _float_tensor(
-            self.values, device=target, name="values", shape=(num_y, num_x)
-        ).reshape(-1)
+        values = _float_tensor(self.values, device=target, name="values", shape=(num_y, num_x)).reshape(-1)
         return x_axis, y_axis, placeholder, placeholder, values.contiguous()
 
-    def evaluate_xy(
-        self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor
-    ) -> torch.Tensor:
+    def evaluate_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
         """Torch evaluation, for freeze-time work and as the kernel's oracle."""
 
-        x_axis, y_axis, x_values, y_values, values = self.tables(
-            device=x_angles_deg.device
-        )
+        x_axis, y_axis, x_values, y_values, values = self.tables(device=x_angles_deg.device)
         return evaluate_antenna_pattern_xy(
             self.kind,
             x_axis,
             y_axis,
             x_values,
             y_values,
-            None if self.kind == PATTERN_KIND_SEPARABLE else values.reshape(
-                len(self.y_angles_deg), len(self.x_angles_deg)
-            ),
+            None
+            if self.kind == PATTERN_KIND_SEPARABLE
+            else values.reshape(len(self.y_angles_deg), len(self.x_angles_deg)),
             x_angles_deg,
             y_angles_deg,
         )
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +355,7 @@ class TxPowerSpec:
         return 1e-3 * (10.0 ** (float(self.power_dbm) / 10.0))
 
     @classmethod
-    def from_radar_config(cls, config) -> "TxPowerSpec":
+    def from_radar_config(cls, config) -> TxPowerSpec:
         return cls(power_dbm=float(config.power))
 
 
@@ -429,20 +377,6 @@ __all__ = [
 #: zero-length second leg has no direction and therefore no antenna angle.
 ROW_KIND_VIA = 0
 ROW_KIND_DIRECT = 1
-
-
-_OPS = None
-
-
-def _ops():
-    """The native operator table, resolved once per process."""
-
-    global _OPS
-    if _OPS is None:
-        from .cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
 
 
 def _require_frozen_constant(owner: str, name: str, value: torch.Tensor) -> None:
@@ -533,13 +467,7 @@ class SensorWeightGeometry:
     #: The float tensors this owner declares constant, in declaration order.
     #: Named as data so that a field added to the dataclass without a decision
     #: about its derivative is visible as a gap rather than as silence.
-    FROZEN_FIELDS = (
-        "tx_velocity",
-        "rx_velocity",
-        "site_velocity",
-        "fixed_length_m",
-        "pattern_frame",
-    )
+    FROZEN_FIELDS = ("tx_velocity", "rx_velocity", "site_velocity", "fixed_length_m", "pattern_frame")
 
     def __post_init__(self) -> None:
         for name in SensorWeightGeometry.FROZEN_FIELDS:
@@ -582,23 +510,13 @@ class SensorWeightPlan:
     def __post_init__(self) -> None:
         for index, table in enumerate(self.tables):
             if isinstance(table, torch.Tensor):
-                _require_frozen_constant(
-                    "SensorWeightPlan", f"tables[{index}]", table
-                )
+                _require_frozen_constant("SensorWeightPlan", f"tables[{index}]", table)
 
     @classmethod
     def build(
-        cls,
-        pattern: AntennaPatternSpec,
-        *,
-        c0: float = SPEED_OF_LIGHT_M_PER_S,
-        device: torch.device | str = "cuda",
-    ) -> "SensorWeightPlan":
-        return cls(
-            pattern_kind=pattern.kind_code,
-            tables=pattern.tables(device=device),
-            c0=float(c0),
-        )
+        cls, pattern: AntennaPatternSpec, *, c0: float = SPEED_OF_LIGHT_M_PER_S, device: torch.device | str = "cuda"
+    ) -> SensorWeightPlan:
+        return cls(pattern_kind=pattern.kind_code, tables=pattern.tables(device=device), c0=float(c0))
 
     def kernel_tail(self, geometry: SensorWeightGeometry) -> tuple:
         """The trailing scalar arguments, in the order all three operators take.
@@ -608,12 +526,7 @@ class SensorWeightPlan:
         gradient than in the primal.
         """
 
-        return (
-            geometry.num_tx,
-            geometry.num_rx,
-            self.pattern_kind,
-            self.c0,
-        )
+        return (geometry.num_tx, geometry.num_rx, self.pattern_kind, self.c0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +546,7 @@ class SensorWeightResult:
         total_delay_s: torch.Tensor,
         delay_rate: torch.Tensor,
         pattern_gain: torch.Tensor,
-    ) -> "SensorWeightResult":
+    ) -> SensorWeightResult:
         return cls(
             weight=torch.complex(out_re, out_im),
             total_delay_s=total_delay_s,
@@ -645,13 +558,7 @@ class SensorWeightResult:
 def _row_constants(geometry: SensorWeightGeometry) -> tuple:
     """The constant row tensors that sit BEFORE ``intensity`` in every signature."""
 
-    return (
-        geometry.site_velocity,
-        geometry.fixed_length_m,
-        geometry.tx_index,
-        geometry.rx_index,
-        geometry.row_kind,
-    )
+    return (geometry.site_velocity, geometry.fixed_length_m, geometry.tx_index, geometry.rx_index, geometry.row_kind)
 
 
 def _sensor_constants(geometry: SensorWeightGeometry, plan: SensorWeightPlan) -> tuple:
@@ -665,17 +572,7 @@ class _SensorWeight(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        tx_pos,
-        rx_pos,
-        site_in,
-        site_out,
-        intensity,
-        weight_re,
-        weight_im,
-        tx_velocity,
-        rx_velocity,
-        geometry,
-        plan,
+        tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity, geometry, plan
     ):
         rows = int(intensity.shape[0])
         out_re = torch.empty_like(intensity)
@@ -722,17 +619,7 @@ class _SensorWeight(torch.autograd.Function):
         ) = inputs
         ctx.geometry = geometry
         ctx.plan = plan
-        saved = (
-            tx_pos,
-            rx_pos,
-            site_in,
-            site_out,
-            intensity,
-            weight_re,
-            weight_im,
-            tx_velocity,
-            rx_velocity,
-        )
+        saved = (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity)
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
         # The pattern gain is a diagnostic, not a differentiable product: it is
@@ -743,17 +630,9 @@ class _SensorWeight(torch.autograd.Function):
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im, grad_tau_rt, grad_tau_rate, grad_gain):
-        (
-            tx_pos,
-            rx_pos,
-            site_in,
-            site_out,
-            intensity,
-            weight_re,
-            weight_im,
-            tx_velocity,
-            rx_velocity,
-        ) = ctx.saved_tensors
+        (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity) = (
+            ctx.saved_tensors
+        )
         geometry = ctx.geometry
         plan = ctx.plan
         rows = int(intensity.shape[0])
@@ -824,17 +703,9 @@ class _SensorWeight(torch.autograd.Function):
         tan_geometry,
         tan_plan,
     ):
-        (
-            tx_pos,
-            rx_pos,
-            site_in,
-            site_out,
-            intensity,
-            weight_re,
-            weight_im,
-            tx_velocity,
-            rx_velocity,
-        ) = ctx.saved_tensors
+        (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity) = (
+            ctx.saved_tensors
+        )
         geometry = ctx.geometry
         plan = ctx.plan
         rows = int(intensity.shape[0])
@@ -927,9 +798,7 @@ def evaluate_sensor_weights(
         geometry,
         plan,
     )
-    return SensorWeightResult.from_components(
-        out_re, out_im, total_delay_s, delay_rate, pattern_gain
-    )
+    return SensorWeightResult.from_components(out_re, out_im, total_delay_s, delay_rate, pattern_gain)
 
 
 __all__ = [
@@ -958,11 +827,9 @@ ISOTROPIC_PATTERN = AntennaPatternSpec(
     y_values=(1.0, 1.0),
 )
 
+
 def _pattern_plan(
-    pattern: AntennaPatternSpec,
-    *,
-    reference_frequency_hz: float,
-    device: torch.device,
+    pattern: AntennaPatternSpec, *, reference_frequency_hz: float, device: torch.device
 ) -> SensorWeightPlan:
     if not isinstance(pattern, AntennaPatternSpec):
         raise TypeError(
@@ -971,16 +838,10 @@ def _pattern_plan(
             "radar.system_config.sensors for the configured one, or "
             "witwin.radar.sensors.ISOTROPIC_PATTERN for none"
         )
-    return SensorWeightPlan.build(
-        pattern,
-        c0=SPEED_OF_LIGHT_M_PER_S,
-        device=device,
-    )
+    return SensorWeightPlan.build(pattern, c0=SPEED_OF_LIGHT_M_PER_S, device=device)
 
 
-def _site_rank_to_array_index(
-    site_ids: tuple[int, ...], *, device: torch.device
-) -> torch.Tensor:
+def _site_rank_to_array_index(site_ids: tuple[int, ...], *, device: torch.device) -> torch.Tensor:
     """Map a composer response slot back to a row of the site position tensor.
 
     ``TwoWayComposer.freeze`` sorts the declared site IDs, so its
@@ -1037,14 +898,7 @@ class RoundTripPatternStage:
     plan: SensorWeightPlan
 
     @classmethod
-    def freeze(
-        cls,
-        radar,
-        composer,
-        *,
-        site_ids,
-        pattern: AntennaPatternSpec,
-    ) -> "RoundTripPatternStage":
+    def freeze(cls, radar, composer, *, site_ids, pattern: AntennaPatternSpec) -> RoundTripPatternStage:
         """Build the constant tables for one frozen :class:`TwoWayComposer`.
 
         ``site_ids`` is the binding's host tuple, in the order its site position
@@ -1065,9 +919,7 @@ class RoundTripPatternStage:
                 "transmitter and a receiver up by pair rank and the two must be "
                 "the same front end"
             )
-        site_rank_to_index = _site_rank_to_array_index(
-            tuple(site_ids), device=device
-        )
+        site_rank_to_index = _site_rank_to_array_index(tuple(site_ids), device=device)
         if int(site_rank_to_index.shape[0]) != composer.site_count:
             raise ValueError(
                 f"the binding declares {int(site_rank_to_index.shape[0])} sites "
@@ -1088,12 +940,8 @@ class RoundTripPatternStage:
             site_count=int(composer.site_count),
             tx_index=tx_index,
             rx_index=rx_index,
-            site_slot=site_rank_to_index.index_select(
-                0, composer.response_slot
-            ).contiguous(),
-            row_kind=torch.full(
-                (rows,), ROW_KIND_VIA, dtype=torch.int32, device=device
-            ),
+            site_slot=site_rank_to_index.index_select(0, composer.response_slot).contiguous(),
+            row_kind=torch.full((rows,), ROW_KIND_VIA, dtype=torch.int32, device=device),
             zero_rows=zero_rows,
             zero_vectors=torch.zeros(rows, 3, dtype=torch.float32, device=device),
             unit_intensity=torch.ones(rows, dtype=torch.float32, device=device),
@@ -1103,14 +951,10 @@ class RoundTripPatternStage:
             # pattern-frame components are dot products with that matrix's COLUMNS. The
             # kernel takes those columns as its rows; the transpose IS the frame
             # change, and it is the canonical world-to-pattern-frame transform.
-            pattern_frame=radar._world_from_local_matrix(
-                device=device, dtype=torch.float32
-            )[1].transpose(0, 1).contiguous(),
-            plan=_pattern_plan(
-                pattern,
-                reference_frequency_hz=array.reference_frequency_hz,
-                device=device,
-            ),
+            pattern_frame=radar._world_from_local_matrix(device=device, dtype=torch.float32)[1]
+            .transpose(0, 1)
+            .contiguous(),
+            plan=_pattern_plan(pattern, reference_frequency_hz=array.reference_frequency_hz, device=device),
         )
 
     def _geometry(self) -> SensorWeightGeometry:
@@ -1128,12 +972,7 @@ class RoundTripPatternStage:
         )
 
     def apply(
-        self,
-        paths: RadarPathBatch,
-        *,
-        tx_pos: torch.Tensor,
-        rx_pos: torch.Tensor,
-        site_positions_m: torch.Tensor,
+        self, paths: RadarPathBatch, *, tx_pos: torch.Tensor, rx_pos: torch.Tensor, site_positions_m: torch.Tensor
     ) -> RadarPathBatch:
         """Publish ``paths`` with the transmit and receive pattern gains applied.
 
@@ -1152,10 +991,7 @@ class RoundTripPatternStage:
         """
 
         if not isinstance(paths, RadarPathBatch):
-            raise TypeError(
-                "the antenna-pattern stage consumes a RadarPathBatch, got "
-                f"{type(paths).__name__}"
-            )
+            raise TypeError(f"the antenna-pattern stage consumes a RadarPathBatch, got {type(paths).__name__}")
         if paths.join_mode != "multipath":
             raise NotImplementedError(
                 f"the antenna-pattern stage is frozen against a two-way join and "
@@ -1203,9 +1039,7 @@ class RoundTripPatternStage:
             row_valid=paths.row_valid,
             topology=paths.topology,
             join_mode=paths.join_mode,
-            frequency_response=self._apply_band(
-                paths, geometry, tx_pos, rx_pos, site
-            ),
+            frequency_response=self._apply_band(paths, geometry, tx_pos, rx_pos, site),
             frequency_offsets_hz=paths.frequency_offsets_hz,
             weight_includes_antenna_pattern=True,
         )
@@ -1250,9 +1084,4 @@ class RoundTripPatternStage:
         return torch.stack(columns, dim=1)
 
 
-__all__ = [
-    "AntennaPatternSpec",
-    "ISOTROPIC_PATTERN",
-    "SensorArraySpec",
-    "TxPowerSpec",
-]
+__all__ = ["AntennaPatternSpec", "ISOTROPIC_PATTERN", "SensorArraySpec", "TxPowerSpec"]

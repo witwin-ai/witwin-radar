@@ -8,5 +8,4 @@ concept-owner modules.
 
 from .radar import Radar, RadarConfig
 
-
 __all__ = ["Radar", "RadarConfig"]

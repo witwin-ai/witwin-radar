@@ -32,7 +32,6 @@ import torch.autograd.forward_ad as forward_ad
 
 import witwin.radar.propagation as kin
 
-
 #: The refusal names the decision that makes it structural, not a preference.
 ADR = "ADR-038"
 
@@ -41,9 +40,7 @@ VELOCITIES = ((-12.0, 0.0, 0.0), (0.0, 5.0, 0.0))
 
 
 def _tensor(values, *, requires_grad: bool = False) -> torch.Tensor:
-    return torch.tensor(
-        list(values), dtype=torch.float32
-    ).requires_grad_(requires_grad)
+    return torch.tensor(list(values), dtype=torch.float32).requires_grad_(requires_grad)
 
 
 # --------------------------------------------------------------------------
@@ -55,10 +52,7 @@ def test_a_kinematics_velocity_that_requires_grad_is_refused():
     """The direct request, refused before a ``Kinematics`` exists."""
 
     with pytest.raises(RuntimeError) as raised:
-        kin.Kinematics(
-            positions_m=_tensor(POSITIONS),
-            velocities_m_per_s=_tensor(VELOCITIES, requires_grad=True),
-        )
+        kin.Kinematics(positions_m=_tensor(POSITIONS), velocities_m_per_s=_tensor(VELOCITIES, requires_grad=True))
     message = str(raised.value)
     assert "Kinematics.velocities_m_per_s" in message
     assert ADR in message
@@ -72,14 +66,10 @@ def test_a_kinematics_velocity_carrying_a_forward_dual_is_refused():
     """A tangent ON a tangent is a second-order forward request."""
 
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            _tensor(VELOCITIES), torch.ones(len(VELOCITIES), 3)
-        )
+        dual = forward_ad.make_dual(_tensor(VELOCITIES), torch.ones(len(VELOCITIES), 3))
         assert not dual.requires_grad
         with pytest.raises(RuntimeError) as raised:
-            kin.Kinematics(
-                positions_m=_tensor(POSITIONS), velocities_m_per_s=dual
-            )
+            kin.Kinematics(positions_m=_tensor(POSITIONS), velocities_m_per_s=dual)
     message = str(raised.value)
     assert "forward tangent" in message
     assert ADR in message
@@ -94,10 +84,7 @@ def test_a_linear_deformation_velocity_that_requires_grad_is_refused():
     """
 
     with pytest.raises(RuntimeError) as raised:
-        kin.LinearDeformation(
-            vertices_m=_tensor(POSITIONS),
-            velocities_m_per_s=_tensor(VELOCITIES, requires_grad=True),
-        )
+        kin.LinearDeformation(vertices_m=_tensor(POSITIONS), velocities_m_per_s=_tensor(VELOCITIES, requires_grad=True))
     assert "LinearDeformation.velocities_m_per_s" in str(raised.value)
     assert ADR in str(raised.value)
 
@@ -113,9 +100,7 @@ def test_a_custom_deformation_velocity_is_refused_and_blamed_by_name():
             return self.velocities * float(1.0 + time_s)
 
     with pytest.raises(RuntimeError) as raised:
-        kin.deformation_kinematics(
-            _tensor(POSITIONS), _GradCarryingHinge(), 0.5
-        )
+        kin.deformation_kinematics(_tensor(POSITIONS), _GradCarryingHinge(), 0.5)
     assert "_GradCarryingHinge.velocity_at" in str(raised.value)
     assert ADR in str(raised.value)
 
@@ -131,9 +116,7 @@ def test_a_velocity_derived_from_a_grad_carrying_position_is_refused():
     """
 
     positions = _tensor(POSITIONS, requires_grad=True)
-    velocities = kin.rigid_site_velocities(
-        positions, velocity=(1.0, 0.0, 0.0), angular_velocity=(0.0, 0.0, 3.0)
-    )
+    velocities = kin.rigid_site_velocities(positions, velocity=(1.0, 0.0, 0.0), angular_velocity=(0.0, 0.0, 3.0))
     assert velocities.requires_grad, "the premise: the graph really is inherited"
 
     with pytest.raises(RuntimeError) as raised:
@@ -143,18 +126,12 @@ def test_a_velocity_derived_from_a_grad_carrying_position_is_refused():
     # And the workflow the message prescribes is accepted: derive the velocity
     # from a detached copy, dual the live positions with it.
     from_detached = kin.rigid_site_velocities(
-        positions.detach(),
-        velocity=(1.0, 0.0, 0.0),
-        angular_velocity=(0.0, 0.0, 3.0),
+        positions.detach(), velocity=(1.0, 0.0, 0.0), angular_velocity=(0.0, 0.0, 3.0)
     )
-    accepted = kin.Kinematics(
-        positions_m=positions, velocities_m_per_s=from_detached
-    )
+    accepted = kin.Kinematics(positions_m=positions, velocities_m_per_s=from_detached)
     assert accepted.positions_m.requires_grad
     assert not accepted.velocities_m_per_s.requires_grad
-    torch.testing.assert_close(
-        from_detached, velocities.detach(), rtol=0.0, atol=0.0
-    )
+    torch.testing.assert_close(from_detached, velocities.detach(), rtol=0.0, atol=0.0)
 
 
 def test_a_stationary_structure_state_still_builds_exact_zeros():
@@ -164,9 +141,7 @@ def test_a_stationary_structure_state_still_builds_exact_zeros():
         rigid_motion = None
 
     kinematics = kin.structure_site_kinematics(_State(), _tensor(POSITIONS))
-    assert torch.equal(
-        kinematics.velocities_m_per_s, torch.zeros(len(POSITIONS), 3)
-    )
+    assert torch.equal(kinematics.velocities_m_per_s, torch.zeros(len(POSITIONS), 3))
 
 
 # --------------------------------------------------------------------------
@@ -183,18 +158,10 @@ def test_the_same_velocity_as_a_tangent_direction_stays_supported():
     ``delay_rate`` downstream.
     """
 
-    sites = kin.Kinematics(
-        positions_m=_tensor(POSITIONS), velocities_m_per_s=_tensor(VELOCITIES)
-    )
-    transmitters = kin.Kinematics(
-        positions_m=_tensor([(0.0, 0.0, 0.0)]),
-        velocities_m_per_s=_tensor([(0.0, 3.0, 0.0)]),
-    )
+    sites = kin.Kinematics(positions_m=_tensor(POSITIONS), velocities_m_per_s=_tensor(VELOCITIES))
+    transmitters = kin.Kinematics(positions_m=_tensor([(0.0, 0.0, 0.0)]), velocities_m_per_s=_tensor([(0.0, 3.0, 0.0)]))
     with kin.two_way_duals(sites=sites, transmitters=transmitters) as duals:
-        for tensor, source in (
-            (duals.sites, sites),
-            (duals.transmitters, transmitters),
-        ):
+        for tensor, source in ((duals.sites, sites), (duals.transmitters, transmitters)):
             primal, tangent = forward_ad.unpack_dual(tensor)
             assert tangent is not None
             assert torch.equal(primal, source.positions_m)
@@ -211,9 +178,7 @@ def test_a_position_leaf_and_a_velocity_tangent_coexist_in_one_dual():
     """
 
     positions = _tensor(POSITIONS, requires_grad=True)
-    sites = kin.Kinematics(
-        positions_m=positions, velocities_m_per_s=_tensor(VELOCITIES)
-    )
+    sites = kin.Kinematics(positions_m=positions, velocities_m_per_s=_tensor(VELOCITIES))
     with kin.two_way_duals(sites=sites) as duals:
         primal, tangent = forward_ad.unpack_dual(duals.sites)
         assert tangent is not None

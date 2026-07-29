@@ -26,11 +26,10 @@ comment that mentions the right string.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import yaml
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
@@ -77,7 +76,7 @@ SELF_HOSTED_ALLOWLIST = {
     "gpu-regression.yml": (
         "manually dispatched GPU regression; no GitHub-hosted runner offers a "
         "CUDA device. Produces no wheel and publishes nothing. Deviation P4."
-    ),
+    )
 }
 
 
@@ -184,11 +183,7 @@ def check_triggers(document: dict, failures: PolicyFailure) -> None:
                 "the pull_request trigger must be types: [labeled] so an "
                 f"ordinary push to a PR starts nothing; found {types!r}"
             )
-        entry_jobs = [
-            job_id
-            for job_id, job in (document.get("jobs") or {}).items()
-            if not job.get("needs")
-        ]
+        entry_jobs = [job_id for job_id, job in (document.get("jobs") or {}).items() if not job.get("needs")]
         for job_id in entry_jobs:
             condition = str((document["jobs"][job_id]).get("if", ""))
             if OPT_IN_LABEL not in condition:
@@ -229,26 +224,13 @@ def check_architectures(document: dict, failures: PolicyFailure) -> None:
         if str(found) != expected:
             detail = ""
             if key.endswith("GENCODE_ARCHES"):
-                reference = (
-                    FULL_EXPECTED_SASS
-                    if key.startswith("FULL")
-                    else SMOKE_EXPECTED_SASS
-                )
-                missing = [
-                    f"sm_{arch}"
-                    for arch in reference
-                    if _dotted(arch) not in str(found)
-                ]
+                reference = FULL_EXPECTED_SASS if key.startswith("FULL") else SMOKE_EXPECTED_SASS
+                missing = [f"sm_{arch}" for arch in reference if _dotted(arch) not in str(found)]
                 if missing:
                     detail = f"; missing {missing}"
-            failures.add(
-                f"`{key}` is {found!r}, the policy value is {expected!r}{detail}"
-            )
+            failures.add(f"`{key}` is {found!r}, the policy value is {expected!r}{detail}")
         if key not in text and f"env.{key}" not in text:
-            failures.add(
-                f"`{key}` is declared but never used, so the profile it names "
-                "does not reach any build step"
-            )
+            failures.add(f"`{key}` is declared but never used, so the profile it names does not reach any build step")
     if f"{_dotted(FULL_EXPECTED_PTX)}+PTX" not in str(env.get("FULL_GENCODE_ARCHES", "")):
         failures.add(
             f"the release profile requests no compute_{FULL_EXPECTED_PTX} PTX "
@@ -273,7 +255,7 @@ def check_verifier_and_manylinux(document: dict, failures: PolicyFailure) -> Non
         # also appears in the auditwheel plat tag and in the publish-time tag
         # assertion, so a substring search would keep passing after the build
         # image itself was swapped for an Ubuntu one.
-        image = str(((step.get("env") or {}).get("CIBW_MANYLINUX_X86_64_IMAGE", "")))
+        image = str((step.get("env") or {}).get("CIBW_MANYLINUX_X86_64_IMAGE", ""))
         if image.startswith(MANYLINUX_IMAGE):
             manylinux = True
     if not windows_verified:
@@ -282,8 +264,7 @@ def check_verifier_and_manylinux(document: dict, failures: PolicyFailure) -> Non
         failures.add("no architecture verifier runs against the Linux artifact")
     if not manylinux:
         failures.add(
-            f"the Linux wheel is not built in a {MANYLINUX_IMAGE} image; "
-            "relabeling an Ubuntu binary is not compliant"
+            f"the Linux wheel is not built in a {MANYLINUX_IMAGE} image; relabeling an Ubuntu binary is not compliant"
         )
 
 
@@ -301,8 +282,7 @@ def check_wheel_shape(document: dict, failures: PolicyFailure) -> None:
         )
     if "torch.utils.cpp_extension" not in text:
         failures.add(
-            "no step asserts torch.utils.cpp_extension stayed unimported, so a "
-            "silent JIT would not be detected"
+            "no step asserts torch.utils.cpp_extension stayed unimported, so a silent JIT would not be detected"
         )
     for sidecar in (".build-info.json", ".build-fingerprint"):
         if sidecar not in text:
@@ -311,28 +291,20 @@ def check_wheel_shape(document: dict, failures: PolicyFailure) -> None:
 
 def check_exact_runtime_matrix(document: dict, failures: PolicyFailure) -> None:
     for job_id, job in (document.get("jobs") or {}).items():
-        matrix = ((job.get("strategy") or {}).get("matrix") or {})
+        matrix = (job.get("strategy") or {}).get("matrix") or {}
         cells = matrix.get("compatibility")
         if not cells:
             continue
         found = tuple(
-            (
-                str(cell.get("python_version")),
-                str(cell.get("torch_version")),
-                str(cell.get("cuda_index")),
-            )
+            (str(cell.get("python_version")), str(cell.get("torch_version")), str(cell.get("cuda_index")))
             for cell in cells
         )
         if found != EXACT_RUNTIME_CELLS:
-            failures.add(
-                f"job {job_id!r} does not carry the exact native-identity "
-                f"cells in order: found {found!r}"
-            )
+            failures.add(f"job {job_id!r} does not carry the exact native-identity cells in order: found {found!r}")
         operating_systems = tuple(matrix.get("os") or ())
         if tuple(sorted(operating_systems)) != tuple(sorted(REQUIRED_OS)):
             failures.add(
-                f"job {job_id!r} must run the compatibility grid on {REQUIRED_OS}, "
-                f"found {operating_systems!r}"
+                f"job {job_id!r} must run the compatibility grid on {REQUIRED_OS}, found {operating_systems!r}"
             )
         return
     failures.add("no exact native-identity job with a `compatibility` matrix")
@@ -391,9 +363,7 @@ def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
                 "(id, deferral, why, executed by, evidence, owner)"
             )
             continue
-        empty = [
-            index for index, cell in enumerate(cells) if not cell or cell in {"-", "TBD"}
-        ]
+        empty = [index for index, cell in enumerate(cells) if not cell or cell in {"-", "TBD"}]
         if empty:
             failures.add(
                 f"{path.name} row {identifier} leaves column(s) {empty} unfilled; "
@@ -401,8 +371,7 @@ def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
             )
     if "Phase 11 proceeds without waiting" not in text:
         failures.add(
-            f"{path.name} must state that these are deferrals rather than gaps "
-            "and that Phase 11 does not wait on them"
+            f"{path.name} must state that these are deferrals rather than gaps and that Phase 11 does not wait on them"
         )
 
 
@@ -419,12 +388,7 @@ def check_runners(directory: Path, failures: PolicyFailure) -> None:
             )
 
 
-def check_workflow(
-    path: Path,
-    *,
-    workflow_dir: Path | None = None,
-    deferrals: Path | None = None,
-) -> PolicyFailure:
+def check_workflow(path: Path, *, workflow_dir: Path | None = None, deferrals: Path | None = None) -> PolicyFailure:
     failures = PolicyFailure()
     document = load_workflow(path)
     check_triggers(document, failures)
@@ -444,10 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workflow", type=Path, default=PUBLISH_WORKFLOW)
     parser.add_argument(
-        "--workflow-dir",
-        type=Path,
-        default=WORKFLOW_DIR,
-        help="directory scanned for forbidden self-hosted runners",
+        "--workflow-dir", type=Path, default=WORKFLOW_DIR, help="directory scanned for forbidden self-hosted runners"
     )
     parser.add_argument("--no-runner-scan", action="store_true")
     parser.add_argument("--deferrals", type=Path, default=DEFERRAL_REGISTER)
@@ -469,10 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print(
-        f"workflow policy OK: {arguments.workflow.name} against Radar release policy "
-        f"version {POLICY_VERSION}"
-    )
+    print(f"workflow policy OK: {arguments.workflow.name} against Radar release policy version {POLICY_VERSION}")
     return 0
 
 

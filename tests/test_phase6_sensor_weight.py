@@ -20,8 +20,8 @@ The fixed ABI assumes a Channel-composed weight and tests only pattern, intensit
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 import pytest
 import torch
@@ -68,12 +68,8 @@ def _sample(radar, count: int, *, seed: int = 0):
         dim=-1,
     )
     points = radar._world_from_local_points(local.to(device))
-    entry = radar._world_from_local_points(
-        (local + 0.05 * torch.randn(count, 3, generator=generator)).to(device)
-    )
-    normals = torch.nn.functional.normalize(
-        torch.randn(count, 3, generator=generator).to(device), dim=-1
-    )
+    entry = radar._world_from_local_points((local + 0.05 * torch.randn(count, 3, generator=generator)).to(device))
+    normals = torch.nn.functional.normalize(torch.randn(count, 3, generator=generator).to(device), dim=-1)
     return PathSample(
         intensities=torch.rand(count, generator=generator).to(device) + 0.1,
         points=points.contiguous(),
@@ -100,20 +96,8 @@ def _rows(radar, sample, *, velocities=None):
     num_tx = radar.config.num_tx
     num_rx = radar.config.num_rx
     rows = num_tx * num_rx * count
-    tx_index = (
-        torch.arange(num_tx, device=device)
-        .view(-1, 1, 1)
-        .expand(num_tx, num_rx, count)
-        .reshape(-1)
-        .contiguous()
-    )
-    rx_index = (
-        torch.arange(num_rx, device=device)
-        .view(1, -1, 1)
-        .expand(num_tx, num_rx, count)
-        .reshape(-1)
-        .contiguous()
-    )
+    tx_index = torch.arange(num_tx, device=device).view(-1, 1, 1).expand(num_tx, num_rx, count).reshape(-1).contiguous()
+    rx_index = torch.arange(num_rx, device=device).view(1, -1, 1).expand(num_tx, num_rx, count).reshape(-1).contiguous()
     repeat = (num_tx * num_rx,)
     site_in = sample.entry_points.repeat(*repeat, 1).contiguous()
     site_out = sample.points.repeat(*repeat, 1).contiguous()
@@ -142,34 +126,20 @@ def _pattern_frame(radar) -> torch.Tensor:
     kernel the columns as rows is the whole of the frame conversion.
     """
 
-    _, world_from_local = radar._world_from_local_matrix(
-        device=radar.device, dtype=torch.float32
-    )
+    _, world_from_local = radar._world_from_local_matrix(device=radar.device, dtype=torch.float32)
     return world_from_local.transpose(0, 1).contiguous()
 
 
 def _plan(radar):
     from witwin.radar.sensors import SensorWeightPlan
 
-    return SensorWeightPlan.build(
-        radar.system_config.sensors.pattern,
-        c0=C0,
-        device=radar.device,
-    )
+    return SensorWeightPlan.build(radar.system_config.sensors.pattern, c0=C0, device=radar.device)
 
 
-def _evaluate(
-    radar,
-    sample,
-    *,
-    velocities=None,
-    weight=None,
-):
+def _evaluate(radar, sample, *, velocities=None, weight=None):
     from witwin.radar.sensors import evaluate_sensor_weights
 
-    geometry, site_in, site_out, intensity = _rows(
-        radar, sample, velocities=velocities
-    )
+    geometry, site_in, site_out, intensity = _rows(radar, sample, velocities=velocities)
     rows = intensity.shape[0]
     if weight is None:
         weight = torch.ones(rows, dtype=torch.complex64, device=radar.device)
@@ -202,13 +172,8 @@ def test_the_kernel_pattern_gain_equals_the_torch_pattern_gain():
 
     radar = _radar()
     sample = _sample(radar, 256, seed=11)
-    result = _evaluate(
-        radar,
-        sample,
-    )
-    reference = compute_antenna_pattern_gains(
-        radar, sample, radar.tx_pos, radar.rx_pos
-    ).reshape(-1)
+    result = _evaluate(radar, sample)
+    reference = compute_antenna_pattern_gains(radar, sample, radar.tx_pos, radar.rx_pos).reshape(-1)
     assert torch.allclose(result.pattern_gain, reference, rtol=1e-5, atol=1e-7)
 
 
@@ -232,35 +197,16 @@ def test_the_kernel_delay_and_rate_equal_the_torch_geometry():
     radar = _radar()
     sample = _sample(radar, 128, seed=5)
     velocities = torch.randn(128, 3, device=radar.device) * 4.0
-    result = _evaluate(
-        radar,
-        sample,
-        velocities=velocities,
-    )
+    result = _evaluate(radar, sample, velocities=velocities)
 
-    from reference.path_math import (
-        compute_total_path_length_rates,
-        compute_total_path_lengths,
-    )
+    from reference.path_math import compute_total_path_length_rates, compute_total_path_lengths
 
     lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos).reshape(-1)
     assert torch.allclose(result.total_delay_s * C0, lengths, rtol=1e-6, atol=1e-5)
     assert torch.allclose(result.total_delay_s, lengths / C0, rtol=1e-6, atol=1e-14)
 
-    rates = compute_total_path_length_rates(
-        sample, velocities, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos
-    ).reshape(-1)
+    rates = compute_total_path_length_rates(sample, velocities, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos).reshape(-1)
     assert torch.allclose(result.delay_rate, rates / C0, rtol=1e-6, atol=1e-14)
-
-
-
-
-
-
-
-
-
-
 
 
 def _directional(radar, sample, tangents, *, step, weight, weight_tangent):
@@ -302,10 +248,7 @@ def _pattern_cell(radar, geometry, site_in, site_out) -> torch.Tensor:
     x_axis = torch.tensor(pattern.x_angles_deg, dtype=torch.float32, device=radar.device)
     y_axis = torch.tensor(pattern.y_angles_deg, dtype=torch.float32, device=radar.device)
     cells = []
-    for vectors in (
-        site_in - radar.tx_pos[geometry.tx_index],
-        site_out - radar.rx_pos[geometry.rx_index],
-    ):
+    for vectors in (site_in - radar.tx_pos[geometry.tx_index], site_out - radar.rx_pos[geometry.rx_index]):
         local = radar._local_from_world_vectors(vectors)
         forward = -local[..., 2]
         x_deg = torch.rad2deg(torch.atan2(local[..., 0], forward))
@@ -366,12 +309,12 @@ def test_the_jvp_matches_a_central_finite_difference():
         "site_out": torch.randn(rows, 3, generator=generator).to(radar.device),
         "intensity": torch.randn(rows, generator=generator).to(radar.device),
     }
-    weight = torch.complex(
-        torch.randn(rows, generator=generator), torch.randn(rows, generator=generator)
-    ).to(radar.device)
-    weight_tangent = torch.complex(
-        torch.randn(rows, generator=generator), torch.randn(rows, generator=generator)
-    ).to(radar.device)
+    weight = torch.complex(torch.randn(rows, generator=generator), torch.randn(rows, generator=generator)).to(
+        radar.device
+    )
+    weight_tangent = torch.complex(torch.randn(rows, generator=generator), torch.randn(rows, generator=generator)).to(
+        radar.device
+    )
 
     with dual_level():
         result = evaluate_sensor_weights(
@@ -428,9 +371,7 @@ def test_the_jvp_matches_a_central_finite_difference():
     # returns the almost-everywhere slope of one of them. Both are right about
     # what they compute and they disagree by construction; this is the same
     # convention the pulsed family uses at a rectangular envelope's two edges.
-    interior = _same_pattern_cell(
-        radar, geometry, site_in, site_out, tangents, step=weight_step
-    )
+    interior = _same_pattern_cell(radar, geometry, site_in, site_out, tangents, step=weight_step)
     crossings = int((~interior).sum())
     assert crossings <= interior.numel() // 20, crossings
     assert crossings > 0, (
@@ -484,12 +425,7 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
     }
     weight_re = _random(rows)
     weight_im = _random(rows)
-    cotangents = {
-        "weight_re": _random(rows),
-        "weight_im": _random(rows),
-        "tau": _random(rows),
-        "rate": _random(rows),
-    }
+    cotangents = {"weight_re": _random(rows), "weight_im": _random(rows), "tau": _random(rows), "rate": _random(rows)}
 
     with dual_level():
         result = evaluate_sensor_weights(
@@ -499,8 +435,7 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
             site_out=make_dual(site_out, tangents["site_out"]),
             intensity=make_dual(intensity, tangents["intensity"]),
             weight=make_dual(
-                torch.complex(weight_re, weight_im),
-                torch.complex(tangents["weight_re"], tangents["weight_im"]),
+                torch.complex(weight_re, weight_im), torch.complex(tangents["weight_re"], tangents["weight_im"])
             ),
             geometry=geometry,
             plan=_plan(radar),
@@ -572,9 +507,7 @@ def test_the_antenna_gradient_is_a_deterministic_reduction():
             intensity=intensity,
             weight=torch.ones(rows, dtype=torch.complex64, device=radar.device),
             geometry=geometry,
-            plan=_plan(
-                radar,
-            ),
+            plan=_plan(radar),
         )
         (result.weight.real * cotangent).sum().backward()
         return leaf.grad

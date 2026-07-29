@@ -20,14 +20,9 @@ import math
 import pytest
 import torch
 
-from witwin.radar.processing import (
-    DetectionFrame,
-    PointCloud,
-    nearest_neighbour_associator,
-)
+from witwin.radar.processing import DetectionFrame, PointCloud, nearest_neighbour_associator
 from witwin.radar.processing.detection import POINT_CLOUD_COLUMNS
 from witwin.radar.processing.tracking import TrackHandoff
-
 
 RANGE_BIN_M = 0.17172175137889091
 FRAME_PERIOD_S = 0.1
@@ -133,10 +128,7 @@ def test_the_handoff_also_refuses_a_forward_dual_which_it_used_to_accept():
     from torch.autograd.forward_ad import dual_level, make_dual
 
     with dual_level():
-        xyz = make_dual(
-            torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64),
-            torch.ones((1, 3), dtype=torch.float64),
-        )
+        xyz = make_dual(torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64), torch.ones((1, 3), dtype=torch.float64))
         with pytest.raises(RuntimeError, match="a forward tangent"):
             DetectionFrame(
                 time_s=0.0,
@@ -237,18 +229,14 @@ def test_the_associator_predicts_forward_rather_than_matching_where_it_was():
     predicted_error = float(
         (
             previous.xyz[0]
-            - previous.xyz[0]
-            / previous.xyz[0].square().sum().sqrt()
-            * (CLOSING_MPS * FRAME_PERIOD_S)
+            - previous.xyz[0] / previous.xyz[0].square().sum().sqrt() * (CLOSING_MPS * FRAME_PERIOD_S)
             - current.xyz[0]
         )
         .square()
         .sum()
         .sqrt()
     )
-    unpredicted_error = float(
-        (previous.xyz[0] - current.xyz[0]).square().sum().sqrt()
-    )
+    unpredicted_error = float((previous.xyz[0] - current.xyz[0]).square().sum().sqrt())
     assert predicted_error < 1e-12
     assert unpredicted_error == pytest.approx(CLOSING_MPS * FRAME_PERIOD_S, rel=1e-9)
 
@@ -342,13 +330,7 @@ def _spread_frame(count: int) -> DetectionFrame:
 
     index = torch.arange(count, dtype=torch.float64)
     xyz = torch.stack((index, index + 10.0, index * 0.5), dim=1)
-    return DetectionFrame(
-        time_s=0.0,
-        xyz=xyz,
-        velocity_mps=index * 0.25,
-        energy=index + 5.0,
-        frame_index=0,
-    )
+    return DetectionFrame(time_s=0.0, xyz=xyz, velocity_mps=index * 0.25, energy=index + 5.0, frame_index=0)
 
 
 def test_the_generator_argument_actually_drives_the_draw():
@@ -380,18 +362,12 @@ def test_the_generator_argument_actually_drives_the_draw():
 
     # And the same seed still reproduces, on both branches: the argument is
     # live, not merely noisy.
-    assert torch.equal(
-        padded_a, frame.as_fixed_size(16, generator=torch.Generator().manual_seed(3))
-    )
-    assert torch.equal(
-        subset_a, frame.as_fixed_size(3, generator=torch.Generator().manual_seed(3))
-    )
+    assert torch.equal(padded_a, frame.as_fixed_size(16, generator=torch.Generator().manual_seed(3)))
+    assert torch.equal(subset_a, frame.as_fixed_size(3, generator=torch.Generator().manual_seed(3)))
 
 
 def test_the_batch_range_column_is_the_norm_of_its_own_position():
     frame = _frame(3)
     batch = frame.as_fixed_size(2, generator=torch.Generator().manual_seed(1))
     for row in batch:
-        assert float(row[5]) == pytest.approx(
-            float(row[:3].square().sum().sqrt()), rel=1e-12
-        )
+        assert float(row[5]) == pytest.approx(float(row[:3].square().sum().sqrt()), rel=1e-12)

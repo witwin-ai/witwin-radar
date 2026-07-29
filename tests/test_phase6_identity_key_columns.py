@@ -28,12 +28,10 @@ from __future__ import annotations
 
 import pytest
 import torch
-
-from witwin.radar.paths import TwoWayComposer
-
 from reference.two_way_torch import PerSiteResponse  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
 
 pytestmark = pytest.mark.gpu
 
@@ -47,11 +45,11 @@ REFERENCE_FREQUENCY_HZ = 77.0e9
 # a duplicate of BASE_ROW and the join must refuse to freeze.
 BASE_ROW = (10, 20, 1, 1, (5,), (2,))
 INBOUND_ROWS = [
-    BASE_ROW,                     # 0
-    (10, 20, 1, 2, (5,), (2,)),   # 1  deeper
-    (10, 20, 1, 1, (7,), (2,)),   # 2  other primitive
-    (10, 20, 1, 1, (5,), (3,)),   # 3  other material
-    (10, 20, 2, 1, (5,), (2,)),   # 4  other component
+    BASE_ROW,  # 0
+    (10, 20, 1, 2, (5,), (2,)),  # 1  deeper
+    (10, 20, 1, 1, (7,), (2,)),  # 2  other primitive
+    (10, 20, 1, 1, (5,), (3,)),  # 3  other material
+    (10, 20, 2, 1, (5,), (2,)),  # 4  other component
 ]
 
 # Ascending identity key over those five rows. The component outranks
@@ -99,18 +97,10 @@ def _run(order):
         return values.index_select(0, index).contiguous()
 
     inbound = fx.leg_batch(
-        take(tau_in).to(torch.float32),
-        take(c_in).to(torch.complex64),
-        rate=take(rate_in).to(torch.float32),
+        take(tau_in).to(torch.float32), take(c_in).to(torch.complex64), rate=take(rate_in).to(torch.float32)
     )
-    outbound = fx.leg_batch(
-        tau_out.to(torch.float32),
-        c_out.to(torch.complex64),
-        rate=rate_out.to(torch.float32),
-    )
-    composed = composer.compose(
-        inbound, outbound, PerSiteResponse(site_value.to(torch.complex64))
-    )
+    outbound = fx.leg_batch(tau_out.to(torch.float32), c_out.to(torch.complex64), rate=rate_out.to(torch.float32))
+    composed = composer.compose(inbound, outbound, PerSiteResponse(site_value.to(torch.complex64)))
     return composer, composed, delays
 
 
@@ -143,9 +133,7 @@ def test_the_composed_order_is_the_full_key_not_the_component_alone():
     # Not merely an ordering claim: each composed row carries ITS OWN row's
     # payload, so the right sequence built from the wrong rows fails here. The
     # five delays are distinct, so this can tell them apart.
-    expected = delays.index_select(
-        0, torch.tensor(CANONICAL_ORDER, dtype=torch.int64, device="cuda")
-    )
+    expected = delays.index_select(0, torch.tensor(CANONICAL_ORDER, dtype=torch.int64, device="cuda"))
     assert len(set(delays.tolist())) == len(INBOUND_ROWS)
     assert torch.equal(composed.total_delay_s, expected)
 
@@ -165,17 +153,12 @@ def test_a_permuted_publication_order_composes_to_an_identical_frame():
     straight_composer, straight, _ = _run(straight_order)
     shuffled_composer, shuffled, _ = _run(shuffled_order)
 
-    assert _published_to_original(
-        straight_composer, straight_order
-    ) == _published_to_original(shuffled_composer, shuffled_order)
-    assert (
-        straight_composer.topology.inbound_row.tolist()
-        != shuffled_composer.topology.inbound_row.tolist()
+    assert _published_to_original(straight_composer, straight_order) == _published_to_original(
+        shuffled_composer, shuffled_order
     )
+    assert straight_composer.topology.inbound_row.tolist() != shuffled_composer.topology.inbound_row.tolist()
     for name in ("total_delay_s", "delay_rate", "complex_transfer_ref"):
-        assert torch.equal(
-            getattr(straight, name), getattr(shuffled, name)
-        ), name
+        assert torch.equal(getattr(straight, name), getattr(shuffled, name)), name
 
 
 @pytest.mark.parametrize("column", sorted(COLUMN_TWINS))

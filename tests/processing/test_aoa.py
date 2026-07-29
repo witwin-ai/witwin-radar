@@ -18,18 +18,11 @@ import math
 
 import pytest
 import torch
-
-from support import exact_bin_grid as grid
-from witwin.radar.processing import (
-    ArrayGeometry,
-    fft2_aoa,
-    music_spectrum,
-    phase_comparison_aoa,
-    tdm_compensate,
-)
 from conftest import PROCESSING_CONFIG, make_processing_axes
-from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
+from support import exact_bin_grid as grid
 
+from witwin.radar.processing import ArrayGeometry, fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
+from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
 #: Read from the same constant the axes record is built on. A hand-typed
 #: wavelength that is a part in 1e5 off puts a part in 1e5 into every phase this
@@ -43,24 +36,13 @@ FFT_SIZE = 64
 #: displaced in z only, so ``el_tx_dx`` is exactly zero and the elevation
 #: estimate carries no azimuth-walk correction to get wrong.
 TX_3 = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 1.0))
-TX_6 = (
-    (0.0, 0.0, 0.0),
-    (4.0, 0.0, 0.0),
-    (0.0, 0.0, 1.0),
-    (4.0, 0.0, 1.0),
-    (0.0, 0.0, 2.0),
-    (4.0, 0.0, 2.0),
-)
+TX_6 = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 1.0), (4.0, 0.0, 1.0), (0.0, 0.0, 2.0), (4.0, 0.0, 2.0))
 RX_4 = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0))
 
 
 def _array(transmitters, *, phase_sign: int = -1) -> ArrayGeometry:
     return ArrayGeometry.from_offsets(
-        transmitters,
-        RX_4,
-        element_spacing_m=WAVELENGTH_M / 2.0,
-        wavelength_m=WAVELENGTH_M,
-        phase_sign=phase_sign,
+        transmitters, RX_4, element_spacing_m=WAVELENGTH_M / 2.0, wavelength_m=WAVELENGTH_M, phase_sign=phase_sign
     )
 
 
@@ -91,10 +73,11 @@ def test_phase_comparison_recovers_an_exactly_on_bin_azimuth():
     assert theta == pytest.approx(14.4775, abs=1e-4)
 
     x_positions = array.element_positions_m[:, 0] / array.element_spacing_m
-    signal = torch.polar(
-        torch.ones(12, dtype=torch.float64),
-        torch.pi * x_positions * expected,
-    ).reshape(-1, 1).to(torch.complex64)
+    signal = (
+        torch.polar(torch.ones(12, dtype=torch.float64), torch.pi * x_positions * expected)
+        .reshape(-1, 1)
+        .to(torch.complex64)
+    )
 
     cosines = phase_comparison_aoa(signal, array, fft_size=FFT_SIZE)
     recovered = math.degrees(math.asin(float(cosines[0, 0])))
@@ -115,9 +98,11 @@ def test_phase_comparison_recovers_an_exactly_on_bin_elevation():
     array = _array(TX_3)
     expected = _exact_cosine(8)
     z_positions = array.element_positions_m[:, 2] / array.element_spacing_m
-    signal = torch.polar(
-        torch.ones(12, dtype=torch.float64), torch.pi * z_positions * expected
-    ).reshape(-1, 1).to(torch.complex64)
+    signal = (
+        torch.polar(torch.ones(12, dtype=torch.float64), torch.pi * z_positions * expected)
+        .reshape(-1, 1)
+        .to(torch.complex64)
+    )
 
     cosines = phase_comparison_aoa(signal, array, fft_size=FFT_SIZE)
     assert float(cosines[0, 0]) == pytest.approx(0.0, abs=1e-6)
@@ -151,9 +136,7 @@ def test_the_two_dimensional_route_recovers_both_cosines_on_their_own_bins():
     cosines = fft2_aoa(values.to(torch.complex64), array, fft_size=FFT_SIZE)
     assert float(cosines[0, 0]) == pytest.approx(x_expected, abs=1e-7)
     assert float(cosines[2, 0]) == pytest.approx(z_expected, abs=1e-7)
-    assert float(cosines[1, 0]) == pytest.approx(
-        math.sqrt(1.0 - x_expected**2 - z_expected**2), abs=1e-6
-    )
+    assert float(cosines[1, 0]) == pytest.approx(math.sqrt(1.0 - x_expected**2 - z_expected**2), abs=1e-6)
 
 
 def test_a_conjugated_beat_cube_is_reconciled_rather_than_mirrored():
@@ -169,9 +152,11 @@ def test_a_conjugated_beat_cube_is_reconciled_rather_than_mirrored():
     beat = _array(TX_3, phase_sign=1)
     expected = _exact_cosine(8)
     x_positions = channel.element_positions_m[:, 0] / channel.element_spacing_m
-    wave = torch.polar(
-        torch.ones(12, dtype=torch.float64), torch.pi * x_positions * expected
-    ).reshape(-1, 1).to(torch.complex64)
+    wave = (
+        torch.polar(torch.ones(12, dtype=torch.float64), torch.pi * x_positions * expected)
+        .reshape(-1, 1)
+        .to(torch.complex64)
+    )
 
     from_channel = phase_comparison_aoa(wave, channel, fft_size=FFT_SIZE)
     from_beat = phase_comparison_aoa(wave.conj(), beat, fft_size=FFT_SIZE)
@@ -185,10 +170,11 @@ def test_a_direction_that_cannot_close_is_published_as_an_exact_zero():
     # imaginary, so the row describes no direction at all.
     x_positions = array.element_positions_m[:, 0] / array.element_spacing_m
     z_positions = array.element_positions_m[:, 2] / array.element_spacing_m
-    signal = torch.polar(
-        torch.ones(12, dtype=torch.float64),
-        torch.pi * (x_positions * 0.875 + z_positions * 0.875),
-    ).reshape(-1, 1).to(torch.complex64)
+    signal = (
+        torch.polar(torch.ones(12, dtype=torch.float64), torch.pi * (x_positions * 0.875 + z_positions * 0.875))
+        .reshape(-1, 1)
+        .to(torch.complex64)
+    )
     cosines = phase_comparison_aoa(signal, array, fft_size=FFT_SIZE)
     assert float(cosines[0, 0]) == 0.0
     assert float(cosines[1, 0]) == 0.0
@@ -246,9 +232,7 @@ def test_the_compensation_reads_the_raw_chirp_period_not_the_slot_period():
     ones = torch.ones((12, 1), dtype=torch.complex64)
     phase = float(torch.angle(tdm_compensate(ones, velocity, array, axes)[4, 0]))
     chirp_period_s = axes.slow_time_period_s / axes.num_tx
-    slot_phase = (
-        -2.0 * math.pi * grid.F_REF_HZ * grid.DELAY_RATE * axes.slow_time_period_s
-    )
+    slot_phase = -2.0 * math.pi * grid.F_REF_HZ * grid.DELAY_RATE * axes.slow_time_period_s
     chirp_phase = -2.0 * math.pi * grid.F_REF_HZ * grid.DELAY_RATE * chirp_period_s
     assert abs((phase - chirp_phase + math.pi) % (2 * math.pi) - math.pi) < 1e-6
     assert abs((phase - slot_phase + math.pi) % (2 * math.pi) - math.pi) > 1e-3
@@ -258,16 +242,13 @@ def test_the_compensation_preserves_magnitude_and_is_one_multiply():
     array = _array(TX_3, phase_sign=1)
     axes = make_processing_axes(PROCESSING_CONFIG)
     generator = torch.Generator().manual_seed(11)
-    signal = torch.complex(
-        torch.randn((12, 7), generator=generator),
-        torch.randn((12, 7), generator=generator),
-    ).to(torch.complex64)
+    signal = torch.complex(torch.randn((12, 7), generator=generator), torch.randn((12, 7), generator=generator)).to(
+        torch.complex64
+    )
     velocities = torch.linspace(-4.0, 4.0, 7, dtype=torch.float64)
     compensated = tdm_compensate(signal, velocities, array, axes)
     assert compensated.dtype == signal.dtype
-    torch.testing.assert_close(
-        compensated.abs(), signal.abs(), rtol=1e-6, atol=1e-6
-    )
+    torch.testing.assert_close(compensated.abs(), signal.abs(), rtol=1e-6, atol=1e-6)
     # Transmitter zero is untouched, bitwise.
     assert torch.equal(compensated[: array.num_rx], signal[: array.num_rx])
 
@@ -297,17 +278,18 @@ def _upa_snapshots(
         torch.randn((count,), generator=generator, dtype=torch.float64),
     )
     wave = manifold.reshape(1, 1, columns, 1) * amplitude.reshape(1, 1, 1, count)
-    noise = torch.complex(
-        torch.randn((1, rows, columns, count), generator=generator, dtype=torch.float64),
-        torch.randn((1, rows, columns, count), generator=generator, dtype=torch.float64),
-    ) * 0.02
+    noise = (
+        torch.complex(
+            torch.randn((1, rows, columns, count), generator=generator, dtype=torch.float64),
+            torch.randn((1, rows, columns, count), generator=generator, dtype=torch.float64),
+        )
+        * 0.02
+    )
     return (wave + noise).to(torch.complex64)
 
 
 @pytest.mark.parametrize("spacing_wavelengths", [0.5, 0.25])
-def test_the_music_peak_lands_on_the_true_angle_at_any_element_spacing(
-    spacing_wavelengths,
-):
+def test_the_music_peak_lands_on_the_true_angle_at_any_element_spacing(spacing_wavelengths):
     """This is the test the hard-coded ``spacing = 0.5`` could not pass.
 
     ``MUSICImager._build_steering_vectors`` took ``spacing = 0.5`` as a default
@@ -328,21 +310,12 @@ def test_the_music_peak_lands_on_the_true_angle_at_any_element_spacing(
 
     truth = 0.35
     data = _upa_snapshots(
-        rows=rows,
-        columns=columns,
-        spacing_wavelengths=spacing_wavelengths,
-        angle_rad=truth,
-        count=64,
+        rows=rows, columns=columns, spacing_wavelengths=spacing_wavelengths, angle_rad=truth, count=64
     )
     azimuth = torch.linspace(-math.pi / 3, math.pi / 3, 241, dtype=torch.float32)
     elevation = torch.zeros(1, dtype=torch.float32)
     spectrum = music_spectrum(
-        data,
-        array,
-        elevation_rad=elevation,
-        azimuth_rad=azimuth,
-        num_signals=1,
-        spatial_smooth=2,
+        data, array, elevation_rad=elevation, azimuth_rad=azimuth, num_signals=1, spatial_smooth=2
     )
     peak = int(spectrum[0, 0].abs().argmax())
     recovered = float(azimuth[peak])
@@ -359,15 +332,6 @@ def test_music_refuses_a_smoothing_or_a_signal_count_that_leaves_no_subspace():
     data = torch.ones((1, 4, 4, 3), dtype=torch.complex64)
     angles = torch.zeros(2, dtype=torch.float32)
     with pytest.raises(ValueError, match="spatial_smooth"):
-        music_spectrum(
-            data, array, elevation_rad=angles, azimuth_rad=angles, spatial_smooth=4
-        )
+        music_spectrum(data, array, elevation_rad=angles, azimuth_rad=angles, spatial_smooth=4)
     with pytest.raises(ValueError, match="noise subspace"):
-        music_spectrum(
-            data,
-            array,
-            elevation_rad=angles,
-            azimuth_rad=angles,
-            num_signals=9,
-            spatial_smooth=1,
-        )
+        music_spectrum(data, array, elevation_rad=angles, azimuth_rad=angles, num_signals=9, spatial_smooth=1)

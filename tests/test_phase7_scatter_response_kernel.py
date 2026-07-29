@@ -16,13 +16,11 @@ import math
 
 import pytest
 import torch
-
-from witwin.radar.paths import TwoWayComposer
-from witwin.radar.scattering import AspectScatterResponse, ScalarRcsResponse
-
 from support import aspect_oracle as oracle  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
+from witwin.radar.scattering import AspectScatterResponse, ScalarRcsResponse
 
 pytestmark = pytest.mark.gpu
 
@@ -59,9 +57,7 @@ def _composer(device: str = "cuda", *, outbound_components=(0,)) -> TwoWayCompos
     """
 
     inbound = fx.frozen_leg(fx.leg_rows(SOURCES, SITES, (0, 1)), device=device)
-    outbound = fx.frozen_leg(
-        fx.leg_rows(SITES, SINKS, outbound_components), device=device
-    )
+    outbound = fx.frozen_leg(fx.leg_rows(SITES, SINKS, outbound_components), device=device)
     return TwoWayComposer.freeze(
         inbound,
         outbound,
@@ -72,9 +68,7 @@ def _composer(device: str = "cuda", *, outbound_components=(0,)) -> TwoWayCompos
     )
 
 
-def _directions(
-    rows: int, *, seed: int, device: str = "cuda", into_site: bool = False
-) -> torch.Tensor:
+def _directions(rows: int, *, seed: int, device: str = "cuda", into_site: bool = False) -> torch.Tensor:
     """Unit directions in a cone comfortably clear of the clamp boundary.
 
     A test that straddles the clamp cannot distinguish the lobe from the
@@ -91,14 +85,7 @@ def _directions(
 
     generator = torch.Generator().manual_seed(seed)
     raw = torch.rand(rows, 3, generator=generator, dtype=torch.float64)
-    vectors = torch.stack(
-        [
-            0.6 + 0.4 * raw[:, 0],
-            0.6 * (raw[:, 1] - 0.5),
-            0.6 * (raw[:, 2] - 0.5),
-        ],
-        dim=1,
-    )
+    vectors = torch.stack([0.6 + 0.4 * raw[:, 0], 0.6 * (raw[:, 1] - 0.5), 0.6 * (raw[:, 2] - 0.5)], dim=1)
     vectors = vectors / torch.linalg.vector_norm(vectors, dim=1, keepdim=True)
     if into_site:
         vectors = -vectors
@@ -110,13 +97,9 @@ def _parameters(sites: int, *, device: str = "cuda", requires_grad: bool = False
     amplitude = [1.5 + 0.5 * index for index in range(sites)]
     phase = [0.4 + 0.3 * index for index in range(sites)]
     return AspectScatterResponse(
-        axis=axis.to(device=device, dtype=torch.float32)
-        .contiguous()
-        .requires_grad_(requires_grad),
-        amplitude=torch.tensor(amplitude, dtype=torch.float32, device=device)
-        .requires_grad_(requires_grad),
-        phase_rad=torch.tensor(phase, dtype=torch.float32, device=device)
-        .requires_grad_(requires_grad),
+        axis=axis.to(device=device, dtype=torch.float32).contiguous().requires_grad_(requires_grad),
+        amplitude=torch.tensor(amplitude, dtype=torch.float32, device=device).requires_grad_(requires_grad),
+        phase_rad=torch.tensor(phase, dtype=torch.float32, device=device).requires_grad_(requires_grad),
         exponent=EXPONENT,
         coherent_interval_s=COHERENT_INTERVAL_S,
     )
@@ -175,14 +158,9 @@ def test_the_aspect_kernel_matches_a_closed_form():
 
     assert composer.path_count == len(SOURCES) * len(SINKS) * len(SITES) * 2
     assert float(expected.abs().min()) > 0.0, "the reference must not be vacuous"
-    torch.testing.assert_close(
-        measured.abs(), expected.abs(), rtol=MAGNITUDE_RTOL, atol=0.0
-    )
+    torch.testing.assert_close(measured.abs(), expected.abs(), rtol=MAGNITUDE_RTOL, atol=0.0)
     for index in range(len(expected)):
-        difference = math.remainder(
-            float(torch.angle(measured[index]) - torch.angle(expected[index])),
-            2.0 * math.pi,
-        )
+        difference = math.remainder(float(torch.angle(measured[index]) - torch.angle(expected[index])), 2.0 * math.pi)
         assert abs(difference) < PHASE_ATOL_RAD, index
 
 
@@ -204,11 +182,7 @@ def test_a_back_facing_direction_publishes_exactly_zero():
     flags = torch.ones(composer.path_count, dtype=torch.int32, device="cuda")
 
     s_re, s_im = _launch(composer, response, dir_in, dir_out, flags)
-    affected = [
-        row
-        for row in range(composer.path_count)
-        if int(composer.outbound_row[row]) == 0
-    ]
+    affected = [row for row in range(composer.path_count) if int(composer.outbound_row[row]) == 0]
     assert affected, "the flipped row must own at least one composed row"
     for row in affected:
         assert float(s_re[row]) == 0.0 and float(s_im[row]) == 0.0, row
@@ -230,9 +204,7 @@ def test_a_dead_row_publishes_exactly_zero():
     flags = torch.ones(composer.path_count, dtype=torch.int32, device="cuda")
     flags[1] = 0
     dir_in = dir_in.clone()
-    dir_in[int(composer.inbound_row[1])] = torch.tensor(
-        [float("nan")] * 3, dtype=torch.float32, device="cuda"
-    )
+    dir_in[int(composer.inbound_row[1])] = torch.tensor([float("nan")] * 3, dtype=torch.float32, device="cuda")
 
     s_re, s_im = _launch(composer, response, dir_in, dir_out, flags)
     assert float(s_re[1]) == 0.0 and float(s_im[1]) == 0.0
@@ -261,12 +233,8 @@ def test_the_composed_round_trip_carries_the_row_response():
     dir_out = _directions(composer.outbound_row_count, seed=42)
     tau_in, _, c_in = fx.payload(composer.inbound_row_count, seed=11)
     tau_out, _, c_out = fx.payload(composer.outbound_row_count, seed=12)
-    inbound = fx.leg_batch(
-        tau_in.float(), c_in.to(torch.complex64), direction=dir_in
-    )
-    outbound = fx.leg_batch(
-        tau_out.float(), c_out.to(torch.complex64), direction=dir_out
-    )
+    inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=dir_in)
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
 
     composed = composer.compose(inbound, outbound, response)
 
@@ -285,10 +253,7 @@ def test_the_composed_round_trip_carries_the_row_response():
     idx_out = composer.outbound_row.tolist()
     reference = torch.stack(
         [
-            (
-                c_out.cpu().to(torch.complex128)[idx_out[row]]
-                * expected_response[row]
-            )
+            (c_out.cpu().to(torch.complex128)[idx_out[row]] * expected_response[row])
             * c_in.cpu().to(torch.complex128)[idx_in[row]]
             for row in range(composer.path_count)
         ]
@@ -318,8 +283,7 @@ def test_a_line_of_sight_only_response_still_serves_the_per_site_route():
     idx_out = composer.outbound_row.tolist()
     reference = torch.stack(
         [
-            (c_out.cpu().to(torch.complex128)[idx_out[row]] * site)
-            * c_in.cpu().to(torch.complex128)[idx_in[row]]
+            (c_out.cpu().to(torch.complex128)[idx_out[row]] * site) * c_in.cpu().to(torch.complex128)[idx_in[row]]
             for row in range(composer.path_count)
         ]
     )
@@ -398,9 +362,7 @@ def test_the_response_refuses_a_higher_order_outbound_leg():
     tau_in, _, c_in = fx.payload(composer.inbound_row_count, seed=11)
     tau_out, _, c_out = fx.payload(composer.outbound_row_count, seed=12)
     inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=dir_in)
-    outbound = fx.leg_batch(
-        tau_out.float(), c_out.to(torch.complex64), direction=dir_out
-    )
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
 
     with pytest.raises(NotImplementedError, match="DEPARTURE direction"):
         composer.compose(inbound, outbound, response)
@@ -423,11 +385,7 @@ def test_the_response_refuses_a_non_unit_axis():
 
     with pytest.raises(ValueError, match="unit vectors"):
         AspectScatterResponse.from_values(
-            [(2.0, 0.0, 0.0)],
-            [1.0],
-            [0.0],
-            exponent=EXPONENT,
-            coherent_interval_s=COHERENT_INTERVAL_S,
+            [(2.0, 0.0, 0.0)], [1.0], [0.0], exponent=EXPONENT, coherent_interval_s=COHERENT_INTERVAL_S
         )
 
 

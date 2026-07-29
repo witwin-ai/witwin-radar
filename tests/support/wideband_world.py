@@ -39,7 +39,6 @@ import math
 
 import torch
 
-
 C0_M_PER_S = 299792458.0
 EPS0_F_PER_M = 8.8541878128e-12
 
@@ -111,60 +110,35 @@ def _scene(material):
     from witwin.core.identity import reserve_antenna_id
 
     mesh = _mesh()
-    plate = Structure(
-        geometry=mesh,
-        material=material,
-        structure_id=1,
-        material_id=1,
-        assignment_id=1,
-        surface_id=1,
-    )
+    plate = Structure(geometry=mesh, material=material, structure_id=1, material_id=1, assignment_id=1, surface_id=1)
     scene = Scene(
         structures=(plate,),
-        endpoints=[
-            AntennaState(
-                reserve_antenna_id(77801),
-                "tx",
-                torch.tensor(SOURCE_POSITION_M, dtype=torch.float32),
-            )
-        ],
+        endpoints=[AntennaState(reserve_antenna_id(77801), "tx", torch.tensor(SOURCE_POSITION_M, dtype=torch.float32))],
     )
     authored = torch.tensor(PLATE_VERTICES_M, dtype=torch.float64)
     survived = mesh.vertices.detach().to(dtype=torch.float64).cpu()
     if not torch.allclose(survived, authored, atol=1.0e-9):
-        raise AssertionError(
-            "the plate was recentred; every Mesh here must pass recenter=False"
-        )
+        raise AssertionError("the plate was recentred; every Mesh here must pass recenter=False")
     return scene
 
 
 def _compile(material, *, reference_frequency_hz=REFERENCE_FREQUENCY_HZ):
     from witwin.channel.scene import compile as compile_scene
 
-    return compile_scene(
-        _scene(material), reference_frequency_hz=reference_frequency_hz
-    )
+    return compile_scene(_scene(material), reference_frequency_hz=reference_frequency_hz)
 
 
 def slab_material():
     from witwin.core import PhysicalMaterial
 
-    return PhysicalMaterial(
-        name="slab",
-        eps_r=SLAB_EPS_R,
-        sigma_e=SLAB_SIGMA_E,
-        thickness_m=SLAB_THICKNESS_M,
-    )
+    return PhysicalMaterial(name="slab", eps_r=SLAB_EPS_R, sigma_e=SLAB_SIGMA_E, thickness_m=SLAB_THICKNESS_M)
 
 
 def half_space_material():
     from witwin.core import PhysicalMaterial
 
     return PhysicalMaterial(
-        name="half_space",
-        eps_r=HALF_SPACE_EPS_R,
-        sigma_e=HALF_SPACE_SIGMA_E,
-        thickness_m=HALF_SPACE_THICKNESS_M,
+        name="half_space", eps_r=HALF_SPACE_EPS_R, sigma_e=HALF_SPACE_SIGMA_E, thickness_m=HALF_SPACE_THICKNESS_M
     )
 
 
@@ -178,8 +152,7 @@ def dispersive_material():
         sigma_e=SLAB_SIGMA_E,
         thickness_m=SLAB_THICKNESS_M,
         dispersion=PowerLawDispersion(
-            reference_frequency_hz=REFERENCE_FREQUENCY_HZ,
-            eps_r_exponent=DISPERSION_EPS_R_EXPONENT,
+            reference_frequency_hz=REFERENCE_FREQUENCY_HZ, eps_r_exponent=DISPERSION_EPS_R_EXPONENT
         ),
     )
 
@@ -194,9 +167,7 @@ def rough_material():
         sigma_e=SLAB_SIGMA_E,
         thickness_m=SLAB_THICKNESS_M,
         roughness_front=SurfaceRoughness(
-            rms_height_m=1.0e-3,
-            correlation_length_x_m=5.0e-3,
-            correlation_length_y_m=5.0e-3,
+            rms_height_m=1.0e-3, correlation_length_x_m=5.0e-3, correlation_length_y_m=5.0e-3
         ),
     )
 
@@ -223,21 +194,13 @@ def endpoint_spec(position, stable_id, *, power_w=None, device="cuda"):
     return RadarEndpointSpec(
         stable_ids=torch.tensor([stable_id], dtype=torch.int64, device=device),
         positions_m=torch.tensor([position], dtype=torch.float32, device=device),
-        polarizations=torch.tensor(
-            [POLARIZATION], dtype=torch.float32, device=device
-        ),
-        powers_w=(
-            None
-            if power_w is None
-            else torch.tensor([power_w], dtype=torch.float32, device=device)
-        ),
+        polarizations=torch.tensor([POLARIZATION], dtype=torch.float32, device=device),
+        powers_w=(None if power_w is None else torch.tensor([power_w], dtype=torch.float32, device=device)),
     )
 
 
 def source_spec(device: str = "cuda"):
-    return endpoint_spec(
-        SOURCE_POSITION_M, SOURCE_STABLE_ID, power_w=SOURCE_POWER_W, device=device
-    )
+    return endpoint_spec(SOURCE_POSITION_M, SOURCE_STABLE_ID, power_w=SOURCE_POWER_W, device=device)
 
 
 def sink_spec(device: str = "cuda"):
@@ -258,11 +221,7 @@ def incidence_cosine() -> float:
     over its length - exact, with no search and no tolerance.
     """
 
-    image = (
-        2.0 * PLATE_PLANE_X_M - SOURCE_POSITION_M[0],
-        SOURCE_POSITION_M[1],
-        SOURCE_POSITION_M[2],
-    )
+    image = (2.0 * PLATE_PLANE_X_M - SOURCE_POSITION_M[0], SOURCE_POSITION_M[1], SOURCE_POSITION_M[2])
     delta = tuple(image[axis] - SINK_POSITION_M[axis] for axis in range(3))
     length = math.sqrt(sum(value * value for value in delta))
     return abs(delta[0]) / length
@@ -271,28 +230,15 @@ def incidence_cosine() -> float:
 def reflection_length_m() -> float:
     """The image-source path length: source -> plate -> sink."""
 
-    image = (
-        2.0 * PLATE_PLANE_X_M - SOURCE_POSITION_M[0],
-        SOURCE_POSITION_M[1],
-        SOURCE_POSITION_M[2],
-    )
-    return math.sqrt(
-        sum((image[axis] - SINK_POSITION_M[axis]) ** 2 for axis in range(3))
-    )
+    image = (2.0 * PLATE_PLANE_X_M - SOURCE_POSITION_M[0], SOURCE_POSITION_M[1], SOURCE_POSITION_M[2])
+    return math.sqrt(sum((image[axis] - SINK_POSITION_M[axis]) ** 2 for axis in range(3)))
 
 
 def line_of_sight_length_m() -> float:
-    return math.sqrt(
-        sum(
-            (SOURCE_POSITION_M[axis] - SINK_POSITION_M[axis]) ** 2
-            for axis in range(3)
-        )
-    )
+    return math.sqrt(sum((SOURCE_POSITION_M[axis] - SINK_POSITION_M[axis]) ** 2 for axis in range(3)))
 
 
-def fringe_period_hz(
-    *, eps_r: float = SLAB_EPS_R, thickness_m: float = SLAB_THICKNESS_M
-) -> float:
+def fringe_period_hz(*, eps_r: float = SLAB_EPS_R, thickness_m: float = SLAB_THICKNESS_M) -> float:
     """``c / (2 * Re(sqrt(eps_r)) * d * cos(theta_t))``, the Airy period.
 
     ``theta_t`` comes from Snell's law at the fixture's incidence, so this is
@@ -319,9 +265,7 @@ def dispersive_eps_r_drift(offsets_hz) -> float:
     """
 
     values = [
-        SLAB_EPS_R
-        * ((REFERENCE_FREQUENCY_HZ + offset) / REFERENCE_FREQUENCY_HZ)
-        ** DISPERSION_EPS_R_EXPONENT
+        SLAB_EPS_R * ((REFERENCE_FREQUENCY_HZ + offset) / REFERENCE_FREQUENCY_HZ) ** DISPERSION_EPS_R_EXPONENT
         for offset in offsets_hz
     ]
     return max(abs(value - SLAB_EPS_R) / SLAB_EPS_R for value in values)
@@ -362,11 +306,7 @@ def slab_reflection_te(frequency_hz: float, *, material: str = "slab") -> comple
     if material == "slab":
         eps_r, sigma_e, thickness_m = SLAB_EPS_R, SLAB_SIGMA_E, SLAB_THICKNESS_M
     elif material == "half_space":
-        eps_r, sigma_e, thickness_m = (
-            HALF_SPACE_EPS_R,
-            HALF_SPACE_SIGMA_E,
-            HALF_SPACE_THICKNESS_M,
-        )
+        eps_r, sigma_e, thickness_m = (HALF_SPACE_EPS_R, HALF_SPACE_SIGMA_E, HALF_SPACE_THICKNESS_M)
     else:
         raise ValueError(f"unknown material {material!r}")
 

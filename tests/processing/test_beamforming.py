@@ -15,7 +15,6 @@ import torch
 from witwin.radar.processing import ArrayGeometry, conventional_steering, mvdr_weights
 from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
-
 TX = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 1.0))
 RX = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0))
 WAVELENGTH_M = SPEED_OF_LIGHT_M_PER_S / 77e9
@@ -25,9 +24,7 @@ def _array(*, spacing_m: float | None = None, phase_sign: int = -1) -> ArrayGeom
     return ArrayGeometry.from_offsets(
         TX,
         RX,
-        element_spacing_m=(
-            WAVELENGTH_M / 2.0 if spacing_m is None else spacing_m
-        ),
+        element_spacing_m=(WAVELENGTH_M / 2.0 if spacing_m is None else spacing_m),
         wavelength_m=WAVELENGTH_M,
         phase_sign=phase_sign,
     )
@@ -66,19 +63,12 @@ def test_the_element_table_is_tx_major_and_reads_its_spacing_as_data():
     for pair in range(12):
         tx = TX[pair // 4]
         rx = RX[pair % 4]
-        expected = [(a + b) * array.element_spacing_m for a, b in zip(tx, rx)]
-        assert [float(v) for v in array.element_positions_m[pair]] == pytest.approx(
-            expected, rel=1e-12
-        )
+        expected = [(a + b) * array.element_spacing_m for a, b in zip(tx, rx, strict=True)]
+        assert [float(v) for v in array.element_positions_m[pair]] == pytest.approx(expected, rel=1e-12)
 
     quarter = _array(spacing_m=WAVELENGTH_M / 4.0)
     assert quarter.spacing_wavelengths == 0.25
-    torch.testing.assert_close(
-        quarter.element_positions_m * 2.0,
-        array.element_positions_m,
-        rtol=1e-12,
-        atol=0.0,
-    )
+    torch.testing.assert_close(quarter.element_positions_m * 2.0, array.element_positions_m, rtol=1e-12, atol=0.0)
 
 
 def test_the_first_eight_virtual_elements_of_this_array_are_a_uniform_line():
@@ -100,10 +90,7 @@ def test_the_two_phasor_conventions_give_conjugate_manifolds():
     beat = _array(phase_sign=1)
     directions = _direction(0.3)
     torch.testing.assert_close(
-        conventional_steering(beat, directions),
-        conventional_steering(array, directions).conj(),
-        rtol=1e-6,
-        atol=1e-7,
+        conventional_steering(beat, directions), conventional_steering(array, directions).conj(), rtol=1e-6, atol=1e-7
     )
 
 
@@ -118,9 +105,7 @@ def test_normalized_weights_give_a_unit_response_to_a_matched_wavefront():
     weights = conventional_steering(array, directions)
     manifold = conventional_steering(array, directions, normalize=False)
     response = (weights.conj() * manifold).sum(dim=0)
-    torch.testing.assert_close(
-        response, torch.ones_like(response), rtol=1e-6, atol=1e-6
-    )
+    torch.testing.assert_close(response, torch.ones_like(response), rtol=1e-6, atol=1e-6)
 
 
 def test_the_manifold_matches_a_wavefront_built_from_the_delay_convention():
@@ -145,22 +130,18 @@ def test_the_manifold_matches_a_wavefront_built_from_the_delay_convention():
 
     hand_built = []
     for position in array.element_positions_m.tolist():
-        projection = sum(p * d for p, d in zip(position, direction[0].tolist()))
+        projection = sum(p * d for p, d in zip(position, direction[0].tolist(), strict=True))
         # exp(-j k d) at d = -projection, the far-field path relative to origin.
         phase = -wavenumber * (-projection)
         hand_built.append(complex(math.cos(phase), math.sin(phase)))
     wavefront = torch.tensor(hand_built, dtype=torch.complex128).reshape(-1, 1)
 
-    manifold = conventional_steering(
-        array, direction, normalize=False, dtype=torch.complex128
-    )
+    manifold = conventional_steering(array, direction, normalize=False, dtype=torch.complex128)
     torch.testing.assert_close(manifold, wavefront, rtol=1e-9, atol=1e-9)
 
     weights = conventional_steering(array, direction, dtype=torch.complex128)
     matched = (weights.conj() * wavefront).sum(dim=0)
-    torch.testing.assert_close(
-        matched, torch.ones_like(matched), rtol=1e-9, atol=1e-9
-    )
+    torch.testing.assert_close(matched, torch.ones_like(matched), rtol=1e-9, atol=1e-9)
 
     # A conjugated array response is a DIFFERENT look direction, and this
     # off-broadside one does not form: the sign is pinned, not free.
@@ -191,9 +172,7 @@ def _snapshots(array: ArrayGeometry, angles, powers, *, noise: float, count: int
         torch.randn((pairs, count), generator=generator, dtype=torch.float64),
     ) * math.sqrt(noise / 2.0)
     for angle, power in zip(angles, powers, strict=True):
-        manifold = conventional_steering(
-            array, _direction(angle), normalize=False, dtype=torch.complex128
-        )
+        manifold = conventional_steering(array, _direction(angle), normalize=False, dtype=torch.complex128)
         amplitude = torch.complex(
             torch.randn((1, count), generator=generator, dtype=torch.float64),
             torch.randn((1, count), generator=generator, dtype=torch.float64),
@@ -214,50 +193,36 @@ def test_mvdr_passes_its_own_look_direction_and_nulls_an_interferer():
 
     array = _array()
     look, interferer = 0.0, 0.6
-    snapshots = _snapshots(
-        array, (look, interferer), (1.0, 100.0), noise=1e-3, count=512
-    )
+    snapshots = _snapshots(array, (look, interferer), (1.0, 100.0), noise=1e-3, count=512)
     covariance = (snapshots @ snapshots.conj().transpose(0, 1)) / snapshots.shape[1]
 
-    steering = conventional_steering(
-        array, _direction(look), normalize=False, dtype=torch.complex128
-    )
+    steering = conventional_steering(array, _direction(look), normalize=False, dtype=torch.complex128)
     weights = mvdr_weights(covariance, steering, diagonal_loading=1e-6)
     assert tuple(weights.shape) == (12, 1)
 
     response = (weights.conj() * steering).sum(dim=0)
-    torch.testing.assert_close(
-        response, torch.ones_like(response), rtol=1e-9, atol=1e-9
-    )
+    torch.testing.assert_close(response, torch.ones_like(response), rtol=1e-9, atol=1e-9)
 
     # The null, measured where it matters: how much of the interferer's own
     # manifold each weight vector lets through. Total output power would be the
     # wrong statistic, because the distortionless constraint means MVDR CANNOT
     # suppress the desired signal and the comparison would be dominated by it.
-    conventional = conventional_steering(
-        array, _direction(look), dtype=torch.complex128
-    )
-    interfering = conventional_steering(
-        array, _direction(interferer), normalize=False, dtype=torch.complex128
-    )
+    conventional = conventional_steering(array, _direction(look), dtype=torch.complex128)
+    interfering = conventional_steering(array, _direction(interferer), normalize=False, dtype=torch.complex128)
     mvdr_leak = float((weights.conj() * interfering).sum().abs() ** 2)
     conventional_leak = float((conventional.conj() * interfering).sum().abs() ** 2)
     assert mvdr_leak < conventional_leak / 100.0, (mvdr_leak, conventional_leak)
 
     # And the total output power is then the desired signal alone, to the noise
     # floor: MVDR has removed a hundred-fold interferer entirely.
-    mvdr_power = float(
-        (weights.conj().transpose(0, 1) @ covariance @ weights).real.squeeze()
-    )
+    mvdr_power = float((weights.conj().transpose(0, 1) @ covariance @ weights).real.squeeze())
     assert mvdr_power == pytest.approx(1.0, rel=0.05)
 
 
 def test_mvdr_carries_a_batch_and_demands_an_explicit_loading():
     array = _array()
     directions = torch.cat([_direction(a) for a in (-0.2, 0.0, 0.2)], dim=0)
-    steering = conventional_steering(
-        array, directions, normalize=False, dtype=torch.complex128
-    )
+    steering = conventional_steering(array, directions, normalize=False, dtype=torch.complex128)
     snapshots = _snapshots(array, (0.0,), (1.0,), noise=1.0, count=64)
     covariance = (snapshots @ snapshots.conj().transpose(0, 1)) / 64
     batched = torch.stack((covariance, covariance * 2.0), dim=0)
@@ -282,12 +247,8 @@ def test_diagonal_loading_makes_a_rank_deficient_covariance_solvable():
     array = _array()
     snapshots = _snapshots(array, (0.0,), (1.0,), noise=0.0, count=1)
     covariance = snapshots @ snapshots.conj().transpose(0, 1)
-    steering = conventional_steering(
-        array, _direction(0.3), normalize=False, dtype=torch.complex128
-    )
+    steering = conventional_steering(array, _direction(0.3), normalize=False, dtype=torch.complex128)
     weights = mvdr_weights(covariance, steering, diagonal_loading=1e-2)
     assert torch.isfinite(weights).all()
     response = (weights.conj() * steering).sum(dim=0)
-    torch.testing.assert_close(
-        response, torch.ones_like(response), rtol=1e-9, atol=1e-9
-    )
+    torch.testing.assert_close(response, torch.ones_like(response), rtol=1e-9, atol=1e-9)

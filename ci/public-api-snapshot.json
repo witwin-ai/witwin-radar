@@ -15,7 +15,7 @@
           "name": "RadarConfig",
           "kind": "class",
           "target": "witwin.radar.radar.RadarConfig",
-          "signature": "(num_tx: 'int', num_rx: 'int', fc: 'float', slope: 'float', adc_samples: 'int', adc_start_time: 'float', sample_rate: 'float', idle_time: 'float', ramp_end_time: 'float', chirp_per_frame: 'int', frame_per_second: 'float', num_doppler_bins: 'int', num_range_bins: 'int', num_angle_bins: 'int', power: 'float', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', antenna_pattern: 'dict[str, Any] | None' = None, frontend: \"'FrontendSpec | None'\" = None) -> None"
+          "signature": "(num_tx: 'int', num_rx: 'int', fc: 'float', slope: 'float', adc_samples: 'int', adc_start_time: 'float', sample_rate: 'float', idle_time: 'float', ramp_end_time: 'float', chirp_per_frame: 'int', frame_per_second: 'float', num_doppler_bins: 'int', num_range_bins: 'int', num_angle_bins: 'int', power: 'float', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', antenna_pattern: 'dict[str, Any] | None' = None, frontend: 'FrontendSpec | None' = None) -> None"
         }
       ]
     },
@@ -383,7 +383,7 @@
           "name": "SmplPoseDeformation",
           "kind": "class",
           "target": "witwin.radar.smpl.SmplPoseDeformation",
-          "signature": "(body: \"'SMPLBody'\", *, pose_rate, reference_time_s: 'float' = 0.0, device=None) -> 'None'"
+          "signature": "(body: 'SMPLBody', *, pose_rate, reference_time_s: 'float' = 0.0, device=None) -> 'None'"
         }
       ]
     },
@@ -485,12 +485,12 @@
         {
           "name": "set_pose",
           "kind": "function",
-          "signature": "(self, *, position=None, target=None, up=None, fov=None) -> \"'Radar'\""
+          "signature": "(self, *, position=None, target=None, up=None, fov=None) -> 'Radar'"
         },
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None) -> \"'RadarSimulationResult'\""
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None) -> 'RadarSimulationResult'"
         }
       ]
     }

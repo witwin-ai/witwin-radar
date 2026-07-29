@@ -90,17 +90,9 @@ def synthesize(kind: str, composed, spec) -> torch.Tensor:
     silently testing FMCW three times.
     """
 
-    from witwin.radar.synthesis import (
-        synthesize_fmcw,
-        synthesize_ofdm,
-        synthesize_pulsed,
-    )
+    from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
-    owners = {
-        "fmcw": synthesize_fmcw,
-        "ofdm": synthesize_ofdm,
-        "pulsed": synthesize_pulsed,
-    }
+    owners = {"fmcw": synthesize_fmcw, "ofdm": synthesize_ofdm, "pulsed": synthesize_pulsed}
     return owners[kind](to_synthesis(composed), spec)
 
 
@@ -109,24 +101,12 @@ def make_spec(kind: str):
 
     from . import multi_endpoint_driver as drv
 
-    builders = {
-        "fmcw": lambda: drv.make_spec(num_chirps=2),
-        "ofdm": ofdm_spec,
-        "pulsed": pulsed_spec,
-    }
+    builders = {"fmcw": lambda: drv.make_spec(num_chirps=2), "ofdm": ofdm_spec, "pulsed": pulsed_spec}
     return builders[kind]()
 
 
 def chain_loss(
-    spike,
-    kind: str,
-    spec,
-    *,
-    sites=None,
-    transmitters=None,
-    receivers=None,
-    response=None,
-    ad_mode: str = "none",
+    spike, kind: str, spec, *, sites=None, transmitters=None, receivers=None, response=None, ad_mode: str = "none"
 ) -> torch.Tensor:
     """Core leaf -> propagation -> RCS -> two-way -> cube -> scalar loss.
 
@@ -154,10 +134,4 @@ def chain_loss(
     return cube.abs().square().sum()
 
 
-__all__ = [
-    "chain_loss",
-    "make_spec",
-    "ofdm_spec",
-    "pulsed_spec",
-    "synthesize",
-]
+__all__ = ["chain_loss", "make_spec", "ofdm_spec", "pulsed_spec", "synthesize"]

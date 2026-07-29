@@ -43,7 +43,6 @@ import time
 
 import pytest
 import torch
-
 from support.dsp_ledger import DspLedger
 from support.pipeline_chain import pipeline_inputs, run_pipeline
 
@@ -217,10 +216,7 @@ def test_the_full_pipeline_meets_the_frozen_latency_budget(inputs, capsys):
             f"(budget {PIPELINE_LATENCY_BUDGET_MS:.4f} ms, "
             f"{PIPELINE_LATENCY_HEADROOM:.2f}x of {FROZEN_BASELINE_PIPELINE_MS:.2f} ms)"
         )
-    assert median <= PIPELINE_LATENCY_BUDGET_MS, (
-        median,
-        PIPELINE_LATENCY_BUDGET_MS,
-    )
+    assert median <= PIPELINE_LATENCY_BUDGET_MS, (median, PIPELINE_LATENCY_BUDGET_MS)
 
 
 def test_the_full_pipeline_meets_the_frozen_peak_memory_budget(inputs, capsys):
@@ -229,10 +225,7 @@ def test_the_full_pipeline_meets_the_frozen_peak_memory_budget(inputs, capsys):
     batch, spec, spec_array = inputs
     peak = _peak_mb(lambda: run_pipeline(batch, spec, spec_array))
     with capsys.disabled():
-        print(
-            f"\nfull pipeline peak delta: {peak:.4f} MB "
-            f"(budget {PIPELINE_PEAK_BUDGET_MB:.4f} MB)"
-        )
+        print(f"\nfull pipeline peak delta: {peak:.4f} MB (budget {PIPELINE_PEAK_BUDGET_MB:.4f} MB)")
     assert peak <= PIPELINE_PEAK_BUDGET_MB, (peak, PIPELINE_PEAK_BUDGET_MB)
 
 
@@ -319,33 +312,20 @@ def _simulation_driver():
     from support import multi_endpoint_world as world
 
     from witwin.radar import Radar
-    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.scattering import ScalarRcsResponse
+    from witwin.radar.simulation import ScatterSitePolicy
 
-    radar = Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
-        position=(0.0, 0.0, 0.0),
-        target=(1.0, 0.0, 0.0),
-    )
+    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
     sites = ScatterSitePolicy.explicit(
-        torch.tensor(
-            (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M),
-            dtype=torch.float32,
-            device=radar.device,
-        )
+        torch.tensor((geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device)
     )
-    response = ScalarRcsResponse.from_values(
-        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device
-    )
+    response = ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
 
     def simulate(frames: int):
         return radar.simulate(
-            scene,
-            times=tuple(index * 1.0e-3 for index in range(frames)),
-            response=response,
-            sites=sites,
+            scene, times=tuple(index * 1.0e-3 for index in range(frames)), response=response, sites=sites
         )
 
     return simulate
@@ -403,10 +383,7 @@ def test_the_simulation_frame_cost_has_not_regressed(capsys):
             f"{BUDGET_REPEATS} (budget {SIMULATION_FRAME_BUDGET_MS:.4f} ms, "
             f"{span} vs {2 * span} frames)"
         )
-    assert per_frame <= SIMULATION_FRAME_BUDGET_MS, (
-        per_frame,
-        SIMULATION_FRAME_BUDGET_MS,
-    )
+    assert per_frame <= SIMULATION_FRAME_BUDGET_MS, (per_frame, SIMULATION_FRAME_BUDGET_MS)
 
 
 # ---------------------------------------------------------------------------
@@ -414,9 +391,7 @@ def test_the_simulation_frame_cost_has_not_regressed(capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_the_pipeline_costs_exactly_one_host_observation_and_six_transforms(
-    inputs, capsys
-):
+def test_the_pipeline_costs_exactly_one_host_observation_and_six_transforms(inputs, capsys):
     """Exact integers, attributed to processing.
 
     Attribution is the point. Processing runs AFTER synthesis, so a
@@ -482,8 +457,9 @@ def _banded_spike(narrow, count: int | None):
     """
 
     from support import multi_endpoint_driver as drv
-    from witwin.radar.channel import ChannelPropagationAdapter
     from support import multi_endpoint_geometry as geo
+
+    from witwin.radar.channel import ChannelPropagationAdapter
 
     if count is None:
         return narrow
@@ -498,9 +474,7 @@ def _banded_spike(narrow, count: int | None):
     return drv.MultiEndpointSpike(compiled=narrow.compiled, adapter=adapter)
 
 
-def test_the_wideband_budget_is_flat_in_the_frequency_column_count(
-    narrowband_spike, capsys
-):
+def test_the_wideband_budget_is_flat_in_the_frequency_column_count(narrowband_spike, capsys):
     """ADR-032 at 1 copy and 1 synchronization, independent of ``F``.
 
     The ``(1 + F) * buckets`` NATIVE launch law is Channel's own and is asserted
@@ -520,8 +494,8 @@ def test_the_wideband_budget_is_flat_in_the_frequency_column_count(
         calls = {"count": 0}
         original = consumer.reevaluate
 
-        def counting(*args, _original=original, **kwargs):
-            calls["count"] += 1
+        def counting(*args, _original=original, _calls=calls, **kwargs):
+            _calls["count"] += 1
             return _original(*args, **kwargs)
 
         consumer.reevaluate = counting
@@ -536,10 +510,7 @@ def test_the_wideband_budget_is_flat_in_the_frequency_column_count(
             assert diagnostics.validation_sync_count == 1, (count, diagnostics)
             assert diagnostics.compact_count_d2h_copies == 0, (count, diagnostics)
             assert diagnostics.compact_sync_count == 0, (count, diagnostics)
-            assert diagnostics.frequency_column_count == (count or 1), (
-                count,
-                diagnostics,
-            )
+            assert diagnostics.frequency_column_count == (count or 1), (count, diagnostics)
         assert calls["count"] == 2, (count, calls)
         reported[count] = (
             calls["count"],
@@ -551,10 +522,7 @@ def test_the_wideband_budget_is_flat_in_the_frequency_column_count(
     with capsys.disabled():
         print("\nwideband budget, per leg")
         for count, values in reported.items():
-            print(
-                f"  F={str(count):<5} reevaluate={values[0]} d2h={values[1]} "
-                f"sync={values[2]} columns={values[3]}"
-            )
+            print(f"  F={str(count):<5} reevaluate={values[0]} d2h={values[1]} sync={values[2]} columns={values[3]}")
 
 
 def test_the_two_way_join_costs_one_launch_per_column(narrowband_spike, capsys):
@@ -566,8 +534,9 @@ def test_the_two_way_join_costs_one_launch_per_column(narrowband_spike, capsys):
     and a measurement that beats the recorded F-loop cost.
     """
 
-    import witwin.radar.paths as two_way
     from support import multi_endpoint_driver as drv
+
+    import witwin.radar.paths as two_way
     from witwin.radar.cuda import runtime as build
 
     operators = build.build_extension()
@@ -577,8 +546,8 @@ def test_the_two_way_join_costs_one_launch_per_column(narrowband_spike, capsys):
         spike = _banded_spike(narrowband_spike, count)
         launches = {"count": 0}
 
-        def counting(*args, _original=original, **kwargs):
-            launches["count"] += 1
+        def counting(*args, _original=original, _launches=launches, **kwargs):
+            _launches["count"] += 1
             return _original(*args, **kwargs)
 
         class _Patched:
@@ -587,12 +556,13 @@ def test_the_two_way_join_costs_one_launch_per_column(narrowband_spike, capsys):
                     return counting
                 return getattr(operators, name)
 
-        saved = two_way._OPS
-        two_way._OPS = _Patched()
+        saved = two_way._ops
+        patched = _Patched()
+        two_way._ops = lambda _patched=patched: _patched
         try:
             spike.frame(response=drv.make_response(), include_delay_rate=False)
         finally:
-            two_way._OPS = saved
+            two_way._ops = saved
         reported[count] = launches["count"]
         assert launches["count"] == 1 + (count or 0), (count, launches)
 

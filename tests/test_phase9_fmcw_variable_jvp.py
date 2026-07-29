@@ -35,12 +35,11 @@ import math
 import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
-
 from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
+
 from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -114,12 +113,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
     """
 
     tau, rate, weight, offsets = _cuda_inputs()
-    steps = {
-        "tau_rt": STEP_TAU_S,
-        "tau_rate": STEP_RATE,
-        "weight_re": STEP_WEIGHT,
-        "weight_im": STEP_WEIGHT,
-    }
+    steps = {"tau_rt": STEP_TAU_S, "tau_rate": STEP_RATE, "weight_re": STEP_WEIGHT, "weight_im": STEP_WEIGHT}
     step = steps[variable]
     direction = torch.tensor([1.0, -0.5], dtype=torch.float32, device="cuda")
 
@@ -144,9 +138,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
             moved_weight = o_weight + torch.complex(delta, torch.zeros_like(delta))
         else:
             moved_weight = o_weight + torch.complex(torch.zeros_like(delta), delta)
-        return ref.beat_samples(
-            moved_tau, moved_rate, moved_weight, o_offsets, SPEC
-        )
+        return ref.beat_samples(moved_tau, moved_rate, moved_weight, o_offsets, SPEC)
 
     with forward_ad.dual_level():
         tangent_tau = torch.zeros_like(tau)
@@ -174,13 +166,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
     expected = 0.5 * (evaluate(1.0) - evaluate(-1.0))
     scale = float(expected.abs().max())
     assert scale > 0.0, variable
-    torch.testing.assert_close(
-        jvp,
-        expected,
-        rtol=2e-3,
-        atol=2e-3 * scale,
-        msg=lambda text: f"{variable}: {text}",
-    )
+    torch.testing.assert_close(jvp, expected, rtol=2e-3, atol=2e-3 * scale, msg=lambda text: f"{variable}: {text}")
 
 
 # --------------------------------------------------------------------------
@@ -260,9 +246,7 @@ def test_the_dropped_term_is_smallest_at_the_far_end_of_the_sweep():
     tau = DELAYS[0] + RATES[0] * t_c
 
     def factor(sample: int) -> float:
-        chirp_hz = SPEC.slope_hz_per_s * (
-            SPEC.t_start_s - tau + sample * SPEC.sample_period_s
-        )
+        chirp_hz = SPEC.slope_hz_per_s * (SPEC.t_start_s - tau + sample * SPEC.sample_period_s)
         return 1.0 + F_REF_HZ / chirp_hz
 
     first = factor(0)
@@ -294,13 +278,7 @@ def test_a_rate_only_tangent_is_not_the_zero_tangent():
     offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
 
     with forward_ad.dual_level():
-        cube = synthesize_fmcw_rows(
-            single,
-            forward_ad.make_dual(rate, torch.ones_like(rate)),
-            weight,
-            offsets,
-            SPEC,
-        )
+        cube = synthesize_fmcw_rows(single, forward_ad.make_dual(rate, torch.ones_like(rate)), weight, offsets, SPEC)
         primal, tangent = forward_ad.unpack_dual(cube)
         magnitude = float(tangent.abs().max())
         reference = float(primal.abs().max())
@@ -311,12 +289,6 @@ def test_a_rate_only_tangent_is_not_the_zero_tangent():
     # the drift has had no slow time to accumulate. A kernel that applied the
     # rate as a constant offset would fail this and pass everything above.
     with forward_ad.dual_level():
-        cube = synthesize_fmcw_rows(
-            single,
-            forward_ad.make_dual(rate, torch.ones_like(rate)),
-            weight,
-            offsets,
-            SPEC,
-        )
+        cube = synthesize_fmcw_rows(single, forward_ad.make_dual(rate, torch.ones_like(rate)), weight, offsets, SPEC)
         first_chirp = forward_ad.unpack_dual(cube).tangent[0]
     assert float(first_chirp.abs().max()) == 0.0

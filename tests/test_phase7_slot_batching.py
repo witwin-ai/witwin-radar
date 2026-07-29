@@ -30,7 +30,6 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import refreshed_slow_time as refreshed  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
@@ -39,7 +38,7 @@ SPEED_OF_LIGHT_M_PER_S = 299792458.0
 #: the Channel geometry kernel, so two models of the same delay cannot agree
 #: more closely than a few of these no matter how exact the physics is. The
 #: plan records the same floor as Phase-6 deviation 3.
-FLOAT32_EPS = 2.0 ** -23
+FLOAT32_EPS = 2.0**-23
 
 
 @pytest.fixture(scope="module")
@@ -56,10 +55,7 @@ def _slot_times(spec):
     from witwin.radar.synthesis.assembly import tdm_slot_times_s
 
     return tdm_slot_times_s(
-        num_chirps=spec.num_chirps,
-        num_tx=spec.num_tx,
-        chirp_period_s=spec.chirp_period_s,
-        device="cuda",
+        num_chirps=spec.num_chirps, num_tx=spec.num_tx, chirp_period_s=spec.chirp_period_s, device="cuda"
     )
 
 
@@ -88,10 +84,7 @@ def test_batched_slots_equal_a_per_slot_loop(spike):
     sites = len(spike.site_ids)
     for slot in range(slots):
         one_in, one_out = spike.legs(stack[slot * sites : (slot + 1) * sites])
-        for batched, single, leg in (
-            (batched_in, one_in, "inbound"),
-            (batched_out, one_out, "outbound"),
-        ):
+        for batched, single, leg in ((batched_in, one_in, "inbound"), (batched_out, one_out, "outbound")):
             view = batched.slot(slot)
             assert torch.equal(view.delay_s, single.delay_s), (leg, slot)
             assert torch.equal(view.coefficient, single.coefficient), (leg, slot)
@@ -121,9 +114,7 @@ def test_pair_count_grows_linearly_not_quadratically(spike):
 
     for slots in (8, 64):
         times = [index * 1.0e-5 for index in range(slots)]
-        batched, _ = spike.slot_legs(
-            _stack(spike, (0.0, 1.0, 0.0), times), slot_count=slots
-        )
+        batched, _ = spike.slot_legs(_stack(spike, (0.0, 1.0, 0.0), times), slot_count=slots)
         assert batched.pair_count == slots * base_pairs
         assert batched.leg_count == slots * base_rows
         assert batched.pair_count != slots * slots * base_pairs
@@ -172,12 +163,10 @@ def test_a_slot_view_aliases_the_batched_storage(spike):
     for slot in range(slots):
         view = batched.slot(slot)
         assert view.delay_s.data_ptr() == (
-            batched.delay_s.data_ptr()
-            + slot * view.leg_count * batched.delay_s.element_size()
+            batched.delay_s.data_ptr() + slot * view.leg_count * batched.delay_s.element_size()
         )
         assert view.coefficient.data_ptr() == (
-            batched.coefficient.data_ptr()
-            + slot * view.leg_count * batched.coefficient.element_size()
+            batched.coefficient.data_ptr() + slot * view.leg_count * batched.coefficient.element_size()
         )
         assert view.slot_count == 1
 
@@ -187,19 +176,13 @@ def test_a_ragged_stack_is_refused_before_any_native_work(spike):
 
     stack = _stack(spike, (0.0, 0.0, 0.0), [0.0, 1.0e-4])
     transmitters = spike._stacked_ids(
-        spike.stacked([position for _, position in spike.transmitters], 2),
-        spike.transmitter_ids,
-        1.0,
+        spike.stacked([position for _, position in spike.transmitters], 2), spike.transmitter_ids, 1.0
     )
     sinks = spike._stacked_ids(stack, spike.site_ids, None)
     with pytest.raises(ValueError, match="not divisible by slot_count"):
-        spike.adapter.reevaluate_slots(
-            spike.inbound, transmitters, sinks, slot_count=3, ad_mode="none"
-        )
+        spike.adapter.reevaluate_slots(spike.inbound, transmitters, sinks, slot_count=3, ad_mode="none")
     with pytest.raises(ValueError, match="slot_count must be a positive int"):
-        spike.adapter.reevaluate_slots(
-            spike.inbound, transmitters, sinks, slot_count=0, ad_mode="none"
-        )
+        spike.adapter.reevaluate_slots(spike.inbound, transmitters, sinks, slot_count=0, ad_mode="none")
 
 
 def test_forward_duals_survive_the_slot_stack(spike, spec):
@@ -222,9 +205,7 @@ def test_forward_duals_survive_the_slot_stack(spike, spec):
     # perpendicular to its own line of sight. Both discriminants in one call:
     # a dead tangent shows up as a wrong P and a correct-looking Q.
     radial = base[0] / base[0].norm()
-    lateral = torch.tensor(
-        [-float(base[1][1]), float(base[1][0]), 0.0], device=base.device
-    )
+    lateral = torch.tensor([-float(base[1][1]), float(base[1][0]), 0.0], device=base.device)
     lateral = lateral / lateral.norm()
     velocity = torch.stack([speed * radial, speed * lateral])
 
@@ -262,42 +243,19 @@ def test_tdm_slot_indices_come_from_the_phase6_owner(spec):
     what stops a second slot table being introduced next to the first one.
     """
 
-    from witwin.radar.synthesis.assembly import (
-        pair_slot_index,
-        pair_tx_index,
-        tdm_slot_count,
-        tdm_slot_times_s,
-    )
+    from witwin.radar.synthesis.assembly import pair_slot_index, pair_tx_index, tdm_slot_count, tdm_slot_times_s
 
     num_tx = spec.num_tx
     num_rx = spec.num_rx
     pairs = num_tx * num_rx
     chirps = spec.num_chirps
-    transmitter = pair_tx_index(
-        num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device="cuda"
-    )
-    table = pair_slot_index(
-        num_chirps=chirps,
-        num_tx=num_tx,
-        num_rx=num_rx,
-        sensor_pair_count=pairs,
-        device="cuda",
-    )
-    expected = torch.stack(
-        [
-            chirp * num_tx + transmitter.to(torch.int64)
-            for chirp in range(chirps)
-        ]
-    )
+    transmitter = pair_tx_index(num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device="cuda")
+    table = pair_slot_index(num_chirps=chirps, num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device="cuda")
+    expected = torch.stack([chirp * num_tx + transmitter.to(torch.int64) for chirp in range(chirps)])
     assert torch.equal(table, expected)
     assert tdm_slot_count(num_chirps=chirps, num_tx=num_tx) == chirps * num_tx
 
-    times = tdm_slot_times_s(
-        num_chirps=chirps,
-        num_tx=num_tx,
-        chirp_period_s=spec.chirp_period_s,
-        device="cuda",
-    )
+    times = tdm_slot_times_s(num_chirps=chirps, num_tx=num_tx, chirp_period_s=spec.chirp_period_s, device="cuda")
     assert times.shape == (chirps * num_tx,)
     for slot in range(chirps * num_tx):
         assert float(times[slot]) == slot * spec.chirp_period_s
@@ -332,10 +290,7 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
     from witwin.radar.synthesis import synthesize_fmcw
 
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            base,
-            torch.tensor([list(velocity)] * base.shape[0], device=base.device),
-        )
+        dual = forward_ad.make_dual(base, torch.tensor([list(velocity)] * base.shape[0], device=base.device))
         composed, _, _ = spike.frame(dual, response, ad_mode="jvp")
         frozen_cube = synthesize_fmcw(to_synthesis(composed), spec)
         origin_delay = composed.total_delay_s.detach().double()
@@ -343,13 +298,9 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
 
     stack = drv.slot_site_stack(base, velocity, times)
     batched_in, batched_out = spike.slot_legs(stack, slot_count=slots)
-    frames = spike.slot_frames(
-        batched_in, batched_out, response, include_delay_rate=False
-    )
+    frames = spike.slot_frames(batched_in, batched_out, response, include_delay_rate=False)
     exact = torch.stack([frame.total_delay_s.double() for frame in frames])
-    predicted = origin_delay.reshape(1, -1) + rate.reshape(1, -1) * times.double().reshape(
-        -1, 1
-    )
+    predicted = origin_delay.reshape(1, -1) + rate.reshape(1, -1) * times.double().reshape(-1, 1)
 
     # The delay statement: the frozen extrapolation reproduces the exact
     # geometry to a few units in the last place of a float32 delay.
@@ -360,9 +311,7 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
     # The cube statement: normalised to the frame PEAK, not per cell. A per-cell
     # relative comparison is meaningless where eleven multipath rows nearly
     # cancel, and a null is not evidence about a slow-time model.
-    refreshed_cube = refreshed.refreshed_cube(
-        frames, spec, num_chirps=spec.num_chirps
-    )
+    refreshed_cube = refreshed.refreshed_cube(frames, spec, num_chirps=spec.num_chirps)
     assert refreshed_cube.shape == frozen_cube.shape
     peak = float(frozen_cube.abs().max())
     error = float((refreshed_cube - frozen_cube).abs().max())
@@ -383,12 +332,8 @@ def test_a_static_frame_is_bit_identical_in_both_modes(spike, spec):
 
     stack = drv.slot_site_stack(spike.site_tensor(), (0.0, 0.0, 0.0), times)
     batched_in, batched_out = spike.slot_legs(stack, slot_count=slots)
-    frames = spike.slot_frames(
-        batched_in, batched_out, response, include_delay_rate=False
-    )
-    refreshed_cube = refreshed.refreshed_cube(
-        frames, spec, num_chirps=spec.num_chirps
-    )
+    frames = spike.slot_frames(batched_in, batched_out, response, include_delay_rate=False)
+    refreshed_cube = refreshed.refreshed_cube(frames, spec, num_chirps=spec.num_chirps)
     assert torch.equal(refreshed_cube, frozen_cube)
 
 
@@ -416,23 +361,16 @@ def test_transverse_motion_defeats_the_frozen_first_order_model(spike, spec):
     response = drv.make_response()
 
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            base,
-            torch.tensor([list(velocity)] * base.shape[0], device=base.device),
-        )
+        dual = forward_ad.make_dual(base, torch.tensor([list(velocity)] * base.shape[0], device=base.device))
         composed, _, _ = spike.frame(dual, response, ad_mode="jvp")
         origin_delay = composed.total_delay_s.detach().double()
         rate = composed.delay_rate.detach().double()
 
     stack = drv.slot_site_stack(base, velocity, times)
     batched_in, batched_out = spike.slot_legs(stack, slot_count=slots)
-    frames = spike.slot_frames(
-        batched_in, batched_out, response, include_delay_rate=False
-    )
+    frames = spike.slot_frames(batched_in, batched_out, response, include_delay_rate=False)
     exact = torch.stack([frame.total_delay_s.double() for frame in frames])
-    predicted = origin_delay.reshape(1, -1) + rate.reshape(1, -1) * times.double().reshape(
-        -1, 1
-    )
+    predicted = origin_delay.reshape(1, -1) + rate.reshape(1, -1) * times.double().reshape(-1, 1)
     # Site P only. Site Q sits far enough off the boresight that this velocity
     # gives it a radial component OUTSIDE the array's unambiguous speed, and a
     # scenario that is already refused by the aliasing limit would not make the
@@ -459,34 +397,22 @@ def test_transverse_motion_defeats_the_frozen_first_order_model(spike, spec):
     # Nothing in the declared limits catches it. The radial speed implied by
     # the published rate is inside the aliasing bound.
     radial = float(rate.abs().max()) * SPEED_OF_LIGHT_M_PER_S / 2.0
-    assert radial < spec.max_unambiguous_speed_mps, (
-        radial,
-        spec.max_unambiguous_speed_mps,
-    )
+    assert radial < spec.max_unambiguous_speed_mps, (radial, spec.max_unambiguous_speed_mps)
 
 
 def test_double_doppler_is_still_refused(spike, spec):
     """A refreshed weight that also publishes a rate applies Doppler twice."""
 
-    from witwin.radar.synthesis.assembly import (
-        SlowTimeMode,
-        SynthesisPathBatch,
-        require_compatible,
-    )
+    from witwin.radar.synthesis.assembly import SlowTimeMode, SynthesisPathBatch, require_compatible
 
     base = spike.site_tensor()
     response = drv.make_response()
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            base, torch.tensor([[0.0, 4.0, 0.0]] * base.shape[0], device=base.device)
-        )
+        dual = forward_ad.make_dual(base, torch.tensor([[0.0, 4.0, 0.0]] * base.shape[0], device=base.device))
         composed, _, _ = spike.frame(dual, response, ad_mode="jvp")
 
     assert composed.delay_rate is not None
     with pytest.raises(ValueError, match="double-counted Doppler"):
         require_compatible(
-            SynthesisPathBatch.from_radar_paths(
-                composed, slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
-            ),
-            spec,
+            SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE), spec
         )

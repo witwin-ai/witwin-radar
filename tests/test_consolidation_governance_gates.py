@@ -6,7 +6,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,9 +54,7 @@ def test_architecture_gate_does_not_treat_plain_strings_as_edges(tmp_path: Path)
     gate = _load("check_architecture")
     _write(tmp_path / "owner.py", 'TOKEN = "witwin.radar.hidden"\n')
     edges, imports_channel = gate._edges(
-        tmp_path / "owner.py",
-        "witwin.radar.owner",
-        {"witwin.radar.owner", "witwin.radar.hidden"},
+        tmp_path / "owner.py", "witwin.radar.owner", {"witwin.radar.owner", "witwin.radar.hidden"}
     )
     assert edges == set()
     assert imports_channel is False
@@ -69,17 +66,11 @@ def test_no_compatibility_gate_finds_python_and_native_shims(tmp_path: Path) -> 
         tmp_path / "ci" / "public-api-manifest.json",
         {
             "modules": {
-                "witwin.radar": {
-                    "Radar": "witwin.radar.radar.Radar",
-                    "RadarConfig": "witwin.radar.radar.RadarConfig",
-                }
+                "witwin.radar": {"Radar": "witwin.radar.radar.Radar", "RadarConfig": "witwin.radar.radar.RadarConfig"}
             }
         },
     )
-    _write(
-        tmp_path / "witwin" / "radar" / "__init__.py",
-        "__all__ = ['Radar', 'RadarConfig']\n",
-    )
+    _write(tmp_path / "witwin" / "radar" / "__init__.py", "__all__ = ['Radar', 'RadarConfig']\n")
     assert gate.audit(tmp_path) == []
 
     _write(
@@ -91,33 +82,20 @@ def test_no_compatibility_gate_finds_python_and_native_shims(tmp_path: Path) -> 
         "    raise AttributeError(name)\n",
     )
     root_errors = gate.audit(tmp_path)
-    assert any(
-        "retired root API remains bound outside __all__: Box" in error
-        for error in root_errors
-    )
-    assert any(
-        "root compatibility proxy remains bound: _LAZY" in error
-        for error in root_errors
-    )
-    assert any(
-        "root compatibility proxy remains bound: __getattr__" in error
-        for error in root_errors
-    )
+    assert any("retired root API remains bound outside __all__: Box" in error for error in root_errors)
+    assert any("root compatibility proxy remains bound: _LAZY" in error for error in root_errors)
+    assert any("root compatibility proxy remains bound: __getattr__" in error for error in root_errors)
 
-    _write(
-        tmp_path / "witwin" / "radar" / "__init__.py",
-        "__all__ = ['Radar', 'RadarConfig']\n",
-    )
+    _write(tmp_path / "witwin" / "radar" / "__init__.py", "__all__ = ['Radar', 'RadarConfig']\n")
     _write(tmp_path / "witwin" / "radar" / "sigproc" / "__init__.py", "")
     _write(
         tmp_path / "witwin" / "radar" / "cuda" / "sensor.cu",
-        "bool legacy_real_polarization;\n"
-        "int spreading_mode;\n"
-        "float *normals;\n",
+        "bool legacy_real_polarization;\nint spreading_mode;\nfloat *normals;\n",
     )
     errors = gate.audit(tmp_path)
     assert any("retired path exists" in error for error in errors)
     assert sum("retired native compatibility token" in error for error in errors) == 3
+
 
 def test_documentation_gate_finds_retired_and_missing_paths(tmp_path: Path) -> None:
     gate = _load("check_documentation_surface")
@@ -129,10 +107,7 @@ def test_documentation_gate_finds_retired_and_missing_paths(tmp_path: Path) -> N
             "retired_living_tokens": ["witwin.radar.sigproc"],
         },
     )
-    _write(
-        tmp_path / "README.md",
-        "Use witwin.radar.sigproc and `witwin/radar/missing.py`.\n",
-    )
+    _write(tmp_path / "README.md", "Use witwin.radar.sigproc and `witwin/radar/missing.py`.\n")
     errors = gate.audit(tmp_path)
     assert any("retired current token" in error for error in errors)
     assert any("missing current path" in error for error in errors)
@@ -140,32 +115,19 @@ def test_documentation_gate_finds_retired_and_missing_paths(tmp_path: Path) -> N
 
 def test_workflow_reference_gate_finds_a_missing_script(tmp_path: Path) -> None:
     gate = _load("check_workflow_references")
-    _write(
-        tmp_path / ".github" / "workflows" / "quality.yml",
-        "run: python tools/does_not_exist.py\n",
-    )
-    assert gate.audit(tmp_path) == [
-        ".github/workflows/quality.yml invokes missing script tools/does_not_exist.py"
-    ]
+    _write(tmp_path / ".github" / "workflows" / "quality.yml", "run: python tools/does_not_exist.py\n")
+    assert gate.audit(tmp_path) == [".github/workflows/quality.yml invokes missing script tools/does_not_exist.py"]
 
-    _write(
-        tmp_path / ".github" / "workflows" / "quality.yml",
-        "# run: python tools/does_not_exist.py\n",
-    )
+    _write(tmp_path / ".github" / "workflows" / "quality.yml", "# run: python tools/does_not_exist.py\n")
     assert gate.audit(tmp_path) == []
 
 
-def test_required_channel_gate_checks_install_fingerprint_and_skip_budget(
-    tmp_path: Path,
-) -> None:
+def test_required_channel_gate_checks_install_fingerprint_and_skip_budget(tmp_path: Path) -> None:
     gate = _load("check_required_channel_coverage")
     relative = ".github/workflows/quality.yml"
     _json(
         tmp_path / "ci" / "required-integration-tests.json",
-        {
-            "required_workflows": [relative],
-            "allowed_channel_skips": 0,
-        },
+        {"required_workflows": [relative], "allowed_channel_skips": 0},
     )
     _write(tmp_path / relative, "run: pip install .[dev]\n")
     errors = gate.audit(tmp_path)

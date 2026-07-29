@@ -24,17 +24,15 @@ the spec against it at construction turns six documented hazards into four
 impossible states, which is the difference between a rule and a comment.
 """
 
-
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
 
 import torch
 
+from ..paths import JOIN_MODES, JoinMode, RadarComponentIndex, RadarPathBatch, RadarPathTopology
 from ..policy import require_host_floats
-from ..paths import JOIN_MODES, JoinMode, RadarPathBatch, RadarPathTopology
-
 
 #: Why no waveform spec scalar is differentiable, stated once and quoted by all
 #: three specs plus the Dirichlet plan.
@@ -82,6 +80,7 @@ CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
 #: one here is what lets a result carry its convention as data instead of a
 #: reader inferring it from the waveform's name.
 BEAT_PHASOR = "conj(exp(-j*k*d))"
+
 
 def require_single_carrier_home(carrier_hz: float, carrier_rate_hz: float) -> None:
     """Refuse a spec that names the absolute carrier in both of its homes.
@@ -213,19 +212,12 @@ class FmcwSpec:
         if self.num_rx < 1:
             raise ValueError("num_rx must be positive")
         if self.output_domain not in FMCW_OUTPUT_DOMAINS:
-            raise ValueError(
-                f"output_domain must be one of {FMCW_OUTPUT_DOMAINS}, got "
-                f"{self.output_domain!r}"
-            )
+            raise ValueError(f"output_domain must be one of {FMCW_OUTPUT_DOMAINS}, got {self.output_domain!r}")
         require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
 
     @classmethod
     def from_radar_config(
-        cls,
-        config,
-        *,
-        carrier_hz: float = 0.0,
-        output_domain: str = FMCW_OUTPUT_SPECTRUM,
+        cls, config, *, carrier_hz: float = 0.0, output_domain: str = FMCW_OUTPUT_SPECTRUM
     ) -> "FmcwSpec":
         """Convert a :class:`witwin.radar.RadarConfig` into SI units.
 
@@ -246,8 +238,7 @@ class FmcwSpec:
             num_samples=int(config.adc_samples),
             num_chirps=int(config.chirp_per_frame),
             sample_period_s=1.0 / (float(config.sample_rate) * 1e3),
-            chirp_period_s=(float(config.idle_time) + float(config.ramp_end_time))
-            * 1e-6,
+            chirp_period_s=(float(config.idle_time) + float(config.ramp_end_time)) * 1e-6,
             slope_hz_per_s=float(config.slope) * 1e12,
             t_start_s=float(config.adc_start_time) * 1e-6,
             reference_frequency_hz=float(config.fc),
@@ -308,11 +299,7 @@ class FmcwSpec:
     def beat_bin(self, round_trip_delay_s: float) -> float:
         """Fractional FFT bin of the beat tone over ``num_samples``."""
 
-        return (
-            self.beat_frequency_hz(round_trip_delay_s)
-            * self.num_samples
-            / self.sample_rate_hz
-        )
+        return self.beat_frequency_hz(round_trip_delay_s) * self.num_samples / self.sample_rate_hz
 
 
 #: The only supported OFDM subcarrier origin: ``f_n = f_ref + n * df`` with
@@ -539,9 +526,7 @@ class OfdmSpec:
         as an approaching one.
         """
 
-        return SPEED_OF_LIGHT_M_PER_S / (
-            4.0 * self.reference_frequency_hz * self.symbol_period_s
-        )
+        return SPEED_OF_LIGHT_M_PER_S / (4.0 * self.reference_frequency_hz * self.symbol_period_s)
 
     def subcarrier_frequency_hz(self, subcarrier: int) -> float:
         """``f_n = f_ref + n * df`` under the pinned origin."""
@@ -785,10 +770,7 @@ class PulsedSpec:
         reported rather than silently corrected.
         """
 
-        return (
-            abs(self.pulse_sample_count * self.sample_period_s - self.pulse_width_s)
-            <= 1e-12 * self.pulse_width_s
-        )
+        return abs(self.pulse_sample_count * self.sample_period_s - self.pulse_width_s) <= 1e-12 * self.pulse_width_s
 
     @property
     def range_gate_end_s(self) -> float:
@@ -833,9 +815,7 @@ class PulsedSpec:
         a receding target reads as an approaching one.
         """
 
-        return SPEED_OF_LIGHT_M_PER_S / (
-            4.0 * self.reference_frequency_hz * self.pri_s
-        )
+        return SPEED_OF_LIGHT_M_PER_S / (4.0 * self.reference_frequency_hz * self.pri_s)
 
     @property
     def coherent_processing_interval_s(self) -> float:
@@ -875,9 +855,7 @@ class PulsedSpec:
             return 0.0
         return self.bandwidth_hz * float(envelope_time_s) / self.pulse_width_s
 
-    def slow_time_phase_step_rad(
-        self, delay_rate: float, envelope_time_s: float = 0.0
-    ) -> float:
+    def slow_time_phase_step_rad(self, delay_rate: float, envelope_time_s: float = 0.0) -> float:
         """Phase advance per pulse at a fixed fast-time sample, in radians.
 
         ``-2 pi tau_rate T_pri (f_c + f_r + B u / T_p)``. The first two terms are
@@ -894,11 +872,7 @@ class PulsedSpec:
             -math.tau
             * float(delay_rate)
             * self.pri_s
-            * (
-                self.carrier_hz
-                + self.carrier_rate_hz
-                + self.instantaneous_pulse_frequency_hz(envelope_time_s)
-            )
+            * (self.carrier_hz + self.carrier_rate_hz + self.instantaneous_pulse_frequency_hz(envelope_time_s))
         )
 
     def doppler_frequency_hz(self, delay_rate: float) -> float:
@@ -988,12 +962,7 @@ class WaveformSpecProtocol(Protocol):
 
 
 def _require_tensor(
-    name: str,
-    value: object,
-    *,
-    dtype: torch.dtype,
-    shape: tuple[int, ...],
-    device: torch.device,
+    name: str, value: object, *, dtype: torch.dtype, shape: tuple[int, ...], device: torch.device
 ) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
@@ -1008,8 +977,7 @@ def _require_tensor(
         )
     if value.device != device:
         raise ValueError(
-            f"{name} is on {value.device} but the batch is on {device}; a "
-            "synthesis batch is single-device by contract"
+            f"{name} is on {value.device} but the batch is on {device}; a synthesis batch is single-device by contract"
         )
     return value
 
@@ -1085,15 +1053,9 @@ class SynthesisPathBatch:
 
     def __post_init__(self) -> None:
         if self.join_mode not in JOIN_MODES:
-            raise ValueError(
-                f"join_mode must be one of {sorted(JOIN_MODES)}, got "
-                f"{self.join_mode!r}"
-            )
+            raise ValueError(f"join_mode must be one of {sorted(JOIN_MODES)}, got {self.join_mode!r}")
         if not isinstance(self.slow_time_mode, SlowTimeMode):
-            raise TypeError(
-                "slow_time_mode must be a SlowTimeMode member, got "
-                f"{self.slow_time_mode!r}"
-            )
+            raise TypeError(f"slow_time_mode must be a SlowTimeMode member, got {self.slow_time_mode!r}")
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
             raise ValueError("sensor_pair_count must be a positive int")
         if type(self.path_count) is not int or self.path_count < 0:
@@ -1106,10 +1068,7 @@ class SynthesisPathBatch:
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
-        if (
-            type(self.reference_frequency_hz) is not float
-            or not self.reference_frequency_hz > 0.0
-        ):
+        if type(self.reference_frequency_hz) is not float or not self.reference_frequency_hz > 0.0:
             raise ValueError(
                 "reference_frequency_hz must be a positive float; it is the "
                 "frequency the weight was evaluated at, not an optional label"
@@ -1117,50 +1076,18 @@ class SynthesisPathBatch:
 
         device = self.total_delay_s.device
         rows = (self.path_count,)
+        _require_tensor("total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows, device=device)
+        _require_tensor("sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows, device=device)
         _require_tensor(
-            "total_delay_s",
-            self.total_delay_s,
-            dtype=torch.float32,
-            shape=rows,
-            device=device,
+            "pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.sensor_pair_count + 1,), device=device
         )
         _require_tensor(
-            "sensor_pair_index",
-            self.sensor_pair_index,
-            dtype=torch.int64,
-            shape=rows,
-            device=device,
-        )
-        _require_tensor(
-            "pair_offsets",
-            self.pair_offsets,
-            dtype=torch.int64,
-            shape=(self.sensor_pair_count + 1,),
-            device=device,
-        )
-        _require_tensor(
-            "complex_transfer_ref",
-            self.complex_transfer_ref,
-            dtype=torch.complex64,
-            shape=rows,
-            device=device,
+            "complex_transfer_ref", self.complex_transfer_ref, dtype=torch.complex64, shape=rows, device=device
         )
         if self.delay_rate is not None:
-            _require_tensor(
-                "delay_rate",
-                self.delay_rate,
-                dtype=torch.float32,
-                shape=rows,
-                device=device,
-            )
+            _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows, device=device)
         if self.row_valid is not None:
-            _require_tensor(
-                "row_valid",
-                self.row_valid,
-                dtype=torch.bool,
-                shape=rows,
-                device=device,
-            )
+            _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows, device=device)
         if (self.frequency_response is None) != (self.frequency_offsets_hz is None):
             raise ValueError(
                 "frequency_response and frequency_offsets_hz are one statement "
@@ -1172,18 +1099,10 @@ class SynthesisPathBatch:
                 raise ValueError("frequency_offsets_hz must have shape (F,)")
             bands = (self.path_count, int(self.frequency_offsets_hz.shape[0]))
             _require_tensor(
-                "frequency_response",
-                self.frequency_response,
-                dtype=torch.complex64,
-                shape=bands,
-                device=device,
+                "frequency_response", self.frequency_response, dtype=torch.complex64, shape=bands, device=device
             )
             _require_tensor(
-                "frequency_offsets_hz",
-                self.frequency_offsets_hz,
-                dtype=torch.float32,
-                shape=(bands[1],),
-                device=device,
+                "frequency_offsets_hz", self.frequency_offsets_hz, dtype=torch.float32, shape=(bands[1],), device=device
             )
         if self.topology.row_count != self.path_count:
             raise ValueError("topology must have exactly path_count rows")
@@ -1193,12 +1112,7 @@ class SynthesisPathBatch:
         return self.total_delay_s.device
 
     @classmethod
-    def from_radar_paths(
-        cls,
-        paths: RadarPathBatch,
-        *,
-        slow_time_mode: SlowTimeMode,
-    ) -> "SynthesisPathBatch":
+    def from_radar_paths(cls, paths: RadarPathBatch, *, slow_time_mode: SlowTimeMode) -> "SynthesisPathBatch":
         """Wrap a composed round-trip batch, zero-copy, with Channel provenance.
 
         Every tensor passes through by reference. Nothing is cloned, made
@@ -1232,9 +1146,7 @@ class SynthesisPathBatch:
         """
 
         if not isinstance(paths, RadarPathBatch):
-            raise TypeError(
-                f"from_radar_paths needs a RadarPathBatch, got {type(paths).__name__}"
-            )
+            raise TypeError(f"from_radar_paths needs a RadarPathBatch, got {type(paths).__name__}")
         return cls(
             sensor_pair_count=paths.sensor_pair_count,
             path_count=paths.path_count,
@@ -1253,10 +1165,9 @@ class SynthesisPathBatch:
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
             slow_time_mode=slow_time_mode,
-            weight_includes_antenna_pattern=bool(
-                paths.weight_includes_antenna_pattern
-            ),
+            weight_includes_antenna_pattern=bool(paths.weight_includes_antenna_pattern),
         )
+
 
 #: The axis names each waveform's rank-3 product is indexed by.
 FMCW_BEAT_AXES = ("chirp", "sensor_pair", "sample")
@@ -1280,26 +1191,16 @@ class SynthesisResult:
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axes):
             raise ValueError(
-                f"a {self.kind} cube has {len(self.axes)} axes {self.axes}, got "
-                f"shape {tuple(self.cube.shape)}"
+                f"a {self.kind} cube has {len(self.axes)} axes {self.axes}, got shape {tuple(self.cube.shape)}"
             )
-        if self.axes[-1] != {
-            "spectrum": "range_bin",
-            "beat": "sample",
-            "cfr": "subcarrier",
-            "time": "sample",
-        }.get(self.output_domain):
-            raise ValueError(
-                f"output_domain={self.output_domain!r} disagrees with axes {self.axes}"
-            )
+        if self.axes[-1] != {"spectrum": "range_bin", "beat": "sample", "cfr": "subcarrier", "time": "sample"}.get(
+            self.output_domain
+        ):
+            raise ValueError(f"output_domain={self.output_domain!r} disagrees with axes {self.axes}")
 
     @classmethod
     def from_fmcw(cls, cube: torch.Tensor, spec: FmcwSpec) -> "SynthesisResult":
-        axes = (
-            FMCW_SPECTRUM_AXES
-            if spec.output_domain == FMCW_OUTPUT_SPECTRUM
-            else FMCW_BEAT_AXES
-        )
+        axes = FMCW_SPECTRUM_AXES if spec.output_domain == FMCW_OUTPUT_SPECTRUM else FMCW_BEAT_AXES
         return cls(
             cube=cube,
             kind="fmcw",
@@ -1323,9 +1224,7 @@ class SynthesisResult:
         )
 
     @classmethod
-    def from_pulsed(
-        cls, cube: torch.Tensor, spec: PulsedSpec
-    ) -> "SynthesisResult":
+    def from_pulsed(cls, cube: torch.Tensor, spec: PulsedSpec) -> "SynthesisResult":
         return cls(
             cube=cube,
             kind="pulsed",
@@ -1335,6 +1234,7 @@ class SynthesisResult:
             reference_frequency_hz=float(spec.reference_frequency_hz),
             output_domain="time",
         )
+
 
 def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) -> None:
     """Refuse any weight/spec pair that would count a factor twice.
@@ -1361,15 +1261,8 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
     """
 
     if not isinstance(batch, SynthesisPathBatch):
-        raise TypeError(
-            f"require_compatible needs a SynthesisPathBatch, got {type(batch).__name__}"
-        )
-    for attribute in (
-        "carrier_hz",
-        "carrier_rate_hz",
-        "reference_frequency_hz",
-        "applies_spreading",
-    ):
+        raise TypeError(f"require_compatible needs a SynthesisPathBatch, got {type(batch).__name__}")
+    for attribute in ("carrier_hz", "carrier_rate_hz", "reference_frequency_hz", "applies_spreading"):
         if not hasattr(spec, attribute):
             raise TypeError(
                 f"{type(spec).__name__} does not declare {attribute!r}, so it "
@@ -1392,11 +1285,7 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
         )
 
     # R2 - the mirror image: nobody owns the absolute carrier at all.
-    if (
-        not batch.weight_includes_reference_phase
-        and carrier_hz == 0.0
-        and carrier_rate_hz == 0.0
-    ):
+    if not batch.weight_includes_reference_phase and carrier_hz == 0.0 and carrier_rate_hz == 0.0:
         raise ValueError(
             "missing carrier phase: this weight carries no reference-frequency "
             "phase, and neither carrier_hz nor carrier_rate_hz is set, so the "
@@ -1484,9 +1373,7 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
             )
 
 
-def require_ofdm_compatible(
-    batch: SynthesisPathBatch, spec: OfdmSpec
-) -> None:
+def require_ofdm_compatible(batch: SynthesisPathBatch, spec: OfdmSpec) -> None:
     """The shared provenance rules, plus OFDM's cyclic-prefix contract.
 
     Called by :func:`~witwin.radar.synthesis.ofdm.synthesize_ofdm`
@@ -1525,15 +1412,9 @@ def require_ofdm_compatible(
     """
 
     if not isinstance(spec, OfdmSpec):
-        raise TypeError(
-            f"require_ofdm_compatible needs an OfdmSpec, got "
-            f"{type(spec).__name__}"
-        )
+        raise TypeError(f"require_ofdm_compatible needs an OfdmSpec, got {type(spec).__name__}")
     require_compatible(batch, spec)
-    if (
-        batch.frequency_response is not None
-        and int(batch.frequency_response.shape[1]) != spec.num_subcarriers
-    ):
+    if batch.frequency_response is not None and int(batch.frequency_response.shape[1]) != spec.num_subcarriers:
         raise ValueError(
             f"the batch carries a {int(batch.frequency_response.shape[1])}-column "
             f"wideband response but this spec declares "
@@ -1557,9 +1438,7 @@ def require_ofdm_compatible(
         )
 
 
-def require_pulsed_compatible(
-    batch: SynthesisPathBatch, spec: PulsedSpec
-) -> None:
+def require_pulsed_compatible(batch: SynthesisPathBatch, spec: PulsedSpec) -> None:
     """The shared provenance rules, plus the pulsed timing and migration bounds.
 
     Called by :func:`~witwin.radar.synthesis.pulsed.synthesize_pulsed`
@@ -1586,10 +1465,7 @@ def require_pulsed_compatible(
     """
 
     if not isinstance(spec, PulsedSpec):
-        raise TypeError(
-            f"require_pulsed_compatible needs a PulsedSpec, got "
-            f"{type(spec).__name__}"
-        )
+        raise TypeError(f"require_pulsed_compatible needs a PulsedSpec, got {type(spec).__name__}")
     require_compatible(batch, spec)
     if spec.pulse_width_s >= spec.pri_s:
         raise ValueError(
@@ -1617,7 +1493,6 @@ def require_pulsed_compatible(
             "processing interval, narrow the velocity window, or widen the range "
             "cell - there is no clamped or reduced-accuracy mode"
         )
-
 
 
 """Structural packing between the synthesis pair axis and the sigproc array.
@@ -1651,9 +1526,6 @@ TDM slot each pair sits in. One convention, two consumers, no second copy.
 """
 
 
-import torch
-
-
 #: The composed pair numbering, stated once. Quoted by the tests that pin it
 #: against ``witwin.radar.paths.sink_major_rank``.
 PAIR_RANK_LAYOUT = "sink_major: pair = rx_rank * num_tx + tx_rank"
@@ -1662,9 +1534,7 @@ PAIR_RANK_LAYOUT = "sink_major: pair = rx_rank * num_tx + tx_rank"
 FRAME_CUBE_AXES = ("tx", "rx", "chirp", "sample")
 
 
-def segment_of_each_row(
-    pair_offsets: torch.Tensor, path_count: int
-) -> torch.Tensor:
+def segment_of_each_row(pair_offsets: torch.Tensor, path_count: int) -> torch.Tensor:
     """Map each compact row to its sensor-pair segment, as ``int64[K]``.
 
     The inverse of the CSR partition: ``pair_offsets`` says where each segment
@@ -1694,13 +1564,7 @@ def _require_array(num_tx: int, num_rx: int) -> int:
     return num_tx * num_rx
 
 
-def pair_tx_index(
-    *,
-    num_tx: int,
-    num_rx: int,
-    sensor_pair_count: int,
-    device: torch.device | str,
-) -> torch.Tensor:
+def pair_tx_index(*, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str) -> torch.Tensor:
     """Which transmitter drives each sensor pair, as ``int32[pair_count]``.
 
     Under :data:`PAIR_RANK_LAYOUT` the transmitter rank is ``pair % num_tx``,
@@ -1725,13 +1589,7 @@ def pair_tx_index(
     return torch.remainder(ranks, num_tx)
 
 
-def pair_rx_index(
-    *,
-    num_tx: int,
-    num_rx: int,
-    sensor_pair_count: int,
-    device: torch.device | str,
-) -> torch.Tensor:
+def pair_rx_index(*, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str) -> torch.Tensor:
     """Which receiver owns each sensor pair, as ``int32[pair_count]``.
 
     The companion of :func:`pair_tx_index` under the same numbering. Nothing in
@@ -1768,12 +1626,7 @@ def tdm_slot_count(*, num_chirps: int, num_tx: int) -> int:
 
 
 def pair_slot_index(
-    *,
-    num_chirps: int,
-    num_tx: int,
-    num_rx: int,
-    sensor_pair_count: int,
-    device: torch.device | str,
+    *, num_chirps: int, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str
 ) -> torch.Tensor:
     """Which TDM slot each ``(chirp, sensor pair)`` sits in, ``int64[C, P]``.
 
@@ -1790,18 +1643,13 @@ def pair_slot_index(
     """
 
     slots = tdm_slot_count(num_chirps=num_chirps, num_tx=num_tx)
-    transmitter = pair_tx_index(
-        num_tx=num_tx,
-        num_rx=num_rx,
-        sensor_pair_count=sensor_pair_count,
-        device=device,
-    ).to(torch.int64)
+    transmitter = pair_tx_index(num_tx=num_tx, num_rx=num_rx, sensor_pair_count=sensor_pair_count, device=device).to(
+        torch.int64
+    )
     chirp = torch.arange(num_chirps, device=device, dtype=torch.int64)
     index = chirp.mul(num_tx).reshape(-1, 1) + transmitter.reshape(1, -1)
     if int(index.max()) >= slots:
-        raise ValueError(
-            f"slot index {int(index.max())} escapes the {slots}-slot frame"
-        )
+        raise ValueError(f"slot index {int(index.max())} escapes the {slots}-slot frame")
     return index
 
 
@@ -1829,9 +1677,7 @@ def tdm_slot_times_s(
     return torch.arange(slots, device=device, dtype=dtype).mul(period)
 
 
-def assemble_frame_cube(
-    cube: torch.Tensor, *, num_tx: int, num_rx: int
-) -> torch.Tensor:
+def assemble_frame_cube(cube: torch.Tensor, *, num_tx: int, num_rx: int) -> torch.Tensor:
     """``[chirp, pair, sample]`` -> ``[TX, RX, chirp, sample]``.
 
     Pure structural packing: one permute to bring the pair axis to the front,
@@ -1848,24 +1694,14 @@ def assemble_frame_cube(
 
     expected = _require_array(num_tx, num_rx)
     if cube.dim() != 3:
-        raise ValueError(
-            "a synthesis cube must have shape (chirps, sensor_pairs, samples), "
-            f"got {tuple(cube.shape)}"
-        )
+        raise ValueError(f"a synthesis cube must have shape (chirps, sensor_pairs, samples), got {tuple(cube.shape)}")
     if cube.shape[1] != expected:
         raise ValueError(
-            f"this cube spans {cube.shape[1]} sensor pairs but the array is "
-            f"{num_tx} x {num_rx} = {expected} pairs"
+            f"this cube spans {cube.shape[1]} sensor pairs but the array is {num_tx} x {num_rx} = {expected} pairs"
         )
     num_chirps = int(cube.shape[0])
     num_samples = int(cube.shape[2])
-    return (
-        cube.permute(1, 0, 2)
-        .reshape(num_rx, num_tx, num_chirps, num_samples)
-        .permute(1, 0, 2, 3)
-        .contiguous()
-    )
-
+    return cube.permute(1, 0, 2).reshape(num_rx, num_tx, num_chirps, num_samples).permute(1, 0, 2, 3).contiguous()
 
 
 """Export one scene component from a batch, without touching row identity.
@@ -1900,16 +1736,7 @@ components in POWER is a post-synthesis operation and lives in
 """
 
 
-from dataclasses import replace
-
-import torch
-
-from ..paths import RadarComponentIndex
-
-
-def select_component(
-    batch: SynthesisPathBatch, index: RadarComponentIndex, name: str
-) -> SynthesisPathBatch:
+def select_component(batch: SynthesisPathBatch, index: RadarComponentIndex, name: str) -> SynthesisPathBatch:
     """The same batch with every row outside ``name`` made inert.
 
     ``index`` must have been built from the batch's own topology. That is
@@ -1924,14 +1751,9 @@ def select_component(
     """
 
     if not isinstance(batch, SynthesisPathBatch):
-        raise TypeError(
-            f"select_component needs a SynthesisPathBatch, got {type(batch).__name__}"
-        )
+        raise TypeError(f"select_component needs a SynthesisPathBatch, got {type(batch).__name__}")
     if not isinstance(index, RadarComponentIndex):
-        raise TypeError(
-            "select_component needs a RadarComponentIndex, got "
-            f"{type(index).__name__}"
-        )
+        raise TypeError(f"select_component needs a RadarComponentIndex, got {type(index).__name__}")
     if index.topology is not batch.topology:
         raise ValueError(
             "the component index was built from a different topology object "
@@ -1941,16 +1763,10 @@ def select_component(
             "wrong scene"
         )
     mask = index.mask(name)
-    weight = torch.where(
-        mask, batch.complex_transfer_ref, torch.zeros_like(batch.complex_transfer_ref)
-    )
+    weight = torch.where(mask, batch.complex_transfer_ref, torch.zeros_like(batch.complex_transfer_ref))
     band = (
         None
         if batch.frequency_response is None
-        else torch.where(
-            mask.unsqueeze(1),
-            batch.frequency_response,
-            torch.zeros_like(batch.frequency_response),
-        )
+        else torch.where(mask.unsqueeze(1), batch.frequency_response, torch.zeros_like(batch.frequency_response))
     )
     return replace(batch, complex_transfer_ref=weight, frequency_response=band)

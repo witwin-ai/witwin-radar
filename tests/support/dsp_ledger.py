@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import torch
 
-
 #: The same four tensor methods the Phase-6 ledger watches. Each moves a device
 #: value to the host, which is a synchronization whether or not it is written as
 #: one.
@@ -37,14 +36,7 @@ HOST_OBSERVERS = ("item", "cpu", "tolist", "numpy")
 #: frozen-surface test asserts this tuple against the source; here it is the set
 #: that gets wrapped, so a call to an unlisted transform would go UNCOUNTED and
 #: the frozen-surface test is what catches it.
-DSP_OPERATORS = (
-    "fft",
-    "ifft",
-    "fft2",
-    "fftshift",
-    "ifftshift",
-    "fftfreq",
-)
+DSP_OPERATORS = ("fft", "ifft", "fft2", "fftshift", "ifftshift", "fftfreq")
 
 #: Calls whose OUTPUT SHAPE depends on device data. Each one must read a count
 #: back to the host before it can allocate, so each is a synchronization that
@@ -64,9 +56,7 @@ class DspLedger:
 
     def __init__(self, monkeypatch=None, operators=DSP_OPERATORS) -> None:
         self.launches = dict.fromkeys(operators, 0)
-        self.host = dict.fromkeys(
-            (*HOST_OBSERVERS, "synchronize", *IMPLICIT_SYNCHRONIZERS), 0
-        )
+        self.host = dict.fromkeys((*HOST_OBSERVERS, "synchronize", *IMPLICIT_SYNCHRONIZERS), 0)
         self._monkeypatch = monkeypatch
         self._restore: list[tuple[object, str, object]] = []
         if monkeypatch is not None:
@@ -93,9 +83,7 @@ class DspLedger:
         for name in HOST_OBSERVERS:
             original_method = getattr(torch.Tensor, name)
 
-            def observing(
-                tensor, *args, _name=name, _original=original_method, **kwargs
-            ):
+            def observing(tensor, *args, _name=name, _original=original_method, **kwargs):
                 self.host[_name] += 1
                 return _original(tensor, *args, **kwargs)
 
@@ -118,7 +106,7 @@ class DspLedger:
 
     # -- context-manager form ---------------------------------------------
 
-    def __enter__(self) -> "DspLedger":
+    def __enter__(self) -> DspLedger:
         if self._monkeypatch is None and not self._restore:
             self._install()
         return self
@@ -146,16 +134,7 @@ class DspLedger:
     def live(self) -> dict[str, int]:
         """Only the non-zero counters, for a readable report line."""
 
-        return {
-            name: value
-            for name, value in (*self.launches.items(), *self.host.items())
-            if value
-        }
+        return {name: value for name, value in (*self.launches.items(), *self.host.items()) if value}
 
 
-__all__ = [
-    "DSP_OPERATORS",
-    "HOST_OBSERVERS",
-    "IMPLICIT_SYNCHRONIZERS",
-    "DspLedger",
-]
+__all__ = ["DSP_OPERATORS", "HOST_OBSERVERS", "IMPLICIT_SYNCHRONIZERS", "DspLedger"]

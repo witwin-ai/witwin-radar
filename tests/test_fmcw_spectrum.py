@@ -31,11 +31,7 @@ def _spec() -> FmcwSpec:
 def _inputs(*, requires_grad: bool = False):
     tau = torch.tensor([1.7e-8, 2.4e-8, 3.1e-8], device="cuda")
     rate = torch.tensor([1.2e-9, -0.7e-9, 0.4e-9], device="cuda")
-    weight = torch.tensor(
-        [0.6 - 0.3j, -0.2 + 0.45j, 0.15 + 0.8j],
-        dtype=torch.complex64,
-        device="cuda",
-    )
+    weight = torch.tensor([0.6 - 0.3j, -0.2 + 0.45j, 0.15 + 0.8j], dtype=torch.complex64, device="cuda")
     if requires_grad:
         tau.requires_grad_(True)
         rate.requires_grad_(True)
@@ -47,9 +43,7 @@ def _inputs(*, requires_grad: bool = False):
 
 def _run(spec, values):
     tau, rate, weight, offsets, tx = values
-    return synthesize_fmcw_rows(
-        tau, rate, weight, offsets, spec, segment_tx_index=tx
-    )
+    return synthesize_fmcw_rows(tau, rate, weight, offsets, spec, segment_tx_index=tx)
 
 
 def test_spectrum_is_the_default_domain():
@@ -89,25 +83,15 @@ def test_spectrum_jvp_equals_fft_of_beat_jvp():
     tangents = (
         torch.tensor([0.4e-10, -0.3e-10, 0.2e-10], device="cuda"),
         torch.tensor([0.7e-10, 0.2e-10, -0.5e-10], device="cuda"),
-        torch.tensor(
-            [0.1 + 0.2j, -0.3 + 0.05j, 0.2 - 0.1j],
-            dtype=torch.complex64,
-            device="cuda",
-        ),
+        torch.tensor([0.1 + 0.2j, -0.3 + 0.05j, 0.2 - 0.1j], dtype=torch.complex64, device="cuda"),
     )
 
     def tangent(spec):
         with forward_ad.dual_level():
-            duals = tuple(
-                forward_ad.make_dual(primal, tan)
-                for primal, tan in zip(values[:3], tangents, strict=True)
-            )
+            duals = tuple(forward_ad.make_dual(primal, tan) for primal, tan in zip(values[:3], tangents, strict=True))
             output = _run(spec, (*duals, *values[3:]))
             return forward_ad.unpack_dual(output).tangent
 
     direct = tangent(_spec())
     beat = tangent(replace(_spec(), output_domain="beat"))
-    torch.testing.assert_close(
-        direct, torch.fft.fft(beat, dim=-1, norm="forward"),
-        rtol=8e-4, atol=8e-4,
-    )
+    torch.testing.assert_close(direct, torch.fft.fft(beat, dim=-1, norm="forward"), rtol=8e-4, atol=8e-4)

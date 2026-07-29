@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import pytest
 import torch
-
-from witwin.radar.paths import TwoWayComposer
-
 from reference.two_way_torch import PerSiteResponse, join_reference  # noqa: E402
 from support import join_fixture as fx  # noqa: E402
 
+from witwin.radar.paths import TwoWayComposer
 
 pytestmark = pytest.mark.gpu
 
@@ -59,16 +57,10 @@ def _frame(composer, *, valid=None, rates=True, seed=(11, 12)):
     tau_out, rate_out, c_out = fx.payload(rows_out, seed=seed[1])
     valid_in, valid_out = valid if valid is not None else (None, None)
     inbound = fx.leg_batch(
-        tau_in.float(),
-        c_in.to(torch.complex64),
-        rate=rate_in.float() if rates else None,
-        row_valid=valid_in,
+        tau_in.float(), c_in.to(torch.complex64), rate=rate_in.float() if rates else None, row_valid=valid_in
     )
     outbound = fx.leg_batch(
-        tau_out.float(),
-        c_out.to(torch.complex64),
-        rate=rate_out.float() if rates else None,
-        row_valid=valid_out,
+        tau_out.float(), c_out.to(torch.complex64), rate=rate_out.float() if rates else None, row_valid=valid_out
     )
     _, _, site_value = fx.payload(composer.site_count, seed=99)
     response = PerSiteResponse(site_value.to(torch.complex64))
@@ -79,16 +71,8 @@ def _reference(composer, inbound, outbound, response, row_valid):
     return join_reference(
         tau_in=inbound.delay_s,
         tau_out=outbound.delay_s,
-        rate_in=(
-            torch.zeros_like(inbound.delay_s)
-            if inbound.delay_rate is None
-            else inbound.delay_rate
-        ),
-        rate_out=(
-            torch.zeros_like(outbound.delay_s)
-            if outbound.delay_rate is None
-            else outbound.delay_rate
-        ),
+        rate_in=(torch.zeros_like(inbound.delay_s) if inbound.delay_rate is None else inbound.delay_rate),
+        rate_out=(torch.zeros_like(outbound.delay_s) if outbound.delay_rate is None else outbound.delay_rate),
         c_in=inbound.coefficient,
         c_out=outbound.coefficient,
         response=response.evaluate(composer.site_count, inbound.delay_s.device),
@@ -142,13 +126,9 @@ def test_the_native_primal_matches_the_retained_torch_composition():
 
     tau, rate, transfer = _reference(composer, inbound, outbound, response, None)
     scale = float(transfer.abs().max())
-    torch.testing.assert_close(
-        composed.total_delay_s, tau, rtol=1e-6, atol=0.0
-    )
+    torch.testing.assert_close(composed.total_delay_s, tau, rtol=1e-6, atol=0.0)
     torch.testing.assert_close(composed.delay_rate, rate, rtol=1e-6, atol=1e-20)
-    torch.testing.assert_close(
-        composed.complex_transfer_ref, transfer, rtol=1e-5, atol=scale * 1e-6
-    )
+    torch.testing.assert_close(composed.complex_transfer_ref, transfer, rtol=1e-5, atol=scale * 1e-6)
 
 
 def test_a_dead_row_publishes_exactly_zero_in_every_output():
@@ -160,9 +140,7 @@ def test_a_dead_row_publishes_exactly_zero_in_every_output():
     inbound, outbound, response = _frame(composer, valid=(valid_in, valid_out))
     composed = composer.compose(inbound, outbound, response)
 
-    expected = valid_in.index_select(0, composer.inbound_row) & (
-        valid_out.index_select(0, composer.outbound_row)
-    )
+    expected = valid_in.index_select(0, composer.inbound_row) & (valid_out.index_select(0, composer.outbound_row))
     assert torch.equal(composed.row_valid, expected)
     assert int((~expected).sum()) > 0
     dead = ~expected
@@ -170,16 +148,10 @@ def test_a_dead_row_publishes_exactly_zero_in_every_output():
     assert float(composed.delay_rate[dead].abs().sum()) == 0.0
     assert float(composed.complex_transfer_ref[dead].abs().sum()) == 0.0
     # And the live rows are untouched by their dead neighbours.
-    tau, _, transfer = _reference(
-        composer, inbound, outbound, response, expected
-    )
-    torch.testing.assert_close(
-        composed.total_delay_s, tau, rtol=1e-6, atol=0.0
-    )
+    tau, _, transfer = _reference(composer, inbound, outbound, response, expected)
+    torch.testing.assert_close(composed.total_delay_s, tau, rtol=1e-6, atol=0.0)
     scale = float(transfer.abs().max())
-    torch.testing.assert_close(
-        composed.complex_transfer_ref, transfer, rtol=1e-5, atol=scale * 1e-6
-    )
+    torch.testing.assert_close(composed.complex_transfer_ref, transfer, rtol=1e-5, atol=scale * 1e-6)
 
 
 def test_an_empty_pair_segment_composes_without_a_special_case():
@@ -209,13 +181,14 @@ def test_an_empty_pair_segment_composes_without_a_special_case():
     assert composed.path_count == 8
     assert composed.sensor_pair_count == 4
 
-    from witwin.radar.synthesis.fmcw import synthesize_fmcw
-    from support import spike_driver as drv
-
     # The fabricated front end is 2 sources x 2 sinks, so the waveform spec
     # has to describe the SAME array: the TDM slot of a sensor pair is only
     # defined once the pair partition and the array are the same front end.
     from dataclasses import replace
+
+    from support import spike_driver as drv
+
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     spec = replace(drv.make_spec(num_chirps=2), num_tx=2, num_rx=2)
     iq = synthesize_fmcw(drv.to_synthesis(composed), spec)
@@ -226,7 +199,7 @@ def test_an_empty_pair_segment_composes_without_a_special_case():
 
 
 def test_a_delay_rate_carrying_a_tape_is_refused_rather_than_zeroed():
-    """"Returns None" and "silently dropped it" must not look the same.
+    """ "Returns None" and "silently dropped it" must not look the same.
 
     ``delay_rate`` is a primal Doppler rate by contract, so the join returns
     None for its gradient and a zero tangent for the composed rate. A rate that
@@ -237,22 +210,16 @@ def test_a_delay_rate_carrying_a_tape_is_refused_rather_than_zeroed():
     inbound, outbound, response = _frame(composer)
     from dataclasses import replace
 
-    live = replace(
-        inbound, delay_rate=inbound.delay_rate.clone().requires_grad_(True)
-    )
+    live = replace(inbound, delay_rate=inbound.delay_rate.clone().requires_grad_(True))
     with pytest.raises(ValueError, match="inbound delay_rate carries requires_grad"):
         composer.compose(live, outbound, response)
 
     import torch.autograd.forward_ad as forward_ad
 
     with forward_ad.dual_level():
-        dual = forward_ad.make_dual(
-            outbound.delay_rate, torch.ones_like(outbound.delay_rate)
-        )
+        dual = forward_ad.make_dual(outbound.delay_rate, torch.ones_like(outbound.delay_rate))
         dualled = replace(outbound, delay_rate=dual)
-        with pytest.raises(
-            ValueError, match="outbound delay_rate carries a forward tangent"
-        ):
+        with pytest.raises(ValueError, match="outbound delay_rate carries a forward tangent"):
             composer.compose(inbound, dualled, response)
 
 
@@ -263,13 +230,5 @@ def test_the_composed_rate_is_absent_unless_both_legs_publish_one():
     assert composed.delay_rate is None
 
     with_rates = _frame(composer)
-    assert (
-        composer.compose(with_rates[0], with_rates[1], with_rates[2]).delay_rate
-        is not None
-    )
-    assert (
-        composer.compose(
-            with_rates[0], with_rates[1], with_rates[2], include_delay_rate=False
-        ).delay_rate
-        is None
-    )
+    assert composer.compose(with_rates[0], with_rates[1], with_rates[2]).delay_rate is not None
+    assert composer.compose(with_rates[0], with_rates[1], with_rates[2], include_delay_rate=False).delay_rate is None

@@ -11,11 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from witwin.radar.propagation import (
-    RadarEndpointSpec,
-    RadarLegBatch,
-    require_endpoint_role,
-)
+from witwin.radar.propagation import RadarEndpointSpec, RadarLegBatch, require_endpoint_role
 
 
 def _spec(rows: int = 2, *, with_power: bool = False) -> RadarEndpointSpec:
@@ -187,9 +183,5 @@ def test_leg_batch_accepts_a_zero_width_interaction_sequence():
     """
 
     zero_width = torch.zeros((2, 0), dtype=torch.int32)
-    leg = _leg(
-        primitive_sequence=zero_width,
-        material_sequence=zero_width,
-        interaction_type=zero_width,
-    )
+    leg = _leg(primitive_sequence=zero_width, material_sequence=zero_width, interaction_type=zero_width)
     assert leg.primitive_sequence.shape == (2, 0)

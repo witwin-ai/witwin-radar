@@ -34,16 +34,7 @@ PROPAGATION_MODULE = REPO_ROOT / "witwin" / "radar" / "propagation.py"
 #: equality: ``reference_frequency_hz`` is the ONE legitimate crossing and
 #: everything else here is geometry, topology, or an AD mode.
 DISCOVERY_KEYWORDS = frozenset(
-    {
-        "sources",
-        "sinks",
-        "reference_frequency_hz",
-        "components",
-        "max_depth",
-        "response",
-        "topology_mode",
-        "ad_mode",
-    }
+    {"sources", "sinks", "reference_frequency_hz", "components", "max_depth", "response", "topology_mode", "ad_mode"}
 )
 #: ``slot_count`` is how many stacked time slots the endpoint batches carry. It
 #: is a batch SHAPE, in the same family as the endpoint counts, and it says
@@ -110,8 +101,8 @@ def _populated_config():
     """
 
     from conftest import STANDARD_CONFIG
-    from witwin.radar.radar import RadarSystemConfig
-    from witwin.radar.radar import validate_frontend_config, validate_radar_config
+
+    from witwin.radar.radar import RadarSystemConfig, validate_frontend_config, validate_radar_config
 
     # The flat record carried a `polarization` block until Phase 11, and this
     # fixture set it because a boundary test on a minimal configuration proves
@@ -149,9 +140,7 @@ def _endpoints(count: int, *, role: str):
         stable_ids=torch.arange(count, dtype=torch.int64),
         positions_m=positions,
         polarizations=polarizations,
-        powers_w=(
-            torch.ones(count, dtype=torch.float32) if role == "source" else None
-        ),
+        powers_w=(torch.ones(count, dtype=torch.float32) if role == "source" else None),
     )
 
 
@@ -229,11 +218,7 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
                 "field_direction": torch.zeros(rows, 3, dtype=torch.float32),
             },
         )()
-        transport = type(
-            "_Transport",
-            (),
-            {"coefficient": torch.zeros(rows, dtype=torch.complex64)},
-        )()
+        transport = type("_Transport", (), {"coefficient": torch.zeros(rows, dtype=torch.complex64)})()
 
     class _Evaluation:
         paths = _Paths()
@@ -244,14 +229,10 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
         diagnostics = None
 
     monkeypatch.setattr(consumer, "PropagationRequest", recorder.propagation_request)
-    monkeypatch.setattr(
-        consumer, "FixedTopologyRequest", recorder.fixed_topology_request
-    )
+    monkeypatch.setattr(consumer, "FixedTopologyRequest", recorder.fixed_topology_request)
     monkeypatch.setattr(consumer, "EndpointBatch", lambda **kwargs: kwargs)
     monkeypatch.setattr(consumer, "evaluate", lambda scene, request: _Evaluation())
-    monkeypatch.setattr(
-        consumer, "prepare_fixed_topology", lambda topology: _Prepared()
-    )
+    monkeypatch.setattr(consumer, "prepare_fixed_topology", lambda topology: _Prepared())
     monkeypatch.setattr(consumer, "reevaluate", lambda scene, request: _Result())
 
 
@@ -291,12 +272,8 @@ def test_a_fully_populated_config_sends_exactly_the_allowed_keywords(monkeypatch
     frozen = adapter.freeze(sources, sinks)
     adapter.reevaluate(frozen, sources, sinks, ad_mode="none")
 
-    assert recorder.discovery == [DISCOVERY_KEYWORDS], sorted(
-        recorder.discovery[0] ^ DISCOVERY_KEYWORDS
-    )
-    assert recorder.reevaluation == [REEVALUATION_KEYWORDS], sorted(
-        recorder.reevaluation[0] ^ REEVALUATION_KEYWORDS
-    )
+    assert recorder.discovery == [DISCOVERY_KEYWORDS], sorted(recorder.discovery[0] ^ DISCOVERY_KEYWORDS)
+    assert recorder.reevaluation == [REEVALUATION_KEYWORDS], sorted(recorder.reevaluation[0] ^ REEVALUATION_KEYWORDS)
 
 
 def test_the_adapter_constructor_accepts_only_the_propagation_block():
@@ -320,9 +297,7 @@ def test_the_adapter_constructor_accepts_only_the_propagation_block():
 
     from witwin.radar.channel import ChannelPropagationAdapter
 
-    parameters = set(
-        inspect.signature(ChannelPropagationAdapter.__init__).parameters
-    ) - {"self"}
+    parameters = set(inspect.signature(ChannelPropagationAdapter.__init__).parameters) - {"self"}
     assert parameters == {
         "compiled_scene",
         "reference_frequency_hz",
@@ -378,10 +353,7 @@ def test_an_ofdm_band_still_produces_exactly_one_reference_frequency(monkeypatch
         sinks = _endpoints(2, role="sink")
         frozen = adapter.freeze(sources, sinks)
         adapter.reevaluate(frozen, sources, sinks, ad_mode="none")
-        assert recorder.reference_frequencies == [reference, reference], (
-            count,
-            recorder.reference_frequencies,
-        )
+        assert recorder.reference_frequencies == [reference, reference], (count, recorder.reference_frequencies)
 
 
 # ---------------------------------------------------------------------------
@@ -395,26 +367,10 @@ def test_an_ofdm_band_still_produces_exactly_one_reference_frequency(monkeypatch
 #: propagation layer for naming a primitive sequence and the test stops meaning
 #: anything the day someone silences it.
 _FORBIDDEN_TOKENS = frozenset(
-    {
-        "waveform",
-        "chirp",
-        "slope",
-        "adc",
-        "agc",
-        "lna",
-        "subcarrier",
-        "pulse",
-        "pri",
-        "noise",
-    }
+    {"waveform", "chirp", "slope", "adc", "agc", "lna", "subcarrier", "pulse", "pri", "noise"}
 )
 _FORBIDDEN_PREFIXES = ("quantiz",)
-_FORBIDDEN_PHRASES = (
-    ("sample", "rate"),
-    ("symbol", "period"),
-    ("receiver", "chain"),
-    ("full", "scale"),
-)
+_FORBIDDEN_PHRASES = (("sample", "rate"), ("symbol", "period"), ("receiver", "chain"), ("full", "scale"))
 
 
 def _names_forbidden_vocabulary(text: str) -> bool:
@@ -423,7 +379,7 @@ def _names_forbidden_vocabulary(text: str) -> bool:
         return True
     if any(token.startswith(_FORBIDDEN_PREFIXES) for token in tokens):
         return True
-    pairs = set(zip(tokens, tokens[1:]))
+    pairs = set(zip(tokens, tokens[1:], strict=False))
     return bool(pairs & set(_FORBIDDEN_PHRASES))
 
 
@@ -461,9 +417,7 @@ def test_no_propagation_module_names_waveform_or_frontend_vocabulary():
     for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(
-                node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-            ):
+            if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
                 text = ast.get_docstring(node, clean=False)
                 if text is not None:
                     docstrings.add(text)
@@ -537,6 +491,7 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
     from dataclasses import replace
 
     from conftest import MINIMAL_CONFIG, make_radar_or_skip
+
     from witwin.radar.radar import OfdmWaveformConfig, PulsedWaveformConfig
     from witwin.radar.synthesis import SlowTimeMode
     from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR
@@ -550,11 +505,7 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
     assert beat.axes == ("chirp", "sensor_pair", "range_bin")
     assert beat.output_domain == "spectrum"
     assert beat.phasor == BEAT_PHASOR
-    assert beat.cube.shape == (
-        radar.config.chirp_per_frame,
-        1,
-        radar.config.adc_samples,
-    )
+    assert beat.cube.shape == (radar.config.chirp_per_frame, 1, radar.config.adc_samples)
 
     radar.system_config = replace(
         radar.system_config,
@@ -605,6 +556,7 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
     from dataclasses import dataclass
 
     from conftest import MINIMAL_CONFIG, make_radar_or_skip
+
     from witwin.radar.synthesis import SlowTimeMode
 
     @dataclass(frozen=True, slots=True)
@@ -616,6 +568,4 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
     radar.system_config = object.__new__(type(radar.system_config))
     object.__setattr__(radar.system_config, "waveform", _Unowned())
     with pytest.raises(ValueError, match="no synthesis owner"):
-        radar._synthesize(
-            batch, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-        )
+        radar._synthesize(batch, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)

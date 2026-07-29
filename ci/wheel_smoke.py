@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
-from functools import lru_cache
 import hashlib
 import io
 import json
@@ -53,8 +52,8 @@ import unicodedata
 import zipfile
 from email import policy
 from email.parser import BytesParser
+from functools import lru_cache
 from pathlib import Path
-
 
 _DISTRIBUTION = "witwin-radar"
 _DIST_INFO_LICENSE = "licenses/LICENSE"
@@ -105,21 +104,12 @@ _BUILD_INFO_KEYS = frozenset(
     }
 )
 _SMOKE_KEYS = frozenset(
-    {
-        "build_info",
-        "distribution",
-        "native_origin",
-        "package_origin",
-        "wheel_sha256",
-        "wheel_smoke",
-    }
+    {"build_info", "distribution", "native_origin", "package_origin", "wheel_sha256", "wheel_smoke"}
 )
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_FORBIDDEN_BUILD_SUFFIXES = frozenset(
-    {".exp", ".ilk", ".lib", ".lock", ".o", ".obj", ".pdb"}
-)
+_FORBIDDEN_BUILD_SUFFIXES = frozenset({".exp", ".ilk", ".lib", ".lock", ".o", ".obj", ".pdb"})
 _ABSOLUTE_PATH_PATTERN = re.compile(
     rb"(?:(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]"
     rb"|(?<![A-Za-z0-9])/(?:home|Users|private/tmp|tmp|workspace)/)"
@@ -147,9 +137,7 @@ def _resolve_wheel(path: Path) -> Path:
     if path.is_dir():
         wheels = sorted(path.glob("*.whl"))
         if len(wheels) != 1:
-            raise WheelSmokeError(
-                f"wheel directory must contain exactly one .whl file; found {len(wheels)}"
-            )
+            raise WheelSmokeError(f"wheel directory must contain exactly one .whl file; found {len(wheels)}")
         return wheels[0]
     if path.suffix != ".whl" or not path.is_file():
         raise WheelSmokeError(f"wheel does not exist: {path}")
@@ -157,16 +145,9 @@ def _resolve_wheel(path: Path) -> Path:
 
 
 def _canonical_member(name: str) -> str:
-    if (
-        not name
-        or "\\" in name
-        or name.startswith("/")
-        or re.match(r"^[A-Za-z]:", name)
-    ):
+    if not name or "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         raise WheelSmokeError(f"wheel member is not a canonical relative path: {name!r}")
-    if unicodedata.normalize("NFC", name) != name or any(
-        ord(char) < 32 for char in name
-    ):
+    if unicodedata.normalize("NFC", name) != name or any(ord(char) < 32 for char in name):
         raise WheelSmokeError(f"wheel member is not canonical Unicode/text: {name!r}")
     parts = name.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -179,15 +160,11 @@ def _canonical_members(archive: zipfile.ZipFile) -> list[str]:
     identities: set[str] = set()
     for info in archive.infolist():
         if info.is_dir():
-            raise WheelSmokeError(
-                f"wheel must not contain directory entries: {info.filename!r}"
-            )
+            raise WheelSmokeError(f"wheel must not contain directory entries: {info.filename!r}")
         member = _canonical_member(info.filename)
         identity = unicodedata.normalize("NFC", member).casefold()
         if identity in identities:
-            raise WheelSmokeError(
-                f"wheel contains duplicate normalized/casefold member: {member!r}"
-            )
+            raise WheelSmokeError(f"wheel contains duplicate normalized/casefold member: {member!r}")
         identities.add(identity)
         members.append(member)
     if not members:
@@ -195,9 +172,7 @@ def _canonical_members(archive: zipfile.ZipFile) -> list[str]:
     return members
 
 
-def _metadata_identity(
-    archive: zipfile.ZipFile, members: list[str]
-) -> tuple[str, str, str]:
+def _metadata_identity(archive: zipfile.ZipFile, members: list[str]) -> tuple[str, str, str]:
     metadata_files = [
         member
         for member in members
@@ -207,12 +182,9 @@ def _metadata_identity(
     ]
     if len(metadata_files) != 1:
         raise WheelSmokeError(
-            "wheel must contain exactly one canonical .dist-info/METADATA file; "
-            f"found {metadata_files}"
+            f"wheel must contain exactly one canonical .dist-info/METADATA file; found {metadata_files}"
         )
-    metadata = BytesParser(policy=policy.default).parsebytes(
-        archive.read(metadata_files[0])
-    )
+    metadata = BytesParser(policy=policy.default).parsebytes(archive.read(metadata_files[0]))
     names = metadata.get_all("Name", [])
     versions = metadata.get_all("Version", [])
     if len(names) != 1 or len(versions) != 1:
@@ -226,8 +198,7 @@ def _metadata_identity(
     dist_info = f"witwin_radar-{version}.dist-info"
     if metadata_files[0] != f"{dist_info}/METADATA":
         raise WheelSmokeError(
-            "wheel .dist-info directory does not exactly match METADATA version: "
-            f"{metadata_files[0]!r}"
+            f"wheel .dist-info directory does not exactly match METADATA version: {metadata_files[0]!r}"
         )
     return name, version, dist_info
 
@@ -243,16 +214,7 @@ def _checked_in_package_members() -> frozenset[str]:
 
     root = _repository_root()
     result = subprocess.run(
-        [
-            "git",
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "witwin",
-        ],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "witwin"],
         cwd=root,
         capture_output=True,
         check=False,
@@ -260,11 +222,7 @@ def _checked_in_package_members() -> frozenset[str]:
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise WheelSmokeError(f"cannot read checked-in witwin member list: {detail}")
-    paths = [
-        path
-        for path in result.stdout.decode("utf-8").split("\0")
-        if path and (root / path).is_file()
-    ]
+    paths = [path for path in result.stdout.decode("utf-8").split("\0") if path and (root / path).is_file()]
     if not paths or any(not path.startswith("witwin/") for path in paths):
         raise WheelSmokeError("checked-in witwin member list is malformed or empty")
     return frozenset(paths)
@@ -276,9 +234,7 @@ def _record_hash(payload: bytes) -> str:
     return f"sha256={encoded}"
 
 
-def _audit_record(
-    archive: zipfile.ZipFile, members: list[str], *, dist_info: str
-) -> None:
+def _audit_record(archive: zipfile.ZipFile, members: list[str], *, dist_info: str) -> None:
     record_member = f"{dist_info}/RECORD"
     try:
         record_text = archive.read(record_member).decode("utf-8")
@@ -302,9 +258,7 @@ def _audit_record(
     if set(recorded) != set(expected):
         missing = sorted(set(expected) - set(recorded))
         extra = sorted(set(recorded) - set(expected))
-        raise WheelSmokeError(
-            f"wheel RECORD member coverage mismatch: missing={missing}, extra={extra}"
-        )
+        raise WheelSmokeError(f"wheel RECORD member coverage mismatch: missing={missing}, extra={extra}")
     spelled = {row[0] for row in rows}
     mismatched_case = sorted(member for member in expected.values() if member not in spelled)
     if mismatched_case:
@@ -328,19 +282,13 @@ def _native_member(members: list[str]) -> str:
     SECOND, differently named binary fails here instead of being ignored.
     """
 
-    shared_libraries = [
-        name for name in members if Path(name).suffix.lower() in _DSO_SUFFIXES
-    ]
+    shared_libraries = [name for name in members if Path(name).suffix.lower() in _DSO_SUFFIXES]
     if len(shared_libraries) != 1:
-        raise WheelSmokeError(
-            f"wheel must contain exactly one native member; found {shared_libraries}"
-        )
+        raise WheelSmokeError(f"wheel must contain exactly one native member; found {shared_libraries}")
     native = shared_libraries[0]
     expected = {f"{_PREBUILT_PREFIX}{_EXTENSION_NAME}{suffix}" for suffix in _NATIVE_SUFFIXES}
     if native not in expected:
-        raise WheelSmokeError(
-            f"wheel native member must be one of {sorted(expected)}; found {native!r}"
-        )
+        raise WheelSmokeError(f"wheel native member must be one of {sorted(expected)}; found {native!r}")
     return native
 
 
@@ -371,24 +319,18 @@ def _audit_identity(archive: zipfile.ZipFile, native: str) -> dict[str, object]:
         raise WheelSmokeError(f"{info_member} schema mismatch: {actual}")
 
     if record["extension_name"] != _EXTENSION_NAME:
-        raise WheelSmokeError(
-            f"wheel build record names {record['extension_name']!r}, expected {_EXTENSION_NAME!r}"
-        )
+        raise WheelSmokeError(f"wheel build record names {record['extension_name']!r}, expected {_EXTENSION_NAME!r}")
     if record["build_type"] not in {"release", "developer"}:
         raise WheelSmokeError(f"unexpected build_type: {record['build_type']!r}")
     for field in ("binary_sha256", "build_fingerprint", "source_fingerprint"):
         if _SHA256_PATTERN.fullmatch(str(record[field])) is None:
             raise WheelSmokeError(f"{field} must be a SHA-256; found {record[field]!r}")
-    if _GIT_SHA_PATTERN.fullmatch(str(record["radar_git_sha"])) is None and record[
-        "radar_git_sha"
-    ] != "unknown":
+    if _GIT_SHA_PATTERN.fullmatch(str(record["radar_git_sha"])) is None and record["radar_git_sha"] != "unknown":
         raise WheelSmokeError(f"unexpected radar_git_sha: {record['radar_git_sha']!r}")
 
     fingerprint_text = archive.read(fingerprint_member).decode("ascii", errors="replace")
     if fingerprint_text.strip() != record["build_fingerprint"]:
-        raise WheelSmokeError(
-            f"{fingerprint_member} does not match the recorded build_fingerprint"
-        )
+        raise WheelSmokeError(f"{fingerprint_member} does not match the recorded build_fingerprint")
 
     packed_digest = hashlib.sha256(archive.read(native)).hexdigest()
     if packed_digest != record["binary_sha256"]:
@@ -399,9 +341,7 @@ def _audit_identity(archive: zipfile.ZipFile, native: str) -> dict[str, object]:
 
     missing_sources = [name for name in _SOURCE_MEMBERS if name not in set(archive.namelist())]
     if missing_sources:
-        raise WheelSmokeError(
-            f"wheel does not ship the sources its identity is keyed by: {missing_sources}"
-        )
+        raise WheelSmokeError(f"wheel does not ship the sources its identity is keyed by: {missing_sources}")
     digest = hashlib.sha256()
     for member in _SOURCE_MEMBERS:
         digest.update(Path(member).name.encode("utf-8"))
@@ -436,11 +376,7 @@ def _audit_wheel_contents(wheel: Path) -> tuple[str, dict[str, object]]:
                 f"extra={sorted(package_members - expected_package)}"
             )
         root = _repository_root()
-        mismatched = sorted(
-            member
-            for member in checked_in
-            if archive.read(member) != (root / member).read_bytes()
-        )
+        mismatched = sorted(member for member in checked_in if archive.read(member) != (root / member).read_bytes())
         if mismatched:
             raise WheelSmokeError(f"wheel checked-in source bytes differ: {mismatched}")
 
@@ -452,9 +388,7 @@ def _audit_wheel_contents(wheel: Path) -> tuple[str, dict[str, object]]:
                 f"licenses/LICENSE; found {sorted(dist_info_members)}"
             )
         if archive.read(f"{dist_info}/{_DIST_INFO_LICENSE}") != (root / "LICENSE").read_bytes():
-            raise WheelSmokeError(
-                "wheel dist-info license bytes differ from the repository LICENSE"
-            )
+            raise WheelSmokeError("wheel dist-info license bytes differ from the repository LICENSE")
         roots = {name.split("/", 1)[0] for name in members}
         if roots != {"witwin", dist_info}:
             raise WheelSmokeError(f"wheel has unexpected top-level roots: {sorted(roots)}")
@@ -487,9 +421,7 @@ def _audit_wheel_contents(wheel: Path) -> tuple[str, dict[str, object]]:
             # generated member.
             if name in checked_in:
                 continue
-            if suffix in {".cfg", ".json", ".md", ".toml", ".txt"} or name.endswith(
-                ".build-fingerprint"
-            ):
+            if suffix in {".cfg", ".json", ".md", ".toml", ".txt"} or name.endswith(".build-fingerprint"):
                 if _ABSOLUTE_PATH_PATTERN.search(archive.read(name)):
                     forbidden.append(f"{name} (contains an absolute local path)")
         if forbidden:
@@ -497,14 +429,7 @@ def _audit_wheel_contents(wheel: Path) -> tuple[str, dict[str, object]]:
     return native, record
 
 
-def _smoke_code(
-    *,
-    target: Path,
-    wheel: Path,
-    wheel_sha256: str,
-    expected_name: str,
-    expected_version: str,
-) -> str:
+def _smoke_code(*, target: Path, wheel: Path, wheel_sha256: str, expected_name: str, expected_version: str) -> str:
     return f"""
 import hashlib
 import importlib.metadata
@@ -614,29 +539,21 @@ def _parse_smoke_evidence(
         if not Path(value).resolve().is_relative_to(target):
             raise WheelSmokeError(f"isolated wheel smoke {label} resolved outside target")
     if Path(evidence["native_origin"]).name != Path(native_member).name:
-        raise WheelSmokeError(
-            f"isolated wheel smoke loaded {evidence['native_origin']!r}, not the packed member"
-        )
+        raise WheelSmokeError(f"isolated wheel smoke loaded {evidence['native_origin']!r}, not the packed member")
     info = evidence["build_info"]
     if info.get("origin") != "packaged":
         raise WheelSmokeError(f"installed extension origin is {info.get('origin')!r}")
     native_build = info.get("native_build")
     if not isinstance(native_build, dict) or set(native_build) != _BUILD_INFO_KEYS:
         raise WheelSmokeError("installed build_info carries no complete native record")
-    mismatched = sorted(
-        key for key in _BUILD_INFO_KEYS if native_build[key] != expected_record[key]
-    )
+    mismatched = sorted(key for key in _BUILD_INFO_KEYS if native_build[key] != expected_record[key])
     if mismatched:
-        raise WheelSmokeError(
-            "installed build record differs from the packed sidecar: " + ", ".join(mismatched)
-        )
+        raise WheelSmokeError("installed build record differs from the packed sidecar: " + ", ".join(mismatched))
     return evidence
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Audit a witwin-radar wheel and import it from an isolated install."
-    )
+    parser = argparse.ArgumentParser(description="Audit a witwin-radar wheel and import it from an isolated install.")
     parser.add_argument("wheel", type=Path)
     parser.add_argument(
         "--core-wheel",
@@ -652,9 +569,7 @@ def main() -> int:
         wheel = _resolve_wheel(args.wheel)
         core_wheel = _resolve_wheel(args.core_wheel)
         with zipfile.ZipFile(wheel) as archive:
-            expected_name, expected_version, _ = _metadata_identity(
-                archive, _canonical_members(archive)
-            )
+            expected_name, expected_version, _ = _metadata_identity(archive, _canonical_members(archive))
         native_member, record = _audit_wheel_contents(wheel)
     except (OSError, WheelSmokeError, zipfile.BadZipFile) as exc:
         parser.error(str(exc))
@@ -691,11 +606,7 @@ def main() -> int:
             expected_version=expected_version,
         )
         smoke = subprocess.run(
-            [sys.executable, "-I", "-c", code],
-            cwd=target,
-            capture_output=True,
-            text=True,
-            check=False,
+            [sys.executable, "-I", "-c", code], cwd=target, capture_output=True, text=True, check=False
         )
         if smoke.stderr:
             print(smoke.stderr.strip(), file=sys.stderr)

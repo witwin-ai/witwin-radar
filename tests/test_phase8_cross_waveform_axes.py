@@ -24,21 +24,12 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
-from witwin.radar.processing import (
-    ProcessingAxes,
-    ProcessingCube,
-    range_doppler_map,
-    range_profile,
-)
+
+from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_doppler_map, range_profile
 from witwin.radar.processing.signal import PROCESSING_DOPPLER_CONVENTION
-from witwin.radar.synthesis import (
-    synthesize_fmcw,
-    synthesize_ofdm,
-    synthesize_pulsed,
-)
+from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 from witwin.radar.synthesis.assembly import SynthesisResult
 
 pytestmark = pytest.mark.gpu
@@ -47,12 +38,7 @@ pytestmark = pytest.mark.gpu
 WAVEFORMS = (
     ("fmcw", grid.fmcw_spec, synthesize_fmcw, SynthesisResult.from_fmcw),
     ("ofdm", grid.ofdm_spec, synthesize_ofdm, SynthesisResult.from_ofdm),
-    (
-        "pulsed",
-        grid.pulsed_spec,
-        synthesize_pulsed,
-        SynthesisResult.from_pulsed,
-    ),
+    ("pulsed", grid.pulsed_spec, synthesize_pulsed, SynthesisResult.from_pulsed),
 )
 
 
@@ -68,11 +54,7 @@ def moving(spike):
 
     composed = grid.moving_frame(spike)
     row = grid.target_row(spike, composed)
-    return (
-        grid.isolate(drv.to_synthesis(composed), row),
-        row,
-        int(composed.sensor_pair_index[row]),
-    )
+    return (grid.isolate(drv.to_synthesis(composed), row), row, int(composed.sensor_pair_index[row]))
 
 
 def _measure(batch, segment, spec_of, synthesize, maker):
@@ -89,9 +71,7 @@ def _measure(batch, segment, spec_of, synthesize, maker):
     return axes, float(axes.range_m[range_bin]), float(axes.velocity_mps[doppler])
 
 
-def test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms(
-    moving, capsys
-):
+def test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms(moving, capsys):
     """The criterion, in SI, with every waveform's own axis doing the conversion.
 
     The tolerance is half of EACH waveform's own bin, which is the largest error
@@ -106,34 +86,22 @@ def test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms(
     truth_speed = grid.CLOSING_SPEED_MPS
     reported = []
     for name, spec_of, synthesize, maker in WAVEFORMS:
-        axes, measured_range, measured_speed = _measure(
-            batch, segment, spec_of, synthesize, maker
-        )
+        axes, measured_range, measured_speed = _measure(batch, segment, spec_of, synthesize, maker)
         reported.append((name, axes, measured_range, measured_speed))
 
-        assert abs(measured_range - truth_range) <= 0.5 * axes.range_bin_m, (
-            name,
-            measured_range,
-            truth_range,
-        )
-        assert abs(measured_speed - truth_speed) <= 0.5 * axes.velocity_bin_mps, (
-            name,
-            measured_speed,
-            truth_speed,
-        )
+        assert abs(measured_range - truth_range) <= 0.5 * axes.range_bin_m, (name, measured_range, truth_range)
+        assert abs(measured_speed - truth_speed) <= 0.5 * axes.velocity_bin_mps, (name, measured_speed, truth_speed)
 
     with capsys.disabled():
         print("\nPhase-8 cross-waveform agreement")
-        print(f"{'waveform':>8} {'range m':>14} {'err m':>12} "
-              f"{'v m/s':>14} {'err m/s':>12}")
-        for name, axes, measured_range, measured_speed in reported:
+        print(f"{'waveform':>8} {'range m':>14} {'err m':>12} {'v m/s':>14} {'err m/s':>12}")
+        for name, _axes, measured_range, measured_speed in reported:
             print(
                 f"{name:>8} {measured_range:14.9f} "
                 f"{measured_range - truth_range:12.3e} "
                 f"{measured_speed:14.9f} {measured_speed - truth_speed:12.3e}"
             )
-        print(f"{'truth':>8} {truth_range:14.9f} {0.0:12.3e} "
-              f"{truth_speed:14.9f} {0.0:12.3e}")
+        print(f"{'truth':>8} {truth_range:14.9f} {0.0:12.3e} {truth_speed:14.9f} {0.0:12.3e}")
 
     # And the three agree with EACH OTHER, not only with the oracle: the
     # velocity comes back bit-identical because the three grids were solved to
@@ -141,9 +109,7 @@ def test_one_target_reads_as_one_range_and_one_velocity_in_all_three_waveforms(
     speeds = {round(value, 12) for _, _, _, value in reported}
     assert len(speeds) == 1, reported
     ranges = [value for _, _, value, _ in reported]
-    assert max(ranges) - min(ranges) <= 0.5 * min(
-        axes.range_bin_m for _, axes, _, _ in reported
-    )
+    assert max(ranges) - min(ranges) <= 0.5 * min(axes.range_bin_m for _, axes, _, _ in reported)
 
 
 def test_the_closing_target_is_positive_in_every_waveform(moving):
@@ -168,17 +134,12 @@ def test_every_waveform_publishes_the_same_units_and_the_same_conventions(moving
     """One vocabulary. A per-waveform unit mapping would be three contracts."""
 
     batch, _, segment = moving
-    records = [
-        _measure(batch, segment, spec_of, synthesize, maker)[0]
-        for _, spec_of, synthesize, maker in WAVEFORMS
-    ]
+    records = [_measure(batch, segment, spec_of, synthesize, maker)[0] for _, spec_of, synthesize, maker in WAVEFORMS]
     reference = records[0].units
     for record in records[1:]:
         assert record.units == reference, record.waveform
     for record in records:
         assert record.reference_frequency_hz == grid.F_REF_HZ
-        assert record.wavelength_m == pytest.approx(
-            grid.C0 / grid.F_REF_HZ, rel=1e-15
-        )
+        assert record.wavelength_m == pytest.approx(grid.C0 / grid.F_REF_HZ, rel=1e-15)
         assert record.range_m.dtype is torch.float64
         assert record.velocity_mps.dtype is torch.float64

@@ -58,7 +58,6 @@ import torch
 
 from . import multi_endpoint_geometry as geo
 
-
 C0 = geo.C0_M_PER_S
 F_REF_HZ = geo.REFERENCE_FREQUENCY_HZ
 
@@ -78,9 +77,7 @@ FMCW_CHIRPS = 8
 FMCW_RANGE_BIN = 50
 
 #: ``tau = m f_s / (S N)``: the delay that lands exactly on that bin.
-TAU_S = FMCW_RANGE_BIN * FMCW_SAMPLE_RATE_HZ / (
-    FMCW_SLOPE_HZ_PER_S * FMCW_SAMPLES
-)
+TAU_S = FMCW_RANGE_BIN * FMCW_SAMPLE_RATE_HZ / (FMCW_SLOPE_HZ_PER_S * FMCW_SAMPLES)
 ROUND_TRIP_M = C0 * TAU_S
 RANGE_M = 0.5 * ROUND_TRIP_M
 
@@ -91,9 +88,7 @@ DOPPLER_BIN = 2
 FMCW_SLOT_PERIOD_S = FMCW_CHIRP_PERIOD_S * FMCW_NUM_TX
 #: ``q = f_ref |tau_rate| T_slot C`` solved for the speed, then
 #: ``tau_rate = -2 v / c`` because the target is CLOSING.
-CLOSING_SPEED_MPS = 0.5 * C0 * DOPPLER_BIN / (
-    F_REF_HZ * FMCW_SLOT_PERIOD_S * FMCW_CHIRPS
-)
+CLOSING_SPEED_MPS = 0.5 * C0 * DOPPLER_BIN / (F_REF_HZ * FMCW_SLOT_PERIOD_S * FMCW_CHIRPS)
 DELAY_RATE = -2.0 * CLOSING_SPEED_MPS / C0
 
 # --- OFDM grid solved from tau ---------------------------------------------
@@ -103,9 +98,7 @@ OFDM_WAVEFORM_SAMPLE_PERIOD_S = TAU_S / OFDM_CIR_SAMPLE
 OFDM_SPACING_HZ = 1.0 / (OFDM_SUBCARRIERS * OFDM_WAVEFORM_SAMPLE_PERIOD_S)
 OFDM_SYMBOLS = 2048
 #: The symbol period that puts the same closing speed on Doppler bin ``+q``.
-OFDM_SYMBOL_PERIOD_S = DOPPLER_BIN / (
-    F_REF_HZ * abs(DELAY_RATE) * OFDM_SYMBOLS
-)
+OFDM_SYMBOL_PERIOD_S = DOPPLER_BIN / (F_REF_HZ * abs(DELAY_RATE) * OFDM_SYMBOLS)
 OFDM_CYCLIC_PREFIX_S = OFDM_SYMBOL_PERIOD_S - 1.0 / OFDM_SPACING_HZ
 #: A configured range window, comfortably above ``tau`` and below the prefix.
 OFDM_MAX_DELAY_S = 5.0e-8
@@ -139,8 +132,7 @@ SITE_STABLE_ID = geo.SITE_P_STABLE_ID
 
 
 def closing_velocity_m_per_s(
-    site: tuple[float, float, float] = SITE_POSITION_M,
-    delay_rate: float = DELAY_RATE,
+    site: tuple[float, float, float] = SITE_POSITION_M, delay_rate: float = DELAY_RATE
 ) -> tuple[float, float, float]:
     """The site velocity that produces exactly ``delay_rate``, in closed form.
 
@@ -153,9 +145,9 @@ def closing_velocity_m_per_s(
     """
 
     direction = (0.0, -1.0, 0.0)
-    unit = geo.leg_delay_rate_s_per_s(
-        site, geo.TX_A_POSITION_M, "los", direction
-    ) + geo.leg_delay_rate_s_per_s(site, geo.RX_A_POSITION_M, "los", direction)
+    unit = geo.leg_delay_rate_s_per_s(site, geo.TX_A_POSITION_M, "los", direction) + geo.leg_delay_rate_s_per_s(
+        site, geo.RX_A_POSITION_M, "los", direction
+    )
     scale = float(delay_rate) / unit
     return tuple(scale * value for value in direction)
 
@@ -164,13 +156,7 @@ SITE_VELOCITY_M_PER_S = closing_velocity_m_per_s()
 
 #: The frame-invariant name of the one row every assertion is made about: the
 #: reflection-free round trip ``TX_A -> site -> RX_A``.
-TARGET_KEY = (
-    geo.TX_A_STABLE_ID,
-    SITE_STABLE_ID,
-    geo.RX_A_STABLE_ID,
-    "los",
-    "los",
-)
+TARGET_KEY = (geo.TX_A_STABLE_ID, SITE_STABLE_ID, geo.RX_A_STABLE_ID, "los", "los")
 
 
 def fmcw_spec(num_chirps: int = FMCW_CHIRPS):
@@ -211,9 +197,7 @@ def pulsed_spec(num_pulses: int = PULSED_PULSES, *, pulse_kind: str | None = Non
     from witwin.radar.synthesis.assembly import PULSE_KIND_LFM, PulsedSpec
 
     kind = PULSE_KIND_LFM if pulse_kind is None else pulse_kind
-    bandwidth = (
-        PULSED_BANDWIDTH_HZ if kind == PULSE_KIND_LFM else 1.0 / PULSED_WIDTH_S
-    )
+    bandwidth = PULSED_BANDWIDTH_HZ if kind == PULSE_KIND_LFM else 1.0 / PULSED_WIDTH_S
     return PulsedSpec(
         num_pulses=num_pulses,
         num_samples=PULSED_SAMPLES,
@@ -236,9 +220,7 @@ def array_spec():
     from witwin.radar import RadarConfig
     from witwin.radar.sensors import SensorArraySpec
 
-    return SensorArraySpec.from_radar_config(
-        RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    )
+    return SensorArraySpec.from_radar_config(RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)))
 
 
 def make_spike():
@@ -286,14 +268,10 @@ def moving_frame(spike, velocity=None):
 
     positions = spike.site_tensor()
     tangent = torch.tensor(
-        [SITE_VELOCITY_M_PER_S if velocity is None else velocity],
-        dtype=torch.float32,
-        device=positions.device,
+        [SITE_VELOCITY_M_PER_S if velocity is None else velocity], dtype=torch.float32, device=positions.device
     )
     with forward_ad.dual_level():
-        composed, _, _ = spike.frame(
-            forward_ad.make_dual(positions, tangent), ad_mode="jvp"
-        )
+        composed, _, _ = spike.frame(forward_ad.make_dual(positions, tangent), ad_mode="jvp")
         return replace(
             composed,
             total_delay_s=composed.total_delay_s.clone(),

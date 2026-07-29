@@ -34,11 +34,7 @@ import torch
 
 
 def echo_cube(
-    total_delay_s: torch.Tensor,
-    delay_rate: torch.Tensor,
-    transfer_ref: torch.Tensor,
-    pair_offsets: torch.Tensor,
-    spec,
+    total_delay_s: torch.Tensor, delay_rate: torch.Tensor, transfer_ref: torch.Tensor, pair_offsets: torch.Tensor, spec
 ) -> torch.Tensor:
     """The pulse-train sum, in the CHANNEL convention, evaluated in float64.
 
@@ -71,18 +67,13 @@ def echo_cube(
     t_l = (pulses * spec.pri_s).reshape(-1, 1)
     t_fast = (spec.range_gate_start_s + samples * spec.sample_period_s).reshape(1, -1)
 
-    out = torch.zeros(
-        (spec.num_pulses, num_segments, spec.num_samples),
-        dtype=torch.complex128,
-    )
+    out = torch.zeros((spec.num_pulses, num_segments, spec.num_samples), dtype=torch.complex128)
     for segment in range(num_segments):
         for row in range(offsets[segment], offsets[segment + 1]):
             drift = delay_rate[row].to(torch.float64) * t_l
             tau = total_delay_s[row].to(torch.float64) + drift
             u = t_fast - tau
-            cycles = -(
-                spec.carrier_rate_hz * drift + spec.carrier_hz * tau
-            )
+            cycles = -(spec.carrier_rate_hz * drift + spec.carrier_hz * tau)
             if spec.is_linear_fm:
                 cycles = cycles + 0.5 * spec.bandwidth_hz * u * u / spec.pulse_width_s
             # HALF-OPEN, matching the kernel. A closed support would put one
@@ -92,9 +83,9 @@ def echo_cube(
             inside = ((u >= 0.0) & (u < spec.pulse_width_s)).to(torch.float64)
             envelope = spec.pulse_amplitude * inside
             phasor = torch.exp(2j * math.pi * cycles.to(torch.complex128))
-            out[:, segment, :] = out[:, segment, :] + transfer_ref[row].to(
-                torch.complex128
-            ) * envelope.to(torch.complex128) * phasor
+            out[:, segment, :] = (
+                out[:, segment, :] + transfer_ref[row].to(torch.complex128) * envelope.to(torch.complex128) * phasor
+            )
     return out
 
 
@@ -110,9 +101,7 @@ def echo_loss(cube: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
     return (delta.real**2 + delta.imag**2).sum()
 
 
-def envelope_clearance_s(
-    total_delay_s: torch.Tensor, delay_rate: torch.Tensor, spec
-) -> float:
+def envelope_clearance_s(total_delay_s: torch.Tensor, delay_rate: torch.Tensor, spec) -> float:
     """How far every sample sits from the nearest pulse-support EDGE, in seconds.
 
     A finite difference on ``tau_rt`` or ``tau_rate`` moves ``u`` by the step. If
@@ -126,9 +115,7 @@ def envelope_clearance_s(
     pulses = torch.arange(spec.num_pulses, dtype=torch.float64).reshape(-1, 1, 1)
     samples = torch.arange(spec.num_samples, dtype=torch.float64).reshape(1, 1, -1)
     rows = torch.arange(total_delay_s.numel()).reshape(1, -1, 1)
-    tau = total_delay_s.to(torch.float64)[rows] + delay_rate.to(torch.float64)[
-        rows
-    ] * (pulses * spec.pri_s)
+    tau = total_delay_s.to(torch.float64)[rows] + delay_rate.to(torch.float64)[rows] * (pulses * spec.pri_s)
     u = spec.range_gate_start_s + samples * spec.sample_period_s - tau
     return float(torch.minimum(u.abs(), (u - spec.pulse_width_s).abs()).min())
 

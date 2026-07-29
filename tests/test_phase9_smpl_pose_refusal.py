@@ -47,10 +47,7 @@ def _smpl_model_root() -> str | None:
 
     candidates = (
         pathlib.Path(smpl_module._default_smpl_model_root()),
-        pathlib.Path(__file__).resolve().parents[3]
-        / "radar"
-        / "models"
-        / "smpl_models",
+        pathlib.Path(__file__).resolve().parents[3] / "radar" / "models" / "smpl_models",
     )
     for candidate in candidates:
         if candidate.is_dir() and any(candidate.glob("*.pkl")):
@@ -89,9 +86,7 @@ def _rate() -> torch.Tensor:
 
 
 @pytest.mark.parametrize("marked", ["pose", "shape"])
-def test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge(
-    smpl, marked
-):
+def test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge(smpl, marked):
     """Refused at construction, before a rest mesh or a state can exist."""
 
     SMPLBody, SmplPoseDeformation, root = smpl
@@ -122,9 +117,7 @@ def test_a_pose_carrying_a_forward_dual_is_refused_too(smpl):
     SMPLBody, SmplPoseDeformation, root = smpl
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(_pose(), torch.ones(72))
-        body = SMPLBody(
-            pose=dual, shape=_shape(), model_root=root, device="cpu"
-        )
+        body = SMPLBody(pose=dual, shape=_shape(), model_root=root, device="cpu")
         with pytest.raises(RuntimeError) as raised:
             SmplPoseDeformation(body, pose_rate=_rate())
     assert "forward tangent" in str(raised.value)
@@ -134,9 +127,7 @@ def test_a_pose_rate_that_requires_grad_is_refused_by_adr_038(smpl):
     """A rate is a tangent direction, exactly like a kinematics velocity."""
 
     SMPLBody, SmplPoseDeformation, root = smpl
-    body = SMPLBody(
-        pose=_pose(), shape=_shape(), model_root=root, device="cpu"
-    )
+    body = SMPLBody(pose=_pose(), shape=_shape(), model_root=root, device="cpu")
     with pytest.raises(RuntimeError) as raised:
         SmplPoseDeformation(body, pose_rate=_rate().requires_grad_(True))
     message = str(raised.value)
@@ -156,11 +147,7 @@ def test_a_transform_derivative_is_refused_by_rest_mesh(smpl):
 
     SMPLBody, SmplPoseDeformation, root = smpl
     body = SMPLBody(
-        pose=_pose(),
-        shape=_shape(),
-        position=torch.zeros(3).requires_grad_(True),
-        model_root=root,
-        device="cpu",
+        pose=_pose(), shape=_shape(), position=torch.zeros(3).requires_grad_(True), model_root=root, device="cpu"
     )
     deformation = SmplPoseDeformation(body, pose_rate=_rate())
     with pytest.raises(RuntimeError) as raised:
@@ -183,9 +170,7 @@ def test_the_rest_mesh_of_an_undifferentiated_body_is_unchanged(smpl):
     """
 
     SMPLBody, SmplPoseDeformation, root = smpl
-    body = SMPLBody(
-        pose=_pose(), shape=_shape(), model_root=root, device="cpu"
-    )
+    body = SMPLBody(pose=_pose(), shape=_shape(), model_root=root, device="cpu")
     deformation = SmplPoseDeformation(body, pose_rate=_rate())
     mesh = deformation.rest_mesh()
     vertices = mesh.vertices
@@ -204,9 +189,7 @@ def test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate(smpl):
     """
 
     SMPLBody, SmplPoseDeformation, root = smpl
-    body = SMPLBody(
-        pose=_pose(), shape=_shape(), model_root=root, device="cpu"
-    )
+    body = SMPLBody(pose=_pose(), shape=_shape(), model_root=root, device="cpu")
     deformation = SmplPoseDeformation(body, pose_rate=_rate())
     velocity = deformation.velocity_at(0.0)
     assert velocity.shape[1] == 3
@@ -221,9 +204,7 @@ def test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate(smpl):
     # a per-component relative test there would be measuring the floor. This is
     # the same normalisation ``test_phase7_moving_structures`` uses.
     step = 1.0e-4
-    difference = (
-        deformation.vertices_at(step) - deformation.vertices_at(-step)
-    ) / (2.0 * step)
+    difference = (deformation.vertices_at(step) - deformation.vertices_at(-step)) / (2.0 * step)
     error = float((difference - velocity).norm(dim=1).max()) / fastest
     assert error < 5.0e-3, error
 
@@ -240,9 +221,7 @@ def test_the_smpl_body_itself_still_publishes_a_pose_gradient(smpl):
 
     SMPLBody, _, root = smpl
     pose = _pose(requires_grad=True)
-    body = SMPLBody(
-        pose=pose, shape=_shape(), model_root=root, device="cpu"
-    )
+    body = SMPLBody(pose=pose, shape=_shape(), model_root=root, device="cpu")
     vertices, _ = body.to_mesh(device="cpu")
     assert vertices.requires_grad
     vertices.square().sum().backward()

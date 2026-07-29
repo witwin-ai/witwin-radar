@@ -41,7 +41,6 @@ from support import fd  # noqa: E402
 from support import phase4_geometry as geo  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 MULTIPATH_COMPONENTS = frozenset({"los", "reflection"})
@@ -84,10 +83,7 @@ def _site(values, *, requires_grad: bool = False) -> torch.Tensor:
 def _reflection_mask(spike, composed) -> torch.Tensor:
     """One per composed row, zero on the row that joins two los legs."""
 
-    names = {
-        geo.LOS_COMPONENT_ID: "los",
-        geo.REFLECTION_COMPONENT_ID: "reflection",
-    }
+    names = {geo.LOS_COMPONENT_ID: "los", geo.REFLECTION_COMPONENT_ID: "reflection"}
 
     def component(frozen, row):
         return names[int(frozen.component_id[row])]
@@ -99,16 +95,9 @@ def _reflection_mask(spike, composed) -> torch.Tensor:
         )
         for row in range(composed.path_count)
     ]
-    assert set(keys) == {
-        ("los", "los"),
-        ("los", "reflection"),
-        ("reflection", "los"),
-        ("reflection", "reflection"),
-    }
+    assert set(keys) == {("los", "los"), ("los", "reflection"), ("reflection", "los"), ("reflection", "reflection")}
     return torch.tensor(
-        [0.0 if key == ("los", "los") else 1.0 for key in keys],
-        dtype=torch.float64,
-        device=composed.device,
+        [0.0 if key == ("los", "los") else 1.0 for key in keys], dtype=torch.float64, device=composed.device
     )
 
 
@@ -125,9 +114,7 @@ def _weights(mask: torch.Tensor) -> dict[str, torch.Tensor]:
     rows = int(mask.shape[0])
 
     def sample() -> torch.Tensor:
-        return (
-            torch.rand(rows, generator=generator, dtype=torch.float64) - 0.5
-        ).to(device=mask.device)
+        return (torch.rand(rows, generator=generator, dtype=torch.float64) - 0.5).to(device=mask.device)
 
     return {
         "linear": sample() * mask,
@@ -138,13 +125,8 @@ def _weights(mask: torch.Tensor) -> dict[str, torch.Tensor]:
 
 def _loss(composed, weights) -> torch.Tensor:
     scaled = composed.total_delay_s.to(torch.float64) * DELAY_SCALE
-    delay_term = (weights["linear"] * scaled).sum() + 0.5 * (
-        weights["quadratic"] * scaled * scaled
-    ).sum()
-    transfer_term = (
-        torch.conj(weights["transfer"])
-        * composed.complex_transfer_ref.to(torch.complex128)
-    ).real.sum()
+    delay_term = (weights["linear"] * scaled).sum() + 0.5 * (weights["quadratic"] * scaled * scaled).sum()
+    transfer_term = (torch.conj(weights["transfer"]) * composed.complex_transfer_ref.to(torch.complex128)).real.sum()
     return delay_term + transfer_term
 
 
@@ -172,9 +154,7 @@ def test_the_reflection_rows_carry_the_whole_loss(spike, endpoints, weights):
     """
 
     tx, rx = endpoints
-    composed, inbound, outbound = spike.paths(
-        tx, _site(SITE_M), rx, drv.make_response()
-    )
+    composed, inbound, outbound = spike.paths(tx, _site(SITE_M), rx, drv.make_response())
     assert float(weights["transfer"].abs().sum()) > 0.0
     assert int((weights["transfer"].abs() == 0.0).sum()) == 1
 
@@ -188,9 +168,7 @@ def test_the_reflection_rows_carry_the_whole_loss(spike, endpoints, weights):
     assert abs(baseline) > ZERO_FLOOR
 
 
-def test_reverse_mode_site_gradients_match_finite_differences(
-    spike, endpoints, weights
-):
+def test_reverse_mode_site_gradients_match_finite_differences(spike, endpoints, weights):
     tx, rx = endpoints
     site = _site(SITE_M, requires_grad=True)
     composed, _, _ = spike.paths(tx, site, rx, drv.make_response(), ad_mode="vjp")
@@ -207,23 +185,15 @@ def test_reverse_mode_site_gradients_match_finite_differences(
             moved[axis] += offset * STEP_M
             samples[offset] = _evaluate(spike, endpoints, weights, moved)
             realized[offset] = float(_site(moved)[0, axis])
-        measured = fd.fourth_order_difference(
-            samples, (realized[1] - realized[-1]) / 2.0
-        )
+        measured = fd.fourth_order_difference(samples, (realized[1] - realized[-1]) / 2.0)
         expected = float(gradient[axis])
         # Every axis carries real signal at this off-plane site, so none of
         # these comparisons is a zero against a zero.
         assert abs(expected) > 1.0e-1, (axis, expected)
-        assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < FD_RTOL, (
-            axis,
-            measured,
-            expected,
-        )
+        assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < FD_RTOL, (axis, measured, expected)
 
 
-def test_forward_mode_site_tangent_matches_reverse_mode_and_a_difference(
-    spike, endpoints, weights
-):
+def test_forward_mode_site_tangent_matches_reverse_mode_and_a_difference(spike, endpoints, weights):
     """The same derivative three ways: JVP, VJP projected, and a difference.
 
     JVP against VJP is the cross-check that the two native companions agree;
@@ -232,16 +202,12 @@ def test_forward_mode_site_tangent_matches_reverse_mode_and_a_difference(
     """
 
     tx, rx = endpoints
-    direction = torch.tensor(
-        [[-0.5, 0.4, 0.3]], dtype=torch.float32, device="cuda"
-    )
+    direction = torch.tensor([[-0.5, 0.4, 0.3]], dtype=torch.float32, device="cuda")
 
     site = _site(SITE_M, requires_grad=True)
     composed, _, _ = spike.paths(tx, site, rx, drv.make_response(), ad_mode="vjp")
     _loss(composed, weights).backward()
-    projected = float(
-        torch.dot(site.grad.reshape(3).double(), direction.reshape(3).double())
-    )
+    projected = float(torch.dot(site.grad.reshape(3).double(), direction.reshape(3).double()))
 
     with forward_ad.dual_level():
         dual, _, _ = spike.paths(
@@ -267,15 +233,10 @@ def test_forward_mode_site_tangent_matches_reverse_mode_and_a_difference(
         moved = [SITE_M[axis] + offset * STEP_M * unit[axis] for axis in range(3)]
         samples[offset] = _evaluate(spike, endpoints, weights, moved)
     differenced = fd.fourth_order_difference(samples, STEP_M)
-    assert fd.relative_error(measured, differenced, floor=ZERO_FLOOR) < FD_RTOL, (
-        measured,
-        differenced,
-    )
+    assert fd.relative_error(measured, differenced, floor=ZERO_FLOOR) < FD_RTOL, (measured, differenced)
 
 
-def test_the_gradient_reaches_the_reflection_leg_and_not_only_the_delay(
-    spike, endpoints
-):
+def test_the_gradient_reaches_the_reflection_leg_and_not_only_the_delay(spike, endpoints):
     """A term-level control on what the gradient above is made of.
 
     With the delay terms removed the loss depends on the site ONLY through the
@@ -316,10 +277,9 @@ def test_the_gradient_reaches_the_reflection_leg_and_not_only_the_delay(
             moved[axis] += offset * STEP_M
             samples[offset] = _evaluate(spike, endpoints, weights, moved)
             realized[offset] = float(_site(moved)[0, axis])
-        measured = fd.fourth_order_difference(
-            samples, (realized[1] - realized[-1]) / 2.0
+        measured = fd.fourth_order_difference(samples, (realized[1] - realized[-1]) / 2.0)
+        assert fd.relative_error(measured, float(gradient[axis]), floor=ZERO_FLOOR) < CONTROL_FD_RTOL, (
+            axis,
+            measured,
+            float(gradient[axis]),
         )
-        assert (
-            fd.relative_error(measured, float(gradient[axis]), floor=ZERO_FLOOR)
-            < CONTROL_FD_RTOL
-        ), (axis, measured, float(gradient[axis]))

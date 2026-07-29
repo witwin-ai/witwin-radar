@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 import torch
-
 from witwin.core import GeometryBase
 
 
@@ -299,7 +298,7 @@ class SMPLBody(GeometryBase):
         self.gender = str(gender)
         self.model_root = _default_smpl_model_root() if model_root is None else str(model_root)
 
-    def updated(self, **changes) -> "SMPLBody":
+    def updated(self, **changes) -> SMPLBody:
         updated = SMPLBody(
             pose=changes.pop("pose", self.pose),
             shape=changes.pop("shape", self.shape),
@@ -367,18 +366,9 @@ class SmplPoseDeformation:
     builds a mesh that satisfies that by construction.
     """
 
-    def __init__(
-        self,
-        body: "SMPLBody",
-        *,
-        pose_rate,
-        reference_time_s: float = 0.0,
-        device=None,
-    ) -> None:
+    def __init__(self, body: SMPLBody, *, pose_rate, reference_time_s: float = 0.0, device=None) -> None:
         if not isinstance(body, SMPLBody):
-            raise TypeError(
-                f"body must be an SMPLBody, got {type(body).__name__}"
-            )
+            raise TypeError(f"body must be an SMPLBody, got {type(body).__name__}")
         # Refused here, at the earliest point the bridge exists, rather than at
         # the first rest_mesh: a caller that got to build the deformation, run a
         # whole epoch loop and only then learn the pose was never differentiable
@@ -421,7 +411,7 @@ class SmplPoseDeformation:
         elapsed = float(time_s) - self.reference_time_s
         return self._pose + self._pose_rate * elapsed
 
-    def body_at(self, time_s: float) -> "SMPLBody":
+    def body_at(self, time_s: float) -> SMPLBody:
         return self._body.updated(pose=self.pose_at(time_s), device=self._device)
 
     def _vertices(self, pose: torch.Tensor) -> torch.Tensor:
@@ -433,9 +423,7 @@ class SmplPoseDeformation:
         which is indistinguishable from a body that is holding still.
         """
 
-        vertices, _ = self._body.updated(
-            pose=pose, device=self._device
-        ).to_mesh(device=self._device)
+        vertices, _ = self._body.updated(pose=pose, device=self._device).to_mesh(device=self._device)
         return vertices
 
     def vertices_at(self, time_s: float) -> torch.Tensor:
@@ -484,15 +472,11 @@ class SmplPoseDeformation:
 
         from witwin.core import Mesh
 
-        vertices, faces = self._body.updated(
-            pose=self._pose, device=self._device
-        ).to_mesh(device=self._device)
+        vertices, faces = self._body.updated(pose=self._pose, device=self._device).to_mesh(device=self._device)
         carrier = _carries_derivative(vertices)
         if carrier is not None:
             _refuse_deformation_derivative(
-                "the posed body's vertices (through its position or rotation)",
-                vertices,
-                carrier,
+                "the posed body's vertices (through its position or rotation)", vertices, carrier
             )
         return Mesh(
             vertices=vertices,
@@ -502,5 +486,6 @@ class SmplPoseDeformation:
             topology_diagnostics=mesh_kwargs.pop("topology_diagnostics", False),
             **mesh_kwargs,
         )
+
 
 __all__ = ["SMPLBody", "SmplPoseDeformation"]

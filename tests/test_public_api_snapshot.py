@@ -11,19 +11,15 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
-from pathlib import Path
 import re
-import sys
 import types
+from pathlib import Path
 
 import witwin.radar
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT = ROOT / "ci" / "public-api-snapshot.json"
-MANIFEST = json.loads(
-    (ROOT / "ci" / "public-api-manifest.json").read_text(encoding="utf-8")
-)
+MANIFEST = json.loads((ROOT / "ci" / "public-api-manifest.json").read_text(encoding="utf-8"))
 PUBLIC_MODULES = tuple(MANIFEST["modules"])
 PUBLIC_CLASSES = tuple(MANIFEST["root_class_members"])
 
@@ -58,11 +54,7 @@ def _signature(obj: object) -> str | None:
 
 
 def _export(name: str, obj: object) -> dict[str, object]:
-    entry: dict[str, object] = {
-        "name": name,
-        "kind": _kind(obj),
-        "target": _target(name, obj),
-    }
+    entry: dict[str, object] = {"name": name, "kind": _kind(obj), "target": _target(name, obj)}
     if (signature := _signature(obj)) is not None:
         entry["signature"] = signature
     return entry
@@ -89,10 +81,7 @@ def build_snapshot() -> dict[str, object]:
         modules.append(
             {
                 "module": module_name,
-                "exports": [
-                    _export(name, getattr(module, name))
-                    for name in sorted(module.__all__)
-                ],
+                "exports": [_export(name, getattr(module, name)) for name in sorted(module.__all__)],
             }
         )
     classes = []
@@ -126,15 +115,9 @@ def test_every_root_export_has_a_consumer() -> None:
     module = witwin.radar
     declaring = Path(module.__file__).resolve()
     production, consumers = _source_files()
-    texts = [
-        path.read_text(encoding="utf-8")
-        for path in production + consumers
-        if path.resolve() != declaring
-    ]
+    texts = [path.read_text(encoding="utf-8") for path in production + consumers if path.resolve() != declaring]
     unconsumed = [
-        name
-        for name in sorted(module.__all__)
-        if not any(re.search(rf"\b{re.escape(name)}\b", text) for text in texts)
+        name for name in sorted(module.__all__) if not any(re.search(rf"\b{re.escape(name)}\b", text) for text in texts)
     ]
     assert unconsumed == []
 
@@ -146,7 +129,5 @@ def test_the_root_is_exactly_the_system_api() -> None:
 
 
 if __name__ == "__main__":
-    SNAPSHOT.write_text(
-        json.dumps(build_snapshot(), indent=2) + "\n", encoding="utf-8"
-    )
+    SNAPSHOT.write_text(json.dumps(build_snapshot(), indent=2) + "\n", encoding="utf-8")
     print(f"regenerated {SNAPSHOT}")

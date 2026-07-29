@@ -48,10 +48,7 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-from witwin.radar.channel import (  # noqa: E402
-    ChannelPropagationAdapter,
-)
-
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -80,11 +77,7 @@ class _SynthesisCounter:
         self.calls = 0
         import witwin.radar.synthesis as synthesis
 
-        for name in (
-            "synthesize_fmcw",
-            "synthesize_ofdm",
-            "synthesize_pulsed",
-        ):
+        for name in ("synthesize_fmcw", "synthesize_ofdm", "synthesize_pulsed"):
             original = getattr(synthesis, name)
 
             def counting(*args, _original=original, **kwargs):
@@ -123,9 +116,7 @@ def test_the_no_cube_instrument_counts_a_real_synthesis(spike, values, counter, 
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_an_ad_mode_outside_the_vocabulary_is_refused_before_any_cube(
-    spike, values, counter, kind
-):
+def test_an_ad_mode_outside_the_vocabulary_is_refused_before_any_cube(spike, values, counter, kind):
     """A closed vocabulary, and the message names the three legal values.
 
     ``"reverse"`` rather than nonsense: a caller who knows Torch reaches for
@@ -221,18 +212,13 @@ def _sources(spike, **overrides):
 
 def _replay(spike, sources, *, ad_mode):
     return spike.adapter.reevaluate(
-        spike.inbound,
-        sources,
-        spike._site_batch(spike.site_tensor(), role="sink"),
-        ad_mode=ad_mode,
+        spike.inbound, sources, spike._site_batch(spike.site_tensor(), role="sink"), ad_mode=ad_mode
     )
 
 
 @pytest.mark.parametrize("field", ("powers_w", "polarizations"))
 @pytest.mark.parametrize("mode", ("vjp", "jvp"))
-def test_a_primal_only_endpoint_input_is_refused_in_both_modes(
-    spike, counter, field, mode
-):
+def test_a_primal_only_endpoint_input_is_refused_in_both_modes(spike, counter, field, mode):
     """Transmit power and polarization, marked and dualled, both refused.
 
     The message points at ``capabilities().primal_only_ad_inputs`` rather than
@@ -241,12 +227,8 @@ def test_a_primal_only_endpoint_input_is_refused_in_both_modes(
     """
 
     base = {
-        "powers_w": torch.full(
-            (2,), geo.TX_POWER_W, dtype=torch.float32, device=spike.device
-        ),
-        "polarizations": torch.tensor(
-            [geo.POLARIZATION] * 2, dtype=torch.float32, device=spike.device
-        ),
+        "powers_w": torch.full((2,), geo.TX_POWER_W, dtype=torch.float32, device=spike.device),
+        "polarizations": torch.tensor([geo.POLARIZATION] * 2, dtype=torch.float32, device=spike.device),
     }[field]
 
     if mode == "vjp":
@@ -255,10 +237,7 @@ def test_a_primal_only_endpoint_input_is_refused_in_both_modes(
             _replay(spike, sources, ad_mode="vjp")
     else:
         with forward_ad.dual_level():
-            sources = _sources(
-                spike,
-                **{field: forward_ad.make_dual(base.clone(), torch.ones_like(base))},
-            )
+            sources = _sources(spike, **{field: forward_ad.make_dual(base.clone(), torch.ones_like(base))})
             with pytest.raises(NotImplementedError) as raised:
                 _replay(spike, sources, ad_mode="jvp")
 
@@ -292,9 +271,7 @@ def test_the_endpoint_spec_carries_no_polarization_basis_to_mark(spike):
 
 
 @pytest.mark.parametrize("component", ("diffraction", "transmission"))
-def test_an_unfreezable_component_is_refused_before_any_discovery(
-    spike, counter, component
-):
+def test_an_unfreezable_component_is_refused_before_any_discovery(spike, counter, component):
     """Item 7's deliverable: a pre-compute refusal, never an implementation.
 
     Channel's ADR-043 record narrows ``component_ad_modes["diffraction"]`` to
@@ -322,18 +299,12 @@ def test_an_unfreezable_component_is_refused_before_any_discovery(
 # --------------------------------------------------------------------------
 
 
-SPEC_SCALARS = {
-    "fmcw": "slope_hz_per_s",
-    "ofdm": "subcarrier_spacing_hz",
-    "pulsed": "pulse_width_s",
-}
+SPEC_SCALARS = {"fmcw": "slope_hz_per_s", "ofdm": "subcarrier_spacing_hz", "pulsed": "pulse_width_s"}
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
 @pytest.mark.parametrize("marked", (True, False))
-def test_a_tensor_waveform_scalar_is_refused_before_the_spec_exists(
-    counter, kind, marked
-):
+def test_a_tensor_waveform_scalar_is_refused_before_the_spec_exists(counter, kind, marked):
     """S2's host-float rule from the consumer's side rather than the owner's.
 
     S2 pins the rule at every ``__post_init__``. What this adds is that the
@@ -357,9 +328,7 @@ def test_a_tensor_waveform_scalar_is_refused_before_the_spec_exists(
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_a_grad_of_grad_request_through_the_whole_chain_is_refused(
-    spike, values, kind
-):
+def test_a_grad_of_grad_request_through_the_whole_chain_is_refused(spike, values, kind):
     """``create_graph=True`` on the production chain, not on an isolated kernel.
 
     S3 pins the rule at each of the ten registered backwards. This asks the
@@ -379,9 +348,7 @@ def test_a_grad_of_grad_request_through_the_whole_chain_is_refused(
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_first_order_request_over_the_same_chain_still_works(
-    spike, values, kind
-):
+def test_the_first_order_request_over_the_same_chain_still_works(spike, values, kind):
     """Over-refusing is the opposite mistake and just as easy to make."""
 
     live = mx.marked(values, ("sites",))

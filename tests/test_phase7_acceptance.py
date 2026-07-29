@@ -39,7 +39,6 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -56,8 +55,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 #: to English. Equality, not containment: an entry naming a test that no longer
 #: exists is a failure, and so is a criterion that lost its last owner.
 ACCEPTANCE_MATRIX = {
-    "static, radial, tangential, rotation, deformation, moving TX/RX and "
-    "moving environment scenarios pass": (
+    "static, radial, tangential, rotation, deformation, moving TX/RX and moving environment scenarios pass": (
         "test_phase7_doppler_scenarios.py::test_a_static_scene_has_exactly_zero_delay_rate",
         "test_phase7_doppler_scenarios.py::test_a_radially_moving_site_matches_the_projection_formula",
         "test_phase7_doppler_scenarios.py::test_the_los_and_reflection_rows_differ",
@@ -81,15 +79,13 @@ ACCEPTANCE_MATRIX = {
         "test_phase6_pulsed_kernel.py::test_a_receding_site_puts_the_slow_time_tone_at_negative_doppler",
         "test_phase6_pulsed_kernel.py::test_a_speed_past_the_unambiguous_bound_aliases",
     ),
-    "limb/rotor/deforming-mesh micro-Doppler agrees with an analytic or "
-    "independent reference": (
+    "limb/rotor/deforming-mesh micro-Doppler agrees with an analytic or independent reference": (
         "test_phase7_microdoppler.py::test_a_rotating_two_blade_target_gives_a_flash_spectrum",
         "test_phase7_microdoppler.py::test_a_hinge_limb_gives_a_rectangular_doppler_band",
         "test_phase7_microdoppler.py::test_smpl_limb_microdoppler_matches_an_independent_reference",
         "test_phase7_scatter_response_kernel.py::test_the_aspect_kernel_matches_a_closed_form",
     ),
-    "Channel time-varying CIR and Radar snapshot timestamps use the same "
-    "world state": (
+    "Channel time-varying CIR and Radar snapshot timestamps use the same world state": (
         "test_phase7_acceptance.py::test_channel_cir_and_radar_frames_use_the_same_world_state",
     ),
     "no Python full-scene retrace inside a frame, symbol or pulse": (
@@ -97,16 +93,14 @@ ACCEPTANCE_MATRIX = {
         "test_phase7_invalidation.py::test_endpoint_only_motion_does_not_recompile",
         "test_phase6_launch_budget.py::test_each_waveform_costs_exactly_one_forward_launch_per_frame",
     ),
-    "topology invalidation returns neither a wrong primal nor a detached "
-    "gradient": (
+    "topology invalidation returns neither a wrong primal nor a detached gradient": (
         "test_phase7_invalidation.py::test_a_stale_compiled_scene_never_answers",
         "test_phase7_invalidation.py::test_invalidation_never_produces_a_detached_gradient",
         "test_phase7_invalidation.py::test_a_born_row_forces_an_explicit_rediscovery",
         "test_phase7_invalidation.py::test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick",
         "test_phase7_rediscovery_cadence.py::test_a_retired_handle_is_refused_even_when_no_version_moved",
     ),
-    "slot batching, launch count, peak memory and realtime scaling meet "
-    "their budgets": (
+    "slot batching, launch count, peak memory and realtime scaling meet their budgets": (
         "test_phase7_slot_batching.py::test_pair_count_grows_linearly_not_quadratically",
         "test_phase6_launch_budget.py::test_the_launch_count_is_flat_in_slot_count",
         "test_phase5_budget.py::test_the_per_frame_host_budget_is_flat_in_slot_count",
@@ -120,8 +114,7 @@ def _defined_tests(path: pathlib.Path) -> set[str]:
     return {
         node.name
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name.startswith("test_")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
     }
 
 
@@ -177,9 +170,7 @@ def _solo_spec(*, num_chirps: int):
 
     values = dict(geo.FIXTURE_RADAR_CONFIG)
     values.update(num_tx=1, num_rx=1, tx_loc=[[0, 0, 0]], rx_loc=[[0, 0, 0]])
-    spec = FmcwSpec.from_radar_config(
-        RadarConfig.from_dict(values), output_domain="beat"
-    )
+    spec = FmcwSpec.from_radar_config(RadarConfig.from_dict(values), output_domain="beat")
     return replace(spec, num_chirps=num_chirps)
 
 
@@ -210,32 +201,21 @@ def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
     kernel that dropped the conjugation would still produce a plausible cube.
     """
 
-
     import witwin.radar.propagation as kin
     from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     velocity = (-SOLO_SPEED_M_PER_S, 0.0, 0.0)
     sites = kin.Kinematics(
-        positions_m=solo.site_tensor(),
-        velocities_m_per_s=torch.tensor(
-            [velocity], dtype=torch.float32, device="cuda"
-        ),
+        positions_m=solo.site_tensor(), velocities_m_per_s=torch.tensor([velocity], dtype=torch.float32, device="cuda")
     )
     stationary = torch.zeros(1, 3, device="cuda")
     with kin.two_way_duals(
         sites=sites,
-        transmitters=kin.Kinematics(
-            positions_m=solo.transmitter_tensor(), velocities_m_per_s=stationary
-        ),
-        receivers=kin.Kinematics(
-            positions_m=solo.receiver_tensor(), velocities_m_per_s=stationary
-        ),
+        transmitters=kin.Kinematics(positions_m=solo.transmitter_tensor(), velocities_m_per_s=stationary),
+        receivers=kin.Kinematics(positions_m=solo.receiver_tensor(), velocities_m_per_s=stationary),
     ) as duals:
         composed, _, _ = solo.frame(
-            duals.sites,
-            transmitters=duals.transmitters,
-            receivers=duals.receivers,
-            ad_mode="jvp",
+            duals.sites, transmitters=duals.transmitters, receivers=duals.receivers, ad_mode="jvp"
         )
         tau_rt = float(composed.total_delay_s[0])
         tau_rate = float(composed.delay_rate[0])
@@ -267,13 +247,7 @@ def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
         measured = float(torch.angle(steps).mean())
         t_m = sample / spec.sample_rate_hz
         ramp = spec.slope_hz_per_s * (spec.t_start_s - tau_rt + t_m)
-        analytic = (
-            2.0
-            * math.pi
-            * tau_rate
-            * spec.chirp_period_s
-            * (spec.carrier_hz + spec.carrier_rate_hz + ramp)
-        )
+        analytic = 2.0 * math.pi * tau_rate * spec.chirp_period_s * (spec.carrier_hz + spec.carrier_rate_hz + ramp)
         assert measured == pytest.approx(analytic, rel=2.0e-4), sample
         # Dimension, stated as a unit identity rather than as a number: the
         # slope is radians per chirp, and dividing by the chirp period gives
@@ -316,6 +290,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
     """
 
     from witwin.channel.propagation import consumer
+
     from witwin.radar.channel import _endpoint_batch
 
     times = _times()
@@ -330,9 +305,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
 
     spike = drv.MultiEndpointSpike(compiled=compiled)
     base = spike.site_tensor()
-    stack = drv.slot_site_stack(
-        base, geo.SITE_P_VELOCITY_M_PER_S, (times - times[0]).tolist()
-    )
+    stack = drv.slot_site_stack(base, geo.SITE_P_VELOCITY_M_PER_S, (times - times[0]).tolist())
 
     inbound, _ = spike.slot_legs(stack, slot_count=SLOT_COUNT)
     assert inbound.slot_count == SLOT_COUNT
@@ -342,9 +315,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
     # second, test-written endpoint batch would be a second world state and the
     # bitwise claim would be about the test rather than about the two consumers.
     transmitters = spike._stacked_ids(
-        spike.stacked(
-            [position for _, position in spike.transmitters], SLOT_COUNT
-        ),
+        spike.stacked([position for _, position in spike.transmitters], SLOT_COUNT),
         spike.transmitter_ids,
         geo.TX_POWER_W,
     )
@@ -370,12 +341,8 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
     for slot in range(SLOT_COUNT):
         radar_slot = inbound.slot(slot)
         assert torch.equal(evaluation.delay_s[slot], radar_slot.delay_s), slot
-        assert torch.equal(
-            evaluation.transport.coefficient[slot], radar_slot.coefficient
-        ), slot
-        if slot and not torch.equal(
-            evaluation.delay_s[slot], evaluation.delay_s[0]
-        ):
+        assert torch.equal(evaluation.transport.coefficient[slot], radar_slot.coefficient), slot
+        if slot and not torch.equal(evaluation.delay_s[slot], evaluation.delay_s[0]):
             moved = True
     # Non-vacuity: a world that did not move would make every slot trivially
     # equal to every other and the bitwise claim would prove nothing.

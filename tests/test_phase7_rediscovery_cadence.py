@@ -28,7 +28,6 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 WALL_SPEED_M_PER_S = 0.5
@@ -50,10 +49,7 @@ def _moving_wall_scene():
     return DynamicScene(
         scene,
         structure_trajectories={
-            1: LinearTrajectory(
-                origin=torch.zeros(3),
-                velocity=torch.tensor([WALL_SPEED_M_PER_S, 0.0, 0.0]),
-            )
+            1: LinearTrajectory(origin=torch.zeros(3), velocity=torch.tensor([WALL_SPEED_M_PER_S, 0.0, 0.0]))
         },
     )
 
@@ -61,9 +57,7 @@ def _moving_wall_scene():
 def _compile(snapshot):
     from witwin.channel.scene import compile as compile_scene
 
-    return compile_scene(
-        snapshot, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ
-    )
+    return compile_scene(snapshot, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
 
 
 def test_rediscovery_is_not_required_while_the_world_holds_still():
@@ -126,9 +120,7 @@ def test_refreeze_is_required_after_a_structure_moves():
     before = spike.adapter.reevaluate(
         spike.inbound,
         spike._stacked_ids(
-            spike.stacked([position for _, position in spike.transmitters], 1),
-            spike.transmitter_ids,
-            geo.TX_POWER_W,
+            spike.stacked([position for _, position in spike.transmitters], 1), spike.transmitter_ids, geo.TX_POWER_W
         ),
         spike._stacked_ids(sites, spike.site_ids, None),
         ad_mode="none",
@@ -147,9 +139,7 @@ def test_refreeze_is_required_after_a_structure_moves():
         spike.adapter.reevaluate(
             spike.inbound,
             spike._stacked_ids(
-                spike.stacked(
-                    [position for _, position in spike.transmitters], 1
-                ),
+                spike.stacked([position for _, position in spike.transmitters], 1),
                 spike.transmitter_ids,
                 geo.TX_POWER_W,
             ),
@@ -165,9 +155,7 @@ def test_refreeze_is_required_after_a_structure_moves():
     after = rebuilt.adapter.reevaluate(
         rebuilt.inbound,
         rebuilt._stacked_ids(
-            rebuilt.stacked(
-                [position for _, position in rebuilt.transmitters], 1
-            ),
+            rebuilt.stacked([position for _, position in rebuilt.transmitters], 1),
             rebuilt.transmitter_ids,
             geo.TX_POWER_W,
         ),
@@ -179,9 +167,7 @@ def test_refreeze_is_required_after_a_structure_moves():
     reflection = before.component_id == geo.REFLECTION_COMPONENT_ID
     assert bool(los.any()) and bool(reflection.any())
     assert torch.equal(before.delay_s[los], after.delay_s[los])
-    assert not torch.equal(
-        before.delay_s[reflection], after.delay_s[reflection]
-    )
+    assert not torch.equal(before.delay_s[reflection], after.delay_s[reflection])
 
 
 def test_a_retired_handle_is_refused_even_when_no_version_moved():
@@ -207,9 +193,7 @@ def test_a_retired_handle_is_refused_even_when_no_version_moved():
         spike.adapter.reevaluate(
             spike.inbound,
             spike._stacked_ids(
-                spike.stacked(
-                    [position for _, position in spike.transmitters], 1
-                ),
+                spike.stacked([position for _, position in spike.transmitters], 1),
                 spike.transmitter_ids,
                 geo.TX_POWER_W,
             ),

@@ -30,9 +30,8 @@ import argparse
 import collections
 import importlib
 import json
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "ci" / "native-binding-manifest.json"
@@ -107,10 +106,7 @@ def _check_shape(manifest: dict, failures: list[str]) -> None:
         failures.append(f"missing top-level keys: {missing}")
         return
     if manifest["schema_version"] != SCHEMA_VERSION:
-        failures.append(
-            f"schema_version is {manifest['schema_version']}, expected "
-            f"{SCHEMA_VERSION}"
-        )
+        failures.append(f"schema_version is {manifest['schema_version']}, expected {SCHEMA_VERSION}")
     try:
         from witwin.radar.cuda.runtime import RADAR_ABI_VERSION
     except ImportError as error:  # pragma: no cover - environment problem
@@ -137,14 +133,10 @@ def _check_sources(manifest: dict, failures: list[str]) -> None:
         return
     if REPO_ROOT not in Path(build.__file__).resolve().parents:
         failures.append(
-            f"witwin.radar resolved to {build.__file__}, outside {REPO_ROOT}; "
-            "this gate must inspect its own checkout"
+            f"witwin.radar resolved to {build.__file__}, outside {REPO_ROOT}; this gate must inspect its own checkout"
         )
         return
-    actual = {
-        str(path.relative_to(REPO_ROOT)).replace("\\", "/")
-        for path in build.extension_sources()
-    }
+    actual = {str(path.relative_to(REPO_ROOT)).replace("\\", "/") for path in build.extension_sources()}
     declared = set(manifest["sources"])
     if actual != declared:
         failures.append(
@@ -174,9 +166,7 @@ def _check_operators(manifest: dict, failures: list[str]) -> None:
         seen.add(symbol)
 
         if entry["native_tu"] not in sources:
-            failures.append(
-                f"{symbol}: native_tu {entry['native_tu']!r} is not a build source"
-            )
+            failures.append(f"{symbol}: native_tu {entry['native_tu']!r} is not a build source")
         if entry["numerical_owner"] not in NUMERICAL_OWNERS:
             failures.append(
                 f"{symbol}: numerical_owner {entry['numerical_owner']!r} is not "
@@ -192,42 +182,28 @@ def _check_operators(manifest: dict, failures: list[str]) -> None:
         if type(launches) is not int or launches < 1:
             failures.append(f"{symbol}: launches must be a positive integer")
         stages = entry["fused_stages"]
-        if not isinstance(stages, list) or not stages or not all(
-            isinstance(stage, str) and stage for stage in stages
-        ):
+        if not isinstance(stages, list) or not stages or not all(isinstance(stage, str) and stage for stage in stages):
             failures.append(f"{symbol}: fused_stages must be a non-empty string list")
         observations = entry["host_observations"]
         if type(observations) is not int or observations < 0:
-            failures.append(
-                f"{symbol}: host_observations must be a non-negative integer"
-            )
+            failures.append(f"{symbol}: host_observations must be a non-negative integer")
 
         owner = REPO_ROOT / entry["python_owner"]
         if not owner.is_file():
             failures.append(f"{symbol}: python_owner {entry['python_owner']} is missing")
         elif symbol not in owner.read_text(encoding="utf-8"):
-            failures.append(
-                f"{symbol}: python_owner {entry['python_owner']} does not name it"
-            )
+            failures.append(f"{symbol}: python_owner {entry['python_owner']} does not name it")
         contract = REPO_ROOT / entry["contract_test"]
         note = entry.get("contract_test_note")
         if note is not None and (
-            not isinstance(note, list)
-            or not note
-            or not all(isinstance(line, str) and line for line in note)
+            not isinstance(note, list) or not note or not all(isinstance(line, str) and line for line in note)
         ):
-            failures.append(
-                f"{symbol}: contract_test_note must be a non-empty string list"
-            )
+            failures.append(f"{symbol}: contract_test_note must be a non-empty string list")
             note = None
         if not contract.is_file():
-            failures.append(
-                f"{symbol}: contract_test {entry['contract_test']} is missing"
-            )
+            failures.append(f"{symbol}: contract_test {entry['contract_test']} is missing")
         elif note is None and not _references(
-            contract.read_text(encoding="utf-8"),
-            symbol=symbol,
-            owner_module=Path(entry["python_owner"]).stem,
+            contract.read_text(encoding="utf-8"), symbol=symbol, owner_module=Path(entry["python_owner"]).stem
         ):
             failures.append(
                 f"{symbol}: contract_test {entry['contract_test']} names neither "
@@ -241,8 +217,7 @@ def _check_operators(manifest: dict, failures: list[str]) -> None:
         if caller is None:
             if entry.get("caller_status") != "test_only" or not entry.get("caller_note"):
                 failures.append(
-                    f"{symbol}: a caller-free symbol must record caller_status "
-                    "'test_only' and a caller_note"
+                    f"{symbol}: a caller-free symbol must record caller_status 'test_only' and a caller_note"
                 )
         elif not _resolves(caller):
             failures.append(f"{symbol}: end_to_end_caller {caller} does not resolve")
@@ -258,11 +233,7 @@ def _check_ad_groups(operators: list[dict], failures: list[str]) -> None:
     defect this column exists to surface.
     """
 
-    primal = collections.Counter(
-        entry["ad_group"]
-        for entry in operators
-        if entry.get("ad_role") == "primal"
-    )
+    primal = collections.Counter(entry["ad_group"] for entry in operators if entry.get("ad_role") == "primal")
     groups = {entry.get("ad_group") for entry in operators}
     for group in sorted(name for name in groups if isinstance(name, str)):
         count = primal.get(group, 0)
@@ -270,9 +241,7 @@ def _check_ad_groups(operators: list[dict], failures: list[str]) -> None:
             failures.append(f"ad_group {group!r} has {count} primal rows, expected 1")
     for entry in operators:
         if entry.get("ad_role") in {"backward", "jvp"} and entry["ad_group"] not in primal:
-            failures.append(
-                f"{entry['symbol']}: ad_group {entry['ad_group']!r} has no primal"
-            )
+            failures.append(f"{entry['symbol']}: ad_group {entry['ad_group']!r} has no primal")
 
 
 def _check_error_owners(manifest: dict, failures: list[str]) -> None:
@@ -286,13 +255,9 @@ def _check_error_owners(manifest: dict, failures: list[str]) -> None:
         domains.add(entry["domain"])
         module = REPO_ROOT / entry["owner_module"]
         if not module.is_file():
-            failures.append(
-                f"error_owners: {entry['owner_module']} does not exist"
-            )
+            failures.append(f"error_owners: {entry['owner_module']} does not exist")
         if not entry["failure_mode"].strip():
-            failures.append(
-                f"error_owners: {entry['domain']} has an empty failure_mode"
-            )
+            failures.append(f"error_owners: {entry['domain']} has an empty failure_mode")
 
 
 def _check_sidecar_symbols(manifest: dict, failures: list[str]) -> str:
@@ -305,6 +270,7 @@ def _check_sidecar_symbols(manifest: dict, failures: list[str]) -> str:
 
     try:
         from witwin.radar.cuda import runtime as build
+
         identity = build
     except ImportError as error:  # pragma: no cover - environment problem
         failures.append(f"cannot import the radar loader: {error}")

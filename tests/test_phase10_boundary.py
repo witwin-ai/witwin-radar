@@ -21,12 +21,11 @@ worse than no test, because it reports a green that means nothing.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE = REPO_ROOT / "ci" / "check_extension_boundary.py"
@@ -58,11 +57,7 @@ def test_the_gate_passes_on_the_packaged_prebuilt():
 
 def test_exactly_one_native_member_sits_under_the_prebuilt_directory():
     binary = _radar_binary()
-    members = [
-        entry
-        for entry in binary.parent.iterdir()
-        if entry.is_file() and entry.suffix in gate.NATIVE_SUFFIXES
-    ]
+    members = [entry for entry in binary.parent.iterdir() if entry.is_file() and entry.suffix in gate.NATIVE_SUFFIXES]
     assert members == [binary]
 
 
@@ -107,16 +102,10 @@ def test_the_gate_fires_when_an_import_leaves_the_allowlist(monkeypatch):
     """A passing gate that cannot fail is not a gate."""
 
     binary = _radar_binary()
-    narrowed = frozenset(
-        name for name in gate.WINDOWS_ALLOWLIST if not name.startswith("torch_")
-    )
+    narrowed = frozenset(name for name in gate.WINDOWS_ALLOWLIST if not name.startswith("torch_"))
     monkeypatch.setattr(gate, "WINDOWS_ALLOWLIST", narrowed)
     monkeypatch.setattr(
-        gate,
-        "LINUX_ALLOWLIST",
-        frozenset(
-            name for name in gate.LINUX_ALLOWLIST if not name.startswith("libtorch")
-        ),
+        gate, "LINUX_ALLOWLIST", frozenset(name for name in gate.LINUX_ALLOWLIST if not name.startswith("libtorch"))
     )
     report = gate.check_boundary(binary)
     assert not report["ok"]

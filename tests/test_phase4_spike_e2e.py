@@ -31,7 +31,6 @@ from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -63,12 +62,8 @@ def _oracle_gradients(reference_iq, spec):
     tx = tx.clone().requires_grad_(True)
     site = site.clone().requires_grad_(True)
     rx = rx.clone().requires_grad_(True)
-    amplitude = torch.tensor(
-        drv.SPIKE_AMPLITUDE, dtype=torch.float64, requires_grad=True
-    )
-    phase = torch.tensor(
-        drv.SPIKE_PHASE_RAD, dtype=torch.float64, requires_grad=True
-    )
+    amplitude = torch.tensor(drv.SPIKE_AMPLITUDE, dtype=torch.float64, requires_grad=True)
+    phase = torch.tensor(drv.SPIKE_PHASE_RAD, dtype=torch.float64, requires_grad=True)
     loss = ref.full_chain_loss(tx, site, rx, amplitude, phase, reference_iq, spec)
     loss.backward()
     return {
@@ -92,13 +87,7 @@ def _oracle_loss(reference_iq, spec, **overrides):
     }
     values.update(overrides)
     return ref.full_chain_loss(
-        values["tx"],
-        values["site"],
-        values["rx"],
-        values["amplitude"],
-        values["phase_rad"],
-        reference_iq,
-        spec,
+        values["tx"], values["site"], values["rx"], values["amplitude"], values["phase_rad"], reference_iq, spec
     )
 
 
@@ -114,36 +103,33 @@ def test_oracle_matches_float64_finite_differences(reference_iq, spec):
     for name in ("tx", "site", "rx"):
         for axis in range(3):
             measured = fd.central_difference(
-                lambda value, key=name: _oracle_loss(
-                    reference_iq, spec, **{key: value}
-                ),
+                lambda value, key=name: _oracle_loss(reference_iq, spec, **{key: value}),
                 drv.oracle_positions()[("tx", "site", "rx").index(name)],
                 axis,
                 POSITION_STEP_M,
             )
-            assert (
-                fd.relative_error(
-                    measured, float(oracle[name][axis]), floor=ZERO_FLOOR
-                )
-                < 1e-3
-            ), (name, axis, measured, float(oracle[name][axis]))
+            assert fd.relative_error(measured, float(oracle[name][axis]), floor=ZERO_FLOOR) < 1e-3, (
+                name,
+                axis,
+                measured,
+                float(oracle[name][axis]),
+            )
 
     for name in ("amplitude", "phase_rad"):
         base = torch.tensor(
-            drv.SPIKE_AMPLITUDE if name == "amplitude" else drv.SPIKE_PHASE_RAD,
-            dtype=torch.float64,
+            drv.SPIKE_AMPLITUDE if name == "amplitude" else drv.SPIKE_PHASE_RAD, dtype=torch.float64
         ).reshape(1)
         measured = fd.central_difference(
-            lambda value, key=name: _oracle_loss(
-                reference_iq, spec, **{key: value.reshape(())}
-            ),
+            lambda value, key=name: _oracle_loss(reference_iq, spec, **{key: value.reshape(())}),
             base,
             0,
             PARAMETER_STEP[name],
         )
-        assert (
-            fd.relative_error(measured, float(oracle[name]), floor=ZERO_FLOOR) < 1e-3
-        ), (name, measured, float(oracle[name]))
+        assert fd.relative_error(measured, float(oracle[name]), floor=ZERO_FLOOR) < 1e-3, (
+            name,
+            measured,
+            float(oracle[name]),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -154,38 +140,20 @@ def test_oracle_matches_float64_finite_differences(reference_iq, spec):
 def test_reverse_mode_loss_gradients_match_the_oracle(spike, spec, reference_iq):
     tx, site, rx = drv.positions(requires_grad=True)
     response = drv.make_response(requires_grad=True)
-    loss = spike.loss(
-        tx,
-        site,
-        rx,
-        response,
-        spec,
-        reference_iq,
-        ad_mode="vjp",
-        include_delay_rate=False,
-    )
+    loss = spike.loss(tx, site, rx, response, spec, reference_iq, ad_mode="vjp", include_delay_rate=False)
     loss.backward()
 
     oracle = _oracle_gradients(reference_iq, spec)
-    assert (
-        fd.relative_error(float(loss.detach()), oracle["loss"], floor=ZERO_FLOOR)
-        < 1e-4
-    )
+    assert fd.relative_error(float(loss.detach()), oracle["loss"], floor=ZERO_FLOOR) < 1e-4
 
-    measured = {
-        "tx": tx.grad.reshape(3),
-        "site": site.grad.reshape(3),
-        "rx": rx.grad.reshape(3),
-    }
+    measured = {"tx": tx.grad.reshape(3), "site": site.grad.reshape(3), "rx": rx.grad.reshape(3)}
     for name, gradient in measured.items():
         assert gradient is not None
         for axis in range(3):
-            assert (
-                fd.relative_error(
-                    float(gradient[axis]), float(oracle[name][axis]), floor=ZERO_FLOOR
-                )
-                < 1e-3
-            ), (name, axis)
+            assert fd.relative_error(float(gradient[axis]), float(oracle[name][axis]), floor=ZERO_FLOOR) < 1e-3, (
+                name,
+                axis,
+            )
         # In-plane components carry real signal; the out-of-plane component is
         # exactly zero for this planar, z-polarized fixture, which is a
         # structural fact and is asserted rather than hidden.
@@ -193,26 +161,14 @@ def test_reverse_mode_loss_gradients_match_the_oracle(spike, spec, reference_iq)
         assert abs(float(gradient[1])) > ZERO_FLOOR
         assert abs(float(gradient[2])) <= ZERO_FLOOR
 
-    assert (
-        fd.relative_error(
-            float(response.amplitude.grad), float(oracle["amplitude"]), floor=ZERO_FLOOR
-        )
-        < 1e-3
-    )
+    assert fd.relative_error(float(response.amplitude.grad), float(oracle["amplitude"]), floor=ZERO_FLOOR) < 1e-3
     # The phase gradient is the conjugation witness: inverting the
     # Channel-to-beat conjugation flips its sign.
-    assert (
-        fd.relative_error(
-            float(response.phase_rad.grad), float(oracle["phase_rad"]), floor=1e-12
-        )
-        < 1e-3
-    )
+    assert fd.relative_error(float(response.phase_rad.grad), float(oracle["phase_rad"]), floor=1e-12) < 1e-3
     assert abs(float(response.phase_rad.grad)) > 1e-12
 
 
-def test_site_gradient_is_the_negated_sum_of_the_endpoint_gradients(
-    spike, spec, reference_iq
-):
+def test_site_gradient_is_the_negated_sum_of_the_endpoint_gradients(spike, spec, reference_iq):
     """A structural identity the two legs must satisfy jointly.
 
     Translating the whole scene changes nothing, so the three position
@@ -222,18 +178,9 @@ def test_site_gradient_is_the_negated_sum_of_the_endpoint_gradients(
 
     tx, site, rx = drv.positions(requires_grad=True)
     spike.loss(
-        tx,
-        site,
-        rx,
-        drv.make_response(),
-        spec,
-        reference_iq,
-        ad_mode="vjp",
-        include_delay_rate=False,
+        tx, site, rx, drv.make_response(), spec, reference_iq, ad_mode="vjp", include_delay_rate=False
     ).backward()
-    torch.testing.assert_close(
-        site.grad, -(tx.grad + rx.grad), rtol=1e-4, atol=1e-7
-    )
+    torch.testing.assert_close(site.grad, -(tx.grad + rx.grad), rtol=1e-4, atol=1e-7)
 
 
 # --------------------------------------------------------------------------
@@ -275,12 +222,7 @@ def test_forward_mode_loss_tangent_matches_the_oracle(spike, reference_iq):
 
     oracle = _oracle_gradients(reference, spec)
     expected = sum(
-        float(
-            torch.dot(
-                oracle[name], direction[name].reshape(3).double().cpu()
-            )
-        )
-        for name in ("tx", "site", "rx")
+        float(torch.dot(oracle[name], direction[name].reshape(3).double().cpu())) for name in ("tx", "site", "rx")
     )
     assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < 1e-3
 
@@ -289,10 +231,7 @@ def test_forward_mode_loss_tangent_matches_the_oracle(spike, reference_iq):
     directional = fd.directional_derivative(
         lambda a, b, c: _oracle_loss(reference, spec, tx=a, site=b, rx=c),
         (o_tx, o_site, o_rx),
-        tuple(
-            direction[name].reshape(3).double().cpu()
-            for name in ("tx", "site", "rx")
-        ),
+        tuple(direction[name].reshape(3).double().cpu() for name in ("tx", "site", "rx")),
         POSITION_STEP_M,
     )
     assert fd.relative_error(measured, directional, floor=ZERO_FLOOR) < 1e-3
@@ -316,13 +255,7 @@ def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
     response = drv.make_response()
 
     with forward_ad.dual_level():
-        composed, inbound, outbound = spike.paths(
-            tx,
-            forward_ad.make_dual(site, velocity),
-            rx,
-            response,
-            ad_mode="jvp",
-        )
+        composed, inbound, outbound = spike.paths(tx, forward_ad.make_dual(site, velocity), rx, response, ad_mode="jvp")
         assert inbound.delay_rate is not None
         assert outbound.delay_rate is not None
         rate = composed.delay_rate.clone()
@@ -330,42 +263,28 @@ def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
     assert rate is not None
 
     o_tx, o_site, o_rx = drv.oracle_positions()
-    analytic = float(
-        ref.round_trip_delay_rate(
-            o_tx, o_site, o_rx, velocity.reshape(3).double().cpu()
-        )
-    )
+    analytic = float(ref.round_trip_delay_rate(o_tx, o_site, o_rx, velocity.reshape(3).double().cpu()))
     measured = float(rate[0])
     # Eight significant digits: this is the Doppler primitive and it has to be
     # exact, not merely close.
-    assert fd.relative_error(measured, analytic, floor=1e-18) < 1e-7, (
-        measured,
-        analytic,
-    )
+    assert fd.relative_error(measured, analytic, floor=1e-18) < 1e-7, (measured, analytic)
 
     doppler_hz = -geo.REFERENCE_FREQUENCY_HZ * measured
-    assert doppler_hz == pytest.approx(
-        -geo.REFERENCE_FREQUENCY_HZ * analytic, rel=1e-6
-    )
+    assert doppler_hz == pytest.approx(-geo.REFERENCE_FREQUENCY_HZ * analytic, rel=1e-6)
     assert doppler_hz < 0.0  # a receding site
 
     # The rate reaches synthesis as a primal and shows up as a slow-time slope.
     from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-    iq = (
-        synthesize_fmcw(drv.to_synthesis(composed), spec)
-        .cpu()
-        .to(torch.complex128)
-    )
+    iq = synthesize_fmcw(drv.to_synthesis(composed), spec).cpu().to(torch.complex128)
     steps = iq[1:, 0, 0] * torch.conj(iq[:-1, 0, 0])
     slope = float(torch.angle(steps).mean())
-    dphi_dtau = 2.0 * math.pi * (
-        geo.REFERENCE_FREQUENCY_HZ
-        + spec.slope_hz_per_s * (spec.t_start_s - float(composed.total_delay_s[0]))
+    dphi_dtau = (
+        2.0
+        * math.pi
+        * (geo.REFERENCE_FREQUENCY_HZ + spec.slope_hz_per_s * (spec.t_start_s - float(composed.total_delay_s[0])))
     )
-    assert slope == pytest.approx(
-        dphi_dtau * measured * spec.chirp_period_s, abs=1e-4
-    )
+    assert slope == pytest.approx(dphi_dtau * measured * spec.chirp_period_s, abs=1e-4)
     # Positive slow-time slope for a receding site: the documented beat
     # convention, asserted rather than flipped.
     assert slope > 0.0
@@ -379,9 +298,7 @@ def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
 def test_every_stage_output_stays_on_the_tape(spike, spec, reference_iq):
     tx, site, rx = drv.positions(requires_grad=True)
     response = drv.make_response(requires_grad=True)
-    composed, inbound, outbound = spike.paths(
-        tx, site, rx, response, ad_mode="vjp"
-    )
+    composed, inbound, outbound = spike.paths(tx, site, rx, response, ad_mode="vjp")
     assert inbound.delay_s.requires_grad
     assert inbound.coefficient.requires_grad
     assert outbound.coefficient.requires_grad
@@ -400,9 +317,7 @@ def test_every_stage_output_stays_on_the_tape(spike, spec, reference_iq):
         assert torch.isfinite(tensor.grad).all()
 
 
-def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(
-    spike, spec, reference_iq
-):
+def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(spike, spec, reference_iq):
     """Dead-row semantics, injected.
 
     A frozen line-of-sight row is replayed as pure free-space transport and is
@@ -419,12 +334,7 @@ def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(
     tx, site, rx = drv.positions(requires_grad=True)
     response = drv.make_response(requires_grad=True)
     composed, _, _ = spike.paths(tx, site, rx, response, ad_mode="vjp")
-    dead = replace(
-        composed,
-        row_valid=torch.zeros(
-            composed.path_count, dtype=torch.bool, device=composed.device
-        ),
-    )
+    dead = replace(composed, row_valid=torch.zeros(composed.path_count, dtype=torch.bool, device=composed.device))
     iq = synthesize_fmcw(drv.to_synthesis(dead), spec)
     assert torch.count_nonzero(iq) == 0
 
@@ -448,9 +358,7 @@ def test_composed_delay_and_magnitude_match_the_closed_form(spike):
     assert composed.path_count == 1
     assert composed.sensor_pair_count == 1
     assert composed.pair_offsets.tolist() == [0, 1]
-    assert float(composed.total_delay_s[0]) == pytest.approx(
-        geo.round_trip_delay_s(), rel=1e-6
-    )
+    assert float(composed.total_delay_s[0]) == pytest.approx(geo.round_trip_delay_s(), rel=1e-6)
 
     d_in, d_out = geo.leg_distances_m()
     wavelength = geo.C0_M_PER_S / geo.REFERENCE_FREQUENCY_HZ
@@ -458,14 +366,8 @@ def test_composed_delay_and_magnitude_match_the_closed_form(spike):
     # power on both the site is a 1 W isotropic re-radiator. That is a declared
     # spike simplification, not the radar equation (R-ADR-002); asserting it
     # verbatim is what stops it changing silently.
-    expected = (
-        drv.SPIKE_AMPLITUDE
-        * (wavelength / (4.0 * math.pi * d_in))
-        * (wavelength / (4.0 * math.pi * d_out))
-    )
-    assert abs(complex(composed.complex_transfer_ref[0])) == pytest.approx(
-        expected, rel=1e-5
-    )
+    expected = drv.SPIKE_AMPLITUDE * (wavelength / (4.0 * math.pi * d_in)) * (wavelength / (4.0 * math.pi * d_out))
+    assert abs(complex(composed.complex_transfer_ref[0])) == pytest.approx(expected, rel=1e-5)
     assert composed.row_valid is not None and bool(composed.row_valid.all())
     assert composed.reference_frequency_hz == geo.REFERENCE_FREQUENCY_HZ
 

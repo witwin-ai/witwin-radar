@@ -33,11 +33,11 @@ from __future__ import annotations
 
 import argparse
 import ast
-from pathlib import Path
 import sys
-import tomllib
 import zipfile
+from pathlib import Path
 
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,9 +53,7 @@ EXPECTED_WHEEL_PACKAGES = ("witwin",)
 
 
 def _is_test_module(module: str) -> bool:
-    return any(
-        module == root or module.startswith(f"{root}.") for root in TEST_ROOTS
-    )
+    return any(module == root or module.startswith(f"{root}.") for root in TEST_ROOTS)
 
 
 def _imported_modules(node: ast.Import | ast.ImportFrom) -> list[str]:
@@ -73,9 +71,7 @@ def _imported_modules(node: ast.Import | ast.ImportFrom) -> list[str]:
 
 def production_modules(root: Path) -> list[Path]:
     package = root / "witwin"
-    return sorted(
-        path for path in package.rglob("*.py") if "__pycache__" not in path.parts
-    )
+    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def check_imports(root: Path) -> list[str]:
@@ -105,31 +101,19 @@ def check_imports(root: Path) -> list[str]:
 
 
 def check_packaging(root: Path) -> list[str]:
-    configuration = tomllib.loads(
-        (root / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    wheel = (
-        configuration.get("tool", {})
-        .get("hatch", {})
-        .get("build", {})
-        .get("targets", {})
-        .get("wheel", {})
-    )
+    configuration = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel = configuration.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
     failures: list[str] = []
 
     packages = tuple(wheel.get("packages", ()))
     if packages != EXPECTED_WHEEL_PACKAGES:
         failures.append(
-            f"pyproject.toml: wheel packages are {list(packages)}; expected "
-            f"{list(EXPECTED_WHEEL_PACKAGES)}"
+            f"pyproject.toml: wheel packages are {list(packages)}; expected {list(EXPECTED_WHEEL_PACKAGES)}"
         )
 
     for artifact in wheel.get("artifacts", ()):
         if not str(artifact).startswith("witwin/"):
-            failures.append(
-                f"pyproject.toml: wheel artifact '{artifact}' reaches outside "
-                "witwin/"
-            )
+            failures.append(f"pyproject.toml: wheel artifact '{artifact}' reaches outside witwin/")
     return failures
 
 
@@ -137,17 +121,10 @@ def check_wheel(wheel_path: Path) -> list[str]:
     with zipfile.ZipFile(wheel_path) as archive:
         names = archive.namelist()
     offenders = sorted(
-        name
-        for name in names
-        if any(
-            name == root or name.startswith(f"{root}/") for root in TEST_ROOTS
-        )
+        name for name in names if any(name == root or name.startswith(f"{root}/") for root in TEST_ROOTS)
     )
     if offenders:
-        return [
-            f"{wheel_path.name}: ships {len(offenders)} test member(s), "
-            f"first {offenders[0]}"
-        ]
+        return [f"{wheel_path.name}: ships {len(offenders)} test member(s), first {offenders[0]}"]
     return []
 
 
@@ -155,9 +132,7 @@ def _resolve_wheel(candidate: Path) -> Path:
     if candidate.is_dir():
         wheels = sorted(candidate.glob("*.whl"))
         if len(wheels) != 1:
-            raise SystemExit(
-                f"expected exactly one .whl in {candidate}, found {len(wheels)}"
-            )
+            raise SystemExit(f"expected exactly one .whl in {candidate}, found {len(wheels)}")
         return wheels[0]
     return candidate
 
@@ -165,12 +140,7 @@ def _resolve_wheel(candidate: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
-    parser.add_argument(
-        "--wheel",
-        type=Path,
-        default=None,
-        help="a built wheel, or a directory holding exactly one",
-    )
+    parser.add_argument("--wheel", type=Path, default=None, help="a built wheel, or a directory holding exactly one")
     arguments = parser.parse_args(argv)
 
     root = arguments.root.resolve()
@@ -183,10 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         wheel_checked = wheel.name
 
     if failures:
-        print(
-            f"check_test_oracle_isolation: {len(failures)} violation(s) under {root}",
-            file=sys.stderr,
-        )
+        print(f"check_test_oracle_isolation: {len(failures)} violation(s) under {root}", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1

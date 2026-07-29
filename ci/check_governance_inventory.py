@@ -3,22 +3,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import sys
-
+from pathlib import Path
 
 ROW = re.compile(r"^\|\s*(GOV-\d{3})\s*\|(.+)\|\s*$")
 
 
 def audit(repo: Path, *, require_closed: bool) -> list[str]:
-    path = (
-        repo
-        / "docs"
-        / "dev"
-        / "audit"
-        / "radar-governance-debt-and-drift-inventory.md"
-    )
+    path = repo / "docs" / "dev" / "audit" / "radar-governance-debt-and-drift-inventory.md"
     rows = {}
     errors = []
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):

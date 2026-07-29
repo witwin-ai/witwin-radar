@@ -58,22 +58,8 @@ if str(REPO_ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 
-FIXTURE = {
-    "chirps": 8,
-    "num_tx": 2,
-    "num_rx": 2,
-    "pairs": 4,
-    "samples": 256,
-    "label": "fixture",
-}
-REALISTIC = {
-    "chirps": 128,
-    "num_tx": 3,
-    "num_rx": 4,
-    "pairs": 12,
-    "samples": 256,
-    "label": "realistic",
-}
+FIXTURE = {"chirps": 8, "num_tx": 2, "num_rx": 2, "pairs": 4, "samples": 256, "label": "fixture"}
+REALISTIC = {"chirps": 128, "num_tx": 3, "num_rx": 4, "pairs": 12, "samples": 256, "label": "realistic"}
 
 #: The 3 TX x 4 RX front end the end-to-end pipeline declares. Twelve virtual
 #: elements is the smallest array on which both angle routes and the point cloud
@@ -154,6 +140,7 @@ def _fmcw_case(size, *, num_tx: int | None = None, num_rx: int | None = None):
     """
 
     from support import exact_bin_grid as grid
+
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes, ProcessingCube
     from witwin.radar.synthesis.assembly import SynthesisResult
 
@@ -178,34 +165,28 @@ def _fmcw_case(size, *, num_tx: int | None = None, num_rx: int | None = None):
 
 def _ofdm_case(size):
     from support import exact_bin_grid as grid
+
     from witwin.radar.processing import ProcessingAxes, ProcessingCube
     from witwin.radar.synthesis.assembly import SynthesisResult
 
     spec = grid.ofdm_spec(size["chirps"])
     cube = _complex_noise((size["chirps"], size["pairs"], 64), seed=12)
     result = SynthesisResult.from_ofdm(cube, spec)
-    axes = ProcessingAxes.from_synthesis(
-        result, spec, _array_spec(size["num_tx"], size["num_rx"])
-    )
+    axes = ProcessingAxes.from_synthesis(result, spec, _array_spec(size["num_tx"], size["num_rx"]))
     return {"axes": axes, "cube": ProcessingCube.from_synthesis(result, axes)}
 
 
 def _pulsed_case(size):
     from support import exact_bin_grid as grid
+
     from witwin.radar.processing import ProcessingAxes, ProcessingCube
     from witwin.radar.synthesis.assembly import SynthesisResult
 
     spec = grid.pulsed_spec(size["chirps"])
     cube = _complex_noise((size["chirps"], size["pairs"], 128), seed=13)
     result = SynthesisResult.from_pulsed(cube, spec)
-    axes = ProcessingAxes.from_synthesis(
-        result, spec, _array_spec(size["num_tx"], size["num_rx"])
-    )
-    return {
-        "axes": axes,
-        "spec": spec,
-        "cube": ProcessingCube.from_synthesis(result, axes),
-    }
+    axes = ProcessingAxes.from_synthesis(result, spec, _array_spec(size["num_tx"], size["num_rx"]))
+    return {"axes": axes, "spec": spec, "cube": ProcessingCube.from_synthesis(result, axes)}
 
 
 # ---------------------------------------------------------------------------
@@ -261,10 +242,7 @@ def group_transforms(size, args) -> list[dict]:
     # the window multiply?
     data = fmcw["cube"].data
     add("window_multiply_only", lambda: taper(data, "hann", dim=-1))
-    add(
-        "transform_only",
-        lambda: torch.fft.fft(data, dim=-1, norm="forward"),
-    )
+    add("transform_only", lambda: torch.fft.fft(data, dim=-1, norm="forward"))
 
     # The matched filter's two transforms, with and without the complex128
     # upcast S4 deleted. This is what that deletion bought.
@@ -285,10 +263,7 @@ def group_transforms(size, args) -> list[dict]:
     # The micro-Doppler framing copy, against the transform it feeds.
     slow = _complex_noise((size["chirps"] * 8,), seed=19)
     frame_length, hop = 32, 8
-    add(
-        "microdoppler.framing_copy",
-        lambda: slow.unfold(-1, frame_length, hop).contiguous(),
-    )
+    add("microdoppler.framing_copy", lambda: slow.unfold(-1, frame_length, hop).contiguous())
     frames = slow.unfold(-1, frame_length, hop).contiguous()
     add("microdoppler.transform", lambda: torch.fft.fft(frames, dim=-1))
 
@@ -302,14 +277,9 @@ def group_cfar(size, args) -> list[dict]:
     doppler = max(size["chirps"], 8)
     ranges = size["samples"]
     for batch_shape, label in (((), "single"), ((size["pairs"],), "batched")):
-        magnitude = torch.rand(
-            (*batch_shape, doppler, ranges), device="cuda", dtype=torch.float32
-        )
-        for name, fn in (
-            ("ca_cfar", ca_cfar),
-            ("ca_cfar_fast", ca_cfar_fast),
-            ("os_cfar", os_cfar),
-        ):
+        magnitude = torch.rand((*batch_shape, doppler, ranges), device="cuda", dtype=torch.float32)
+        for name, fn in (("ca_cfar", ca_cfar), ("ca_cfar_fast", ca_cfar_fast), ("os_cfar", os_cfar)):
+
             def call(_fn=fn, _m=magnitude):
                 return _fn(_m)
 
@@ -327,6 +297,7 @@ def group_cfar(size, args) -> list[dict]:
                 }
             )
     profile = torch.rand((size["pairs"], ranges), device="cuda", dtype=torch.float32)
+
     def call():
         return ca_cfar_1d(profile)
 
@@ -347,12 +318,7 @@ def group_cfar(size, args) -> list[dict]:
 
 
 def group_aoa(size, args) -> list[dict]:
-    from witwin.radar.processing import (
-        fft2_aoa,
-        music_spectrum,
-        phase_comparison_aoa,
-        tdm_compensate,
-    )
+    from witwin.radar.processing import fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
 
     rows = []
 
@@ -377,12 +343,7 @@ def group_aoa(size, args) -> list[dict]:
     virtual24 = _complex_noise((24, detections), seed=29)
     velocities = torch.rand(detections, device="cuda", dtype=torch.float32)
 
-    add(
-        "tdm_compensate.vectorized",
-        lambda: tdm_compensate(
-            virtual12, velocities, narrow["array"], narrow["axes"]
-        ),
-    )
+    add("tdm_compensate.vectorized", lambda: tdm_compensate(virtual12, velocities, narrow["array"], narrow["axes"]))
 
     # The deleted form, reconstructed here and nowhere else: a Python loop over
     # transmitters with an in-place multiply on a clone.
@@ -391,25 +352,12 @@ def group_aoa(size, args) -> list[dict]:
         out = virtual12.clone()
         chirp_period = float(narrow["axes"].slow_time_period_s) / array.num_tx
         for index in range(1, array.num_tx):
-            phase = (
-                array.phase_sign
-                * 4
-                * math.pi
-                * velocities
-                * index
-                * chirp_period
-                / array.wavelength_m
-            )
-            out[index * array.num_rx : (index + 1) * array.num_rx] *= torch.exp(
-                1j * phase
-            )
+            phase = array.phase_sign * 4 * math.pi * velocities * index * chirp_period / array.wavelength_m
+            out[index * array.num_rx : (index + 1) * array.num_rx] *= torch.exp(1j * phase)
         return out
 
     add("tdm_compensate.python_loop", legacy_tdm, note="the deleted form")
-    add(
-        "phase_comparison_aoa",
-        lambda: phase_comparison_aoa(virtual12, narrow["array"], fft_size=64),
-    )
+    add("phase_comparison_aoa", lambda: phase_comparison_aoa(virtual12, narrow["array"], fft_size=64))
     add("fft2_aoa", lambda: fft2_aoa(virtual24, wide["array"], fft_size=64))
 
     bins, rows_m, cols_n, snapshots = 8, 6, 8, 16
@@ -419,29 +367,20 @@ def group_aoa(size, args) -> list[dict]:
     add(
         "music_spectrum",
         lambda: music_spectrum(
-            angle_data,
-            wide["array"],
-            elevation_rad=elevation,
-            azimuth_rad=azimuth,
-            num_signals=3,
-            spatial_smooth=3,
+            angle_data, wide["array"], elevation_rad=elevation, azimuth_rad=azimuth, num_signals=3, spatial_smooth=3
         ),
     )
 
     # The two halves of MUSIC, separated: the eigen-decomposition against the
     # smoothing construction the list comprehension used to build.
     smoothing = 3
-    unfolded = angle_data.unfold(1, rows_m - smoothing, 1).unfold(
-        2, cols_n - smoothing, 1
-    )
+    unfolded = angle_data.unfold(1, rows_m - smoothing, 1).unfold(2, cols_n - smoothing, 1)
     add("music.smoothing_unfold", lambda: unfolded.contiguous())
 
     def legacy_smoothing():
         return torch.stack(
             [
-                angle_data[
-                    :, i : i + rows_m - smoothing, j : j + cols_n - smoothing, :
-                ]
+                angle_data[:, i : i + rows_m - smoothing, j : j + cols_n - smoothing, :]
                 for i in range(smoothing + 1)
                 for j in range(smoothing + 1)
             ]
@@ -472,9 +411,7 @@ def group_cube(size, args) -> list[dict]:
     rd = range_doppler_map(range_profile(case["cube"], window="hann"), window="hann")
     directions = torch.stack(
         [
-            torch.tensor(
-                [math.sin(angle), math.cos(angle), 0.0], dtype=torch.float64
-            )
+            torch.tensor([math.sin(angle), math.cos(angle), 0.0], dtype=torch.float64)
             for angle in torch.linspace(-0.6, 0.6, 64).tolist()
         ]
     )
@@ -498,25 +435,16 @@ def group_cube(size, args) -> list[dict]:
 
     add(
         "assemble_frame_cube",
-        lambda: assemble_frame_cube(
-            raw, num_tx=PIPELINE_NUM_TX, num_rx=PIPELINE_NUM_RX
-        ),
+        lambda: assemble_frame_cube(raw, num_tx=PIPELINE_NUM_TX, num_rx=PIPELINE_NUM_RX),
         note="permute/reshape/permute/contiguous, a full copy",
     )
-    add(
-        "ProcessingCube.from_synthesis",
-        lambda: ProcessingCube.from_synthesis(case["result"], axes),
-    )
+    add("ProcessingCube.from_synthesis", lambda: ProcessingCube.from_synthesis(case["result"], axes))
     add(
         "conventional_steering",
         lambda: conventional_steering(array, directions),
         note="scene static; the element table is built once per array",
     )
-    add(
-        "beam_cube",
-        lambda: beam_cube(rd, weights, directions=directions),
-        note="the second full copy",
-    )
+    add("beam_cube", lambda: beam_cube(rd, weights, directions=directions), note="the second full copy")
     return rows
 
 
@@ -527,6 +455,7 @@ def group_pipeline(args) -> list[dict]:
 
     rows = []
     for detector in ("ca_cfar_fast", "ca_cfar", "os_cfar"):
+
         def call(_d=detector):
             return run_pipeline(batch, spec, spec_array, detector=_d)
 
@@ -562,9 +491,7 @@ def parse_args() -> argparse.Namespace:
         default=["transforms", "cfar", "aoa", "cube", "pipeline"],
         help="Which stage groups to measure.",
     )
-    parser.add_argument(
-        "--json", action="store_true", help="Print machine-readable JSON after the table."
-    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON after the table.")
     return parser.parse_args()
 
 
@@ -590,17 +517,12 @@ def main() -> None:
     if "pipeline" in args.groups:
         rows += group_pipeline(args)
 
-    print(
-        f"{'group':<11} {'size':<10} {'stage':<32} {'median_ms':>10} {'peak_mb':>9} "
-        f"{'fft':>4} {'host':>5}  note"
-    )
+    print(f"{'group':<11} {'size':<10} {'stage':<32} {'median_ms':>10} {'peak_mb':>9} {'fft':>4} {'host':>5}  note")
     print("-" * 122)
     for row in rows:
         host = row.get("host", {})
         transforms = int(host.get("transforms", 0))
-        observations = sum(
-            int(value) for name, value in host.items() if name != "transforms"
-        )
+        observations = sum(int(value) for name, value in host.items() if name != "transforms")
         print(
             f"{row['group']:<11} {row['size']:<10} {row['stage']:<32} "
             f"{row['median_ms']:10.4f} {row['peak_mb']:9.2f} {transforms:4d} "

@@ -45,8 +45,8 @@ pytest.importorskip("witwin.channel")
 
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
-import witwin.radar.propagation as kin  # noqa: E402
 
+import witwin.radar.propagation as kin  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -92,28 +92,16 @@ class Measured:
 
     @property
     def doppler_hz(self) -> list[float]:
-        return [
-            -geo.REFERENCE_FREQUENCY_HZ * value
-            for value in self.delay_rate.tolist()
-        ]
+        return [-geo.REFERENCE_FREQUENCY_HZ * value for value in self.delay_rate.tolist()]
 
 
 def _track(positions: torch.Tensor, velocities) -> kin.Kinematics:
     return kin.Kinematics(
-        positions_m=positions,
-        velocities_m_per_s=torch.tensor(
-            list(velocities), dtype=torch.float32, device="cuda"
-        ),
+        positions_m=positions, velocities_m_per_s=torch.tensor(list(velocities), dtype=torch.float32, device="cuda")
     )
 
 
-def _measure(
-    spike,
-    *,
-    site_velocity=None,
-    transmitter_velocity=None,
-    receiver_velocity=None,
-) -> Measured:
+def _measure(spike, *, site_velocity=None, transmitter_velocity=None, receiver_velocity=None) -> Measured:
     """One frame with ALL THREE endpoint tensors dualised in one level.
 
     The transmitters and receivers are always dualised, even when they are
@@ -123,27 +111,14 @@ def _measure(
     single-tensor test when its velocity happens to be zero.
     """
 
-    sites = _track(
-        spike.site_tensor(), site_velocity or [ZERO3] * len(spike.sites)
-    )
-    transmitters = _track(
-        spike.transmitter_tensor(),
-        transmitter_velocity or [ZERO3] * len(spike.transmitters),
-    )
-    receivers = _track(
-        spike.receiver_tensor(),
-        receiver_velocity or [ZERO3] * len(spike.receivers),
-    )
-    with kin.two_way_duals(
-        sites=sites, transmitters=transmitters, receivers=receivers
-    ) as duals:
+    sites = _track(spike.site_tensor(), site_velocity or [ZERO3] * len(spike.sites))
+    transmitters = _track(spike.transmitter_tensor(), transmitter_velocity or [ZERO3] * len(spike.transmitters))
+    receivers = _track(spike.receiver_tensor(), receiver_velocity or [ZERO3] * len(spike.receivers))
+    with kin.two_way_duals(sites=sites, transmitters=transmitters, receivers=receivers) as duals:
         for tensor in (duals.transmitters, duals.sites, duals.receivers):
             assert forward_ad.unpack_dual(tensor).tangent is not None
         composed, inbound, outbound = spike.frame(
-            duals.sites,
-            transmitters=duals.transmitters,
-            receivers=duals.receivers,
-            ad_mode="jvp",
+            duals.sites, transmitters=duals.transmitters, receivers=duals.receivers, ad_mode="jvp"
         )
         return Measured(
             composed=composed,
@@ -156,12 +131,8 @@ def _measure(
 
 
 def _assert_matches_oracle(spike, measured: Measured, velocities: dict) -> None:
-    expected = geo.combined_delay_rate_s_per_s(
-        spike.predicted_combined_rows(), velocities
-    )
-    for index, (value, reference) in enumerate(
-        zip(measured.delay_rate.tolist(), expected, strict=True)
-    ):
+    expected = geo.combined_delay_rate_s_per_s(spike.predicted_combined_rows(), velocities)
+    for index, (value, reference) in enumerate(zip(measured.delay_rate.tolist(), expected, strict=True)):
         if reference == 0.0:
             assert value == 0.0, index
         else:
@@ -191,15 +162,9 @@ def test_a_static_scene_has_exactly_zero_delay_rate(spike):
 
     measured = _measure(spike)
     assert measured.delay_rate.shape[0] == 11
-    assert torch.equal(
-        measured.delay_rate, torch.zeros_like(measured.delay_rate)
-    )
-    assert torch.equal(
-        measured.inbound_rate, torch.zeros_like(measured.inbound_rate)
-    )
-    assert torch.equal(
-        measured.outbound_rate, torch.zeros_like(measured.outbound_rate)
-    )
+    assert torch.equal(measured.delay_rate, torch.zeros_like(measured.delay_rate))
+    assert torch.equal(measured.inbound_rate, torch.zeros_like(measured.inbound_rate))
+    assert torch.equal(measured.outbound_rate, torch.zeros_like(measured.outbound_rate))
 
 
 def test_a_static_scene_has_no_slow_time_phase_slope(spike):
@@ -234,9 +199,7 @@ def test_a_static_scene_repeats_its_weight_in_every_slot(spike):
     """
 
     slots = 8
-    inbound, outbound = spike.slot_legs(
-        spike.stacked(spike.site_tensor(), slots), slot_count=slots
-    )
+    inbound, outbound = spike.slot_legs(spike.stacked(spike.site_tensor(), slots), slot_count=slots)
     for leg in (inbound, outbound):
         assert leg.slot_count == slots
         first = leg.slot(0)
@@ -277,29 +240,16 @@ def test_a_radially_moving_site_matches_the_projection_formula(spike):
         ("outbound", measured.outbound_rate, spike.predicted_outbound_rows()),
     ):
         expected = geo.leg_delay_rates_s_per_s(rows, velocities)
-        for index, (value, reference) in enumerate(
-            zip(rates.tolist(), expected, strict=True)
-        ):
+        for index, (value, reference) in enumerate(zip(rates.tolist(), expected, strict=True)):
             if reference == 0.0:
                 assert value == 0.0, (name, index)
             else:
-                assert value == pytest.approx(reference, rel=RATE_RTOL), (
-                    name,
-                    index,
-                )
+                assert value == pytest.approx(reference, rel=RATE_RTOL), (name, index)
 
     # The stationary site is exactly stationary, and the moving one is not.
     rows = spike.predicted_combined_rows()
-    moving = [
-        index
-        for index, row in enumerate(rows)
-        if row.site_id == geo.SITE_P_STABLE_ID
-    ]
-    still = [
-        index
-        for index, row in enumerate(rows)
-        if row.site_id == geo.SITE_Q_STABLE_ID
-    ]
+    moving = [index for index, row in enumerate(rows) if row.site_id == geo.SITE_P_STABLE_ID]
+    still = [index for index, row in enumerate(rows) if row.site_id == geo.SITE_Q_STABLE_ID]
     assert moving and still
     values = measured.delay_rate
     assert torch.equal(values[still], torch.zeros_like(values[still]))
@@ -313,23 +263,12 @@ def test_the_doppler_sign_follows_the_channel_phasor(spike):
     surfaces much later as a target that approaches when it should recede.
     """
 
-    approaching = _measure(
-        spike, site_velocity=[geo.SITE_P_RADIAL_VELOCITY_M_PER_S, ZERO3]
-    )
-    receding = _measure(
-        spike,
-        site_velocity=[
-            tuple(-value for value in geo.SITE_P_RADIAL_VELOCITY_M_PER_S),
-            ZERO3,
-        ],
-    )
-    row = _row_named(spike, (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID,
-                             geo.RX_A_STABLE_ID, "los", "los"))
+    approaching = _measure(spike, site_velocity=[geo.SITE_P_RADIAL_VELOCITY_M_PER_S, ZERO3])
+    receding = _measure(spike, site_velocity=[tuple(-value for value in geo.SITE_P_RADIAL_VELOCITY_M_PER_S), ZERO3])
+    row = _row_named(spike, (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_A_STABLE_ID, "los", "los"))
     assert approaching.doppler_hz[row] > 1000.0
     assert receding.doppler_hz[row] < -1000.0
-    torch.testing.assert_close(
-        approaching.delay_rate, -receding.delay_rate, rtol=1e-6, atol=0.0
-    )
+    torch.testing.assert_close(approaching.delay_rate, -receding.delay_rate, rtol=1e-6, atol=0.0)
 
 
 # --------------------------------------------------------------------------
@@ -349,19 +288,13 @@ def test_the_los_and_reflection_rows_differ(spike):
     """
 
     velocities = {geo.SITE_P_STABLE_ID: geo.SITE_P_VELOCITY_M_PER_S}
-    measured = _measure(
-        spike, site_velocity=[geo.SITE_P_VELOCITY_M_PER_S, ZERO3]
-    )
+    measured = _measure(spike, site_velocity=[geo.SITE_P_VELOCITY_M_PER_S, ZERO3])
     _assert_matches_oracle(spike, measured, velocities)
 
     triple = (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_A_STABLE_ID)
     los = measured.doppler_hz[_row_named(spike, (*triple, "los", "los"))]
-    reflection = measured.doppler_hz[
-        _row_named(spike, (*triple, "reflection", "reflection"))
-    ]
-    mixed = measured.doppler_hz[
-        _row_named(spike, (*triple, "los", "reflection"))
-    ]
+    reflection = measured.doppler_hz[_row_named(spike, (*triple, "reflection", "reflection"))]
+    mixed = measured.doppler_hz[_row_named(spike, (*triple, "los", "reflection"))]
 
     assert los < 0.0 and reflection < 0.0
     assert abs(los - reflection) > 100.0
@@ -386,10 +319,7 @@ def test_moving_transmitter_and_receiver(spike):
     every call and neither could carry a tangent.
     """
 
-    velocities = {
-        geo.TX_A_STABLE_ID: geo.TX_A_VELOCITY_M_PER_S,
-        geo.RX_A_STABLE_ID: geo.RX_A_VELOCITY_M_PER_S,
-    }
+    velocities = {geo.TX_A_STABLE_ID: geo.TX_A_VELOCITY_M_PER_S, geo.RX_A_STABLE_ID: geo.RX_A_VELOCITY_M_PER_S}
     measured = _measure(
         spike,
         transmitter_velocity=[geo.TX_A_VELOCITY_M_PER_S, ZERO3],
@@ -406,12 +336,8 @@ def test_moving_transmitter_and_receiver(spike):
     # transmitter does; a chain that only dualised one end would zero one of
     # these two groups.
     rows = spike.predicted_combined_rows()
-    to_rx_b = [
-        index for index, row in enumerate(rows) if row.sink_id == geo.RX_B_STABLE_ID
-    ]
-    to_rx_a = [
-        index for index, row in enumerate(rows) if row.sink_id == geo.RX_A_STABLE_ID
-    ]
+    to_rx_b = [index for index, row in enumerate(rows) if row.sink_id == geo.RX_B_STABLE_ID]
+    to_rx_a = [index for index, row in enumerate(rows) if row.sink_id == geo.RX_A_STABLE_ID]
     assert float(measured.delay_rate[to_rx_b].abs().min()) > 0.0
     assert float(measured.delay_rate[to_rx_a].abs().min()) > 0.0
 
@@ -440,14 +366,9 @@ def test_moving_endpoints_equal_the_reciprocal_moving_site(spike):
         transmitter_velocity=[parallel] * len(spike.transmitters),
         receiver_velocity=[parallel] * len(spike.receivers),
     )
-    reciprocal = _measure(
-        spike,
-        site_velocity=[tuple(-value for value in parallel)] * len(spike.sites),
-    )
+    reciprocal = _measure(spike, site_velocity=[tuple(-value for value in parallel)] * len(spike.sites))
     assert float(boosted.delay_rate.abs().min()) > 0.0
-    torch.testing.assert_close(
-        boosted.delay_rate, reciprocal.delay_rate, rtol=1e-4, atol=0.0
-    )
+    torch.testing.assert_close(boosted.delay_rate, reciprocal.delay_rate, rtol=1e-4, atol=0.0)
 
     normal = (-3.0, 0.0, 0.0)
     boosted = _measure(
@@ -455,35 +376,21 @@ def test_moving_endpoints_equal_the_reciprocal_moving_site(spike):
         transmitter_velocity=[normal] * len(spike.transmitters),
         receiver_velocity=[normal] * len(spike.receivers),
     )
-    reciprocal = _measure(
-        spike,
-        site_velocity=[tuple(-value for value in normal)] * len(spike.sites),
-    )
+    reciprocal = _measure(spike, site_velocity=[tuple(-value for value in normal)] * len(spike.sites))
     rows = spike.predicted_combined_rows()
     line_of_sight = [
-        index
-        for index, row in enumerate(rows)
-        if row.inbound.component == "los" and row.outbound.component == "los"
+        index for index, row in enumerate(rows) if row.inbound.component == "los" and row.outbound.component == "los"
     ]
     two_bounce = [
         index
         for index, row in enumerate(rows)
-        if row.inbound.component == "reflection"
-        and row.outbound.component == "reflection"
+        if row.inbound.component == "reflection" and row.outbound.component == "reflection"
     ]
     assert line_of_sight and two_bounce
     torch.testing.assert_close(
-        boosted.delay_rate[line_of_sight],
-        reciprocal.delay_rate[line_of_sight],
-        rtol=1e-4,
-        atol=0.0,
+        boosted.delay_rate[line_of_sight], reciprocal.delay_rate[line_of_sight], rtol=1e-4, atol=0.0
     )
-    torch.testing.assert_close(
-        boosted.delay_rate[two_bounce],
-        -reciprocal.delay_rate[two_bounce],
-        rtol=1e-4,
-        atol=0.0,
-    )
+    torch.testing.assert_close(boosted.delay_rate[two_bounce], -reciprocal.delay_rate[two_bounce], rtol=1e-4, atol=0.0)
     assert float(boosted.delay_rate[two_bounce].abs().min()) > 0.0
 
 
@@ -515,24 +422,13 @@ def test_the_round_trip_rate_is_the_sum_of_the_two_legs(spike):
     }
     measured = _measure(
         spike,
-        site_velocity=[
-            velocities[geo.SITE_P_STABLE_ID],
-            velocities[geo.SITE_Q_STABLE_ID],
-        ],
+        site_velocity=[velocities[geo.SITE_P_STABLE_ID], velocities[geo.SITE_Q_STABLE_ID]],
         transmitter_velocity=[velocities[geo.TX_A_STABLE_ID], ZERO3],
-        receiver_velocity=[
-            velocities[geo.RX_A_STABLE_ID],
-            velocities[geo.RX_B_STABLE_ID],
-        ],
+        receiver_velocity=[velocities[geo.RX_A_STABLE_ID], velocities[geo.RX_B_STABLE_ID]],
     )
     topology = measured.composed.topology
-    summed = (
-        measured.inbound_rate[topology.inbound_row]
-        + measured.outbound_rate[topology.outbound_row]
-    )
-    summed = torch.where(
-        measured.composed.row_valid, summed, torch.zeros_like(summed)
-    )
+    summed = measured.inbound_rate[topology.inbound_row] + measured.outbound_rate[topology.outbound_row]
+    summed = torch.where(measured.composed.row_valid, summed, torch.zeros_like(summed))
     assert torch.equal(measured.delay_rate, summed)
 
     _assert_matches_oracle(spike, measured, velocities)
@@ -558,15 +454,11 @@ def _slow_time_peak_hz(frame, spec, row: int):
 
     alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
     alone[row] = True
-    cube = synthesize_fmcw(
-        drv.to_synthesis(replace(frame, row_valid=alone)), spec
-    ).cpu()
+    cube = synthesize_fmcw(drv.to_synthesis(replace(frame, row_valid=alone)), spec).cpu()
     pair = int(frame.sensor_pair_index[row])
     slow = cube[:, pair, 0].to(torch.complex128)
     spectrum = torch.fft.fftshift(torch.fft.fft(slow)).abs()
-    frequencies = torch.fft.fftshift(
-        torch.fft.fftfreq(spec.num_chirps, d=spec.slot_period_s)
-    )
+    frequencies = torch.fft.fftshift(torch.fft.fftfreq(spec.num_chirps, d=spec.slot_period_s))
     peak = float(frequencies[int(spectrum.argmax())])
     return peak, float(frequencies[1] - frequencies[0])
 
@@ -586,11 +478,8 @@ def test_doppler_aliasing_folds_as_predicted(spike, speed_mps):
     """
 
     spec = drv.make_spec(num_chirps=64)
-    measured = _measure(
-        spike, site_velocity=[(-float(speed_mps), 0.0, 0.0), ZERO3]
-    )
-    row = _row_named(spike, (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID,
-                             geo.RX_A_STABLE_ID, "los", "los"))
+    measured = _measure(spike, site_velocity=[(-float(speed_mps), 0.0, 0.0), ZERO3])
+    row = _row_named(spike, (geo.TX_A_STABLE_ID, geo.SITE_P_STABLE_ID, geo.RX_A_STABLE_ID, "los", "los"))
     rate = float(measured.delay_rate[row])
     delay = float(measured.total_delay_s[row])
     implied_mps = geo.C0_M_PER_S * abs(rate) / 2.0
@@ -600,10 +489,7 @@ def test_doppler_aliasing_folds_as_predicted(spike, speed_mps):
     # The beat cube is conjugated once, so its slow-time tone sits at
     # +tau_rate * (f_ref + slope * (t_start - tau_rt)) - the carrier plus the
     # ramp's own contribution at the sample being read.
-    tone_hz = rate * (
-        spec.reference_frequency_hz
-        + spec.slope_hz_per_s * (spec.t_start_s - delay)
-    )
+    tone_hz = rate * (spec.reference_frequency_hz + spec.slope_hz_per_s * (spec.t_start_s - delay))
     prf_hz = 1.0 / spec.slot_period_s
     folds = round(tone_hz / prf_hz)
     folded_hz = tone_hz - folds * prf_hz

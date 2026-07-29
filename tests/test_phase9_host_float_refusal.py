@@ -34,23 +34,9 @@ import math
 import pytest
 import torch
 
-from witwin.radar.frontend import (  # noqa: E402
-    AdcSpec,
-    AgcSpec,
-    LnaSpec,
-    NoiseSpec,
-    PortSpec,
-    SeedSpec,
-)
-from witwin.radar.policy import (  # noqa: E402
-    require_host_float,
-    require_host_floats,
-)
-from witwin.radar.synthesis.assembly import (  # noqa: E402
-    FmcwSpec,
-    OfdmSpec,
-    PulsedSpec,
-)
+from witwin.radar.frontend import AdcSpec, AgcSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec  # noqa: E402
+from witwin.radar.policy import require_host_float, require_host_floats  # noqa: E402
+from witwin.radar.synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec  # noqa: E402
 
 #: A working set of keyword arguments per spec, and the fields that must each
 #: refuse a tensor. The valid set is what makes this a test of the refusal
@@ -59,88 +45,130 @@ from witwin.radar.synthesis.assembly import (  # noqa: E402
 #: field was replaced.
 F_REF_HZ = 77.0e9
 
-FMCW_BASE = dict(
-    num_samples=32,
-    num_chirps=3,
-    sample_period_s=1.0 / 4.4e6,
-    chirp_period_s=65.0e-6,
-    slope_hz_per_s=60.012e12,
-    t_start_s=6.0e-6,
-    reference_frequency_hz=F_REF_HZ,
-    carrier_hz=0.0,
-    carrier_rate_hz=F_REF_HZ,
-    num_tx=1,
-    num_rx=1,
-)
+FMCW_BASE = {
+    "num_samples": 32,
+    "num_chirps": 3,
+    "sample_period_s": 1.0 / 4.4e6,
+    "chirp_period_s": 65.0e-6,
+    "slope_hz_per_s": 60.012e12,
+    "t_start_s": 6.0e-6,
+    "reference_frequency_hz": F_REF_HZ,
+    "carrier_hz": 0.0,
+    "carrier_rate_hz": F_REF_HZ,
+    "num_tx": 1,
+    "num_rx": 1,
+}
 
-OFDM_BASE = dict(
-    num_subcarriers=8,
-    num_symbols=2,
-    subcarrier_spacing_hz=120.0e3,
-    cyclic_prefix_s=2.0e-6,
-    reference_frequency_hz=F_REF_HZ,
-    max_expected_delay_s=1.0e-6,
-    carrier_hz=0.0,
-    carrier_rate_hz=F_REF_HZ,
-)
+OFDM_BASE = {
+    "num_subcarriers": 8,
+    "num_symbols": 2,
+    "subcarrier_spacing_hz": 120.0e3,
+    "cyclic_prefix_s": 2.0e-6,
+    "reference_frequency_hz": F_REF_HZ,
+    "max_expected_delay_s": 1.0e-6,
+    "carrier_hz": 0.0,
+    "carrier_rate_hz": F_REF_HZ,
+}
 
-PULSED_BASE = dict(
-    num_pulses=2,
-    num_samples=32,
-    sample_period_s=2.0e-8,
-    pri_s=1.0e-5,
-    range_gate_start_s=0.0,
-    pulse_kind="rect",
-    pulse_width_s=1.0e-7,
-    bandwidth_hz=1.0e7,
-    reference_frequency_hz=F_REF_HZ,
-    max_expected_delay_rate=0.0,
-    carrier_hz=0.0,
-    carrier_rate_hz=F_REF_HZ,
-)
+PULSED_BASE = {
+    "num_pulses": 2,
+    "num_samples": 32,
+    "sample_period_s": 2.0e-8,
+    "pri_s": 1.0e-5,
+    "range_gate_start_s": 0.0,
+    "pulse_kind": "rect",
+    "pulse_width_s": 1.0e-7,
+    "bandwidth_hz": 1.0e7,
+    "reference_frequency_hz": F_REF_HZ,
+    "max_expected_delay_rate": 0.0,
+    "carrier_hz": 0.0,
+    "carrier_rate_hz": F_REF_HZ,
+}
 
-NOISE_BASE = dict(
-    noise_figure_db=6.0,
-    antenna_temperature_k=290.0,
-    bandwidth_hz=5.0e6,
-    phase_noise_dbc_per_hz=-90.0,
-    phase_offset_hz=1.0e6,
-    phase_sample_rate_hz=4.4e6,
-)
+NOISE_BASE = {
+    "noise_figure_db": 6.0,
+    "antenna_temperature_k": 290.0,
+    "bandwidth_hz": 5.0e6,
+    "phase_noise_dbc_per_hz": -90.0,
+    "phase_offset_hz": 1.0e6,
+    "phase_sample_rate_hz": 4.4e6,
+}
 
 #: ``(owner label, factory, base kwargs, refusing fields)``. The field lists are
 #: exhaustive per spec: every scalar the owner declares is here, so a new field
 #: added without a decision about its derivative shows up as a missing case.
 SPEC_CASES = (
-    ("PortSpec", PortSpec, dict(reference_impedance_ohm=50.0),
-     ("reference_impedance_ohm",)),
-    ("NoiseSpec", NoiseSpec, NOISE_BASE,
-     ("noise_figure_db", "antenna_temperature_k", "bandwidth_hz",
-      "phase_noise_dbc_per_hz", "phase_offset_hz", "phase_sample_rate_hz")),
-    ("LnaSpec", LnaSpec, dict(gain_db=20.0), ("gain_db",)),
-    ("AgcSpec", AgcSpec, dict(target_rms=1.0),
-     ("target_rms", "min_gain_db", "max_gain_db")),
-    ("AdcSpec", AdcSpec, dict(bits=10, full_scale=1.0), ("bits", "full_scale")),
-    ("FmcwSpec", FmcwSpec, FMCW_BASE,
-     ("num_samples", "num_chirps", "sample_period_s", "chirp_period_s",
-      "slope_hz_per_s", "t_start_s", "reference_frequency_hz", "carrier_hz",
-      "carrier_rate_hz", "num_tx", "num_rx")),
-    ("OfdmSpec", OfdmSpec, OFDM_BASE,
-     ("num_subcarriers", "num_symbols", "subcarrier_spacing_hz",
-      "cyclic_prefix_s", "reference_frequency_hz", "max_expected_delay_s",
-      "carrier_hz", "carrier_rate_hz")),
-    ("PulsedSpec", PulsedSpec, PULSED_BASE,
-     ("num_pulses", "num_samples", "sample_period_s", "pri_s",
-      "range_gate_start_s", "pulse_width_s", "bandwidth_hz",
-      "reference_frequency_hz", "max_expected_delay_rate", "carrier_hz",
-      "carrier_rate_hz")),
+    ("PortSpec", PortSpec, {"reference_impedance_ohm": 50.0}, ("reference_impedance_ohm",)),
+    (
+        "NoiseSpec",
+        NoiseSpec,
+        NOISE_BASE,
+        (
+            "noise_figure_db",
+            "antenna_temperature_k",
+            "bandwidth_hz",
+            "phase_noise_dbc_per_hz",
+            "phase_offset_hz",
+            "phase_sample_rate_hz",
+        ),
+    ),
+    ("LnaSpec", LnaSpec, {"gain_db": 20.0}, ("gain_db",)),
+    ("AgcSpec", AgcSpec, {"target_rms": 1.0}, ("target_rms", "min_gain_db", "max_gain_db")),
+    ("AdcSpec", AdcSpec, {"bits": 10, "full_scale": 1.0}, ("bits", "full_scale")),
+    (
+        "FmcwSpec",
+        FmcwSpec,
+        FMCW_BASE,
+        (
+            "num_samples",
+            "num_chirps",
+            "sample_period_s",
+            "chirp_period_s",
+            "slope_hz_per_s",
+            "t_start_s",
+            "reference_frequency_hz",
+            "carrier_hz",
+            "carrier_rate_hz",
+            "num_tx",
+            "num_rx",
+        ),
+    ),
+    (
+        "OfdmSpec",
+        OfdmSpec,
+        OFDM_BASE,
+        (
+            "num_subcarriers",
+            "num_symbols",
+            "subcarrier_spacing_hz",
+            "cyclic_prefix_s",
+            "reference_frequency_hz",
+            "max_expected_delay_s",
+            "carrier_hz",
+            "carrier_rate_hz",
+        ),
+    ),
+    (
+        "PulsedSpec",
+        PulsedSpec,
+        PULSED_BASE,
+        (
+            "num_pulses",
+            "num_samples",
+            "sample_period_s",
+            "pri_s",
+            "range_gate_start_s",
+            "pulse_width_s",
+            "bandwidth_hz",
+            "reference_frequency_hz",
+            "max_expected_delay_rate",
+            "carrier_hz",
+            "carrier_rate_hz",
+        ),
+    ),
 )
 
-FIELD_CASES = tuple(
-    (label, factory, base, field)
-    for label, factory, base, fields in SPEC_CASES
-    for field in fields
-)
+FIELD_CASES = tuple((label, factory, base, field) for label, factory, base, fields in SPEC_CASES for field in fields)
 
 
 def _identify(case) -> str:
@@ -166,9 +194,7 @@ def _declared_value(factory, base, field) -> float:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "label,factory,base,fields", SPEC_CASES, ids=[case[0] for case in SPEC_CASES]
-)
+@pytest.mark.parametrize("label,factory,base,fields", SPEC_CASES, ids=[case[0] for case in SPEC_CASES])
 def test_the_base_specification_still_constructs(label, factory, base, fields):
     """Without this the refusal tests could all be passing for the wrong reason.
 
@@ -188,12 +214,8 @@ def test_the_base_specification_still_constructs(label, factory, base, fields):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "label,factory,base,field", FIELD_CASES, ids=[_identify(c) for c in FIELD_CASES]
-)
-def test_every_configuration_scalar_refuses_a_marked_tensor(
-    label, factory, base, field
-):
+@pytest.mark.parametrize("label,factory,base,field", FIELD_CASES, ids=[_identify(c) for c in FIELD_CASES])
+def test_every_configuration_scalar_refuses_a_marked_tensor(label, factory, base, field):
     """The exact request that used to run a whole frame and return None."""
 
     marked = torch.tensor(_declared_value(factory, base, field), requires_grad=True)
@@ -207,12 +229,8 @@ def test_every_configuration_scalar_refuses_a_marked_tensor(
     assert "None" in message
 
 
-@pytest.mark.parametrize(
-    "label,factory,base,field", FIELD_CASES, ids=[_identify(c) for c in FIELD_CASES]
-)
-def test_every_configuration_scalar_refuses_an_unmarked_tensor_too(
-    label, factory, base, field
-):
+@pytest.mark.parametrize("label,factory,base,field", FIELD_CASES, ids=[_identify(c) for c in FIELD_CASES])
+def test_every_configuration_scalar_refuses_an_unmarked_tensor_too(label, factory, base, field):
     """The tomorrow case, which is why the rule is on the TYPE.
 
     A caller who threads an unmarked tensor through a spec today has already
@@ -275,9 +293,7 @@ def test_a_forward_dual_is_refused_as_well():
     """
 
     with torch.autograd.forward_ad.dual_level():
-        dual = torch.autograd.forward_ad.make_dual(
-            torch.tensor(20.0), torch.tensor(1.0)
-        )
+        dual = torch.autograd.forward_ad.make_dual(torch.tensor(20.0), torch.tensor(1.0))
         assert not dual.requires_grad
         with pytest.raises(TypeError):
             LnaSpec(gain_db=dual)
@@ -292,13 +308,7 @@ def test_the_validator_passes_every_non_tensor_through():
     """Ints, floats, None and bools are all legal spec values."""
 
     require_host_floats(
-        "Probe",
-        "a reason.",
-        an_int=3,
-        a_float=1.5,
-        a_none=None,
-        a_bool=True,
-        a_numpy_free_scalar=math.pi,
+        "Probe", "a reason.", an_int=3, a_float=1.5, a_none=None, a_bool=True, a_numpy_free_scalar=math.pi
     )
 
 
@@ -312,21 +322,14 @@ def test_the_validator_reports_the_first_offender_in_declaration_order():
     """
 
     with pytest.raises(TypeError) as excinfo:
-        require_host_floats(
-            "Probe",
-            "a reason.",
-            first=torch.tensor(1.0),
-            second=torch.tensor(2.0),
-        )
+        require_host_floats("Probe", "a reason.", first=torch.tensor(1.0), second=torch.tensor(2.0))
     assert "Probe.first" in str(excinfo.value)
     assert "Probe.second" not in str(excinfo.value)
 
 
 def test_the_single_field_validator_carries_the_owner_and_the_reason():
     with pytest.raises(TypeError) as excinfo:
-        require_host_float(
-            "field", torch.tensor(1.0), owner="Owner", reason="Because so."
-        )
+        require_host_float("field", torch.tensor(1.0), owner="Owner", reason="Because so.")
     message = str(excinfo.value)
     assert "Owner.field" in message
     assert "Because so." in message

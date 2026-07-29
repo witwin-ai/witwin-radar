@@ -38,8 +38,8 @@ pytest.importorskip("witwin.channel")
 
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
-import witwin.radar.processing.range_doppler as md  # noqa: E402
 
+import witwin.radar.processing.range_doppler as md  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -130,14 +130,8 @@ def _slow_time(spike, stack: torch.Tensor):
 
     inbound, outbound = spike.slot_legs(stack, slot_count=SLOT_COUNT)
     frames = spike.slot_frames(inbound, outbound)
-    rows = torch.stack(
-        [frame.complex_transfer_ref.detach() for frame in frames], dim=1
-    )
-    return (
-        rows.cpu().to(torch.complex128),
-        rows.sum(dim=0).cpu().to(torch.complex128),
-        frames[0],
-    )
+    rows = torch.stack([frame.complex_transfer_ref.detach() for frame in frames], dim=1)
+    return (rows.cpu().to(torch.complex128), rows.sum(dim=0).cpu().to(torch.complex128), frames[0])
 
 
 def _tone_hz(sequence: torch.Tensor) -> float:
@@ -166,9 +160,7 @@ def _closed_form_hz(spike, velocities: dict, sites) -> dict:
     """``f_D = -f_ref tau_rate`` per composed row, keyed by row identity."""
 
     rows = spike.predicted_combined_rows()
-    shifts = geo.combined_doppler_hz(
-        rows, velocities, AXIAL_TRANSMITTERS, sites, AXIAL_RECEIVERS
-    )
+    shifts = geo.combined_doppler_hz(rows, velocities, AXIAL_TRANSMITTERS, sites, AXIAL_RECEIVERS)
     return {row.key: shifts[index] for index, row in enumerate(rows)}
 
 
@@ -180,11 +172,7 @@ def _closed_form_hz(spike, velocities: dict, sites) -> dict:
 @pytest.fixture(scope="module")
 def rotor():
     return drv.MultiEndpointSpike(
-        transmitters=AXIAL_TRANSMITTERS,
-        sites=ROTOR_SITES,
-        receivers=AXIAL_RECEIVERS,
-        components=LOS_ONLY,
-        max_depth=0,
+        transmitters=AXIAL_TRANSMITTERS, sites=ROTOR_SITES, receivers=AXIAL_RECEIVERS, components=LOS_ONLY, max_depth=0
     )
 
 
@@ -212,18 +200,13 @@ def test_a_rotating_two_blade_target_gives_a_flash_spectrum(rotor):
     import witwin.radar.propagation as kin
 
     produced = kin.rigid_site_velocities(
-        torch.tensor(
-            [position for _, position in ROTOR_SITES], dtype=torch.float32
-        ),
+        torch.tensor([position for _, position in ROTOR_SITES], dtype=torch.float32),
         angular_velocity=geo.ROTOR_ANGULAR_VELOCITY,
         centre_m=geo.ROTOR_CENTRE_M,
     )
     assert torch.allclose(
         produced.to(torch.float64),
-        torch.tensor(
-            [velocities[stable_id] for stable_id, _ in ROTOR_SITES],
-            dtype=torch.float64,
-        ),
+        torch.tensor([velocities[stable_id] for stable_id, _ in ROTOR_SITES], dtype=torch.float64),
         rtol=0.0,
         atol=1.0e-5,
     ), produced
@@ -252,8 +235,7 @@ def test_a_rotating_two_blade_target_gives_a_flash_spectrum(rotor):
     upper_hz = float(frequencies[frequencies > 0][upper])
     lower_hz = float(frequencies[frequencies < 0][lower])
     assert abs(upper_hz + lower_hz) <= BIN_HZ
-    for peak, tone in ((upper_hz, max(advancing, retreating)),
-                       (lower_hz, min(advancing, retreating))):
+    for peak, tone in ((upper_hz, max(advancing, retreating)), (lower_hz, min(advancing, retreating))):
         assert abs(peak - tone) <= BIN_HZ, (peak, tone)
 
 
@@ -289,8 +271,7 @@ def test_a_hinge_limb_gives_a_rectangular_doppler_band(hinge):
     assert rows.shape == (len(geo.HINGE_SITES), SLOT_COUNT)
 
     velocities = {
-        stable_id: geo.HINGE_VELOCITIES_M_PER_S[index]
-        for index, (stable_id, _) in enumerate(geo.HINGE_SITES)
+        stable_id: geo.HINGE_VELOCITIES_M_PER_S[index] for index, (stable_id, _) in enumerate(geo.HINGE_SITES)
     }
     reference = _closed_form_hz(hinge, velocities, geo.HINGE_SITES)
     keys = drv.composed_keys(hinge, frame)
@@ -347,10 +328,7 @@ def _smpl_model_root() -> str | None:
 
     candidates = [
         pathlib.Path(smpl_module._default_smpl_model_root()),
-        pathlib.Path(__file__).resolve().parents[3]
-        / "radar"
-        / "models"
-        / "smpl_models",
+        pathlib.Path(__file__).resolve().parents[3] / "radar" / "models" / "smpl_models",
     ]
     for candidate in candidates:
         if candidate.is_dir() and any(candidate.glob("*.pkl")):
@@ -383,40 +361,23 @@ def test_smpl_limb_microdoppler_matches_an_independent_reference():
 
     pose_rate = torch.zeros(72, device="cuda")
     pose_rate[3 * 18 + 2] = 3.0
-    body = SMPLBody(
-        pose=torch.zeros(72),
-        shape=torch.zeros(10),
-        model_root=model_root,
-        device="cuda",
-    )
+    body = SMPLBody(pose=torch.zeros(72), shape=torch.zeros(10), model_root=model_root, device="cuda")
     deformation = SmplPoseDeformation(body, pose_rate=pose_rate)
     velocity = deformation.velocity_at(0.0)
     speed = velocity.norm(dim=1)
     fastest = torch.topk(speed, 3).indices.tolist()
-    limb = [
-        tuple(float(value) for value in velocity[index].tolist())
-        for index in fastest
-    ]
+    limb = [tuple(float(value) for value in velocity[index].tolist()) for index in fastest]
     assert min(sum(value**2 for value in row) ** 0.5 for row in limb) > 0.2
 
-    sites = tuple(
-        (stable_id, position)
-        for (stable_id, position) in geo.HINGE_SITES
-    )
+    sites = tuple((stable_id, position) for (stable_id, position) in geo.HINGE_SITES)
     spike = drv.MultiEndpointSpike(
-        transmitters=AXIAL_TRANSMITTERS,
-        sites=sites,
-        receivers=AXIAL_RECEIVERS,
-        components=LOS_ONLY,
-        max_depth=0,
+        transmitters=AXIAL_TRANSMITTERS, sites=sites, receivers=AXIAL_RECEIVERS, components=LOS_ONLY, max_depth=0
     )
     times = _slot_times()
     stack = _linear_stack(sites, limb, times)
     rows, _, frame = _slow_time(spike, stack)
 
-    velocities = {
-        stable_id: limb[index] for index, (stable_id, _) in enumerate(sites)
-    }
+    velocities = {stable_id: limb[index] for index, (stable_id, _) in enumerate(sites)}
     reference = _closed_form_hz(spike, velocities, sites)
     keys = drv.composed_keys(spike, frame)
     for index, key in enumerate(keys):
@@ -489,9 +450,7 @@ def test_microdoppler_analysis_is_torch_only():
             continue
         text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
         text = re.sub(r"//.*", " ", text).lower()
-        offenders.extend(
-            (path.name, word) for word in ANALYSIS_VOCABULARY if word in text
-        )
+        offenders.extend((path.name, word) for word in ANALYSIS_VOCABULARY if word in text)
     assert offenders == [], offenders
 
 

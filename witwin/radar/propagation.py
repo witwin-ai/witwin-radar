@@ -14,8 +14,9 @@ about that composition.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Callable, Iterator, Literal, Protocol, Sequence, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import torch
 import torch.autograd.forward_ad as forward_ad
@@ -24,12 +25,7 @@ EndpointRole = Literal["source", "sink"]
 
 
 def _require_tensor(
-    name: str,
-    value: object,
-    *,
-    dtype: torch.dtype,
-    ndim: int | None = None,
-    shape: tuple[int, ...] | None = None,
+    name: str, value: object, *, dtype: torch.dtype, ndim: int | None = None, shape: tuple[int, ...] | None = None
 ) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
@@ -44,11 +40,7 @@ def _require_tensor(
     return value
 
 
-def require_wideband_pair(
-    frequency_response: object,
-    frequency_offsets_hz: object,
-    row_count: int,
-) -> int:
+def require_wideband_pair(frequency_response: object, frequency_offsets_hz: object, row_count: int) -> int:
     """Validate a ``[rows, F]`` response against its ``[F]`` grid, host only.
 
     One statement in two tensors: a response without its grid names no
@@ -75,10 +67,7 @@ def require_wideband_pair(
     if frequency_response is None:
         return 0
     if not isinstance(frequency_offsets_hz, torch.Tensor):
-        raise TypeError(
-            "frequency_offsets_hz must be a torch.Tensor, got "
-            f"{type(frequency_offsets_hz).__name__}"
-        )
+        raise TypeError(f"frequency_offsets_hz must be a torch.Tensor, got {type(frequency_offsets_hz).__name__}")
     if frequency_offsets_hz.ndim != 1:
         raise ValueError("frequency_offsets_hz must have shape (F,)")
     bands = int(frequency_offsets_hz.shape[0])
@@ -87,18 +76,8 @@ def require_wideband_pair(
             "frequency_offsets_hz must declare at least one column; an empty "
             "grid is a narrowband batch, which is spelled with both members None"
         )
-    _require_tensor(
-        "frequency_response",
-        frequency_response,
-        dtype=torch.complex64,
-        shape=(row_count, bands),
-    )
-    _require_tensor(
-        "frequency_offsets_hz",
-        frequency_offsets_hz,
-        dtype=torch.float32,
-        shape=(bands,),
-    )
+    _require_tensor("frequency_response", frequency_response, dtype=torch.complex64, shape=(row_count, bands))
+    _require_tensor("frequency_offsets_hz", frequency_offsets_hz, dtype=torch.float32, shape=(bands,))
     if frequency_response.device != frequency_offsets_hz.device:
         raise ValueError(
             f"frequency_response is on {frequency_response.device} but its grid "
@@ -128,24 +107,14 @@ class RadarEndpointSpec:
     powers_w: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
-        positions = _require_tensor(
-            "positions_m", self.positions_m, dtype=torch.float32, ndim=2
-        )
+        positions = _require_tensor("positions_m", self.positions_m, dtype=torch.float32, ndim=2)
         if positions.shape[1] != 3:
-            raise ValueError(
-                f"positions_m must have shape (N, 3), got {tuple(positions.shape)}"
-            )
+            raise ValueError(f"positions_m must have shape (N, 3), got {tuple(positions.shape)}")
         rows = int(positions.shape[0])
-        _require_tensor(
-            "stable_ids", self.stable_ids, dtype=torch.int64, shape=(rows,)
-        )
-        _require_tensor(
-            "polarizations", self.polarizations, dtype=torch.float32, shape=(rows, 3)
-        )
+        _require_tensor("stable_ids", self.stable_ids, dtype=torch.int64, shape=(rows,))
+        _require_tensor("polarizations", self.polarizations, dtype=torch.float32, shape=(rows, 3))
         if self.powers_w is not None:
-            _require_tensor(
-                "powers_w", self.powers_w, dtype=torch.float32, shape=(rows,)
-            )
+            _require_tensor("powers_w", self.powers_w, dtype=torch.float32, shape=(rows,))
         device = positions.device
         for name, value in (
             ("stable_ids", self.stable_ids),
@@ -153,10 +122,7 @@ class RadarEndpointSpec:
             ("powers_w", self.powers_w),
         ):
             if value is not None and value.device != device:
-                raise ValueError(
-                    f"{name} must share the positions_m device {device}, "
-                    f"got {value.device}"
-                )
+                raise ValueError(f"{name} must share the positions_m device {device}, got {value.device}")
 
     @property
     def count(self) -> int:
@@ -284,10 +250,7 @@ class RadarLegBatch:
             raise ValueError("pair_count must be a non-negative int")
         if type(self.slot_count) is not int or self.slot_count < 1:
             raise ValueError("slot_count must be a positive int")
-        for name, total in (
-            ("leg_count", self.leg_count),
-            ("pair_count", self.pair_count),
-        ):
+        for name, total in (("leg_count", self.leg_count), ("pair_count", self.pair_count)):
             if total % self.slot_count:
                 raise ValueError(
                     f"{name} {total} is not divisible by slot_count "
@@ -296,59 +259,29 @@ class RadarLegBatch:
                 )
         rows = (self.leg_count,)
         _require_tensor("pair_index", self.pair_index, dtype=torch.int64, shape=rows)
-        _require_tensor(
-            "pair_offsets",
-            self.pair_offsets,
-            dtype=torch.int64,
-            shape=(self.pair_count + 1,),
-        )
+        _require_tensor("pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.pair_count + 1,))
         for name in ("source_index", "sink_index", "depth", "component_id"):
-            _require_tensor(
-                name, getattr(self, name), dtype=torch.int32, shape=rows
-            )
+            _require_tensor(name, getattr(self, name), dtype=torch.int32, shape=rows)
         for name in ("source_id", "sink_id"):
-            _require_tensor(
-                name, getattr(self, name), dtype=torch.int64, shape=rows
-            )
-        width = int(self.primitive_sequence.shape[1]) if (
-            isinstance(self.primitive_sequence, torch.Tensor)
-            and self.primitive_sequence.ndim == 2
-        ) else -1
+            _require_tensor(name, getattr(self, name), dtype=torch.int64, shape=rows)
+        width = (
+            int(self.primitive_sequence.shape[1])
+            if (isinstance(self.primitive_sequence, torch.Tensor) and self.primitive_sequence.ndim == 2)
+            else -1
+        )
         if width < 0:
             raise ValueError("primitive_sequence must have shape (rows, width)")
-        for name in (
-            "primitive_sequence",
-            "material_sequence",
-            "interaction_type",
-        ):
-            _require_tensor(
-                name,
-                getattr(self, name),
-                dtype=torch.int32,
-                shape=(self.leg_count, width),
-            )
+        for name in ("primitive_sequence", "material_sequence", "interaction_type"):
+            _require_tensor(name, getattr(self, name), dtype=torch.int32, shape=(self.leg_count, width))
         _require_tensor("delay_s", self.delay_s, dtype=torch.float32, shape=rows)
-        _require_tensor(
-            "coefficient", self.coefficient, dtype=torch.complex64, shape=rows
-        )
+        _require_tensor("coefficient", self.coefficient, dtype=torch.complex64, shape=rows)
         if self.delay_rate is not None:
-            _require_tensor(
-                "delay_rate", self.delay_rate, dtype=torch.float32, shape=rows
-            )
+            _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows)
         if self.row_valid is not None:
-            _require_tensor(
-                "row_valid", self.row_valid, dtype=torch.bool, shape=rows
-            )
+            _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
         if self.field_direction is not None:
-            _require_tensor(
-                "field_direction",
-                self.field_direction,
-                dtype=torch.float32,
-                shape=(self.leg_count, 3),
-            )
-        require_wideband_pair(
-            self.frequency_response, self.frequency_offsets_hz, self.leg_count
-        )
+            _require_tensor("field_direction", self.field_direction, dtype=torch.float32, shape=(self.leg_count, 3))
+        require_wideband_pair(self.frequency_response, self.frequency_offsets_hz, self.leg_count)
 
     @property
     def device(self) -> torch.device:
@@ -376,7 +309,7 @@ class RadarLegBatch:
     def pairs_per_slot(self) -> int:
         return self.pair_count // self.slot_count
 
-    def slot(self, index: int) -> "RadarLegBatch":
+    def slot(self, index: int) -> RadarLegBatch:
         """One slot of a slot-major batch, as a single-slot batch.
 
         The payload members are NARROWED, so ``delay_s``, ``coefficient``,
@@ -392,10 +325,7 @@ class RadarLegBatch:
         """
 
         if type(index) is not int or not 0 <= index < self.slot_count:
-            raise ValueError(
-                f"slot index must be an int in [0, {self.slot_count}), "
-                f"got {index!r}"
-            )
+            raise ValueError(f"slot index must be an int in [0, {self.slot_count}), got {index!r}")
         rows = self.rows_per_slot
         pairs = self.pairs_per_slot
         start = index * rows
@@ -409,10 +339,7 @@ class RadarLegBatch:
             leg_count=rows,
             pair_count=pairs,
             pair_index=self.pair_index[start:stop] - base,
-            pair_offsets=(
-                self.pair_offsets[base : base + pairs + 1]
-                - self.pair_offsets[base]
-            ),
+            pair_offsets=(self.pair_offsets[base : base + pairs + 1] - self.pair_offsets[base]),
             source_index=narrow(self.source_index),
             sink_index=narrow(self.sink_index),
             depth=narrow(self.depth),
@@ -465,9 +392,7 @@ class RadarPropagationLegs:
         for name in ("inbound", "outbound"):
             value = getattr(self, name)
             if not isinstance(value, RadarLegBatch):
-                raise TypeError(
-                    f"{name} must be a RadarLegBatch, got {type(value).__name__}"
-                )
+                raise TypeError(f"{name} must be a RadarLegBatch, got {type(value).__name__}")
         if self.inbound.slot_count != self.outbound.slot_count:
             raise ValueError(
                 f"the inbound leg carries {self.inbound.slot_count} slots and "
@@ -487,6 +412,7 @@ class RadarPropagationLegs:
     @property
     def device(self) -> torch.device:
         return self.inbound.device
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class FrozenEpoch:
@@ -583,13 +509,8 @@ class ClutterComponentSpec:
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("name must be a non-empty str")
         if self.mobility not in MOBILITIES:
-            raise ValueError(
-                f"mobility must be one of {list(MOBILITIES)}, got "
-                f"{self.mobility!r}"
-            )
-        object.__setattr__(
-            self, "components", frozenset(str(value) for value in self.components)
-        )
+            raise ValueError(f"mobility must be one of {list(MOBILITIES)}, got {self.mobility!r}")
+        object.__setattr__(self, "components", frozenset(str(value) for value in self.components))
         if not self.components:
             raise ValueError(
                 f"component {self.name!r} declares no propagation components; "
@@ -660,10 +581,7 @@ def epoch_policy(specs, *, fixed_topology_components) -> EpochPolicy:
     names: set[str] = set()
     for spec in declared:
         if not isinstance(spec, ClutterComponentSpec):
-            raise TypeError(
-                "epoch_policy needs ClutterComponentSpec values, got "
-                f"{type(spec).__name__}"
-            )
+            raise TypeError(f"epoch_policy needs ClutterComponentSpec values, got {type(spec).__name__}")
         if spec.name in names:
             raise ValueError(f"component {spec.name!r} is declared twice")
         names.add(spec.name)
@@ -680,16 +598,11 @@ def epoch_policy(specs, *, fixed_topology_components) -> EpochPolicy:
             )
 
     mobilities = {spec.mobility for spec in declared}
-    periods = [
-        spec.rediscovery_period_frames
-        for spec in declared
-        if spec.mobility == REDISCOVER
-    ]
+    periods = [spec.rediscovery_period_frames for spec in declared if spec.mobility == REDISCOVER]
     period = min(periods) if periods else None
     replays = REPLAY in mobilities
     return EpochPolicy(
-        world_motion="fixed_winner_replay" if replays else "frozen_world",
-        motion_event_period_frames=period,
+        world_motion="fixed_winner_replay" if replays else "frozen_world", motion_event_period_frames=period
     )
 
 
@@ -765,22 +678,14 @@ class SceneEpochLoop:
     ) -> None:
         for name in ("at", "structure_trajectories", "structure_deformations"):
             if not hasattr(dynamic_scene, name):
-                raise TypeError(
-                    f"dynamic_scene must expose {name!r}; pass a "
-                    "witwin.core.dynamics.DynamicScene"
-                )
+                raise TypeError(f"dynamic_scene must expose {name!r}; pass a witwin.core.dynamics.DynamicScene")
         if not callable(compile_scene):
-            raise TypeError(
-                "compile_scene must be callable; pass "
-                "witwin.channel.scene.compile"
-            )
+            raise TypeError("compile_scene must be callable; pass witwin.channel.scene.compile")
         if motion_event_period_frames is not None and (
-            type(motion_event_period_frames) is not int
-            or motion_event_period_frames < 1
+            type(motion_event_period_frames) is not int or motion_event_period_frames < 1
         ):
             raise ValueError(
-                "motion_event_period_frames must be a positive int or None, "
-                f"got {motion_event_period_frames!r}"
+                f"motion_event_period_frames must be a positive int or None, got {motion_event_period_frames!r}"
             )
         self._dynamic = dynamic_scene
         self._reference_frequency_hz = float(reference_frequency_hz)
@@ -788,10 +693,7 @@ class SceneEpochLoop:
         self._period = motion_event_period_frames
         self._world_motion = str(world_motion)
         self._compile_scene = compile_scene
-        self._structures_move = bool(
-            dynamic_scene.structure_trajectories
-            or dynamic_scene.structure_deformations
-        )
+        self._structures_move = bool(dynamic_scene.structure_trajectories or dynamic_scene.structure_deformations)
         self._frozen: FrozenEpoch | None = None
         self._compiled: object | None = None
         self._frame_index = -1
@@ -900,9 +802,7 @@ class SceneEpochLoop:
         return False
 
     def _motion_event_due(self) -> bool:
-        return self._period is not None and (
-            self._frame_index - self._last_discovery_frame >= self._period
-        )
+        return self._period is not None and (self._frame_index - self._last_discovery_frame >= self._period)
 
     def _recompile(self, snapshot: object, *, force: bool = False) -> bool:
         """Compile this snapshot, or keep the one already built.
@@ -919,9 +819,7 @@ class SceneEpochLoop:
         self._compiled = self._compile(snapshot)
         self.compile_count += 1
         if self._frozen is not None:
-            self._frozen.adapter.refreeze(
-                self._compiled, world_motion=self._world_motion
-            )
+            self._frozen.adapter.refreeze(self._compiled, world_motion=self._world_motion)
         return True
 
     def _rediscovery_reason(self, recompiled: bool, mutated: bool) -> str | None:
@@ -972,9 +870,7 @@ class SceneEpochLoop:
         previous = self._frozen
         frozen = self._bind(self._compiled, snapshot, previous)
         if not isinstance(frozen, FrozenEpoch):
-            raise TypeError(
-                f"bind must return a FrozenEpoch, got {type(frozen).__name__}"
-            )
+            raise TypeError(f"bind must return a FrozenEpoch, got {type(frozen).__name__}")
         if not frozen.handles:
             raise ValueError(
                 "bind returned a FrozenEpoch with no handles; the per-frame "
@@ -988,9 +884,8 @@ class SceneEpochLoop:
         del reason
 
     def _compile(self, snapshot: object) -> object:
-        return self._compile_scene(
-            snapshot, reference_frequency_hz=self._reference_frequency_hz
-        )
+        return self._compile_scene(snapshot, reference_frequency_hz=self._reference_frequency_hz)
+
 
 @runtime_checkable
 class DeformationVelocity(Protocol):
@@ -1013,8 +908,7 @@ class DeformationVelocity(Protocol):
     the whole migration.
     """
 
-    def velocity_at(self, time_s: float) -> torch.Tensor:
-        ...
+    def velocity_at(self, time_s: float) -> torch.Tensor: ...
 
 
 def _require_positions(name: str, value: object) -> torch.Tensor:
@@ -1074,12 +968,7 @@ def _require_velocity_is_not_a_leaf(name: str, owner: str, value: torch.Tensor):
     )
 
 
-def _vector3(
-    name: str,
-    value: object,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
+def _vector3(name: str, value: object, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     """One world-frame 3-vector, or zeros when the caller declared nothing.
 
     ``None`` means "this quantity is not part of the motion", which is a
@@ -1090,11 +979,7 @@ def _vector3(
 
     if value is None:
         return torch.zeros(3, dtype=dtype, device=device)
-    tensor = (
-        value
-        if isinstance(value, torch.Tensor)
-        else torch.tensor(value, dtype=dtype, device=device)
-    )
+    tensor = value if isinstance(value, torch.Tensor) else torch.tensor(value, dtype=dtype, device=device)
     if tuple(tensor.shape) != (3,):
         raise ValueError(f"{name} must have shape (3,), got {tuple(tensor.shape)}")
     return tensor.to(device=device, dtype=dtype)
@@ -1122,9 +1007,7 @@ class Kinematics:
     def __post_init__(self) -> None:
         positions = _require_positions("positions_m", self.positions_m)
         velocities = _require_velocity_is_not_a_leaf(
-            "velocities_m_per_s",
-            "Kinematics",
-            _require_positions("velocities_m_per_s", self.velocities_m_per_s),
+            "velocities_m_per_s", "Kinematics", _require_positions("velocities_m_per_s", self.velocities_m_per_s)
         )
         if tuple(positions.shape) != tuple(velocities.shape):
             raise ValueError(
@@ -1134,10 +1017,7 @@ class Kinematics:
                 "primal it rides"
             )
         if positions.device != velocities.device:
-            raise ValueError(
-                f"positions_m is on {positions.device} and velocities_m_per_s "
-                f"is on {velocities.device}"
-            )
+            raise ValueError(f"positions_m is on {positions.device} and velocities_m_per_s is on {velocities.device}")
         if not positions.is_contiguous() or not velocities.is_contiguous():
             raise ValueError("Kinematics tensors must be contiguous")
 
@@ -1151,11 +1031,7 @@ class Kinematics:
 
 
 def rigid_site_velocities(
-    positions_m: torch.Tensor,
-    *,
-    velocity=None,
-    angular_velocity=None,
-    centre_m=None,
+    positions_m: torch.Tensor, *, velocity=None, angular_velocity=None, centre_m=None
 ) -> torch.Tensor:
     """``v(p) = v_cm + omega x (p - c)`` for world points riding a rigid body.
 
@@ -1201,18 +1077,12 @@ def rotation_centre_m(rigid_motion, *, device=None, dtype=torch.float32):
     resolved = (
         torch.device(device)
         if device is not None
-        else (
-            translation.device
-            if isinstance(translation, torch.Tensor)
-            else torch.device("cpu")
-        )
+        else (translation.device if isinstance(translation, torch.Tensor) else torch.device("cpu"))
     )
     return _vector3("translation", translation, resolved, dtype)
 
 
-def structure_site_kinematics(
-    state, positions_m: torch.Tensor
-) -> Kinematics:
+def structure_site_kinematics(state, positions_m: torch.Tensor) -> Kinematics:
     """Rigid-body kinematics of world points riding one Core ``StructureState``.
 
     ``positions_m`` are the world positions of the tracked points - scatter
@@ -1261,29 +1131,18 @@ def deformation_kinematics(
     velocities = descriptor.velocity_at(time_s)
     if not isinstance(velocities, torch.Tensor):
         raise TypeError(
-            f"{type(descriptor).__name__}.velocity_at must return a torch."
-            f"Tensor, got {type(velocities).__name__}"
+            f"{type(descriptor).__name__}.velocity_at must return a torch.Tensor, got {type(velocities).__name__}"
         )
     # Named here rather than left to ``Kinematics`` below, because a custom
     # ``DeformationVelocity`` is a third place a caller authors a velocity and
     # the message should blame the descriptor that produced it.
-    _require_velocity_is_not_a_leaf(
-        "velocity_at", type(descriptor).__name__, velocities
-    )
+    _require_velocity_is_not_a_leaf("velocity_at", type(descriptor).__name__, velocities)
     if vertex_index is not None:
         if vertex_index.dtype != torch.int64:
-            raise TypeError(
-                f"vertex_index must use torch.int64, got {vertex_index.dtype}"
-            )
-        velocities = velocities.index_select(
-            0, vertex_index.to(device=velocities.device)
-        )
-    velocities = velocities.to(
-        device=positions.device, dtype=torch.float32
-    ).contiguous()
-    return Kinematics(
-        positions_m=positions.contiguous(), velocities_m_per_s=velocities
-    )
+            raise TypeError(f"vertex_index must use torch.int64, got {vertex_index.dtype}")
+        velocities = velocities.index_select(0, vertex_index.to(device=velocities.device))
+    velocities = velocities.to(device=positions.device, dtype=torch.float32).contiguous()
+    return Kinematics(positions_m=positions.contiguous(), velocities_m_per_s=velocities)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1320,9 +1179,7 @@ class LinearDeformation:
     def __post_init__(self) -> None:
         vertices = _require_positions("vertices_m", self.vertices_m)
         velocities = _require_velocity_is_not_a_leaf(
-            "velocities_m_per_s",
-            "LinearDeformation",
-            _require_positions("velocities_m_per_s", self.velocities_m_per_s),
+            "velocities_m_per_s", "LinearDeformation", _require_positions("velocities_m_per_s", self.velocities_m_per_s)
         )
         if tuple(vertices.shape) != tuple(velocities.shape):
             raise ValueError(
@@ -1331,10 +1188,7 @@ class LinearDeformation:
                 "deformation states one velocity per authored vertex"
             )
         if vertices.device != velocities.device:
-            raise ValueError(
-                f"vertices_m is on {vertices.device} and velocities_m_per_s "
-                f"is on {velocities.device}"
-            )
+            raise ValueError(f"vertices_m is on {vertices.device} and velocities_m_per_s is on {velocities.device}")
 
     def vertices_at(self, time_s: float) -> torch.Tensor:
         elapsed = float(time_s) - float(self.reference_time_s)
@@ -1358,10 +1212,7 @@ class LinearDeformation:
 
 
 def endpoint_kinematics(
-    snapshot_or_states,
-    antenna_ids: Sequence[int] | None = None,
-    *,
-    device: str | torch.device = "cuda",
+    snapshot_or_states, antenna_ids: Sequence[int] | None = None, *, device: str | torch.device = "cuda"
 ) -> Kinematics:
     """``(positions, velocities)`` for an ordered set of Core endpoint states.
 
@@ -1387,14 +1238,9 @@ def endpoint_kinematics(
     ordered = list(states)
     if antenna_ids is not None:
         by_id = {int(state.antenna.antenna_id): state for state in ordered}
-        missing = [
-            stable_id for stable_id in antenna_ids if int(stable_id) not in by_id
-        ]
+        missing = [stable_id for stable_id in antenna_ids if int(stable_id) not in by_id]
         if missing:
-            raise KeyError(
-                f"the snapshot declares no endpoint for antenna IDs {missing}; "
-                f"it carries {sorted(by_id)}"
-            )
+            raise KeyError(f"the snapshot declares no endpoint for antenna IDs {missing}; it carries {sorted(by_id)}")
         ordered = [by_id[int(stable_id)] for stable_id in antenna_ids]
     if not ordered:
         raise ValueError("endpoint_kinematics requires at least one endpoint")
@@ -1404,32 +1250,14 @@ def endpoint_kinematics(
     velocities = []
     for state in ordered:
         motion = getattr(state, "rigid_motion", None)
-        position = state.antenna.position.to(
-            device=resolved, dtype=torch.float32
-        )
+        position = state.antenna.position.to(device=resolved, dtype=torch.float32)
         if tuple(position.shape) != (3,):
-            raise ValueError(
-                f"antenna position must have shape (3,), got "
-                f"{tuple(position.shape)}"
-            )
-        translation = _vector3(
-            "translation",
-            None if motion is None else motion.translation,
-            resolved,
-            torch.float32,
-        )
+            raise ValueError(f"antenna position must have shape (3,), got {tuple(position.shape)}")
+        translation = _vector3("translation", None if motion is None else motion.translation, resolved, torch.float32)
         positions.append(position + translation)
-        velocities.append(
-            _vector3(
-                "velocity",
-                None if motion is None else motion.velocity,
-                resolved,
-                torch.float32,
-            )
-        )
+        velocities.append(_vector3("velocity", None if motion is None else motion.velocity, resolved, torch.float32))
     return Kinematics(
-        positions_m=torch.stack(positions).contiguous(),
-        velocities_m_per_s=torch.stack(velocities).contiguous(),
+        positions_m=torch.stack(positions).contiguous(), velocities_m_per_s=torch.stack(velocities).contiguous()
     )
 
 
@@ -1501,32 +1329,23 @@ def two_way_duals(
     """
 
     if not isinstance(sites, Kinematics):
-        raise TypeError(
-            f"sites must be a Kinematics, got {type(sites).__name__}"
-        )
+        raise TypeError(f"sites must be a Kinematics, got {type(sites).__name__}")
     for name, value in (("transmitters", transmitters), ("receivers", receivers)):
         if value is not None and not isinstance(value, Kinematics):
-            raise TypeError(
-                f"{name} must be a Kinematics or None, got {type(value).__name__}"
-            )
+            raise TypeError(f"{name} must be a Kinematics or None, got {type(value).__name__}")
     if type(slot_count) is not int or slot_count < 1:
         raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
 
     def dual(value: Kinematics | None) -> torch.Tensor | None:
         if value is None:
             return None
-        return replicate_slots(
-            forward_ad.make_dual(value.positions_m, value.velocities_m_per_s),
-            slot_count,
-        )
+        return replicate_slots(forward_ad.make_dual(value.positions_m, value.velocities_m_per_s), slot_count)
 
     with forward_ad.dual_level():
         yield TwoWayDuals(
-            transmitters=dual(transmitters),
-            sites=dual(sites),
-            receivers=dual(receivers),
-            slot_count=slot_count,
+            transmitters=dual(transmitters), sites=dual(sites), receivers=dual(receivers), slot_count=slot_count
         )
+
 
 __all__ = [
     "MOBILITIES",

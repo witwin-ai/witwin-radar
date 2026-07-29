@@ -49,12 +49,12 @@ import torch
 
 from . import multi_endpoint_geometry as geo
 from . import multi_endpoint_world as world
+
 # A deliberate RE-EXPORT, written in the redundant-alias form so it reads as
 # one. Eight modules reach it as `drv.to_synthesis(...)` rather than
 # importing `synthesis_batch` themselves; `ruff --fix` deleted it once as an
 # unused import and took four launch-budget tests with it.
 from .synthesis_batch import to_synthesis as to_synthesis
-
 
 MULTIPATH_COMPONENTS = frozenset({"los", "reflection"})
 
@@ -68,19 +68,11 @@ def make_response(*, requires_grad: bool = False, device: str = "cuda"):
     from witwin.radar.scattering import ScalarRcsResponse
 
     return ScalarRcsResponse.from_values(
-        FIXTURE_AMPLITUDE,
-        FIXTURE_PHASE_RAD,
-        device=device,
-        requires_grad=requires_grad,
+        FIXTURE_AMPLITUDE, FIXTURE_PHASE_RAD, device=device, requires_grad=requires_grad
     )
 
 
-def make_spec(
-    *,
-    num_chirps: int | None = None,
-    carrier_hz: float = 0.0,
-    output_domain: str = "beat",
-):
+def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0, output_domain: str = "beat"):
     from witwin.radar import RadarConfig
     from witwin.radar.synthesis import FmcwSpec
 
@@ -136,18 +128,14 @@ class MultiEndpointSpike:
         outbound_components: frozenset[str] | None = None,
         outbound_max_depth: int | None = None,
     ) -> None:
+        from witwin.radar.channel import ChannelPropagationAdapter
         from witwin.radar.paths import TwoWayComposer
-        from witwin.radar.channel import (
-            ChannelPropagationAdapter,
-        )
 
         self.device = device
         self.transmitters = tuple(transmitters)
         self.sites = tuple(sites)
         self.receivers = tuple(receivers)
-        self.compiled = (
-            world.compile_fixture_scene() if compiled is None else compiled
-        )
+        self.compiled = world.compile_fixture_scene() if compiled is None else compiled
         # An epoch loop rebinds ONE adapter across compiled scenes rather than
         # building a new one per epoch, because a frozen handle carries the
         # epoch number of the adapter it came from and only that adapter can
@@ -171,12 +159,8 @@ class MultiEndpointSpike:
             else ChannelPropagationAdapter(
                 self.compiled,
                 reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-                components=(
-                    components if outbound_components is None else outbound_components
-                ),
-                max_depth=(
-                    max_depth if outbound_max_depth is None else outbound_max_depth
-                ),
+                components=(components if outbound_components is None else outbound_components),
+                max_depth=(max_depth if outbound_max_depth is None else outbound_max_depth),
             )
         )
 
@@ -187,12 +171,10 @@ class MultiEndpointSpike:
 
         # Freeze once, outside every loop.
         self.inbound = self.adapter.freeze(
-            self._transmitter_batch(transmitter_positions),
-            self._site_batch(site_positions, role="sink"),
+            self._transmitter_batch(transmitter_positions), self._site_batch(site_positions, role="sink")
         )
         self.outbound = self.outbound_adapter.freeze(
-            self._site_batch(site_positions, role="source"),
-            self._receiver_batch(receiver_positions),
+            self._site_batch(site_positions, role="source"), self._receiver_batch(receiver_positions)
         )
         self.composer = TwoWayComposer.freeze(
             self.inbound,
@@ -202,39 +184,22 @@ class MultiEndpointSpike:
             # already-sorted list would make that sort unreachable and the
             # ``[Q, P]`` variant would stop testing it.
             torch.tensor(
-                list(
-                    self.site_ids
-                    if declared_site_ids is None
-                    else declared_site_ids
-                ),
+                list(self.site_ids if declared_site_ids is None else declared_site_ids),
                 dtype=torch.int64,
                 device=device,
             ),
-            radar_source_ids=list(
-                self.transmitter_ids
-                if declared_source_ids is None
-                else declared_source_ids
-            ),
-            radar_sink_ids=list(
-                self.receiver_ids if declared_sink_ids is None else declared_sink_ids
-            ),
+            radar_source_ids=list(self.transmitter_ids if declared_source_ids is None else declared_source_ids),
+            radar_sink_ids=list(self.receiver_ids if declared_sink_ids is None else declared_sink_ids),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         )
 
     # -- endpoint batches ---------------------------------------------------
 
     def _transmitter_batch(self, positions):
-        return world.endpoint_batch(
-            positions,
-            self.transmitter_ids,
-            power_w=geo.TX_POWER_W,
-            device=self.device,
-        )
+        return world.endpoint_batch(positions, self.transmitter_ids, power_w=geo.TX_POWER_W, device=self.device)
 
     def _receiver_batch(self, positions):
-        return world.endpoint_batch(
-            positions, self.receiver_ids, device=self.device
-        )
+        return world.endpoint_batch(positions, self.receiver_ids, device=self.device)
 
     def _site_batch(self, positions, *, role: str):
         """The site endpoint, excited at exactly 1 W when it is the source.
@@ -246,10 +211,7 @@ class MultiEndpointSpike:
         """
 
         return world.endpoint_batch(
-            positions,
-            self.site_ids,
-            power_w=geo.SITE_POWER_W if role == "source" else None,
-            device=self.device,
+            positions, self.site_ids, power_w=geo.SITE_POWER_W if role == "source" else None, device=self.device
         )
 
     def site_tensor(self, positions=None, *, requires_grad: bool = False):
@@ -262,33 +224,18 @@ class MultiEndpointSpike:
     def transmitter_tensor(self, positions=None):
         """The transmitter positions as one ``(N, 3)`` float32 CUDA tensor."""
 
-        values = (
-            [position for _, position in self.transmitters]
-            if positions is None
-            else positions
-        )
+        values = [position for _, position in self.transmitters] if positions is None else positions
         return torch.tensor(list(values), dtype=torch.float32, device=self.device)
 
     def receiver_tensor(self, positions=None):
         """The receiver positions as one ``(N, 3)`` float32 CUDA tensor."""
 
-        values = (
-            [position for _, position in self.receivers]
-            if positions is None
-            else positions
-        )
+        values = [position for _, position in self.receivers] if positions is None else positions
         return torch.tensor(list(values), dtype=torch.float32, device=self.device)
 
     # -- one frame ----------------------------------------------------------
 
-    def legs(
-        self,
-        sites=None,
-        *,
-        transmitters=None,
-        receivers=None,
-        ad_mode: str = "none",
-    ):
+    def legs(self, sites=None, *, transmitters=None, receivers=None, ad_mode: str = "none"):
         """Reevaluate both frozen legs at ``sites``.
 
         Each of the three endpoint sets may be a live ``(N, 3)`` tensor. For
@@ -308,16 +255,12 @@ class MultiEndpointSpike:
         inbound = self.adapter.reevaluate(
             self.inbound,
             self._transmitter_batch(self._transmitter_positions(transmitters)),
-            self._site_batch(
-                self.site_positions if sites is None else sites, role="sink"
-            ),
+            self._site_batch(self.site_positions if sites is None else sites, role="sink"),
             ad_mode=ad_mode,
         )
         outbound = self.outbound_adapter.reevaluate(
             self.outbound,
-            self._site_batch(
-                self.site_positions if sites is None else sites, role="source"
-            ),
+            self._site_batch(self.site_positions if sites is None else sites, role="source"),
             self._receiver_batch(self._receiver_positions(receivers)),
             ad_mode=ad_mode,
         )
@@ -345,17 +288,9 @@ class MultiEndpointSpike:
     ):
         """One frame: two reevaluations and one composition."""
 
-        inbound, outbound = self.legs(
-            sites,
-            transmitters=transmitters,
-            receivers=receivers,
-            ad_mode=ad_mode,
-        )
+        inbound, outbound = self.legs(sites, transmitters=transmitters, receivers=receivers, ad_mode=ad_mode)
         composed = self.composer.compose(
-            inbound,
-            outbound,
-            make_response() if response is None else response,
-            include_delay_rate=include_delay_rate,
+            inbound, outbound, make_response() if response is None else response, include_delay_rate=include_delay_rate
         )
         return composed, inbound, outbound
 
@@ -374,9 +309,7 @@ class MultiEndpointSpike:
         values = (
             positions
             if isinstance(positions, torch.Tensor)
-            else torch.tensor(
-                list(positions), dtype=torch.float32, device=self.device
-            )
+            else torch.tensor(list(positions), dtype=torch.float32, device=self.device)
         )
         return values.repeat(int(slot_count), 1)
 
@@ -400,9 +333,7 @@ class MultiEndpointSpike:
 
         sites = self.stacked(site_positions, 1)
         transmitters = (
-            self.stacked(
-                [position for _, position in self.transmitters], slot_count
-            )
+            self.stacked([position for _, position in self.transmitters], slot_count)
             if transmitter_positions is None
             else self.stacked(transmitter_positions, 1)
         )
@@ -439,14 +370,9 @@ class MultiEndpointSpike:
         rows = int(positions.shape[0])
         listed = list(ids)
         if rows % len(listed):
-            raise ValueError(
-                f"a stack of {rows} endpoints is not a whole number of "
-                f"{len(listed)}-endpoint slots"
-            )
+            raise ValueError(f"a stack of {rows} endpoints is not a whole number of {len(listed)}-endpoint slots")
         slots = rows // len(listed)
-        return world.endpoint_batch(
-            positions, listed * slots, power_w=power_w, device=self.device
-        )
+        return world.endpoint_batch(positions, listed * slots, power_w=power_w, device=self.device)
 
     def slot_frames(self, inbound, outbound, response=None, *, include_delay_rate=True):
         """Compose every slot of a slot-major pair of legs.
@@ -462,17 +388,14 @@ class MultiEndpointSpike:
         target = make_response() if response is None else response
         return [
             self.composer.compose(
-                inbound.slot(slot),
-                outbound.slot(slot),
-                target,
-                include_delay_rate=include_delay_rate,
+                inbound.slot(slot), outbound.slot(slot), target, include_delay_rate=include_delay_rate
             )
             for slot in range(inbound.slot_count)
         ]
 
     # -- the single-pair comparison spike -----------------------------------
 
-    def single_pair(self, transmitter, site, receiver) -> "MultiEndpointSpike":
+    def single_pair(self, transmitter, site, receiver) -> MultiEndpointSpike:
         """The 1 x 1 x 1 Phase-4/5-shaped spike for one endpoint triple.
 
         Built on the SAME compiled scene, so any difference between it and the
@@ -509,10 +432,7 @@ def composed_keys(spike: MultiEndpointSpike, composed):
     and RX_A differ by 20 ps.
     """
 
-    names = {
-        geo.LOS_COMPONENT_ID: "los",
-        geo.REFLECTION_COMPONENT_ID: "reflection",
-    }
+    names = {geo.LOS_COMPONENT_ID: "los", geo.REFLECTION_COMPONENT_ID: "reflection"}
     inbound_components = spike.inbound.component_id.tolist()
     outbound_components = spike.outbound.component_id.tolist()
     topology = spike.composer.topology

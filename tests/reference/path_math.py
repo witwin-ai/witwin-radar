@@ -38,12 +38,7 @@ def compute_total_path_lengths(sample, tx_pos: torch.Tensor, rx_pos: torch.Tenso
     return dist_tx + sample.fixed_path_lengths.view(1, 1, -1) + dist_rx
 
 
-def compute_antenna_pattern_gains(
-    radar,
-    sample,
-    tx_pos: torch.Tensor,
-    rx_pos: torch.Tensor,
-) -> torch.Tensor | None:
+def compute_antenna_pattern_gains(radar, sample, tx_pos: torch.Tensor, rx_pos: torch.Tensor) -> torch.Tensor | None:
     """Return per-path power gains from the configured TX/RX antenna pattern."""
     tx_vectors = radar._local_from_world_vectors(sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
     rx_vectors = radar._local_from_world_vectors(sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
@@ -75,8 +70,4 @@ def compute_total_path_length_rates(sample, velocities, *, tx_pos, rx_pos):
     return entry_rates.unsqueeze(1) + point_rates.unsqueeze(0)
 
 
-__all__ = [
-    "compute_antenna_pattern_gains",
-    "compute_total_path_length_rates",
-    "compute_total_path_lengths",
-]
+__all__ = ["compute_antenna_pattern_gains", "compute_total_path_length_rates", "compute_total_path_lengths"]

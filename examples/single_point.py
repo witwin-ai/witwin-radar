@@ -52,8 +52,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
+
 from witwin.radar import Radar, RadarConfig  # noqa: E402
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
@@ -65,12 +65,14 @@ from witwin.radar.processing import (  # noqa: E402
     range_profile,
 )
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.synthesis import SlowTimeMode  # noqa: E402
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
 CONFIG = {
-    "num_tx": 3, "num_rx": 4,
+    "num_tx": 3,
+    "num_rx": 4,
     "fc": 77e9,
     "slope": 60.012,
     "adc_samples": 256,
@@ -131,13 +133,7 @@ def build_scene() -> Scene:
     )
     return Scene(
         structures=(wall,),
-        endpoints=[
-            AntennaState(
-                reserve_antenna_id(770101),
-                "tx",
-                torch.tensor((0.0, 0.0, 0.0), dtype=torch.float32),
-            )
-        ],
+        endpoints=[AntennaState(reserve_antenna_id(770101), "tx", torch.tensor((0.0, 0.0, 0.0), dtype=torch.float32))],
     )
 
 
@@ -148,8 +144,7 @@ def build_radar() -> Radar:
     config = dataclasses.replace(
         config,
         frontend=FrontendSpec(
-            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3),
-            seed=SeedSpec(20260727),
+            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3), seed=SeedSpec(20260727)
         ),
     )
     return Radar(config, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
@@ -182,14 +177,9 @@ def processing_axes(radar: Radar) -> ProcessingAxes:
     the same for every frame.
     """
 
-    synthesis = radar._synthesize(
-        radar.last_radar_paths,
-        slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
-    )
+    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis,
-        radar.system_config.waveform_spec(),
-        radar.system_config.sensors.array,
+        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
     )
 
 
@@ -202,14 +192,8 @@ def main() -> None:
 
     radar = build_radar()
     scene = build_scene()
-    sites = ScatterSitePolicy.explicit(
-        torch.tensor([TARGET_POSITION_M], dtype=torch.float32, device=radar.device)
-    )
-    response = ScalarRcsResponse.from_rcs(
-        TARGET_RCS_M2,
-        reference_frequency_hz=radar.config.fc,
-        device=radar.device,
-    )
+    sites = ScatterSitePolicy.explicit(torch.tensor([TARGET_POSITION_M], dtype=torch.float32, device=radar.device))
+    response = ScalarRcsResponse.from_rcs(TARGET_RCS_M2, reference_frequency_hz=radar.config.fc, device=radar.device)
 
     print(f"Using device={radar.device}")
     print("Simulating the scene...")
@@ -236,13 +220,9 @@ def main() -> None:
     # The world does not move, so the pipeline compiles the scene once and
     # discovers the path topology once for the whole run.
     assert result.compile_count == 1 and result.discovery_count == 1, (
-        f"a still world compiled {result.compile_count} times and discovered "
-        f"{result.discovery_count} topologies"
+        f"a still world compiled {result.compile_count} times and discovered {result.discovery_count} topologies"
     )
-    print(
-        f"  Epochs: {result.epochs}  compiles={result.compile_count} "
-        f"discoveries={result.discovery_count}  OK"
-    )
+    print(f"  Epochs: {result.epochs}  compiles={result.compile_count} discoveries={result.discovery_count}  OK")
 
     # The four typed diagnostics, all describing the LAST frame.
     print(
@@ -268,9 +248,7 @@ def main() -> None:
     geometry = ArrayGeometry.from_axes(axes)
     profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
     rd = range_doppler_map(profile, window="hann")
-    combined = rd.data.reshape(
-        geometry.sensor_pair_count, *rd.data.shape[-2:]
-    ).sum(dim=0)
+    combined = rd.data.reshape(geometry.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     range_response = combined.abs().amax(dim=0)
 
     peak_bin = int(torch.argmax(range_response))
@@ -285,10 +263,7 @@ def main() -> None:
     # The wall turns one target into three round trips: direct-direct at 3 m,
     # the two direct-reflected cross terms at 5 m, and reflected-reflected at
     # 7 m. The 5 m peak is the one the wall's image source predicts.
-    multipath_range_m = 0.5 * (
-        true_range_m
-        + math.dist((0.0, 0.0, 2.0 * WALL_PLANE_Z_M), TARGET_POSITION_M)
-    )
+    multipath_range_m = 0.5 * (true_range_m + math.dist((0.0, 0.0, 2.0 * WALL_PLANE_Z_M), TARGET_POSITION_M))
     multipath_bin = int(round(multipath_range_m / axes.range_bin_m))
     window = range_response[multipath_bin - 2 : multipath_bin + 3]
     assert float(window.max()) > 0.1 * float(range_response[peak_bin]), (
@@ -296,12 +271,8 @@ def main() -> None:
     )
     print(f"  Multipath peak near {multipath_range_m:.4f} m  OK")
 
-    detections = ca_cfar_fast(
-        combined.abs(), guard_cells=(2, 4), training_cells=(4, 8), pfa=1e-4
-    )
-    cloud = point_cloud(
-        detections, rd, axes, geometry, route="phase_comparison", max_points=64
-    )
+    detections = ca_cfar_fast(combined.abs(), guard_cells=(2, 4), training_cells=(4, 8), pfa=1e-4)
+    cloud = point_cloud(detections, rd, axes, geometry, route="phase_comparison", max_points=64)
     print(f"  Point cloud: {len(cloud)} points")
     print("PASSED")
 

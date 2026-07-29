@@ -165,18 +165,9 @@ SITE_R_STABLE_ID = 22
 HINGE_SITE_IDS: tuple[int, ...] = (24, 25, 26)
 HINGE_ROOT_SPEED_M_PER_S = 4.0
 HINGE_TIP_SPEED_M_PER_S = 12.0
-HINGE_SITES: tuple[tuple[int, Point], ...] = tuple(
-    (HINGE_SITE_IDS[k], (2.0, 0.2 + 0.4 * k, 0.0)) for k in range(3)
-)
+HINGE_SITES: tuple[tuple[int, Point], ...] = tuple((HINGE_SITE_IDS[k], (2.0, 0.2 + 0.4 * k, 0.0)) for k in range(3))
 HINGE_VELOCITIES_M_PER_S: tuple[Point, ...] = tuple(
-    (
-        -(
-            HINGE_ROOT_SPEED_M_PER_S
-            + k * (HINGE_TIP_SPEED_M_PER_S - HINGE_ROOT_SPEED_M_PER_S) / 2.0
-        ),
-        0.0,
-        0.0,
-    )
+    (-(HINGE_ROOT_SPEED_M_PER_S + k * (HINGE_TIP_SPEED_M_PER_S - HINGE_ROOT_SPEED_M_PER_S) / 2.0), 0.0, 0.0)
     for k in range(3)
 )
 
@@ -198,18 +189,9 @@ WALL_VELOCITY_M_PER_S: Point = (4.0, 0.0, 0.0)
 #: class a fixed-topology replay cannot report.
 WALL_PARKED_OFFSET_M: Point = (0.0, 2.0, 0.0)
 
-TRANSMITTERS: tuple[tuple[int, Point], ...] = (
-    (TX_A_STABLE_ID, TX_A_POSITION_M),
-    (TX_B_STABLE_ID, TX_B_POSITION_M),
-)
-SITES: tuple[tuple[int, Point], ...] = (
-    (SITE_P_STABLE_ID, SITE_P_POSITION_M),
-    (SITE_Q_STABLE_ID, SITE_Q_POSITION_M),
-)
-RECEIVERS: tuple[tuple[int, Point], ...] = (
-    (RX_A_STABLE_ID, RX_A_POSITION_M),
-    (RX_B_STABLE_ID, RX_B_POSITION_M),
-)
+TRANSMITTERS: tuple[tuple[int, Point], ...] = ((TX_A_STABLE_ID, TX_A_POSITION_M), (TX_B_STABLE_ID, TX_B_POSITION_M))
+SITES: tuple[tuple[int, Point], ...] = ((SITE_P_STABLE_ID, SITE_P_POSITION_M), (SITE_Q_STABLE_ID, SITE_Q_POSITION_M))
+RECEIVERS: tuple[tuple[int, Point], ...] = ((RX_A_STABLE_ID, RX_A_POSITION_M), (RX_B_STABLE_ID, RX_B_POSITION_M))
 
 # The same physical sites, declared in the endpoint batch in DESCENDING stable
 # ID order. Positions and IDs swap together, so this is the same world seen
@@ -292,9 +274,7 @@ def specular_point_m(a: Point, b: Point) -> Point | None:
 
 
 def _cross_2d(origin, u, v) -> float:
-    return (u[0] - origin[0]) * (v[1] - origin[1]) - (u[1] - origin[1]) * (
-        v[0] - origin[0]
-    )
+    return (u[0] - origin[0]) * (v[1] - origin[1]) - (u[1] - origin[1]) * (v[0] - origin[0])
 
 
 def face_containing(point: Point, *, tolerance: float = 1.0e-9) -> int | None:
@@ -314,16 +294,9 @@ def face_containing(point: Point, *, tolerance: float = 1.0e-9) -> int | None:
 
     probe = (point[1], point[2])
     for index, face in enumerate(WALL_FACES):
-        a, b, c = (
-            (WALL_VERTICES_M[vertex][1], WALL_VERTICES_M[vertex][2])
-            for vertex in face
-        )
+        a, b, c = ((WALL_VERTICES_M[vertex][1], WALL_VERTICES_M[vertex][2]) for vertex in face)
         area = _cross_2d(a, b, c)
-        weights = (
-            _cross_2d(b, c, probe) / area,
-            _cross_2d(c, a, probe) / area,
-            _cross_2d(a, b, probe) / area,
-        )
+        weights = (_cross_2d(b, c, probe) / area, _cross_2d(c, a, probe) / area, _cross_2d(a, b, probe) / area)
         if all(weight > tolerance for weight in weights):
             return index
     return None
@@ -376,21 +349,14 @@ class LegRow:
 
     @property
     def interaction_type(self) -> int:
-        return (
-            LOS_INTERACTION_TYPE
-            if self.component == "los"
-            else REFLECTION_INTERACTION_TYPE
-        )
+        return LOS_INTERACTION_TYPE if self.component == "los" else REFLECTION_INTERACTION_TYPE
 
     @property
     def delay_s(self) -> float:
         return self.length_m / C0_M_PER_S
 
 
-def leg_rows(
-    sources: tuple[tuple[int, Point], ...],
-    sinks: tuple[tuple[int, Point], ...],
-) -> list[LegRow]:
+def leg_rows(sources: tuple[tuple[int, Point], ...], sinks: tuple[tuple[int, Point], ...]) -> list[LegRow]:
     """Every row of one leg, in the order Channel publishes them.
 
     ``sources`` and ``sinks`` are in ENDPOINT BATCH ROW ORDER, because that is
@@ -471,13 +437,7 @@ class CombinedRow:
     def key(self) -> tuple[int, int, int, str, str]:
         """A frame-invariant name for this composed row."""
 
-        return (
-            self.source_id,
-            self.site_id,
-            self.sink_id,
-            self.inbound.component,
-            self.outbound.component,
-        )
+        return (self.source_id, self.site_id, self.sink_id, self.inbound.component, self.outbound.component)
 
 
 def _leg_key(row: LegRow) -> tuple[int, int, tuple[int, ...], tuple[int, ...]]:
@@ -516,19 +476,11 @@ def combined_rows(
                     if inbound.source_id != source_id or inbound.sink_id != site_id:
                         continue
                     for outbound in outbound_rows:
-                        if (
-                            outbound.source_id != site_id
-                            or outbound.sink_id != sink_id
-                        ):
+                        if outbound.source_id != site_id or outbound.sink_id != sink_id:
                             continue
                         ranked.append(
                             (
-                                (
-                                    pair_rank,
-                                    site_rank,
-                                    _leg_key(inbound),
-                                    _leg_key(outbound),
-                                ),
+                                (pair_rank, site_rank, _leg_key(inbound), _leg_key(outbound)),
                                 CombinedRow(
                                     sensor_pair_rank=pair_rank,
                                     site_rank=site_rank,
@@ -544,9 +496,7 @@ def combined_rows(
     return [row for _, row in ranked]
 
 
-def combined_pair_offsets(
-    rows: list[CombinedRow], *, sensor_pair_count: int
-) -> list[int]:
+def combined_pair_offsets(rows: list[CombinedRow], *, sensor_pair_count: int) -> list[int]:
     counts = [0] * sensor_pair_count
     for row in rows:
         counts[row.sensor_pair_rank] += 1
@@ -559,9 +509,7 @@ def combined_pair_offsets(
 STATIONARY: Point = (0.0, 0.0, 0.0)
 
 
-def leg_delay_rate_s_per_s(
-    moving: Point, fixed: Point, component: str, velocity: Point
-) -> float:
+def leg_delay_rate_s_per_s(moving: Point, fixed: Point, component: str, velocity: Point) -> float:
     """``d(delay)/dt`` of one leg from ONE endpoint's motion, in float64.
 
     One formula covers both components, which is the point of the image source:
@@ -585,25 +533,17 @@ def leg_delay_rate_s_per_s(
     return projection / length / C0_M_PER_S
 
 
-def _leg_delay_rate_s_per_s(
-    site: Point, other: Point, component: str, velocity: Point
-) -> float:
+def _leg_delay_rate_s_per_s(site: Point, other: Point, component: str, velocity: Point) -> float:
     """The moving-SITE spelling of :func:`leg_delay_rate_s_per_s`."""
 
     return leg_delay_rate_s_per_s(site, other, component, velocity)
 
 
-ALL_ENDPOINTS: tuple[tuple[int, Point], ...] = (
-    *TRANSMITTERS,
-    *SITES,
-    *RECEIVERS,
-)
+ALL_ENDPOINTS: tuple[tuple[int, Point], ...] = (*TRANSMITTERS, *SITES, *RECEIVERS)
 
 
 def leg_delay_rates_s_per_s(
-    rows: list[LegRow],
-    velocities: dict[int, Point],
-    endpoints: tuple[tuple[int, Point], ...] = ALL_ENDPOINTS,
+    rows: list[LegRow], velocities: dict[int, Point], endpoints: tuple[tuple[int, Point], ...] = ALL_ENDPOINTS
 ) -> list[float]:
     """``d(delay)/dt`` of each LEG row, in the same order as ``rows``.
 
@@ -612,21 +552,14 @@ def leg_delay_rates_s_per_s(
     and would be untestable against an oracle that could only produce the sum.
     """
 
-    positions = {stable_id: position for stable_id, position in endpoints}
+    positions = dict(endpoints)
     rates: list[float] = []
     for row in rows:
         source = positions[row.source_id]
         sink = positions[row.sink_id]
         rates.append(
-            leg_delay_rate_s_per_s(
-                sink, source, row.component, velocities.get(row.sink_id, STATIONARY)
-            )
-            + leg_delay_rate_s_per_s(
-                source,
-                sink,
-                row.component,
-                velocities.get(row.source_id, STATIONARY),
-            )
+            leg_delay_rate_s_per_s(sink, source, row.component, velocities.get(row.sink_id, STATIONARY))
+            + leg_delay_rate_s_per_s(source, sink, row.component, velocities.get(row.source_id, STATIONARY))
         )
     return rates
 
@@ -648,10 +581,7 @@ def combined_delay_rate_s_per_s(
     nothing about the round trip needs a second closed form.
     """
 
-    positions = {
-        stable_id: position
-        for stable_id, position in (*transmitters, *sites, *receivers)
-    }
+    positions = dict((*transmitters, *sites, *receivers))
     rates: list[float] = []
     for row in rows:
         site = positions[row.site_id]
@@ -661,18 +591,10 @@ def combined_delay_rate_s_per_s(
         source_velocity = velocities.get(row.source_id, STATIONARY)
         sink_velocity = velocities.get(row.sink_id, STATIONARY)
         rates.append(
-            leg_delay_rate_s_per_s(
-                site, source, row.inbound.component, site_velocity
-            )
-            + leg_delay_rate_s_per_s(
-                source, site, row.inbound.component, source_velocity
-            )
-            + leg_delay_rate_s_per_s(
-                site, sink, row.outbound.component, site_velocity
-            )
-            + leg_delay_rate_s_per_s(
-                sink, site, row.outbound.component, sink_velocity
-            )
+            leg_delay_rate_s_per_s(site, source, row.inbound.component, site_velocity)
+            + leg_delay_rate_s_per_s(source, site, row.inbound.component, source_velocity)
+            + leg_delay_rate_s_per_s(site, sink, row.outbound.component, site_velocity)
+            + leg_delay_rate_s_per_s(sink, site, row.outbound.component, sink_velocity)
         )
     return rates
 
@@ -692,9 +614,7 @@ def combined_doppler_hz(
 
     return [
         -REFERENCE_FREQUENCY_HZ * rate
-        for rate in combined_delay_rate_s_per_s(
-            rows, velocities, transmitters, sites, receivers
-        )
+        for rate in combined_delay_rate_s_per_s(rows, velocities, transmitters, sites, receivers)
     ]
 
 
@@ -713,10 +633,7 @@ def image_velocity_m_per_s(wall_velocity: Point = WALL_VELOCITY_M_PER_S) -> Poin
 
 
 def wall_motion_leg_delay_rate_s_per_s(
-    source: Point,
-    sink: Point,
-    component: str,
-    wall_velocity: Point = WALL_VELOCITY_M_PER_S,
+    source: Point, sink: Point, component: str, wall_velocity: Point = WALL_VELOCITY_M_PER_S
 ) -> float:
     """``d(delay)/dt`` of one leg when the WALL moves and the endpoints do not.
 
@@ -749,22 +666,13 @@ def wall_motion_combined_delay_rate_s_per_s(
 ) -> list[float]:
     """``d(tau_rt)/dt`` of each composed row from wall motion alone."""
 
-    positions = {
-        stable_id: position
-        for stable_id, position in (*transmitters, *sites, *receivers)
-    }
+    positions = dict((*transmitters, *sites, *receivers))
     return [
         wall_motion_leg_delay_rate_s_per_s(
-            positions[row.source_id],
-            positions[row.site_id],
-            row.inbound.component,
-            wall_velocity,
+            positions[row.source_id], positions[row.site_id], row.inbound.component, wall_velocity
         )
         + wall_motion_leg_delay_rate_s_per_s(
-            positions[row.site_id],
-            positions[row.sink_id],
-            row.outbound.component,
-            wall_velocity,
+            positions[row.site_id], positions[row.sink_id], row.outbound.component, wall_velocity
         )
         for row in rows
     ]
@@ -788,11 +696,7 @@ def rotor_site_velocities(
     for stable_id, position in sites:
         r = tuple(position[axis] - centre[axis] for axis in range(3))
         w = angular_velocity
-        velocities[stable_id] = (
-            w[1] * r[2] - w[2] * r[1],
-            w[2] * r[0] - w[0] * r[2],
-            w[0] * r[1] - w[1] * r[0],
-        )
+        velocities[stable_id] = (w[1] * r[2] - w[2] * r[1], w[2] * r[0] - w[0] * r[2], w[0] * r[1] - w[1] * r[0])
     return velocities
 
 
@@ -819,34 +723,17 @@ def combined_delay_gradient_s_per_m(
     no first-order term.
     """
 
-    positions = {
-        stable_id: position
-        for stable_id, position in (*transmitters, *sites, *receivers)
-    }
+    positions = dict((*transmitters, *sites, *receivers))
     gradient = {stable_id: [0.0, 0.0, 0.0] for stable_id, _ in sites}
     for row, weight in zip(rows, weights, strict=True):
         site = positions[row.site_id]
         for axis in range(3):
-            direction = tuple(
-                1.0 if index == axis else 0.0 for index in range(3)
-            )
+            direction = tuple(1.0 if index == axis else 0.0 for index in range(3))
             gradient[row.site_id][axis] += weight * (
-                _leg_delay_rate_s_per_s(
-                    site,
-                    positions[row.source_id],
-                    row.inbound.component,
-                    direction,
-                )
-                + _leg_delay_rate_s_per_s(
-                    site,
-                    positions[row.sink_id],
-                    row.outbound.component,
-                    direction,
-                )
+                _leg_delay_rate_s_per_s(site, positions[row.source_id], row.inbound.component, direction)
+                + _leg_delay_rate_s_per_s(site, positions[row.sink_id], row.outbound.component, direction)
             )
-    return {
-        stable_id: tuple(value) for stable_id, value in gradient.items()
-    }
+    return {stable_id: tuple(value) for stable_id, value in gradient.items()}
 
 
 __all__ = [

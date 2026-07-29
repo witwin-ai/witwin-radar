@@ -44,7 +44,6 @@ import math
 
 import pytest
 import torch
-
 from support.pulsed_grid import (  # noqa: E402
     BANDWIDTH_HZ,
     C0,
@@ -63,10 +62,10 @@ from support.pulsed_grid import (  # noqa: E402
     reference_spec,
     stored,
 )
+
 from witwin.radar.processing.range_doppler import lag_axis, matched_filter  # noqa: E402
 from witwin.radar.synthesis.assembly import PulsedSpec  # noqa: E402
 from witwin.radar.synthesis.pulsed import synthesize_echo_rows  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -111,9 +110,7 @@ def _rows(delays, weights, rates, offsets=None):
 
 def _cube(spec, delays, weights, rates, offsets=None) -> torch.Tensor:
     tau, rate, transfer, table = _rows(delays, weights, rates, offsets)
-    return synthesize_echo_rows(tau, rate, transfer, table, spec).cpu().to(
-        torch.complex128
-    )
+    return synthesize_echo_rows(tau, rate, transfer, table, spec).cpu().to(torch.complex128)
 
 
 def _single_row_estimate(spec, tau, weight=1.0 + 0.0j, oversample: int = 64):
@@ -177,9 +174,7 @@ def test_the_peak_is_exact_at_an_on_grid_delay():
     """
 
     spec = reference_spec(num_pulses=1)
-    estimate, _, _ = _single_row_estimate(
-        spec, ON_GRID_TAU_S, _frozen_channel_weight(tau=ON_GRID_TAU_S)
-    )
+    estimate, _, _ = _single_row_estimate(spec, ON_GRID_TAU_S, _frozen_channel_weight(tau=ON_GRID_TAU_S))
     assert estimate == pytest.approx(ON_GRID_TAU_S, rel=1e-12)
 
 
@@ -250,7 +245,7 @@ def test_the_estimate_tracks_every_sub_sample_offset_and_snapping_does_not():
     # The analytic estimates are strictly increasing with the true delay, which
     # a staircase is not.
     values = [value for _, value, _ in table]
-    assert all(later > earlier for earlier, later in zip(values, values[1:]))
+    assert all(later > earlier for earlier, later in zip(values, values[1:], strict=False))
 
 
 def test_the_peak_magnitude_barely_moves_across_a_sub_sample_sweep():
@@ -264,25 +259,14 @@ def test_the_peak_magnitude_barely_moves_across_a_sub_sample_sweep():
     """
 
     def spread(spec: PulsedSpec) -> float:
-        magnitudes = [
-            _single_row_estimate(
-                spec, TAU_RT_S + k * spec.sample_period_s / 8.0
-            )[2]
-            for k in range(8)
-        ]
+        magnitudes = [_single_row_estimate(spec, TAU_RT_S + k * spec.sample_period_s / 8.0)[2] for k in range(8)]
         return (max(magnitudes) - min(magnitudes)) / max(magnitudes)
 
     coarse = spread(reference_spec(num_pulses=1))
     assert coarse == pytest.approx(1.95e-3, rel=0.1)
     assert coarse < 3.0e-3
 
-    fine = spread(
-        reference_spec(
-            num_pulses=1,
-            sample_period_s=SAMPLE_PERIOD_S / 2.0,
-            num_samples=2 * NUM_SAMPLES,
-        )
-    )
+    fine = spread(reference_spec(num_pulses=1, sample_period_s=SAMPLE_PERIOD_S / 2.0, num_samples=2 * NUM_SAMPLES))
     assert fine == pytest.approx(0.5 * coarse, rel=0.15)
 
 
@@ -371,27 +355,19 @@ def test_the_rectangular_pulse_compresses_to_a_triangle_of_base_two_pulse_widths
 
     # The triangle, exactly: half maximum lands on the samples T_p / 2 away.
     half_samples = spec.pulse_sample_count // 2
-    assert float(magnitude[peak + half_samples] / magnitude[peak]) == pytest.approx(
-        0.5, rel=1e-12
-    )
-    assert float(magnitude[peak - half_samples] / magnitude[peak]) == pytest.approx(
-        0.5, rel=1e-12
-    )
+    assert float(magnitude[peak + half_samples] / magnitude[peak]) == pytest.approx(0.5, rel=1e-12)
+    assert float(magnitude[peak - half_samples] / magnitude[peak]) == pytest.approx(0.5, rel=1e-12)
 
     half = 0.5 * float(magnitude[peak])
     index = peak
     while float(magnitude[index]) > half:
         index += 1
-    fraction = (float(magnitude[index - 1]) - half) / (
-        float(magnitude[index - 1]) - float(magnitude[index])
-    )
+    fraction = (float(magnitude[index - 1]) - half) / (float(magnitude[index - 1]) - float(magnitude[index]))
     half_width_s = (index - 1 + fraction - peak) * SAMPLE_PERIOD_S
     assert half_width_s == pytest.approx(PULSE_WIDTH_S / 2.0, rel=1e-3)
 
     # The base is two pulse widths: the correlation is structurally zero beyond.
-    assert float(magnitude[peak + spec.pulse_sample_count + 2 :].max()) < 1e-9 * float(
-        magnitude[peak]
-    )
+    assert float(magnitude[peak + spec.pulse_sample_count + 2 :].max()) < 1e-9 * float(magnitude[peak])
 
     # And the resolution that pulse width buys - three orders of magnitude
     # coarser than the LFM's, which is the whole reason an LFM is transmitted.
@@ -444,9 +420,7 @@ def test_the_lfm_compresses_to_a_sinc_with_the_textbook_first_sidelobe():
         sidelobe += 1
     ratio_db = 20.0 * math.log10(float(magnitude[sidelobe]) / peak_value)
     assert ratio_db == pytest.approx(-13.2, abs=1.0)
-    assert (float(lags[sidelobe]) - float(lags[peak])) * BANDWIDTH_HZ == pytest.approx(
-        1.43, rel=0.05
-    )
+    assert (float(lags[sidelobe]) - float(lags[peak])) * BANDWIDTH_HZ == pytest.approx(1.43, rel=0.05)
 
 
 # --------------------------------------------------------------------------
@@ -497,17 +471,11 @@ def test_the_slow_time_slope_carries_the_whole_carrier_not_just_the_envelope(sam
     measured = _measured_pulse_slope(spec, sample, TAU_RATE)
     assert measured == pytest.approx(analytic, rel=1e-5)
 
-    envelope_only = (
-        -math.tau
-        * stored(TAU_RATE)
-        * PRI_S
-        * spec.instantaneous_pulse_frequency_hz(envelope_time)
-    )
+    envelope_only = -math.tau * stored(TAU_RATE) * PRI_S * spec.instantaneous_pulse_frequency_hz(envelope_time)
     understatement = analytic / envelope_only
     assert abs(understatement) > 1000.0
     assert abs(understatement) == pytest.approx(
-        1.0 + F_REF_HZ / spec.instantaneous_pulse_frequency_hz(envelope_time),
-        rel=1e-9,
+        1.0 + F_REF_HZ / spec.instantaneous_pulse_frequency_hz(envelope_time), rel=1e-9
     )
     assert abs(measured) > 1000.0 * 1e-5 * abs(analytic)
 
@@ -548,9 +516,7 @@ def test_both_carrier_homes_produce_the_same_slow_time_slope(sample):
     from_weight = _measured_pulse_slope(production, sample, TAU_RATE)
     kernel_cube = _cube(kernel_owned, [TAU_RT_S], [1.0 + 0.0j], [TAU_RATE])
     from_kernel = _lsq_slope(_unwrapped(kernel_cube[:, 0, sample]))
-    analytic = production.slow_time_phase_step_rad(
-        stored(TAU_RATE), _envelope_time_s(sample)
-    )
+    analytic = production.slow_time_phase_step_rad(stored(TAU_RATE), _envelope_time_s(sample))
     assert from_weight == pytest.approx(analytic, rel=1e-5)
     assert from_kernel == pytest.approx(analytic, rel=1e-5)
 
@@ -592,9 +558,7 @@ def test_a_receding_site_puts_the_slow_time_tone_at_negative_doppler():
     # conjugated, and that is asserted rather than left to the reader.
     from witwin.radar.synthesis.fmcw import channel_phasor_to_beat_weight
 
-    coefficient = torch.tensor(
-        [_frozen_channel_weight()], dtype=torch.complex64, device="cuda"
-    )
+    coefficient = torch.tensor([_frozen_channel_weight()], dtype=torch.complex64, device="cuda")
     beat = channel_phasor_to_beat_weight(coefficient)
     assert not torch.equal(beat, coefficient)
     assert torch.equal(beat, torch.conj(coefficient).resolve_conj())
@@ -619,9 +583,7 @@ def test_a_speed_past_the_unambiguous_bound_aliases():
     """
 
     spec = reference_spec(num_pulses=16)
-    assert spec.max_unambiguous_speed_m_s == pytest.approx(
-        C0 / (4.0 * F_REF_HZ * PRI_S), rel=1e-12
-    )
+    assert spec.max_unambiguous_speed_m_s == pytest.approx(C0 / (4.0 * F_REF_HZ * PRI_S), rel=1e-12)
 
     speed = 1.05 * spec.max_unambiguous_speed_m_s
     rate = 2.0 * speed / C0
@@ -640,13 +602,9 @@ def test_a_speed_past_the_unambiguous_bound_aliases():
     # Just inside the bound the same estimator recovers the true slope.
     inside_rate = 2.0 * (0.95 * spec.max_unambiguous_speed_m_s) / C0
     inside_spec = reference_spec(num_pulses=16, max_expected_delay_rate=inside_rate)
-    inside = _cube(
-        inside_spec, [TAU_RT_S], [_frozen_channel_weight()], [inside_rate]
-    )[:, 0, LEADING_SAMPLE]
+    inside = _cube(inside_spec, [TAU_RT_S], [_frozen_channel_weight()], [inside_rate])[:, 0, LEADING_SAMPLE]
     measured = float(torch.angle(inside[1:] * torch.conj(inside[:-1])).mean())
-    assert measured == pytest.approx(
-        -math.tau * stored(inside_rate) * PRI_S * F_REF_HZ, rel=1e-4
-    )
+    assert measured == pytest.approx(-math.tau * stored(inside_rate) * PRI_S * F_REF_HZ, rel=1e-4)
 
 
 # --------------------------------------------------------------------------
@@ -659,26 +617,15 @@ def _cuda_batch(*, row_valid=None, path_count: int = 1, pair_count: int = 1):
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     zeros = torch.zeros(path_count, dtype=torch.int64, device="cuda")
-    offsets = torch.tensor(
-        [0] + [path_count] * pair_count, dtype=torch.int64, device="cuda"
-    )
+    offsets = torch.tensor([0] + [path_count] * pair_count, dtype=torch.int64, device="cuda")
     return SynthesisPathBatch(
         sensor_pair_count=pair_count,
         path_count=path_count,
         sensor_pair_index=torch.zeros(path_count, dtype=torch.int64, device="cuda"),
         pair_offsets=offsets,
-        total_delay_s=torch.full(
-            (path_count,), TAU_RT_S, dtype=torch.float32, device="cuda"
-        ),
-        delay_rate=torch.full(
-            (path_count,), TAU_RATE, dtype=torch.float32, device="cuda"
-        ),
-        complex_transfer_ref=torch.full(
-            (path_count,),
-            _frozen_channel_weight(),
-            dtype=torch.complex64,
-            device="cuda",
-        ),
+        total_delay_s=torch.full((path_count,), TAU_RT_S, dtype=torch.float32, device="cuda"),
+        delay_rate=torch.full((path_count,), TAU_RATE, dtype=torch.float32, device="cuda"),
+        complex_transfer_ref=torch.full((path_count,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"),
         reference_frequency_hz=F_REF_HZ,
         frequency_response=None,
         frequency_offsets_hz=None,
@@ -711,9 +658,7 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
     assert float(synthesize_pulsed(alive, spec).abs().sum()) > 0.0
     assert float(synthesize_pulsed(dead, spec).abs().sum()) == 0.0
 
-    weight = torch.full(
-        (1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"
-    ).requires_grad_(True)
+    weight = torch.full((1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda").requires_grad_(True)
     live = dataclasses.replace(dead, complex_transfer_ref=weight)
     cube = synthesize_pulsed(live, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
@@ -738,9 +683,7 @@ def test_a_row_outside_the_range_gate_contributes_exactly_zero():
     assert not bool(torch.isnan(cube.imag).any())
 
     # And a row whose echo arrives BEFORE the gate opens is equally silent.
-    early = reference_spec(
-        num_pulses=2, num_samples=256, range_gate_start_s=15.0e-6
-    )
+    early = reference_spec(num_pulses=2, num_samples=256, range_gate_start_s=15.0e-6)
     early_cube = _cube(early, [TAU_RT_S], [_frozen_channel_weight()], [0.0])
     assert float(early_cube.abs().max()) == 0.0
 
@@ -814,12 +757,7 @@ def test_permuting_the_rows_of_one_segment_leaves_the_train_unchanged():
     rates = [TAU_RATE, 0.0, -TAU_RATE]
     order = [2, 0, 1]
     straight = _cube(spec, delays, weights, rates)
-    permuted = _cube(
-        spec,
-        [delays[i] for i in order],
-        [weights[i] for i in order],
-        [rates[i] for i in order],
-    )
+    permuted = _cube(spec, [delays[i] for i in order], [weights[i] for i in order], [rates[i] for i in order])
     scale = float(straight.abs().max())
     torch.testing.assert_close(straight, permuted, rtol=1e-6, atol=1e-6 * scale)
 
@@ -841,20 +779,11 @@ def test_the_kernel_matches_the_float64_reference_train():
     from support import reference_pulsed as ref
 
     delays = [TAU_RT_S, ON_GRID_TAU_S, 3.0e-6, 5.5e-6, 7.25e-6]
-    weights = [
-        _frozen_channel_weight(),
-        0.5 + 0.25j,
-        -0.75 + 0.1j,
-        0.2 - 0.6j,
-        1.3 + 0.05j,
-    ]
+    weights = [_frozen_channel_weight(), 0.5 + 0.25j, -0.75 + 0.1j, 0.2 - 0.6j, 1.3 + 0.05j]
     rates = [TAU_RATE, -TAU_RATE, 0.0, 2.0 * TAU_RATE, -0.5 * TAU_RATE]
     offsets = [0, 2, 2, 5]
 
-    for spec in (
-        reference_spec(num_pulses=5, num_samples=512),
-        rect_spec(num_pulses=5, num_samples=512),
-    ):
+    for spec in (reference_spec(num_pulses=5, num_samples=512), rect_spec(num_pulses=5, num_samples=512)):
         measured = _cube(spec, delays, weights, rates, offsets)
         expected = ref.echo_cube(
             torch.tensor(delays, dtype=torch.float32).double(),
@@ -865,9 +794,7 @@ def test_the_kernel_matches_the_float64_reference_train():
         )
         scale = float(expected.abs().max())
         assert scale > 0.0
-        torch.testing.assert_close(
-            measured, expected, rtol=1e-5, atol=1e-6 * scale
-        )
+        torch.testing.assert_close(measured, expected, rtol=1e-5, atol=1e-6 * scale)
 
 
 def test_the_carrier_rate_multiplies_the_drift_and_the_envelope_the_full_delay():
@@ -898,9 +825,7 @@ def test_the_carrier_rate_multiplies_the_drift_and_the_envelope_the_full_delay()
     # ...while the envelope is fully positioned by the same delay: the gate is
     # silent right up to the sample the pulse's leading edge lands on.
     assert float(cube[0, 0, :ON_GRID_SAMPLE].abs().max()) == 0.0
-    assert abs(complex(cube[0, 0, ON_GRID_SAMPLE])) == pytest.approx(
-        abs(weight) * spec.pulse_amplitude, rel=1e-6
-    )
+    assert abs(complex(cube[0, 0, ON_GRID_SAMPLE])) == pytest.approx(abs(weight) * spec.pulse_amplitude, rel=1e-6)
 
 
 # --------------------------------------------------------------------------
@@ -930,9 +855,7 @@ class _FrameLedger:
         for name in HOST_OBSERVERS:
             original_method = getattr(torch.Tensor, name)
 
-            def observing(
-                tensor, *args, _name=name, _original=original_method, **kwargs
-            ):
+            def observing(tensor, *args, _name=name, _original=original_method, **kwargs):
                 self.host[_name] += 1
                 return _original(tensor, *args, **kwargs)
 
@@ -980,6 +903,7 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
     """
 
     from support import multi_endpoint_driver as drv
+
     from witwin.radar.synthesis.assembly import assemble_frame_cube
     from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
@@ -999,9 +923,7 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
         assert float(frame[1, rx].abs().sum()) == 0.0
 
 
-def test_one_pulsed_frame_is_one_launch_and_no_host_observation(
-    multi_endpoint_spike, monkeypatch
-):
+def test_one_pulsed_frame_is_one_launch_and_no_host_observation(multi_endpoint_spike, monkeypatch):
     """Acceptance: exactly one ``pulsed_echo_forward`` per frame, and no D2H.
 
     The host budget is measured over synthesis and assembly only, because the
@@ -1010,6 +932,7 @@ def test_one_pulsed_frame_is_one_launch_and_no_host_observation(
     """
 
     from support import multi_endpoint_driver as drv
+
     import witwin.radar.synthesis.pulsed as pulsed
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
@@ -1022,23 +945,18 @@ def test_one_pulsed_frame_is_one_launch_and_no_host_observation(
     cube = pulsed.synthesize_pulsed(batch, spec)
     assemble_frame_cube(cube, num_tx=2, num_rx=2)
 
-    assert ledger.launches == {
-        "pulsed_echo_forward": 1,
-        "pulsed_echo_backward": 0,
-        "pulsed_echo_jvp": 0,
-    }, ledger.launches
-    assert ledger.host == dict.fromkeys((*HOST_OBSERVERS, "synchronize"), 0), (
-        ledger.host
+    assert ledger.launches == {"pulsed_echo_forward": 1, "pulsed_echo_backward": 0, "pulsed_echo_jvp": 0}, (
+        ledger.launches
     )
+    assert ledger.host == dict.fromkeys((*HOST_OBSERVERS, "synchronize"), 0), ledger.host
 
 
 def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatch):
     from support import multi_endpoint_driver as drv
+
     import witwin.radar.synthesis.pulsed as pulsed
 
-    composed, _, _ = multi_endpoint_spike.frame(
-        response=drv.make_response(requires_grad=True)
-    )
+    composed, _, _ = multi_endpoint_spike.frame(response=drv.make_response(requires_grad=True))
     spec = _fixture_spec(2)
     batch = drv.to_synthesis(composed)
     operators = pulsed._ops()
@@ -1051,9 +969,7 @@ def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatc
     assert ledger.launches["pulsed_echo_jvp"] == 0
 
 
-def test_the_contract_guards_run_before_any_launch(
-    multi_endpoint_spike, monkeypatch
-):
+def test_the_contract_guards_run_before_any_launch(multi_endpoint_spike, monkeypatch):
     """The refusal happens BEFORE the kernel runs, not after.
 
     A check that ran after the launch would still raise, but it would already
@@ -1063,6 +979,7 @@ def test_the_contract_guards_run_before_any_launch(
     """
 
     from support import multi_endpoint_driver as drv
+
     import witwin.radar.synthesis.pulsed as pulsed
 
     composed, _, _ = multi_endpoint_spike.frame()
@@ -1085,9 +1002,7 @@ def test_the_contract_guards_run_before_any_launch(
     # speed that walks a whole range cell in it is 50 km/s rather than the
     # 5 km/s the 32-pulse spec needs. The bound is a statement about the CPI,
     # not about the speed alone.
-    migrating = dataclasses.replace(
-        migrating, max_expected_delay_rate=2.0 * 50000.0 / C0
-    )
+    migrating = dataclasses.replace(migrating, max_expected_delay_rate=2.0 * 50000.0 / C0)
     assert migrating.range_migration_delay_s > migrating.range_cell_delay_s
     with pytest.raises(ValueError, match="range migration"):
         pulsed.synthesize_pulsed(batch, migrating)
@@ -1108,10 +1023,7 @@ def test_the_forward_allocates_no_per_path_per_sample_intermediate():
     spec = reference_spec(num_pulses=8, num_samples=512)
     rows = 512
     generator = torch.Generator(device="cuda").manual_seed(20260725)
-    tau = (
-        torch.rand(rows, generator=generator, device="cuda", dtype=torch.float32)
-        * 5.0e-6
-    )
+    tau = torch.rand(rows, generator=generator, device="cuda", dtype=torch.float32) * 5.0e-6
     rate = torch.zeros(rows, dtype=torch.float32, device="cuda")
     transfer = torch.ones(rows, dtype=torch.complex64, device="cuda")
     offsets = torch.tensor([0, rows], dtype=torch.int64, device="cuda")
@@ -1133,6 +1045,4 @@ def test_the_forward_allocates_no_per_path_per_sample_intermediate():
     # Non-vacuity: one K x L x M float32 intermediate would be 8 MB, which is
     # more than a hundred times this budget, so a Torch replay of the sum fails
     # here immediately.
-    assert 4 * rows * spec.num_pulses * spec.num_samples > 100.0 * (
-        2.0 * output_bytes + per_row_bytes
-    )
+    assert 4 * rows * spec.num_pulses * spec.num_samples > 100.0 * (2.0 * output_bytes + per_row_bytes)

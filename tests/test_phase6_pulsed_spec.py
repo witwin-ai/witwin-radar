@@ -20,7 +20,6 @@ import math
 
 import pytest
 import torch
-
 from support.pulsed_grid import (  # noqa: E402
     BANDWIDTH_HZ,
     C0,
@@ -36,18 +35,14 @@ from support.pulsed_grid import (  # noqa: E402
     rect_spec,
     reference_spec,
 )
-from witwin.radar.processing.range_doppler import (  # noqa: E402
-    lag_axis,
-    matched_filter,
-    pulse_samples,
-)
+
+from witwin.radar.processing.range_doppler import lag_axis, matched_filter, pulse_samples  # noqa: E402
 from witwin.radar.synthesis.assembly import (  # noqa: E402
     PulsedSpec,
     SlowTimeMode,
     SynthesisPathBatch,
     require_pulsed_compatible,
 )
-
 
 # --------------------------------------------------------------------------
 # The grid is self-consistent, and every reason it has to be is asserted
@@ -77,9 +72,7 @@ def test_the_reference_grid_is_internally_consistent():
 
     # 4. The test speed is inside the unambiguous bound, so a slow-time slope
     #    means something. 12 m/s would not be.
-    assert spec.max_unambiguous_speed_m_s == pytest.approx(
-        9.733521363636363, rel=1e-12
-    )
+    assert spec.max_unambiguous_speed_m_s == pytest.approx(9.733521363636363, rel=1e-12)
     assert RADIAL_SPEED_MPS < spec.max_unambiguous_speed_m_s
     assert 12.0 > spec.max_unambiguous_speed_m_s
 
@@ -93,9 +86,7 @@ def test_the_derived_quantities_are_the_closed_forms():
 
     # LFM resolution comes from the SWEEP and is independent of the length.
     assert spec.range_resolution_m == pytest.approx(7.49481145, rel=1e-12)
-    assert spec.range_resolution_m == pytest.approx(
-        C0 / (2.0 * BANDWIDTH_HZ), rel=1e-12
-    )
+    assert spec.range_resolution_m == pytest.approx(C0 / (2.0 * BANDWIDTH_HZ), rel=1e-12)
     # The rectangle's comes from its LENGTH alone, and the two disagree by the
     # time-bandwidth product - 200 here - which is the whole reason an LFM is
     # worth transmitting.
@@ -106,16 +97,10 @@ def test_the_derived_quantities_are_the_closed_forms():
 
     assert spec.max_unambiguous_range_m == pytest.approx(14989.6229, rel=1e-12)
     assert spec.max_unambiguous_range_m == pytest.approx(C0 * PRI_S / 2.0, rel=1e-12)
-    assert spec.max_unambiguous_speed_m_s == pytest.approx(
-        spec.wavelength_m / (4.0 * PRI_S), rel=1e-12
-    )
+    assert spec.max_unambiguous_speed_m_s == pytest.approx(spec.wavelength_m / (4.0 * PRI_S), rel=1e-12)
     assert spec.range_cell_delay_s == pytest.approx(5.0e-8, rel=1e-12)
-    assert spec.range_migration_delay_s == pytest.approx(
-        abs(TAU_RATE) * NUM_PULSES * PRI_S, rel=1e-12
-    )
-    assert spec.pulse_amplitude == pytest.approx(
-        1.0 / math.sqrt(PULSE_WIDTH_S), rel=1e-12
-    )
+    assert spec.range_migration_delay_s == pytest.approx(abs(TAU_RATE) * NUM_PULSES * PRI_S, rel=1e-12)
+    assert spec.pulse_amplitude == pytest.approx(1.0 / math.sqrt(PULSE_WIDTH_S), rel=1e-12)
     assert spec.pulse_sample_count == 500
     assert spec.pulse_grid_is_commensurate
 
@@ -132,9 +117,7 @@ def test_the_doppler_and_slow_time_closed_forms():
     """
 
     spec = reference_spec()
-    assert spec.doppler_frequency_hz(TAU_RATE) == pytest.approx(
-        -2568.443533, rel=1e-8
-    )
+    assert spec.doppler_frequency_hz(TAU_RATE) == pytest.approx(-2568.443533, rel=1e-8)
     assert spec.doppler_frequency_hz(TAU_RATE) < 0.0
     assert spec.doppler_frequency_hz(-TAU_RATE) > 0.0
     assert abs(spec.doppler_frequency_hz(TAU_RATE)) < 0.5 / PRI_S
@@ -146,20 +129,14 @@ def test_the_doppler_and_slow_time_closed_forms():
     assert spec.instantaneous_pulse_frequency_hz(0.0) == 0.0
 
     # At the trailing edge it is the largest it ever gets, and it is B.
-    assert spec.instantaneous_pulse_frequency_hz(
-        PULSE_WIDTH_S
-    ) == pytest.approx(BANDWIDTH_HZ, rel=1e-12)
+    assert spec.instantaneous_pulse_frequency_hz(PULSE_WIDTH_S) == pytest.approx(BANDWIDTH_HZ, rel=1e-12)
     at_tail = spec.slow_time_phase_step_rad(TAU_RATE, PULSE_WIDTH_S)
-    assert at_tail / at_edge == pytest.approx(
-        1.0 + BANDWIDTH_HZ / F_REF_HZ, rel=1e-12
-    )
+    assert at_tail / at_edge == pytest.approx(1.0 + BANDWIDTH_HZ / F_REF_HZ, rel=1e-12)
 
     # A rectangular pulse has no such correction at all: its envelope carries no
     # phase, so the whole slow-time step is the carrier's.
     assert rect_spec().instantaneous_pulse_frequency_hz(PULSE_WIDTH_S) == 0.0
-    assert rect_spec().slow_time_phase_step_rad(
-        TAU_RATE, PULSE_WIDTH_S
-    ) == pytest.approx(at_edge, rel=1e-12)
+    assert rect_spec().slow_time_phase_step_rad(TAU_RATE, PULSE_WIDTH_S) == pytest.approx(at_edge, rel=1e-12)
 
 
 # --------------------------------------------------------------------------
@@ -240,9 +217,7 @@ def _cpu_batch(spec: PulsedSpec) -> SynthesisPathBatch:
         reference_frequency_hz=spec.reference_frequency_hz,
         frequency_response=None,
         frequency_offsets_hz=None,
-        topology=RadarPathTopology(
-            zeros.clone(), zeros.clone(), zeros.clone(), zeros.clone(), zeros.clone()
-        ),
+        topology=RadarPathTopology(zeros.clone(), zeros.clone(), zeros.clone(), zeros.clone(), zeros.clone()),
         row_valid=None,
         join_mode="multipath",
         weight_includes_reference_phase=True,
@@ -290,9 +265,7 @@ def test_range_migration_past_one_cell_is_refused_and_names_itself():
     # vacuous at any speed a radar would care about.
     near = reference_spec(max_expected_delay_rate=2.0 * 1000.0 / C0)
     assert near.range_migration_delay_s == pytest.approx(2.1348102e-08, rel=1e-6)
-    assert near.range_migration_delay_s / near.range_cell_delay_s == pytest.approx(
-        0.4270, rel=1e-3
-    )
+    assert near.range_migration_delay_s / near.range_cell_delay_s == pytest.approx(0.4270, rel=1e-3)
     require_pulsed_compatible(_cpu_batch(near), near)
 
     # 5000 m/s walks 2.1 cells and is refused.
@@ -338,22 +311,15 @@ def test_the_shared_provenance_rules_still_apply():
 
     spec = reference_spec()
     with pytest.raises(ValueError, match="double-counted carrier phase"):
-        require_pulsed_compatible(
-            _cpu_batch(spec), reference_spec(carrier_hz=F_REF_HZ, carrier_rate_hz=0.0)
-        )
+        require_pulsed_compatible(_cpu_batch(spec), reference_spec(carrier_hz=F_REF_HZ, carrier_rate_hz=0.0))
     with pytest.raises(ValueError, match="understated Doppler"):
-        require_pulsed_compatible(
-            _cpu_batch(spec), reference_spec(carrier_rate_hz=0.5 * F_REF_HZ)
-        )
+        require_pulsed_compatible(_cpu_batch(spec), reference_spec(carrier_rate_hz=0.5 * F_REF_HZ))
     # R7. The carrier rate still matches the BATCH's reference frequency, so
     # R3 is satisfied and the mismatch this catches is the spec's own declared
     # frequency: a narrowband coefficient is not transferable between them.
     with pytest.raises(ValueError, match="reference frequency mismatch"):
         require_pulsed_compatible(
-            _cpu_batch(spec),
-            reference_spec(
-                reference_frequency_hz=24.0e9, carrier_rate_hz=F_REF_HZ
-            ),
+            _cpu_batch(spec), reference_spec(reference_frequency_hz=24.0e9, carrier_rate_hz=F_REF_HZ)
         )
 
 
@@ -398,12 +364,8 @@ def test_the_replica_carries_exactly_unit_energy(spec_factory):
     assert replica.dtype == torch.complex128
     energy = float((replica.abs() ** 2).sum()) * spec.sample_period_s
     assert energy == pytest.approx(1.0, rel=1e-12)
-    assert float(replica.abs().max()) == pytest.approx(
-        spec.pulse_amplitude, rel=1e-12
-    )
-    assert float(replica.abs().min()) == pytest.approx(
-        spec.pulse_amplitude, rel=1e-12
-    )
+    assert float(replica.abs().max()) == pytest.approx(spec.pulse_amplitude, rel=1e-12)
+    assert float(replica.abs().min()) == pytest.approx(spec.pulse_amplitude, rel=1e-12)
 
 
 def test_the_two_replicas_differ_only_by_phase():
@@ -418,11 +380,7 @@ def test_the_two_replicas_differ_only_by_phase():
     spec = reference_spec()
     steps = torch.angle(lfm[1:] * torch.conj(lfm[:-1]))
     analytic_last = (
-        math.tau
-        * spec.bandwidth_hz
-        * (498.5 * spec.sample_period_s)
-        * spec.sample_period_s
-        / spec.pulse_width_s
+        math.tau * spec.bandwidth_hz * (498.5 * spec.sample_period_s) * spec.sample_period_s / spec.pulse_width_s
     )
     assert float(steps[-1]) == pytest.approx(analytic_last, rel=1e-9)
 
@@ -442,9 +400,7 @@ def _delayed_replica(spec: PulsedSpec, shift_samples: int) -> torch.Tensor:
     """The received train for one on-grid row, built without the kernel."""
 
     replica = pulse_samples(spec)
-    signal = torch.zeros(
-        (1, 1, spec.num_samples), dtype=torch.complex128
-    )
+    signal = torch.zeros((1, 1, spec.num_samples), dtype=torch.complex128)
     signal[0, 0, shift_samples : shift_samples + replica.shape[0]] = replica
     return signal
 
@@ -462,9 +418,7 @@ def test_the_matched_filter_is_a_correlation_not_a_convolution():
     z = matched_filter(_delayed_replica(spec, shift), spec)[0, 0]
     lag = lag_axis(spec)
     assert int(z.abs().argmax()) == shift
-    assert float(lag[int(z.abs().argmax())]) == pytest.approx(
-        shift * SAMPLE_PERIOD_S, rel=1e-12
-    )
+    assert float(lag[int(z.abs().argmax())]) == pytest.approx(shift * SAMPLE_PERIOD_S, rel=1e-12)
 
 
 def test_the_matched_filter_peak_is_the_coefficient_at_an_on_grid_delay():
@@ -488,9 +442,7 @@ def test_the_matched_filter_peak_is_the_coefficient_at_an_on_grid_delay():
     z = matched_filter(signal, spec)[0, 0]
     peak = complex(z[100])
     assert abs(peak) == pytest.approx(abs(weight), rel=1e-12)
-    assert math.atan2(peak.imag, peak.real) == pytest.approx(
-        math.atan2(weight.imag, weight.real), abs=1e-12
-    )
+    assert math.atan2(peak.imag, peak.real) == pytest.approx(math.atan2(weight.imag, weight.real), abs=1e-12)
 
 
 def test_oversampling_interpolates_and_changes_nothing_on_the_original_grid():
@@ -507,12 +459,8 @@ def test_oversampling_interpolates_and_changes_nothing_on_the_original_grid():
     coarse = matched_filter(signal, spec)[0, 0]
     fine = matched_filter(signal, spec, oversample=8)[0, 0]
     assert fine.shape[0] == 8 * coarse.shape[0]
-    torch.testing.assert_close(
-        fine[::8], coarse, rtol=1e-10, atol=1e-12 * float(coarse.abs().max())
-    )
-    assert float(lag_axis(spec, oversample=8)[8]) == pytest.approx(
-        float(lag_axis(spec)[1]), rel=1e-12
-    )
+    torch.testing.assert_close(fine[::8], coarse, rtol=1e-10, atol=1e-12 * float(coarse.abs().max()))
+    assert float(lag_axis(spec, oversample=8)[8]) == pytest.approx(float(lag_axis(spec)[1]), rel=1e-12)
 
 
 def test_the_matched_filter_refuses_a_signal_of_the_wrong_length():

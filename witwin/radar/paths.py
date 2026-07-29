@@ -26,6 +26,7 @@ from typing import Literal
 import torch
 import torch.autograd.forward_ad as forward_ad
 
+from .cuda import native_ops as _ops
 from .policy import first_order_only
 from .propagation import RadarLegBatch, require_wideband_pair
 
@@ -61,14 +62,8 @@ def leg_identity(frozen, name: str) -> tuple[list[int], list[int], list[LegKey]]
     sink = [int(value) for value in frozen.sink_id.tolist()]
     component = [int(value) for value in frozen.component_id.tolist()]
     depth = [int(value) for value in frozen.depth.tolist()]
-    primitive = [
-        tuple(int(value) for value in row)
-        for row in frozen.primitive_sequence.tolist()
-    ]
-    material = [
-        tuple(int(value) for value in row)
-        for row in frozen.material_sequence.tolist()
-    ]
+    primitive = [tuple(int(value) for value in row) for row in frozen.primitive_sequence.tolist()]
+    material = [tuple(int(value) for value in row) for row in frozen.material_sequence.tolist()]
     rows = len(source)
     for label, column in (
         ("sink_id", sink),
@@ -78,19 +73,12 @@ def leg_identity(frozen, name: str) -> tuple[list[int], list[int], list[LegKey]]
         ("material_sequence", material),
     ):
         if len(column) != rows:
-            raise ValueError(
-                f"{name} leg {label} has {len(column)} rows, expected {rows}"
-            )
-    keys: list[LegKey] = [
-        (component[row], depth[row], primitive[row], material[row])
-        for row in range(rows)
-    ]
+            raise ValueError(f"{name} leg {label} has {len(column)} rows, expected {rows}")
+    keys: list[LegKey] = [(component[row], depth[row], primitive[row], material[row]) for row in range(rows)]
     return source, sink, keys
 
 
-def group_rows(
-    source: list[int], sink: list[int], keys: list[LegKey], name: str
-) -> dict[tuple[int, int], list[int]]:
+def group_rows(source: list[int], sink: list[int], keys: list[LegKey], name: str) -> dict[tuple[int, int], list[int]]:
     """Index a leg's rows by its ``(source_id, sink_id)`` endpoint pair.
 
     Also enforces that the identity key is UNIQUE inside each endpoint pair. A
@@ -184,18 +172,13 @@ def csr(owner_of_row: list[int], owner_count: int) -> tuple[list[int], list[int]
         offsets.append(len(rows))
     return offsets, rows
 
+
 JoinMode = Literal["direct", "multipath"]
 
 JOIN_MODES: frozenset[str] = frozenset({"direct", "multipath"})
 
 
-def _require_tensor(
-    name: str,
-    value: object,
-    *,
-    dtype: torch.dtype,
-    shape: tuple[int, ...],
-) -> torch.Tensor:
+def _require_tensor(name: str, value: object, *, dtype: torch.dtype, shape: tuple[int, ...]) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
     if value.dtype != dtype:
@@ -234,13 +217,7 @@ class RadarPathTopology:
 
     def __post_init__(self) -> None:
         rows = (int(self.radar_source_id.shape[0]),)
-        for name in (
-            "radar_source_id",
-            "site_id",
-            "radar_sink_id",
-            "inbound_row",
-            "outbound_row",
-        ):
+        for name in ("radar_source_id", "site_id", "radar_sink_id", "inbound_row", "outbound_row"):
             _require_tensor(name, getattr(self, name), dtype=torch.int64, shape=rows)
 
     @property
@@ -329,46 +306,23 @@ class RadarPathBatch:
         if type(self.weight_includes_antenna_pattern) is not bool:
             raise TypeError("weight_includes_antenna_pattern must be a bool")
         if self.join_mode not in JOIN_MODES:
-            raise ValueError(
-                f"join_mode must be one of {sorted(JOIN_MODES)}, got "
-                f"{self.join_mode!r}"
-            )
+            raise ValueError(f"join_mode must be one of {sorted(JOIN_MODES)}, got {self.join_mode!r}")
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
             raise ValueError("sensor_pair_count must be a positive int")
         if type(self.path_count) is not int or self.path_count < 0:
             raise ValueError("path_count must be a non-negative int")
         rows = (self.path_count,)
-        _require_tensor(
-            "sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows
-        )
-        _require_tensor(
-            "pair_offsets",
-            self.pair_offsets,
-            dtype=torch.int64,
-            shape=(self.sensor_pair_count + 1,),
-        )
-        _require_tensor(
-            "total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows
-        )
-        _require_tensor(
-            "complex_transfer_ref",
-            self.complex_transfer_ref,
-            dtype=torch.complex64,
-            shape=rows,
-        )
+        _require_tensor("sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows)
+        _require_tensor("pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.sensor_pair_count + 1,))
+        _require_tensor("total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows)
+        _require_tensor("complex_transfer_ref", self.complex_transfer_ref, dtype=torch.complex64, shape=rows)
         if self.delay_rate is not None:
-            _require_tensor(
-                "delay_rate", self.delay_rate, dtype=torch.float32, shape=rows
-            )
+            _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows)
         if self.row_valid is not None:
-            _require_tensor(
-                "row_valid", self.row_valid, dtype=torch.bool, shape=rows
-            )
+            _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
         if self.topology.row_count != self.path_count:
             raise ValueError("topology must have exactly path_count rows")
-        require_wideband_pair(
-            self.frequency_response, self.frequency_offsets_hz, self.path_count
-        )
+        require_wideband_pair(self.frequency_response, self.frequency_offsets_hz, self.path_count)
 
     @property
     def device(self) -> torch.device:
@@ -381,8 +335,6 @@ class RadarPathBatch:
         if self.frequency_offsets_hz is None:
             return 0
         return int(self.frequency_offsets_hz.shape[0])
-
-_OPS = None
 
 
 def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_count):
@@ -401,9 +353,7 @@ def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_cou
     if sensor_pair_index.dtype != torch.int64:
         raise TypeError(f"sensor_pair_index must be int64, got {sensor_pair_index.dtype}")
     if sensor_pair_index.dim() != 1:
-        raise ValueError(
-            f"sensor_pair_index must be 1-D, got shape {tuple(sensor_pair_index.shape)}"
-        )
+        raise ValueError(f"sensor_pair_index must be 1-D, got shape {tuple(sensor_pair_index.shape)}")
     previous = -1
     for row, rank in enumerate(sensor_pair_index.tolist()):
         if rank < 0 or rank >= expected:
@@ -418,28 +368,8 @@ def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_cou
             )
         previous = rank
 
-def _ops():
-    """The native operator table, resolved once per process.
 
-    Held here as well as in the build module because this runs on every frame,
-    forward and backward: a per-launch import plus function call is pure
-    overhead on the hot path.
-    """
-
-    global _OPS
-    if _OPS is None:
-        from .cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
-
-
-def _primal_rate(
-    delay_rate: torch.Tensor | None,
-    rows: int,
-    device: torch.device,
-    name: str,
-) -> torch.Tensor:
+def _primal_rate(delay_rate: torch.Tensor | None, rows: int, device: torch.device, name: str) -> torch.Tensor:
     """The leg's delay rate as a strictly primal kernel input.
 
     ``delay_rate`` is ``d(delay_s)/dt`` unpacked from a forward-only dual and
@@ -560,36 +490,14 @@ class _TwoWayJoin(torch.autograd.Function):
         # backward is identical, which is the whole point of routing a row
         # response through the same kernel.
         ctx.response_family = response_family
-        saved = (
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-        )
+        saved = (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s)
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_tau_rt, grad_rate_rt, grad_c_rt_re, grad_c_rt_im):
-        (
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-        ) = ctx.saved_tensors
+        (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         join = ctx.join
         response_offsets, response_rows, response_slots = ctx.response_family
         # grad_rate_rt is discarded, and that is exact rather than lossy:
@@ -676,18 +584,7 @@ class _TwoWayJoin(torch.autograd.Function):
         tan_join,
         tan_response_family,
     ):
-        (
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-        ) = ctx.saved_tensors
+        (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         # tan_rate_in / tan_rate_out are ignored, and the refusal that makes
         # that honest lives in _primal_rate, at the facade. Autograd hands this
         # callback a zero-filled tangent for an input that carries none, so a
@@ -699,9 +596,7 @@ class _TwoWayJoin(torch.autograd.Function):
             return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
 
         def outbound(tangent):
-            return (
-                torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
-            )
+            return torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
 
         def site(tangent):
             return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
@@ -780,15 +675,8 @@ class TwoWayComposer:
 
     @classmethod
     def freeze(
-        cls,
-        inbound,
-        outbound,
-        site_ids,
-        *,
-        radar_source_ids,
-        radar_sink_ids,
-        reference_frequency_hz: float,
-    ) -> "TwoWayComposer":
+        cls, inbound, outbound, site_ids, *, radar_source_ids, radar_sink_ids, reference_frequency_hz: float
+    ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
         ``inbound`` and ``outbound`` are
@@ -814,18 +702,10 @@ class TwoWayComposer:
         sites = stable_ids(site_ids, "site_ids")
         sites.sort()
 
-        inbound_source, inbound_sink, inbound_keys = leg_identity(
-            inbound, "inbound"
-        )
-        outbound_source, outbound_sink, outbound_keys = leg_identity(
-            outbound, "outbound"
-        )
-        arriving = group_rows(
-            inbound_source, inbound_sink, inbound_keys, "inbound"
-        )
-        leaving = group_rows(
-            outbound_source, outbound_sink, outbound_keys, "outbound"
-        )
+        inbound_source, inbound_sink, inbound_keys = leg_identity(inbound, "inbound")
+        outbound_source, outbound_sink, outbound_keys = leg_identity(outbound, "outbound")
+        arriving = group_rows(inbound_source, inbound_sink, inbound_keys, "inbound")
+        leaving = group_rows(outbound_source, outbound_sink, outbound_keys, "outbound")
         pair_rank = sink_major_rank(sources, sinks)
 
         # (pair_rank, site_rank, source, site, sink, inbound_row, outbound_row,
@@ -836,14 +716,12 @@ class TwoWayComposer:
         stray_sources = sorted(set(inbound_source) - set(sources))
         if stray_sources:
             raise ValueError(
-                f"inbound leg rows carry radar source IDs {stray_sources} that "
-                f"are not in radar_source_ids {sources}"
+                f"inbound leg rows carry radar source IDs {stray_sources} that are not in radar_source_ids {sources}"
             )
         stray_sinks = sorted(set(outbound_sink) - set(sinks))
         if stray_sinks:
             raise ValueError(
-                f"outbound leg rows carry radar sink IDs {stray_sinks} that are "
-                f"not in radar_sink_ids {sinks}"
+                f"outbound leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}"
             )
 
         # A site absent from a leg ENTIRELY is a caller error: the site list is
@@ -855,13 +733,9 @@ class TwoWayComposer:
         reachable_out = {endpoints[0] for endpoints in leaving}
         for site in sites:
             if site not in reachable_in:
-                raise ValueError(
-                    f"site {site} has no inbound leg row in the frozen topology"
-                )
+                raise ValueError(f"site {site} has no inbound leg row in the frozen topology")
             if site not in reachable_out:
-                raise ValueError(
-                    f"site {site} has no outbound leg row in the frozen topology"
-                )
+                raise ValueError(f"site {site} has no outbound leg row in the frozen topology")
 
         rows: list[tuple[int, int, int, int, int, int, int, LegKey, LegKey]] = []
         for site_rank, site in enumerate(sites):
@@ -872,15 +746,7 @@ class TwoWayComposer:
                     for i in inbound_rows:
                         for o in outbound_rows:
                             rows.append(
-                                (
-                                    pair_rank(source, sink),
-                                    site_rank,
-                                    source,
-                                    site,
-                                    sink,
-                                    i,
-                                    o,
-                                )
+                                (pair_rank(source, sink), site_rank, source, site, sink, i, o)
                                 + (inbound_keys[i], outbound_keys[o])
                             )
 
@@ -890,18 +756,11 @@ class TwoWayComposer:
         rows.sort(key=lambda row: (row[0], row[1], row[7], row[8]))
 
         def column(index: int) -> torch.Tensor:
-            return torch.tensor(
-                [row[index] for row in rows], dtype=torch.int64, device=device
-            )
+            return torch.tensor([row[index] for row in rows], dtype=torch.int64, device=device)
 
         pair_count = len(sources) * len(sinks)
         sensor_pair_index = column(0)
-        validate_pair_ordering(
-            sensor_pair_index,
-            num_tx=len(sources),
-            num_rx=len(sinks),
-            sensor_pair_count=pair_count,
-        )
+        validate_pair_ordering(sensor_pair_index, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
         offsets = pair_offsets([row[0] for row in rows], pair_count)
 
         inbound_count = len(inbound_source)
@@ -938,9 +797,7 @@ class TwoWayComposer:
             by_response_rows=table(by_response[1]),
             reference_frequency_hz=float(reference_frequency_hz),
             row_slot=torch.arange(len(rows), dtype=torch.int64, device=device),
-            by_row_offsets=torch.arange(
-                len(rows) + 1, dtype=torch.int64, device=device
-            ),
+            by_row_offsets=torch.arange(len(rows) + 1, dtype=torch.int64, device=device),
             by_row_rows=torch.arange(len(rows), dtype=torch.int64, device=device),
             outbound_max_depth=max((row[8][1] for row in rows), default=0),
         )
@@ -950,12 +807,7 @@ class TwoWayComposer:
         return int(self.inbound_row.shape[0])
 
     def compose(
-        self,
-        inbound: RadarLegBatch,
-        outbound: RadarLegBatch,
-        response,
-        *,
-        include_delay_rate: bool = True,
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, response, *, include_delay_rate: bool = True
     ) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
 
@@ -986,11 +838,7 @@ class TwoWayComposer:
         rows = self.path_count
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
-        flags = (
-            torch.ones(rows, dtype=torch.int32, device=device)
-            if row_valid is None
-            else row_valid.to(torch.int32)
-        )
+        flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
         band = self._band(inbound, outbound)
         response_re, response_im, response_index, response_family = self._response(
             response, inbound, outbound, flags, device
@@ -1018,21 +866,10 @@ class TwoWayComposer:
         )
 
         frequency_response = self._compose_band(
-            band,
-            inbound,
-            outbound,
-            response_re,
-            response_im,
-            response_index,
-            response_family,
-            flags,
+            band, inbound, outbound, response_re, response_im, response_index, response_family, flags
         )
 
-        publish_rate = (
-            include_delay_rate
-            and inbound.delay_rate is not None
-            and outbound.delay_rate is not None
-        )
+        publish_rate = include_delay_rate and inbound.delay_rate is not None and outbound.delay_rate is not None
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
             path_count=rows,
@@ -1046,9 +883,7 @@ class TwoWayComposer:
             topology=self.topology,
             join_mode="multipath",
             frequency_response=frequency_response,
-            frequency_offsets_hz=(
-                None if band is None else inbound.frequency_offsets_hz
-            ),
+            frequency_offsets_hz=(None if band is None else inbound.frequency_offsets_hz),
         )
 
     def _band(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> int | None:
@@ -1076,9 +911,7 @@ class TwoWayComposer:
                 f"the two legs carry {counts[0]} and {counts[1]} frequency "
                 "columns; they must be evaluated over the same band"
             )
-        if not torch.equal(
-            inbound.frequency_offsets_hz, outbound.frequency_offsets_hz
-        ):
+        if not torch.equal(inbound.frequency_offsets_hz, outbound.frequency_offsets_hz):
             raise ValueError(
                 "the two legs were evaluated over different frequency grids; a "
                 "composed column multiplies one leg's response at f by the "
@@ -1086,17 +919,7 @@ class TwoWayComposer:
             )
         return counts[0]
 
-    def _compose_band(
-        self,
-        band,
-        inbound,
-        outbound,
-        response_re,
-        response_im,
-        response_index,
-        response_family,
-        flags,
-    ):
+    def _compose_band(self, band, inbound, outbound, response_re, response_im, response_index, response_family, flags):
         """Compose ``H_in(f_j) * S * H_out(f_j)`` for every column of the band.
 
         The frequency axis is a PYTHON LOOP over the existing ``[K]`` join
@@ -1125,12 +948,8 @@ class TwoWayComposer:
             _tau, _rate, column_re, column_im = _TwoWayJoin.apply(
                 inbound.delay_s.contiguous(),
                 outbound.delay_s.contiguous(),
-                _primal_rate(
-                    inbound.delay_rate, inbound.leg_count, flags.device, "inbound"
-                ),
-                _primal_rate(
-                    outbound.delay_rate, outbound.leg_count, flags.device, "outbound"
-                ),
+                _primal_rate(inbound.delay_rate, inbound.leg_count, flags.device, "inbound"),
+                _primal_rate(outbound.delay_rate, outbound.leg_count, flags.device, "outbound"),
                 inbound.frequency_response[:, index].real.contiguous(),
                 inbound.frequency_response[:, index].imag.contiguous(),
                 outbound.frequency_response[:, index].real.contiguous(),
@@ -1147,9 +966,7 @@ class TwoWayComposer:
             columns.append(torch.complex(column_re, column_im))
         return torch.stack(columns, dim=1)
 
-    def _require_frame(
-        self, inbound: RadarLegBatch, outbound: RadarLegBatch
-    ) -> None:
+    def _require_frame(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> None:
         """Refuse a frame that is not the one this join was frozen against.
 
         The index tables address the FROZEN leg rows, so a batch of a different
@@ -1217,12 +1034,7 @@ class TwoWayComposer:
                     f"a row-evaluated scatter response must publish one {name} "
                     f"value per composed row; this join has {self.path_count}"
                 )
-        return (
-            rows_re,
-            rows_im,
-            self.row_slot,
-            (self.by_row_offsets, self.by_row_rows, self.path_count),
-        )
+        return (rows_re, rows_im, self.row_slot, (self.by_row_offsets, self.by_row_rows, self.path_count))
 
     def _site_response(self, response, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.
@@ -1236,10 +1048,7 @@ class TwoWayComposer:
 
         value = response.evaluate(self.site_count, device)
         if not isinstance(value, torch.Tensor):
-            raise TypeError(
-                "a scatter response must evaluate to a torch.Tensor, got "
-                f"{type(value).__name__}"
-            )
+            raise TypeError(f"a scatter response must evaluate to a torch.Tensor, got {type(value).__name__}")
         if value.numel() != self.site_count:
             raise ValueError(
                 f"the scatter response evaluated to {value.numel()} values but "
@@ -1248,26 +1057,15 @@ class TwoWayComposer:
         return value
 
     def _row_validity(
-        self,
-        inbound: RadarLegBatch,
-        outbound: RadarLegBatch,
-        rows: int,
-        device: torch.device,
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, rows: int, device: torch.device
     ) -> torch.Tensor | None:
         if inbound.row_valid is None and outbound.row_valid is None:
             return None
         ones = torch.ones(rows, dtype=torch.bool, device=device)
-        valid_in = (
-            ones
-            if inbound.row_valid is None
-            else inbound.row_valid.index_select(0, self.inbound_row)
-        )
-        valid_out = (
-            ones
-            if outbound.row_valid is None
-            else outbound.row_valid.index_select(0, self.outbound_row)
-        )
+        valid_in = ones if inbound.row_valid is None else inbound.row_valid.index_select(0, self.inbound_row)
+        valid_out = ones if outbound.row_valid is None else outbound.row_valid.index_select(0, self.outbound_row)
         return valid_in & valid_out
+
 
 NO_SITE = -1
 NO_OUTBOUND_ROW = -1
@@ -1285,14 +1083,7 @@ class DirectComposer:
     reference_frequency_hz: float
 
     @classmethod
-    def freeze(
-        cls,
-        leg,
-        *,
-        radar_source_ids,
-        radar_sink_ids,
-        reference_frequency_hz: float,
-    ) -> "DirectComposer":
+    def freeze(cls, leg, *, radar_source_ids, radar_sink_ids, reference_frequency_hz: float) -> DirectComposer:
         """Order one frozen leg's rows the way a composed batch is ordered.
 
         Same canonical key as the two-way join - sensor pair, then row identity
@@ -1310,43 +1101,29 @@ class DirectComposer:
         stray_sources = sorted(set(source) - set(sources))
         if stray_sources:
             raise ValueError(
-                f"leg rows carry radar source IDs {stray_sources} that are not "
-                f"in radar_source_ids {sources}"
+                f"leg rows carry radar source IDs {stray_sources} that are not in radar_source_ids {sources}"
             )
         stray_sinks = sorted(set(sink) - set(sinks))
         if stray_sinks:
-            raise ValueError(
-                f"leg rows carry radar sink IDs {stray_sinks} that are not in "
-                f"radar_sink_ids {sinks}"
-            )
+            raise ValueError(f"leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}")
 
         rows: list[tuple[int, int, int, int, LegKey]] = [
-            (pair_rank(source[row], sink[row]), source[row], sink[row], row, keys[row])
-            for row in range(len(source))
+            (pair_rank(source[row], sink[row]), source[row], sink[row], row, keys[row]) for row in range(len(source))
         ]
         rows.sort(key=lambda row: (row[0], row[4]))
 
         def column(index: int) -> torch.Tensor:
-            return torch.tensor(
-                [row[index] for row in rows], dtype=torch.int64, device=device
-            )
+            return torch.tensor([row[index] for row in rows], dtype=torch.int64, device=device)
 
         def constant(value: int) -> torch.Tensor:
-            return torch.full(
-                (len(rows),), value, dtype=torch.int64, device=device
-            )
+            return torch.full((len(rows),), value, dtype=torch.int64, device=device)
 
         pair_count = len(sources) * len(sinks)
         sensor_pair_index = column(0)
         # Same freeze-time layout gate as the two-way join. A direct batch feeds
         # the same synthesis cube assembly, so it depends on the same sink-major
         # pair rank and has to be held to it in the same place.
-        validate_pair_ordering(
-            sensor_pair_index,
-            num_tx=len(sources),
-            num_rx=len(sinks),
-            sensor_pair_count=pair_count,
-        )
+        validate_pair_ordering(sensor_pair_index, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
         offsets = pair_offsets([row[0] for row in rows], pair_count)
         return cls(
             row_index=column(3),
@@ -1367,9 +1144,7 @@ class DirectComposer:
     def path_count(self) -> int:
         return int(self.row_index.shape[0])
 
-    def compose(
-        self, leg: RadarLegBatch, *, include_delay_rate: bool = True
-    ) -> RadarPathBatch:
+    def compose(self, leg: RadarLegBatch, *, include_delay_rate: bool = True) -> RadarPathBatch:
         """Publish one frame's direct rows. A gather, not a computation.
 
         Nothing is added, multiplied, or conjugated here: the leg's transport
@@ -1395,22 +1170,12 @@ class DirectComposer:
                 "to this frozen topology"
             )
         rows = self.row_index
-        row_valid = (
-            None if leg.row_valid is None else leg.row_valid.index_select(0, rows)
-        )
+        row_valid = None if leg.row_valid is None else leg.row_valid.index_select(0, rows)
         # A band reorders exactly like the reference column: `index_select` on
         # dim 0 keeps the frequency axis intact, so a direct wideband batch
         # needs no arithmetic here either.
-        frequency_response = (
-            None
-            if leg.frequency_response is None
-            else leg.frequency_response.index_select(0, rows)
-        )
-        delay_rate = (
-            leg.delay_rate.index_select(0, rows)
-            if include_delay_rate and leg.delay_rate is not None
-            else None
-        )
+        frequency_response = None if leg.frequency_response is None else leg.frequency_response.index_select(0, rows)
+        delay_rate = leg.delay_rate.index_select(0, rows) if include_delay_rate and leg.delay_rate is not None else None
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
             path_count=self.path_count,
@@ -1424,10 +1189,9 @@ class DirectComposer:
             topology=self.topology,
             join_mode="direct",
             frequency_response=frequency_response,
-            frequency_offsets_hz=(
-                None if frequency_response is None else leg.frequency_offsets_hz
-            ),
+            frequency_offsets_hz=(None if frequency_response is None else leg.frequency_offsets_hz),
         )
+
 
 TARGET = "target"
 
@@ -1453,12 +1217,7 @@ MULTI_INTERACTION = "multi_interaction"
 #: always published, including an empty one: a caller that sums the per-class
 #: cubes must be able to iterate a fixed list rather than discover which classes
 #: this particular frame happened to produce.
-COMPONENT_NAMES: tuple[str, ...] = (
-    TARGET,
-    ENVIRONMENT_CLUTTER,
-    DIRECT_LEAKAGE,
-    MULTI_INTERACTION,
-)
+COMPONENT_NAMES: tuple[str, ...] = (TARGET, ENVIRONMENT_CLUTTER, DIRECT_LEAKAGE, MULTI_INTERACTION)
 
 #: The value both interaction sequences carry where a row interacted with
 #: nothing. Channel publishes it on every line-of-sight row.
@@ -1469,10 +1228,7 @@ def _int_set(values: object, name: str) -> frozenset[int]:
     if values is None:
         return frozenset()
     if isinstance(values, torch.Tensor):
-        raise TypeError(
-            f"{name} is a host declaration about the scene, not a device "
-            "tensor; pass a set of stable IDs"
-        )
+        raise TypeError(f"{name} is a host declaration about the scene, not a device tensor; pass a set of stable IDs")
     if isinstance(values, (int, str)):
         raise TypeError(f"{name} must be an iterable of ints, got {type(values).__name__}")
     return frozenset(int(value) for value in values)
@@ -1507,18 +1263,11 @@ class ComponentDeclaration:
     multi_interaction_depth: int = 1
 
     def __post_init__(self) -> None:
-        for name in (
-            "target_site_ids",
-            "clutter_site_ids",
-            "clutter_material_slots",
-        ):
+        for name in ("target_site_ids", "clutter_site_ids", "clutter_material_slots"):
             object.__setattr__(self, name, _int_set(getattr(self, name), name))
-        if type(self.multi_interaction_depth) is not int or (
-            self.multi_interaction_depth < 0
-        ):
+        if type(self.multi_interaction_depth) is not int or (self.multi_interaction_depth < 0):
             raise ValueError(
-                "multi_interaction_depth must be a non-negative int, got "
-                f"{self.multi_interaction_depth!r}"
+                f"multi_interaction_depth must be a non-negative int, got {self.multi_interaction_depth!r}"
             )
         overlap = self.target_site_ids & self.clutter_site_ids
         if overlap:
@@ -1528,9 +1277,7 @@ class ComponentDeclaration:
                 "would count those rows twice"
             )
 
-    def classify(
-        self, *, site_id: int, depth: int, material_slots: frozenset[int]
-    ) -> tuple[str, ...]:
+    def classify(self, *, site_id: int, depth: int, material_slots: frozenset[int]) -> tuple[str, ...]:
         """Every class this row belongs to, evaluated independently.
 
         The four predicates are written separately rather than as an if/elif
@@ -1549,13 +1296,9 @@ class ComponentDeclaration:
 
         direct = site_id == NO_SITE
         deep = depth > self.multi_interaction_depth
-        clutter = bool(material_slots & self.clutter_material_slots) or (
-            site_id in self.clutter_site_ids
-        )
+        clutter = bool(material_slots & self.clutter_material_slots) or (site_id in self.clutter_site_ids)
         matched: list[str] = []
-        if not direct and not deep and not clutter and (
-            site_id in self.target_site_ids
-        ):
+        if not direct and not deep and not clutter and (site_id in self.target_site_ids):
             matched.append(TARGET)
         if not deep and clutter:
             matched.append(ENVIRONMENT_CLUTTER)
@@ -1571,14 +1314,10 @@ def _leg_facts(leg, name: str) -> tuple[list[int], list[frozenset[int]]]:
 
     depth = [int(value) for value in leg.depth.tolist()]
     materials = [
-        frozenset(int(value) for value in row if int(value) != NO_INTERACTION)
-        for row in leg.material_sequence.tolist()
+        frozenset(int(value) for value in row if int(value) != NO_INTERACTION) for row in leg.material_sequence.tolist()
     ]
     if len(depth) != len(materials):
-        raise ValueError(
-            f"{name} leg publishes {len(depth)} depths and {len(materials)} "
-            "material sequences"
-        )
+        raise ValueError(f"{name} leg publishes {len(depth)} depths and {len(materials)} material sequences")
     return depth, materials
 
 
@@ -1605,10 +1344,7 @@ class RadarComponentIndex:
 
     def index_of(self, name: str) -> int:
         if name not in self.names:
-            raise KeyError(
-                f"{name!r} is not a declared component; this index publishes "
-                f"{list(self.names)}"
-            )
+            raise KeyError(f"{name!r} is not a declared component; this index publishes {list(self.names)}")
         return self.names.index(name)
 
     def count(self, name: str) -> int:
@@ -1626,13 +1362,7 @@ class RadarComponentIndex:
         return self.class_id == self.index_of(name)
 
     @classmethod
-    def from_two_way(
-        cls,
-        composer,
-        inbound,
-        outbound,
-        declaration: ComponentDeclaration,
-    ) -> "RadarComponentIndex":
+    def from_two_way(cls, composer, inbound, outbound, declaration: ComponentDeclaration) -> RadarComponentIndex:
         """Classify a two-way join's rows from its two frozen leg topologies.
 
         ``composer`` is a :class:`~witwin.radar.paths.TwoWayComposer`
@@ -1644,26 +1374,17 @@ class RadarComponentIndex:
         return cls._build(composer.topology, inbound, outbound, declaration)
 
     @classmethod
-    def from_direct(
-        cls, composer, leg, declaration: ComponentDeclaration
-    ) -> "RadarComponentIndex":
+    def from_direct(cls, composer, leg, declaration: ComponentDeclaration) -> RadarComponentIndex:
         """Classify a direct composer's rows. There is no second leg."""
 
         return cls._build(composer.topology, leg, None, declaration)
 
     @classmethod
     def _build(
-        cls,
-        topology: RadarPathTopology,
-        inbound,
-        outbound,
-        declaration: ComponentDeclaration,
-    ) -> "RadarComponentIndex":
+        cls, topology: RadarPathTopology, inbound, outbound, declaration: ComponentDeclaration
+    ) -> RadarComponentIndex:
         if not isinstance(declaration, ComponentDeclaration):
-            raise TypeError(
-                "declaration must be a ComponentDeclaration, got "
-                f"{type(declaration).__name__}"
-            )
+            raise TypeError(f"declaration must be a ComponentDeclaration, got {type(declaration).__name__}")
         site = [int(value) for value in topology.site_id.tolist()]
         inbound_row = [int(value) for value in topology.inbound_row.tolist()]
         outbound_row = [int(value) for value in topology.outbound_row.tolist()]
@@ -1680,9 +1401,7 @@ class RadarComponentIndex:
             if outbound is not None and outbound_row[row] >= 0:
                 depth = max(depth, out_depth[outbound_row[row]])
                 materials = materials | out_materials[outbound_row[row]]
-            matched = declaration.classify(
-                site_id=site_id, depth=depth, material_slots=materials
-            )
+            matched = declaration.classify(site_id=site_id, depth=depth, material_slots=materials)
             if len(matched) != 1:
                 raise ValueError(
                     f"composed row {row} (site {site_id}, depth {depth}, "
@@ -1694,19 +1413,15 @@ class RadarComponentIndex:
                 )
             classes.append(COMPONENT_NAMES.index(matched[0]))
 
-        counts = tuple(
-            sum(1 for value in classes if value == index)
-            for index in range(len(COMPONENT_NAMES))
-        )
+        counts = tuple(sum(1 for value in classes if value == index) for index in range(len(COMPONENT_NAMES)))
         return cls(
             topology=topology,
-            class_id=torch.tensor(
-                classes, dtype=torch.int32, device=topology.site_id.device
-            ),
+            class_id=torch.tensor(classes, dtype=torch.int32, device=topology.site_id.device),
             names=COMPONENT_NAMES,
             counts=counts,
             declaration=declaration,
         )
+
 
 __all__ = [
     "COMPONENT_NAMES",

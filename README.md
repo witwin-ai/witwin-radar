@@ -72,7 +72,7 @@ pytest tests/ --gpu
 python ci/run_ci_tier.py quick
 ```
 
-The quick tier includes architectural, public-surface, documentation, release-claim, workflow-reference, and compatibility-removal gates. Required-Channel workflows install the Channel extra, record its build fingerprint, and permit zero skips caused by a missing Channel runtime.
+The quick tier includes canonical Ruff formatting/lint, exact-clone detection, architectural, public-surface, documentation, release-claim, workflow-reference, and compatibility-removal gates. Required-Channel workflows install the Channel extra, record its build fingerprint, and permit zero skips caused by a missing Channel runtime.
 
 No benchmark, GPU result, wheel load, or remote workflow is claimed as executed merely because its command exists. Current performance evidence and outstanding measurements are documented in `PERFORMANCE.md`.
 
@@ -89,6 +89,7 @@ All maintained scene-driven examples require CUDA and Channel.
 ## Documentation
 
 - Pipeline: `docs/pipeline_guide.md`
+- Development standard: `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`
 - Consolidation plan: `docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md`
 - Governance inventory: `docs/dev/audit/radar-governance-debt-and-drift-inventory.md`
 - AD capability matrix: `docs/dev/radar-ad-capability-matrix.md`

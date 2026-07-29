@@ -20,15 +20,7 @@ from witwin.radar.propagation import RadarLegBatch
 from witwin.radar.scattering import ScalarRcsResponse
 
 
-def _frozen(
-    source_ids,
-    sink_ids,
-    *,
-    components=None,
-    depths=None,
-    primitives=None,
-    device="cpu",
-):
+def _frozen(source_ids, sink_ids, *, components=None, depths=None, primitives=None, device="cpu"):
     """A duck-typed frozen leg topology with full row identity.
 
     ``components``/``depths``/``primitives`` default to distinct per-row values
@@ -40,9 +32,8 @@ def _frozen(
     rows = len(source_ids)
     components = list(range(rows)) if components is None else list(components)
     depths = list(components) if depths is None else list(depths)
-    primitives = (
-        [[value] for value in components] if primitives is None else list(primitives)
-    )
+    primitives = [[value] for value in components] if primitives is None else list(primitives)
+
     def make(values, dtype):
         return torch.tensor(values, dtype=dtype, device=device)
 
@@ -117,25 +108,13 @@ def test_delay_is_additive_and_transfer_factorizes():
     # outbound leg entirely. They were vacuous, and a mutation that removed
     # tau_out survived this whole file.
     torch.testing.assert_close(
-        composed.total_delay_s.cpu(),
-        torch.tensor([3.0e-8], dtype=torch.float32),
-        rtol=1e-6,
-        atol=0.0,
+        composed.total_delay_s.cpu(), torch.tensor([3.0e-8], dtype=torch.float32), rtol=1e-6, atol=0.0
     )
     torch.testing.assert_close(
-        composed.delay_rate.cpu(),
-        torch.tensor([2.0e-9], dtype=torch.float32),
-        rtol=1e-6,
-        atol=0.0,
+        composed.delay_rate.cpu(), torch.tensor([2.0e-9], dtype=torch.float32), rtol=1e-6, atol=0.0
     )
-    expected = (
-        outbound.coefficient
-        * _response().evaluate(1, torch.device("cuda"))
-        * inbound.coefficient
-    )
-    torch.testing.assert_close(
-        composed.complex_transfer_ref, expected, rtol=1e-6, atol=0.0
-    )
+    expected = outbound.coefficient * _response().evaluate(1, torch.device("cuda")) * inbound.coefficient
+    torch.testing.assert_close(composed.complex_transfer_ref, expected, rtol=1e-6, atol=0.0)
     assert composed.topology.radar_source_id.tolist() == [10]
     assert composed.topology.site_id.tolist() == [20]
     assert composed.topology.radar_sink_id.tolist() == [30]
@@ -227,11 +206,7 @@ def test_join_is_by_identity_not_by_array_position():
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
-    ).compose(
-        inbound,
-        _legs([2.0e-8, 8.0e-8], [1.0 + 0.0j, 0.0 + 1.0j], device="cuda"),
-        _response(),
-    )
+    ).compose(inbound, _legs([2.0e-8, 8.0e-8], [1.0 + 0.0j, 0.0 + 1.0j], device="cuda"), _response())
     permuted = TwoWayComposer.freeze(
         inbound_frozen,
         _frozen([21, 20], [30, 30], components=[0, 0], device="cuda"),
@@ -239,30 +214,16 @@ def test_join_is_by_identity_not_by_array_position():
         radar_source_ids=[10],
         radar_sink_ids=[30],
         reference_frequency_hz=77.0e9,
-    ).compose(
-        inbound,
-        _legs([8.0e-8, 2.0e-8], [0.0 + 1.0j, 1.0 + 0.0j], device="cuda"),
-        _response(),
-    )
+    ).compose(inbound, _legs([8.0e-8, 2.0e-8], [0.0 + 1.0j, 1.0 + 0.0j], device="cuda"), _response())
 
     # Bit-identical, not merely close: the same rows in the same order do the
     # same arithmetic. Default float32 tolerances would hide a wrong pairing at
     # these delay magnitudes entirely.
-    torch.testing.assert_close(
-        straight.total_delay_s, permuted.total_delay_s, rtol=0.0, atol=0.0
-    )
-    torch.testing.assert_close(
-        straight.complex_transfer_ref,
-        permuted.complex_transfer_ref,
-        rtol=0.0,
-        atol=0.0,
-    )
+    torch.testing.assert_close(straight.total_delay_s, permuted.total_delay_s, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(straight.complex_transfer_ref, permuted.complex_transfer_ref, rtol=0.0, atol=0.0)
     assert straight.topology.site_id.tolist() == permuted.topology.site_id.tolist()
     # The join really did have to reorder: the outbound row indices differ.
-    assert (
-        straight.topology.outbound_row.tolist()
-        != permuted.topology.outbound_row.tolist()
-    )
+    assert straight.topology.outbound_row.tolist() != permuted.topology.outbound_row.tolist()
 
 
 def _two_by_two_composer(device="cpu"):
@@ -283,20 +244,12 @@ def test_rows_are_sorted_into_a_valid_pair_partition():
     assert composer.path_count == 4
     offsets = composer.pair_offsets.tolist()
     assert offsets == [0, 1, 2, 3, 4]
-    assert composer.sensor_pair_index.tolist() == sorted(
-        composer.sensor_pair_index.tolist()
-    )
+    assert composer.sensor_pair_index.tolist() == sorted(composer.sensor_pair_index.tolist())
     # SINK-MAJOR, mirroring the Channel consumer's own pair index
     # (``sink_row_index * source_count + source_row_index``). One convention
     # crosses the boundary rather than two; a source-major order here would be
     # a second, silently different, virtual-array numbering.
-    pairs = list(
-        zip(
-            composer.topology.radar_source_id.tolist(),
-            composer.topology.radar_sink_id.tolist(),
-            strict=True,
-        )
-    )
+    pairs = list(zip(composer.topology.radar_source_id.tolist(), composer.topology.radar_sink_id.tolist(), strict=True))
     assert pairs == [(10, 30), (11, 30), (10, 31), (11, 31)]
 
 
@@ -434,18 +387,8 @@ def test_row_validity_is_the_conjunction_of_both_legs():
         reference_frequency_hz=77.0e9,
     )
     composed = composer.compose(
-        _legs(
-            [1.0e-8, 2.0e-8],
-            [1.0 + 0j, 1.0 + 0j],
-            valid=[True, False],
-            device="cuda",
-        ),
-        _legs(
-            [1.0e-8, 2.0e-8],
-            [1.0 + 0j, 1.0 + 0j],
-            valid=[True, True],
-            device="cuda",
-        ),
+        _legs([1.0e-8, 2.0e-8], [1.0 + 0j, 1.0 + 0j], valid=[True, False], device="cuda"),
+        _legs([1.0e-8, 2.0e-8], [1.0 + 0j, 1.0 + 0j], valid=[True, True], device="cuda"),
         _response(),
     )
     assert composed.row_valid.tolist() == [True, False]
@@ -466,12 +409,7 @@ def test_delay_rate_is_only_composed_when_both_legs_have_one():
     assert composer.compose(without, with_rate, _response()).delay_rate is None
     assert composer.compose(with_rate, with_rate, _response()).delay_rate is not None
     # A position-perturbation dual is not a velocity, so the caller can say so.
-    assert (
-        composer.compose(
-            with_rate, with_rate, _response(), include_delay_rate=False
-        ).delay_rate
-        is None
-    )
+    assert composer.compose(with_rate, with_rate, _response(), include_delay_rate=False).delay_rate is None
 
 
 def test_a_geometry_dependent_response_is_refused():
@@ -483,11 +421,7 @@ def test_a_geometry_dependent_response_is_refused():
 
     composer = _one_site_composer()
     with pytest.raises(NotImplementedError, match="native kernel"):
-        composer.compose(
-            _legs([1.0e-8], [1.0 + 0j]),
-            _legs([1.0e-8], [1.0 + 0j]),
-            PerPathResponse(),
-        )
+        composer.compose(_legs([1.0e-8], [1.0 + 0j]), _legs([1.0e-8], [1.0 + 0j]), PerPathResponse())
 
 
 def test_scalar_response_is_a_broadcast_parameter_scale():
@@ -529,13 +463,8 @@ def test_scalar_response_rejects_malformed_parameters():
     with pytest.raises(TypeError, match="amplitude must be a torch.Tensor"):
         ScalarRcsResponse(amplitude=1.0, phase_rad=torch.tensor(0.0))
     with pytest.raises(ValueError, match="must be a 0-dim tensor"):
-        ScalarRcsResponse(
-            amplitude=torch.ones(2), phase_rad=torch.tensor(0.0)
-        )
+        ScalarRcsResponse(amplitude=torch.ones(2), phase_rad=torch.tensor(0.0))
     with pytest.raises(TypeError, match="must use torch.float32"):
-        ScalarRcsResponse(
-            amplitude=torch.tensor(1.0, dtype=torch.float64),
-            phase_rad=torch.tensor(0.0),
-        )
+        ScalarRcsResponse(amplitude=torch.tensor(1.0, dtype=torch.float64), phase_rad=torch.tensor(0.0))
     with pytest.raises(ValueError, match="row_count must be non-negative"):
         ScalarRcsResponse.from_values(1.0, 0.0).evaluate(-1, torch.device("cpu"))

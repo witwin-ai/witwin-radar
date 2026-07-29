@@ -35,30 +35,18 @@ import pathlib
 
 import pytest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "dev" / "radar-ad-capability-matrix.md"
 
-HEADER = (
-    "| route | leaf-or-output | mode | state | mechanism | owner | test | validation |"
-)
+HEADER = "| route | leaf-or-output | mode | state | mechanism | owner | test | validation |"
 
 #: The four target states of ``01-design.md`` section 1. ``SILENT`` is not one
 #: of them and never becomes one.
 STATES = frozenset({"SUP", "ZERO", "REF", "DECL"})
 
-MECHANISMS = frozenset(
-    {
-        "native-companion",
-        "native-declared",
-        "torch-orchestration",
-        "host-declaration",
-    }
-)
+MECHANISMS = frozenset({"native-companion", "native-declared", "torch-orchestration", "host-declaration"})
 
-VALIDATIONS = frozenset(
-    {"fd", "oracle-f64", "analytic", "adjoint", "declaration", "refusal"}
-)
+VALIDATIONS = frozenset({"fd", "oracle-f64", "analytic", "adjoint", "declaration", "refusal"})
 
 MODES = frozenset({"jvp", "vjp", "both"})
 
@@ -76,61 +64,21 @@ STRUCTURAL_SUP_ROWS = frozenset(
     {
         ("reevaluate/prepared", "out:field_direction", "both"),
         ("join/_compose_band", "out:autograd context aliasing", "vjp"),
-        (
-            "kinematics/two_way_duals",
-            "position leaf beside a velocity tangent",
-            "both",
-        ),
+        ("kinematics/two_way_duals", "position leaf beside a velocity tangent", "both"),
         ("legacy-scene/SMPLBody", "pose", "vjp"),
         ("sensor_weight/evaluate", "antenna position reduction order", "vjp"),
         ("chain/any", "one dual level over all three endpoint sets", "jvp"),
-        (
-            "reevaluate/prepared",
-            "out:compact row identity across none, jvp and vjp",
-            "both",
-        ),
-        (
-            "reevaluate/prepared",
-            "out:topology identity, scene-leaf compile against the shared one",
-            "both",
-        ),
+        ("reevaluate/prepared", "out:compact row identity across none, jvp and vjp", "both"),
+        ("reevaluate/prepared", "out:topology identity, scene-leaf compile against the shared one", "both"),
         ("frontend/noise", "out:the Philox realisation under AD", "vjp"),
-        (
-            "tape/two_way",
-            "out:join context, 10 saved tensors, one launch each way",
-            "vjp",
-        ),
-        (
-            "tape/aspect",
-            "out:aspect context, 9 saved tensors, one launch each way",
-            "vjp",
-        ),
-        (
-            "tape/fmcw_beat",
-            "out:beat context, backward saves segment where forward saves offsets",
-            "both",
-        ),
+        ("tape/two_way", "out:join context, 10 saved tensors, one launch each way", "vjp"),
+        ("tape/aspect", "out:aspect context, 9 saved tensors, one launch each way", "vjp"),
+        ("tape/fmcw_beat", "out:beat context, backward saves segment where forward saves offsets", "both"),
         ("tape/ofdm_cfr", "out:cfr context, same forward/backward asymmetry", "both"),
-        (
-            "tape/pulsed_echo",
-            "out:echo context, same forward/backward asymmetry",
-            "both",
-        ),
-        (
-            "tape/sensor_weight",
-            "out:weight context, 9 saved tensors, one launch each way",
-            "vjp",
-        ),
-        (
-            "tape/frontend",
-            "out:noise and AGC contexts, two owners in one call",
-            "vjp",
-        ),
-        (
-            "tape/compose_band",
-            "out:tape bytes as a linear law in the band column count",
-            "vjp",
-        ),
+        ("tape/pulsed_echo", "out:echo context, same forward/backward asymmetry", "both"),
+        ("tape/sensor_weight", "out:weight context, 9 saved tensors, one launch each way", "vjp"),
+        ("tape/frontend", "out:noise and AGC contexts, two owners in one call", "vjp"),
+        ("tape/compose_band", "out:tape bytes as a linear law in the band column count", "vjp"),
         ("tape/any", "out:no tape reaches a public result record", "both"),
         ("tape/any", "out:no module outside an owner reads a context", "both"),
         ("reevaluate/prepared", "out:ad_companion_launches, ad_tape_bytes", "vjp"),
@@ -173,32 +121,12 @@ TOTAL_ROWS = sum(SECTION_ROWS.values())
 class Row:
     """One matrix row, with the section it was written under."""
 
-    __slots__ = (
-        "line",
-        "section",
-        "route",
-        "leaf",
-        "mode",
-        "state",
-        "mechanism",
-        "owner",
-        "test",
-        "validation",
-    )
+    __slots__ = ("line", "section", "route", "leaf", "mode", "state", "mechanism", "owner", "test", "validation")
 
     def __init__(self, line: int, section: str, cells: list[str]) -> None:
         self.line = line
         self.section = section
-        (
-            self.route,
-            self.leaf,
-            self.mode,
-            self.state,
-            self.mechanism,
-            self.owner,
-            self.test,
-            self.validation,
-        ) = cells
+        (self.route, self.leaf, self.mode, self.state, self.mechanism, self.owner, self.test, self.validation) = cells
 
     def __repr__(self) -> str:  # pragma: no cover - failure messages only
         return f"<row line {self.line} {self.section!r} {self.route}/{self.leaf}>"
@@ -244,11 +172,7 @@ def parsed():
 
 def _functions(path: pathlib.Path) -> frozenset[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return frozenset(
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    )
+    return frozenset(node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +218,7 @@ def test_every_row_uses_the_four_target_states(parsed):
 
 
 def test_every_row_names_one_of_the_four_mechanisms(parsed):
-    bad = [
-        (row.line, row.mechanism) for row in parsed if row.mechanism not in MECHANISMS
-    ]
+    bad = [(row.line, row.mechanism) for row in parsed if row.mechanism not in MECHANISMS]
     assert not bad, bad
 
 
@@ -331,11 +253,7 @@ def test_a_supported_row_is_never_justified_by_a_refusal(parsed):
     derivative whose only evidence is that something else was refused.
     """
 
-    bad = [
-        (row.line, row.leaf)
-        for row in parsed
-        if row.state == "SUP" and row.validation == "refusal"
-    ]
+    bad = [(row.line, row.leaf) for row in parsed if row.state == "SUP" and row.validation == "refusal"]
     assert not bad, bad
 
 
@@ -373,9 +291,7 @@ def test_the_structural_allowlist_has_no_stale_entry(parsed):
     """
 
     present = {
-        (row.route, row.leaf, row.mode)
-        for row in parsed
-        if row.state == "SUP" and row.validation == "declaration"
+        (row.route, row.leaf, row.mode) for row in parsed if row.state == "SUP" and row.validation == "declaration"
     }
     assert present == STRUCTURAL_SUP_ROWS
 
@@ -389,11 +305,7 @@ def test_a_refusal_validation_appears_only_on_a_refused_row(parsed):
     the moved geometry, which is a stronger statement than the raise alone.
     """
 
-    bad = [
-        (row.line, row.state)
-        for row in parsed
-        if row.validation == "refusal" and row.state != "REF"
-    ]
+    bad = [(row.line, row.state) for row in parsed if row.validation == "refusal" and row.state != "REF"]
     assert not bad, bad
 
 
@@ -405,11 +317,7 @@ def test_a_declared_row_is_evidenced_by_its_declaration(parsed):
     mislabelled. Both are ways of losing a decision.
     """
 
-    bad = [
-        (row.line, row.validation)
-        for row in parsed
-        if row.state == "DECL" and row.validation != "declaration"
-    ]
+    bad = [(row.line, row.validation) for row in parsed if row.state == "DECL" and row.validation != "declaration"]
     assert not bad, bad
     assert sum(1 for row in parsed if row.state == "DECL") >= 1
 
@@ -490,9 +398,7 @@ def test_the_mirrored_channel_rows_agree_with_the_live_capability_record():
     assert consumer.CONTRACT_VERSION == 6
     record = consumer.capabilities()
 
-    assert record.direction_differentiable_components == frozenset(
-        {"los", "reflection"}
-    )
+    assert record.direction_differentiable_components == frozenset({"los", "reflection"})
     modes = dict(record.component_ad_modes)
     # Narrowed by ADR-043: the diffraction AD column was advertised and could
     # not produce a row, so the pre-compute refusal is now the honest answer.
@@ -528,9 +434,7 @@ def test_the_mirrored_section_only_claims_cells_radar_can_reach():
 
     record = consumer.capabilities()
     assert record.fixed_topology_components == frozenset({"los", "reflection"})
-    assert record.fixed_topology_components.issubset(
-        record.direction_differentiable_components
-    )
+    assert record.fixed_topology_components.issubset(record.direction_differentiable_components)
     assert "scalar_transport" in record.fixed_topology_responses
 
 
@@ -558,11 +462,7 @@ def test_every_deferral_names_a_follow_up_owner():
     text = DOC.read_text(encoding="utf-8")
     assert "## Deferred" in text
     deferred = text.split("## Deferred", 1)[1].split("\n## ", 1)[0]
-    bullets = [
-        block
-        for block in deferred.split("\n- ")[1:]
-        if block.strip()
-    ]
+    bullets = [block for block in deferred.split("\n- ")[1:] if block.strip()]
     assert len(bullets) >= 8, len(bullets)
     for block in bullets:
         head = block.strip().splitlines()[0]
@@ -582,9 +482,7 @@ def test_the_acceptance_record_maps_every_plan_criterion():
     rows = [
         line
         for line in record.splitlines()
-        if line.strip().startswith("|")
-        and not line.strip().startswith("|---")
-        and "criterion" not in line.lower()
+        if line.strip().startswith("|") and not line.strip().startswith("|---") and "criterion" not in line.lower()
     ]
     assert len(rows) == 7, len(rows)
     for line in rows:

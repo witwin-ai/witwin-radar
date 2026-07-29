@@ -34,21 +34,12 @@ DO exist, ``ca_cfar_fast`` and ``os_cfar``.
 import numpy as np
 import pytest
 import torch
-
-from conftest import (
-    STANDARD_CONFIG, FAST_CONFIG,
-    make_scene_radar_or_skip, simulate_point_targets,
-)
+from conftest import FAST_CONFIG, STANDARD_CONFIG, make_scene_radar_or_skip, simulate_point_targets
 
 pytestmark = pytest.mark.gpu
 
 # Validation config: adc_start_time=0 for clean signal, enough chirps for Doppler
-_VFAST = {
-    **FAST_CONFIG,
-    "adc_start_time": 0,
-    "chirp_per_frame": 32,
-    "num_doppler_bins": 32,
-}
+_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32, "num_doppler_bins": 32}
 _VFULL = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 
@@ -87,9 +78,7 @@ class TestStaticTarget:
         ranges = cloud.range_m.cpu().numpy()
         best = ranges[np.argmin(np.abs(ranges - distance))]
         tol = frame.axes.range_bin_m * 2
-        assert abs(best - distance) < tol, (
-            f"distance={distance}m: detected {best:.3f}m, tolerance={tol:.3f}m"
-        )
+        assert abs(best - distance) < tol, f"distance={distance}m: detected {best:.3f}m, tolerance={tol:.3f}m"
 
     def test_the_axes_record_describes_the_published_cube(self):
         """The processing metadata and the simulated cube are one product.
@@ -163,17 +152,13 @@ class TestMovingTarget:
 
         radar = make_scene_radar_or_skip(_VFULL)
         speed = 1.5  # m/s, closing: local +z shortens the boresight range
-        frame = simulate_point_targets(
-            radar, [(_local(3.0), (0.0, 0.0, speed))]
-        )
+        frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
         _, _, _, velocity, _, detected = _strongest(cloud)
         assert abs(detected - 3.0) < frame.axes.range_bin_m * 5
         tol = frame.axes.velocity_bin_mps * 3
-        assert abs(abs(velocity) - speed) < tol, (
-            f"expected |v| ~= {speed} m/s, detected {velocity:.3f} m/s"
-        )
+        assert abs(abs(velocity) - speed) < tol, f"expected |v| ~= {speed} m/s, detected {velocity:.3f} m/s"
 
     def test_the_doppler_sign_follows_the_direction_of_travel(self):
         """Closing and receding at the same speed give opposite signs.
@@ -185,12 +170,8 @@ class TestMovingTarget:
 
         radar = make_scene_radar_or_skip(_VFULL)
         speed = 1.5
-        closing = simulate_point_targets(
-            radar, [(_local(3.0), (0.0, 0.0, speed))]
-        )
-        receding = simulate_point_targets(
-            radar, [(_local(3.0), (0.0, 0.0, -speed))]
-        )
+        closing = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
+        receding = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, -speed))])
         forward = _strongest(closing.point_cloud(positive_velocity_only=False))[3]
         backward = _strongest(receding.point_cloud(positive_velocity_only=False))[3]
 
@@ -203,9 +184,7 @@ class TestMovingTarget:
 
         radar = make_scene_radar_or_skip(_VFULL)
         speed = 2.0
-        frame = simulate_point_targets(
-            radar, [(_local(3.0), (0.0, 0.0, speed))]
-        )
+        frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
 
         combined = frame.combined_map().abs()
         flat = int(combined.argmax())
@@ -229,9 +208,7 @@ class TestMovingTargetAngle:
     @pytest.mark.parametrize("closing_speed", [-1.5, 1.5])
     def test_moving_broadside_target_stays_broadside(self, closing_speed):
         radar = make_scene_radar_or_skip(_VFULL)
-        frame = simulate_point_targets(
-            radar, [(_local(3.0), (0.0, 0.0, closing_speed))]
-        )
+        frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, closing_speed))])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
         x, _, z, _, _, detected = _strongest(cloud)
@@ -263,9 +240,7 @@ class TestEnergyScale:
 
     @staticmethod
     def _peak_energy(radar, *, sigma_m2):
-        frame = simulate_point_targets(
-            radar, [_local(3.0)], sigma_m2=sigma_m2
-        )
+        frame = simulate_point_targets(radar, [_local(3.0)], sigma_m2=sigma_m2)
         cloud = frame.point_cloud(positive_velocity_only=False)
         return float(cloud.energy.max())
 
@@ -273,9 +248,7 @@ class TestEnergyScale:
         radar = make_scene_radar_or_skip(_VFAST)
         low = self._peak_energy(radar, sigma_m2=self.SMALL_RCS_M2)
         high = self._peak_energy(radar, sigma_m2=self.LARGE_RCS_M2)
-        assert high - low == pytest.approx(20.0, abs=0.1), (
-            f"sigma x100 changed the peak by {high - low:.2f} dB"
-        )
+        assert high - low == pytest.approx(20.0, abs=0.1), f"sigma x100 changed the peak by {high - low:.2f} dB"
 
     def test_the_additive_energy_floor_is_what_biases_a_weak_target(self):
         """The falsifier for the paragraph above, measured rather than asserted.
@@ -291,9 +264,7 @@ class TestEnergyScale:
         for sigma in (1.0, 100.0):
             frame = simulate_point_targets(radar, [_local(3.0)], sigma_m2=sigma)
             levels.append(float(frame.combined_map().abs().max()))
-        assert 20.0 * np.log10(levels[1] / levels[0]) == pytest.approx(
-            20.0, abs=1e-3
-        )
+        assert 20.0 * np.log10(levels[1] / levels[0]) == pytest.approx(20.0, abs=1e-3)
 
     def test_the_two_detectors_report_the_same_scale_and_the_same_angle(self):
         """``ca_cfar_fast`` and ``os_cfar`` select different cells, not different
@@ -310,26 +281,12 @@ class TestEnergyScale:
         radar = make_scene_radar_or_skip(_VFAST)
         frame = simulate_point_targets(radar, [_local(3.0)])
         rd = frame.range_doppler()
-        combined = rd.data.reshape(
-            frame.array.sensor_pair_count, *rd.data.shape[-2:]
-        ).sum(dim=0)
+        combined = rd.data.reshape(frame.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
 
         clouds = {}
         for name, detector in (("ca", ca_cfar_fast), ("os", os_cfar)):
-            cells = detector(
-                combined.abs(),
-                guard_cells=(1, 2),
-                training_cells=(2, 3),
-                pfa=1e-2,
-            )
-            clouds[name] = point_cloud(
-                cells,
-                rd,
-                frame.axes,
-                frame.array,
-                max_points=64,
-                positive_velocity_only=False,
-            )
+            cells = detector(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
+            clouds[name] = point_cloud(cells, rd, frame.axes, frame.array, max_points=64, positive_velocity_only=False)
 
         peaks = {name: _strongest(cloud) for name, cloud in clouds.items()}
         assert abs(peaks["ca"][4] - peaks["os"][4]) < 30.0, peaks

@@ -8,24 +8,20 @@ from typing import Protocol, runtime_checkable
 
 import torch
 
+from .cuda import native_ops as _ops
 from .policy import first_order_only
 
 #: Maximum unmodelled aspect-response phase walk over one coherent interval.
 ASPECT_PHASE_BUDGET_RAD = 0.1
 
 
-def require_aspect_phase_rate_bounded(
-    aspect_phase_rate_rad_per_s: float, coherent_interval_s: float
-) -> None:
+def require_aspect_phase_rate_bounded(aspect_phase_rate_rad_per_s: float, coherent_interval_s: float) -> None:
     """Refuse an aspect phase whose coherent-interval walk exceeds the budget."""
 
     rate = float(aspect_phase_rate_rad_per_s)
     interval = float(coherent_interval_s)
     if rate < 0.0:
-        raise ValueError(
-            "aspect_phase_rate_rad_per_s is a magnitude bound and cannot be "
-            f"negative, got {rate}"
-        )
+        raise ValueError(f"aspect_phase_rate_rad_per_s is a magnitude bound and cannot be negative, got {rate}")
     if not interval > 0.0:
         raise ValueError(f"coherent_interval_s must be positive, got {interval}")
     walk = rate * interval
@@ -41,6 +37,8 @@ def require_aspect_phase_rate_bounded(
             "interval, slow the aspect change, or accept a response whose "
             "argument is aspect independent - there is no approximated mode"
         )
+
+
 @runtime_checkable
 class ScatterResponse(Protocol):
     """A complex response evaluated for a batch of composed rows.
@@ -82,9 +80,7 @@ class ScatterResponse(Protocol):
 #: The list is deliberately explicit rather than an ``isinstance`` against a
 #: base class: a subclass of the native response can override ``evaluate_rows``
 #: with a Torch expression and would inherit the permission with it.
-NATIVE_ROW_RESPONSE_OWNERS = frozenset(
-    {"witwin.radar.scattering.AspectScatterResponse"}
-)
+NATIVE_ROW_RESPONSE_OWNERS = frozenset({"witwin.radar.scattering.AspectScatterResponse"})
 
 
 @runtime_checkable
@@ -101,11 +97,7 @@ class NativeRowScatterResponse(Protocol):
     native_row_owner: str
 
     def evaluate_rows(
-        self,
-        composer: object,
-        inbound: object,
-        outbound: object,
-        row_valid: torch.Tensor,
+        self, composer: object, inbound: object, outbound: object, row_valid: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the ``float32[composer.path_count]`` real/imaginary pair.
 
@@ -117,6 +109,7 @@ class NativeRowScatterResponse(Protocol):
         response costs exactly ONE extra kernel launch per frame.
         """
         ...
+
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
@@ -140,9 +133,7 @@ SPEED_OF_LIGHT_M_PER_S = 299792458.0
 RCS_AMPLITUDE_LAW = "sqrt(4*pi*sigma_m2)/wavelength_m"
 
 
-def rcs_amplitude(
-    sigma_m2: float | torch.Tensor, wavelength_m: float
-) -> float | torch.Tensor:
+def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float | torch.Tensor:
     """``sqrt(4 pi sigma) / lambda``, the dimensionless target strength.
 
     Dimensionless is the whole content of the normalisation. ``S`` carries no
@@ -229,13 +220,8 @@ class ScalarRcsResponse:
 
     @classmethod
     def from_values(
-        cls,
-        amplitude: float,
-        phase_rad: float,
-        *,
-        device: torch.device | str = "cpu",
-        requires_grad: bool = False,
-    ) -> "ScalarRcsResponse":
+        cls, amplitude: float, phase_rad: float, *, device: torch.device | str = "cpu", requires_grad: bool = False
+    ) -> ScalarRcsResponse:
         def parameter(value: float) -> torch.Tensor:
             tensor = torch.tensor(float(value), dtype=torch.float32, device=device)
             return tensor.requires_grad_(requires_grad)
@@ -251,7 +237,7 @@ class ScalarRcsResponse:
         phase_rad: float = 0.0,
         device: torch.device | str = "cpu",
         requires_grad: bool = False,
-    ) -> "ScalarRcsResponse":
+    ) -> ScalarRcsResponse:
         """Build ``S`` from a radar cross section, through the pinned law.
 
         This is the only constructor that knows what a square metre is worth.
@@ -284,12 +270,7 @@ class ScalarRcsResponse:
         wavelength_m = SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz)
         amplitude = rcs_amplitude(sigma_m2, wavelength_m)
         if not isinstance(amplitude, torch.Tensor):
-            return cls.from_values(
-                amplitude,
-                phase_rad,
-                device=device,
-                requires_grad=requires_grad,
-            )
+            return cls.from_values(amplitude, phase_rad, device=device, requires_grad=requires_grad)
         if requires_grad:
             raise ValueError(
                 "requires_grad=True is not meaningful with a tensor sigma_m2: "
@@ -300,10 +281,7 @@ class ScalarRcsResponse:
                 "dimensionless strength as its own leaf."
             )
         return cls(
-            amplitude=amplitude,
-            phase_rad=torch.tensor(
-                float(phase_rad), dtype=torch.float32, device=amplitude.device
-            ),
+            amplitude=amplitude, phase_rad=torch.tensor(float(phase_rad), dtype=torch.float32, device=amplitude.device)
         )
 
     @property
@@ -327,24 +305,11 @@ class ScalarRcsResponse:
         phase = self.phase_rad.to(device=device, dtype=torch.complex64)
         return (amplitude * torch.exp(-1j * phase)).expand(row_count)
 
-ASPECT_SCATTER_LAW = (
-    "S = amplitude * max(-dot(dir_in, axis), 0)^n "
-    "* max(dot(dir_out, axis), 0)^n * exp(-i * phase_rad)"
-)
+
+ASPECT_SCATTER_LAW = "S = amplitude * max(-dot(dir_in, axis), 0)^n * max(dot(dir_out, axis), 0)^n * exp(-i * phase_rad)"
 
 #: The fully qualified name the composer checks against its owner list.
 _OWNER = "witwin.radar.scattering.AspectScatterResponse"
-
-_OPS = None
-
-
-def _ops():
-    global _OPS
-    if _OPS is None:
-        from .cuda import runtime as build
-
-        _OPS = build.build_extension()
-    return _OPS
 
 
 class _AspectResponse(torch.autograd.Function):
@@ -360,19 +325,7 @@ class _AspectResponse(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(
-        dir_in,
-        dir_out,
-        axis,
-        amplitude,
-        phase_rad,
-        idx_in,
-        idx_out,
-        idx_site,
-        row_valid,
-        exponent,
-        tables,
-    ):
+    def forward(dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid, exponent, tables):
         rows = int(idx_in.shape[0])
         s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         s_im = torch.empty_like(s_re)
@@ -395,49 +348,17 @@ class _AspectResponse(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (
-            dir_in,
-            dir_out,
-            axis,
-            amplitude,
-            phase_rad,
-            idx_in,
-            idx_out,
-            idx_site,
-            row_valid,
-            exponent,
-            tables,
-        ) = inputs
+        (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid, exponent, tables) = inputs
         ctx.exponent = exponent
         ctx.tables = tables
-        saved = (
-            dir_in,
-            dir_out,
-            axis,
-            amplitude,
-            phase_rad,
-            idx_in,
-            idx_out,
-            idx_site,
-            row_valid,
-        )
+        saved = (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid)
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_s_re, grad_s_im):
-        (
-            dir_in,
-            dir_out,
-            axis,
-            amplitude,
-            phase_rad,
-            idx_in,
-            idx_out,
-            idx_site,
-            row_valid,
-        ) = ctx.saved_tensors
+        (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         tables = ctx.tables
         grad_dir_in = torch.empty_like(dir_in)
         grad_dir_out = torch.empty_like(dir_out)
@@ -502,17 +423,7 @@ class _AspectResponse(torch.autograd.Function):
         tan_exponent,
         tan_tables,
     ):
-        (
-            dir_in,
-            dir_out,
-            axis,
-            amplitude,
-            phase_rad,
-            idx_in,
-            idx_out,
-            idx_site,
-            row_valid,
-        ) = ctx.saved_tensors
+        (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
 
         def tangent(value, like):
             return torch.zeros_like(like) if value is None else value.contiguous()
@@ -634,12 +545,8 @@ class AspectScatterResponse:
                 "gradient of a different parameterisation than the caller wrote"
             )
         if not isinstance(self.exponent, float) or not self.exponent >= 1.0:
-            raise ValueError(
-                f"exponent must be a float of at least 1.0, got {self.exponent!r}"
-            )
-        require_aspect_phase_rate_bounded(
-            self.aspect_phase_rate_rad_per_s, self.coherent_interval_s
-        )
+            raise ValueError(f"exponent must be a float of at least 1.0, got {self.exponent!r}")
+        require_aspect_phase_rate_bounded(self.aspect_phase_rate_rad_per_s, self.coherent_interval_s)
 
     @classmethod
     def from_values(
@@ -653,14 +560,12 @@ class AspectScatterResponse:
         aspect_phase_rate_rad_per_s: float = 0.0,
         device: torch.device | str = "cuda",
         requires_grad: bool = False,
-    ) -> "AspectScatterResponse":
+    ) -> AspectScatterResponse:
         """Build the response from host sequences, one row per site."""
 
         def parameter(values, width: int | None) -> torch.Tensor:
             tensor = torch.tensor(
-                [list(row) for row in values] if width else list(values),
-                dtype=torch.float32,
-                device=device,
+                [list(row) for row in values] if width else list(values), dtype=torch.float32, device=device
             )
             return tensor.requires_grad_(requires_grad)
 
@@ -722,8 +627,7 @@ class AspectScatterResponse:
 
         if self.site_count != composer.site_count:
             raise ValueError(
-                f"this response carries {self.site_count} sites but the join was "
-                f"frozen against {composer.site_count}"
+                f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
             )
         if composer.outbound_max_depth != 0:
             raise NotImplementedError(
@@ -770,9 +674,9 @@ def _require_direction(leg, rows: int, name: str) -> torch.Tensor:
         )
     if int(direction.shape[0]) != rows:
         raise ValueError(
-            f"the {name} leg carries {int(direction.shape[0])} direction rows "
-            f"but this join was frozen against {rows}"
+            f"the {name} leg carries {int(direction.shape[0])} direction rows but this join was frozen against {rows}"
         )
     return direction.contiguous()
+
 
 __all__ = ["AspectScatterResponse", "ScalarRcsResponse", "ScatterResponse"]

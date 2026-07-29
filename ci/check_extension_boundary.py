@@ -33,10 +33,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import struct
 import sys
-
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PREBUILT_DIR = REPO_ROOT / "witwin" / "radar" / "cuda" / "prebuilt"
@@ -117,9 +116,7 @@ def read_pe_imports(path: Path) -> list[str]:
     section_table = optional + optional_size
     for index in range(section_count):
         base = section_table + index * 40
-        virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from(
-            "<IIII", data, base + 8
-        )
+        virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from("<IIII", data, base + 8)
         sections.append((virtual_address, max(virtual_size, raw_size), raw_pointer))
 
     def to_offset(rva: int) -> int:
@@ -191,8 +188,7 @@ def read_elf_needed(path: Path) -> list[str]:
         raise BoundaryError(f"{path} has DT_NEEDED entries but no DT_STRTAB")
 
     string_table_offset = _elf_address_to_offset(
-        data, endian, program_header_offset, program_header_size,
-        program_header_count, string_table_address, path,
+        data, endian, program_header_offset, program_header_size, program_header_count, string_table_address, path
     )
     names: list[str] = []
     for name_offset in needed_offsets:
@@ -267,15 +263,10 @@ def discover_radar_binary() -> Path:
             f"{PREBUILT_DIR} is not a directory; build the packaged prebuilt "
             "with `python scripts/build_radar_cuda_prebuilt.py`"
         )
-    members = sorted(
-        entry
-        for entry in PREBUILT_DIR.iterdir()
-        if entry.is_file() and entry.suffix in NATIVE_SUFFIXES
-    )
+    members = sorted(entry for entry in PREBUILT_DIR.iterdir() if entry.is_file() and entry.suffix in NATIVE_SUFFIXES)
     if len(members) != 1:
         raise BoundaryError(
-            f"expected exactly one native member under {PREBUILT_DIR}, found "
-            f"{[member.name for member in members]}"
+            f"expected exactly one native member under {PREBUILT_DIR}, found {[member.name for member in members]}"
         )
     return members[0]
 
@@ -293,9 +284,7 @@ def check_radar(path: Path) -> dict[str, object]:
 
     unexpected = sorted({name for name in imports if name.lower() not in allowed})
     if unexpected:
-        failures.append(
-            f"{path.name} imports outside the frozen allowlist: {unexpected}"
-        )
+        failures.append(f"{path.name} imports outside the frozen allowlist: {unexpected}")
     for name in imports:
         lowered = name.lower()
         for token in FORBIDDEN_IMPORT_TOKENS:
@@ -324,11 +313,7 @@ def check_channel(path: Path) -> dict[str, object]:
     """
 
     imports = read_imports(path)
-    failures = [
-        f"{path.name} imports {name}, which names 'drjit'"
-        for name in imports
-        if "drjit" in name.lower()
-    ]
+    failures = [f"{path.name} imports {name}, which names 'drjit'" for name in imports if "drjit" in name.lower()]
     return {
         "path": str(path),
         "bytes": path.stat().st_size,
@@ -338,9 +323,7 @@ def check_channel(path: Path) -> dict[str, object]:
     }
 
 
-def check_boundary(
-    radar_binary: Path, channel_binary: Path | None = None
-) -> dict[str, object]:
+def check_boundary(radar_binary: Path, channel_binary: Path | None = None) -> dict[str, object]:
     report: dict[str, object] = {"radar": check_radar(radar_binary)}
     failures = list(report["radar"]["failures"])  # type: ignore[index]
 
@@ -368,10 +351,7 @@ def check_boundary(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--radar-binary",
-        type=Path,
-        default=None,
-        help="the radar native library; defaults to the packaged prebuilt",
+        "--radar-binary", type=Path, default=None, help="the radar native library; defaults to the packaged prebuilt"
     )
     parser.add_argument(
         "--channel-binary",
@@ -395,9 +375,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.json is not None:
         arguments.json.parent.mkdir(parents=True, exist_ok=True)
-        arguments.json.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        arguments.json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     for key in ("radar", "channel"):
         entry = report.get(key)

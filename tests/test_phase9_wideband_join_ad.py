@@ -43,10 +43,7 @@ from support import fd  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 
-from witwin.radar.channel import (  # noqa: E402
-    ChannelPropagationAdapter,
-)
-
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -103,17 +100,12 @@ def weights(banded):
     """A deterministic sign-mixed cotangent over ``[K, F]``, never all ones."""
 
     generator = torch.Generator().manual_seed(4177)
-    raw = torch.rand(
-        2, banded.composer.path_count, BAND_COLUMNS,
-        generator=generator, dtype=torch.float32,
-    )
+    raw = torch.rand(2, banded.composer.path_count, BAND_COLUMNS, generator=generator, dtype=torch.float32)
     return torch.complex(2.0 * raw[0] - 1.0, 2.0 * raw[1] - 1.0).cuda()
 
 
 def _band(spike, sites=None, *, ad_mode: str = "none"):
-    composed, _, _ = spike.frame(
-        sites, drv.make_response(), ad_mode=ad_mode, include_delay_rate=False
-    )
+    composed, _, _ = spike.frame(sites, drv.make_response(), ad_mode=ad_mode, include_delay_rate=False)
     band = composed.frequency_response
     assert band is not None, "this spike declared a band"
     return band
@@ -139,9 +131,7 @@ def test_the_published_band_carries_a_graph_from_the_endpoint_leaf(banded):
     assert band.grad_fn is not None
 
 
-def test_a_reverse_endpoint_gradient_reaches_every_wideband_column(
-    banded, weights
-):
+def test_a_reverse_endpoint_gradient_reaches_every_wideband_column(banded, weights):
     """``d(loss over [K, F])/d(site)`` against a fourth-order difference."""
 
     base = banded.site_tensor()
@@ -160,16 +150,12 @@ def test_a_reverse_endpoint_gradient_reaches_every_wideband_column(
                 moved[site, axis] += offset * STEP_M
                 samples[offset] = float(_band_loss(banded, weights, moved))
                 realized[offset] = float(moved[site, axis])
-            measured = fd.fourth_order_difference(
-                samples, (realized[1] - realized[-1]) / 2.0
-            )
+            measured = fd.fourth_order_difference(samples, (realized[1] - realized[-1]) / 2.0)
             expected = float(gradient[site, axis])
             # Non-vacuity: this fixture's smallest live component is ~0.1, so a
             # zero here would mean the leaf stopped reaching the band.
             assert abs(expected) > ZERO_FLOOR, (site, axis, expected)
-            assert fd.relative_error(
-                measured, expected, floor=ZERO_FLOOR
-            ) < FD_RTOL, (site, axis, measured, expected)
+            assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < FD_RTOL, (site, axis, measured, expected)
 
 
 def test_a_forward_tangent_on_an_endpoint_reaches_the_band(banded, weights):
@@ -180,17 +166,13 @@ def test_a_forward_tangent_on_an_endpoint_reaches_the_band(banded, weights):
     to every column would disagree with the projection here.
     """
 
-    direction = torch.tensor(
-        [[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda"
-    )
+    direction = torch.tensor([[0.3, -0.9, 0.0], [0.7, 0.4, 0.0]], dtype=torch.float32, device="cuda")
     base = banded.site_tensor()
 
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(base.clone(), direction)
         assert not dual.requires_grad
-        tangent = forward_ad.unpack_dual(
-            _band_loss(banded, weights, dual, ad_mode="jvp")
-        ).tangent
+        tangent = forward_ad.unpack_dual(_band_loss(banded, weights, dual, ad_mode="jvp")).tangent
         assert tangent is not None
         forward = float(tangent)
 
@@ -200,9 +182,7 @@ def test_a_forward_tangent_on_an_endpoint_reaches_the_band(banded, weights):
 
     samples = {}
     for offset in (-2, -1, 1, 2):
-        samples[offset] = float(
-            _band_loss(banded, weights, base + offset * STEP_M * direction)
-        )
+        samples[offset] = float(_band_loss(banded, weights, base + offset * STEP_M * direction))
     differenced = fd.fourth_order_difference(samples, STEP_M)
 
     assert abs(forward) > ZERO_FLOOR
@@ -210,9 +190,7 @@ def test_a_forward_tangent_on_an_endpoint_reaches_the_band(banded, weights):
     assert fd.relative_error(differenced, forward, floor=ZERO_FLOOR) < FD_RTOL
 
 
-def test_a_combined_endpoint_perturbation_equals_the_sum_of_its_parts(
-    banded, weights
-):
+def test_a_combined_endpoint_perturbation_equals_the_sum_of_its_parts(banded, weights):
     """Sites AND transmitters live at once, against two single-leaf differences.
 
     The join is bilinear in the two legs' coefficients and the transmitter only
@@ -222,30 +200,19 @@ def test_a_combined_endpoint_perturbation_equals_the_sum_of_its_parts(
     what separates them.
     """
 
-    site_direction = torch.tensor(
-        [[0.4, -0.8, 0.0], [-0.6, 0.3, 0.0]], dtype=torch.float32, device="cuda"
-    )
-    tx_direction = torch.tensor(
-        [[0.7, 0.5, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32, device="cuda"
-    )
+    site_direction = torch.tensor([[0.4, -0.8, 0.0], [-0.6, 0.3, 0.0]], dtype=torch.float32, device="cuda")
+    tx_direction = torch.tensor([[0.7, 0.5, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32, device="cuda")
     site_base = banded.site_tensor()
     tx_base = banded.transmitter_tensor()
 
     sites = site_base.clone().requires_grad_(True)
     transmitters = tx_base.clone().requires_grad_(True)
     composed, _, _ = banded.frame(
-        sites,
-        drv.make_response(),
-        transmitters=transmitters,
-        ad_mode="vjp",
-        include_delay_rate=False,
+        sites, drv.make_response(), transmitters=transmitters, ad_mode="vjp", include_delay_rate=False
     )
     band = composed.frequency_response
     (band.real * weights.real + band.imag * weights.imag).sum().backward()
-    combined = float(
-        (sites.grad * site_direction).sum()
-        + (transmitters.grad * tx_direction).sum()
-    )
+    combined = float((sites.grad * site_direction).sum() + (transmitters.grad * tx_direction).sum())
 
     def loss(site_step: float, tx_step: float) -> float:
         composed, _, _ = banded.frame(
@@ -255,15 +222,10 @@ def test_a_combined_endpoint_perturbation_equals_the_sum_of_its_parts(
             include_delay_rate=False,
         )
         value = composed.frequency_response
-        return float(
-            (value.real * weights.real + value.imag * weights.imag).sum()
-        )
+        return float((value.real * weights.real + value.imag * weights.imag).sum())
 
     def difference(site_scale: float, tx_scale: float) -> float:
-        samples = {
-            offset: loss(offset * STEP_M * site_scale, offset * STEP_M * tx_scale)
-            for offset in (-2, -1, 1, 2)
-        }
+        samples = {offset: loss(offset * STEP_M * site_scale, offset * STEP_M * tx_scale) for offset in (-2, -1, 1, 2)}
         return fd.fourth_order_difference(samples, STEP_M)
 
     site_only = difference(1.0, 0.0)
@@ -273,9 +235,7 @@ def test_a_combined_endpoint_perturbation_equals_the_sum_of_its_parts(
     # Each leaf really moves the loss, so the sum is not one term plus noise.
     assert abs(site_only) > ZERO_FLOOR
     assert abs(tx_only) > ZERO_FLOOR
-    assert fd.relative_error(
-        site_only + tx_only, both, floor=ZERO_FLOOR
-    ) < FD_RTOL
+    assert fd.relative_error(site_only + tx_only, both, floor=ZERO_FLOOR) < FD_RTOL
     assert fd.relative_error(combined, both, floor=ZERO_FLOOR) < FD_RTOL
 
 
@@ -308,9 +268,7 @@ def test_each_wideband_column_carries_a_different_endpoint_derivative(banded):
         assert spread > 0.1, (column, spread)
 
 
-def test_the_reference_column_gradient_equals_the_narrowband_join_gradient(
-    narrow, banded
-):
+def test_the_reference_column_gradient_equals_the_narrowband_join_gradient(narrow, banded):
     """Column 0 is the narrowband join, in the derivative as well as the value.
 
     Phase 8 pinned the PRIMAL equality bitwise. If the band loop recomputed the
@@ -324,14 +282,8 @@ def test_the_reference_column_gradient_equals_the_narrowband_join_gradient(
 
     def gradient(spike, *, column: int | None) -> torch.Tensor:
         sites = base.clone().requires_grad_(True)
-        composed, _, _ = spike.frame(
-            sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False
-        )
-        value = (
-            composed.complex_transfer_ref
-            if column is None
-            else composed.frequency_response[:, column]
-        )
+        composed, _, _ = spike.frame(sites, drv.make_response(), ad_mode="vjp", include_delay_rate=False)
+        value = composed.complex_transfer_ref if column is None else composed.frequency_response[:, column]
         (value.real.sum() + value.imag.sum()).backward()
         return sites.grad
 
@@ -348,9 +300,7 @@ def test_the_reference_column_gradient_equals_the_narrowband_join_gradient(
 
 
 @pytest.mark.parametrize("columns", [1, 2, 4, 8])
-def test_the_band_loop_keeps_one_join_context_per_column_and_aliases_its_tables(
-    narrow, columns
-):
+def test_the_band_loop_keeps_one_join_context_per_column_and_aliases_its_tables(narrow, columns):
     """``F + 1`` contexts, and seven of each context's ten saved tensors alias.
 
     This is a STRUCTURAL statement, not a budget: the loop retains one autograd
@@ -376,12 +326,7 @@ def test_the_band_loop_keeps_one_join_context_per_column_and_aliases_its_tables(
         # the backward pass, and the storage is released the moment the graph
         # is, so a pointer collected afterwards would be a use-after-free
         # dressed up as an aliasing measurement.
-        saved.append(
-            tuple(
-                (tensor.data_ptr(), tensor.numel() * tensor.element_size())
-                for tensor in ctx.to_save
-            )
-        )
+        saved.append(tuple((tensor.data_ptr(), tensor.numel() * tensor.element_size()) for tensor in ctx.to_save))
 
     two_way._TwoWayJoin.setup_context = staticmethod(recording)
     try:

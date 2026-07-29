@@ -51,7 +51,6 @@ from support import fd  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-
 pytestmark = pytest.mark.gpu
 
 
@@ -125,9 +124,7 @@ def test_the_three_waveforms_share_one_frozen_topology(spike, values, kind):
     assert float(cube.abs().max()) > 0.0
 
 
-def test_the_scene_leaf_scenario_is_the_same_topology_as_the_shared_one(
-    spike, values
-):
+def test_the_scene_leaf_scenario_is_the_same_topology_as_the_shared_one(spike, values):
     """A scene leaf forces its own compile; this says it is the same world.
 
     ``vertices``, ``eps_r`` and ``sigma_e`` are baked into the compiled scene,
@@ -189,16 +186,11 @@ def test_each_combined_gradient_equals_its_single_leaf_gradient(values, kind):
     for name in mx.LEAF_NAMES:
         single_loss, single = _reverse(kind, values, (name,))
         assert single_loss == combined_loss, name
-        assert torch.equal(single[name], combined[name]), (
-            name,
-            float((single[name] - combined[name]).abs().max()),
-        )
+        assert torch.equal(single[name], combined[name]), (name, float((single[name] - combined[name]).abs().max()))
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_combined_difference_equals_the_sum_of_the_single_leaf_differences(
-    values, kind
-):
+def test_the_combined_difference_equals_the_sum_of_the_single_leaf_differences(values, kind):
     """Perturb all eight at once against the sum of the eight single differences.
 
     Two statements in one. The sum-of-singles comparison is a linearity check
@@ -209,45 +201,26 @@ def test_the_combined_difference_equals_the_sum_of_the_single_leaf_differences(
     """
 
     _, gradients = _reverse(kind, values, mx.LEAF_NAMES)
-    directions = {
-        name: mx.direction(name, values[name], gradients[name])
-        for name in mx.LEAF_NAMES
-    }
-    parts = {
-        name: float((gradients[name] * directions[name]).sum())
-        for name in mx.LEAF_NAMES
-    }
+    directions = {name: mx.direction(name, values[name], gradients[name]) for name in mx.LEAF_NAMES}
+    parts = {name: float((gradients[name] * directions[name]).sum()) for name in mx.LEAF_NAMES}
     for name, part in parts.items():
         assert abs(part) > 0.0, name
     # Signed by the gradient, so every leaf pushes the loss the same way and
     # the total is the sum of magnitudes rather than a near cancellation.
-    assert all(part > 0.0 for part in parts.values()) or all(
-        part < 0.0 for part in parts.values()
-    ), parts
+    assert all(part > 0.0 for part in parts.values()) or all(part < 0.0 for part in parts.values()), parts
     analytic = sum(parts.values())
 
     def difference(active):
         samples = {
-            offset: float(
-                mx.loss_of(
-                    kind,
-                    mx.perturbed(values, directions, active, offset, mx.FD_STEP),
-                )
-            )
+            offset: float(mx.loss_of(kind, mx.perturbed(values, directions, active, offset, mx.FD_STEP)))
             for offset in (-2, -1, 1, 2)
         }
         return fd.fourth_order_difference(samples, mx.FD_STEP)
 
     singles = sum(difference((name,)) for name in mx.LEAF_NAMES)
     all_at_once = difference(mx.LEAF_NAMES)
-    assert (
-        fd.relative_error(singles, all_at_once, floor=ZERO_FLOOR)
-        < COMBINED_FD_RTOL
-    ), (singles, all_at_once)
-    assert (
-        fd.relative_error(analytic, all_at_once, floor=ZERO_FLOOR)
-        < COMBINED_FD_RTOL
-    ), (analytic, all_at_once)
+    assert fd.relative_error(singles, all_at_once, floor=ZERO_FLOOR) < COMBINED_FD_RTOL, (singles, all_at_once)
+    assert fd.relative_error(analytic, all_at_once, floor=ZERO_FLOOR) < COMBINED_FD_RTOL, (analytic, all_at_once)
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
@@ -269,18 +242,12 @@ def test_the_conductivity_gradient_matches_a_central_difference(values, kind):
         moved["sigma_e"] = values["sigma_e"] + offset * SIGMA_E_STEP
         return float(mx.loss_of(kind, moved))
 
-    measured = fd.fourth_order_difference(
-        {offset: at(offset) for offset in (-2, -1, 1, 2)}, SIGMA_E_STEP
-    )
-    assert (
-        fd.relative_error(measured, expected, floor=ZERO_FLOOR) < SIGMA_E_FD_RTOL
-    ), (measured, expected)
+    measured = fd.fourth_order_difference({offset: at(offset) for offset in (-2, -1, 1, 2)}, SIGMA_E_STEP)
+    assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < SIGMA_E_FD_RTOL, (measured, expected)
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_response_phase_gradient_matches_a_central_difference(
-    spike, values, kind
-):
+def test_the_response_phase_gradient_matches_a_central_difference(spike, values, kind):
     """``phase_rad`` through the conjugation boundary, against a difference.
 
     The FMCW beat cube is CONJUGATED relative to Channel's convention and the
@@ -298,12 +265,8 @@ def test_the_response_phase_gradient_matches_a_central_difference(
         moved["phase_rad"] = values["phase_rad"] + offset * PHASE_STEP
         return float(mx.loss_of(kind, moved, spike=spike))
 
-    measured = fd.fourth_order_difference(
-        {offset: at(offset) for offset in (-2, -1, 1, 2)}, PHASE_STEP
-    )
-    assert (
-        fd.relative_error(measured, expected, floor=ZERO_FLOOR) < PHASE_FD_RTOL
-    ), (measured, expected)
+    measured = fd.fourth_order_difference({offset: at(offset) for offset in (-2, -1, 1, 2)}, PHASE_STEP)
+    assert fd.relative_error(measured, expected, floor=ZERO_FLOOR) < PHASE_FD_RTOL, (measured, expected)
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
@@ -321,12 +284,8 @@ def test_a_magnitude_only_loss_cannot_see_the_response_phase(spike, values, kind
     live = mx.marked(values, ("phase_rad",))
     cube = mx.cube_of(kind, live, ad_mode="vjp", spike=spike)
     magnitude = cube.abs().square().sum()
-    (magnitude_gradient,) = torch.autograd.grad(
-        magnitude, live["phase_rad"], retain_graph=True
-    )
-    assert abs(float(magnitude_gradient)) < PHASE_INVARIANCE_BOUND * abs(
-        float(magnitude.detach())
-    )
+    (magnitude_gradient,) = torch.autograd.grad(magnitude, live["phase_rad"], retain_graph=True)
+    assert abs(float(magnitude_gradient)) < PHASE_INVARIANCE_BOUND * abs(float(magnitude.detach()))
 
     both = mx.combined_loss(cube)
     (combined_gradient,) = torch.autograd.grad(both, live["phase_rad"])
@@ -356,9 +315,7 @@ def cotangent():
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology(
-    spike, values, cotangent, kind
-):
+def test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology(spike, values, cotangent, kind):
     """``<grad, v> == <u, J v>`` over the whole cube, one topology, one order.
 
     The two passes go through the SAME ``MultiEndpointSpike``, so the same
@@ -372,9 +329,7 @@ def test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology(
     prepared = (spike.inbound.prepared, spike.outbound.prepared)
 
     generator = torch.Generator().manual_seed(613)
-    raw = torch.rand(
-        values["sites"].shape, generator=generator, dtype=torch.float32
-    )
+    raw = torch.rand(values["sites"].shape, generator=generator, dtype=torch.float32)
     tangent = (2.0 * raw - 1.0).cuda()
     # The out-of-plane column is structurally dead in this fixture, so a
     # direction with one would only dilute the identity.
@@ -398,10 +353,7 @@ def test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology(
 
     assert (spike.inbound.prepared, spike.outbound.prepared) == prepared
     assert abs(reverse) > 0.0
-    assert fd.relative_error(forward, reverse, floor=ZERO_FLOOR) < 1.0e-5, (
-        forward,
-        reverse,
-    )
+    assert fd.relative_error(forward, reverse, floor=ZERO_FLOOR) < 1.0e-5, (forward, reverse)
 
 
 # --------------------------------------------------------------------------
@@ -412,13 +364,7 @@ def test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology(
 #: Every column of ``RadarPathTopology``. These are the five the join builds its
 #: canonical order from and the five a caller traces a row back through, so
 #: comparing all of them elementwise is the complete row-mapping statement.
-IDENTITY_COLUMNS = (
-    "radar_source_id",
-    "site_id",
-    "radar_sink_id",
-    "inbound_row",
-    "outbound_row",
-)
+IDENTITY_COLUMNS = ("radar_source_id", "site_id", "radar_sink_id", "inbound_row", "outbound_row")
 
 
 @contextlib.contextmanager
@@ -442,11 +388,7 @@ def _modes(spike, values):
         # line-of-sight row, which would make the forward result agree with the
         # others for the wrong reason.
         for name in ("sites", "transmitters", "receivers"):
-            seed = (
-                torch.ones_like(values[name])
-                if name == "sites"
-                else torch.zeros_like(values[name])
-            )
+            seed = torch.ones_like(values[name]) if name == "sites" else torch.zeros_like(values[name])
             duals[name] = forward_ad.make_dual(values[name].clone(), seed)
         results["jvp"] = mx.replay(spike, duals, ad_mode="jvp")
         yield results
@@ -464,13 +406,8 @@ def test_the_three_ad_modes_publish_the_same_compact_rows(spike, values, kind):
     """
 
     with _modes(spike, values) as results:
-        assert {name: r.path_count for name, r in results.items()} == {
-            name: 11 for name in results
-        }
-        keys = {
-            name: drv.composed_keys(spike, result)
-            for name, result in results.items()
-        }
+        assert {name: r.path_count for name, r in results.items()} == dict.fromkeys(results, 11)
+        keys = {name: drv.composed_keys(spike, result) for name, result in results.items()}
         assert keys["none"] == keys["vjp"] == keys["jvp"]
         for column in IDENTITY_COLUMNS:
             reference = getattr(results["none"].topology, column)
@@ -482,9 +419,7 @@ def test_the_three_ad_modes_publish_the_same_compact_rows(spike, values, kind):
 
 
 @pytest.mark.parametrize("kind", mx.WAVEFORMS)
-def test_the_primal_is_bitwise_identical_in_all_three_ad_modes(
-    spike, values, kind
-):
+def test_the_primal_is_bitwise_identical_in_all_three_ad_modes(spike, values, kind):
     """The numerical-convention half: same rows, same numbers, to the last bit.
 
     Exact, not close. An AD mode is a request for extra outputs, never a
@@ -499,20 +434,14 @@ def test_the_primal_is_bitwise_identical_in_all_three_ad_modes(
         primal = {}
         for name, result in results.items():
             cube = wc.synthesize(kind, result, spec)
-            primal[name] = (
-                forward_ad.unpack_dual(cube).primal if name == "jvp" else cube
-            )
+            primal[name] = forward_ad.unpack_dual(cube).primal if name == "jvp" else cube
             delay = result.total_delay_s
             transfer = result.complex_transfer_ref
             if name == "jvp":
                 delay = forward_ad.unpack_dual(delay).primal
                 transfer = forward_ad.unpack_dual(transfer).primal
-            assert torch.equal(
-                delay.detach(), results["none"].total_delay_s
-            ), name
-            assert torch.equal(
-                transfer.detach(), results["none"].complex_transfer_ref
-            ), name
+            assert torch.equal(delay.detach(), results["none"].total_delay_s), name
+            assert torch.equal(transfer.detach(), results["none"].complex_transfer_ref), name
         for name in ("vjp", "jvp"):
             assert torch.equal(primal[name].detach(), primal["none"]), name
 
@@ -530,12 +459,7 @@ def test_ad_mode_none_publishes_no_graph_and_no_tangent(spike, values, kind):
 
     composed = mx.replay(spike, values, ad_mode="none")
     cube = wc.synthesize(kind, composed, wc.make_spec(kind))
-    published = (
-        composed.total_delay_s,
-        composed.complex_transfer_ref,
-        composed.row_valid,
-        cube,
-    )
+    published = (composed.total_delay_s, composed.complex_transfer_ref, composed.row_valid, cube)
     for tensor in published:
         assert not tensor.requires_grad
         assert tensor.grad_fn is None
@@ -545,11 +469,7 @@ def test_ad_mode_none_publishes_no_graph_and_no_tangent(spike, values, kind):
     with forward_ad.dual_level():
         inside = mx.replay(spike, values, ad_mode="none")
         inside_cube = wc.synthesize(kind, inside, wc.make_spec(kind))
-        for tensor in (
-            inside.total_delay_s,
-            inside.complex_transfer_ref,
-            inside_cube,
-        ):
+        for tensor in (inside.total_delay_s, inside.complex_transfer_ref, inside_cube):
             assert forward_ad.unpack_dual(tensor).tangent is None
             assert not tensor.requires_grad
         assert torch.equal(inside_cube, cube)

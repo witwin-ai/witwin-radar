@@ -134,9 +134,7 @@ class StableIdAllocator:
         for name in ("transmitter_base", "receiver_base", "site_base"):
             value = getattr(self, name)
             if type(value) is not int or value < 0:
-                raise ValueError(
-                    f"{name} must be a non-negative int, got {value!r}"
-                )
+                raise ValueError(f"{name} must be a non-negative int, got {value!r}")
 
     def allocate(
         self, *, transmitter_count: int, receiver_count: int, site_count: int
@@ -150,17 +148,11 @@ class StableIdAllocator:
         )
         bases = (self.transmitter_base, self.receiver_base, self.site_base)
         names = ("transmitter", "receiver", "site")
-        blocks = tuple(
-            tuple(range(base, base + count))
-            for base, count in zip(bases, counts, strict=True)
-        )
+        blocks = tuple(tuple(range(base, base + count)) for base, count in zip(bases, counts, strict=True))
         for first in range(len(blocks)):
             for second in range(first + 1, len(blocks)):
                 low, high = bases[first], bases[second]
-                if (
-                    low < high + counts[second]
-                    and high < low + counts[first]
-                ):
+                if low < high + counts[second] and high < low + counts[first]:
                     raise ValueError(
                         f"the {names[first]} ID block "
                         f"[{bases[first]}, {bases[first] + counts[first]}) "
@@ -210,14 +202,11 @@ class ScatterSitePolicy:
 
     def __post_init__(self) -> None:
         if self.source not in SITE_SOURCES:
-            raise ValueError(
-                f"source must be one of {list(SITE_SOURCES)}, got {self.source!r}"
-            )
+            raise ValueError(f"source must be one of {list(SITE_SOURCES)}, got {self.source!r}")
         if self.source == SITE_SOURCE_EXPLICIT:
             if self.positions_m is None:
                 raise ValueError(
-                    "an explicit site policy requires positions_m; "
-                    "ScatterSitePolicy.explicit(positions) builds one"
+                    "an explicit site policy requires positions_m; ScatterSitePolicy.explicit(positions) builds one"
                 )
             if self.structure_ids is not None:
                 raise ValueError(
@@ -236,12 +225,8 @@ class ScatterSitePolicy:
 
     @classmethod
     def explicit(
-        cls,
-        positions_m: object,
-        *,
-        stable_ids: tuple[int, ...] | None = None,
-        power_w: float = SITE_EXCITATION_POWER_W,
-    ) -> "ScatterSitePolicy":
+        cls, positions_m: object, *, stable_ids: tuple[int, ...] | None = None, power_w: float = SITE_EXCITATION_POWER_W
+    ) -> ScatterSitePolicy:
         return cls(
             source=SITE_SOURCE_EXPLICIT,
             positions_m=positions_m,
@@ -256,7 +241,7 @@ class ScatterSitePolicy:
         structure_ids: tuple[int, ...] | None = None,
         stable_ids: tuple[int, ...] | None = None,
         power_w: float = SITE_EXCITATION_POWER_W,
-    ) -> "ScatterSitePolicy":
+    ) -> ScatterSitePolicy:
         """Sites at the world anchors Core publishes for moving structures.
 
         ``structure_ids`` selects a subset; ``None`` takes every structure the
@@ -267,11 +252,7 @@ class ScatterSitePolicy:
 
         return cls(
             source=SITE_SOURCE_STRUCTURE_ANCHOR,
-            structure_ids=(
-                None
-                if structure_ids is None
-                else tuple(int(value) for value in structure_ids)
-            ),
+            structure_ids=(None if structure_ids is None else tuple(int(value) for value in structure_ids)),
             stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
             power_w=power_w,
         )
@@ -281,9 +262,7 @@ class ScatterSitePolicy:
 
         if self.source == SITE_SOURCE_EXPLICIT:
             return _site_positions(self.positions_m, device=device)
-        return _structure_anchor_positions(
-            snapshot, self.structure_ids, device=device
-        )
+        return _structure_anchor_positions(snapshot, self.structure_ids, device=device)
 
 
 def _site_positions(positions: object, *, device: torch.device) -> torch.Tensor:
@@ -310,18 +289,11 @@ def _site_positions(positions: object, *, device: torch.device) -> torch.Tensor:
                 "moved tensor is the one you hold"
             )
         if positions.ndim != 2 or int(positions.shape[1]) != 3:
-            raise ValueError(
-                "site positions must have shape (S, 3), got "
-                f"{tuple(positions.shape)}"
-            )
+            raise ValueError(f"site positions must have shape (S, 3), got {tuple(positions.shape)}")
         if not positions.is_contiguous():
             raise ValueError("site positions must be contiguous")
         return positions
-    return torch.tensor(
-        [tuple(float(value) for value in row) for row in positions],
-        dtype=torch.float32,
-        device=device,
-    )
+    return torch.tensor([tuple(float(value) for value in row) for row in positions], dtype=torch.float32, device=device)
 
 
 def _structure_anchor_positions(
@@ -337,16 +309,13 @@ def _structure_anchor_positions(
 
     states = getattr(snapshot, "structures", None)
     if states is None:
-        raise TypeError(
-            "snapshot must expose structures; pass a witwin.core SceneSnapshot"
-        )
+        raise TypeError("snapshot must expose structures; pass a witwin.core SceneSnapshot")
     by_id: dict[int, object] = {}
     for state in states:
         key = int(state.structure_id)
         if key in by_id:
             raise ValueError(
-                f"structure_id {key} appears twice in the snapshot; a site "
-                "anchor must name exactly one structure"
+                f"structure_id {key} appears twice in the snapshot; a site anchor must name exactly one structure"
             )
         by_id[key] = state
     if structure_ids is None:
@@ -355,10 +324,7 @@ def _structure_anchor_positions(
         selected = sorted(structure_ids)
         missing = [key for key in selected if key not in by_id]
         if missing:
-            raise ValueError(
-                f"structure_ids {missing} are not in this snapshot, which "
-                f"carries {sorted(by_id)}"
-            )
+            raise ValueError(f"structure_ids {missing} are not in this snapshot, which carries {sorted(by_id)}")
         if len(set(selected)) != len(selected):
             raise ValueError("structure_ids must not repeat a structure")
     anchors = []
@@ -430,11 +396,7 @@ class RadarWorldBinding:
 
 
 def _endpoint_spec(
-    positions_m: torch.Tensor,
-    stable_ids: tuple[int, ...],
-    *,
-    polarization: torch.Tensor,
-    power_w: float | None,
+    positions_m: torch.Tensor, stable_ids: tuple[int, ...], *, polarization: torch.Tensor, power_w: float | None
 ) -> RadarEndpointSpec:
     rows = int(positions_m.shape[0])
     if rows != len(stable_ids):
@@ -447,19 +409,11 @@ def _endpoint_spec(
         stable_ids=torch.tensor(stable_ids, dtype=torch.int64, device=device),
         positions_m=positions_m,
         polarizations=polarization.expand(rows, 3).contiguous(),
-        powers_w=(
-            None
-            if power_w is None
-            else torch.full(
-                (rows,), float(power_w), dtype=torch.float32, device=device
-            )
-        ),
+        powers_w=(None if power_w is None else torch.full((rows,), float(power_w), dtype=torch.float32, device=device)),
     )
 
 
-def _polarization_tensor(
-    polarization: object, *, device: torch.device
-) -> torch.Tensor:
+def _polarization_tensor(polarization: object, *, device: torch.device) -> torch.Tensor:
     """Validate the declared polarization on the HOST, then build it once.
 
     The non-zero check is made on the three declared floats rather than on the
@@ -479,16 +433,11 @@ def _polarization_tensor(
 def _array_positions(radar: object, name: str) -> torch.Tensor:
     positions = getattr(radar, name, None)
     if not isinstance(positions, torch.Tensor):
-        raise TypeError(
-            f"radar.{name} must be a torch.Tensor of world element positions; "
-            "pass a witwin.radar.Radar"
-        )
+        raise TypeError(f"radar.{name} must be a torch.Tensor of world element positions; pass a witwin.radar.Radar")
     if positions.dtype != torch.float32:
         raise TypeError(f"radar.{name} must use torch.float32, got {positions.dtype}")
     if positions.ndim != 2 or int(positions.shape[1]) != 3:
-        raise ValueError(
-            f"radar.{name} must have shape (N, 3), got {tuple(positions.shape)}"
-        )
+        raise ValueError(f"radar.{name} must have shape (N, 3), got {tuple(positions.shape)}")
     if not positions.is_contiguous():
         raise ValueError(f"radar.{name} must be contiguous")
     return positions
@@ -524,8 +473,7 @@ def bind_radar_world(
     device = transmitter_positions.device
     if receiver_positions.device != device:
         raise ValueError(
-            f"radar.tx_pos is on {device} but radar.rx_pos is on "
-            f"{receiver_positions.device}; one radar is one device"
+            f"radar.tx_pos is on {device} but radar.rx_pos is on {receiver_positions.device}; one radar is one device"
         )
     site_positions = sites.resolve(snapshot, device=device)
 
@@ -535,17 +483,12 @@ def bind_radar_world(
         receiver_count=int(receiver_positions.shape[0]),
         site_count=int(site_positions.shape[0]),
     )
-    site_ids = (
-        allocated_site_ids if sites.stable_ids is None else sites.stable_ids
-    )
+    site_ids = allocated_site_ids if sites.stable_ids is None else sites.stable_ids
     if len(site_ids) != int(site_positions.shape[0]):
         raise ValueError(
-            f"the site policy declared {len(site_ids)} stable IDs for "
-            f"{int(site_positions.shape[0])} site positions"
+            f"the site policy declared {len(site_ids)} stable IDs for {int(site_positions.shape[0])} site positions"
         )
-    overlap = (set(site_ids) & set(transmitter_ids)) | (
-        set(site_ids) & set(receiver_ids)
-    )
+    overlap = (set(site_ids) & set(transmitter_ids)) | (set(site_ids) & set(receiver_ids))
     if overlap:
         raise ValueError(
             f"site stable IDs {sorted(overlap)} collide with the transmitter or "
@@ -553,38 +496,19 @@ def bind_radar_world(
         )
 
     polarization_vector = _polarization_tensor(polarization, device=device)
-    transmit_power_w = float(
-        radar.system_config.sensors.tx_power.transmit_power_watts
-    )
+    transmit_power_w = float(radar.system_config.sensors.tx_power.transmit_power_watts)
     return RadarWorldBinding(
         transmitters=_endpoint_spec(
-            transmitter_positions,
-            transmitter_ids,
-            polarization=polarization_vector,
-            power_w=transmit_power_w,
+            transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
         ),
-        receivers=_endpoint_spec(
-            receiver_positions,
-            receiver_ids,
-            polarization=polarization_vector,
-            power_w=None,
-        ),
-        site_sources=_endpoint_spec(
-            site_positions,
-            site_ids,
-            polarization=polarization_vector,
-            power_w=sites.power_w,
-        ),
-        site_sinks=_endpoint_spec(
-            site_positions,
-            site_ids,
-            polarization=polarization_vector,
-            power_w=None,
-        ),
+        receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=polarization_vector, power_w=None),
+        site_sources=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=sites.power_w),
+        site_sinks=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=None),
         transmitter_ids=transmitter_ids,
         receiver_ids=receiver_ids,
         site_ids=tuple(site_ids),
     )
+
 
 #: What this driver declares to the waveform kernel about the composed weight.
 #:
@@ -680,7 +604,7 @@ class RadarSimulationResult:
         last_compiled_scene: object,
         last_propagation: object,
         last_radar_paths: object,
-    ) -> "RadarSimulationResult":
+    ) -> RadarSimulationResult:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
         ``synthesis`` is the LAST frame's
@@ -696,10 +620,7 @@ class RadarSimulationResult:
             cube=stacked,
             times_s=tuple(float(value) for value in times_s),
             kind=synthesis.kind,
-            axes=(
-                SIMULATION_CUBE_LEADING_AXES
-                + (synthesis.axes[0], synthesis.axes[2])
-            ),
+            axes=(SIMULATION_CUBE_LEADING_AXES + (synthesis.axes[0], synthesis.axes[2])),
             phasor=synthesis.phasor,
             time_dependence=synthesis.time_dependence,
             reference_frequency_hz=float(synthesis.reference_frequency_hz),
@@ -723,10 +644,7 @@ def _dynamic_scene(scene: object) -> object:
     would force every caller with a still world to write the wrapper themselves.
     """
 
-    if all(
-        hasattr(scene, name)
-        for name in ("at", "structure_trajectories", "structure_deformations")
-    ):
+    if all(hasattr(scene, name) for name in ("at", "structure_trajectories", "structure_deformations")):
         return scene
     from witwin.core.dynamics import DynamicScene
 
@@ -756,8 +674,7 @@ def _times(times: object) -> tuple[float, ...]:
     values = tuple(float(value) for value in times)
     if not values:
         raise ValueError(
-            "times must name at least one frame instant; an empty sequence "
-            "asks for a simulation of nothing"
+            "times must name at least one frame instant; an empty sequence asks for a simulation of nothing"
         )
     return values
 
@@ -821,13 +738,9 @@ def simulate_scene(
     as a proven no-op, or leave it ``None``.
     """
 
+    from .channel import ChannelPropagationAdapter, compile_scene
     from .paths import TwoWayComposer, validate_pair_ordering
-    from .channel import (
-        ChannelPropagationAdapter,
-        compile_scene,
-    )
-    from .propagation import RadarPropagationLegs
-    from .propagation import FrozenEpoch, SceneEpochLoop
+    from .propagation import FrozenEpoch, RadarPropagationLegs, SceneEpochLoop
     from .sensors import RoundTripPatternStage
     from .synthesis.assembly import assemble_frame_cube
 
@@ -841,17 +754,13 @@ def simulate_scene(
         )
     orientation = DEFAULT_POLARIZATION if polarization is None else polarization
 
-    solve_config = radar.system_config.with_propagation(
-        components=components, max_depth=max_depth
-    )
+    solve_config = radar.system_config.with_propagation(components=components, max_depth=max_depth)
     propagation = solve_config.propagation
     array = solve_config.sensors.array
     reference_frequency_hz = propagation.reference_frequency_hz
 
     def bind(compiled, snapshot, previous):
-        binding = bind_radar_world(
-            radar, snapshot, sites=policy, ids=ids, polarization=orientation
-        )
+        binding = bind_radar_world(radar, snapshot, sites=policy, ids=ids, polarization=orientation)
         adapter = (
             ChannelPropagationAdapter(
                 compiled,
@@ -867,9 +776,7 @@ def simulate_scene(
         composer = TwoWayComposer.freeze(
             inbound,
             outbound,
-            torch.tensor(
-                binding.site_ids, dtype=torch.int64, device=binding.device
-            ),
+            torch.tensor(binding.site_ids, dtype=torch.int64, device=binding.device),
             radar_source_ids=list(binding.transmitter_ids),
             radar_sink_ids=list(binding.receiver_ids),
             reference_frequency_hz=reference_frequency_hz,
@@ -889,21 +796,12 @@ def simulate_scene(
         stage = (
             None
             if antenna_pattern is None
-            else RoundTripPatternStage.freeze(
-                radar,
-                composer,
-                site_ids=binding.site_ids,
-                pattern=antenna_pattern,
-            )
+            else RoundTripPatternStage.freeze(radar, composer, site_ids=binding.site_ids, pattern=antenna_pattern)
         )
         # The binding travels with the epoch so the frame that just froze does
         # not build a second one from the same snapshot. It is deterministic, so
         # the two would agree - which is exactly why building both is waste.
-        return FrozenEpoch(
-            adapter=adapter,
-            handles=(inbound, outbound),
-            payload=(composer, binding, stage),
-        )
+        return FrozenEpoch(adapter=adapter, handles=(inbound, outbound), payload=(composer, binding, stage))
 
     loop = SceneEpochLoop(
         _dynamic_scene(scene),
@@ -933,28 +831,14 @@ def simulate_scene(
         binding = (
             epoch_binding
             if epoch_frame.rediscovered
-            else bind_radar_world(
-                radar,
-                epoch_frame.snapshot,
-                sites=policy,
-                ids=ids,
-                polarization=orientation,
-            )
+            else bind_radar_world(radar, epoch_frame.snapshot, sites=policy, ids=ids, polarization=orientation)
         )
         legs = RadarPropagationLegs(
             inbound=frozen.adapter.reevaluate_slots(
-                inbound_handle,
-                binding.transmitters,
-                binding.site_sinks,
-                slot_count=1,
-                ad_mode=ad_mode,
+                inbound_handle, binding.transmitters, binding.site_sinks, slot_count=1, ad_mode=ad_mode
             ),
             outbound=frozen.adapter.reevaluate_slots(
-                outbound_handle,
-                binding.site_sources,
-                binding.receivers,
-                slot_count=1,
-                ad_mode=ad_mode,
+                outbound_handle, binding.site_sources, binding.receivers, slot_count=1, ad_mode=ad_mode
             ),
         )
         composed = composer.compose(legs.inbound, legs.outbound, response)
@@ -967,11 +851,7 @@ def simulate_scene(
             )
         synthesis = radar._synthesize(composed, slow_time_mode=mode)
         cubes.append(
-            radar._apply_signal_models(
-                assemble_frame_cube(
-                    synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx
-                )
-            )
+            radar._apply_signal_models(assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx))
         )
         epochs.append(epoch_frame.epoch)
         reasons.append(epoch_frame.reason)
@@ -989,5 +869,6 @@ def simulate_scene(
         last_propagation=legs,
         last_radar_paths=composed,
     )
+
 
 __all__ = ["RadarSimulationResult", "ScatterSitePolicy", "StableIdAllocator"]

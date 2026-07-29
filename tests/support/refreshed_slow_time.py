@@ -67,11 +67,7 @@ def gather_slot_rows(frames, slot_of_row: torch.Tensor):
     columns = torch.arange(rows, device=slot_of_row.device, dtype=torch.int64)
     delays = torch.stack([frame.total_delay_s for frame in frames])
     transfer = torch.stack([frame.complex_transfer_ref for frame in frames])
-    validity = (
-        None
-        if frames[0].row_valid is None
-        else torch.stack([frame.row_valid for frame in frames])
-    )
+    validity = None if frames[0].row_valid is None else torch.stack([frame.row_valid for frame in frames])
     gathered = []
     for chirp in range(int(slot_of_row.shape[0])):
         index = slot_of_row[chirp]
@@ -96,11 +92,7 @@ def refreshed_cube(frames, spec, *, num_chirps: int):
     factor this oracle is willing to pay to be independent.
     """
 
-    from witwin.radar.synthesis import (
-        SlowTimeMode,
-        SynthesisPathBatch,
-        synthesize_fmcw,
-    )
+    from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch, synthesize_fmcw
 
     if spec.carrier_hz != 0.0:
         raise ValueError(
@@ -109,14 +101,10 @@ def refreshed_cube(frames, spec, *, num_chirps: int):
             "comparison"
         )
     one_chirp = replace(spec, num_chirps=1, carrier_rate_hz=0.0)
-    slot_of_row = slot_of_each_row(
-        frames[0], num_chirps=num_chirps, num_tx=spec.num_tx, num_rx=spec.num_rx
-    )
+    slot_of_row = slot_of_each_row(frames[0], num_chirps=num_chirps, num_tx=spec.num_tx, num_rx=spec.num_rx)
     cubes = []
     for composed in gather_slot_rows(frames, slot_of_row):
-        batch = SynthesisPathBatch.from_radar_paths(
-            composed, slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
-        )
+        batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE)
         cubes.append(synthesize_fmcw(batch, one_chirp))
     return torch.cat(cubes, dim=0)
 

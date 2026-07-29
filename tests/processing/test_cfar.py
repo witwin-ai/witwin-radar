@@ -24,13 +24,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar.processing import (
-    Detections,
-    ca_cfar,
-    ca_cfar_1d,
-    ca_cfar_fast,
-    os_cfar,
-)
+from witwin.radar.processing import Detections, ca_cfar, ca_cfar_1d, ca_cfar_fast, os_cfar
 
 
 def _complex_gaussian_power(shape, *, variance: float, seed: int) -> torch.Tensor:
@@ -55,9 +49,7 @@ def test_the_measured_false_alarm_rate_matches_the_analytic_one(pfa):
     guard, training = (1, 1), (2, 2)
     outer_d = guard[0] + training[0]
     outer_r = guard[1] + training[1]
-    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * guard[0] + 1) * (
-        2 * guard[1] + 1
-    )
+    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * guard[0] + 1) * (2 * guard[1] + 1)
     alpha = n_train * (pfa ** (-1.0 / n_train) - 1.0)
     analytic = (1.0 + alpha / n_train) ** (-n_train)
     assert analytic == pytest.approx(pfa, rel=1e-12)
@@ -72,11 +64,7 @@ def test_the_measured_false_alarm_rate_matches_the_analytic_one(pfa):
     total = int(interior.numel())
     measured = count / total
     standard_error = math.sqrt(analytic * (1.0 - analytic) / total)
-    assert abs(measured - analytic) <= 3.0 * standard_error, (
-        measured,
-        analytic,
-        standard_error,
-    )
+    assert abs(measured - analytic) <= 3.0 * standard_error, (measured, analytic, standard_error)
 
 
 @pytest.mark.parametrize("pfa", [1e-2, 3e-3])
@@ -102,9 +90,7 @@ def test_the_ordered_statistic_rate_follows_rohlings_law_and_not_its_pfa(pfa):
     guard, training, rank_fraction = (1, 1), (2, 2), 0.75
     outer_d = guard[0] + training[0]
     outer_r = guard[1] + training[1]
-    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * guard[0] + 1) * (
-        2 * guard[1] + 1
-    )
+    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * guard[0] + 1) * (2 * guard[1] + 1)
     rank = min(int(rank_fraction * n_train), n_train - 1) + 1
     alpha = n_train * (pfa ** (-1.0 / n_train) - 1.0)
 
@@ -117,22 +103,12 @@ def test_the_ordered_statistic_rate_follows_rohlings_law_and_not_its_pfa(pfa):
     assert analytic < 0.25 * pfa
 
     noise = _complex_gaussian_power((900, 900), variance=7.0, seed=31337)
-    detected = os_cfar(
-        noise,
-        guard_cells=guard,
-        training_cells=training,
-        rank_fraction=rank_fraction,
-        pfa=pfa,
-    )
+    detected = os_cfar(noise, guard_cells=guard, training_cells=training, rank_fraction=rank_fraction, pfa=pfa)
     interior = detected.mask[outer_d:-outer_d, outer_r:-outer_r]
     total = int(interior.numel())
     measured = int(interior.sum()) / total
     standard_error = math.sqrt(analytic * (1.0 - analytic) / total)
-    assert abs(measured - analytic) <= 5.0 * standard_error, (
-        measured,
-        analytic,
-        standard_error,
-    )
+    assert abs(measured - analytic) <= 5.0 * standard_error, (measured, analytic, standard_error)
 
 
 def test_the_rate_does_not_depend_on_the_noise_level():
@@ -155,9 +131,7 @@ def test_a_target_at_a_known_signal_to_noise_ratio_is_detected():
     cell = (30, 61)
     noise[cell] = 2.0 * 100.0
     for detector in (ca_cfar, ca_cfar_fast, os_cfar):
-        detected = detector(
-            noise, guard_cells=(2, 3), training_cells=(4, 6), pfa=1e-4
-        )
+        detected = detector(noise, guard_cells=(2, 3), training_cells=(4, 6), pfa=1e-4)
         assert bool(detected.mask[cell]), detector.__name__
         assert float(noise[cell]) > float(detected.threshold[cell])
 
@@ -168,9 +142,7 @@ def test_the_ordered_statistic_detector_survives_a_second_target_in_its_ring():
     values = torch.full((48, 48), 1.0, dtype=torch.float64)
     values[24, 24] = 60.0
     values[24, 30] = 60.0
-    detected = os_cfar(
-        values, guard_cells=(2, 2), training_cells=(4, 4), rank_fraction=0.75
-    )
+    detected = os_cfar(values, guard_cells=(2, 2), training_cells=(4, 4), rank_fraction=0.75)
     assert bool(detected.mask[24, 24])
     assert bool(detected.mask[24, 30])
 
@@ -195,9 +167,7 @@ def test_a_batched_map_equals_a_python_loop_over_its_slices_bitwise(detector):
     batched = detector(cube, guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-3)
     assert tuple(batched.mask.shape) == (5, 32, 48)
     for index in range(5):
-        one = detector(
-            cube[index], guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-3
-        )
+        one = detector(cube[index], guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-3)
         assert torch.equal(batched.mask[index], one.mask)
         assert torch.equal(batched.threshold[index], one.threshold)
 
@@ -207,9 +177,7 @@ def test_a_rank_four_beam_cube_carries_both_of_its_leading_axes():
     cube = torch.rand((3, 4, 24, 24), generator=generator, dtype=torch.float32) + 0.1
     detected = ca_cfar_fast(cube, guard_cells=(1, 1), training_cells=(2, 2))
     assert tuple(detected.mask.shape) == (3, 4, 24, 24)
-    flat = ca_cfar_fast(
-        cube.reshape(12, 24, 24), guard_cells=(1, 1), training_cells=(2, 2)
-    )
+    flat = ca_cfar_fast(cube.reshape(12, 24, 24), guard_cells=(1, 1), training_cells=(2, 2))
     assert torch.equal(detected.mask.reshape(12, 24, 24), flat.mask)
 
 

@@ -152,6 +152,7 @@ def first_order_only(backward):
 
     return guarded
 
+
 def require_host_float(name: str, value: object, *, owner: str, reason: str) -> None:
     """Refuse a tensor where a host float is the contract.
 
@@ -162,11 +163,7 @@ def require_host_float(name: str, value: object, *, owner: str, reason: str) -> 
 
     if not isinstance(value, torch.Tensor):
         return
-    carrier = (
-        "a requires_grad tensor"
-        if value.requires_grad
-        else f"a {tuple(value.shape)} torch.Tensor"
-    )
+    carrier = "a requires_grad tensor" if value.requires_grad else f"a {tuple(value.shape)} torch.Tensor"
     raise TypeError(
         f"{owner}.{name} must be a host float and got {carrier}. {reason} There "
         "is no tangent or gradient slot for it in either AD mode, so a tensor "
@@ -193,9 +190,5 @@ def require_host_floats(owner: str, reason: str, **fields: object) -> None:
     for name, value in fields.items():
         require_host_float(name, value, owner=owner, reason=reason)
 
-__all__ = [
-    "first_order_only",
-    "refuse_derivative",
-    "require_host_float",
-    "require_host_floats",
-]
+
+__all__ = ["first_order_only", "refuse_derivative", "require_host_float", "require_host_floats"]

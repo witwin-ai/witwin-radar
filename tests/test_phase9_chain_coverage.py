@@ -52,19 +52,9 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
-from witwin.radar.frontend import (  # noqa: E402
-    FrontendChain,
-    FrontendSpec,
-    LnaSpec,
-    NoiseSpec,
-    PortSpec,
-    SeedSpec,
-)
-from witwin.radar.channel import (  # noqa: E402
-    ChannelPropagationAdapter,
-)
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
+from witwin.radar.frontend import FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec  # noqa: E402
 from witwin.radar.synthesis import OfdmSpec, synthesize_ofdm  # noqa: E402
-
 
 pytestmark = pytest.mark.gpu
 
@@ -108,13 +98,13 @@ def values(spike):
 
 
 def _noise(**overrides):
-    fields = dict(
-        noise_figure_db=3.0,
-        bandwidth_hz=1.0e6,
-        phase_noise_dbc_per_hz=-80.0,
-        phase_offset_hz=1.0e5,
-        phase_sample_rate_hz=1.0e6,
-    )
+    fields = {
+        "noise_figure_db": 3.0,
+        "bandwidth_hz": 1.0e6,
+        "phase_noise_dbc_per_hz": -80.0,
+        "phase_offset_hz": 1.0e5,
+        "phase_sample_rate_hz": 1.0e6,
+    }
     fields.update(overrides)
     return NoiseSpec(**fields)
 
@@ -158,9 +148,7 @@ def _bare_loss(spike, values, *, ad_mode="none", kind="fmcw"):
     return _cube(spike, values, ad_mode=ad_mode, kind=kind).abs().square().sum()
 
 
-def _frontend_loss(
-    spike, values, *, ad_mode="none", kind="fmcw", frontend=None, seed_base=None
-):
+def _frontend_loss(spike, values, *, ad_mode="none", kind="fmcw", frontend=None, seed_base=None):
     cube = _cube(spike, values, ad_mode=ad_mode, kind=kind)
     chain = FrontendChain(_frontend() if frontend is None else frontend)
     return chain.apply(cube.contiguous(), seed_base=seed_base).signal.abs().square().sum()
@@ -178,9 +166,7 @@ def _site_gradient(loss_fn, values, **kwargs):
 # --------------------------------------------------------------------------
 
 
-def test_the_noiseless_frontend_scales_the_endpoint_gradient_by_exactly_r_g_squared(
-    spike, values
-):
+def test_the_noiseless_frontend_scales_the_endpoint_gradient_by_exactly_r_g_squared(spike, values):
     """An exact analytic oracle, and it pins the port convention as well.
 
     With the noise stages off the frontend is ``x -> g_lna * sqrt(R) * x``, a
@@ -194,14 +180,9 @@ def test_the_noiseless_frontend_scales_the_endpoint_gradient_by_exactly_r_g_squa
     could never show.
     """
 
-    bare, _ = _site_gradient(
-        lambda live: _bare_loss(spike, live, ad_mode="vjp"), values
-    )
+    bare, _ = _site_gradient(lambda live: _bare_loss(spike, live, ad_mode="vjp"), values)
     through, _ = _site_gradient(
-        lambda live: _frontend_loss(
-            spike, live, ad_mode="vjp", frontend=_frontend(quiet=True)
-        ),
-        values,
+        lambda live: _frontend_loss(spike, live, ad_mode="vjp", frontend=_frontend(quiet=True)), values
     )
     assert float(bare.abs().max()) > 0.0
     expected = PORT_OHM * (10.0 ** (LNA_GAIN_DB / 10.0))
@@ -211,9 +192,7 @@ def test_the_noiseless_frontend_scales_the_endpoint_gradient_by_exactly_r_g_squa
         assert abs(value - expected) < 1.0e-3 * expected, (value, expected)
 
 
-def test_the_noisy_frontend_gradient_matches_a_fourth_order_difference(
-    spike, values
-):
+def test_the_noisy_frontend_gradient_matches_a_fourth_order_difference(spike, values):
     """The whole chain with phase noise, thermal noise and the LNA live.
 
     The difference is taken with the SAME seed at every sample, so the noise
@@ -223,37 +202,23 @@ def test_the_noisy_frontend_gradient_matches_a_fourth_order_difference(
     measure nothing.
     """
 
-    gradient, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values
-    )
+    gradient, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values)
     direction = mx.direction("sites", values["sites"], gradient)
     analytic = float((gradient * direction).sum())
     assert abs(analytic) > 0.0
 
     samples = {
-        offset: float(
-            _frontend_loss(
-                spike,
-                mx.perturbed(values, {"sites": direction}, ("sites",), offset, STEP_M),
-            )
-        )
+        offset: float(_frontend_loss(spike, mx.perturbed(values, {"sites": direction}, ("sites",), offset, STEP_M)))
         for offset in (-2, -1, 1, 2)
     }
     measured = fd.fourth_order_difference(samples, STEP_M)
-    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < FD_RTOL, (
-        measured,
-        analytic,
-    )
+    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < FD_RTOL, (measured, analytic)
 
 
-def test_the_frontend_forward_tangent_reproduces_the_reverse_gradient(
-    spike, values
-):
+def test_the_frontend_forward_tangent_reproduces_the_reverse_gradient(spike, values):
     """Both AD modes through the frontend, on one frozen topology."""
 
-    gradient, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values
-    )
+    gradient, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values)
     direction = mx.direction("sites", values["sites"], gradient)
     analytic = float((gradient * direction).sum())
 
@@ -291,22 +256,15 @@ def test_a_global_agc_makes_a_magnitude_loss_exactly_constant(spike, values):
         agc=AgcSpec(target_rms=target_rms, mode="global"),
         seed=SeedSpec(5),
     )
-    gated, loss = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp", frontend=spec),
-        values,
-    )
-    ungated, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values
-    )
+    gated, loss = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp", frontend=spec), values)
+    ungated, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values)
     elements = _cube(spike, values).numel()
     assert loss == pytest.approx(elements * target_rms * target_rms, rel=1e-6)
     # Measured 7.8e-5 of the ungated gradient. It is not exactly zero and could
     # not be: the derivative that cancels is a sum of 2048 terms each about 1e5
     # times the residual, so what survives is float32 cancellation of a sum
     # whose true value is zero, not a derivative the backward failed to remove.
-    assert float(gated.abs().sum()) < AGC_RESIDUAL_BOUND * float(
-        ungated.abs().sum()
-    )
+    assert float(gated.abs().sum()) < AGC_RESIDUAL_BOUND * float(ungated.abs().sum())
 
 
 # --------------------------------------------------------------------------
@@ -325,18 +283,11 @@ def test_the_same_seed_replays_a_bitwise_identical_gradient(spike, values, kind)
     distributional test in the tree and fail here.
     """
 
-    first, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=17),
-        values,
-    )
+    first, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=17), values)
     replayed, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=17),
-        values,
+        lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=17), values
     )
-    other, _ = _site_gradient(
-        lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=18),
-        values,
-    )
+    other, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp", kind=kind, seed_base=18), values)
     assert float(first.abs().sum()) > 0.0
     assert torch.equal(first, replayed)
     assert not torch.equal(first, other)
@@ -367,21 +318,13 @@ def test_the_physics_chain_itself_has_no_noise_to_reproduce(spike, values):
 
 def _slot_loss(spike, values, *, ad_mode="none", kind="fmcw"):
     stacked = spike.stacked(values["sites"], SLOT_COUNT)
-    inbound, outbound = spike.slot_legs(
-        stacked, slot_count=SLOT_COUNT, ad_mode=ad_mode
-    )
+    inbound, outbound = spike.slot_legs(stacked, slot_count=SLOT_COUNT, ad_mode=ad_mode)
     spec = wc.make_spec(kind)
-    frames = spike.slot_frames(
-        inbound, outbound, mx.response_of(values), include_delay_rate=False
-    )
-    return sum(
-        wc.synthesize(kind, frame, spec).abs().square().sum() for frame in frames
-    )
+    frames = spike.slot_frames(inbound, outbound, mx.response_of(values), include_delay_rate=False)
+    return sum(wc.synthesize(kind, frame, spec).abs().square().sum() for frame in frames)
 
 
-def test_a_slot_batched_replay_carries_the_single_frame_gradient_exactly(
-    spike, values
-):
+def test_a_slot_batched_replay_carries_the_single_frame_gradient_exactly(spike, values):
     """Three identical slots of a static scene, and an exact factor of three.
 
     ``reevaluate_slots`` is ONE consumer call for the whole frame - one launch
@@ -394,12 +337,8 @@ def test_a_slot_batched_replay_carries_the_single_frame_gradient_exactly(
     not produce that.
     """
 
-    batched, _ = _site_gradient(
-        lambda live: _slot_loss(spike, live, ad_mode="vjp"), values
-    )
-    single, _ = _site_gradient(
-        lambda live: _bare_loss(spike, live, ad_mode="vjp"), values
-    )
+    batched, _ = _site_gradient(lambda live: _slot_loss(spike, live, ad_mode="vjp"), values)
+    single, _ = _site_gradient(lambda live: _bare_loss(spike, live, ad_mode="vjp"), values)
     assert float(single.abs().max()) > 0.0
     live = single.abs() > 0.0
     ratio = (batched[live] / single[live]).tolist()
@@ -410,25 +349,15 @@ def test_a_slot_batched_replay_carries_the_single_frame_gradient_exactly(
 def test_the_slot_batched_gradient_matches_a_fourth_order_difference(spike, values):
     """And the factor of three is not the only thing that is right about it."""
 
-    gradient, _ = _site_gradient(
-        lambda live: _slot_loss(spike, live, ad_mode="vjp"), values
-    )
+    gradient, _ = _site_gradient(lambda live: _slot_loss(spike, live, ad_mode="vjp"), values)
     direction = mx.direction("sites", values["sites"], gradient)
     analytic = float((gradient * direction).sum())
     samples = {
-        offset: float(
-            _slot_loss(
-                spike,
-                mx.perturbed(values, {"sites": direction}, ("sites",), offset, STEP_M),
-            )
-        )
+        offset: float(_slot_loss(spike, mx.perturbed(values, {"sites": direction}, ("sites",), offset, STEP_M)))
         for offset in (-2, -1, 1, 2)
     }
     measured = fd.fourth_order_difference(samples, STEP_M)
-    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < FD_RTOL, (
-        measured,
-        analytic,
-    )
+    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < FD_RTOL, (measured, analytic)
 
 
 # --------------------------------------------------------------------------
@@ -481,28 +410,19 @@ def test_a_wideband_endpoint_gradient_reaches_a_synthesized_cube(banded, values)
     wrongly would pass every S1 test and fail here.
     """
 
-    gradient, _ = _site_gradient(
-        lambda live: _wideband_loss(banded, live, ad_mode="vjp"), values
-    )
+    gradient, _ = _site_gradient(lambda live: _wideband_loss(banded, live, ad_mode="vjp"), values)
     direction = mx.direction("sites", values["sites"], gradient)
     analytic = float((gradient * direction).sum())
     assert abs(analytic) > 0.0
 
     samples = {
         offset: float(
-            _wideband_loss(
-                banded,
-                mx.perturbed(
-                    values, {"sites": direction}, ("sites",), offset, WIDEBAND_STEP_M
-                ),
-            )
+            _wideband_loss(banded, mx.perturbed(values, {"sites": direction}, ("sites",), offset, WIDEBAND_STEP_M))
         )
         for offset in (-2, -1, 1, 2)
     }
     measured = fd.fourth_order_difference(samples, WIDEBAND_STEP_M)
-    assert (
-        fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < WIDEBAND_FD_RTOL
-    ), (measured, analytic)
+    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < WIDEBAND_FD_RTOL, (measured, analytic)
 
 
 def test_the_wideband_cube_is_not_the_narrowband_one(spike, banded, values):
@@ -515,12 +435,7 @@ def test_the_wideband_cube_is_not_the_narrowband_one(spike, banded, values):
 
     wide = float(_wideband_loss(banded, values))
     narrow_composed = mx.replay(spike, values)
-    narrow = float(
-        synthesize_ofdm(to_synthesis(narrow_composed), WIDEBAND_SPEC)
-        .abs()
-        .square()
-        .sum()
-    )
+    narrow = float(synthesize_ofdm(to_synthesis(narrow_composed), WIDEBAND_SPEC).abs().square().sum())
     assert narrow != wide
     assert abs(wide - narrow) > 1.0e-6 * abs(wide)
 
@@ -561,14 +476,9 @@ def _pattern_stage(spike):
     """
 
     from witwin.radar import Radar
-    from witwin.radar.sensors import AntennaPatternSpec
-    from witwin.radar.sensors import RoundTripPatternStage
+    from witwin.radar.sensors import AntennaPatternSpec, RoundTripPatternStage
 
-    radar = Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
-        position=(0.0, 0.0, 0.0),
-        target=(1.0, 0.0, 0.0),
-    )
+    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
     stage = RoundTripPatternStage.freeze(
         radar,
         spike.composer,
@@ -585,9 +495,7 @@ def _pattern_stage(spike):
 
 
 def _pattern_sites(*, requires_grad: bool = False) -> torch.Tensor:
-    return torch.tensor(
-        PATTERN_SITE_POSITIONS_M, dtype=torch.float32, device="cuda"
-    ).requires_grad_(requires_grad)
+    return torch.tensor(PATTERN_SITE_POSITIONS_M, dtype=torch.float32, device="cuda").requires_grad_(requires_grad)
 
 
 def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
@@ -606,12 +514,7 @@ def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
 
     from witwin.radar.synthesis import synthesize_fmcw
 
-    patterned = stage.apply(
-        composed,
-        tx_pos=radar.tx_pos,
-        rx_pos=radar.rx_pos,
-        site_positions_m=sites,
-    )
+    patterned = stage.apply(composed, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=sites)
     cube = synthesize_fmcw(to_synthesis(patterned), drv.make_spec())
     return cube.real.square().sum() + cube.imag.square().sum()
 
@@ -649,10 +552,6 @@ def test_a_sensor_weight_gradient_reaches_a_synthesized_waveform_cube(spike):
     for offset in (-2, -1, 1, 2):
         shifted = _pattern_sites()
         shifted[row, axis] += offset * PATTERN_STEP_M
-        samples[offset] = float(
-            _pattern_loss(radar, stage, composed, shifted)
-        )
+        samples[offset] = float(_pattern_loss(radar, stage, composed, shifted))
     measured = fd.fourth_order_difference(samples, PATTERN_STEP_M)
-    assert (
-        fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < PATTERN_FD_RTOL
-    ), (measured, analytic)
+    assert fd.relative_error(measured, analytic, floor=ZERO_FLOOR) < PATTERN_FD_RTOL, (measured, analytic)

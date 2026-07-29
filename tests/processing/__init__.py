@@ -21,13 +21,12 @@ import math
 
 import pytest
 import torch
-
 from conftest import empty_world, simulate_point_targets
 
 from witwin.radar import Radar, RadarConfig
-from witwin.radar.simulation import ScatterSitePolicy
 from witwin.radar.scattering import ScalarRcsResponse
 from witwin.radar.sensors import AntennaPatternSpec
+from witwin.radar.simulation import ScatterSitePolicy
 
 
 def _config() -> dict:
@@ -53,14 +52,7 @@ def _config() -> dict:
 
 
 def _local_target(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
-    direction = torch.tensor(
-        [
-            math.tan(math.radians(x_deg)),
-            math.tan(math.radians(y_deg)),
-            -1.0,
-        ],
-        dtype=torch.float32,
-    )
+    direction = torch.tensor([math.tan(math.radians(x_deg)), math.tan(math.radians(y_deg)), -1.0], dtype=torch.float32)
     direction = direction / torch.linalg.norm(direction)
     return direction * radius
 
@@ -83,16 +75,12 @@ def _composed_weight(radar: Radar, local_point: torch.Tensor, *, pattern) -> flo
     transform from a statement about an antenna pattern.
     """
 
-    world = radar._world_from_local_points(
-        local_point.reshape(1, 3).to(radar.device)
-    )
+    world = radar._world_from_local_points(local_point.reshape(1, 3).to(radar.device))
     radar.simulate(
         empty_world(),
         times=(0.0,),
         response=ScalarRcsResponse.from_rcs(
-            1.0,
-            reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz,
-            device=radar.device,
+            1.0, reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz, device=radar.device
         ),
         sites=ScatterSitePolicy.explicit(world),
         components=frozenset({"los"}),
@@ -116,24 +104,12 @@ def test_radar_transforms_local_points_and_vectors():
         up=(0.0, 1.0, 0.0),
     )
     local_points = torch.tensor(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, -2.0],
-        ],
-        dtype=torch.float32,
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -2.0]], dtype=torch.float32
     )
 
     world_points = radar._world_from_local_points(local_points)
     expected_points = torch.tensor(
-        [
-            [1.0, 2.0, 3.0],
-            [1.0, 2.0, 4.0],
-            [1.0, 3.0, 3.0],
-            [3.0, 2.0, 3.0],
-        ],
-        dtype=torch.float32,
+        [[1.0, 2.0, 3.0], [1.0, 2.0, 4.0], [1.0, 3.0, 3.0], [3.0, 2.0, 3.0]], dtype=torch.float32
     )
     assert torch.allclose(world_points, expected_points)
 
@@ -144,11 +120,7 @@ def test_radar_transforms_local_points_and_vectors():
 
 def test_radar_world_positions_follow_pose():
     radar = Radar(
-        RadarConfig.from_dict({
-            **_config(),
-            "num_tx": 2,
-            "tx_loc": [[0, 0, 0], [2, 0, 0]],
-        }),
+        RadarConfig.from_dict({**_config(), "num_tx": 2, "tx_loc": [[0, 0, 0], [2, 0, 0]]}),
         device="cpu",
         position=(1.0, 0.0, 0.0),
         target=(2.0, 0.0, 0.0),
@@ -156,35 +128,16 @@ def test_radar_world_positions_follow_pose():
     )
     spacing = radar._lambda / 2.0
 
-    expected = torch.tensor(
-        [
-            [1.0, 0.0, 0.0],
-            [1.0, 0.0, 2.0 * spacing],
-        ],
-        dtype=torch.float32,
-    )
+    expected = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 2.0 * spacing]], dtype=torch.float32)
     assert torch.allclose(radar.tx_pos.cpu(), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_set_pose_updates_position_target_fov_and_antenna_positions():
-    radar = Radar(
-        RadarConfig.from_dict({
-            **_config(),
-            "num_tx": 2,
-            "tx_loc": [[0, 0, 0], [2, 0, 0]],
-        }),
-        device="cpu",
-    )
+    radar = Radar(RadarConfig.from_dict({**_config(), "num_tx": 2, "tx_loc": [[0, 0, 0], [2, 0, 0]]}), device="cpu")
     radar.set_pose(position=(1.0, 0.0, 0.0), target=(2.0, 0.0, 0.0), fov=42.0)
 
     spacing = radar._lambda / 2.0
-    expected = torch.tensor(
-        [
-            [1.0, 0.0, 0.0],
-            [1.0, 0.0, 2.0 * spacing],
-        ],
-        dtype=torch.float32,
-    )
+    expected = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 2.0 * spacing]], dtype=torch.float32)
     assert radar.fov == 42.0
     assert torch.allclose(radar.tx_pos.cpu(), expected, atol=1e-6, rtol=1e-6)
 
@@ -211,28 +164,16 @@ def test_a_rotated_and_translated_radar_simulates_the_same_local_scene():
     """
 
     config = RadarConfig.from_dict(_config())
-    identity = Radar(
-        config, position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0)
-    )
-    moved = Radar(
-        config,
-        position=(1.5, -0.25, 0.5),
-        target=(1.5, 0.75, 0.5),
-        up=(0.0, 0.0, 1.0),
-    )
+    identity = Radar(config, position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0))
+    moved = Radar(config, position=(1.5, -0.25, 0.5), target=(1.5, 0.75, 0.5), up=(0.0, 0.0, 1.0))
 
     target_local = (0.0, 0.0, -2.0)
     first = simulate_point_targets(identity, [target_local])
     second = simulate_point_targets(moved, [target_local])
 
+    torch.testing.assert_close(first.cube.abs().max(), second.cube.abs().max(), rtol=1e-5, atol=0.0)
     torch.testing.assert_close(
-        first.cube.abs().max(), second.cube.abs().max(), rtol=1e-5, atol=0.0
-    )
-    torch.testing.assert_close(
-        identity.last_radar_paths.total_delay_s,
-        moved.last_radar_paths.total_delay_s,
-        rtol=1e-6,
-        atol=0.0,
+        identity.last_radar_paths.total_delay_s, moved.last_radar_paths.total_delay_s, rtol=1e-6, atol=0.0
     )
 
 
@@ -259,16 +200,11 @@ def test_a_rotated_radar_evaluates_its_pattern_in_the_local_frame():
     """
 
     radar = Radar(
-        RadarConfig.from_dict(_config()),
-        position=(0.0, 0.0, 0.0),
-        target=(1.0, 0.0, 0.0),
-        up=(0.0, 1.0, 0.0),
+        RadarConfig.from_dict(_config()), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0)
     )
     pattern = AntennaPatternSpec.half_wave_dipole()
 
     centre = _composed_weight(radar, _local_target(0.0, 0.0), pattern=pattern)
     off_axis = _composed_weight(radar, _local_target(0.0, 45.0), pattern=pattern)
 
-    assert off_axis / centre == pytest.approx(
-        _half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3
-    )
+    assert off_axis / centre == pytest.approx(_half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3)

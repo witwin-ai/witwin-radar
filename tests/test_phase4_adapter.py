@@ -11,13 +11,12 @@ import torch
 
 pytest.importorskip("witwin.channel")
 
-from witwin.channel.propagation import consumer  # noqa: E402
-
 from support import phase4_geometry as geo  # noqa: E402
 from support import phase4_world as world  # noqa: E402
-from witwin.radar.propagation import RadarEndpointSpec, require_endpoint_role  # noqa: E402
-from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
+from witwin.channel.propagation import consumer  # noqa: E402
 
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
+from witwin.radar.propagation import RadarEndpointSpec, require_endpoint_role  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -30,17 +29,12 @@ def compiled_scene():
 @pytest.fixture(scope="module")
 def adapter(compiled_scene):
     return ChannelPropagationAdapter(
-        compiled_scene,
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        components=frozenset({"los"}),
-        max_depth=0,
+        compiled_scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=frozenset({"los"}), max_depth=0
     )
 
 
 def _tx():
-    return world.endpoint_spec(
-        geo.TX_POSITION_M, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W
-    )
+    return world.endpoint_spec(geo.TX_POSITION_M, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W)
 
 
 def _site_sink():
@@ -48,9 +42,7 @@ def _site_sink():
 
 
 def _site_source():
-    return world.endpoint_spec(
-        geo.SITE_POSITION_M, geo.SITE_STABLE_ID, power_w=geo.TX_POWER_W
-    )
+    return world.endpoint_spec(geo.SITE_POSITION_M, geo.SITE_STABLE_ID, power_w=geo.TX_POWER_W)
 
 
 def _rx():
@@ -76,9 +68,7 @@ def test_freeze_discovers_one_los_row_and_reports_prepare_cost(frozen_inbound):
     assert frozen_inbound.sink_id.tolist() == [geo.SITE_STABLE_ID]
 
 
-def test_reevaluate_publishes_radar_leg_aliasing_consumer_storage(
-    adapter, compiled_scene, frozen_inbound
-):
+def test_reevaluate_publishes_radar_leg_aliasing_consumer_storage(adapter, compiled_scene, frozen_inbound):
     """delay_s and coefficient must ALIAS the consumer tensors, not copy them."""
 
     sources, sinks = _tx(), _site_sink()
@@ -94,9 +84,7 @@ def test_reevaluate_publishes_radar_leg_aliasing_consumer_storage(
                 powers_w=sources.powers_w,
             ),
             sinks=consumer.EndpointBatch(
-                stable_ids=sinks.stable_ids,
-                positions_m=sinks.positions_m,
-                polarizations=sinks.polarizations,
+                stable_ids=sinks.stable_ids, positions_m=sinks.positions_m, polarizations=sinks.polarizations
             ),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
             topology=frozen_inbound.prepared,
@@ -108,9 +96,7 @@ def test_reevaluate_publishes_radar_leg_aliasing_consumer_storage(
     # the consumer produced.
     # Bit-identical: two calls with identical endpoints run identical kernels.
     # Default float32 tolerances mean nothing at nanosecond delay magnitudes.
-    torch.testing.assert_close(
-        legs.delay_s, reference.paths.geometry.delay_s, rtol=0.0, atol=0.0
-    )
+    torch.testing.assert_close(legs.delay_s, reference.paths.geometry.delay_s, rtol=0.0, atol=0.0)
     assert legs.leg_count == reference.paths.path_count
     assert legs.pair_count == reference.paths.pair_count
 
@@ -173,21 +159,11 @@ def test_freeze_is_never_called_per_frame(adapter, monkeypatch):
     for frame in range(5):
         offset = 0.01 * frame
         site = torch.tensor(
-            [[geo.SITE_POSITION_M[0], geo.SITE_POSITION_M[1] + offset, 0.0]],
-            dtype=torch.float32,
-            device="cuda",
+            [[geo.SITE_POSITION_M[0], geo.SITE_POSITION_M[1] + offset, 0.0]], dtype=torch.float32, device="cuda"
         )
+        adapter.reevaluate(inbound, _tx(), world.endpoint_spec(site, geo.SITE_STABLE_ID), ad_mode="none")
         adapter.reevaluate(
-            inbound,
-            _tx(),
-            world.endpoint_spec(site, geo.SITE_STABLE_ID),
-            ad_mode="none",
-        )
-        adapter.reevaluate(
-            outbound,
-            world.endpoint_spec(site, geo.SITE_STABLE_ID, power_w=geo.TX_POWER_W),
-            _rx(),
-            ad_mode="none",
+            outbound, world.endpoint_spec(site, geo.SITE_STABLE_ID, power_w=geo.TX_POWER_W), _rx(), ad_mode="none"
         )
     # Two frozen topologies, five frames, still two preparations.
     assert calls["prepare"] == 2
@@ -229,22 +205,14 @@ def test_jvp_publishes_delay_rate_and_refuses_to_invent_one(adapter, frozen_inbo
     velocity = torch.tensor([[0.0, 12.0, 0.0]], dtype=torch.float32, device="cuda")
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(primal, velocity)
-        legs = adapter.reevaluate(
-            frozen_inbound,
-            _tx(),
-            world.endpoint_spec(dual, geo.SITE_STABLE_ID),
-            ad_mode="jvp",
-        )
+        legs = adapter.reevaluate(frozen_inbound, _tx(), world.endpoint_spec(dual, geo.SITE_STABLE_ID), ad_mode="jvp")
         assert legs.delay_rate is not None
         # Cloned inside the level: still valid after the level exits.
         rate_inside = legs.delay_rate.clone()
     torch.testing.assert_close(legs.delay_rate, rate_inside)
 
     d_in, _ = geo.leg_distances_m()
-    direction = [
-        (s - t) / d_in
-        for s, t in zip(geo.SITE_POSITION_M, geo.TX_POSITION_M, strict=True)
-    ]
+    direction = [(s - t) / d_in for s, t in zip(geo.SITE_POSITION_M, geo.TX_POSITION_M, strict=True)]
     analytic = sum(u * v for u, v in zip(direction, (0.0, 12.0, 0.0), strict=True))
     analytic /= geo.C0_M_PER_S
     assert abs(float(legs.delay_rate[0]) - analytic) < abs(analytic) * 1e-5
@@ -255,18 +223,12 @@ def test_jvp_publishes_delay_rate_and_refuses_to_invent_one(adapter, frozen_inbo
         adapter.reevaluate(frozen_inbound, _tx(), _site_sink(), ad_mode="jvp")
 
 
-def test_differentiable_power_is_rejected_before_any_native_work(
-    adapter, frozen_inbound
-):
+def test_differentiable_power_is_rejected_before_any_native_work(adapter, frozen_inbound):
     powers = torch.ones(1, dtype=torch.float32, device="cuda", requires_grad=True)
     sources = RadarEndpointSpec(
         stable_ids=torch.tensor([geo.TX_STABLE_ID], dtype=torch.int64, device="cuda"),
-        positions_m=torch.tensor(
-            [geo.TX_POSITION_M], dtype=torch.float32, device="cuda"
-        ),
-        polarizations=torch.tensor(
-            [geo.POLARIZATION], dtype=torch.float32, device="cuda"
-        ),
+        positions_m=torch.tensor([geo.TX_POSITION_M], dtype=torch.float32, device="cuda"),
+        polarizations=torch.tensor([geo.POLARIZATION], dtype=torch.float32, device="cuda"),
         powers_w=powers,
     )
     with pytest.raises(NotImplementedError, match="primal-only"):
@@ -274,23 +236,17 @@ def test_differentiable_power_is_rejected_before_any_native_work(
 
 
 def test_differentiable_polarization_is_rejected(adapter, frozen_inbound):
-    polarizations = torch.tensor(
-        [geo.POLARIZATION], dtype=torch.float32, device="cuda"
-    ).requires_grad_(True)
+    polarizations = torch.tensor([geo.POLARIZATION], dtype=torch.float32, device="cuda").requires_grad_(True)
     sinks = RadarEndpointSpec(
         stable_ids=torch.tensor([geo.SITE_STABLE_ID], dtype=torch.int64, device="cuda"),
-        positions_m=torch.tensor(
-            [geo.SITE_POSITION_M], dtype=torch.float32, device="cuda"
-        ),
+        positions_m=torch.tensor([geo.SITE_POSITION_M], dtype=torch.float32, device="cuda"),
         polarizations=polarizations,
     )
     with pytest.raises(NotImplementedError, match="primal-only"):
         adapter.reevaluate(frozen_inbound, _tx(), sinks, ad_mode="vjp")
 
 
-def test_frequency_mismatch_is_refused_with_the_contract_error(
-    compiled_scene, frozen_inbound
-):
+def test_frequency_mismatch_is_refused_with_the_contract_error(compiled_scene, frozen_inbound):
     """A request frequency that is not the compiled reference is refused.
 
     "Before native compute" is a Channel-side guarantee that Radar cannot
@@ -303,23 +259,15 @@ def test_frequency_mismatch_is_refused_with_the_contract_error(
     """
 
     mismatched = ChannelPropagationAdapter(
-        compiled_scene,
-        reference_frequency_hz=24.0e9,
-        components=frozenset({"los"}),
-        max_depth=0,
+        compiled_scene, reference_frequency_hz=24.0e9, components=frozenset({"los"}), max_depth=0
     )
-    with pytest.raises(
-        ValueError, match="reference_frequency_hz does not exactly match"
-    ):
+    with pytest.raises(ValueError, match="reference_frequency_hz does not exactly match"):
         mismatched.reevaluate(frozen_inbound, _tx(), _site_sink(), ad_mode="none")
 
     # No partial result, no corrupted handle: the refusal happened before
     # anything observable was produced.
     survivor = ChannelPropagationAdapter(
-        compiled_scene,
-        reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        components=frozenset({"los"}),
-        max_depth=0,
+        compiled_scene, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=frozenset({"los"}), max_depth=0
     )
     legs = survivor.reevaluate(frozen_inbound, _tx(), _site_sink(), ad_mode="none")
     assert legs.leg_count == 1

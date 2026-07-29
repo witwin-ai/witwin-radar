@@ -19,20 +19,11 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
-from witwin.radar.processing import (
-    ProcessingAxes,
-    ProcessingCube,
-    range_doppler_map,
-    range_profile,
-)
-from witwin.radar.synthesis import (
-    synthesize_fmcw,
-    synthesize_ofdm,
-    synthesize_pulsed,
-)
+
+from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_doppler_map, range_profile
+from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 from witwin.radar.synthesis.assembly import SynthesisResult
 
 pytestmark = pytest.mark.gpu
@@ -41,12 +32,7 @@ pytestmark = pytest.mark.gpu
 WAVEFORMS = (
     ("fmcw", grid.fmcw_spec, synthesize_fmcw, SynthesisResult.from_fmcw),
     ("ofdm", grid.ofdm_spec, synthesize_ofdm, SynthesisResult.from_ofdm),
-    (
-        "pulsed",
-        grid.pulsed_spec,
-        synthesize_pulsed,
-        SynthesisResult.from_pulsed,
-    ),
+    ("pulsed", grid.pulsed_spec, synthesize_pulsed, SynthesisResult.from_pulsed),
 )
 
 
@@ -97,9 +83,7 @@ def test_the_frozen_row_carries_the_delay_rate_the_geometry_was_solved_for(closi
 
 
 @pytest.mark.parametrize("name,spec_of,synthesize,maker", WAVEFORMS)
-def test_the_closing_target_lands_on_the_solved_doppler_bin(
-    closing, name, spec_of, synthesize, maker, capsys
-):
+def test_the_closing_target_lands_on_the_solved_doppler_bin(closing, name, spec_of, synthesize, maker, capsys):
     """Bin ``centre + 2`` in every waveform, and the same signed velocity.
 
     The bin is POSITIVE for a closing target in all three, which is the
@@ -189,9 +173,7 @@ def test_the_unreconciled_beat_spectrum_peaks_on_the_opposite_bin(closing):
     profile = range_profile(processing)
 
     tx, rx = segment % grid.FMCW_NUM_TX, segment // grid.FMCW_NUM_TX
-    raw = torch.fft.fftshift(
-        torch.fft.fft(profile.data[tx, rx], dim=-2), dim=-2
-    ).abs()
+    raw = torch.fft.fftshift(torch.fft.fft(profile.data[tx, rx], dim=-2), dim=-2).abs()
     flat = int(raw.argmax())
     centre = axes.doppler_bin_count // 2
     assert flat // raw.shape[1] == centre - grid.DOPPLER_BIN
@@ -226,18 +208,10 @@ def test_the_map_is_rank_generic_and_publishes_the_axes_it_was_built_with(closin
     tx, rx = segment % grid.FMCW_NUM_TX, segment // grid.FMCW_NUM_TX
     full = range_doppler_map(range_profile(processing))
     reference = full.data[tx, rx]
-    assert tuple(reference.shape) == (
-        axes.doppler_bin_count,
-        axes.range_bin_count,
-    )
+    assert tuple(reference.shape) == (axes.doppler_bin_count, axes.range_bin_count)
     assert full.range_axis is axes.range_m
     assert full.doppler_axis is axes.velocity_mps
-    assert tuple(full.data.shape) == (
-        axes.num_tx,
-        axes.num_rx,
-        axes.doppler_bin_count,
-        axes.range_bin_count,
-    )
+    assert tuple(full.data.shape) == (axes.num_tx, axes.num_rx, axes.doppler_bin_count, axes.range_bin_count)
 
 
 def test_the_doppler_stage_refuses_a_bare_tensor(closing):

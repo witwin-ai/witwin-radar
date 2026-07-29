@@ -20,9 +20,7 @@ def to_synthesis(composed):
 
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
-    return SynthesisPathBatch.from_radar_paths(
-        composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    )
+    return SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
 
 
 __all__ = ["to_synthesis"]

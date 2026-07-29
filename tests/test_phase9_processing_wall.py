@@ -42,8 +42,8 @@ import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
 import torch.nn.functional as F
-
 from conftest import PROCESSING_CONFIG, make_processing_axes
+
 from witwin.radar.processing import (
     ArrayGeometry,
     ProcessingCube,
@@ -56,16 +56,9 @@ from witwin.radar.processing import (
     range_doppler_map,
     range_profile,
 )
-from witwin.radar.processing.angle import (
-    fft2_aoa,
-    music_spectrum,
-    phase_comparison_aoa,
-    tdm_compensate,
-)
-from witwin.radar.processing.detection import Detections, ca_cfar_1d
-from witwin.radar.processing.detection import _keep_strongest
+from witwin.radar.processing.angle import fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
+from witwin.radar.processing.detection import Detections, _keep_strongest, ca_cfar_1d
 from witwin.radar.processing.tracking import DetectionFrame
-
 
 #: Three transmitters, four receivers: enough for the phase-comparison route,
 #: and the same array the point-cloud tests are written against so a failure
@@ -107,13 +100,10 @@ def _cube(axes, array) -> torch.Tensor:
 
     samples = int(axes.range_bin_count)
     chirps = int(axes.doppler_bin_count)
-    direction = torch.tensor(
-        [[AZIMUTH_COSINE, math.sqrt(1.0 - AZIMUTH_COSINE**2), 0.0]],
-        dtype=torch.float64,
+    direction = torch.tensor([[AZIMUTH_COSINE, math.sqrt(1.0 - AZIMUTH_COSINE**2), 0.0]], dtype=torch.float64)
+    manifold = conventional_steering(array, direction, normalize=False, dtype=torch.complex64).reshape(
+        array.num_tx, array.num_rx, 1, 1
     )
-    manifold = conventional_steering(
-        array, direction, normalize=False, dtype=torch.complex64
-    ).reshape(array.num_tx, array.num_rx, 1, 1)
     chirp_period_s = axes.slow_time_period_s / axes.num_tx
     closing = DOPPLER_BIN * axes.velocity_bin_mps
     slot_phase = (
@@ -125,30 +115,20 @@ def _cube(axes, array) -> torch.Tensor:
         * chirp_period_s
         / array.wavelength_m
     )
-    slot = (
-        torch.polar(torch.ones_like(slot_phase), slot_phase)
-        .to(torch.complex64)
-        .reshape(array.num_tx, 1, 1, 1)
-    )
+    slot = torch.polar(torch.ones_like(slot_phase), slot_phase).to(torch.complex64).reshape(array.num_tx, 1, 1, 1)
     fast = torch.arange(samples, dtype=torch.float64)
     slow = torch.arange(chirps, dtype=torch.float64)
-    tone = torch.polar(
-        torch.ones(samples, dtype=torch.float64),
-        2.0 * math.pi * RANGE_BIN * fast / samples,
-    ).to(torch.complex64)
-    walk = torch.polar(
-        torch.ones(chirps, dtype=torch.float64),
-        -2.0 * math.pi * DOPPLER_BIN * slow / chirps,
-    ).to(torch.complex64)
+    tone = torch.polar(torch.ones(samples, dtype=torch.float64), 2.0 * math.pi * RANGE_BIN * fast / samples).to(
+        torch.complex64
+    )
+    walk = torch.polar(torch.ones(chirps, dtype=torch.float64), -2.0 * math.pi * DOPPLER_BIN * slow / chirps).to(
+        torch.complex64
+    )
     generator = torch.Generator().manual_seed(606)
     floor = (
         torch.complex(
-            torch.randn(
-                (array.num_tx, array.num_rx, chirps, samples), generator=generator
-            ),
-            torch.randn(
-                (array.num_tx, array.num_rx, chirps, samples), generator=generator
-            ),
+            torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
+            torch.randn((array.num_tx, array.num_rx, chirps, samples), generator=generator),
         ).to(torch.complex64)
         * 1e-3
     )
@@ -172,9 +152,7 @@ class _Scene:
         self.array = array
         self.cube = cube
         self.rd = range_doppler_map(range_profile(ProcessingCube(cube, axes)))
-        combined = self.rd.data.reshape(
-            array.sensor_pair_count, *self.rd.data.shape[-2:]
-        ).sum(dim=0)
+        combined = self.rd.data.reshape(array.sensor_pair_count, *self.rd.data.shape[-2:]).sum(dim=0)
         self.power = combined.abs().to(torch.float64)
         self.detected = ca_cfar_fast(self.power, **DETECTOR)
 
@@ -188,12 +166,7 @@ def scene():
 def _remap(rd, data):
     """The same Range-Doppler record over a different data tensor."""
 
-    return type(rd)(
-        data=data,
-        axes=rd.axes,
-        window=rd.window,
-        window_coherent_gain=rd.window_coherent_gain,
-    )
+    return type(rd)(data=data, axes=rd.axes, window=rd.window, window_coherent_gain=rd.window_coherent_gain)
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +264,7 @@ def test_the_range_and_doppler_transforms_stay_differentiable(scene):
 def test_the_beam_cube_stays_differentiable(scene):
     live = scene.cube.detach().clone().requires_grad_(True)
     rd = range_doppler_map(range_profile(ProcessingCube(live, scene.axes)))
-    directions = torch.tensor(
-        [[0.0, 1.0, 0.0], [0.25, math.sqrt(1 - 0.0625), 0.0]], dtype=torch.float64
-    )
+    directions = torch.tensor([[0.0, 1.0, 0.0], [0.25, math.sqrt(1 - 0.0625), 0.0]], dtype=torch.float64)
     steering = conventional_steering(scene.array, directions, dtype=torch.complex64)
     cubes = beam_cube(rd, steering, directions=directions)
     assert cubes.data.requires_grad
@@ -323,9 +294,7 @@ def test_the_matched_filter_stays_differentiable():
     )
     generator = torch.Generator().manual_seed(9)
     signal = (
-        torch.complex(
-            torch.randn(64, generator=generator), torch.randn(64, generator=generator)
-        )
+        torch.complex(torch.randn(64, generator=generator), torch.randn(64, generator=generator))
         .to(torch.complex64)
         .requires_grad_(True)
     )
@@ -341,10 +310,7 @@ def test_the_tdm_compensation_stays_differentiable(scene):
     generator = torch.Generator().manual_seed(17)
     rows = scene.array.sensor_pair_count
     virtual = (
-        torch.complex(
-            torch.randn((rows, 2), generator=generator),
-            torch.randn((rows, 2), generator=generator),
-        )
+        torch.complex(torch.randn((rows, 2), generator=generator), torch.randn((rows, 2), generator=generator))
         .to(torch.complex64)
         .requires_grad_(True)
     )
@@ -358,8 +324,7 @@ def test_the_tdm_compensation_stays_differentiable(scene):
 def _music_inputs():
     generator = torch.Generator().manual_seed(11)
     data = torch.complex(
-        torch.randn((1, 4, 4, 8), generator=generator),
-        torch.randn((1, 4, 4, 8), generator=generator),
+        torch.randn((1, 4, 4, 8), generator=generator), torch.randn((1, 4, 4, 8), generator=generator)
     ).to(torch.complex64)
     elevation = torch.linspace(-0.4, 0.4, 5, dtype=torch.float32)
     azimuth = torch.linspace(-0.4, 0.4, 7, dtype=torch.float32)
@@ -385,12 +350,7 @@ def test_the_music_pseudo_spectrum_is_differentiable_and_matches_a_difference(sc
 
     def loss(values: torch.Tensor) -> torch.Tensor:
         spectrum = music_spectrum(
-            values,
-            scene.array,
-            elevation_rad=elevation,
-            azimuth_rad=azimuth,
-            num_signals=2,
-            spatial_smooth=1,
+            values, scene.array, elevation_rad=elevation, azimuth_rad=azimuth, num_signals=2, spatial_smooth=1
         )
         return spectrum.abs().sum()
 
@@ -429,18 +389,12 @@ def test_music_image_carries_the_same_live_derivative_as_the_spectrum(scene):
     bins = int(scene.axes.range_bin_count)
     data = (
         torch.complex(
-            torch.randn((4, 4, 8, bins), generator=generator),
-            torch.randn((4, 4, 8, bins), generator=generator),
+            torch.randn((4, 4, 8, bins), generator=generator), torch.randn((4, 4, 8, bins), generator=generator)
         )
         .to(torch.complex64)
         .requires_grad_(True)
     )
-    profile = RangeProfile(
-        data=data,
-        axes=scene.axes,
-        window="rectangular",
-        window_coherent_gain=1.0,
-    )
+    profile = RangeProfile(data=data, axes=scene.axes, window="rectangular", window_coherent_gain=1.0)
     image = music_image(
         profile,
         scene.array,
@@ -509,9 +463,7 @@ def test_the_detectors_still_detect_and_the_guard_changed_no_value(scene):
     ``tests/processing/test_cutover.py``, which still pass.
     """
 
-    detached = ca_cfar_fast(
-        scene.power.clone().requires_grad_(True).detach(), **DETECTOR
-    )
+    detached = ca_cfar_fast(scene.power.clone().requires_grad_(True).detach(), **DETECTOR)
     assert torch.equal(scene.detected.mask, detached.mask)
     assert torch.equal(scene.detected.threshold, detached.threshold)
     assert int(scene.detected.mask.sum()) > 0
@@ -532,9 +484,7 @@ def test_the_point_cloud_refuses_a_gradient_before_any_compute(scene, watch):
     """
 
     live = _remap(scene.rd, scene.rd.data.detach().clone().requires_grad_(True))
-    with pytest.raises(
-        RuntimeError, match="witwin.radar.processing.detection.point_cloud is not differentiable"
-    ):
+    with pytest.raises(RuntimeError, match="witwin.radar.processing.detection.point_cloud is not differentiable"):
         point_cloud(scene.detected, live, scene.axes, scene.array, max_points=64)
     assert watch.calls == []
 
@@ -556,8 +506,7 @@ def test_the_point_cloud_refuses_a_live_detection_threshold(scene, watch):
     """
 
     live = Detections(
-        mask=scene.detected.mask,
-        threshold=scene.detected.threshold.detach().clone().requires_grad_(True),
+        mask=scene.detected.mask, threshold=scene.detected.threshold.detach().clone().requires_grad_(True)
     )
     with pytest.raises(RuntimeError, match="detection_threshold carries a gradient"):
         point_cloud(live, scene.rd, scene.axes, scene.array, max_points=64)
@@ -574,9 +523,7 @@ def test_the_peak_selection_refuses_a_gradient_before_any_topk(scene, watch):
 
 
 def test_the_point_cloud_still_produces_its_one_point(scene):
-    cloud = point_cloud(
-        scene.detected, scene.rd, scene.axes, scene.array, max_points=64
-    )
+    cloud = point_cloud(scene.detected, scene.rd, scene.axes, scene.array, max_points=64)
     assert len(cloud) == 1
     assert not cloud.xyz.requires_grad
     assert not cloud.energy.requires_grad
@@ -591,16 +538,13 @@ AOA_ENTRIES = {"phase_comparison_aoa": phase_comparison_aoa, "fft2_aoa": fft2_ao
 
 
 @pytest.mark.parametrize("entry", sorted(AOA_ENTRIES))
-def test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute(
-    scene, watch, entry
-):
+def test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute(scene, watch, entry):
     """The bin index is discrete; the cosine derived from it is a staircase."""
 
     generator = torch.Generator().manual_seed(41)
     rows = scene.array.sensor_pair_count
     virtual = torch.complex(
-        torch.randn((rows, 2), generator=generator),
-        torch.randn((rows, 2), generator=generator),
+        torch.randn((rows, 2), generator=generator), torch.randn((rows, 2), generator=generator)
     ).to(torch.complex64)
     estimator = AOA_ENTRIES[entry]
 
@@ -683,19 +627,13 @@ def test_every_wall_refusal_comes_from_the_one_owner():
     assert policy.refuse_derivative.__module__ == "witwin.radar.policy"
 
     root = pathlib.Path(__file__).resolve().parents[1] / "witwin" / "radar"
-    guarded = (
-        "processing/detection.py",
-        "processing/angle.py",
-        "processing/tracking.py",
-        "frontend.py",
-    )
+    guarded = ("processing/detection.py", "processing/angle.py", "processing/tracking.py", "frontend.py")
     for relative in guarded:
         tree = ast.parse((root / relative).read_text(encoding="utf-8"))
         imported = {
             alias.name
             for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and (node.module or "").endswith("policy")
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("policy")
             for alias in node.names
         }
         assert "refuse_derivative" in imported, relative
