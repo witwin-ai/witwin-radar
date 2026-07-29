@@ -16,10 +16,6 @@ So the check starts at the declared entry points and walks the import graph:
   - a module reaches its parent package, because importing `a.b.c` imports
     `a.b` first - this is what keeps package `__init__.py` files honest instead
     of blanket-exempt;
-  - a module reaches a sibling module it names as a bare string constant, which
-    is how `witwin/radar/__init__.py::_LAZY` defers `deployment` and
-    `capabilities` past import time.
-
 Anything left unvisited is an orphan. `ENTRY_POINTS` is the allowlist, and it is
 deliberately short: each entry is a module a *user* imports directly, so nothing
 in the tree needs to. Adding to it is a decision about the public surface, which
@@ -43,23 +39,16 @@ PACKAGE = "witwin.radar"
 
 # Modules a user imports directly, so no in-tree production module has to.
 ENTRY_POINTS: dict[str, str] = {
-    "witwin.radar": (
-        "the package root and the public API surface frozen in "
-        "ci/public-api-snapshot.json"
-    ),
-    "witwin.radar.processing": (
-        "the post-processing facade; documented in README.md and imported by "
-        "callers, examples and tests rather than by the simulation chain"
-    ),
-    "witwin.radar.sigproc": (
-        "the pre-Phase-8 public signal-processing surface, retained as thin "
-        "re-export adapters over witwin.radar.processing"
-    ),
-    "witwin.radar.sigproc.matched_filter": (
-        "a pure re-export of witwin.radar.processing.matched_filter that "
-        "witwin.radar.sigproc deliberately does not pull in, so that importing "
-        "the facade does not import pulse compression"
-    ),
+    "witwin.radar": "minimal Radar/RadarConfig system facade",
+    "witwin.radar.capabilities": "public capability report owner",
+    "witwin.radar.deployment": "public deployment/runtime report owner",
+    "witwin.radar.frontend": "public receiver-frontend owner",
+    "witwin.radar.smpl": "public SMPL authoring facade",
+    "witwin.radar.processing": "public signal-processing facade",
+    "witwin.radar.scattering": "public scatter-response owner",
+    "witwin.radar.sensors": "public sensor contract owner",
+    "witwin.radar.simulation": "public simulation/session result owner",
+    "witwin.radar.synthesis": "public waveform synthesis facade",
 }
 
 
@@ -111,10 +100,6 @@ def edges_from(path: Path, name: str, known: set[str]) -> set[str]:
             note(target)
             for alias in node.names:
                 note(f"{target}.{alias.name}")
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # `importlib.import_module(f".{name}", __package__)` - the lazy
-            # export shape in witwin/radar/__init__.py.
-            note(f"{base_package}.{node.value}")
 
     # Importing a submodule imports its parent package first.
     parent = name.rpartition(".")[0]

@@ -41,19 +41,19 @@ import torch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "witwin" / "radar"
 
-#: The seven files that own a ``torch.autograd.Function``. ``frontend/chain.py``
+#: The seven files that own a ``torch.autograd.Function``. ``frontend.py``
 #: owns two, which is why there are eight tape owners and seven files. There
 #: were nine files until Phase 11 deleted ``synthesis/dirichlet_spectrum.py``
 #: with the route it synthesized for.
 TAPE_OWNER_FILES = frozenset(
     {
-        "frontend/chain.py",
-        "paths/two_way.py",
-        "scattering/aspect.py",
-        "sensors/weights.py",
-        "synthesis/fmcw_beat.py",
-        "synthesis/ofdm_cfr.py",
-        "synthesis/pulsed_echo.py",
+        "frontend.py",
+        "paths.py",
+        "scattering.py",
+        "sensors.py",
+        "synthesis/fmcw.py",
+        "synthesis/ofdm.py",
+        "synthesis/pulsed.py",
     }
 )
 
@@ -261,19 +261,19 @@ def test_the_synthesis_and_sensor_results_carry_no_tape(frame):
 
     from support import ad_boundaries as ab
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import synthesize_fmcw_beat
-    from witwin.radar.synthesis.contracts import SynthesisResult
+    from witwin.radar.synthesis import synthesize_fmcw
+    from witwin.radar.synthesis.assembly import SynthesisResult
 
     _, composed, _, _ = frame
     spec = drv.make_spec(num_chirps=2)
-    cube = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+    cube = synthesize_fmcw(drv.to_synthesis(composed), spec)
     assert cube.requires_grad, "the fixture must be live"
-    _assert_clean("synthesis", SynthesisResult.from_fmcw_beat(cube, spec))
+    _assert_clean("synthesis", SynthesisResult.from_fmcw(cube, spec))
 
     # The sensor-weight owner, through its production entry point with a live
     # leaf, so the walked ``SensorWeightResult`` is one that HAS a tape behind
     # it rather than one that never built a graph.
-    from witwin.radar.sensors.weights import SensorWeightResult
+    from witwin.radar.sensors import SensorWeightResult
 
     boundary = ab.boundary("sensor_weight")
     captured: list = []
@@ -344,7 +344,8 @@ def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
     from support import multi_endpoint_driver as drv
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
-    from witwin.radar import Radar, ScatterSitePolicy
+    from witwin.radar import Radar
+    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.scattering import ScalarRcsResponse
 
     if radar is None:

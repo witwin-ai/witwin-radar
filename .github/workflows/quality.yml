@@ -10,6 +10,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # Repository policy supplies the exact Channel build fingerprint.
+  WITWIN_CHANNEL_FINGERPRINT: ${{ vars.WITWIN_CHANNEL_FINGERPRINT }}
+  WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET: '0'
+
 jobs:
   cpu-quality:
     runs-on: ubuntu-latest
@@ -20,7 +25,20 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install package and development tools
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,channel]"
+      - name: Verify required Channel runtime identity
+        run: >-
+          python -c "import os, witwin.channel;
+          from witwin.channel import build_info;
+          info = build_info();
+          fingerprint = str(info['build_fingerprint']);
+          expected = os.environ['WITWIN_CHANNEL_FINGERPRINT'];
+          budget = int(os.environ['WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET']);
+          assert budget == 0, 'required Channel skip budget must remain zero';
+          assert expected, 'configure repository variable WITWIN_CHANNEL_FINGERPRINT';
+          assert fingerprint == expected,
+          f'Channel fingerprint {fingerprint!r} != required {expected!r}';
+          print(f'Channel build_fingerprint={fingerprint}; required-skip-budget={budget}')"
       # One name that a person and this workflow both run. The steps it used to
       # restate - ruff, then the CPU suite under coverage with a 50% floor - are
       # gates inside the tier now, alongside the manifest, workflow-policy and

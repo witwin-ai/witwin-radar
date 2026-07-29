@@ -595,7 +595,7 @@ def processing_axes(radar):
     from witwin.radar.processing import ProcessingAxes
     from witwin.radar.synthesis import SlowTimeMode
 
-    synthesis = radar.synthesize(
+    synthesis = radar._synthesize(
         radar.last_radar_paths,
         slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
     )
@@ -609,8 +609,9 @@ def processing_axes(radar):
 def generate_range_doppler(args: argparse.Namespace) -> None:
     import torch
 
-    from witwin.radar import Radar, RadarConfig, ScatterSitePolicy
-    from witwin.radar.processing import range_doppler, range_profile
+    from witwin.radar import Radar, RadarConfig
+    from witwin.radar.simulation import ScatterSitePolicy
+    from witwin.radar.processing import ProcessingCube, range_doppler_map, range_profile
     from witwin.radar.scattering import ScalarRcsResponse
 
     input_path = pathlib.Path(args.input).expanduser().resolve()
@@ -703,7 +704,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             ranges = axes.range_m[:half].detach().cpu().numpy()
             velocities = axes.velocity_mps.detach().cpu().numpy()
 
-        profile = range_profile(result.cube[0], axes=axes, window="hann")
+        profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
         if args.static_clutter_removal:
             # Static clutter removal is a SLOW-TIME mean subtraction. The range
             # stage owns the fast-time DC removal (``remove_dc=``); the
@@ -711,7 +712,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             profile = dataclasses.replace(
                 profile, data=profile.data - profile.data.mean(dim=-2, keepdim=True)
             )
-        rd = range_doppler(profile, window="hann")
+        rd = range_doppler_map(profile, window="hann")
         cell = rd.data[int(args.tx), int(args.rx)]
         rd_db = (
             20.0 * torch.log10(cell.abs() + DECIBEL_FLOOR)

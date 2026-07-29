@@ -27,8 +27,8 @@ from witwin.radar.processing import (
     phase_comparison_aoa,
     tdm_compensate,
 )
-from witwin.radar.processing.adapters import axes_from_radar
-from witwin.radar.synthesis.contracts import SPEED_OF_LIGHT_M_PER_S
+from conftest import PROCESSING_CONFIG, make_processing_axes
+from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
 
 #: Read from the same constant the axes record is built on. A hand-typed
@@ -214,7 +214,7 @@ def test_the_tdm_compensation_is_the_analytic_slot_phase_at_a_nonzero_velocity()
     """
 
     array = _array(TX_3, phase_sign=1)
-    axes = axes_from_radar(_mock_radar())
+    axes = make_processing_axes(PROCESSING_CONFIG)
     chirp_period_s = axes.slow_time_period_s / axes.num_tx
 
     velocity = torch.tensor([grid.CLOSING_SPEED_MPS], dtype=torch.float64)
@@ -240,7 +240,7 @@ def test_the_compensation_reads_the_raw_chirp_period_not_the_slot_period():
     arrays that differ only in transmitter count.
     """
 
-    axes = axes_from_radar(_mock_radar())
+    axes = make_processing_axes(PROCESSING_CONFIG)
     array = _array(TX_3, phase_sign=1)
     velocity = torch.tensor([grid.CLOSING_SPEED_MPS], dtype=torch.float64)
     ones = torch.ones((12, 1), dtype=torch.complex64)
@@ -256,7 +256,7 @@ def test_the_compensation_reads_the_raw_chirp_period_not_the_slot_period():
 
 def test_the_compensation_preserves_magnitude_and_is_one_multiply():
     array = _array(TX_3, phase_sign=1)
-    axes = axes_from_radar(_mock_radar())
+    axes = make_processing_axes(PROCESSING_CONFIG)
     generator = torch.Generator().manual_seed(11)
     signal = torch.complex(
         torch.randn((12, 7), generator=generator),
@@ -270,13 +270,6 @@ def test_the_compensation_preserves_magnitude_and_is_one_multiply():
     )
     # Transmitter zero is untouched, bitwise.
     assert torch.equal(compensated[: array.num_rx], signal[: array.num_rx])
-
-
-def _mock_radar():
-    from conftest import MockRadar
-    from support.legacy_golden import GOLDEN_CONFIG
-
-    return MockRadar(GOLDEN_CONFIG)
 
 
 # ---------------------------------------------------------------------------

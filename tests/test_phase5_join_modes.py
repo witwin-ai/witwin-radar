@@ -2,7 +2,7 @@
 
 The acceptance property is that the choice is made once, by the caller, and
 RECORDED - never inferred downstream and never silently substituted. So both
-composers publish ``RadarPathBatch``, ``synthesize_fmcw_beat`` takes either
+composers publish ``RadarPathBatch``, ``synthesize_fmcw`` takes either
 without a branch, and the batch says which one it came from.
 
 Scope note, because the words collide: "direct mode" is the direct TX-to-RX
@@ -19,8 +19,8 @@ import torch
 pytest.importorskip("witwin.channel")
 
 from witwin.radar.paths import JOIN_MODES, DirectComposer  # noqa: E402
-from witwin.radar.paths.direct import NO_OUTBOUND_ROW, NO_SITE  # noqa: E402
-from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat  # noqa: E402
+from witwin.radar.paths import NO_OUTBOUND_ROW, NO_SITE  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw  # noqa: E402
 
 from support import phase4_geometry as geo  # noqa: E402
 from support import spike_driver as drv  # noqa: E402
@@ -85,7 +85,7 @@ def test_both_modes_publish_the_same_contract_to_the_same_synthesis(
         assert batch.sensor_pair_count == 1
         assert batch.pair_offsets.tolist() == [0, 1]
         assert batch.reference_frequency_hz == geo.REFERENCE_FREQUENCY_HZ
-        iq = synthesize_fmcw_beat(drv.to_synthesis(batch), spec)
+        iq = synthesize_fmcw(drv.to_synthesis(batch), spec)
         assert iq.shape == (spec.num_chirps, 1, spec.num_samples)
         assert torch.isfinite(iq.real).all() and torch.isfinite(iq.imag).all()
 

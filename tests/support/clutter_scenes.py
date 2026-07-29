@@ -140,13 +140,13 @@ class ClutterEpochState:
 def clutter_epoch_loop(dynamic, policy, *, compile_scene=None, decl=None):
     """A :class:`SceneEpochLoop` configured by a component declaration.
 
-    ``policy`` is the :class:`~witwin.radar.propagation.epochs.EpochPolicy` the
+    ``policy`` is the :class:`~witwin.radar.propagation.EpochPolicy` the
     caller resolved from its :class:`ClutterComponentSpec` set. Passing the
     resolved policy rather than the specs keeps the loop unaware of the
     component vocabulary, which is the layering the production modules declare.
     """
 
-    from witwin.radar.propagation.epochs import FrozenEpoch, SceneEpochLoop
+    from witwin.radar.propagation import FrozenEpoch, SceneEpochLoop
 
     state = ClutterEpochState(decl)
 

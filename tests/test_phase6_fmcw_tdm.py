@@ -23,11 +23,11 @@ import torch
 
 from support import fd  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
-from witwin.radar.synthesis.contracts import (  # noqa: E402
+from witwin.radar.synthesis.assembly import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
-    FmcwBeatSpec,
+    FmcwSpec,
 )
-from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -45,7 +45,7 @@ TAU_RT_S = 2.0 * 3.7 / C0
 TAU_RATE = 2.0 * 12.0 / C0
 
 
-def _spec(**overrides) -> FmcwBeatSpec:
+def _spec(**overrides) -> FmcwSpec:
     fields = dict(
         num_samples=NUM_SAMPLES,
         num_chirps=8,
@@ -56,9 +56,10 @@ def _spec(**overrides) -> FmcwBeatSpec:
         reference_frequency_hz=FC_HZ,
         carrier_hz=0.0,
         carrier_rate_hz=FC_HZ,
+        output_domain="beat",
     )
     fields.update(overrides)
-    return FmcwBeatSpec(**fields)
+    return FmcwSpec(**fields)
 
 
 def _frozen_channel_weight() -> complex:
@@ -124,7 +125,7 @@ def test_a_second_transmitter_is_exactly_one_chirp_period_later(sample):
     tau, rate, weight, offsets, tx_index = _two_transmitters(
         _frozen_channel_weight()
     )
-    cube = synthesize_beat_rows(
+    cube = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=tx_index
     ).cpu()
 
@@ -135,7 +136,7 @@ def test_a_second_transmitter_is_exactly_one_chirp_period_later(sample):
 
     # A stationary target has no slot phase at all, which is what makes the
     # measurement above attributable to motion rather than to the table.
-    still = synthesize_beat_rows(
+    still = synthesize_fmcw_rows(
         tau,
         torch.zeros_like(rate),
         weight,
@@ -160,11 +161,11 @@ def test_the_transmitter_table_is_what_decides_the_slot_not_the_pair_rank():
     tau, rate, weight, offsets, tx_index = _two_transmitters(
         _frozen_channel_weight()
     )
-    forward = synthesize_beat_rows(
+    forward = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=tx_index
     )
     reversed_table = torch.tensor([1, 0], dtype=torch.int32, device="cuda")
-    swapped = synthesize_beat_rows(
+    swapped = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=reversed_table
     )
     assert torch.equal(forward[:, 0, :], swapped[:, 1, :])
@@ -194,7 +195,7 @@ def test_the_sigproc_tdm_compensation_removes_exactly_the_carrier_slot_phase(
     tau, rate, weight, offsets, tx_index = _two_transmitters(
         _frozen_channel_weight()
     )
-    cube = synthesize_beat_rows(
+    cube = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=tx_index
     ).cpu()
 
@@ -236,7 +237,7 @@ def test_a_pure_carrier_slot_phase_is_compensated_to_nothing():
     tau, rate, weight, offsets, tx_index = _two_transmitters(
         _frozen_channel_weight()
     )
-    cube = synthesize_beat_rows(
+    cube = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=tx_index
     ).cpu()
 
@@ -326,7 +327,7 @@ def test_tdm_phase_matches_downstream_compensation(num_tx):
     tau, rate, weight, offsets, tx_index = _n_transmitters(
         _frozen_channel_weight(), TAU_RATE_BISTATIC, num_tx
     )
-    cube = synthesize_beat_rows(
+    cube = synthesize_fmcw_rows(
         tau, rate, weight, offsets, spec, segment_tx_index=tx_index
     ).cpu()
 
@@ -376,7 +377,7 @@ def test_tdm_phase_matches_downstream_compensation(num_tx):
 
 def _identical_row_per_pair(*, num_tx: int, num_rx: int, rate: float):
     """One physically identical row per sensor pair of a ``num_tx x num_rx``
-    array, as the batch ``synthesize_fmcw_beat`` consumes.
+    array, as the batch ``synthesize_fmcw`` consumes.
 
     Every row carries the same delay, the same rate and the same weight, so any
     difference between two pairs in the synthesized cube is slot time and
@@ -390,8 +391,8 @@ def _identical_row_per_pair(*, num_tx: int, num_rx: int, rate: float):
     than the transmitter axis.
     """
 
-    from witwin.radar.paths.contracts import RadarPathTopology
-    from witwin.radar.synthesis.contracts import SlowTimeMode, SynthesisPathBatch
+    from witwin.radar.paths import RadarPathTopology
+    from witwin.radar.synthesis.assembly import SlowTimeMode, SynthesisPathBatch
 
     pairs = num_tx * num_rx
     rows = torch.arange(pairs, dtype=torch.int64, device="cuda")
@@ -436,7 +437,7 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
     Every other TDM test in this file hands the kernel a table it built itself
     (``torch.tensor([0, 1])``, ``torch.arange(num_tx)``), so they pin the
     kernel's phase LAW and are blind to the table that feeds it in production.
-    This one drives the whole chain instead - ``synthesize_fmcw_beat`` ->
+    This one drives the whole chain instead - ``synthesize_fmcw`` ->
     ``assembly.pair_tx_index`` -> ``segment_tx_index`` -> the beat kernel ->
     ``assemble_frame_cube`` -> ``processing.tdm_compensate`` - and asserts that
     the compensation lands every virtual-antenna block back on top of block 0. A
@@ -464,7 +465,7 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
 
     from witwin.radar.processing import ArrayGeometry, tdm_compensate
     from witwin.radar.synthesis.assembly import assemble_frame_cube
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     num_rx = 2
     num_chirps = 4
@@ -479,7 +480,7 @@ def test_the_production_slot_table_survives_the_downstream_compensation(num_tx):
     batch = _identical_row_per_pair(
         num_tx=num_tx, num_rx=num_rx, rate=TAU_RATE_BISTATIC
     )
-    cube = synthesize_fmcw_beat(batch, spec)
+    cube = synthesize_fmcw(batch, spec)
     frame = assemble_frame_cube(cube, num_tx=num_tx, num_rx=num_rx)
     assert tuple(frame.shape) == (num_tx, num_rx, num_chirps, spec.num_samples)
 
@@ -562,8 +563,8 @@ def test_a_single_transmitter_makes_the_slot_the_chirp_index_exactly():
     tau, rate, weight, offsets = _single_row()
     assert spec.num_tx == 1
 
-    implicit = synthesize_beat_rows(tau, rate, weight, offsets, spec)
-    explicit = synthesize_beat_rows(
+    implicit = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
+    explicit = synthesize_fmcw_rows(
         tau,
         rate,
         weight,
@@ -586,7 +587,7 @@ def test_the_slot_is_num_tx_chirp_periods_wide():
     """
 
     tau, rate, weight, offsets = _single_row()
-    tdm = synthesize_beat_rows(
+    tdm = synthesize_fmcw_rows(
         tau,
         rate,
         weight,
@@ -594,7 +595,7 @@ def test_the_slot_is_num_tx_chirp_periods_wide():
         _spec(num_chirps=6, num_tx=2, num_rx=1),
         segment_tx_index=torch.zeros(1, dtype=torch.int32, device="cuda"),
     )
-    widened = synthesize_beat_rows(
+    widened = synthesize_fmcw_rows(
         tau,
         rate,
         weight,
@@ -608,14 +609,14 @@ def test_a_multi_transmitter_spec_refuses_to_guess_the_slot_table():
     spec = _spec(num_tx=2, num_rx=2)
     tau, rate, weight, offsets = _single_row()
     with pytest.raises(ValueError, match="must name the transmitter"):
-        synthesize_beat_rows(tau, rate, weight, offsets, spec)
+        synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
 
 
 def test_the_transmitter_table_must_span_the_segments():
     spec = _spec(num_tx=2, num_rx=1)
     tau, rate, weight, offsets, _ = _two_transmitters(_frozen_channel_weight())
     with pytest.raises(ValueError, match="one transmitter index per sensor-pair"):
-        synthesize_beat_rows(
+        synthesize_fmcw_rows(
             tau,
             rate,
             weight,
@@ -630,7 +631,7 @@ def test_the_transmitter_table_must_span_the_segments():
 # --------------------------------------------------------------------------
 
 
-AD_SPEC = FmcwBeatSpec(
+AD_SPEC = FmcwSpec(
     num_samples=24,
     num_chirps=4,
     sample_period_s=1.0 / SAMPLE_RATE_HZ,
@@ -642,6 +643,7 @@ AD_SPEC = FmcwBeatSpec(
     carrier_rate_hz=FC_HZ,
     num_tx=2,
     num_rx=1,
+    output_domain="beat",
 )
 AD_DELAYS = (TAU_RT_S, 2.4e-8, 1.7e-8)
 AD_RATES = (TAU_RATE, -1.1e-8, 4.0e-9)
@@ -760,7 +762,7 @@ def test_native_vjp_matches_the_oracle_across_the_slot_axis(ad_target):
     tau = tau.clone().requires_grad_(True)
     rate = rate.clone().requires_grad_(True)
     weight = weight.clone().requires_grad_(True)
-    iq = synthesize_beat_rows(
+    iq = synthesize_fmcw_rows(
         tau, rate, weight, offsets, AD_SPEC, segment_tx_index=tx_index
     )
     ref.radar_loss(iq.cpu(), ad_target).backward()
@@ -882,7 +884,7 @@ def test_native_jvp_matches_a_central_difference_of_the_primal():
                     weight, torch.complex(torch.zeros_like(tangent), tangent)
                 )
             assert not dual_tau.requires_grad
-            iq = synthesize_beat_rows(
+            iq = synthesize_fmcw_rows(
                 dual_tau,
                 dual_rate,
                 dual_weight,
@@ -983,14 +985,14 @@ def test_a_real_tdm_frame_assembles_into_the_sigproc_layout(multi_endpoint_spike
 
     from support import multi_endpoint_driver as drv
     from witwin.radar.synthesis.assembly import assemble_frame_cube
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     composed, _, _ = multi_endpoint_spike.frame()
-    spec = drv.make_spec(num_chirps=2)
+    spec = drv.make_spec(num_chirps=2, output_domain="beat")
     assert (spec.num_tx, spec.num_rx) == (2, 2)
     assert composed.sensor_pair_count == spec.sensor_pair_count
 
-    cube = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+    cube = synthesize_fmcw(drv.to_synthesis(composed), spec)
     assert tuple(cube.shape) == (2, 4, spec.num_samples)
 
     frame = assemble_frame_cube(cube, num_tx=spec.num_tx, num_rx=spec.num_rx)
@@ -1018,16 +1020,16 @@ def test_one_tdm_frame_is_one_launch_and_no_host_observation(
     """
 
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import fmcw_beat
+    from witwin.radar.synthesis import fmcw
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
     composed, _, _ = multi_endpoint_spike.frame()
-    spec = drv.make_spec(num_chirps=2)
+    spec = drv.make_spec(num_chirps=2, output_domain="beat")
     batch = drv.to_synthesis(composed)
-    operators = fmcw_beat._ops()
+    operators = fmcw._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = fmcw_beat.synthesize_fmcw_beat(batch, spec)
+    cube = fmcw.synthesize_fmcw(batch, spec)
     frame = assemble_frame_cube(cube, num_tx=spec.num_tx, num_rx=spec.num_rx)
     assert frame.shape[0] == spec.num_tx
 
@@ -1043,17 +1045,17 @@ def test_one_tdm_frame_is_one_launch_and_no_host_observation(
 
 def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatch):
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import fmcw_beat
+    from witwin.radar.synthesis import fmcw
 
     composed, _, _ = multi_endpoint_spike.frame(
         response=drv.make_response(requires_grad=True)
     )
-    spec = drv.make_spec(num_chirps=2)
+    spec = drv.make_spec(num_chirps=2, output_domain="beat")
     batch = drv.to_synthesis(composed)
-    operators = fmcw_beat._ops()
+    operators = fmcw._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = fmcw_beat.synthesize_fmcw_beat(batch, spec)
+    cube = fmcw.synthesize_fmcw(batch, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
     assert ledger.launches["fmcw_beat_forward"] == 1
     assert ledger.launches["fmcw_beat_backward"] == 1

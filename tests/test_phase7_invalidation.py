@@ -34,8 +34,8 @@ pytest.importorskip("witwin.channel")
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
-from witwin.radar.propagation import kinematics as kin  # noqa: E402
-from witwin.radar.propagation.epochs import (  # noqa: E402
+import witwin.radar.propagation as kin  # noqa: E402
+from witwin.radar.propagation import (  # noqa: E402
     FIRST_FRAME,
     MOTION_EVENT_CADENCE,
     SOURCE_MUTATION,
@@ -145,7 +145,7 @@ def test_a_stale_compiled_scene_never_answers(monkeypatch):
     performs ZERO of them cannot have launched.
     """
 
-    from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
+    from witwin.radar.channel import ChannelPropagationAdapter
 
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
     early = world.compile_snapshot(dynamic.at(0.0))

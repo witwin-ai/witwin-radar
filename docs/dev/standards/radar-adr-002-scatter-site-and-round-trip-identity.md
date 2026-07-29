@@ -68,7 +68,7 @@ about which triangle the ray struck on any given frame.
 `freeze` takes explicit `radar_source_ids` and `radar_sink_ids`, and
 `sensor_pair_count` is their cross product. Deriving the pair set from surviving
 composed rows was a latent correctness bug rather than an optimization:
-`synthesize_fmcw_beat` shapes its output `[chirps, sensor_pair_count, samples]`,
+`synthesize_fmcw` shapes its output `[chirps, sensor_pair_count, samples]`,
 so a TX/RX pair whose only site failed discovery silently RENUMBERED and
 RESHAPED the IQ cube. A pair that discovered nothing now owns an empty segment,
 and the beat kernel already yields an exact-zero accumulator for `start == end`.

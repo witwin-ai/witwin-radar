@@ -5,7 +5,7 @@ Run:
     cd radar
     pytest tests/                         # CPU-only tests
     pytest tests/ --gpu                   # include GPU tests (needs CUDA)
-    pytest tests/sigproc/ -v              # single subfolder
+    pytest tests/processing/ -v           # processing owners
 """
 
 import sys
@@ -83,12 +83,53 @@ MINIMAL_CONFIG = {
 }
 
 
+PROCESSING_CONFIG = {
+    **STANDARD_CONFIG,
+    "num_tx": 3,
+    "num_rx": 4,
+    "adc_start_time": 0,
+    "adc_samples": 64,
+    "chirp_per_frame": 16,
+    "num_doppler_bins": 16,
+    "num_range_bins": 64,
+    "num_angle_bins": 64,
+    "tx_loc": [[0, 0, 0], [2, 0, 0], [0, 1, 0]],
+    "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
+}
+
+
+def make_processing_axes(config=None, *, doppler_bins: int | None = None):
+    """Build processing metadata through the canonical synthesis contracts."""
+
+    from dataclasses import replace
+
+    import torch
+
+    from witwin.radar import RadarConfig
+    from witwin.radar.radar import RadarSystemConfig
+    from witwin.radar.processing import ProcessingAxes
+    from witwin.radar.synthesis.assembly import SynthesisResult
+
+    raw = PROCESSING_CONFIG if config is None else config
+    cfg = raw if isinstance(raw, RadarConfig) else RadarConfig.from_dict(dict(raw))
+    system = RadarSystemConfig.from_radar_config(cfg)
+    spec = replace(system.waveform_spec(), output_domain="beat")
+    if doppler_bins is not None:
+        spec = replace(spec, num_chirps=int(doppler_bins))
+    array = system.sensors.array
+    cube = torch.zeros(
+        (spec.num_chirps, array.sensor_pair_count, spec.num_samples),
+        dtype=torch.complex64,
+    )
+    result = SynthesisResult.from_fmcw(cube, spec)
+    return ProcessingAxes.from_synthesis(result, spec, array)
+
 # ---------------------------------------------------------------------------
-# CPU-only mock for sigproc tests that need FrameConfig / PointCloudProcessConfig
+# CPU-only Radar contract fixture
 # ---------------------------------------------------------------------------
 
 class MockRadar:
-    """Lightweight CPU-only mock providing the attributes needed by sigproc code."""
+    """Lightweight CPU-only radar contract fixture."""
 
     def __init__(self, config=None):
         import torch
@@ -103,29 +144,30 @@ class MockRadar:
             self.config = RadarConfig.from_dict(dict(config))
         cfg = self.config
 
-        from witwin.radar.config import RadarSystemConfig
+        from witwin.radar.radar import RadarSystemConfig
 
-        self._lambda = self.c0 / cfg.fc
-        antenna_spacing = self._lambda / 2
+        self.wavelength_m = self.c0 / cfg.fc
+        antenna_spacing = self.wavelength_m / 2
         self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32) * antenna_spacing
         self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32) * antenna_spacing
 
-        # The mock derives its axes from the SAME record the real radar does,
-        # rather than repeating six formulas that then drift apart. `sigproc`
-        # reads `radar.axes` and this is what makes the mock a real duck-type of
-        # that read rather than a lookalike.
-        self.system_config = RadarSystemConfig.from_radar_config(cfg)
-        self.axes = self.system_config.axes(device="cpu")
-        self.range_resolution = self.axes.range_resolution
-        self.max_range = self.axes.max_range
-        self.doppler_resolution = self.axes.doppler_resolution
-        self.max_doppler = self.axes.max_doppler
-        self.ranges = self.axes.ranges
-        self.velocities = self.axes.velocities
+        from witwin.radar.processing import ProcessingAxes
+        from witwin.radar.synthesis import SynthesisResult
 
+        self.system_config = RadarSystemConfig.from_radar_config(cfg)
+        spec = self.system_config.waveform_spec()
+        array = self.system_config.sensors.array
+        cube = torch.zeros(
+            spec.num_chirps,
+            array.sensor_pair_count,
+            spec.num_samples,
+            dtype=torch.complex64,
+        )
+        result = SynthesisResult.from_fmcw(cube, spec)
+        self.axes = ProcessingAxes.from_synthesis(result, spec, array)
         self.gain = 1.0
 
-    # Convenience accessors for sigproc/test code that still needs flat fields
+    # Convenience accessors used by configuration tests
     @property
     def num_tx(self) -> int:
         return self.config.num_tx
@@ -218,7 +260,7 @@ def mock_radar():
 #
 # * **The radar looks along world +x** with the default up. Targets are still
 #   authored in the radar's LOCAL frame - ``[0, 0, -d]`` is still "d metres
-#   straight ahead" - and ``Radar.world_from_local_points`` does the transform,
+#   straight ahead" - and ``Radar._world_from_local_points`` does the transform,
 #   so the test text did not have to change and the production pose transform is
 #   on the path rather than mirrored.
 #
@@ -232,7 +274,7 @@ def mock_radar():
 # * **Intra-frame Doppler is opened by the caller.** ``Radar.simulate`` has no
 #   ``velocities=`` keyword (a named Phase-11 scope boundary), so a moving target
 #   is driven by dualising the site tensor with
-#   ``witwin.radar.propagation.kinematics.two_way_duals`` and asking for
+#   ``witwin.radar.propagation.two_way_duals`` and asking for
 #   ``ad_mode="jvp"``. The site policy passes its tensor through by identity, so
 #   the dual reaches the legs and the join publishes ``delay_rate``, which is
 #   what the waveform kernel's slow-time carrier consumes. Nothing here computes
@@ -323,10 +365,11 @@ class PointTargetFrame:
         assert torch.equal(packed.data, self.cube)
 
     def range_doppler(self, *, window="hann"):
-        from witwin.radar.processing import range_doppler, range_profile
+        from witwin.radar.processing import range_doppler_map, range_profile
 
-        return range_doppler(
-            range_profile(self.processing_cube(), window=window), window=window
+        range_window = "rectangular" if self.axes.output_domain == "spectrum" else window
+        return range_doppler_map(
+            range_profile(self.processing_cube(), window=range_window), window=window
         )
 
     def range_profile_db(self, *, window="hann"):
@@ -399,14 +442,14 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     Returns a :class:`PointTargetFrame`.
     """
 
-    from witwin.radar import ScatterSitePolicy
+    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes
-    from witwin.radar.propagation import kinematics as kin
+    import witwin.radar.propagation as kin
     from witwin.radar.scattering import ScalarRcsResponse
     from witwin.radar.synthesis import SlowTimeMode
 
     local_positions, local_velocities, moving = _target_tensors(radar, targets)
-    world_positions = radar.world_from_local_points(local_positions)
+    world_positions = radar._world_from_local_points(local_positions)
     response = ScalarRcsResponse.from_rcs(
         sigma_m2,
         reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz,
@@ -427,7 +470,7 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     if moving:
         track = kin.Kinematics(
             positions_m=world_positions,
-            velocities_m_per_s=radar.world_from_local_vectors(local_velocities),
+            velocities_m_per_s=radar._world_from_local_vectors(local_velocities),
         )
         with kin.two_way_duals(sites=track) as duals:
             result = solve(duals.sites, "jvp")
@@ -438,7 +481,7 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
             # ``delay_rate`` and consumed by the waveform kernel's slow-time
             # carrier.
             cube = _primal(result.cube).detach().clone()
-            synthesis = radar.synthesize(
+            synthesis = radar._synthesize(
                 radar.last_radar_paths,
                 slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
             )
@@ -446,7 +489,7 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     else:
         result = solve(world_positions, "none")
         cube = result.cube
-        synthesis = radar.synthesize(
+        synthesis = radar._synthesize(
             radar.last_radar_paths,
             slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
         )

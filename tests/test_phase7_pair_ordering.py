@@ -36,18 +36,17 @@ def test_validate_pair_ordering_runs_in_production(monkeypatch):
     not a partition.
     """
 
-    from witwin.radar.paths import two_way
-    from witwin.radar.synthesis import assembly
+    import witwin.radar.paths as two_way
 
     spike = drv.MultiEndpointSpike()
     seen = []
-    original = assembly.validate_pair_ordering
+    original = two_way.validate_pair_ordering
 
     def spying(index, **kwargs):
         seen.append((index, dict(kwargs)))
         return original(index, **kwargs)
 
-    monkeypatch.setattr(assembly, "validate_pair_ordering", spying)
+    monkeypatch.setattr(two_way, "validate_pair_ordering", spying)
 
     from witwin.radar.paths import TwoWayComposer
 
@@ -79,7 +78,7 @@ def test_validate_pair_ordering_runs_in_production(monkeypatch):
 
         return rank
 
-    monkeypatch.setattr(two_way._identity, "sink_major_rank", escaping)
+    monkeypatch.setattr(two_way, "sink_major_rank", escaping)
     with pytest.raises(ValueError, match="outside the 2 x 2 array's range"):
         TwoWayComposer.freeze(
             spike.inbound,
@@ -94,18 +93,18 @@ def test_validate_pair_ordering_runs_in_production(monkeypatch):
 def test_the_direct_composer_is_held_to_the_same_layout(monkeypatch):
     """A direct batch feeds the same cube assembly and the same gate."""
 
+    import witwin.radar.paths as two_way
     from witwin.radar.paths import DirectComposer
-    from witwin.radar.synthesis import assembly
 
     spike = drv.MultiEndpointSpike()
     seen = []
-    original = assembly.validate_pair_ordering
+    original = two_way.validate_pair_ordering
 
     def spying(index, **kwargs):
         seen.append(index)
         return original(index, **kwargs)
 
-    monkeypatch.setattr(assembly, "validate_pair_ordering", spying)
+    monkeypatch.setattr(two_way, "validate_pair_ordering", spying)
     composer = DirectComposer.freeze(
         spike.inbound,
         radar_source_ids=list(spike.transmitter_ids),

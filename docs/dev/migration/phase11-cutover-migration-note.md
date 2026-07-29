@@ -20,7 +20,7 @@ note is the list of what moved, what died, and what to write instead.
 ## 1. `Radar.simulate` returns instead of raising
 
 **Before.** `Radar.simulate(scene, ...)` raised `NotImplementedError` naming
-`ChannelPropagationAdapter`, `TwoWayComposer`, `synthesize_fmcw_beat` and
+`ChannelPropagationAdapter`, `TwoWayComposer`, `synthesize_fmcw` and
 `mimo_from_paths` as the route a caller had to assemble by hand. Before that it
 took a radar `Scene` plus `motion_sampling="per_chirp" | "per_frame"`.
 
@@ -99,7 +99,7 @@ result = radar.simulate(dynamic, times=tuple(k / 10.0 for k in range(8)), ...)
 
 `Timeline.generate_rd` has no single replacement: build the Range-Doppler maps
 from `result.cube` with `witwin.radar.processing.range_profile` and
-`range_doppler` (see `examples/rgbd_range_doppler.py`).
+`range_doppler_map` (see `examples/rgbd_range_doppler.py`).
 
 ## 5. `MimoPathCache` is removed, and so is `docs/fast_mimo_api.md`
 
@@ -157,7 +157,7 @@ MOVE the Dirichlet and receiver/noise files "to their final owners". This phase
 resolves both moves as DELETE:
 
 * **The Dirichlet route (item 6, M3).** Moving it would preserve a SECOND FMCW
-  synthesis owner beside `witwin.radar.synthesis.synthesize_fmcw_beat`.
+  synthesis owner beside `witwin.radar.synthesis.synthesize_fmcw`.
   Acceptance criterion 4 requires native duplicate production code to be
   deleted, `witwin/radar/capabilities.py` already labelled the route
   `legacy_solver_route`, and its `backward` symbol was already caller-free in
@@ -167,7 +167,7 @@ resolves both moves as DELETE:
   deleted.
 * **The receive-chain runtimes (item 6, M2).** `ReceiverChainRuntime`,
   `NoiseModelRuntime` and `PolarizationRuntime` in `witwin/radar/radar.py` were
-  to move to `witwin/radar/frontend/`. `frontend/chain.py` already states that
+  to move to `witwin/radar/frontend/`. `frontend.py` already states that
   those stages are merged into `FrontendChain`, so moving them would relocate a
   shadow rather than remove it, and `Radar._validate_runtime_config` refusing a
   configuration that names both is exactly the compatibility branch criterion 6
@@ -325,7 +325,7 @@ a key the validator never read is affected.
 | `witwin.radar.Scene`, `SceneModule`, `CompiledMesh` | `witwin.core.Scene`, `witwin.core.dynamics.DynamicScene` |
 | `Timeline`, `TransformMotion` | `DynamicScene` + `LinearTrajectory` + `times=` |
 | `SamplingMode`, `MotionSampling` | nothing; sampling is per frame |
-| `Solver`, `DirichletSolver`, `radar.solver` | `witwin.radar.synthesis.synthesize_fmcw_beat` via `Radar.synthesize` |
+| `Solver`, `DirichletSolver`, `radar.solver` | `witwin.radar.synthesis.synthesize_fmcw` via `Radar.synthesize` |
 | `quantize_complex_signal` | `FrontendSpec(adc=AdcSpec(...))` |
 | `noise_model`, `receiver_chain` | `frontend=FrontendSpec(...)` |
 | `radar.last_trace` | `radar.last_snapshot` / `last_compiled_scene` / `last_propagation` / `last_radar_paths` |

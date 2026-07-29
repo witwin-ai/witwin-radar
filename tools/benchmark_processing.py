@@ -155,7 +155,7 @@ def _fmcw_case(size, *, num_tx: int | None = None, num_rx: int | None = None):
 
     from support import exact_bin_grid as grid
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes, ProcessingCube
-    from witwin.radar.synthesis.contracts import SynthesisResult
+    from witwin.radar.synthesis.assembly import SynthesisResult
 
     spec = grid.fmcw_spec(size["chirps"])
     from dataclasses import replace
@@ -165,7 +165,7 @@ def _fmcw_case(size, *, num_tx: int | None = None, num_rx: int | None = None):
     pairs = num_tx * num_rx
     spec = replace(spec, num_tx=num_tx, num_rx=num_rx)
     cube = _complex_noise((size["chirps"], pairs, size["samples"]), seed=11)
-    result = SynthesisResult.from_fmcw_beat(cube, spec)
+    result = SynthesisResult.from_fmcw(cube, spec)
     axes = ProcessingAxes.from_synthesis(result, spec, _array_spec(num_tx, num_rx))
     return {
         "result": result,
@@ -179,11 +179,11 @@ def _fmcw_case(size, *, num_tx: int | None = None, num_rx: int | None = None):
 def _ofdm_case(size):
     from support import exact_bin_grid as grid
     from witwin.radar.processing import ProcessingAxes, ProcessingCube
-    from witwin.radar.synthesis.contracts import SynthesisResult
+    from witwin.radar.synthesis.assembly import SynthesisResult
 
     spec = grid.ofdm_spec(size["chirps"])
     cube = _complex_noise((size["chirps"], size["pairs"], 64), seed=12)
-    result = SynthesisResult.from_ofdm_cfr(cube, spec)
+    result = SynthesisResult.from_ofdm(cube, spec)
     axes = ProcessingAxes.from_synthesis(
         result, spec, _array_spec(size["num_tx"], size["num_rx"])
     )
@@ -193,11 +193,11 @@ def _ofdm_case(size):
 def _pulsed_case(size):
     from support import exact_bin_grid as grid
     from witwin.radar.processing import ProcessingAxes, ProcessingCube
-    from witwin.radar.synthesis.contracts import SynthesisResult
+    from witwin.radar.synthesis.assembly import SynthesisResult
 
     spec = grid.pulsed_spec(size["chirps"])
     cube = _complex_noise((size["chirps"], size["pairs"], 128), seed=13)
-    result = SynthesisResult.from_pulsed_echo(cube, spec)
+    result = SynthesisResult.from_pulsed(cube, spec)
     axes = ProcessingAxes.from_synthesis(
         result, spec, _array_spec(size["num_tx"], size["num_rx"])
     )
@@ -227,9 +227,9 @@ def _pipeline_fixture():
 
 
 def group_transforms(size, args) -> list[dict]:
-    from witwin.radar.processing import fft2_aoa, range_doppler, range_profile
-    from witwin.radar.processing.matched_filter import matched_filter as legacy_mf
-    from witwin.radar.processing.primitives import taper
+    from witwin.radar.processing import fft2_aoa, range_doppler_map, range_profile
+    from witwin.radar.processing.range_doppler import matched_filter
+    from witwin.radar.processing.signal import taper
 
     fmcw = _fmcw_case(size)
     ofdm = _ofdm_case(size)
@@ -255,7 +255,7 @@ def group_transforms(size, args) -> list[dict]:
     add("range_profile.fmcw", lambda: range_profile(fmcw["cube"], window="hann"))
     add("range_profile.ofdm", lambda: range_profile(ofdm["cube"], window="hann"))
     add("range_profile.pulsed", lambda: range_profile(pulsed["cube"], window="hann"))
-    add("range_doppler", lambda: range_doppler(profile, window="hann"))
+    add("range_doppler_map", lambda: range_doppler_map(profile, window="hann"))
 
     # The two halves of a range profile, separated: is the cost the transform or
     # the window multiply?
@@ -270,10 +270,10 @@ def group_transforms(size, args) -> list[dict]:
     # upcast S4 deleted. This is what that deletion bought.
     pdata = pulsed["cube"].data
     pspec = pulsed["spec"]
-    add("matched_filter.float32", lambda: legacy_mf(pdata, pspec))
+    add("matched_filter.float32", lambda: matched_filter(pdata, pspec))
     add(
         "matched_filter.complex128",
-        lambda: legacy_mf(pdata, pspec, dtype=torch.complex128),
+        lambda: matched_filter(pdata, pspec, dtype=torch.complex128),
         note="the deleted unconditional upcast",
     )
 
@@ -460,7 +460,7 @@ def group_cube(size, args) -> list[dict]:
         ProcessingCube,
         beam_cube,
         conventional_steering,
-        range_doppler,
+        range_doppler_map,
         range_profile,
     )
     from witwin.radar.synthesis.assembly import assemble_frame_cube
@@ -469,7 +469,7 @@ def group_cube(size, args) -> list[dict]:
     raw = case["raw"]
     axes = case["axes"]
     array = case["array"]
-    rd = range_doppler(range_profile(case["cube"], window="hann"), window="hann")
+    rd = range_doppler_map(range_profile(case["cube"], window="hann"), window="hann")
     directions = torch.stack(
         [
             torch.tensor(

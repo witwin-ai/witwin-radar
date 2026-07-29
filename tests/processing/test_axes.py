@@ -24,8 +24,8 @@ import pytest
 import torch
 
 from support import exact_bin_grid as grid
-from witwin.radar.processing import PROCESSING_UNITS, ProcessingAxes
-from witwin.radar.synthesis.contracts import (
+from witwin.radar.processing.signal import PROCESSING_UNITS, ProcessingAxes
+from witwin.radar.synthesis.assembly import (
     BEAT_PHASOR,
     CHANNEL_PHASOR,
     SPEED_OF_LIGHT_M_PER_S,
@@ -42,7 +42,7 @@ def _cube(slow: int, fast: int) -> torch.Tensor:
 
 def fmcw_axes(**kwargs) -> ProcessingAxes:
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw_beat(
+    result = SynthesisResult.from_fmcw(
         _cube(spec.num_chirps, spec.num_samples), spec
     )
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
@@ -50,7 +50,7 @@ def fmcw_axes(**kwargs) -> ProcessingAxes:
 
 def ofdm_axes(**kwargs) -> ProcessingAxes:
     spec = grid.ofdm_spec(num_symbols=8)
-    result = SynthesisResult.from_ofdm_cfr(
+    result = SynthesisResult.from_ofdm(
         _cube(spec.num_symbols, spec.num_subcarriers), spec
     )
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
@@ -58,7 +58,7 @@ def ofdm_axes(**kwargs) -> ProcessingAxes:
 
 def pulsed_axes(**kwargs) -> ProcessingAxes:
     spec = grid.pulsed_spec(num_pulses=8)
-    result = SynthesisResult.from_pulsed_echo(
+    result = SynthesisResult.from_pulsed(
         _cube(spec.num_pulses, spec.num_samples), spec
     )
     return ProcessingAxes.from_synthesis(result, spec, grid.array_spec(), **kwargs)
@@ -92,7 +92,7 @@ def test_an_unknown_phasor_is_refused_rather_than_defaulted():
 
     spec = grid.fmcw_spec()
     result = replace(
-        SynthesisResult.from_fmcw_beat(_cube(spec.num_chirps, spec.num_samples), spec),
+        SynthesisResult.from_fmcw(_cube(spec.num_chirps, spec.num_samples), spec),
         phasor="exp(+j*k*d)",
     )
     with pytest.raises(ValueError, match="unknown phasor convention"):
@@ -212,7 +212,7 @@ def test_a_pulsed_range_gate_moves_the_axis_origin_and_nothing_else():
     from dataclasses import replace
 
     spec = replace(grid.pulsed_spec(num_pulses=8), range_gate_start_s=2.0e-8)
-    result = SynthesisResult.from_pulsed_echo(
+    result = SynthesisResult.from_pulsed(
         _cube(spec.num_pulses, spec.num_samples), spec
     )
     record = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
@@ -244,7 +244,7 @@ def test_a_cube_a_spec_and_an_array_must_describe_one_front_end():
     from dataclasses import replace
 
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw_beat(
+    result = SynthesisResult.from_fmcw(
         _cube(spec.num_chirps, spec.num_samples), spec
     )
     array = grid.array_spec()
@@ -267,43 +267,3 @@ def test_a_cube_a_spec_and_an_array_must_describe_one_front_end():
                 rx_loc=(array.rx_loc[0],),
             ),
         )
-
-
-# ---------------------------------------------------------------------------
-# Migration
-# ---------------------------------------------------------------------------
-
-
-def test_as_fmcw_axes_is_the_mechanical_migration_for_the_legacy_record():
-    """The Phase-6 ``RadarAxes`` view, with the chirp period NOT the slot period.
-
-    ``RadarAxes.chirp_period_s`` is the raw chirp period; ``_compensate_tdm_phase``
-    multiplies it by a transmitter index. This record's ``slow_time_period_s`` is
-    the TDM SLOT period, ``num_tx`` times larger. Confusing the two costs a
-    factor of ``num_tx`` in every compensated elevation, so the conversion is
-    asserted rather than assumed.
-    """
-
-    record = fmcw_axes()
-    legacy = record.as_fmcw_axes()
-    assert legacy.chirp_period_s == pytest.approx(
-        grid.FMCW_CHIRP_PERIOD_S, rel=1e-15
-    )
-    assert legacy.chirp_period_s * record.num_tx == pytest.approx(
-        record.slow_time_period_s, rel=1e-15
-    )
-    assert legacy.range_resolution == record.range_bin_m
-    assert legacy.doppler_resolution == record.velocity_bin_mps
-    assert legacy.max_doppler == record.max_unambiguous_speed_mps
-    assert legacy.wavelength_m == record.wavelength_m
-    assert legacy.element_spacing_m == record.element_spacing_m
-    assert torch.equal(legacy.velocities, record.velocity_mps)
-    assert torch.equal(
-        legacy.ranges, record.range_m[: record.range_bin_count // 2]
-    )
-
-
-def test_the_legacy_record_is_refused_for_the_two_waveforms_it_cannot_name():
-    for builder in (ofdm_axes, pulsed_axes):
-        with pytest.raises(NotImplementedError, match="FMCW-shaped"):
-            builder().as_fmcw_axes()

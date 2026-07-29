@@ -6,10 +6,9 @@ The full production chain, once per test:
 
 These are the only end-to-end range, velocity and angle ACCURACY tests in the
 repository - everything else pins a contract, a launch count or a derivative -
-so they were migrated rather than deleted when ``Radar.mimo`` and ``sigproc``
-stopped being the route. Nothing here calls ``witwin.radar.sigproc``: that
-package is a thin adapter over ``witwin.radar.processing`` and asserting an
-accuracy through an adapter measures the adapter.
+so they were migrated rather than deleted when the previous simulation and DSP
+routes were removed. Nothing here calls a compatibility layer; every assertion
+runs through the canonical processing owners.
 
 Three things changed with the route and are stated here because they change what
 the numbers mean, not merely how they are spelled:
@@ -22,7 +21,7 @@ the numbers mean, not merely how they are spelled:
   and Channel correctly publishes an exactly zero transport.
 * **Intra-frame Doppler is opened by the caller.** ``Radar.simulate`` has no
   velocity keyword, so ``conftest.simulate_point_targets`` dualises the site
-  tensor through ``propagation.kinematics.two_way_duals``. A moving-target test
+  tensor through ``propagation.two_way_duals``. A moving-target test
   here is therefore also the statement that the kinematics seam composes with
   the production entry.
 

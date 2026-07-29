@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from witwin.radar.processing import ArrayGeometry, conventional_steering, mvdr_weights
-from witwin.radar.synthesis.contracts import SPEED_OF_LIGHT_M_PER_S
+from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
 
 TX = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 1.0))

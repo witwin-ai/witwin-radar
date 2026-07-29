@@ -29,10 +29,12 @@ SPIKE_PHASE_RAD = 0.7
 
 def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
     from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwBeatSpec
+    from witwin.radar.synthesis import FmcwSpec
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwBeatSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    spec = FmcwSpec.from_radar_config(
+        config, carrier_hz=carrier_hz, output_domain="beat"
+    )
     if num_chirps is not None:
         from dataclasses import replace
 
@@ -76,7 +78,7 @@ class Phase4Spike:
         compiled=None,
     ) -> None:
         from witwin.radar.paths import TwoWayComposer
-        from witwin.radar.propagation.channel_consumer import (
+        from witwin.radar.channel import (
             ChannelPropagationAdapter,
         )
 
@@ -158,7 +160,7 @@ class Phase4Spike:
         ad_mode: str = "none",
         include_delay_rate: bool = True,
     ) -> torch.Tensor:
-        from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+        from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
         composed, _, _ = self.paths(
             tx,
@@ -168,7 +170,7 @@ class Phase4Spike:
             ad_mode=ad_mode,
             include_delay_rate=include_delay_rate,
         )
-        return synthesize_fmcw_beat(to_synthesis(composed), spec)
+        return synthesize_fmcw(to_synthesis(composed), spec)
 
     def loss(
         self,
@@ -212,7 +214,7 @@ class DirectSpike:
         compiled=None,
     ) -> None:
         from witwin.radar.paths import DirectComposer
-        from witwin.radar.propagation.channel_consumer import (
+        from witwin.radar.channel import (
             ChannelPropagationAdapter,
         )
 

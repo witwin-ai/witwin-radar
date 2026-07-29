@@ -276,7 +276,7 @@ shown to fail is a comment with an exit code.
 | `ci/check_torch_physics_allowlist.py` | the whole tree with an empty frozen exclusion list, against `ci/torch-physics-allowlist.json`, under a `FROZEN_BASELINE_DIGEST` | 79 modules, 23 recorded expressions, 34 occurrences |
 
 The fourth gate's widened scope found one expression the old one-package scan
-could not see: `witwin/radar/sensors/pattern.py`'s `torch.atan2` pair, recorded
+could not see: `witwin/radar/sensors.py`'s `torch.atan2` pair, recorded
 as debt with its reason rather than repaired. Moving it is a numerical change
 and belongs in its own commit with its own evidence.
 

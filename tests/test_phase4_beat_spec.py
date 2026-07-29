@@ -11,13 +11,13 @@ import pytest
 
 from support import phase4_geometry as geo
 from witwin.radar import RadarConfig
-from witwin.radar.synthesis import FmcwBeatSpec
+from witwin.radar.synthesis import FmcwSpec
 
 
 @pytest.fixture
-def spec() -> FmcwBeatSpec:
+def spec() -> FmcwSpec:
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    return FmcwBeatSpec.from_radar_config(config)
+    return FmcwSpec.from_radar_config(config)
 
 
 def test_units_are_converted_to_si(spec):
@@ -44,7 +44,7 @@ def test_carrier_placement_defaults_to_the_weight(spec):
     assert spec.carrier_rate_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    explicit = FmcwBeatSpec.from_radar_config(config, carrier_hz=config.fc)
+    explicit = FmcwSpec.from_radar_config(config, carrier_hz=config.fc)
     assert explicit.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
     # The kernel owns the whole carrier here, so the rate term must NOT be
     # applied as well; that would double count it.
@@ -87,12 +87,12 @@ def test_round_trip_delay_is_the_sum_of_two_legs():
 def test_spec_rejects_a_degenerate_grid():
     f_ref = geo.REFERENCE_FREQUENCY_HZ
     with pytest.raises(ValueError, match="num_samples must be positive"):
-        FmcwBeatSpec(0, 1, 1e-6, 1e-4, 1e12, 0.0, f_ref)
+        FmcwSpec(0, 1, 1e-6, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="num_chirps must be positive"):
-        FmcwBeatSpec(4, 0, 1e-6, 1e-4, 1e12, 0.0, f_ref)
+        FmcwSpec(4, 0, 1e-6, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="sample_period_s must be positive"):
-        FmcwBeatSpec(4, 1, 0.0, 1e-4, 1e12, 0.0, f_ref)
+        FmcwSpec(4, 1, 0.0, 1e-4, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="chirp_period_s must be positive"):
-        FmcwBeatSpec(4, 1, 1e-6, 0.0, 1e12, 0.0, f_ref)
+        FmcwSpec(4, 1, 1e-6, 0.0, 1e12, 0.0, f_ref)
     with pytest.raises(ValueError, match="reference_frequency_hz must be"):
-        FmcwBeatSpec(4, 1, 1e-6, 1e-4, 1e12, 0.0, 0.0)
+        FmcwSpec(4, 1, 1e-6, 1e-4, 1e12, 0.0, 0.0)

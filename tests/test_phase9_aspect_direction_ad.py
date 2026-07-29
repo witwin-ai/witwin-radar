@@ -65,7 +65,7 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
 from witwin.radar.scattering import AspectScatterResponse  # noqa: E402
-from witwin.radar.synthesis import synthesize_fmcw_beat  # noqa: E402
+from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -452,7 +452,7 @@ def _cube_loss(spike, spec, sites, *, ad_mode: str = "none"):
     composed, _, _ = spike.frame(
         sites, _response(), ad_mode=ad_mode, include_delay_rate=False
     )
-    cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+    cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum()
 
 
@@ -538,7 +538,7 @@ def test_the_direction_term_is_load_bearing_in_the_synthesized_loss(spike, spec)
         composed = spike.composer.compose(
             inbound, outbound, _response(), include_delay_rate=False
         )
-        cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+        cube = synthesize_fmcw(to_synthesis(composed), spec)
         cube.abs().square().sum().backward()
         return sites.grad
 

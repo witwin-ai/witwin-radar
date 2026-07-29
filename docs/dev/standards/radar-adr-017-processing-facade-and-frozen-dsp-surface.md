@@ -40,7 +40,7 @@ Three facts shape the answer.
 One package, one entry per stage, rank generic with an arbitrary leading batch:
 
 ```
-SynthesisResult -> ProcessingCube -> range_profile -> range_doppler
+SynthesisResult -> ProcessingCube -> range_profile -> range_doppler_map
                 -> beam_cube -> ca_cfar -> point_cloud -> DetectionFrame
 ```
 
@@ -58,12 +58,11 @@ one documented conversion site and must not grow a second home. It publishes the
 range and velocity axes in SI, the phasor convention, the array layout, and the
 derived `doppler_sign`.
 
-The legacy `Radar` is NOT made multi-waveform. `RadarSystemConfig.axes()` raises
-for anything but FMCW, `Radar.__init__` calls `_init_axes` unconditionally, and
-`from_radar_config` hard-codes FMCW, so a non-FMCW `Radar` is unconstructible
-today. `ProcessingAxes` is built one level up, at the
-`RadarSystemConfig`/`SynthesisResult` level, where all three waveforms already
-exist. `as_fmcw_axes()` returns the Phase-6 `RadarAxes` for the legacy callers.
+`ProcessingAxes` is the only physical-axis record. It is built from
+`RadarSystemConfig` and the typed `SynthesisResult`, where all waveform and
+output-domain information is available. `RadarAxes`, `_init_axes`, flat Radar
+axis aliases, and the `as_fmcw_axes()` adapter were deleted rather than
+maintained as compatibility surfaces.
 
 ### 3. One canonical Doppler convention, reconciled exactly once
 
@@ -75,7 +74,7 @@ published velocity axis for all three waveforms.
 
 `doppler_sign` is DERIVED from the cube's published `phasor` string
 (`BEAT_PHASOR -> +1`, `CHANNEL_PHASOR -> -1`, anything else is a `ValueError`),
-and the reconciliation is applied in exactly one place, inside `range_doppler`,
+and the reconciliation is applied in exactly one place, inside `range_doppler_map`,
 as a frequency-index reversal `X[k] -> X[(-k) mod D]` performed with
 `index_select` BEFORE the `fftshift`. It is a gather with no arithmetic, so it is
 exact.
@@ -151,7 +150,7 @@ DSP is justified only if the measurement shows one of:
 
 | # | Criterion | Measured | Tripped |
 |---|---|---|---|
-| (a) | dispatch overhead dominating actual transform time | every stage is flat in problem size: `range_profile` 0.079 ms at both the fixture and a 48x larger cube; `range_doppler` 0.142 / 0.145 ms; `fft2_aoa` 0.396 / 0.393 ms. Dispatch DOES dominate | see below |
+| (a) | dispatch overhead dominating actual transform time | every stage is flat in problem size: `range_profile` 0.079 ms at both the fixture and a 48x larger cube; `range_doppler_map` 0.142 / 0.145 ms; `fft2_aoa` 0.396 / 0.393 ms. Dispatch DOES dominate | see below |
 | (b) | a layout conversion costing more than the transform it feeds | `assemble_frame_cube` 0.018 ms against a 0.079 ms range profile (0.23x); `beam_cube` 0.041 ms; the micro-Doppler framing copy 0.022 ms against its 0.021 ms transform (1.05x) | no |
 | (c) | a fusion opportunity removing a materialized intermediate LARGER than the output | the windowed tensor is exactly the size of the output. The one genuine outlier is `os_cfar`, 138 MB for one `[128, 256]` map against `ca_cfar_fast`'s 0.62 MB - but that is an ALGORITHM choice with a Torch-side fix (chunking), not a kernel-fusion argument | no |
 | (d) | a tape or AD cost a native primal+JVP+VJP would remove | processing carries no production tape. The chain is post-synthesis and the plan already declares CFAR, peak selection and tracking non-differentiable | no |

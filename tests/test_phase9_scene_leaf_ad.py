@@ -54,7 +54,7 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
-from witwin.radar.synthesis import synthesize_fmcw_beat  # noqa: E402
+from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -111,7 +111,7 @@ def _chain(spec, *, vertices=None, eps_r=None, sites=None, ad_mode="none"):
     composed, _, _ = spike.frame(
         sites, drv.make_response(), ad_mode=ad_mode, include_delay_rate=False
     )
-    cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+    cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum(), spike
 
 

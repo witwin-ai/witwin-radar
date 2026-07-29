@@ -32,10 +32,10 @@ Two Phase-9 corrections to that enforcement, both of which mattered:
 
 * it checked ``requires_grad`` only, so a FORWARD DUAL walked straight through
   with a live tangent. It now goes through
-  :func:`witwin.radar.ad_contracts.refuse_derivative`, which checks both modes,
+  :func:`witwin.radar.policy.refuse_derivative`, which checks both modes,
   so this module and the wall speak with one voice and one wording;
 * it fired LATE. A :class:`DetectionFrame` is built from a
-  :class:`~witwin.radar.processing.pointcloud.PointCloud` that already exists,
+  :class:`~witwin.radar.processing.detection.PointCloud` that already exists,
   so by the time this refusal ran the frame had been computed in full. The
   point-cloud stage now refuses at ITS entry, which makes this check
   unreachable in the normal flow. It is kept anyway: an unreachable guard on
@@ -50,8 +50,8 @@ from typing import Callable
 
 import torch
 
-from ..ad_contracts import refuse_derivative
-from .pointcloud import POINT_CLOUD_COLUMNS, PointCloud
+from ..policy import refuse_derivative
+from .detection import POINT_CLOUD_COLUMNS, PointCloud
 
 
 #: Why a detection frame has no derivative.

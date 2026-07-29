@@ -279,9 +279,9 @@ def test_a_site_behind_the_wall_kills_every_row_and_the_frame_is_still_valid():
     assert float(composed.total_delay_s.abs().sum()) == 0.0
     assert float(composed.complex_transfer_ref.abs().sum()) == 0.0
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-    iq = synthesize_fmcw_beat(
+    iq = synthesize_fmcw(
         drv.to_synthesis(composed), drv.make_spec(num_chirps=2)
     )
     assert torch.count_nonzero(iq) == 0
@@ -329,7 +329,7 @@ def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipat
 
     from dataclasses import replace
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     spec = drv.make_spec(num_chirps=4)
     delay, rate, transfer, composed = _moving_frame(multipath)
@@ -339,7 +339,7 @@ def test_the_multipath_cube_matches_the_independent_float64_beat_oracle(multipat
     assert frame.path_count == 4
     assert bool(frame.row_valid.all())
 
-    measured = synthesize_fmcw_beat(drv.to_synthesis(frame), spec)
+    measured = synthesize_fmcw(drv.to_synthesis(frame), spec)
     expected = ref.beat_samples(
         delay.cpu(),
         rate.cpu(),
@@ -383,7 +383,7 @@ def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
 
     from dataclasses import replace
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     spec = drv.make_spec(num_chirps=8)
     assert spec.carrier_hz == 0.0
@@ -397,7 +397,7 @@ def test_each_combined_row_carries_its_own_analytic_slow_time_slope(multipath):
     for row in range(frame.path_count):
         alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
         alone[row] = True
-        iq = synthesize_fmcw_beat(
+        iq = synthesize_fmcw(
             drv.to_synthesis(replace(frame, row_valid=alone)), spec
         )
         chirps = iq[:, 0, 0].cpu().to(torch.complex128)

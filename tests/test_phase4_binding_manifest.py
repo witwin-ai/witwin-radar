@@ -38,7 +38,7 @@ def _implemented_operators() -> set[str]:
     file that is not a build input still has to appear in the manifest.
     """
 
-    kernels = REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels"
+    kernels = REPO_ROOT / "witwin" / "radar" / "cuda"
     found: set[str] = set()
     for path in sorted(kernels.glob("*.cu")):
         found.update(
@@ -131,7 +131,7 @@ def test_a_named_end_to_end_caller_resolves_to_something_that_exists(manifest):
 
 
 def test_every_manifested_source_is_a_build_input(manifest):
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     sources = {
         str(path.relative_to(REPO_ROOT)).replace("\\", "/")
@@ -143,7 +143,7 @@ def test_every_manifested_source_is_a_build_input(manifest):
 def test_the_load_check_covers_every_operator_family(manifest):
     """A stale binary must fail at load, not deep inside a kernel call."""
 
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     families = {entry["family"] for entry in manifest["operators"]}
     checked_families = {
@@ -164,7 +164,7 @@ def test_the_jit_build_directory_is_keyed_by_the_source_set():
     `fmcw_beat_forward` attribute error that passed on an identical rerun.
     """
 
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     fingerprint = build.source_fingerprint()
     assert len(fingerprint) == 16
@@ -174,7 +174,7 @@ def test_the_jit_build_directory_is_keyed_by_the_source_set():
 
     # Content, not just the file list: an edited kernel keys a new directory.
     original = build.extension_sources
-    kernel = REPO_ROOT / "witwin" / "radar" / "cuda" / "kernels" / "fmcw_beat.cu"
+    kernel = REPO_ROOT / "witwin" / "radar" / "cuda" / "fmcw_beat.cu"
     edited = pathlib.Path(__file__).parent / "support" / "__init__.py"
     build.extension_sources = lambda: [kernel, edited]
     try:
@@ -194,7 +194,7 @@ def test_every_load_route_validates_the_required_operators(monkeypatch):
 
     import torch
 
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     class Empty:
         def __getattr__(self, name):
@@ -205,7 +205,7 @@ def test_every_load_route_validates_the_required_operators(monkeypatch):
         build._require_operators(pathlib.Path("fake.pyd"))
 
     # And the JIT route goes through that same gate rather than around it.
-    source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "build.py").read_text(
+    source = (REPO_ROOT / "witwin" / "radar" / "cuda" / "runtime.py").read_text(
         encoding="utf-8"
     )
     assert "return _require_operators(Path(library_path))" in source

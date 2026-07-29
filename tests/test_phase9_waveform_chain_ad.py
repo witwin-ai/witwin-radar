@@ -36,7 +36,7 @@ forward-mode request whose dual covers only the transmitters is REFUSED by
 Radar's dead-tangent guard, because the outbound leg then has no live input and
 publishes no ``delay_s`` tangent. The supported shape is one dual level covering
 all three endpoint sets, which is exactly what
-``witwin.radar.propagation.kinematics.two_way_duals`` does for the same reason.
+``witwin.radar.propagation.two_way_duals`` does for the same reason.
 The last section pins both halves.
 """
 
@@ -156,7 +156,7 @@ def test_the_two_cubes_have_their_own_shapes_and_are_not_the_beat_cube(spike, sp
     # And they are published in the CHANNEL convention, unconjugated, where the
     # beat cube is the one waveform that is conjugated. A fixture that had
     # dispatched to FMCW would carry the other convention.
-    from witwin.radar.synthesis.contracts import BEAT_PHASOR, CHANNEL_PHASOR
+    from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR
 
     assert specs["ofdm"].phasor == CHANNEL_PHASOR
     assert specs["pulsed"].phasor == CHANNEL_PHASOR

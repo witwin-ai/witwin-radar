@@ -45,7 +45,7 @@ FD_RTOL = 1.0e-3
 
 
 def _ops():
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     return build.build_extension()
 

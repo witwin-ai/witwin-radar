@@ -67,7 +67,7 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-from witwin.radar.propagation.channel_consumer import (  # noqa: E402
+from witwin.radar.channel import (  # noqa: E402
     ChannelPropagationAdapter,
 )
 
@@ -208,7 +208,7 @@ def _banded(narrow, columns: int):
 def _band_tape(spike, columns: int):
     """``(contexts, total bytes, distinct-storage bytes)`` for one banded frame."""
 
-    from witwin.radar.paths import two_way
+    import witwin.radar.paths as two_way
 
     saved = []
     original = two_way._TwoWayJoin.setup_context
@@ -322,7 +322,11 @@ BOUNDARY_OPERATORS = {
         "scatter_response_aspect_backward",
         "scatter_response_aspect_jvp",
     ),
-    "fmcw": ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"),
+    "fmcw": (
+        "fmcw_spectrum_forward",
+        "fmcw_spectrum_backward",
+        "fmcw_spectrum_jvp",
+    ),
     "ofdm": ("ofdm_cfr_forward", "ofdm_cfr_backward", "ofdm_cfr_jvp"),
     "pulsed": ("pulsed_echo_forward", "pulsed_echo_backward", "pulsed_echo_jvp"),
     "sensor_weight": (
@@ -360,7 +364,7 @@ class _Launches:
 
 
 def _operators():
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     return build.build_extension()
 

@@ -12,24 +12,21 @@ Two frozen statements, both by EQUALITY rather than containment:
 
 * **the dispatcher owner set.** Every AST reference to `torch.ops` or to
   `torch.utils.cpp_extension`, anywhere under `witwin/`, must come from
-  `witwin/radar/cuda/build.py`. Not "must be in an allowlist" - must equal
+  `witwin/radar/cuda/runtime.py`. Not "must be in an allowlist" - must equal
   that one module. A new owner fails, and so does the owner disappearing.
 * **the loader's consumers.** The modules that call
-  `witwin.radar.cuda.build.build_extension()` are recorded one by one with
+  `witwin.radar.cuda.runtime.build_extension()` are recorded one by one with
   the reason each one holds a handle. A tenth consumer is a decision; a stale
   entry for a deleted one is a hole.
 
-`witwin/radar/cuda/identity.py` is deliberately NOT an owner. It validates the
-sidecars, the binary digest, the source digest and the live runtime BEFORE
-`torch.ops.load_library` runs, so it must be importable on a machine with no
-CUDA and no loaded library at all. Its zero-access property is asserted here
-positively, because "identity.py may touch torch.ops" is exactly the allowance
-that would let validation drift after the load rather than before it.
+`witwin/radar/cuda/runtime.py` is the sole dispatcher, JIT, and identity
+validation owner. It remains importable without CUDA because dispatcher loading is
+lazy; every load route must validate sidecars and runtime identity before calling
+`torch.ops.load_library`. The exact owner set and exact consumer set are frozen
+here.
 
-Docstrings are not access. This scans expressions, so the prose in
-`build.py` and `identity.py` that NAMES `torch.ops` does not make either a
-consumer of it; G1's string scan is where text is policed, and conflating the
-two would make both weaker.
+Docstrings are not access. This gate scans executable expressions; prose that names
+`torch.ops` is governed separately.
 """
 
 from __future__ import annotations
@@ -44,11 +41,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The single module allowed to name the dispatcher or the JIT compiler in
 #: code. Frozen by equality against the measured set.
-DISPATCHER_OWNERS = frozenset({"witwin/radar/cuda/build.py"})
+DISPATCHER_OWNERS = frozenset({"witwin/radar/cuda/runtime.py"})
 
 #: The loader's sibling, which must never gain dispatcher access: it runs
 #: before the library is loaded and must import without CUDA.
-IDENTITY_OWNER = "witwin/radar/cuda/identity.py"
 
 #: Every module that takes a handle from the loader, and why. Frozen by
 #: equality. Seven are kernel facades that keep the handle in a module global
@@ -57,13 +53,13 @@ IDENTITY_OWNER = "witwin/radar/cuda/identity.py"
 #: which would answer a different question.
 EXPECTED_LOADER_CONSUMERS = {
     "witwin/radar/deployment.py": "public build_info(), from the validated record",
-    "witwin/radar/frontend/chain.py": "frontend_chain facade",
-    "witwin/radar/paths/two_way.py": "two_way_join facade",
-    "witwin/radar/scattering/aspect.py": "scatter_response_aspect facade",
-    "witwin/radar/sensors/weights.py": "sensor_weight facade",
-    "witwin/radar/synthesis/fmcw_beat.py": "fmcw_beat_synthesis facade",
-    "witwin/radar/synthesis/ofdm_cfr.py": "ofdm_cfr_synthesis facade",
-    "witwin/radar/synthesis/pulsed_echo.py": "pulsed_echo_synthesis facade",
+    "witwin/radar/frontend.py": "frontend_chain facade",
+    "witwin/radar/paths.py": "two_way_join facade",
+    "witwin/radar/scattering.py": "scatter_response_aspect facade",
+    "witwin/radar/sensors.py": "sensor_weight facade",
+    "witwin/radar/synthesis/fmcw.py": "fmcw_beat_synthesis facade",
+    "witwin/radar/synthesis/ofdm.py": "ofdm_cfr_synthesis facade",
+    "witwin/radar/synthesis/pulsed.py": "pulsed_echo_synthesis facade",
 }
 
 
@@ -159,7 +155,7 @@ def check(root: Path) -> list[str]:
         lines = ", ".join(f"{line}:{name}" for line, name in dispatcher[module])
         failures.append(
             f"{module}: reaches the dispatcher directly ({lines}); the loader "
-            "at witwin/radar/cuda/build.py is the only owner"
+            "at witwin/radar/cuda/runtime.py is the only owner"
         )
     for module in sorted(DISPATCHER_OWNERS - owners):
         failures.append(
@@ -167,11 +163,6 @@ def check(root: Path) -> list[str]:
             "torch.ops nor torch.utils.cpp_extension; the record is stale"
         )
 
-    if IDENTITY_OWNER in dispatcher:
-        failures.append(
-            f"{IDENTITY_OWNER}: must validate BEFORE torch.ops.load_library and "
-            "must import without CUDA, so it may hold no dispatcher access"
-        )
 
     expected = set(EXPECTED_LOADER_CONSUMERS)
     for module in sorted(consumers - expected):
@@ -208,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         "check_raw_native_access: dispatcher owner "
         f"{sorted(DISPATCHER_OWNERS)[0]}; "
         f"{len(EXPECTED_LOADER_CONSUMERS)} recorded loader consumers; "
-        f"{IDENTITY_OWNER} holds no dispatcher access"
+        "identity validation and dispatcher loading share the single runtime owner"
     )
     return 0
 

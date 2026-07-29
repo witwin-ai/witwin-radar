@@ -1,6 +1,6 @@
 """A velocity is a tangent direction, never a leaf, and now it says so.
 
-Under ADR-038 every velocity in ``witwin.radar.propagation.kinematics`` goes
+Under ADR-038 every velocity in ``witwin.radar.propagation`` goes
 into the TANGENT slot of ``torch.autograd.forward_ad.make_dual``. A tangent is
 consumed by the forward pass and never differentiated, so ``d(loss)/d(velocity)``
 does not exist in either AD mode. It is not zero and it is not small; there is
@@ -30,7 +30,7 @@ import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
 
-from witwin.radar.propagation import kinematics as kin
+import witwin.radar.propagation as kin
 
 
 #: The refusal names the decision that makes it structural, not a preference.

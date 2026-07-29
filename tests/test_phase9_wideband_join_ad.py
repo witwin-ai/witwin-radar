@@ -1,7 +1,7 @@
 """An endpoint gradient through ``_compose_band``, column by column.
 
 Phase 8 shipped the wideband band and pinned two things about the join's
-per-column loop (``witwin/radar/paths/two_way.py``): the primal product
+per-column loop (``witwin/radar/paths.py``): the primal product
 ``H_in(f_j) * S * H_out(f_j)`` and the launch count, one per column. It pinned
 NOTHING about the loop's derivative. Every Phase-8 AD test builds synthetic
 ``[K, F]`` band tensors and differentiates the SYNTHESIS kernel with respect to
@@ -43,7 +43,7 @@ from support import fd  # noqa: E402
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 
-from witwin.radar.propagation.channel_consumer import (  # noqa: E402
+from witwin.radar.channel import (  # noqa: E402
     ChannelPropagationAdapter,
 )
 
@@ -364,7 +364,7 @@ def test_the_band_loop_keeps_one_join_context_per_column_and_aliases_its_tables(
     primal test.
     """
 
-    from witwin.radar.paths import two_way
+    import witwin.radar.paths as two_way
 
     spike = _banded(narrow, columns)
     saved = []

@@ -1,4 +1,4 @@
-"""The one contract all three waveforms consume, and the eight rules that make
+"""The one contract all three waveforms consume, and the active provenance rules that make
 the double-count hazards unrepresentable.
 
 Every assertion here runs on the CPU. That is deliberate: the provenance rules
@@ -19,8 +19,8 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from witwin.radar.paths.contracts import RadarPathBatch, RadarPathTopology
-from witwin.radar.synthesis import (
+from witwin.radar.paths import RadarPathBatch, RadarPathTopology
+from witwin.radar.synthesis.assembly import (
     SlowTimeMode,
     SynthesisPathBatch,
     WaveformSpecProtocol,
@@ -36,7 +36,7 @@ C0 = 299792458.0
 class _Spec:
     """The smallest thing that satisfies WaveformSpecProtocol.
 
-    A stand-in rather than ``FmcwBeatSpec``, because the rules are statements
+    A stand-in rather than ``FmcwSpec``, because the rules are statements
     about the protocol and not about FMCW: an OFDM or pulsed spec has to answer
     the same four questions, and testing through one waveform's dataclass would
     quietly make the rules FMCW-shaped.
@@ -52,20 +52,13 @@ class _Spec:
 class _BandSpec(_Spec):
     """A spec that opts in to indexing a ``[K, F]`` band, as OFDM does.
 
-    Declared here rather than reusing ``OfdmCfrSpec`` for the same reason
+    Declared here rather than reusing ``OfdmSpec`` for the same reason
     ``_Spec`` exists: rule R8 is a statement about the opt-in, not about OFDM's
     subcarrier grid, and testing it through the real spec would tie it to a
     cyclic prefix it has nothing to do with.
     """
 
     consumes_frequency_response: bool = True
-
-
-@dataclass(frozen=True)
-class _SensorAwareSpec(_Spec):
-    """A spec that also declares the sensor-weight owner's TX power mode."""
-
-    tx_power_mode: str = "already_in_weight"
 
 
 def _topology(rows: int) -> RadarPathTopology:
@@ -105,20 +98,6 @@ def _channel_batch(**overrides) -> SynthesisPathBatch:
     from dataclasses import replace
 
     return replace(batch, **overrides)
-
-
-def _real_batch(amplitudes: torch.Tensor | None = None) -> SynthesisPathBatch:
-    if amplitudes is None:
-        amplitudes = torch.tensor([0.5, -0.25, 1.0], dtype=torch.float32)
-    rows = int(amplitudes.shape[0])
-    return SynthesisPathBatch.from_real_amplitudes(
-        torch.linspace(1.0, 3.0, rows, dtype=torch.float32),
-        amplitudes,
-        pair_offsets=torch.tensor([0, 1, rows], dtype=torch.int64),
-        topology=_topology(rows),
-        c0=C0,
-        reference_frequency_hz=F_REF,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,55 +158,6 @@ def test_from_radar_paths_refuses_a_foreign_type():
 
 
 # ---------------------------------------------------------------------------
-# T0.4 (contract half) - the real-amplitude embedding
-# ---------------------------------------------------------------------------
-
-
-def test_real_amplitudes_keep_their_sign():
-    """A negative legacy amplitude is a reflection flip, not a magnitude.
-
-    ``complex(abs(amp), 0)`` fails this. It is the only phase a real amplitude
-    can carry, and dropping it is a silent 180-degree error.
-    """
-
-    batch = _real_batch(torch.tensor([-0.5, 0.5], dtype=torch.float32))
-    assert torch.equal(
-        batch.complex_transfer_ref,
-        torch.tensor([-0.5 + 0j, 0.5 + 0j], dtype=torch.complex64),
-    )
-    assert batch.complex_transfer_ref.imag.abs().max().item() == 0.0
-
-
-def test_real_amplitudes_become_round_trip_delay_once():
-    distances = torch.tensor([1.0, 3.7], dtype=torch.float32)
-    batch = SynthesisPathBatch.from_real_amplitudes(
-        distances,
-        torch.ones(2, dtype=torch.float32),
-        pair_offsets=torch.tensor([0, 2], dtype=torch.int64),
-        topology=_topology(2),
-        c0=C0,
-        reference_frequency_hz=F_REF,
-    )
-    expected = distances.to(torch.float64) * 2.0 / C0
-    assert torch.allclose(
-        batch.total_delay_s.to(torch.float64), expected, rtol=1e-6, atol=0.0
-    )
-
-
-def test_real_amplitudes_declare_no_reference_phase():
-    batch = _real_batch()
-    assert batch.weight_includes_reference_phase is False
-    assert batch.slow_time_mode is SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-
-
-def test_the_pair_partition_is_derived_half_open():
-    batch = _real_batch(torch.tensor([1.0, 1.0, 1.0, 1.0], dtype=torch.float32))
-    assert torch.equal(
-        batch.sensor_pair_index, torch.tensor([0, 1, 1, 1], dtype=torch.int64)
-    )
-
-
-# ---------------------------------------------------------------------------
 # Structural validation - host-only, no tensor value is read
 # ---------------------------------------------------------------------------
 
@@ -268,17 +198,6 @@ def test_a_frequency_response_without_its_grid_is_refused():
         _channel_batch(frequency_response=torch.zeros(3, 4, dtype=torch.complex64))
 
 
-def test_an_empty_batch_is_legal():
-    batch = SynthesisPathBatch.from_real_amplitudes(
-        torch.zeros(0, dtype=torch.float32),
-        torch.zeros(0, dtype=torch.float32),
-        pair_offsets=torch.tensor([0, 0, 0], dtype=torch.int64),
-        topology=_topology(0),
-        c0=C0,
-        reference_frequency_hz=F_REF,
-    )
-    assert batch.path_count == 0
-    assert batch.sensor_pair_count == 2
 
 
 def test_construction_reads_no_tensor_value():
@@ -309,7 +228,7 @@ def test_construction_reads_no_tensor_value():
 
 
 # ---------------------------------------------------------------------------
-# T0.7 - the eight provenance rules
+# T0.7 - the active provenance rules
 # ---------------------------------------------------------------------------
 
 
@@ -317,8 +236,6 @@ def test_a_compatible_channel_pair_is_accepted():
     require_compatible(_channel_batch(), _Spec())
 
 
-def test_a_compatible_real_pair_is_accepted():
-    require_compatible(_real_batch(), _Spec(carrier_hz=F_REF, carrier_rate_hz=0.0))
 
 
 def test_r1_a_channel_weight_with_a_kernel_carrier_is_refused():
@@ -329,9 +246,6 @@ def test_r1_a_channel_weight_with_a_kernel_carrier_is_refused():
         require_compatible(_channel_batch(), _Spec(carrier_hz=F_REF, carrier_rate_hz=0.0))
 
 
-def test_r2_a_phaseless_weight_with_no_carrier_owner_is_refused():
-    with pytest.raises(ValueError, match="missing carrier phase"):
-        require_compatible(_real_batch(), _Spec(carrier_hz=0.0, carrier_rate_hz=0.0))
 
 
 def test_r3_a_frozen_channel_weight_needs_the_carrier_rate():
@@ -340,11 +254,6 @@ def test_r3_a_frozen_channel_weight_needs_the_carrier_rate():
         require_compatible(batch, _Spec(carrier_rate_hz=0.5 * F_REF))
 
 
-def test_r3_a_frozen_real_weight_needs_the_kernel_carrier_at_f_ref():
-    with pytest.raises(ValueError, match="understated Doppler"):
-        require_compatible(
-            _real_batch(), _Spec(carrier_hz=0.5 * F_REF, carrier_rate_hz=0.0)
-        )
 
 
 def test_r4_a_refreshed_weight_refuses_a_carrier_rate():
@@ -371,15 +280,8 @@ def test_r5_spreading_applied_twice_is_refused():
         require_compatible(_channel_batch(), _Spec(applies_spreading=True))
 
 
-def test_r6_transmit_power_applied_twice_is_refused():
-    with pytest.raises(ValueError, match="double-counted transmit power"):
-        require_compatible(
-            _channel_batch(), _SensorAwareSpec(tx_power_mode="config_power_dbm")
-        )
 
 
-def test_r6_accepts_the_sensor_owner_that_defers_to_the_weight():
-    require_compatible(_channel_batch(), _SensorAwareSpec())
 
 
 def test_r7_a_reference_frequency_mismatch_is_refused():

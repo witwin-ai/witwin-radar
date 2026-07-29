@@ -430,7 +430,7 @@ jobs:
           if-no-files-found: error
 
   test_torch_compatibility:
-    name: Stable ABI / ${{ matrix.os }} / py${{ matrix.compatibility.python_version }} / torch${{ matrix.compatibility.torch_version }}
+    name: Exact native identity / ${{ matrix.os }} / py${{ matrix.compatibility.python_version }} / torch${{ matrix.compatibility.torch_version }}
     if: needs.policy.outputs.scope == 'full'
     needs:
       - policy
@@ -446,9 +446,6 @@ jobs:
           - {python_version: "3.12", torch_version: "2.10.0", cuda_index: "cu128"}
           - {python_version: "3.13", torch_version: "2.10.0", cuda_index: "cu128"}
           - {python_version: "3.14", torch_version: "2.10.0", cuda_index: "cu128"}
-          - {python_version: "3.14", torch_version: "2.11.0", cuda_index: "cu128"}
-          - {python_version: "3.14", torch_version: "2.12.0", cuda_index: "cu126"}
-          - {python_version: "3.14", torch_version: "2.13.0", cuda_index: "cu126"}
 
     steps:
       - name: Set up Python
@@ -475,18 +472,10 @@ jobs:
           python -m pip install --no-deps "witwin>=0.4,<0.5"
           python -m pip install --no-deps dist/*.whl
 
-      # NOTE (deviation P3, deferral D6). The binary is Stable-ABI built against
-      # Torch 2.10, but R-ADR-019's identity record pins the torch and CUDA
-      # versions it was built with, and validate_identity compares them against
-      # the live runtime. So the LOADER, not the ABI, decides these cells: a
-      # matching-Torch cell must load, and a different-Torch cell must be
-      # REFUSED loudly and must still not JIT. Asserting both is the honest
-      # reading of the contract as built. Reconciling it with the policy line
-      # "one Stable ABI binary ... loaded unchanged in every applicable
-      # compatibility cell" is an open decision owned by the R-ADR-019 author
-      # and the platform policy owner; see
-      # docs/dev/plans/phase10-deferred-release-matrix.md.
-      - name: Load the same stable binary
+      # Radar publishes an exact native identity. Every release cell therefore
+      # installs the Torch/CUDA identity used to build the wheel and must load
+      # the packaged binary; a loader refusal is a failed release cell.
+      - name: Load packaged binary with exact runtime identity
         shell: bash
         env:
           EXPECTED_TORCH: ${{ matrix.compatibility.torch_version }}
@@ -501,35 +490,16 @@ jobs:
           assert torch.__version__.split("+", 1)[0] == expected_torch
 
           import witwin.radar as radar
-          from witwin.radar.cuda import build, identity
 
-          recorded = identity.read_build_info(build.prebuilt_extension_path())
-          built_with = recorded["torch_version"]
-          live = identity.runtime_identity()
-          matches = all(recorded.get(key) == value for key, value in live.items())
-
-          if matches:
-              record = radar.build_info()
-              assert record["origin"] == "packaged", record["origin"]
-              assert "torch.utils.cpp_extension" not in sys.modules
-              print(f"packaged load OK with torch {torch.__version__} (built with {built_with})")
-              raise SystemExit(0)
-
-          try:
-              radar.build_info()
-          except build.RadarExtensionABIError as error:
-              assert "torch_version" in str(error) or "cuda_version" in str(error), error
-              assert "torch.utils.cpp_extension" not in sys.modules
-              print(f"::warning::R-ADR-019 refuses torch {torch.__version__} "
-                    f"against a binary built with {built_with}: {error}")
-              print("This cell measures deviation P3, not a passing Stable ABI cell.")
-              raise SystemExit(0)
-          raise SystemExit(
-              "the loader accepted a runtime its own identity record does not "
-              "describe; that is the silent-mismatch failure R-ADR-019 exists to stop"
+          record = radar.build_info()
+          assert record["origin"] == "packaged", record["origin"]
+          assert record["torch_version"] == torch.__version__.split("+", 1)[0], record
+          assert "torch.utils.cpp_extension" not in sys.modules
+          print(
+              f"packaged exact-identity load OK with torch {torch.__version__}; "
+              f"fingerprint={record['build_fingerprint']}"
           )
           PY
-
   consumer_channel_extra:
     # R-ADR-008 follow-up 2: the required-consumer job. Radar declares
     # `witwin-radar[channel]`, and until something installs it that extra is a

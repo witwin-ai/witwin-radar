@@ -1,6 +1,6 @@
 """The one test-side mapping from a composed batch to a synthesis batch.
 
-``synthesize_fmcw_beat`` consumes :class:`SynthesisPathBatch`, not
+``synthesize_fmcw`` consumes :class:`SynthesisPathBatch`, not
 :class:`RadarPathBatch`: the difference between them is the weight's provenance,
 and it is what lets ``require_compatible`` refuse a spec that would count the
 carrier, the spreading, or the Doppler twice.

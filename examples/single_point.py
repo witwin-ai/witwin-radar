@@ -52,14 +52,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
-from witwin.radar import Radar, RadarConfig, ScatterSitePolicy  # noqa: E402
+from witwin.radar import Radar, RadarConfig  # noqa: E402
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
     ProcessingAxes,
+    ProcessingCube,
     ca_cfar_fast,
     point_cloud,
-    range_doppler,
+    range_doppler_map,
     range_profile,
 )
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
@@ -180,7 +182,7 @@ def processing_axes(radar: Radar) -> ProcessingAxes:
     the same for every frame.
     """
 
-    synthesis = radar.synthesize(
+    synthesis = radar._synthesize(
         radar.last_radar_paths,
         slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
     )
@@ -264,8 +266,8 @@ def main() -> None:
 
     axes = processing_axes(radar)
     geometry = ArrayGeometry.from_axes(axes)
-    profile = range_profile(result.cube[0], axes=axes, window="hann")
-    rd = range_doppler(profile, window="hann")
+    profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
+    rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(
         geometry.sensor_pair_count, *rd.data.shape[-2:]
     ).sum(dim=0)

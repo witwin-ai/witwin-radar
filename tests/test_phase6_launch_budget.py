@@ -7,7 +7,7 @@ change a number here rather than a number in the file it was already editing.
 
 The budgets are the design's section 4.3:
 
-    fmcw_beat_forward       1 per frame
+    fmcw_spectrum_forward   1 per default FMCW frame
     ofdm_cfr_forward        1 per frame
     pulsed_echo_forward     1 per frame
     sensor_weight_forward   1 per frame
@@ -38,6 +38,9 @@ SYNTHESIS_OPERATORS = (
     "fmcw_beat_forward",
     "fmcw_beat_backward",
     "fmcw_beat_jvp",
+    "fmcw_spectrum_forward",
+    "fmcw_spectrum_backward",
+    "fmcw_spectrum_jvp",
     "ofdm_cfr_forward",
     "ofdm_cfr_backward",
     "ofdm_cfr_jvp",
@@ -102,7 +105,7 @@ def batch(spike):
 
 
 def _operators():
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     return build.build_extension()
 
@@ -112,15 +115,15 @@ def _waveforms():
 
     from test_phase6_cross_waveform import fmcw_spec, ofdm_spec, pulsed_spec
     from witwin.radar.synthesis import (
-        synthesize_fmcw_beat,
-        synthesize_ofdm_cfr,
-        synthesize_pulsed_echo,
+        synthesize_fmcw,
+        synthesize_ofdm,
+        synthesize_pulsed,
     )
 
     return (
-        ("fmcw_beat", synthesize_fmcw_beat, fmcw_spec(4)),
-        ("ofdm_cfr", synthesize_ofdm_cfr, ofdm_spec(4)),
-        ("pulsed_echo", synthesize_pulsed_echo, pulsed_spec(4)),
+        ("fmcw_beat", synthesize_fmcw, fmcw_spec(4)),
+        ("ofdm_cfr", synthesize_ofdm, ofdm_spec(4)),
+        ("pulsed_echo", synthesize_pulsed, pulsed_spec(4)),
     )
 
 
@@ -165,7 +168,7 @@ def test_the_launch_count_is_flat_in_slot_count(spike, monkeypatch, capsys):
     """
 
     from witwin.channel.propagation import consumer
-    from witwin.radar.synthesis import synthesize_fmcw_beat
+    from witwin.radar.synthesis import synthesize_fmcw
 
     from test_phase6_cross_waveform import fmcw_spec
 
@@ -190,7 +193,7 @@ def test_the_launch_count_is_flat_in_slot_count(spike, monkeypatch, capsys):
         composed = spike.composer.compose(
             inbound.slot(0), outbound.slot(0), drv.make_response()
         )
-        synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+        synthesize_fmcw(drv.to_synthesis(composed), spec)
         reported[slots] = (replays["count"], dict(ledger.launches))
         monkeypatch.undo()
 
@@ -229,12 +232,11 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
 
     The owner work item 8 introduced used to be reachable only through
     ``Radar.mimo_from_trace``. Its production consumer is now
-    ``sensors/round_trip.py``, applied inside ``Radar.simulate`` when a caller
-    declares an antenna pattern, and the budget is unchanged: ONE launch covers
+    ``sensors.py``, applied inside ``Radar.simulate`` from the Radar sensor configuration, and the budget is unchanged: ONE launch covers
     the whole frame's composed rows however many pairs and sites they span.
 
     Two differences from the legacy spelling, both deliberate. This route also
-    synthesizes a waveform, so ``fmcw_beat_forward`` is asserted at the same
+    synthesizes a waveform, so ``fmcw_spectrum_forward`` is asserted at the same
     count rather than required to be zero - the claim is that the pattern stage
     adds exactly one launch on top of the frame the entry already pays for. And
     the run is TWO frames, which is what makes this a per-frame budget: a stage
@@ -246,12 +248,21 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
 
-    from witwin.radar import Radar, ScatterSitePolicy
+    from witwin.radar import Radar
+    from witwin.radar.simulation import ScatterSitePolicy
     from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.sensors.round_trip import ISOTROPIC_PATTERN
+    from witwin.radar.sensors import ISOTROPIC_PATTERN
 
+    config = dict(geo.FIXTURE_RADAR_CONFIG)
+    config["antenna_pattern"] = {
+        "kind": ISOTROPIC_PATTERN.kind,
+        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
+        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
+        "x_values": list(ISOTROPIC_PATTERN.x_values),
+        "y_values": list(ISOTROPIC_PATTERN.y_values),
+    }
     radar = Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
+        config,
         position=(0.0, 0.0, 0.0),
         target=(1.0, 0.0, 0.0),
     )
@@ -274,7 +285,6 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
             times=times,
             response=response,
             sites=sites,
-            antenna_pattern=ISOTROPIC_PATTERN,
         )
 
     simulate((0.0,))  # resolve every lazy import and table before wrapping
@@ -291,9 +301,9 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
     assert ledger.launches["sensor_weight_forward"] == frames, ledger.launches
     assert ledger.launches["sensor_weight_backward"] == 0, ledger.launches
     assert ledger.launches["sensor_weight_jvp"] == 0, ledger.launches
-    assert ledger.launches["fmcw_beat_forward"] == frames, ledger.launches
+    assert ledger.launches["fmcw_spectrum_forward"] == frames, ledger.launches
     for name in SYNTHESIS_OPERATORS:
-        if not name.startswith("sensor_weight") and name != "fmcw_beat_forward":
+        if not name.startswith("sensor_weight") and name != "fmcw_spectrum_forward":
             assert ledger.launches[name] == 0, (name, ledger.launches)
 
 

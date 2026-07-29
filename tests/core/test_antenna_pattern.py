@@ -30,7 +30,7 @@ import torch
 from witwin.radar import Radar, RadarConfig
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology
 from witwin.radar.sensors import AntennaPatternSpec
-from witwin.radar.sensors.round_trip import RoundTripPatternStage
+from witwin.radar.sensors import RoundTripPatternStage
 
 
 pytestmark = pytest.mark.gpu
@@ -177,11 +177,11 @@ def test_missing_antenna_pattern_uses_default_dipole_runtime():
     assert radar.config.antenna_pattern is None
     assert radar.antenna_pattern_config["kind"] == "separable"
 
-    center_gain = radar.evaluate_antenna_pattern_xy(
+    center_gain = radar._evaluate_antenna_pattern_xy(
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
-    edge_gain = radar.evaluate_antenna_pattern_xy(
+    edge_gain = radar._evaluate_antenna_pattern_xy(
         torch.tensor([85.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )

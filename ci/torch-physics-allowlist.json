@@ -1,5 +1,5 @@
 {
-  "comment": "Every torch call in the FORBIDDEN list that survives anywhere under witwin/, classified. Scope is the WHOLE tree with an empty exclusion list, because the previous scan covered one package and a narrow scope is a silent way to grow an allowlist. Keyed by (module, function, call, occurrences); equality in both directions. A recorded entry states what an expression IS - several are debt, not approval. Enforced by ci/check_torch_physics_allowlist.py, whose FROZEN_BASELINE_DIGEST covers this whole document.",
+  "comment": "Every torch call in the FORBIDDEN list that survives anywhere under witwin/, classified. Scope is the WHOLE tree with an empty exclusion list, because the previous scan covered one package and a narrow scope is a silent way to grow an allowlist. Keyed by (module, function, call, occurrences); equality in both directions. Every recorded entry states the accepted owner boundary for the expression. Enforced by ci/check_torch_physics_allowlist.py, whose FROZEN_BASELINE_DIGEST covers this whole document.",
   "schema_version": 1,
   "scanned_root": "witwin",
   "excluded_paths": [],
@@ -30,30 +30,29 @@
     "dsp_replica": "A reference waveform or steering vector built for correlation or estimation, downstream of the cube. It reconstructs a KNOWN transmit or array law to match against measured samples; it does not evaluate scene propagation.",
     "dsp_estimation": "Angle, Doppler or phase estimation over the cube. Behind the R-ADR-018 non-differentiability wall.",
     "result_assembly": "Per-response, not per-path, construction of a complex result whose per-path factors are all native.",
-    "legacy_pose_authoring": "Body-model pose math on the legacy SMPL route, upstream of the Core/Channel compile boundary.",
-    "freeze_time_pattern_oracle": "Recorded DEBT found by this gate's widened scope. The production per-path antenna weight is the native sensor_weight family; this Torch route is the freeze-time and oracle evaluator."
+    "smpl_pose_authoring": "Body-model pose math upstream of the Core/Channel compile boundary."
   },
   "entries": [
     {
-      "module": "witwin/radar/geometry/smpl.py",
+      "module": "witwin/radar/smpl.py",
       "function": "_axis_angle_matrices",
       "call": "torch.sin",
       "occurrences": 1,
-      "category": "legacy_pose_authoring",
-      "reason": "Rodrigues rotation for the SMPL joint axis-angle vectors, 24 joints per frame. It authors a deformed rest mesh that then crosses the Core compile boundary; it is not per-path propagation. The legacy SMPL route is already a recorded exception in tests/test_phase6_no_torch_physics.py::PHASE9_KNOWN_REQUIRES_GRAD_ROUTES.",
+      "category": "smpl_pose_authoring",
+      "reason": "Rodrigues rotation for the SMPL joint axis-angle vectors, 24 joints per frame. It authors a deformed rest mesh that then crosses the Core compile boundary; it is not per-path propagation. This is the accepted SMPL authoring boundary recorded in R-ADR-007.",
       "adr": "R-ADR-007"
     },
     {
-      "module": "witwin/radar/geometry/smpl.py",
+      "module": "witwin/radar/smpl.py",
       "function": "_axis_angle_matrices",
       "call": "torch.cos",
       "occurrences": 1,
-      "category": "legacy_pose_authoring",
+      "category": "smpl_pose_authoring",
       "reason": "The cosine half of the same Rodrigues expression.",
       "adr": "R-ADR-007"
     },
     {
-      "module": "witwin/radar/processing/aoa.py",
+      "module": "witwin/radar/processing/angle.py",
       "function": "tdm_compensate",
       "call": "torch.exp",
       "occurrences": 1,
@@ -62,7 +61,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/aoa.py",
+      "module": "witwin/radar/processing/angle.py",
       "function": "phase_comparison_aoa",
       "call": "torch.exp",
       "occurrences": 1,
@@ -71,7 +70,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/aoa.py",
+      "module": "witwin/radar/processing/angle.py",
       "function": "upa_steering",
       "call": "torch.sin",
       "occurrences": 2,
@@ -80,7 +79,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/aoa.py",
+      "module": "witwin/radar/processing/angle.py",
       "function": "upa_steering",
       "call": "torch.polar",
       "occurrences": 2,
@@ -89,7 +88,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/beamforming.py",
+      "module": "witwin/radar/processing/angle.py",
       "function": "conventional_steering",
       "call": "torch.polar",
       "occurrences": 1,
@@ -98,7 +97,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/microdoppler.py",
+      "module": "witwin/radar/processing/range_doppler.py",
       "function": "_window",
       "call": "torch.cos",
       "occurrences": 1,
@@ -107,7 +106,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/primitives.py",
+      "module": "witwin/radar/processing/signal.py",
       "function": "window_values",
       "call": "torch.cos",
       "occurrences": 5,
@@ -116,7 +115,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/primitives.py",
+      "module": "witwin/radar/processing/signal.py",
       "function": "pulse_replica",
       "call": "torch.cos",
       "occurrences": 1,
@@ -125,7 +124,7 @@
       "adr": "R-ADR-017"
     },
     {
-      "module": "witwin/radar/processing/primitives.py",
+      "module": "witwin/radar/processing/signal.py",
       "function": "pulse_replica",
       "call": "torch.sin",
       "occurrences": 1,
@@ -152,30 +151,12 @@
       "adr": "R-ADR-007"
     },
     {
-      "module": "witwin/radar/scattering/rcs.py",
+      "module": "witwin/radar/scattering.py",
       "function": "evaluate",
       "call": "torch.exp",
       "occurrences": 1,
       "category": "result_assembly",
       "reason": "ScalarRcsResponse's per-target complex assembly: one complex number per target, broadcast across its rows. R-ADR-007 places it inside the Torch allowlist by name, and its aspect-dependent successor is native (scatter_response_aspect). Already frozen by equality in tests/test_phase6_no_torch_physics.py::PHASE9_RCS_TORCH_CALLS.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/sensors/pattern.py",
-      "function": "evaluate_antenna_pattern_vectors",
-      "call": "torch.atan2",
-      "occurrences": 2,
-      "category": "freeze_time_pattern_oracle",
-      "reason": "FOUND BY THIS GATE'S WIDENED SCOPE - sensors/ was nominally an owner package but the forbidden-call scan only ever walked solvers/. Direction vectors to azimuth and elevation degrees before a pattern-table interpolation. The production per-path antenna weight is the native sensor_weight family (kernels/sensor_weight.cu, 3 operators); this Torch route is what AntennaPattern.evaluate_xy's own docstring calls freeze-time work and the kernel's oracle. Its only callers are the public Radar.evaluate_antenna_pattern_vectors accessor and tests/reference/path_math.py. Recorded as debt rather than repaired: moving it is a numerical change and Phase 10 is an architecture phase.",
-      "adr": "R-ADR-007"
-    },
-    {
-      "module": "witwin/radar/utils/vector.py",
-      "function": "normalize_rows",
-      "call": "torch.linalg.norm",
-      "occurrences": 1,
-      "category": "freeze_time_pose",
-      "reason": "The shared row-normalisation utility used by scene and pose authoring.",
       "adr": "R-ADR-007"
     }
   ]

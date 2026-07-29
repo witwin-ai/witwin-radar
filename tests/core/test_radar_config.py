@@ -39,34 +39,6 @@ class TestRadarConfigSchema:
         assert radar_config.antenna_pattern["x_values"][1] == pytest.approx(1.0)
         assert radar_config.antenna_pattern["y_values"] == [0.5, 1.0, 0.5]
 
-    def test_polarization_round_trip_through_the_sensor_block(self):
-        """The named directions still resolve; the FLAT key no longer exists.
-
-        Phase 11 deleted ``RadarConfig.polarization`` with the runtime that read
-        it - a second projection of a field Channel has already projected onto
-        each endpoint's declared polarization. ``validate_polarization_config``
-        survives because the sensor BLOCK still declares one, for the native
-        kernel mode that implements the legacy projection, so the round trip is
-        asserted where it still happens.
-        """
-
-        from witwin.radar.validation import validate_polarization_config
-
-        polarization = validate_polarization_config(
-            {
-                "tx": "horizontal",
-                "rx": ["vertical", "horizontal", "vertical", "horizontal"],
-                "reflection_flip": False,
-            },
-            num_tx=STANDARD_CONFIG["num_tx"],
-            num_rx=STANDARD_CONFIG["num_rx"],
-        )
-
-        assert polarization["tx"][0] == pytest.approx((1.0, 0.0, 0.0))
-        assert polarization["rx"][0] == pytest.approx((0.0, 1.0, 0.0))
-        assert polarization["rx"][1] == pytest.approx((1.0, 0.0, 0.0))
-        assert polarization["reflection_flip"] is False
-
     def test_the_flat_record_no_longer_carries_the_three_deleted_blocks(self):
         """A dataclass field is the claim; asserting its absence is the check."""
 
@@ -132,15 +104,6 @@ class TestRadarConfigSchema:
         with pytest.raises(ValueError, match="must contain exactly 3 entries"):
             RadarConfig.from_dict(broken)
 
-    def test_polarization_requires_matching_rx_count(self):
-        from witwin.radar.validation import validate_polarization_config
-
-        with pytest.raises(ValueError, match="must contain exactly 4 entries"):
-            validate_polarization_config(
-                {"tx": "horizontal", "rx": ["horizontal", "vertical"]},
-                num_tx=STANDARD_CONFIG["num_tx"],
-                num_rx=STANDARD_CONFIG["num_rx"],
-            )
 
 
 class TestParameterFormulas:
@@ -152,8 +115,8 @@ class TestParameterFormulas:
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz * cfg["adc_samples"])
         mock = MockRadar(cfg)
-        assert mock.range_resolution == pytest.approx(expected, rel=1e-10)
-        assert 0.03 < mock.range_resolution < 0.06
+        assert mock.axes.range_bin_m == pytest.approx(expected, rel=1e-10)
+        assert 0.03 < mock.axes.range_bin_m < 0.06
 
     def test_doppler_resolution(self):
         cfg = STANDARD_CONFIG
@@ -162,8 +125,8 @@ class TestParameterFormulas:
         effective_period = chirp_period * cfg["num_tx"]
         expected = lam / (2 * cfg["chirp_per_frame"] * effective_period)
         mock = MockRadar(cfg)
-        assert mock.doppler_resolution == pytest.approx(expected, rel=1e-10)
-        assert 0.05 < mock.doppler_resolution < 0.15
+        assert mock.axes.velocity_bin_mps == pytest.approx(expected, rel=1e-10)
+        assert 0.05 < mock.axes.velocity_bin_mps < 0.15
 
     def test_max_range_uses_precise_c0(self):
         cfg = STANDARD_CONFIG
@@ -171,12 +134,12 @@ class TestParameterFormulas:
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz)
         mock = MockRadar(cfg)
-        assert mock.max_range == pytest.approx(expected, rel=1e-10)
+        assert mock.axes.max_unambiguous_range_m == pytest.approx(expected, rel=1e-10)
 
     def test_max_range_equals_resolution_times_adc(self):
         mock = MockRadar(STANDARD_CONFIG)
-        assert mock.max_range == pytest.approx(
-            mock.range_resolution * STANDARD_CONFIG["adc_samples"],
+        assert mock.axes.max_unambiguous_range_m == pytest.approx(
+            mock.axes.range_bin_m * STANDARD_CONFIG["adc_samples"],
             rel=1e-10,
         )
 
@@ -186,17 +149,17 @@ class TestParameterFormulas:
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         expected = lam / (4 * chirp_period * cfg["num_tx"])
         mock = MockRadar(cfg)
-        assert mock.max_doppler == pytest.approx(expected, rel=1e-10)
+        assert mock.axes.max_unambiguous_speed_mps == pytest.approx(expected, rel=1e-10)
 
     def test_wavelength(self):
         mock = MockRadar(STANDARD_CONFIG)
-        assert mock._lambda == pytest.approx(C0 / 77e9, rel=1e-10)
-        assert 3.8e-3 < mock._lambda < 4.0e-3
+        assert mock.wavelength_m == pytest.approx(C0 / 77e9, rel=1e-10)
+        assert 3.8e-3 < mock.wavelength_m < 4.0e-3
 
     def test_antenna_positions_scaled(self):
         cfg = STANDARD_CONFIG
         mock = MockRadar(cfg)
-        spacing = mock._lambda / 2
+        spacing = mock.wavelength_m / 2
         np.testing.assert_allclose(mock.tx_loc, np.array(cfg["tx_loc"], dtype=np.float32) * spacing)
         np.testing.assert_allclose(mock.rx_loc, np.array(cfg["rx_loc"], dtype=np.float32) * spacing)
 
@@ -209,7 +172,7 @@ class TestConfigVariations:
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz * adc_samples)
-        assert mock.range_resolution == pytest.approx(expected, rel=1e-10)
+        assert mock.axes.range_bin_m == pytest.approx(expected, rel=1e-10)
 
     @pytest.mark.parametrize("chirps", [8, 32, 64, 128, 256])
     def test_doppler_resolution_scales_with_chirps(self, chirps):
@@ -219,7 +182,7 @@ class TestConfigVariations:
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         effective_period = chirp_period * cfg["num_tx"]
         expected = lam / (2 * chirps * effective_period)
-        assert mock.doppler_resolution == pytest.approx(expected, rel=1e-10)
+        assert mock.axes.velocity_bin_mps == pytest.approx(expected, rel=1e-10)
 
     @pytest.mark.parametrize("num_tx", [1, 2, 3, 4, 8])
     def test_max_doppler_scales_with_num_tx(self, num_tx):
@@ -228,7 +191,7 @@ class TestConfigVariations:
         lam = C0 / cfg["fc"]
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         expected = lam / (4 * chirp_period * num_tx)
-        assert mock.max_doppler == pytest.approx(expected, rel=1e-10)
+        assert mock.axes.max_unambiguous_speed_mps == pytest.approx(expected, rel=1e-10)
 
 
 def test_a_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_config):
@@ -237,7 +200,7 @@ def test_a_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_
     radar = Radar(standard_config, device="cpu")
     assert radar.device == torch.device("cpu")
     assert radar.tx_pos.device.type == "cpu"
-    assert radar.ranges.device.type == "cpu"
+    assert not hasattr(radar, "axes")
 
 
 def test_radar_rejects_backend_keyword(standard_config):
@@ -289,16 +252,18 @@ class TestRadarConstruction:
 
         radar = Radar(standard_config)
         mock = MockRadar(standard_config)
-        assert radar.range_resolution == pytest.approx(mock.range_resolution, rel=1e-10)
-        assert radar.doppler_resolution == pytest.approx(mock.doppler_resolution, rel=1e-10)
-        assert radar.max_range == pytest.approx(mock.max_range, rel=1e-10)
+        spec = radar.system_config.waveform_spec()
+        assert spec.max_unambiguous_speed_mps == pytest.approx(
+            mock.axes.max_unambiguous_speed_mps, rel=1e-10
+        )
 
-    def test_radar_axes_shapes(self, standard_config):
+    def test_radar_has_no_processing_axis_state(self, standard_config):
         from witwin.radar import Radar
 
         radar = Radar(standard_config)
-        assert radar.ranges.shape[0] == radar.config.num_range_bins // 2
-        assert radar.velocities.shape[0] == radar.config.num_doppler_bins
+        assert not hasattr(radar, 'axes')
+        assert not hasattr(radar, 'ranges')
+        assert not hasattr(radar, 'velocities')
 
     def test_no_solver_and_no_fft_state_hang_off_the_radar(self, standard_config):
         """This used to assert where the FFT state LIVED; now there is none.

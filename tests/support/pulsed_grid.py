@@ -28,11 +28,11 @@ from __future__ import annotations
 
 import torch
 
-from witwin.radar.synthesis.contracts import (
+from witwin.radar.synthesis.assembly import (
     PULSE_KIND_LFM,
     PULSE_KIND_RECT,
     SPEED_OF_LIGHT_M_PER_S,
-    PulsedEchoSpec,
+    PulsedSpec,
 )
 
 
@@ -62,7 +62,7 @@ ON_GRID_SAMPLE = 100
 ON_GRID_TAU_S = ON_GRID_SAMPLE * SAMPLE_PERIOD_S
 
 
-def reference_spec(**overrides) -> PulsedEchoSpec:
+def reference_spec(**overrides) -> PulsedSpec:
     """The shared grid at the PRODUCTION carrier placement, LFM pulse."""
 
     fields = dict(
@@ -80,10 +80,10 @@ def reference_spec(**overrides) -> PulsedEchoSpec:
         carrier_rate_hz=F_REF_HZ,
     )
     fields.update(overrides)
-    return PulsedEchoSpec(**fields)
+    return PulsedSpec(**fields)
 
 
-def rect_spec(**overrides) -> PulsedEchoSpec:
+def rect_spec(**overrides) -> PulsedSpec:
     """The rectangular pulse on the same grid.
 
     ``bandwidth_hz = 1 / T_p`` is the rectangle's own matched-filter bandwidth
@@ -119,7 +119,7 @@ def peak_estimate(cube_row: torch.Tensor, spec, *, oversample: int = 64):
     it does not shrink with a faster ADC. Both were measured.
     """
 
-    from witwin.radar.sigproc.matched_filter import lag_axis, matched_filter
+    from witwin.radar.processing.range_doppler import lag_axis, matched_filter
 
     compressed = matched_filter(cube_row, spec, oversample=oversample)
     lags = lag_axis(spec, oversample=oversample)

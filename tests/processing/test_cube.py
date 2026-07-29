@@ -18,9 +18,9 @@ import torch
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
 from witwin.radar.processing import ProcessingAxes, ProcessingCube
-from witwin.radar.synthesis import synthesize_fmcw_beat
+from witwin.radar.synthesis import synthesize_fmcw
 from witwin.radar.synthesis.assembly import assemble_frame_cube
-from witwin.radar.synthesis.contracts import SynthesisResult
+from witwin.radar.synthesis.assembly import SynthesisResult
 
 pytestmark = pytest.mark.gpu
 
@@ -34,7 +34,7 @@ def frame():
 
 
 def _cube(batch, spec):
-    result = SynthesisResult.from_fmcw_beat(synthesize_fmcw_beat(batch, spec), spec)
+    result = SynthesisResult.from_fmcw(synthesize_fmcw(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
     return ProcessingCube.from_synthesis(result, axes), result, axes
 
@@ -82,7 +82,7 @@ def test_a_dead_row_reaches_the_cube_as_an_exact_zero(frame):
 def _select(batch, keep):
     """A batch physically containing only ``keep``, with rebuilt CSR offsets."""
 
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
 
     index = torch.nonzero(keep, as_tuple=False).flatten()
     pair = batch.sensor_pair_index[index].contiguous()
@@ -118,10 +118,10 @@ def test_the_cube_refuses_a_result_its_metadata_record_does_not_describe(frame):
 
     _, _, batch = frame
     spec = grid.fmcw_spec(2)
-    result = SynthesisResult.from_fmcw_beat(synthesize_fmcw_beat(batch, spec), spec)
+    result = SynthesisResult.from_fmcw(synthesize_fmcw(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
 
-    with pytest.raises(ValueError, match="different products"):
+    with pytest.raises(ValueError, match="output_domain=.*disagrees"):
         ProcessingCube.from_synthesis(
             replace(result, axes=("symbol", "sensor_pair", "subcarrier")), axes
         )

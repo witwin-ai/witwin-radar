@@ -73,13 +73,13 @@ _DSO_SUFFIXES = frozenset({".dll", ".dylib", ".pyd", ".so"})
 #: copies reproduce the digest without knowing where they were built.
 _SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
-    "witwin/radar/cuda/kernels/fmcw_beat.cu",
-    "witwin/radar/cuda/kernels/frontend.cu",
-    "witwin/radar/cuda/kernels/ofdm_cfr.cu",
-    "witwin/radar/cuda/kernels/pulsed_echo.cu",
-    "witwin/radar/cuda/kernels/scatter_response.cu",
-    "witwin/radar/cuda/kernels/sensor_weight.cu",
-    "witwin/radar/cuda/kernels/two_way_join.cu",
+    "witwin/radar/cuda/fmcw_beat.cu",
+    "witwin/radar/cuda/frontend.cu",
+    "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/pulsed_echo.cu",
+    "witwin/radar/cuda/scatter_response.cu",
+    "witwin/radar/cuda/sensor_weight.cu",
+    "witwin/radar/cuda/two_way_join.cu",
 )
 
 _BUILD_INFO_KEYS = frozenset(

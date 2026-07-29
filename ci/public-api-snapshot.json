@@ -1,81 +1,10 @@
 {
-  "schema_version": 1,
-  "generator": "tests/test_public_api_snapshot.py::build_snapshot/v1",
+  "schema_version": 2,
+  "generator": "tests/test_public_api_snapshot.py::build_snapshot/v2",
   "modules": [
     {
       "module": "witwin.radar",
       "exports": [
-        {
-          "name": "Box",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Box",
-          "signature": "(position=(0, 0, 0), size=(1, 1, 1), rotation=None, *, device=None)"
-        },
-        {
-          "name": "Cone",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Cone",
-          "signature": "(position=(0, 0, 0), radius=1.0, height=1.0, axis='z', rotation=None, *, device=None)"
-        },
-        {
-          "name": "Cylinder",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Cylinder",
-          "signature": "(position=(0, 0, 0), radius=1.0, height=1.0, axis='z', rotation=None, *, device=None)"
-        },
-        {
-          "name": "DetectorType",
-          "kind": "class",
-          "target": "witwin.radar.processing.contracts.DetectorType",
-          "signature": "(value, names=None, *, module=None, qualname=None, type=None, start=1, boundary=None)"
-        },
-        {
-          "name": "Ellipsoid",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Ellipsoid",
-          "signature": "(position=(0, 0, 0), radii=(1, 1, 1), rotation=None, *, device=None)"
-        },
-        {
-          "name": "Geometry",
-          "kind": "union",
-          "target": "witwin.core.geometry.primitives.Box | witwin.core.geometry.primitives.Sphere | witwin.core.geometry.primitives.Cylinder | witwin.core.geometry.primitives.Cone | witwin.core.geometry.primitives.Ellipsoid | witwin.core.geometry.primitives.Pyramid | witwin.core.geometry.primitives.Prism | witwin.core.geometry.primitives.Torus | witwin.core.geometry.primitives.HollowBox | witwin.core.geometry.mesh.Mesh | witwin.radar.geometry.smpl.SMPLBody"
-        },
-        {
-          "name": "GeometryBase",
-          "kind": "class",
-          "target": "witwin.core.geometry.base.GeometryBase",
-          "signature": "(position=(0, 0, 0), rotation=None, *, device=None)"
-        },
-        {
-          "name": "HollowBox",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.HollowBox",
-          "signature": "(position=(0, 0, 0), outer_size=(1, 1, 1), inner_size=(0.8, 0.8, 0.8), rotation=None, *, device=None)"
-        },
-        {
-          "name": "Material",
-          "kind": "class",
-          "target": "witwin.core.material.PhysicalMaterial",
-          "signature": "(eps_r: 'ScalarLike' = 1.0, mu_r: 'ScalarLike' = 1.0, sigma_e: 'ScalarLike' = 0.0, name: 'str | None' = None, *, material_id: 'MaterialId | int | None' = None, version: 'int' = 0, thickness_m: 'ScalarLike' = 0.1, layers=(), geometry_mode: 'str' = 'thin_sheet', roughness_front: 'SurfaceRoughness | None' = None, roughness_back: 'SurfaceRoughness | None' = None, dispersion: 'DispersionSpec | PowerLawDispersion | None' = None, gain: 'ScalarLike' = 1.0, scattering_coefficient: 'ScalarLike' = 0.0, xpd_coefficient: 'ScalarLike' = 0.0, conductor_model: \"Literal['finite', 'perfect']\" = 'finite')"
-        },
-        {
-          "name": "Mesh",
-          "kind": "class",
-          "target": "witwin.core.geometry.mesh.Mesh",
-          "signature": "(vertices, faces, *, position=(0.0, 0.0, 0.0), scale=1.0, rotation=None, recenter: 'bool' = True, fill_mode: 'str' = 'auto', surface_thickness: 'float | None' = None, source_path: 'str | PathLike[str] | None' = None, topology_diagnostics: 'bool | None' = None, device=None)"
-        },
-        {
-          "name": "Prism",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Prism",
-          "signature": "(position=(0, 0, 0), radius=1.0, height=1.0, num_sides=6, axis='z', rotation=None, *, device=None)"
-        },
-        {
-          "name": "Pyramid",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Pyramid",
-          "signature": "(position=(0, 0, 0), base_size=1.0, height=1.0, axis='z', rotation=None, *, device=None)"
-        },
         {
           "name": "Radar",
           "kind": "class",
@@ -87,77 +16,27 @@
           "kind": "class",
           "target": "witwin.radar.radar.RadarConfig",
           "signature": "(num_tx: 'int', num_rx: 'int', fc: 'float', slope: 'float', adc_samples: 'int', adc_start_time: 'float', sample_rate: 'float', idle_time: 'float', ramp_end_time: 'float', chirp_per_frame: 'int', frame_per_second: 'float', num_doppler_bins: 'int', num_range_bins: 'int', num_angle_bins: 'int', power: 'float', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', antenna_pattern: 'dict[str, Any] | None' = None, frontend: \"'FrontendSpec | None'\" = None) -> None"
-        },
-        {
-          "name": "RadarPropagationLegs",
-          "kind": "class",
-          "target": "witwin.radar.propagation.contracts.RadarPropagationLegs",
-          "signature": "(inbound: 'RadarLegBatch', outbound: 'RadarLegBatch') -> None"
-        },
-        {
-          "name": "RadarSimulationResult",
-          "kind": "class",
-          "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object') -> None"
-        },
-        {
-          "name": "RadarWorldBinding",
-          "kind": "class",
-          "target": "witwin.radar.scene_binding.RadarWorldBinding",
-          "signature": "(transmitters: 'RadarEndpointSpec', receivers: 'RadarEndpointSpec', site_sources: 'RadarEndpointSpec', site_sinks: 'RadarEndpointSpec', transmitter_ids: 'tuple[int, ...]', receiver_ids: 'tuple[int, ...]', site_ids: 'tuple[int, ...]') -> None"
-        },
-        {
-          "name": "SMPLBody",
-          "kind": "class",
-          "target": "witwin.radar.geometry.smpl.SMPLBody",
-          "signature": "(pose, shape, *, position=(0.0, 0.0, 0.0), gender: 'str' = 'male', model_root: 'str | None' = None, rotation=None, device=None)"
-        },
-        {
-          "name": "ScatterSitePolicy",
-          "kind": "class",
-          "target": "witwin.radar.scene_binding.ScatterSitePolicy",
-          "signature": "(source: 'str', positions_m: 'object | None' = None, structure_ids: 'tuple[int, ...] | None' = None, stable_ids: 'tuple[int, ...] | None' = None, power_w: 'float' = 1.0) -> None"
-        },
-        {
-          "name": "Sphere",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Sphere",
-          "signature": "(position=(0, 0, 0), radius=1.0, rotation=None, *, device=None)"
-        },
-        {
-          "name": "StableIdAllocator",
-          "kind": "class",
-          "target": "witwin.radar.scene_binding.StableIdAllocator",
-          "signature": "(transmitter_base: 'int' = 1000000, receiver_base: 'int' = 2000000, site_base: 'int' = 3000000) -> None"
-        },
-        {
-          "name": "Structure",
-          "kind": "class",
-          "target": "witwin.core.structure.Structure",
-          "signature": "(geometry: 'GeometrySpec', material: 'MaterialSpec', name: 'str | None' = None, priority: 'int' = 0, enabled: 'bool' = True, tags=(), metadata: 'Mapping[str, Any] | None' = None, *, structure_id: 'StructureId | int | None' = None, material_id: 'MaterialId | int | None' = None, assignment_id: 'AssignmentId | int | None' = None, surface_id: 'SurfaceId | int | None' = None, primitive_ids=(), phase_screen: 'PhaseScreen | None' = None, uv: 'torch.Tensor | None' = None, face_uv: 'torch.Tensor | None' = None)"
-        },
-        {
-          "name": "Torus",
-          "kind": "class",
-          "target": "witwin.core.geometry.primitives.Torus",
-          "signature": "(position=(0, 0, 0), major_radius=1.0, minor_radius=0.25, axis='z', rotation=None, *, device=None)"
-        },
-        {
-          "name": "bind_radar_world",
-          "kind": "function",
-          "target": "witwin.radar.scene_binding.bind_radar_world",
-          "signature": "(radar: 'object', snapshot: 'object', *, sites: 'ScatterSitePolicy', ids: 'StableIdAllocator | None' = None, polarization: 'object' = (0.0, 0.0, 1.0)) -> 'RadarWorldBinding'"
-        },
-        {
-          "name": "build_info",
-          "kind": "function",
-          "target": "witwin.radar.deployment.build_info",
-          "signature": "() -> 'dict[str, Any]'"
-        },
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.capabilities",
+      "exports": [
         {
           "name": "capabilities",
           "kind": "function",
           "target": "witwin.radar.capabilities.capabilities",
+          "signature": "() -> 'dict[str, Any]'"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.deployment",
+      "exports": [
+        {
+          "name": "build_info",
+          "kind": "function",
+          "target": "witwin.radar.deployment.build_info",
           "signature": "() -> 'dict[str, Any]'"
         },
         {
@@ -175,34 +54,66 @@
       ]
     },
     {
+      "module": "witwin.radar.frontend",
+      "exports": [
+        {
+          "name": "AdcSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.AdcSpec",
+          "signature": "(bits: 'int', full_scale: 'float') -> None"
+        },
+        {
+          "name": "AgcSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.AgcSpec",
+          "signature": "(target_rms: 'float', mode: 'str' = 'per_rx', min_gain_db: 'float' = -60.0, max_gain_db: 'float' = 60.0) -> None"
+        },
+        {
+          "name": "FrontendSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.FrontendSpec",
+          "signature": "(port: 'PortSpec' = PortSpec(reference_impedance_ohm=50.0), noise: 'NoiseSpec | None' = None, lna: 'LnaSpec | None' = None, agc: 'AgcSpec | None' = None, adc: 'AdcSpec | None' = None, seed: 'SeedSpec' = SeedSpec(seed_base=0)) -> None"
+        },
+        {
+          "name": "LnaSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.LnaSpec",
+          "signature": "(gain_db: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "NoiseSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.NoiseSpec",
+          "signature": "(noise_figure_db: 'float' = 0.0, antenna_temperature_k: 'float' = 290.0, bandwidth_hz: 'float' = 0.0, phase_noise_dbc_per_hz: 'float | None' = None, phase_offset_hz: 'float' = 0.0, phase_sample_rate_hz: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "PortSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.PortSpec",
+          "signature": "(reference_impedance_ohm: 'float' = 50.0) -> None"
+        },
+        {
+          "name": "SeedSpec",
+          "kind": "class",
+          "target": "witwin.radar.frontend.SeedSpec",
+          "signature": "(seed_base: 'int' = 0) -> None"
+        }
+      ]
+    },
+    {
       "module": "witwin.radar.processing",
       "exports": [
         {
-          "name": "AOA_ROUTES",
-          "kind": "value",
-          "target": "<dict> AOA_ROUTES"
-        },
-        {
           "name": "ArrayGeometry",
           "kind": "class",
-          "target": "witwin.radar.processing.beamforming.ArrayGeometry",
-          "signature": "(element_positions_m: 'torch.Tensor', num_tx: 'int', num_rx: 'int', element_spacing_m: 'float', wavelength_m: 'float', phase_sign: 'int', tx_loc_half_wavelength: 'tuple[tuple[float, float, float], ...]', rx_loc_half_wavelength: 'tuple[tuple[float, float, float], ...]') -> None"
-        },
-        {
-          "name": "Associator",
-          "kind": "value",
-          "target": "typing.Callable"
+          "target": "witwin.radar.processing.angle.ArrayGeometry",
+          "signature": "(element_positions_m: torch.Tensor, num_tx: int, num_rx: int, element_spacing_m: float, wavelength_m: float, phase_sign: int, tx_loc_half_wavelength: tuple[tuple[float, float, float], ...], rx_loc_half_wavelength: tuple[tuple[float, float, float], ...]) -> None"
         },
         {
           "name": "BeamCube",
           "kind": "class",
-          "target": "witwin.radar.processing.contracts.BeamCube",
-          "signature": "(data: 'torch.Tensor', axes: 'object', directions: 'torch.Tensor') -> None"
-        },
-        {
-          "name": "DIRECTION_COSINE_ROWS",
-          "kind": "value",
-          "target": "<tuple> DIRECTION_COSINE_ROWS"
+          "target": "witwin.radar.processing.angle.BeamCube",
+          "signature": "(data: torch.Tensor, axes: object, directions: torch.Tensor) -> None"
         },
         {
           "name": "DetectionFrame",
@@ -213,19 +124,8 @@
         {
           "name": "Detections",
           "kind": "class",
-          "target": "witwin.radar.processing.cfar.Detections",
-          "signature": "(mask: 'torch.Tensor', threshold: 'torch.Tensor') -> None"
-        },
-        {
-          "name": "DetectorType",
-          "kind": "class",
-          "target": "witwin.radar.processing.contracts.DetectorType",
-          "signature": "(value, names=None, *, module=None, qualname=None, type=None, start=1, boundary=None)"
-        },
-        {
-          "name": "FAST_TIME_NAMES",
-          "kind": "value",
-          "target": "<dict> FAST_TIME_NAMES"
+          "target": "witwin.radar.processing.detection.Detections",
+          "signature": "(mask: torch.Tensor, threshold: torch.Tensor) -> None"
         },
         {
           "name": "POINT_CLOUD_COLUMNS",
@@ -233,54 +133,34 @@
           "target": "<tuple> POINT_CLOUD_COLUMNS"
         },
         {
-          "name": "PROCESSING_AMPLITUDE_CONVENTION",
-          "kind": "value",
-          "target": "<str> PROCESSING_AMPLITUDE_CONVENTION"
-        },
-        {
-          "name": "PROCESSING_DOPPLER_CONVENTION",
-          "kind": "value",
-          "target": "<str> PROCESSING_DOPPLER_CONVENTION"
-        },
-        {
-          "name": "PROCESSING_UNITS",
-          "kind": "value",
-          "target": "<dict> PROCESSING_UNITS"
-        },
-        {
           "name": "PointCloud",
           "kind": "class",
-          "target": "witwin.radar.processing.pointcloud.PointCloud",
-          "signature": "(xyz: 'torch.Tensor', velocity_mps: 'torch.Tensor', energy: 'torch.Tensor', range_m: 'torch.Tensor') -> None"
+          "target": "witwin.radar.processing.detection.PointCloud",
+          "signature": "(xyz: torch.Tensor, velocity_mps: torch.Tensor, energy: torch.Tensor, range_m: torch.Tensor) -> None"
         },
         {
           "name": "ProcessingAxes",
           "kind": "class",
-          "target": "witwin.radar.processing.axes.ProcessingAxes",
-          "signature": "(waveform: 'str', fast_time_name: 'str', slow_time_name: 'str', slow_time_period_s: 'float', range_bin_count: 'int', doppler_bin_count: 'int', range_bin_m: 'float', range_origin_m: 'float', max_unambiguous_range_m: 'float', velocity_bin_mps: 'float', max_unambiguous_speed_mps: 'float', wavelength_m: 'float', reference_frequency_hz: 'float', phasor: 'str', doppler_sign: 'int', num_tx: 'int', num_rx: 'int', element_spacing_m: 'float', tx_loc_half_wavelength: 'tuple[tuple[float, float, float], ...]', rx_loc_half_wavelength: 'tuple[tuple[float, float, float], ...]', range_m: 'torch.Tensor', velocity_mps: 'torch.Tensor', range_oversample: 'int' = 1, matched_filter_replica: 'torch.Tensor | None' = None, matched_filter_sample_period_s: 'float' = 0.0) -> None"
+          "target": "witwin.radar.processing.signal.ProcessingAxes",
+          "signature": "(waveform: str, output_domain: str, fast_time_name: str, slow_time_name: str, slow_time_period_s: float, range_bin_count: int, doppler_bin_count: int, range_bin_m: float, range_origin_m: float, max_unambiguous_range_m: float, velocity_bin_mps: float, max_unambiguous_speed_mps: float, wavelength_m: float, reference_frequency_hz: float, phasor: str, doppler_sign: int, num_tx: int, num_rx: int, element_spacing_m: float, tx_loc_half_wavelength: tuple[tuple[float, float, float], ...], rx_loc_half_wavelength: tuple[tuple[float, float, float], ...], range_m: torch.Tensor, velocity_mps: torch.Tensor, range_oversample: int = 1, matched_filter_replica: torch.Tensor | None = None, matched_filter_sample_period_s: float = 0.0) -> None"
         },
         {
           "name": "ProcessingCube",
           "kind": "class",
-          "target": "witwin.radar.processing.cube.ProcessingCube",
-          "signature": "(data: 'torch.Tensor', axes: 'object') -> None"
+          "target": "witwin.radar.processing.signal.ProcessingCube",
+          "signature": "(data: torch.Tensor, axes: object) -> None"
         },
         {
           "name": "RangeDopplerMap",
           "kind": "class",
-          "target": "witwin.radar.processing.contracts.RangeDopplerMap",
-          "signature": "(data: 'torch.Tensor', axes: 'object', window: 'str', window_coherent_gain: 'float') -> None"
+          "target": "witwin.radar.processing.range_doppler.RangeDopplerMap",
+          "signature": "(data: torch.Tensor, axes: object, window: str, window_coherent_gain: float) -> None"
         },
         {
           "name": "RangeProfile",
           "kind": "class",
-          "target": "witwin.radar.processing.contracts.RangeProfile",
-          "signature": "(data: 'torch.Tensor', axes: 'object', window: 'str', window_coherent_gain: 'float') -> None"
-        },
-        {
-          "name": "SLOW_TIME_NAMES",
-          "kind": "value",
-          "target": "<dict> SLOW_TIME_NAMES"
+          "target": "witwin.radar.processing.range_doppler.RangeProfile",
+          "signature": "(data: torch.Tensor, axes: object, window: str, window_coherent_gain: float) -> None"
         },
         {
           "name": "TrackHandoff",
@@ -289,87 +169,82 @@
           "signature": "(associator: 'Associator | None' = None, frames: 'list[DetectionFrame]' = <factory>, assignments: 'list[torch.Tensor]' = <factory>, _next_track_id: 'int' = 0) -> None"
         },
         {
-          "name": "WINDOWS",
-          "kind": "value",
-          "target": "<tuple> WINDOWS"
-        },
-        {
           "name": "beam_cube",
           "kind": "function",
-          "target": "witwin.radar.processing.beam_cube.beam_cube",
-          "signature": "(rd: 'RangeDopplerMap', steering: 'torch.Tensor', *, directions: 'torch.Tensor') -> 'BeamCube'"
+          "target": "witwin.radar.processing.angle.beam_cube",
+          "signature": "(rd: witwin.radar.processing.range_doppler.RangeDopplerMap, steering: torch.Tensor, *, directions: torch.Tensor) -> witwin.radar.processing.angle.BeamCube"
         },
         {
           "name": "ca_cfar",
           "kind": "function",
-          "target": "witwin.radar.processing.cfar.ca_cfar",
-          "signature": "(rd_map: 'torch.Tensor', *, guard_cells: 'tuple[int, int]' = (2, 3), training_cells: 'tuple[int, int]' = (4, 6), pfa: 'float' = 0.001) -> 'Detections'"
+          "target": "witwin.radar.processing.detection.ca_cfar",
+          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
           "name": "ca_cfar_1d",
           "kind": "function",
-          "target": "witwin.radar.processing.cfar.ca_cfar_1d",
-          "signature": "(profile: 'torch.Tensor', *, guard_cells: 'int' = 2, training_cells: 'int' = 8, pfa: 'float' = 0.001) -> 'Detections'"
+          "target": "witwin.radar.processing.detection.ca_cfar_1d",
+          "signature": "(profile: torch.Tensor, *, guard_cells: int = 2, training_cells: int = 8, pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
           "name": "ca_cfar_fast",
           "kind": "function",
-          "target": "witwin.radar.processing.cfar.ca_cfar_fast",
-          "signature": "(rd_map: 'torch.Tensor', *, guard_cells: 'tuple[int, int]' = (2, 3), training_cells: 'tuple[int, int]' = (4, 6), pfa: 'float' = 0.001) -> 'Detections'"
+          "target": "witwin.radar.processing.detection.ca_cfar_fast",
+          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
           "name": "combine_incoherent",
           "kind": "function",
-          "target": "witwin.radar.processing.combination.combine_incoherent",
-          "signature": "(cubes) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.detection.combine_incoherent",
+          "signature": "(cubes) -> torch.Tensor"
         },
         {
           "name": "conventional_steering",
           "kind": "function",
-          "target": "witwin.radar.processing.beamforming.conventional_steering",
-          "signature": "(array: 'ArrayGeometry', directions: 'torch.Tensor', *, normalize: 'bool' = True, dtype: 'torch.dtype' = torch.complex64) -> 'torch.Tensor'"
-        },
-        {
-          "name": "dominant_frequencies_hz",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.dominant_frequencies_hz",
-          "signature": "(spectrum: 'torch.Tensor', frequencies_hz: 'torch.Tensor')"
-        },
-        {
-          "name": "doppler_frequencies_hz",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.doppler_frequencies_hz",
-          "signature": "(slot_count: 'int', slot_period_s: 'float', *, device=None)"
+          "target": "witwin.radar.processing.angle.conventional_steering",
+          "signature": "(array: witwin.radar.processing.angle.ArrayGeometry, directions: torch.Tensor, *, normalize: bool = True, dtype: torch.dtype = torch.complex64) -> torch.Tensor"
         },
         {
           "name": "fft2_aoa",
           "kind": "function",
-          "target": "witwin.radar.processing.aoa.fft2_aoa",
-          "signature": "(virtual_ant: 'torch.Tensor', array: 'ArrayGeometry', *, fft_size: 'int' = 64) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.fft2_aoa",
+          "signature": "(virtual_ant: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor"
+        },
+        {
+          "name": "lag_axis",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.lag_axis",
+          "signature": "(spec, *, oversample: int = 1, device: torch.device | str = 'cpu')"
+        },
+        {
+          "name": "matched_filter",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.matched_filter",
+          "signature": "(signal: torch.Tensor, spec, *, oversample: int = 1, dtype: torch.dtype | None = None) -> torch.Tensor"
         },
         {
           "name": "microdoppler_spectrogram",
           "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.microdoppler_spectrogram",
-          "signature": "(samples: 'torch.Tensor', *, slot_period_s: 'float', window_slots: 'int', hop_slots: 'int', window: 'str' = 'hann')"
+          "target": "witwin.radar.processing.range_doppler.microdoppler_spectrogram",
+          "signature": "(samples: torch.Tensor, *, slot_period_s: float, window_slots: int, hop_slots: int, window: str = 'hann')"
         },
         {
           "name": "music_image",
           "kind": "function",
-          "target": "witwin.radar.processing.aoa.music_image",
-          "signature": "(profile, array: 'ArrayGeometry', *, elevation_rad: 'torch.Tensor', azimuth_rad: 'torch.Tensor', range_bins: 'torch.Tensor | None' = None, num_signals: 'int' = 7, spatial_smooth: 'int' = 3, num_snapshots: 'int' = 8) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.music_image",
+          "signature": "(profile, array: witwin.radar.processing.angle.ArrayGeometry, *, elevation_rad: torch.Tensor, azimuth_rad: torch.Tensor, range_bins: torch.Tensor | None = None, num_signals: int = 7, spatial_smooth: int = 3, num_snapshots: int = 8) -> torch.Tensor"
         },
         {
           "name": "music_spectrum",
           "kind": "function",
-          "target": "witwin.radar.processing.aoa.music_spectrum",
-          "signature": "(angle_data: 'torch.Tensor', array: 'ArrayGeometry', *, elevation_rad: 'torch.Tensor', azimuth_rad: 'torch.Tensor', num_signals: 'int' = 7, spatial_smooth: 'int' = 3) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.music_spectrum",
+          "signature": "(angle_data: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, *, elevation_rad: torch.Tensor, azimuth_rad: torch.Tensor, num_signals: int = 7, spatial_smooth: int = 3) -> torch.Tensor"
         },
         {
           "name": "mvdr_weights",
           "kind": "function",
-          "target": "witwin.radar.processing.beamforming.mvdr_weights",
-          "signature": "(covariance: 'torch.Tensor', steering: 'torch.Tensor', *, diagonal_loading: 'float') -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.mvdr_weights",
+          "signature": "(covariance: torch.Tensor, steering: torch.Tensor, *, diagonal_loading: float) -> torch.Tensor"
         },
         {
           "name": "nearest_neighbour_associator",
@@ -380,181 +255,200 @@
         {
           "name": "os_cfar",
           "kind": "function",
-          "target": "witwin.radar.processing.cfar.os_cfar",
-          "signature": "(rd_map: 'torch.Tensor', *, guard_cells: 'tuple[int, int]' = (2, 3), training_cells: 'tuple[int, int]' = (4, 6), rank_fraction: 'float' = 0.75, pfa: 'float' = 0.001) -> 'Detections'"
+          "target": "witwin.radar.processing.detection.os_cfar",
+          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), rank_fraction: float = 0.75, pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
           "name": "phase_comparison_aoa",
           "kind": "function",
-          "target": "witwin.radar.processing.aoa.phase_comparison_aoa",
-          "signature": "(virtual_ant: 'torch.Tensor', array: 'ArrayGeometry', *, fft_size: 'int' = 64) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.phase_comparison_aoa",
+          "signature": "(virtual_ant: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor"
         },
         {
           "name": "point_cloud",
           "kind": "function",
-          "target": "witwin.radar.processing.pointcloud.point_cloud",
-          "signature": "(detections: 'Detections', rd: 'RangeDopplerMap', axes, array: 'ArrayGeometry', *, route: 'str' = 'phase_comparison', fft_size: 'int' = 64, range_gate_m: 'tuple[float, float] | None' = None, max_points: 'int | None' = None, positive_velocity_only: 'bool' = False, energy_floor: 'float' = 1e-06) -> 'PointCloud'"
+          "target": "witwin.radar.processing.detection.point_cloud",
+          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, axes, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06) -> witwin.radar.processing.detection.PointCloud"
         },
         {
-          "name": "range_doppler",
+          "name": "pulse_samples",
           "kind": "function",
-          "target": "witwin.radar.processing.doppler.range_doppler",
-          "signature": "(profile: 'RangeProfile', *, window: 'str | None' = None) -> 'RangeDopplerMap'"
+          "target": "witwin.radar.processing.range_doppler.pulse_samples",
+          "signature": "(spec, device: torch.device | str = 'cpu') -> torch.Tensor"
         },
         {
-          "name": "range_gate_mask",
+          "name": "range_doppler_map",
           "kind": "function",
-          "target": "witwin.radar.processing.pointcloud.range_gate_mask",
-          "signature": "(axes, gate_m: 'tuple[float, float] | None') -> 'torch.Tensor | None'"
+          "target": "witwin.radar.processing.range_doppler.range_doppler_map",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, *, window: str | None = None) -> witwin.radar.processing.range_doppler.RangeDopplerMap"
         },
         {
           "name": "range_profile",
           "kind": "function",
-          "target": "witwin.radar.processing.range_profile.range_profile",
-          "signature": "(cube, *, axes=None, window: 'str | None' = None, remove_dc: 'bool' = False) -> 'RangeProfile'"
-        },
-        {
-          "name": "slow_time_spectrum",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.slow_time_spectrum",
-          "signature": "(samples: 'torch.Tensor', *, window: 'str' = 'hann')"
+          "target": "witwin.radar.processing.range_doppler.range_profile",
+          "signature": "(cube: witwin.radar.processing.signal.ProcessingCube, *, window: str | None = None, remove_dc: bool = False) -> witwin.radar.processing.range_doppler.RangeProfile"
         },
         {
           "name": "tdm_compensate",
           "kind": "function",
-          "target": "witwin.radar.processing.aoa.tdm_compensate",
-          "signature": "(aoa_input: 'torch.Tensor', velocities: 'torch.Tensor', array: 'ArrayGeometry', axes) -> 'torch.Tensor'"
-        },
-        {
-          "name": "upa_steering",
-          "kind": "function",
-          "target": "witwin.radar.processing.aoa.upa_steering",
-          "signature": "(array: 'ArrayGeometry', *, rows: 'int', columns: 'int', elevation_rad: 'torch.Tensor', azimuth_rad: 'torch.Tensor', dtype: 'torch.dtype' = torch.complex64) -> 'torch.Tensor'"
+          "target": "witwin.radar.processing.angle.tdm_compensate",
+          "signature": "(aoa_input: torch.Tensor, velocities: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, axes) -> torch.Tensor"
         }
       ]
     },
     {
-      "module": "witwin.radar.sigproc",
+      "module": "witwin.radar.scattering",
       "exports": [
         {
-          "name": "FrameConfig",
+          "name": "AspectScatterResponse",
           "kind": "class",
-          "target": "witwin.radar.processing.adapters.FrameConfig",
-          "signature": "(radar)"
+          "target": "witwin.radar.scattering.AspectScatterResponse",
+          "signature": "(axis: 'torch.Tensor', amplitude: 'torch.Tensor', phase_rad: 'torch.Tensor', exponent: 'float', coherent_interval_s: 'float', aspect_phase_rate_rad_per_s: 'float' = 0.0) -> None"
         },
         {
-          "name": "MUSICImager",
+          "name": "ScalarRcsResponse",
           "kind": "class",
-          "target": "witwin.radar.processing.adapters.MUSICImager",
-          "signature": "(num_tx=20, num_rx=20, num_signals=7, spatial_smooth=3, num_pixels=128, fov=1.5707963267948966, num_chirps=8, array: 'ArrayGeometry | None' = None)"
+          "target": "witwin.radar.scattering.ScalarRcsResponse",
+          "signature": "(amplitude: 'torch.Tensor', phase_rad: 'torch.Tensor') -> None"
         },
         {
-          "name": "PointCloudProcessConfig",
+          "name": "ScatterResponse",
           "kind": "class",
-          "target": "witwin.radar.processing.adapters.PointCloudProcessConfig",
-          "signature": "(radar, static_clutter_removal: 'bool' = False, energy_top_k: 'int' = 128, range_cut: 'bool' = False, output_velocity: 'bool' = True, output_snr: 'bool' = True, output_range: 'bool' = True, output_in_meter: 'bool' = True)"
+          "target": "witwin.radar.scattering.ScatterResponse",
+          "signature": "(*args, **kwargs)"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.sensors",
+      "exports": [
+        {
+          "name": "AntennaPatternSpec",
+          "kind": "class",
+          "target": "witwin.radar.sensors.AntennaPatternSpec",
+          "signature": "(kind: 'str', x_angles_deg: 'tuple[float, ...]', y_angles_deg: 'tuple[float, ...]', x_values: 'tuple[float, ...] | None' = None, y_values: 'tuple[float, ...] | None' = None, values: 'tuple[tuple[float, ...], ...] | None' = None) -> None"
         },
         {
-          "name": "ca_cfar_2d",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.ca_cfar_2d",
-          "signature": "(rd_map, guard_cells=(2, 3), training_cells=(4, 6), pfa: 'float' = 0.001)"
+          "name": "ISOTROPIC_PATTERN",
+          "kind": "value",
+          "target": "<AntennaPatternSpec> ISOTROPIC_PATTERN"
         },
         {
-          "name": "ca_cfar_2d_fast",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.ca_cfar_2d_fast",
-          "signature": "(rd_map, guard_cells=(2, 3), training_cells=(4, 6), pfa: 'float' = 0.001)"
+          "name": "SensorArraySpec",
+          "kind": "class",
+          "target": "witwin.radar.sensors.SensorArraySpec",
+          "signature": "(num_tx: 'int', num_rx: 'int', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', reference_frequency_hz: 'float') -> None"
         },
         {
-          "name": "clutter_removal",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.clutter_removal",
-          "signature": "(input_val: 'torch.Tensor', axis: 'int' = 0) -> 'torch.Tensor'"
+          "name": "TxPowerSpec",
+          "kind": "class",
+          "target": "witwin.radar.sensors.TxPowerSpec",
+          "signature": "(power_dbm: 'float') -> None"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.simulation",
+      "exports": [
+        {
+          "name": "RadarSimulationResult",
+          "kind": "class",
+          "target": "witwin.radar.simulation.RadarSimulationResult",
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object') -> None"
         },
         {
-          "name": "dominant_frequencies_hz",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.dominant_frequencies_hz",
-          "signature": "(spectrum: 'torch.Tensor', frequencies_hz: 'torch.Tensor')"
+          "name": "ScatterSitePolicy",
+          "kind": "class",
+          "target": "witwin.radar.simulation.ScatterSitePolicy",
+          "signature": "(source: 'str', positions_m: 'object | None' = None, structure_ids: 'tuple[int, ...] | None' = None, stable_ids: 'tuple[int, ...] | None' = None, power_w: 'float' = 1.0) -> None"
         },
         {
-          "name": "doppler_fft",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.doppler_fft",
-          "signature": "(range_result: 'torch.Tensor', frame_config) -> 'torch.Tensor'"
+          "name": "StableIdAllocator",
+          "kind": "class",
+          "target": "witwin.radar.simulation.StableIdAllocator",
+          "signature": "(transmitter_base: 'int' = 1000000, receiver_base: 'int' = 2000000, site_base: 'int' = 3000000) -> None"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.smpl",
+      "exports": [
+        {
+          "name": "SMPLBody",
+          "kind": "class",
+          "target": "witwin.radar.smpl.SMPLBody",
+          "signature": "(pose, shape, *, position=(0.0, 0.0, 0.0), gender: 'str' = 'male', model_root: 'str | None' = None, rotation=None, device=None)"
         },
         {
-          "name": "doppler_frequencies_hz",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.doppler_frequencies_hz",
-          "signature": "(slot_count: 'int', slot_period_s: 'float', *, device=None)"
+          "name": "SmplPoseDeformation",
+          "kind": "class",
+          "target": "witwin.radar.smpl.SmplPoseDeformation",
+          "signature": "(body: \"'SMPLBody'\", *, pose_rate, reference_time_s: 'float' = 0.0, device=None) -> 'None'"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.synthesis",
+      "exports": [
+        {
+          "name": "FmcwSpec",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.FmcwSpec",
+          "signature": "(num_samples: int, num_chirps: int, sample_period_s: float, chirp_period_s: float, slope_hz_per_s: float, t_start_s: float, reference_frequency_hz: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, num_tx: int = 1, num_rx: int = 1, output_domain: str = 'spectrum') -> None"
         },
         {
-          "name": "frame2pointcloud",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.frame2pointcloud",
-          "signature": "(frame: 'torch.Tensor', cfg, radar=None) -> 'torch.Tensor'"
+          "name": "OfdmSpec",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.OfdmSpec",
+          "signature": "(num_subcarriers: int, num_symbols: int, subcarrier_spacing_hz: float, cyclic_prefix_s: float, reference_frequency_hz: float, max_expected_delay_s: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, subcarrier_origin: str = 'f_ref_at_n0') -> None"
         },
         {
-          "name": "microdoppler_spectrogram",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.microdoppler_spectrogram",
-          "signature": "(samples: 'torch.Tensor', *, slot_period_s: 'float', window_slots: 'int', hop_slots: 'int', window: 'str' = 'hann')"
+          "name": "PulsedSpec",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.PulsedSpec",
+          "signature": "(num_pulses: int, num_samples: int, sample_period_s: float, pri_s: float, range_gate_start_s: float, pulse_kind: str, pulse_width_s: float, bandwidth_hz: float, reference_frequency_hz: float, max_expected_delay_rate: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, pulse_normalization: str = 'unit_energy') -> None"
         },
         {
-          "name": "naive_xyz",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.naive_xyz",
-          "signature": "(virtual_ant, num_tx=3, num_rx=4, fft_size=64, tx_loc_hw=None)"
+          "name": "SlowTimeMode",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.SlowTimeMode",
+          "signature": "(value, names=None, *, module=None, qualname=None, type=None, start=1, boundary=None)"
         },
         {
-          "name": "os_cfar_2d",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.os_cfar_2d",
-          "signature": "(rd_map, guard_cells=(2, 3), training_cells=(4, 6), rank_fraction: 'float' = 0.75, pfa: 'float' = 0.001)"
+          "name": "SynthesisPathBatch",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
+          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, frequency_response: torch.Tensor | None, frequency_offsets_hz: torch.Tensor | None, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, join_mode: Literal['direct', 'multipath'], weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False) -> None"
         },
         {
-          "name": "process_pc",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.process_pc",
-          "signature": "(radar, frame: 'torch.Tensor', static_clutter_removal=True, positive_velocity_only=True, detector: 'DetectorType' = 'cfar', guard_cells=(2, 4), training_cells=(4, 8), pfa=0.001, max_points=512, energy_top_k=128)"
+          "name": "SynthesisResult",
+          "kind": "class",
+          "target": "witwin.radar.synthesis.assembly.SynthesisResult",
+          "signature": "(cube: torch.Tensor, kind: str, axes: tuple[str, ...], phasor: str, time_dependence: str, reference_frequency_hz: float, output_domain: str) -> None"
         },
         {
-          "name": "process_pc_tensor",
+          "name": "select_component",
           "kind": "function",
-          "target": "witwin.radar.processing.adapters.process_pc_tensor",
-          "signature": "(radar, frame: 'torch.Tensor', static_clutter_removal=True, positive_velocity_only=True, detector: 'DetectorType' = 'cfar', guard_cells=(2, 4), training_cells=(4, 8), pfa=0.001, max_points=512, energy_top_k=128) -> 'torch.Tensor'"
+          "target": "witwin.radar.synthesis.assembly.select_component",
+          "signature": "(batch: witwin.radar.synthesis.assembly.SynthesisPathBatch, index: witwin.radar.paths.RadarComponentIndex, name: str) -> witwin.radar.synthesis.assembly.SynthesisPathBatch"
         },
         {
-          "name": "process_rd",
+          "name": "synthesize_fmcw",
           "kind": "function",
-          "target": "witwin.radar.processing.adapters.process_rd",
-          "signature": "(radar, frame: 'torch.Tensor', tx: 'int' = 0, rx: 'int' = 0, *, static_clutter_removal: 'bool' = False)"
+          "target": "witwin.radar.synthesis.fmcw.synthesize_fmcw",
+          "signature": "(batch: 'SynthesisPathBatch', spec: 'FmcwSpec') -> 'torch.Tensor'"
         },
         {
-          "name": "process_rd_tensor",
+          "name": "synthesize_ofdm",
           "kind": "function",
-          "target": "witwin.radar.processing.adapters.process_rd_tensor",
-          "signature": "(radar, frame: 'torch.Tensor', tx: 'int' = 0, rx: 'int' = 0, *, static_clutter_removal: 'bool' = False)"
+          "target": "witwin.radar.synthesis.ofdm.synthesize_ofdm",
+          "signature": "(batch: 'SynthesisPathBatch', spec: 'OfdmSpec') -> 'torch.Tensor'"
         },
         {
-          "name": "range_fft",
+          "name": "synthesize_pulsed",
           "kind": "function",
-          "target": "witwin.radar.processing.adapters.range_fft",
-          "signature": "(reshaped_frame: 'torch.Tensor', frame_config) -> 'torch.Tensor'"
-        },
-        {
-          "name": "reg_data",
-          "kind": "function",
-          "target": "witwin.radar.processing.adapters.reg_data",
-          "signature": "(data, pc_size)"
-        },
-        {
-          "name": "slow_time_spectrum",
-          "kind": "function",
-          "target": "witwin.radar.processing.microdoppler.slow_time_spectrum",
-          "signature": "(samples: 'torch.Tensor', *, window: 'str' = 'hann')"
+          "target": "witwin.radar.synthesis.pulsed.synthesize_pulsed",
+          "signature": "(batch: 'SynthesisPathBatch', spec: 'PulsedSpec') -> 'torch.Tensor'"
         }
       ]
     }
@@ -563,21 +457,6 @@
     {
       "class": "witwin.radar.Radar",
       "members": [
-        {
-          "name": "apply_signal_models",
-          "kind": "function",
-          "signature": "(self, signal: 'torch.Tensor') -> 'torch.Tensor'"
-        },
-        {
-          "name": "evaluate_antenna_pattern_vectors",
-          "kind": "function",
-          "signature": "(self, vectors: 'torch.Tensor') -> 'torch.Tensor'"
-        },
-        {
-          "name": "evaluate_antenna_pattern_xy",
-          "kind": "function",
-          "signature": "(self, x_angles_deg: 'torch.Tensor', y_angles_deg: 'torch.Tensor') -> 'torch.Tensor'"
-        },
         {
           "name": "last_compiled_scene",
           "kind": "property",
@@ -604,16 +483,6 @@
           "doc_first_line": "The Core ``SceneSnapshot`` the last simulated frame ran against."
         },
         {
-          "name": "local_from_world_points",
-          "kind": "function",
-          "signature": "(self, points: 'torch.Tensor') -> 'torch.Tensor'"
-        },
-        {
-          "name": "local_from_world_vectors",
-          "kind": "function",
-          "signature": "(self, vectors: 'torch.Tensor') -> 'torch.Tensor'"
-        },
-        {
           "name": "set_pose",
           "kind": "function",
           "signature": "(self, *, position=None, target=None, up=None, fov=None) -> \"'Radar'\""
@@ -621,22 +490,7 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, slow_time_mode=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, antenna_pattern=None) -> \"'RadarSimulationResult'\""
-        },
-        {
-          "name": "synthesize",
-          "kind": "function",
-          "signature": "(self, paths, *, slow_time_mode) -> \"'SynthesisResult'\""
-        },
-        {
-          "name": "world_from_local_points",
-          "kind": "function",
-          "signature": "(self, points: 'torch.Tensor') -> 'torch.Tensor'"
-        },
-        {
-          "name": "world_from_local_vectors",
-          "kind": "function",
-          "signature": "(self, vectors: 'torch.Tensor') -> 'torch.Tensor'"
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None) -> \"'RadarSimulationResult'\""
         }
       ]
     }

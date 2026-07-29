@@ -1,113 +1,65 @@
-"""Radar post-processing.
+"""Typed radar processing facade."""
 
-Everything in this package is PyTorch by owner directive: range profiles,
-Range-Doppler maps, beam cubes, AoA, CFAR, point clouds and detection handoff
-are post-processing, not simulation, and a native DSP kernel needs a measured
-dispatch, layout, fusion or tape bottleneck plus its own decision record before
-it can exist.
-
-Processing CONSUMES synthesis results. It never mutates a path batch, never
-changes composed row identity, and publishes no field that crosses back into
-the Channel capability record, its public API, or its native binding manifest.
-
-The chain, in order:
-
-    SynthesisResult -> ProcessingCube -> range_profile -> range_doppler
-                    -> beam_cube -> ca_cfar -> point_cloud -> DetectionFrame
-
-:class:`ProcessingAxes` is the one metadata / axes / units record all of them
-read. It is built from the waveform SPECS - never from the flat engineering-unit
-``RadarConfig``, which has exactly one documented conversion site - and it is
-where the cross-waveform Doppler sign is fixed. :class:`ArrayGeometry` is the
-matching statement about the array: where every virtual element is, in metres,
-with no half-wavelength spacing assumed anywhere. This package also owns the
-component combination laws that Phase-8 clutter export needs.
-
-``witwin.radar.sigproc`` keeps its whole public surface as migration adapters
-over this facade; the adapters are in :mod:`witwin.radar.processing.adapters`
-and the old internal paths are deleted.
-"""
-
-from .aoa import (
-    AOA_ROUTES,
-    DIRECTION_COSINE_ROWS,
+from .angle import (
+    ArrayGeometry,
+    BeamCube,
+    beam_cube,
+    conventional_steering,
     fft2_aoa,
     music_image,
     music_spectrum,
+    mvdr_weights,
     phase_comparison_aoa,
     tdm_compensate,
-    upa_steering,
 )
-from .axes import ProcessingAxes
-from .beam_cube import beam_cube
-from .beamforming import ArrayGeometry, conventional_steering, mvdr_weights
-from .cfar import Detections, ca_cfar, ca_cfar_1d, ca_cfar_fast, os_cfar
-from .combination import combine_incoherent
-from .contracts import (
-    FAST_TIME_NAMES,
-    PROCESSING_AMPLITUDE_CONVENTION,
-    PROCESSING_DOPPLER_CONVENTION,
-    PROCESSING_UNITS,
-    SLOW_TIME_NAMES,
-    BeamCube,
-    DetectorType,
-    RangeDopplerMap,
-    RangeProfile,
-)
-from .cube import ProcessingCube
-from .doppler import range_doppler
-from .microdoppler import (
-    dominant_frequencies_hz,
-    doppler_frequencies_hz,
-    microdoppler_spectrogram,
-    slow_time_spectrum,
-)
-from .pointcloud import (
+from .detection import (
+    Detections,
     POINT_CLOUD_COLUMNS,
     PointCloud,
+    ca_cfar,
+    ca_cfar_1d,
+    ca_cfar_fast,
+    combine_incoherent,
+    os_cfar,
     point_cloud,
-    range_gate_mask,
 )
-from .primitives import WINDOWS
-from .range_profile import range_profile
-from .tracking import (
-    Associator,
-    DetectionFrame,
-    TrackHandoff,
-    nearest_neighbour_associator,
+from .range_doppler import (
+    RangeDopplerMap,
+    RangeProfile,
+    lag_axis,
+    matched_filter,
+    microdoppler_spectrogram,
+    pulse_samples,
+    range_doppler_map,
+    range_profile,
 )
+from .signal import (
+    ProcessingAxes,
+    ProcessingCube,
+)
+from .tracking import DetectionFrame, TrackHandoff, nearest_neighbour_associator
 
 __all__ = [
-    "AOA_ROUTES",
-    "DIRECTION_COSINE_ROWS",
-    "FAST_TIME_NAMES",
-    "POINT_CLOUD_COLUMNS",
-    "PROCESSING_AMPLITUDE_CONVENTION",
-    "PROCESSING_DOPPLER_CONVENTION",
-    "PROCESSING_UNITS",
-    "SLOW_TIME_NAMES",
-    "WINDOWS",
     "ArrayGeometry",
-    "Associator",
     "BeamCube",
     "DetectionFrame",
     "Detections",
-    "DetectorType",
+    "POINT_CLOUD_COLUMNS",
     "PointCloud",
     "ProcessingAxes",
     "ProcessingCube",
+    "TrackHandoff",
     "RangeDopplerMap",
     "RangeProfile",
-    "TrackHandoff",
     "beam_cube",
     "ca_cfar",
     "ca_cfar_1d",
     "ca_cfar_fast",
     "combine_incoherent",
     "conventional_steering",
-    "dominant_frequencies_hz",
-    "doppler_frequencies_hz",
     "fft2_aoa",
+    "lag_axis",
+    "matched_filter",
     "microdoppler_spectrogram",
     "music_image",
     "music_spectrum",
@@ -116,10 +68,8 @@ __all__ = [
     "os_cfar",
     "phase_comparison_aoa",
     "point_cloud",
-    "range_doppler",
-    "range_gate_mask",
+    "pulse_samples",
+    "range_doppler_map",
     "range_profile",
-    "slow_time_spectrum",
     "tdm_compensate",
-    "upa_steering",
 ]

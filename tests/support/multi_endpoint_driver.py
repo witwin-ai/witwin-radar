@@ -75,16 +75,25 @@ def make_response(*, requires_grad: bool = False, device: str = "cuda"):
     )
 
 
-def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
+def make_spec(
+    *,
+    num_chirps: int | None = None,
+    carrier_hz: float = 0.0,
+    output_domain: str = "beat",
+):
     from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwBeatSpec
+    from witwin.radar.synthesis import FmcwSpec
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwBeatSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz)
     if num_chirps is not None:
         from dataclasses import replace
 
         spec = replace(spec, num_chirps=num_chirps)
+    if spec.output_domain != output_domain:
+        from dataclasses import replace
+
+        spec = replace(spec, output_domain=output_domain)
     return spec
 
 
@@ -128,7 +137,7 @@ class MultiEndpointSpike:
         outbound_max_depth: int | None = None,
     ) -> None:
         from witwin.radar.paths import TwoWayComposer
-        from witwin.radar.propagation.channel_consumer import (
+        from witwin.radar.channel import (
             ChannelPropagationAdapter,
         )
 

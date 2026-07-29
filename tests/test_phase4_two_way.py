@@ -303,7 +303,7 @@ def test_rows_are_sorted_into_a_valid_pair_partition():
 def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows():
     """A pair that discovered nothing still owns an (empty) segment.
 
-    ``synthesize_fmcw_beat`` shapes its output ``[chirps, sensor_pair_count,
+    ``synthesize_fmcw`` shapes its output ``[chirps, sensor_pair_count,
     samples]``. Deriving the pair set from surviving composed rows would
     renumber and reshape the IQ cube whenever a site failed discovery for one
     TX/RX pair, which is a silent wrong answer rather than a missing one.
@@ -344,14 +344,14 @@ def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
 
     # And the check is a real gate, exercised rather than grepped for: a table
     # that failed either condition raises instead of reaching the kernel.
-    from witwin.radar.paths import _identity
+    import witwin.radar.paths as paths
 
     with pytest.raises(ValueError, match="would not partition all composed rows"):
-        _identity.pair_offsets([0, 0, 1], pair_count=1)
+        paths.pair_offsets([0, 0, 1], pair_count=1)
     with pytest.raises(ValueError, match="pair_count must be positive"):
-        _identity.pair_offsets([], pair_count=0)
+        paths.pair_offsets([], pair_count=0)
     # Empty segments are legal; only an out-of-range pair rank is not.
-    assert _identity.pair_offsets([0, 0, 3], pair_count=4) == [0, 2, 2, 2, 3]
+    assert paths.pair_offsets([0, 0, 3], pair_count=4) == [0, 2, 2, 2, 3]
 
 
 def test_a_site_without_a_leg_is_refused_rather_than_dropped():

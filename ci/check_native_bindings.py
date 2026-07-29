@@ -112,7 +112,7 @@ def _check_shape(manifest: dict, failures: list[str]) -> None:
             f"{SCHEMA_VERSION}"
         )
     try:
-        from witwin.radar.cuda.identity import RADAR_ABI_VERSION
+        from witwin.radar.cuda.runtime import RADAR_ABI_VERSION
     except ImportError as error:  # pragma: no cover - environment problem
         failures.append(f"cannot import the radar ABI constant: {error}")
     else:
@@ -131,7 +131,7 @@ def _check_sources(manifest: dict, failures: list[str]) -> None:
     """
 
     try:
-        from witwin.radar.cuda import build
+        from witwin.radar.cuda import runtime as build
     except ImportError as error:  # pragma: no cover - environment problem
         failures.append(f"cannot import the radar build module: {error}")
         return
@@ -304,7 +304,8 @@ def _check_sidecar_symbols(manifest: dict, failures: list[str]) -> str:
     """
 
     try:
-        from witwin.radar.cuda import build, identity
+        from witwin.radar.cuda import runtime as build
+        identity = build
     except ImportError as error:  # pragma: no cover - environment problem
         failures.append(f"cannot import the radar loader: {error}")
         return "error"

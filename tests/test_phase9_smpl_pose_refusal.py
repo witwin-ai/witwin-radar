@@ -43,7 +43,7 @@ def _smpl_model_root() -> str | None:
     against, so the models live beside the main checkout.
     """
 
-    from witwin.radar.geometry import smpl as smpl_module
+    import witwin.radar.smpl as smpl_module
 
     candidates = (
         pathlib.Path(smpl_module._default_smpl_model_root()),
@@ -64,7 +64,7 @@ def smpl():
     root = _smpl_model_root()
     if root is None:
         pytest.skip("no SMPL model files available in this checkout")
-    from witwin.radar.geometry import SMPLBody, SmplPoseDeformation
+    from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
 
     return SMPLBody, SmplPoseDeformation, root
 

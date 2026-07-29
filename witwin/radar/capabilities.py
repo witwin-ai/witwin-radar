@@ -1,7 +1,7 @@
 """What ``witwin.radar`` can do, as a versioned record.
 
 Channel has had a capability manifest since Plan 07 and Radar has been reading
-it (``propagation/channel_consumer.py``) without publishing one of its own.
+it (``channel.py``) without publishing one of its own.
 That asymmetry is Phase-10 work item 3: a consumer that cannot describe itself
 cannot be validated by its own consumers either.
 
@@ -44,6 +44,7 @@ _CAPABILITIES: dict[str, Any] = {
         "logical_owner": "_radar_native",
         "operator_families": [
             "fmcw_beat_synthesis",
+            "fmcw_spectrum_synthesis",
             "ofdm_cfr_synthesis",
             "pulsed_echo_synthesis",
             "two_way_join",
@@ -84,7 +85,7 @@ _CAPABILITIES: dict[str, Any] = {
         "components": ["los", "reflection"],
         "topology_mode": "fixed_topology",
         "refused_components": ["diffraction", "transmission", "scattering"],
-        "refusal_site": "witwin/radar/propagation/channel_consumer.py",
+        "refusal_site": "witwin/radar/channel.py",
     },
     # A summary of docs/dev/radar-ad-capability-matrix.md. The four states are
     # that document's closed vocabulary; SILENT is not one of them and never
@@ -93,7 +94,7 @@ _CAPABILITIES: dict[str, Any] = {
         "states": ["SUP", "ZERO", "REF", "DECL"],
         "modes": ["none", "jvp", "vjp"],
         "first_order_only": True,
-        "higher_order_owner": "witwin/radar/ad_contracts.py",
+        "higher_order_owner": "witwin/radar/policy.py",
         "production_finite_differences": False,
         "supported_leaves": [
             "mesh_vertices",
@@ -123,10 +124,10 @@ _CAPABILITIES: dict[str, Any] = {
     # first discrete decision every stage refuses at its entry, before any
     # device work and before any result object exists.
     "processing_wall": {
-        "owner": "witwin/radar/ad_contracts.py",
+        "owner": "witwin/radar/policy.py",
         "differentiable_stages": [
             "range_profile",
-            "range_doppler",
+            "range_doppler_map",
             "beam_cube",
             "matched_filter",
             "tdm_compensate",
@@ -150,7 +151,7 @@ _CAPABILITIES: dict[str, Any] = {
     "host_observations": {
         "per_frame_owner": "none",
         "per_frame_budget": 2,
-        "freeze_time_owner": "witwin/radar/paths/_identity.py",
+        "freeze_time_owner": "witwin/radar/paths.py",
         "contract": "docs/dev/standards/radar-adr-006-compact-contract-and-cardinality-budget.md",
     },
 }
@@ -206,7 +207,7 @@ def _propagation_consumer_record() -> dict[str, Any]:
 def capabilities() -> dict[str, Any]:
     """Return the versioned Radar capability manifest."""
 
-    from .cuda.identity import RADAR_ABI_VERSION
+    from .cuda.runtime import RADAR_ABI_VERSION
 
     manifest = deepcopy(_CAPABILITIES)
     manifest["radar_abi_version"] = RADAR_ABI_VERSION
@@ -215,4 +216,4 @@ def capabilities() -> dict[str, Any]:
     return manifest
 
 
-__all__ = ["CONSUMER_MODULE", "capabilities"]
+__all__ = ["capabilities"]

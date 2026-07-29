@@ -14,8 +14,8 @@ import torch.autograd.forward_ad as forward_ad
 from support import fd  # noqa: E402
 from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
-from witwin.radar.synthesis.contracts import FmcwBeatSpec  # noqa: E402
-from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows  # noqa: E402
+from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.gpu
 # frozen weight cannot carry. Deriving the operator AD against this setting is
 # deliberate - carrier_rate_hz makes d(phi)/d(tau_rate) differ from
 # d(phi)/d(tau_rt) * t_c, and a spec with it zeroed would never exercise that.
-SPEC = FmcwBeatSpec(
+SPEC = FmcwSpec(
     num_samples=32,
     num_chirps=3,
     sample_period_s=1.0 / 4.4e6,
@@ -36,6 +36,7 @@ SPEC = FmcwBeatSpec(
     reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
     carrier_hz=0.0,
     carrier_rate_hz=geo.REFERENCE_FREQUENCY_HZ,
+    output_domain="beat",
 )
 
 DELAYS = (geo.round_trip_delay_s(), 2.4e-8)
@@ -77,7 +78,7 @@ def target_iq():
 
 
 def _production_loss(tau, rate, weight, offsets, target):
-    iq = synthesize_beat_rows(tau, rate, weight, offsets, SPEC)
+    iq = synthesize_fmcw_rows(tau, rate, weight, offsets, SPEC)
     return ref.radar_loss(iq.cpu(), target)
 
 
@@ -203,7 +204,7 @@ def test_multi_segment_vjp_matches_the_oracle(multi_target_iq):
     tau = tau.clone().requires_grad_(True)
     rate = rate.clone().requires_grad_(True)
     weight = weight.clone().requires_grad_(True)
-    iq = synthesize_beat_rows(tau, rate, weight, offsets, SPEC)
+    iq = synthesize_fmcw_rows(tau, rate, weight, offsets, SPEC)
     ref.radar_loss(iq.cpu(), multi_target_iq).backward()
 
     o_tau = torch.tensor(MULTI_DELAYS, dtype=torch.float64).requires_grad_(True)
@@ -247,7 +248,7 @@ def test_the_segment_mapping_is_the_half_open_partition():
     in the previous one.
     """
 
-    from witwin.radar.synthesis.fmcw_beat import _segment_of_each_path
+    from witwin.radar.synthesis.fmcw import _segment_of_each_path
 
     offsets = torch.tensor(MULTI_OFFSETS, dtype=torch.int64, device="cuda")
     mapping = _segment_of_each_path(offsets, len(MULTI_DELAYS))
@@ -264,7 +265,7 @@ def test_native_jvp_matches_the_oracle(target_iq):
     with forward_ad.dual_level():
         dual_tau = forward_ad.make_dual(tau, d_tau)
         dual_rate = forward_ad.make_dual(rate, d_rate)
-        iq = synthesize_beat_rows(dual_tau, dual_rate, weight, offsets, SPEC)
+        iq = synthesize_fmcw_rows(dual_tau, dual_rate, weight, offsets, SPEC)
         loss = ref.radar_loss(iq.cpu(), target_iq)
         tangent = forward_ad.unpack_dual(loss).tangent
         assert tangent is not None, "the native jvp companion was not reached"
@@ -316,14 +317,14 @@ def test_a_forward_only_dual_is_not_dropped_at_the_facade():
             tau, torch.ones_like(tau) * 1e-9
         )
         assert not dual.requires_grad
-        iq = synthesize_beat_rows(dual, rate, weight, offsets, SPEC)
+        iq = synthesize_fmcw_rows(dual, rate, weight, offsets, SPEC)
         assert forward_ad.unpack_dual(iq).tangent is not None
 
 
 def test_gradcheck_corroborates_both_modes():
     """Corroboration only, at tiny size and with stated float32 tolerances."""
 
-    spec = FmcwBeatSpec(
+    spec = FmcwSpec(
         num_samples=4,
         num_chirps=2,
         sample_period_s=1.0 / 4.4e6,
@@ -332,6 +333,7 @@ def test_gradcheck_corroborates_both_modes():
         t_start_s=0.0,
         reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
         carrier_hz=0.0,
+        output_domain="beat",
     )
     offsets = torch.tensor([0, 2], dtype=torch.int64, device="cuda")
     rate = torch.zeros(2, dtype=torch.float32, device="cuda")
@@ -341,7 +343,7 @@ def test_gradcheck_corroborates_both_modes():
     ).requires_grad_(True)
 
     def run(w):
-        return synthesize_beat_rows(tau, rate, w, offsets, spec)
+        return synthesize_fmcw_rows(tau, rate, w, offsets, spec)
 
     # Only the weight is checked: it enters linearly, so a float32 central
     # difference is well conditioned. tau enters through a phase of order 1e10

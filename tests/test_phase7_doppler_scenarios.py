@@ -45,7 +45,7 @@ pytest.importorskip("witwin.channel")
 
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
-from witwin.radar.propagation import kinematics as kin  # noqa: E402
+import witwin.radar.propagation as kin  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -212,10 +212,10 @@ def test_a_static_scene_has_no_slow_time_phase_slope(spike):
     slow-time slope here would be a carrier the kernel is advancing on its own.
     """
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     spec = drv.make_spec(num_chirps=8)
-    cube = synthesize_fmcw_beat(drv.to_synthesis(_measure(spike).frame()), spec)
+    cube = synthesize_fmcw(drv.to_synthesis(_measure(spike).frame()), spec)
     assert cube.shape[0] == 8
     assert float(cube.abs().max()) > 0.0
     for chirp in range(1, cube.shape[0]):
@@ -554,11 +554,11 @@ def _slow_time_peak_hz(frame, spec, row: int):
     published it.
     """
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     alone = torch.zeros(frame.path_count, dtype=torch.bool, device=frame.device)
     alone[row] = True
-    cube = synthesize_fmcw_beat(
+    cube = synthesize_fmcw(
         drv.to_synthesis(replace(frame, row_valid=alone)), spec
     ).cpu()
     pair = int(frame.sensor_pair_index[row])

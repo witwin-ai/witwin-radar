@@ -53,7 +53,7 @@ def spec():
 
 
 def _slot_times(spec):
-    from witwin.radar.synthesis import tdm_slot_times_s
+    from witwin.radar.synthesis.assembly import tdm_slot_times_s
 
     return tdm_slot_times_s(
         num_chirps=spec.num_chirps,
@@ -262,7 +262,7 @@ def test_tdm_slot_indices_come_from_the_phase6_owner(spec):
     what stops a second slot table being introduced next to the first one.
     """
 
-    from witwin.radar.synthesis import (
+    from witwin.radar.synthesis.assembly import (
         pair_slot_index,
         pair_tx_index,
         tdm_slot_count,
@@ -329,7 +329,7 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
     base = spike.site_tensor()
     response = drv.make_response()
 
-    from witwin.radar.synthesis import synthesize_fmcw_beat
+    from witwin.radar.synthesis import synthesize_fmcw
 
     with forward_ad.dual_level():
         dual = forward_ad.make_dual(
@@ -337,7 +337,7 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
             torch.tensor([list(velocity)] * base.shape[0], device=base.device),
         )
         composed, _, _ = spike.frame(dual, response, ad_mode="jvp")
-        frozen_cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+        frozen_cube = synthesize_fmcw(to_synthesis(composed), spec)
         origin_delay = composed.total_delay_s.detach().double()
         rate = composed.delay_rate.detach().double()
 
@@ -376,10 +376,10 @@ def test_a_static_frame_is_bit_identical_in_both_modes(spike, spec):
     slots = int(times.shape[0])
     response = drv.make_response()
 
-    from witwin.radar.synthesis import synthesize_fmcw_beat
+    from witwin.radar.synthesis import synthesize_fmcw
 
     composed, _, _ = spike.frame(spike.site_tensor(), response, ad_mode="none")
-    frozen_cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+    frozen_cube = synthesize_fmcw(to_synthesis(composed), spec)
 
     stack = drv.slot_site_stack(spike.site_tensor(), (0.0, 0.0, 0.0), times)
     batched_in, batched_out = spike.slot_legs(stack, slot_count=slots)
@@ -468,7 +468,7 @@ def test_transverse_motion_defeats_the_frozen_first_order_model(spike, spec):
 def test_double_doppler_is_still_refused(spike, spec):
     """A refreshed weight that also publishes a rate applies Doppler twice."""
 
-    from witwin.radar.synthesis import (
+    from witwin.radar.synthesis.assembly import (
         SlowTimeMode,
         SynthesisPathBatch,
         require_compatible,

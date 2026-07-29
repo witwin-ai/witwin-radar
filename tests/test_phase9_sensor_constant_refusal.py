@@ -1,14 +1,6 @@
 """The sensor-weight frozen constants refuse a derivative instead of returning None.
 
-``SensorWeightGeometry``'s docstring has said since Phase 6 that every field on
-it except the four position tensors is a constant with respect to the
-derivative. Nothing enforced it. Thirteen float tensors - three velocity sets,
-the fixed leg length, the facet normals, the two polarization sets, the local
-frame, and the five resident pattern tables - reach the native operator through slots
-whose ``backward`` returns ``None`` by construction, and five of them are not
-inputs of the autograd ``Function`` at all. A caller who marked one got a full
-frame, a full result object, and ``grad = None``, with nothing anywhere saying
-the slot had no derivative.
+``SensorWeightGeometry`` declares velocity, fixed-length and pattern-frame tensors as frozen inputs; the five resident pattern tables are frozen with the plan. A marked frozen tensor must be refused before native dispatch.
 
 That is the defect class this phase exists to remove, and the fix is a refusal at
 CONSTRUCTION - before ``validate``, before a plan, before any launch. Almost
@@ -38,9 +30,8 @@ import torch
 import torch.autograd.forward_ad as forward_ad
 
 from witwin.radar.sensors import ROW_KIND_VIA  # noqa: E402
-from witwin.radar.sensors.weights import (  # noqa: E402
+from witwin.radar.sensors import (  # noqa: E402
     SensorWeightGeometry,
-    SensorWeightModes,
     SensorWeightPlan,
 )
 
@@ -58,10 +49,7 @@ GEOMETRY_SHAPES = {
     "rx_velocity": (NUM_RX, 3),
     "site_velocity": (ROWS, 3),
     "fixed_length_m": (ROWS,),
-    "normals": (ROWS, 3),
-    "pol_tx": (NUM_TX, 3),
-    "pol_rx": (NUM_RX, 3),
-    "local_axes": (3, 3),
+    "pattern_frame": (3, 3),
 }
 
 
@@ -88,11 +76,6 @@ def _plan(tables=None) -> SensorWeightPlan:
         if tables is None
         else tables,
         c0=299792458.0,
-        wavelength_m=3.894e-3,
-        tx_amplitude=1.0,
-        modes=SensorWeightModes(
-            spreading=False, tx_power=False, legacy_real_polarization=False
-        ),
     )
 
 
@@ -233,7 +216,7 @@ def test_no_geometry_object_survives_a_refusal():
     """
 
     fields = _geometry_fields()
-    fields["normals"] = fields["normals"].clone().requires_grad_(True)
+    fields["pattern_frame"] = fields["pattern_frame"].clone().requires_grad_(True)
     captured = None
     try:
         captured = SensorWeightGeometry(**fields)
@@ -246,13 +229,13 @@ def test_the_refusal_precedes_the_shape_validation():
     """A marked tensor of the WRONG shape still reports the derivative.
 
     Ordering matters for the message a caller reads. ``validate`` would say
-    "normals must have shape (3, 3)", the caller would fix the shape, and the
+    "pattern_frame must have shape (3, 3)", the caller would fix the shape, and the
     silent ``None`` would come back on the next run. The refusal fires at
     construction and ``validate`` never gets the chance.
     """
 
     fields = _geometry_fields()
-    fields["normals"] = torch.zeros(ROWS + 4, 3, requires_grad=True)
+    fields["pattern_frame"] = torch.zeros(ROWS + 4, 3, requires_grad=True)
     with pytest.raises(RuntimeError) as excinfo:
         SensorWeightGeometry(**fields)
     assert "frozen geometric constant" in str(excinfo.value)
@@ -289,11 +272,11 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
     host float, where refusing the type is both available and stronger.
     """
 
-    from witwin.radar.frontend.contracts import LnaSpec
+    from witwin.radar.frontend import LnaSpec
 
     geometry = SensorWeightGeometry(**_geometry_fields())
-    assert isinstance(geometry.normals, torch.Tensor)
-    assert not geometry.normals.requires_grad
+    assert isinstance(geometry.pattern_frame, torch.Tensor)
+    assert not geometry.pattern_frame.requires_grad
 
     with pytest.raises(TypeError):
         LnaSpec(gain_db=torch.tensor(20.0))
@@ -310,9 +293,9 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
 # the whole frame and return ``velocities.grad is None``.
 #
 # The Phase-11 cutover deletes that route, and the production consumer is now
-# ``sensors/round_trip.py``. Its geometry is a STAGE-OWNED constant: the
+# ``sensors.py``. Its geometry is a STAGE-OWNED constant: the
 # velocities, the fixed length and the normals are zeros the stage allocates at
-# freeze time, and no caller can hand it a marked one. That is a stronger
+# freeze time; no caller can hand any of them a marked value. That is a stronger
 # position than the old route's and it changes what is worth asserting, so the
 # section asserts both halves - that the production geometry carries nothing
 # marked, and that the SAME geometry with one field marked is still refused.
@@ -346,7 +329,7 @@ def _production_stage(pattern=None):
     from support import multi_endpoint_geometry as geo
 
     from witwin.radar import Radar
-    from witwin.radar.sensors.round_trip import ISOTROPIC_PATTERN, RoundTripPatternStage
+    from witwin.radar.sensors import ISOTROPIC_PATTERN, RoundTripPatternStage
 
     spike = drv.MultiEndpointSpike()
     radar = Radar(

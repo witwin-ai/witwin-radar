@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "manylinux_policy": "manylinux_2_28",
+  "stable_abi_cross_torch_claim": false,
+  "runtime_identity_policy": "exact_torch_cuda_and_abi_identity",
+  "expected_loader_refusal_is_release_success": false,
+  "supported_python": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14"
+  ]
+}

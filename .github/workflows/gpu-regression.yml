@@ -9,6 +9,10 @@ name: Radar GPU regression
 on:
   workflow_dispatch:
 
+env:
+  WITWIN_CHANNEL_FINGERPRINT: ${{ vars.WITWIN_CHANNEL_FINGERPRINT }}
+  WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET: '0'
+
 jobs:
   gpu-tests:
     runs-on: [self-hosted, windows, x64, gpu]
@@ -16,7 +20,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install package and development tools
         shell: pwsh
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,channel]"
+      - name: Verify required Channel runtime identity
+        shell: pwsh
+        run: >-
+          python -c "import os, witwin.channel;
+          from witwin.channel import build_info;
+          info = build_info();
+          fingerprint = str(info['build_fingerprint']);
+          expected = os.environ['WITWIN_CHANNEL_FINGERPRINT'];
+          budget = int(os.environ['WITWIN_REQUIRED_CHANNEL_SKIP_BUDGET']);
+          assert budget == 0, 'required Channel skip budget must remain zero';
+          assert expected, 'configure repository variable WITWIN_CHANNEL_FINGERPRINT';
+          assert fingerprint == expected,
+          f'Channel fingerprint {fingerprint!r} != required {expected!r}';
+          print(f'Channel build_fingerprint={fingerprint}; required-skip-budget={budget}')"
       # The cuda tier is quick plus the GPU suite under coverage with the same
       # 75% floor this workflow used to assert inline, plus the R-ADR-019 loader
       # contract and the extension-boundary audit, which reads the shipped
@@ -26,4 +44,4 @@ jobs:
         run: python ci/run_ci_tier.py cuda
       - name: CUDA performance smoke benchmark
         shell: pwsh
-        run: python tools/benchmark_dirichlet_cuda.py --targets 1024 16384 --warmup 3 --runs 10 --json
+        run: python tools/benchmark_processing.py --groups pipeline --warmup 3 --runs 10 --json

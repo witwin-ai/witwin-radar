@@ -1986,7 +1986,7 @@ Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
   `witwin/radar/propagation/kinematics.py` 是 Core snapshot 到
   `(positions, velocities)` 与 forward-AD dual 的唯一 owner（`RigidMotion.velocity`
   和 `angular_velocity` 的第一个消费者）；`epochs.py` 承载 motion-event cadence；
-  `scattering/aspect.py` + `cuda/kernels/scatter_response.cu` 提供 aspect-dependent
+  `scattering.py` + `cuda/kernels/scatter_response.cu` 提供 aspect-dependent
   target response 的 primal/JVP/VJP；`sigproc/microdoppler.py` 提供 Torch 侧的
   micro-Doppler 分析。
 - 八条验收标准与证明它们的测试的映射由
@@ -2001,7 +2001,7 @@ Phase 6 记录的偏差与上游缺口（不在本 tree 修补）：
   哈希只在 tick 上付）。R-ADR-014 决策 3b。
   (b) TDM 验收改为端到端：
   `test_phase6_fmcw_tdm.py::test_the_production_slot_table_survives_the_downstream_compensation`
-  用生产 `pair_tx_index` 驱动 `synthesize_fmcw_beat -> assemble_frame_cube ->
+  用生产 `pair_tx_index` 驱动 `synthesize_fmcw -> assemble_frame_cube ->
   sigproc._compensate_tdm_phase`，且 `num_rx > 1` 使 `pair % num_tx` 不再退化为
   恒等映射；此前所有 TDM 测试都自建 tx 表，槽位表本身没有端到端 owner。
   (c) 验收矩阵第 3 行补上 OFDM 与 pulsed 的 Doppler 符号/aliasing owner；

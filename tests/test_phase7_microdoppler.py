@@ -38,7 +38,7 @@ pytest.importorskip("witwin.channel")
 
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
-from witwin.radar.sigproc import microdoppler as md  # noqa: E402
+import witwin.radar.processing.range_doppler as md  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -209,7 +209,7 @@ def test_a_rotating_two_blade_target_gives_a_flash_spectrum(rotor):
     # tests measure replayed positions and the production velocity owner is
     # pinned in a different file, so a defect in that owner leaves every
     # spectrum test green.
-    from witwin.radar.propagation import kinematics as kin
+    import witwin.radar.propagation as kin
 
     produced = kin.rigid_site_velocities(
         torch.tensor(
@@ -343,7 +343,7 @@ def test_a_hinge_limb_gives_a_rectangular_doppler_band(hinge):
 def _smpl_model_root() -> str | None:
     import pathlib
 
-    from witwin.radar.geometry import smpl as smpl_module
+    import witwin.radar.smpl as smpl_module
 
     candidates = [
         pathlib.Path(smpl_module._default_smpl_model_root()),
@@ -375,7 +375,7 @@ def test_smpl_limb_microdoppler_matches_an_independent_reference():
     """
 
     pytest.importorskip("smplpytorch")
-    from witwin.radar.geometry import SMPLBody, SmplPoseDeformation
+    from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
 
     model_root = _smpl_model_root()
     if model_root is None:
@@ -444,7 +444,7 @@ ANALYSIS_VOCABULARY = (
     "music",
     "pointcloud",
     "matched_filter",
-    "range_doppler",
+    "range_doppler_map",
     "clustering",
 )
 
@@ -459,7 +459,7 @@ def test_microdoppler_analysis_is_torch_only():
     root = _pathlib.Path(__file__).resolve().parents[1]
     # Moved into the processing facade at the Phase-8 cutover, so that every
     # production torch.fft in the processing chain lives in one package.
-    module = root / "witwin" / "radar" / "processing" / "microdoppler.py"
+    module = root / "witwin" / "radar" / "processing" / "range_doppler.py"
     source = module.read_text(encoding="utf-8")
 
     # Nothing in this module may resolve the extension, by any spelling.
@@ -473,7 +473,7 @@ def test_microdoppler_analysis_is_torch_only():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
-    assert imported == {"__future__", "torch"}, sorted(imported)
+    assert imported == {"dataclasses", "signal", "torch"}, sorted(imported)
 
     # And no analysis vocabulary leaked into the native side. COMMENTS are
     # stripped first, deliberately: ``fmcw_beat.cu`` names
@@ -506,8 +506,8 @@ def test_the_analysis_module_is_importable_without_cuda_being_resolved():
     import importlib
     import sys
 
-    sys.modules.pop("witwin.radar.sigproc.microdoppler", None)
-    loaded = "witwin.radar.cuda.build" in sys.modules
-    importlib.import_module("witwin.radar.sigproc.microdoppler")
+    sys.modules.pop("witwin.radar.processing.range_doppler", None)
+    loaded = "witwin.radar.cuda.runtime" in sys.modules
+    importlib.import_module("witwin.radar.processing.range_doppler")
     if not loaded:
-        assert "witwin.radar.cuda.build" not in sys.modules
+        assert "witwin.radar.cuda.runtime" not in sys.modules

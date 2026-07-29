@@ -350,10 +350,10 @@ def test_doppler_delay_rate_matches_the_analytic_two_way_projection(spike):
     assert doppler_hz < 0.0  # a receding site
 
     # The rate reaches synthesis as a primal and shows up as a slow-time slope.
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     iq = (
-        synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+        synthesize_fmcw(drv.to_synthesis(composed), spec)
         .cpu()
         .to(torch.complex128)
     )
@@ -388,9 +388,9 @@ def test_every_stage_output_stays_on_the_tape(spike, spec, reference_iq):
     assert composed.total_delay_s.requires_grad
     assert composed.complex_transfer_ref.requires_grad
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-    iq = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+    iq = synthesize_fmcw(drv.to_synthesis(composed), spec)
     assert iq.requires_grad
     assert iq.grad_fn is not None
     loss = drv.radar_loss(iq, reference_iq)
@@ -414,7 +414,7 @@ def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(
 
     from dataclasses import replace
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     tx, site, rx = drv.positions(requires_grad=True)
     response = drv.make_response(requires_grad=True)
@@ -425,7 +425,7 @@ def test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients(
             composed.path_count, dtype=torch.bool, device=composed.device
         ),
     )
-    iq = synthesize_fmcw_beat(drv.to_synthesis(dead), spec)
+    iq = synthesize_fmcw(drv.to_synthesis(dead), spec)
     assert torch.count_nonzero(iq) == 0
 
     loss = drv.radar_loss(iq, reference_iq)

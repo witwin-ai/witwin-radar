@@ -36,13 +36,13 @@ from support.pulsed_grid import (  # noqa: E402
     rect_spec,
     reference_spec,
 )
-from witwin.radar.sigproc.matched_filter import (  # noqa: E402
+from witwin.radar.processing.range_doppler import (  # noqa: E402
     lag_axis,
     matched_filter,
     pulse_samples,
 )
-from witwin.radar.synthesis.contracts import (  # noqa: E402
-    PulsedEchoSpec,
+from witwin.radar.synthesis.assembly import (  # noqa: E402
+    PulsedSpec,
     SlowTimeMode,
     SynthesisPathBatch,
     require_pulsed_compatible,
@@ -211,7 +211,7 @@ def test_both_carrier_homes_may_not_be_named_at_once():
     with pytest.raises(ValueError, match="two"):
         reference_spec(carrier_hz=F_REF_HZ, carrier_rate_hz=F_REF_HZ)
 
-    from witwin.radar.synthesis.contracts import require_single_carrier_home
+    from witwin.radar.synthesis.assembly import require_single_carrier_home
 
     with pytest.raises(ValueError) as spec_error:
         reference_spec(carrier_hz=F_REF_HZ, carrier_rate_hz=F_REF_HZ)
@@ -225,8 +225,8 @@ def test_both_carrier_homes_may_not_be_named_at_once():
 # --------------------------------------------------------------------------
 
 
-def _cpu_batch(spec: PulsedEchoSpec) -> SynthesisPathBatch:
-    from witwin.radar.paths.contracts import RadarPathTopology
+def _cpu_batch(spec: PulsedSpec) -> SynthesisPathBatch:
+    from witwin.radar.paths import RadarPathTopology
 
     zeros = torch.zeros(1, dtype=torch.int64)
     return SynthesisPathBatch(
@@ -358,9 +358,9 @@ def test_the_shared_provenance_rules_still_apply():
 
 
 def test_the_pulsed_guard_refuses_a_spec_of_another_waveform():
-    from witwin.radar.synthesis.contracts import OfdmCfrSpec
+    from witwin.radar.synthesis.assembly import OfdmSpec
 
-    other = OfdmCfrSpec(
+    other = OfdmSpec(
         num_subcarriers=4,
         num_symbols=1,
         subcarrier_spacing_hz=120.0e3,
@@ -369,7 +369,7 @@ def test_the_pulsed_guard_refuses_a_spec_of_another_waveform():
         max_expected_delay_s=1.0e-6,
         carrier_rate_hz=F_REF_HZ,
     )
-    with pytest.raises(TypeError, match="PulsedEchoSpec"):
+    with pytest.raises(TypeError, match="PulsedSpec"):
         require_pulsed_compatible(_cpu_batch(reference_spec()), other)
 
 
@@ -438,7 +438,7 @@ def test_a_pulse_shorter_than_one_sample_is_refused():
 # --------------------------------------------------------------------------
 
 
-def _delayed_replica(spec: PulsedEchoSpec, shift_samples: int) -> torch.Tensor:
+def _delayed_replica(spec: PulsedSpec, shift_samples: int) -> torch.Tensor:
     """The received train for one on-grid row, built without the kernel."""
 
     replica = pulse_samples(spec)

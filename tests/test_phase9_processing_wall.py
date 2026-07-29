@@ -31,9 +31,7 @@ argwhere - replaced by counting stand-ins, and asserts the count is exactly
 zero. A stage that raised after computing its threshold would fail that even
 though it raised.
 
-``witwin/radar/sigproc/*`` are deprecated re-export shims over
-``witwin/radar/processing/*``, so guarding the processing owners covers both
-surfaces with one implementation and there is deliberately no second guard.
+The guards live only in the canonical processing owners, with no secondary surface.
 """
 
 from __future__ import annotations
@@ -45,28 +43,27 @@ import torch
 import torch.autograd.forward_ad as forward_ad
 import torch.nn.functional as F
 
-from conftest import MockRadar
-from support.legacy_golden import GOLDEN_CONFIG
+from conftest import PROCESSING_CONFIG, make_processing_axes
 from witwin.radar.processing import (
     ArrayGeometry,
+    ProcessingCube,
     beam_cube,
     ca_cfar,
     ca_cfar_fast,
     conventional_steering,
     os_cfar,
     point_cloud,
-    range_doppler,
+    range_doppler_map,
     range_profile,
 )
-from witwin.radar.processing.adapters import axes_from_radar
-from witwin.radar.processing.aoa import (
+from witwin.radar.processing.angle import (
     fft2_aoa,
     music_spectrum,
     phase_comparison_aoa,
     tdm_compensate,
 )
-from witwin.radar.processing.cfar import Detections, ca_cfar_1d
-from witwin.radar.processing.pointcloud import _keep_strongest
+from witwin.radar.processing.detection import Detections, ca_cfar_1d
+from witwin.radar.processing.detection import _keep_strongest
 from witwin.radar.processing.tracking import DetectionFrame
 
 
@@ -74,7 +71,7 @@ from witwin.radar.processing.tracking import DetectionFrame
 #: and the same array the point-cloud tests are written against so a failure
 #: here and a failure there describe one geometry.
 CONFIG = {
-    **GOLDEN_CONFIG,
+    **PROCESSING_CONFIG,
     "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 0, 1]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
@@ -96,7 +93,7 @@ DETECTOR = {"guard_cells": (1, 2), "training_cells": (3, 4), "pfa": 1e-6}
 
 
 def _records():
-    axes = axes_from_radar(MockRadar(CONFIG))
+    axes = make_processing_axes(CONFIG)
     return axes, ArrayGeometry.from_axes(axes)
 
 
@@ -174,7 +171,7 @@ class _Scene:
         self.axes = axes
         self.array = array
         self.cube = cube
-        self.rd = range_doppler(range_profile(cube, axes=axes))
+        self.rd = range_doppler_map(range_profile(ProcessingCube(cube, axes)))
         combined = self.rd.data.reshape(
             array.sensor_pair_count, *self.rd.data.shape[-2:]
         ).sum(dim=0)
@@ -279,9 +276,9 @@ def test_the_range_and_doppler_transforms_stay_differentiable(scene):
     """
 
     live = scene.cube.detach().clone().requires_grad_(True)
-    profile = range_profile(live, axes=scene.axes)
+    profile = range_profile(ProcessingCube(live, scene.axes))
     assert profile.data.requires_grad
-    rd = range_doppler(profile)
+    rd = range_doppler_map(profile)
     assert rd.data.requires_grad
 
     (grad,) = torch.autograd.grad(rd.data.abs().square().sum(), live)
@@ -293,7 +290,7 @@ def test_the_range_and_doppler_transforms_stay_differentiable(scene):
 
 def test_the_beam_cube_stays_differentiable(scene):
     live = scene.cube.detach().clone().requires_grad_(True)
-    rd = range_doppler(range_profile(live, axes=scene.axes))
+    rd = range_doppler_map(range_profile(ProcessingCube(live, scene.axes)))
     directions = torch.tensor(
         [[0.0, 1.0, 0.0], [0.25, math.sqrt(1 - 0.0625), 0.0]], dtype=torch.float64
     )
@@ -307,10 +304,10 @@ def test_the_beam_cube_stays_differentiable(scene):
 def test_the_matched_filter_stays_differentiable():
     """A correlation is a product of transforms; it has an exact derivative."""
 
-    from witwin.radar.processing.matched_filter import matched_filter
-    from witwin.radar.synthesis.contracts import PulsedEchoSpec
+    from witwin.radar.processing.range_doppler import matched_filter
+    from witwin.radar.synthesis.assembly import PulsedSpec
 
-    spec = PulsedEchoSpec(
+    spec = PulsedSpec(
         num_pulses=1,
         num_samples=64,
         sample_period_s=2.0e-9,
@@ -425,8 +422,8 @@ def test_music_image_carries_the_same_live_derivative_as_the_spectrum(scene):
     defined, correct and measured one test above.
     """
 
-    from witwin.radar.processing.aoa import music_image
-    from witwin.radar.processing.contracts import RangeProfile
+    from witwin.radar.processing.angle import music_image
+    from witwin.radar.processing.range_doppler import RangeProfile
 
     generator = torch.Generator().manual_seed(23)
     bins = int(scene.axes.range_bin_count)
@@ -478,7 +475,7 @@ def test_a_cfar_detector_refuses_a_gradient_before_any_compute(scene, watch, ent
     """
 
     live = scene.power.clone().requires_grad_(True)
-    with pytest.raises(RuntimeError, match=f"cfar.{entry} is not differentiable"):
+    with pytest.raises(RuntimeError, match=f"witwin.radar.processing.detection.{entry} is not differentiable"):
         CFAR_ENTRIES[entry](live, **DETECTOR)
     assert watch.calls == []
 
@@ -495,7 +492,7 @@ def test_a_cfar_detector_refuses_a_forward_dual_before_any_compute(scene, watch,
 
 def test_the_range_only_detector_refuses_both_modes_before_any_compute(scene, watch):
     profile = scene.power[0]
-    with pytest.raises(RuntimeError, match="cfar.ca_cfar_1d is not differentiable"):
+    with pytest.raises(RuntimeError, match="witwin.radar.processing.detection.ca_cfar_1d is not differentiable"):
         ca_cfar_1d(profile.clone().requires_grad_(True))
     with forward_ad.dual_level():
         with pytest.raises(RuntimeError, match="a forward tangent"):
@@ -536,7 +533,7 @@ def test_the_point_cloud_refuses_a_gradient_before_any_compute(scene, watch):
 
     live = _remap(scene.rd, scene.rd.data.detach().clone().requires_grad_(True))
     with pytest.raises(
-        RuntimeError, match="pointcloud.point_cloud is not differentiable"
+        RuntimeError, match="witwin.radar.processing.detection.point_cloud is not differentiable"
     ):
         point_cloud(scene.detected, live, scene.axes, scene.array, max_points=64)
     assert watch.calls == []
@@ -607,7 +604,7 @@ def test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute(
     ).to(torch.complex64)
     estimator = AOA_ENTRIES[entry]
 
-    with pytest.raises(RuntimeError, match=f"aoa.{entry} is not differentiable"):
+    with pytest.raises(RuntimeError, match=f"witwin.radar.processing.angle.{entry} is not differentiable"):
         estimator(virtual.clone().requires_grad_(True), scene.array, fft_size=64)
     with forward_ad.dual_level():
         with pytest.raises(RuntimeError, match="a forward tangent"):
@@ -681,17 +678,16 @@ def test_every_wall_refusal_comes_from_the_one_owner():
     import ast
     import pathlib
 
-    from witwin.radar import ad_contracts
+    from witwin.radar import policy
 
-    assert ad_contracts.refuse_derivative.__module__ == "witwin.radar.ad_contracts"
+    assert policy.refuse_derivative.__module__ == "witwin.radar.policy"
 
     root = pathlib.Path(__file__).resolve().parents[1] / "witwin" / "radar"
     guarded = (
-        "processing/cfar.py",
-        "processing/pointcloud.py",
-        "processing/aoa.py",
+        "processing/detection.py",
+        "processing/angle.py",
         "processing/tracking.py",
-        "frontend/chain.py",
+        "frontend.py",
     )
     for relative in guarded:
         tree = ast.parse((root / relative).read_text(encoding="utf-8"))
@@ -699,7 +695,7 @@ def test_every_wall_refusal_comes_from_the_one_owner():
             alias.name
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom)
-            and (node.module or "").endswith("ad_contracts")
+            and (node.module or "").endswith("policy")
             for alias in node.names
         }
         assert "refuse_derivative" in imported, relative

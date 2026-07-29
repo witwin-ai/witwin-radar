@@ -44,7 +44,7 @@ PHASE_ATOL_RAD = 1.0e-5
 
 
 def _ops():
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     return build.build_extension()
 
@@ -440,7 +440,7 @@ def test_the_aspect_rate_guard_refuses_a_fast_aspect_change():
     reports that it was.
     """
 
-    from witwin.radar.synthesis.contracts import ASPECT_PHASE_BUDGET_RAD
+    from witwin.radar.scattering import ASPECT_PHASE_BUDGET_RAD
 
     over = 1.01 * ASPECT_PHASE_BUDGET_RAD / COHERENT_INTERVAL_S
     with pytest.raises(ValueError, match="unmodelled aspect Doppler"):

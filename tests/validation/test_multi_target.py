@@ -18,7 +18,7 @@ import torch
 
 from conftest import (
     FAST_CONFIG, STANDARD_CONFIG,
-    make_scene_radar_or_skip, simulate_point_targets,
+    make_processing_axes, make_scene_radar_or_skip, simulate_point_targets,
 )
 
 pytestmark = pytest.mark.gpu
@@ -143,7 +143,8 @@ class TestRangeResolutionLimit:
     def test_unresolvable_targets_merge(self):
         radar = make_scene_radar_or_skip(_VFAST)
         centre = 3.0
-        delta = frame_delta = radar.range_resolution * 0.3
+        resolution = make_processing_axes(_VFAST).range_bin_m
+        delta = frame_delta = resolution * 0.3
         frame = simulate_point_targets(
             radar, [_local(centre - delta), _local(centre + frame_delta)]
         )
@@ -163,14 +164,15 @@ class TestRangeResolutionLimit:
 
         radar = make_scene_radar_or_skip(_VFAST)
         d1 = 3.0
+        resolution = make_processing_axes(_VFAST).range_bin_m
         frame = simulate_point_targets(
-            radar, [_local(d1), _local(d1 + radar.range_resolution * 5)]
+            radar, [_local(d1), _local(d1 + resolution * 5)]
         )
         profile = _range_profile(frame)
         axis = frame.axes.range_m.cpu().numpy()
 
         bin1 = int(np.argmin(np.abs(axis - d1)))
-        bin2 = int(np.argmin(np.abs(axis - (d1 + radar.range_resolution * 5))))
+        bin2 = int(np.argmin(np.abs(axis - (d1 + resolution * 5))))
         assert bin1 < bin2
         peak = max(profile[bin1], profile[bin2])
         valley = profile[bin1:bin2 + 1].min()
@@ -218,7 +220,7 @@ class TestPointCloudOutputFormat:
         contract rather than a silent one.
         """
 
-        from witwin.radar import ScatterSitePolicy
+        from witwin.radar.simulation import ScatterSitePolicy
 
         radar = make_scene_radar_or_skip(_VFAST)
         with pytest.raises(ValueError, match="site_count must be a positive int"):

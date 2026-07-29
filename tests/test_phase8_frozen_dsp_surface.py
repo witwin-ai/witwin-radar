@@ -229,7 +229,7 @@ def test_no_window_constructor_is_called_from_the_vendor_library():
     assert offenders == [], offenders
     # And the facade's own window owner is still there, so this is a scan for
     # the right thing rather than one that passes because nothing windows.
-    from witwin.radar.processing.primitives import WINDOWS
+    from witwin.radar.processing.signal import WINDOWS
 
     assert "hamming" in WINDOWS and "hamming_symmetric" in WINDOWS
 
@@ -298,13 +298,16 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
     too rather than needing a second edit.
     """
 
-    packages = ("synthesis", "sensors", "frontend", "paths", "propagation")
+    owners = ("synthesis", "sensors.py", "frontend.py", "paths.py", "propagation.py")
     allowed = EXPECTED_FENCE_ALLOWANCES
     scanned = 0
     offenders = []
-    for package in packages:
-        root = REPO_ROOT / "witwin" / "radar" / package
-        for path in sorted(root.rglob("*.py")):
+    for owner in owners:
+        root = REPO_ROOT / "witwin" / "radar" / owner
+        assert root.exists(), f"physics owner moved: {owner}"
+        paths = [root] if root.is_file() else sorted(root.rglob("*.py"))
+        assert paths, f"physics owner is empty: {owner}"
+        for path in paths:
             relative = path.relative_to(REPO_ROOT).as_posix()
             if relative in allowed:
                 continue
@@ -325,8 +328,8 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
                 ] in FROZEN_FUNCTIONAL:
                     offenders.append((relative, name))
     assert offenders == [], offenders
-    # Non-vacuity: the six packages exist and were actually walked.
-    assert scanned >= 25, scanned
+    # Non-vacuity follows from each exact concept owner being present and non-empty.
+    assert scanned >= len(owners), scanned
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +490,7 @@ def test_the_native_binding_manifest_carries_no_processing_symbol():
         "beamform",
         "point_cloud",
         "range_profile",
-        "range_doppler",
+        "range_doppler_map",
         "music",
         "aoa",
         "steering",

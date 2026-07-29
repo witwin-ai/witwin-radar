@@ -34,6 +34,7 @@ The three layers do different jobs and all three are required:
 from __future__ import annotations
 
 import ast
+import json
 import os
 import pathlib
 import subprocess
@@ -92,109 +93,34 @@ ALLOWED_CHANNEL_IMPORTS = frozenset(
     }
 )
 
-SPIKE_MODULES = (
-    # The two cross-domain contract owners at the package root. Every domain
-    # with an AD boundary or a configuration scalar imports one of them, so
-    # they are on the per-frame path by construction, and they are scanned here
-    # for the same reason the DSP glue is: being a validator is permission to
-    # read an attribute, not permission to read a device tensor to the host.
-    "witwin/radar/ad_contracts.py",
-    "witwin/radar/host_parameters.py",
-    "witwin/radar/propagation/__init__.py",
-    "witwin/radar/propagation/contracts.py",
-    "witwin/radar/propagation/channel_consumer.py",
-    # The Core-kinematics seam. It names no witwin package at module scope - it
-    # is duck typed over Core's snapshot shape - and it is scanned here because
-    # it runs once per frame and is the natural place for a host read of a
-    # velocity to appear.
-    "witwin/radar/propagation/kinematics.py",
-    # The scene-driven epoch loop. It decides when a moving world pays for a
-    # compile and a rediscovery, so it runs per frame and is scanned for the
-    # same reasons. It takes its scene compiler as an ARGUMENT precisely so
-    # that it does not become a second module naming ``witwin.channel``.
-    "witwin/radar/propagation/epochs.py",
-    # The production scene -> endpoint/site binding owner. It is scanned here
-    # because it is the module that turns a Core world into endpoint specs, and
-    # a host read of a structure anchor or an ID vector is exactly the kind of
-    # convenience that would look harmless in it. It names no Channel module at
-    # all: compiling is the adapter's, and this owns identity and packing.
-    "witwin/radar/scene_binding.py",
-    # The scene-driven entry's frame loop. It is the module that RUNS the
-    # per-frame path rather than one the path passes through, so a stray host
-    # read there - a progress count, a convergence check, a "just this once"
-    # float() on a delay - would be the most expensive one in the package. It
-    # reaches ``witwin.channel`` only through the adapter's own
-    # ``compile_scene``, which is why it does not appear in
-    # ``test_only_the_adapter_crosses_the_channel_boundary`` below.
-    "witwin/radar/simulation.py",
-    "witwin/radar/paths/__init__.py",
-    "witwin/radar/paths/contracts.py",
-    "witwin/radar/paths/_identity.py",
-    "witwin/radar/paths/components.py",
-    "witwin/radar/paths/direct.py",
-    "witwin/radar/paths/two_way.py",
-    "witwin/radar/scattering/__init__.py",
-    "witwin/radar/scattering/base.py",
-    "witwin/radar/scattering/rcs.py",
-    "witwin/radar/synthesis/__init__.py",
-    "witwin/radar/synthesis/assembly.py",
-    "witwin/radar/synthesis/contracts.py",
-    "witwin/radar/synthesis/fmcw_beat.py",
-    "witwin/radar/synthesis/ofdm_cfr.py",
-    "witwin/radar/synthesis/pulsed_echo.py",
-    "witwin/radar/synthesis/selection.py",
-    # The component combination laws. Post-synthesis Torch by owner directive,
-    # and in this list for the same reason ``matched_filter`` is: being on the
-    # Torch side of the processing exception is permission to add magnitudes,
-    # not permission to read a device tensor per frame.
-    "witwin/radar/processing/__init__.py",
-    "witwin/radar/processing/combination.py",
-    # The range / Doppler / beam chain and the metadata record all of them read.
-    # Same rule, and it has teeth here: the published window coherent gain is a
-    # host closed form rather than a ``float(w.mean())`` precisely so that a
-    # per-frame processing call adds no unattributed synchronization.
-    "witwin/radar/processing/axes.py",
-    "witwin/radar/processing/beam_cube.py",
-    "witwin/radar/processing/contracts.py",
-    "witwin/radar/processing/cube.py",
-    "witwin/radar/processing/doppler.py",
-    "witwin/radar/processing/primitives.py",
-    "witwin/radar/processing/range_profile.py",
-    "witwin/radar/sensors/__init__.py",
-    "witwin/radar/sensors/contracts.py",
-    "witwin/radar/sensors/pattern.py",
-    "witwin/radar/sensors/weights.py",
-    "witwin/radar/frontend/__init__.py",
-    "witwin/radar/frontend/contracts.py",
-    "witwin/radar/frontend/chain.py",
-    # DSP glue, and in this list on purpose. It is subjected to the same
-    # host-observation and Dr.Jit scans as the native owners because being on
-    # the Torch side of the processing exception is permission to use an FFT,
-    # not permission to read a device tensor to the host per frame.
-    "witwin/radar/processing/matched_filter.py",
-    # The rest of the Phase-8 processing chain, under the same scans. A batched
-    # detector, an angle estimator and a beam weight are all post-synthesis
-    # Torch by the owner directive; that is permission to use an FFT, not
-    # permission to read a device tensor to the host per frame.
-    "witwin/radar/processing/adapters.py",
-    "witwin/radar/processing/aoa.py",
-    "witwin/radar/processing/beamforming.py",
-    "witwin/radar/processing/cfar.py",
-    "witwin/radar/processing/microdoppler.py",
-    "witwin/radar/processing/tracking.py",
-)
+def _module_source_path(module: str) -> str:
+    relative = module.replace(".", "/")
+    module_file = REPO_ROOT / f"{relative}.py"
+    if module_file.exists():
+        return f"{relative}.py"
+    package_file = REPO_ROOT / relative / "__init__.py"
+    if package_file.exists():
+        return f"{relative}/__init__.py"
+    raise AssertionError(f"architecture manifest names missing module {module!r}")
 
+
+_ARCHITECTURE = json.loads(
+    (REPO_ROOT / "ci" / "architecture-manifest.json").read_text(encoding="utf-8")
+)
+SPIKE_MODULES = tuple(
+    _module_source_path(module) for module in _ARCHITECTURE["hot_path_modules"]
+)
 SPIKE_IMPORTS = textwrap.dedent(
     """
-    import witwin.radar.propagation.channel_consumer
-    import witwin.radar.paths.two_way
-    import witwin.radar.scattering.rcs
-    import witwin.radar.synthesis.fmcw_beat
-    import witwin.radar.synthesis.ofdm_cfr
-    import witwin.radar.synthesis.pulsed_echo
-    import witwin.radar.sensors.weights
-    import witwin.radar.frontend.chain
-    import witwin.radar.processing.matched_filter
+    import witwin.radar.channel
+    import witwin.radar.paths
+    import witwin.radar.scattering
+    import witwin.radar.synthesis.fmcw
+    import witwin.radar.synthesis.ofdm
+    import witwin.radar.synthesis.pulsed
+    import witwin.radar.sensors
+    import witwin.radar.frontend
+    import witwin.radar.processing.range_doppler
     """
 ).strip()
 
@@ -276,14 +202,14 @@ def test_the_propagation_package_alone_does_not_require_channel():
 
 def test_synthesis_scattering_and_paths_do_not_require_channel():
     modules = _subprocess_modules(
-        "import witwin.radar.sensors.weights\n"
-        "import witwin.radar.frontend.chain\n"
-        "import witwin.radar.synthesis.fmcw_beat\n"
-        "import witwin.radar.synthesis.ofdm_cfr\n"
-        "import witwin.radar.synthesis.pulsed_echo\n"
-        "import witwin.radar.processing.matched_filter\n"
-        "import witwin.radar.scattering.rcs\n"
-        "import witwin.radar.paths.two_way"
+        "import witwin.radar.sensors\n"
+        "import witwin.radar.frontend\n"
+        "import witwin.radar.synthesis.fmcw\n"
+        "import witwin.radar.synthesis.ofdm\n"
+        "import witwin.radar.synthesis.pulsed\n"
+        "import witwin.radar.processing.range_doppler\n"
+        "import witwin.radar.scattering\n"
+        "import witwin.radar.paths"
     )
     offenders = sorted(name for name in modules if name.startswith("witwin.channel"))
     assert offenders == [], offenders
@@ -401,7 +327,7 @@ def _static_closure() -> tuple[set[str], set[str]]:
 
 def test_static_closure_of_the_new_modules_names_nothing_forbidden():
     reachable, imports = _static_closure()
-    assert "witwin.radar.propagation.channel_consumer" in reachable
+    assert "witwin.radar.channel" in reachable
 
     offenders = sorted(name for name in imports if _matches(name, NEVER_NAMED))
     assert offenders == [], offenders
@@ -424,7 +350,7 @@ def test_only_the_adapter_crosses_the_channel_boundary():
             for name in _imports_of(REPO_ROOT / relative, _module_name(relative))
         )
     ]
-    assert crossing == ["witwin/radar/propagation/channel_consumer.py"], crossing
+    assert crossing == ["witwin/radar/channel.py"], crossing
 
 
 # --------------------------------------------------------------------------
@@ -438,12 +364,10 @@ def test_only_the_adapter_crosses_the_channel_boundary():
 
 HOST_OBSERVATION_METHODS = frozenset({"cpu", "numpy", "tolist", "item"})
 
-# paths/_identity.py reads frozen leg row identity to the host once, at freeze
-# time, where the consumer has already synchronized. That is the sanctioned
-# host observation, and naming ONE owner is what keeps it that way: neither
-# composer may grow its own read.
+# paths.py reads frozen leg identity and classifies components once at freeze
+# time, after the consumer has already synchronized.
 HOST_OBSERVATION_OWNERS = {
-    "witwin/radar/paths/_identity.py": frozenset({"tolist"}),
+    "witwin/radar/paths.py": frozenset({"tolist"}),
     # synthesis/assembly.py::validate_pair_ordering is the freeze-time check
     # that a frozen pair partition really is this array's TX x RX grid. It
     # reads the pair ranks on the host ONCE, where the topology is decided and
@@ -451,22 +375,6 @@ HOST_OBSERVATION_OWNERS = {
     # precisely so the per-frame path cannot inherit the read.
     # test_the_frame_assembly_path_reads_no_tensor_value pins that split.
     "witwin/radar/synthesis/assembly.py": frozenset({"tolist"}),
-    # paths/components.py classifies composed rows into scene components. It is
-    # the same freeze-time observation as _identity.py, made once per topology
-    # epoch from the frozen leg identity columns after the consumer has already
-    # synchronized, and the resulting class_id lives on the device. Per FRAME
-    # it reads nothing: ``mask`` is a device comparison and ``count`` returns a
-    # host int decided at build time.
-    "witwin/radar/paths/components.py": frozenset({"tolist"}),
-    # processing/adapters.py is the legacy sigproc surface, and PUBLISHING
-    # numpy is that surface's contract: process_pc and process_rd have always
-    # returned host arrays, and reg_data has always returned a host batch.
-    # Naming the allowance here rather than dropping the module from the scan
-    # keeps every OTHER observation - an item(), a stray cpu() inside a
-    # transform - a failure. The facade entries these adapters call read
-    # nothing; that is what test_no_host_observation_in_the_processing_chain
-    # in tests/processing/test_cutover.py measures at runtime.
-    "witwin/radar/processing/adapters.py": frozenset({"cpu", "numpy"}),
     # processing/tracking.py is the frame-to-frame detection handoff. It is
     # explicitly non-differentiable and explicitly a host-side stage: an
     # association is a discrete decision over a detection list that already
@@ -476,7 +384,7 @@ HOST_OBSERVATION_OWNERS = {
     # processing/pointcloud.py performs exactly one: the argwhere that turns a
     # detection mask into a row list. A point cloud has a data-dependent
     # length, so that observation is the stage, and it is attributed here.
-    "witwin/radar/processing/pointcloud.py": frozenset(),
+    "witwin/radar/processing/detection.py": frozenset(),
 }
 
 
@@ -526,7 +434,7 @@ def test_no_drjit_reference_of_any_kind_in_the_new_modules():
 
 
 def test_the_synthesis_hot_loop_is_native_not_torch():
-    facade = REPO_ROOT / "witwin/radar/synthesis/fmcw_beat.py"
+    facade = REPO_ROOT / "witwin/radar/synthesis/fmcw.py"
     tree = ast.parse(facade.read_text(encoding="utf-8"))
 
     # No Python iteration over paths or samples anywhere in the facade.
@@ -550,45 +458,37 @@ def test_the_synthesis_hot_loop_is_native_not_torch():
         assert forbidden not in called, forbidden
 
     source = facade.read_text(encoding="utf-8")
-    assert "_FmcwBeatSynthesis.apply(" in source
-    for operator in ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"):
-        assert operator in source, operator
+    assert "_FmcwSynthesis.apply(" in source
+    for domain in ("beat", "spectrum"):
+        for role in ("forward", "backward", "jvp"):
+            assert f"fmcw_{domain}_{role}" in source
 
-    # TDM slot time is a KERNEL ARGUMENT, not a Torch expression. The facade
-    # passes the per-segment transmitter index across the boundary to all three
-    # operators and never forms a slot time itself: computing
-    # (chirp * num_tx + tx) * chirp_period in Torch would be a second, silently
-    # divergent copy of the slow-time axis, and broadcasting it over the sample
-    # axis would materialise the per-path-per-sample intermediate the kernel
-    # exists to avoid.
+    # Both domains use one shared bridge and pass TDM ownership to native code.
     assert "segment_tx_index" in source
-    for operator in ("fmcw_beat_forward", "fmcw_beat_backward", "fmcw_beat_jvp"):
+    for helper in ("_forward_op", "_backward_op", "_jvp_op"):
         call = next(
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and _dotted(node.func).endswith(operator)
+            and isinstance(node.func, ast.Call)
+            and isinstance(node.func.func, ast.Name)
+            and node.func.func.id == helper
         )
-        passed = [
-            argument.id
-            for argument in call.args
-            if isinstance(argument, ast.Name)
-        ]
-        assert "tx_index" in passed, (operator, passed)
+        passed = [argument.id for argument in call.args if isinstance(argument, ast.Name)]
+        assert "tx_index" in passed, (helper, passed)
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/fmcw_beat.cu").read_text(
-        encoding="utf-8"
-    )
-    for symbol in (
-        "__global__ void fmcw_beat_forward_kernel",
-        "__global__ void fmcw_beat_backward_kernel",
-        "__global__ void fmcw_beat_jvp_kernel",
-        "sincosf",
-        "segment_tx_index",
-        "slot_time",
-    ):
-        assert symbol in kernel, symbol
-
+    for domain in ("beat", "spectrum"):
+        kernel = (
+            REPO_ROOT / f"witwin/radar/cuda/fmcw_{domain}.cu"
+        ).read_text(encoding="utf-8")
+        for symbol in (
+            f"__global__ void fmcw_{domain}_forward_kernel",
+            f"__global__ void fmcw_{domain}_backward_kernel",
+            f"__global__ void fmcw_{domain}_jvp_kernel",
+            "segment_tx_index",
+            "slot_time",
+        ):
+            assert symbol in kernel, symbol
 
 def test_the_ofdm_hot_loop_is_native_not_torch():
     """The CFR sum is a kernel, and the OFDM family conjugates nothing.
@@ -600,7 +500,7 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     untouched.
     """
 
-    facade = REPO_ROOT / "witwin/radar/synthesis/ofdm_cfr.py"
+    facade = REPO_ROOT / "witwin/radar/synthesis/ofdm.py"
     tree = ast.parse(facade.read_text(encoding="utf-8"))
 
     loops = [
@@ -647,10 +547,10 @@ def test_the_ofdm_hot_loop_is_native_not_torch():
     }
     assert "channel_phasor_to_beat_weight" not in called_names
     assert "conj" not in called_names
-    imported = _imports_of(facade, "witwin.radar.synthesis.ofdm_cfr")
+    imported = _imports_of(facade, "witwin.radar.synthesis.ofdm")
     assert not any("fmcw" in name for name in imported), sorted(imported)
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/ofdm_cfr.cu").read_text(
+    kernel = (REPO_ROOT / "witwin/radar/cuda/ofdm_cfr.cu").read_text(
         encoding="utf-8"
     )
     for symbol in (
@@ -691,7 +591,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     from here.
     """
 
-    facade = REPO_ROOT / "witwin/radar/synthesis/pulsed_echo.py"
+    facade = REPO_ROOT / "witwin/radar/synthesis/pulsed.py"
     tree = ast.parse(facade.read_text(encoding="utf-8"))
 
     loops = [
@@ -742,7 +642,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     }
     assert "channel_phasor_to_beat_weight" not in called_names
     assert "conj" not in called_names
-    imported = _imports_of(facade, "witwin.radar.synthesis.pulsed_echo")
+    imported = _imports_of(facade, "witwin.radar.synthesis.pulsed")
     assert not any("fmcw" in name for name in imported), sorted(imported)
     assert not any("ofdm" in name for name in imported), sorted(imported)
     # The matched filter is the CONSUMER of this module's output, never a
@@ -750,7 +650,7 @@ def test_the_pulsed_hot_loop_is_native_not_torch():
     # inside the synthesis owner.
     assert not any("sigproc" in name for name in imported), sorted(imported)
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/pulsed_echo.cu").read_text(
+    kernel = (REPO_ROOT / "witwin/radar/cuda/pulsed_echo.cu").read_text(
         encoding="utf-8"
     )
     for symbol in (
@@ -799,15 +699,11 @@ def test_the_matched_filter_re_derives_no_geometry():
     synthesis kernel already owns. Scanned by name because every one of these
     would appear as an attribute read on the spec.
 
-    The module MOVED at the Phase-8 cutover, from ``sigproc`` into the
-    processing facade, so that every production ``torch.fft`` expression in the
-    processing chain lives in one package. The correlation itself moved one step
-    further, into ``processing/primitives.py``, which the range-profile stage
-    shares - so the FFT assertions below follow it there rather than being
-    dropped. The scan itself is unchanged.
+    The canonical range/Doppler owner exposes the spec-facing entry, while the
+    shared correlation primitive lives in the signal owner.
     """
 
-    module = REPO_ROOT / "witwin/radar/processing/matched_filter.py"
+    module = REPO_ROOT / "witwin/radar/processing/range_doppler.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
 
     attributes = {
@@ -830,16 +726,16 @@ def test_the_matched_filter_re_derives_no_geometry():
     # The one witwin edge it is allowed: the shared correlation primitive. It
     # reaches nothing else, and in particular no synthesis contract, no path
     # row and no propagation module.
-    imported = _imports_of(module, "witwin.radar.processing.matched_filter")
+    imported = _imports_of(module, "witwin.radar.processing.range_doppler")
     witwin_edges = sorted(
         name
         for name in imported
         if name.startswith("witwin") and "." in name.removeprefix("witwin.radar.")
     )
-    allowed = "witwin.radar.processing.primitives"
+    allowed = "witwin.radar.processing.signal"
     assert all(name.startswith(allowed) for name in witwin_edges), witwin_edges
 
-    correlation = REPO_ROOT / "witwin/radar/processing/primitives.py"
+    correlation = REPO_ROOT / "witwin/radar/processing/signal.py"
     source = correlation.read_text(encoding="utf-8")
     assert "torch.fft" in source
     assert "torch.conj" in source
@@ -885,7 +781,7 @@ def test_the_two_way_join_hot_loop_is_native_not_torch():
     anything.
     """
 
-    facade = REPO_ROOT / "witwin/radar/paths/two_way.py"
+    facade = REPO_ROOT / "witwin/radar/paths.py"
     tree = ast.parse(facade.read_text(encoding="utf-8"))
     compose = next(
         node
@@ -920,7 +816,7 @@ def test_the_two_way_join_hot_loop_is_native_not_torch():
     ):
         assert operator in source, operator
 
-    kernel = (REPO_ROOT / "witwin/radar/cuda/kernels/two_way_join.cu").read_text(
+    kernel = (REPO_ROOT / "witwin/radar/cuda/two_way_join.cu").read_text(
         encoding="utf-8"
     )
     for symbol in (

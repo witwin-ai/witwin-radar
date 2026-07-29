@@ -86,7 +86,7 @@ exchange for nothing a reader cannot already get from the manifest.
 - Out-parameter style, matching the existing family: outputs are preallocated by
   the Python owner and passed as `Tensor(a!)`.
 - One Python owner per symbol. For the beat family that owner is
-  `witwin/radar/synthesis/fmcw_beat.py`.
+  `witwin/radar/synthesis/fmcw.py`.
 - Three registered operators per differentiable family: `_forward`, `_backward`,
   `_jvp`. Finite-difference derivatives in production are forbidden.
 - All tensors CUDA, contiguous, and validated in the host wrapper before launch.
@@ -106,7 +106,7 @@ nonzero:
   whereas a float32 `tau` re-multiplied by 77 GHz loses roughly 2e-4 rad at 2 m
   and 1e-2 rad at 100 m.
 
-Setting both to `fc` double counts the carrier and `FmcwBeatSpec.__post_init__`
+Setting both to `fc` double counts the carrier and `FmcwSpec.__post_init__`
 refuses it.
 
 `carrier_rate_hz` is not a second carrier and not a knob. It exists because a
@@ -141,7 +141,7 @@ multiplies by the conjugate of the transmitted chirp, so the beat-domain phasor
 advances with `+j`. The two conventions are conjugates.
 
 The conversion has exactly ONE call site,
-`witwin.radar.synthesis.fmcw_beat.channel_phasor_to_beat_weight`. A complex
+`witwin.radar.synthesis.fmcw.channel_phasor_to_beat_weight`. A complex
 target response is authored in the Channel convention, because it multiplies
 transports authored there, and is converted along with them.
 

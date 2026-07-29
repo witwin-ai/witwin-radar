@@ -16,7 +16,7 @@ from witwin.channel.propagation import consumer  # noqa: E402
 from support import phase4_geometry as geo  # noqa: E402
 from support import phase4_world as world  # noqa: E402
 from witwin.radar.propagation import RadarEndpointSpec, require_endpoint_role  # noqa: E402
-from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter  # noqa: E402
+from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu

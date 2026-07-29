@@ -45,7 +45,7 @@ Three further facts constrain the answer.
 
 ### 1. The refusal narrows by name; it does not disappear
 
-`witwin.radar.scattering.base.NATIVE_ROW_RESPONSE_OWNERS` is an explicit
+`witwin.radar.scattering.NATIVE_ROW_RESPONSE_OWNERS` is an explicit
 frozenset of fully qualified class names the composer will dispatch. A
 geometry-dependent response that is not on it still raises `NotImplementedError`
 with the original message.

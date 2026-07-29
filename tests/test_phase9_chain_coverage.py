@@ -17,7 +17,7 @@ scenario the rest of Phase 9 uses and because each one is small:
    cube.
 4. **sensor weight -> waveform -> loss.** ``evaluate_sensor_weights`` is
    validated against its own finite difference and its own adjoint. Its
-   production consumer is ``sensors/round_trip.py``, the antenna-pattern stage
+   production consumer is ``sensors.py``, the antenna-pattern stage
    ``Radar.simulate`` applies to composed round-trip rows, and that composition
    had no AD test. (Before the Phase-11 cutover the consumer was the Dirichlet
    spectrum inside ``Radar.mimo_from_trace``; the owner moved, the claim did
@@ -60,10 +60,10 @@ from witwin.radar.frontend import (  # noqa: E402
     PortSpec,
     SeedSpec,
 )
-from witwin.radar.propagation.channel_consumer import (  # noqa: E402
+from witwin.radar.channel import (  # noqa: E402
     ChannelPropagationAdapter,
 )
-from witwin.radar.synthesis import OfdmCfrSpec, synthesize_ofdm_cfr  # noqa: E402
+from witwin.radar.synthesis import OfdmSpec, synthesize_ofdm  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -353,7 +353,7 @@ def test_the_physics_chain_itself_has_no_noise_to_reproduce(spike, values):
     first = float(_bare_loss(spike, values))
     second = float(_bare_loss(spike, values))
     assert first == second
-    assert drv.make_spec(num_chirps=2).__class__.__name__ == "FmcwBeatSpec"
+    assert drv.make_spec(num_chirps=2).__class__.__name__ == "FmcwSpec"
     from witwin.radar import RadarConfig
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
@@ -436,7 +436,7 @@ def test_the_slot_batched_gradient_matches_a_fourth_order_difference(spike, valu
 # --------------------------------------------------------------------------
 
 
-WIDEBAND_SPEC = OfdmCfrSpec(
+WIDEBAND_SPEC = OfdmSpec(
     num_subcarriers=8,
     num_symbols=2,
     subcarrier_spacing_hz=25.0e6,
@@ -469,7 +469,7 @@ def banded(spike):
 def _wideband_loss(banded, values, *, ad_mode="none"):
     composed = mx.replay(banded, values, ad_mode=ad_mode)
     assert composed.frequency_response is not None, "this spike declared a band"
-    cube = synthesize_ofdm_cfr(to_synthesis(composed), WIDEBAND_SPEC)
+    cube = synthesize_ofdm(to_synthesis(composed), WIDEBAND_SPEC)
     return cube.abs().square().sum()
 
 
@@ -516,7 +516,7 @@ def test_the_wideband_cube_is_not_the_narrowband_one(spike, banded, values):
     wide = float(_wideband_loss(banded, values))
     narrow_composed = mx.replay(spike, values)
     narrow = float(
-        synthesize_ofdm_cfr(to_synthesis(narrow_composed), WIDEBAND_SPEC)
+        synthesize_ofdm(to_synthesis(narrow_composed), WIDEBAND_SPEC)
         .abs()
         .square()
         .sum()
@@ -562,7 +562,7 @@ def _pattern_stage(spike):
 
     from witwin.radar import Radar
     from witwin.radar.sensors import AntennaPatternSpec
-    from witwin.radar.sensors.round_trip import RoundTripPatternStage
+    from witwin.radar.sensors import RoundTripPatternStage
 
     radar = Radar(
         dict(geo.FIXTURE_RADAR_CONFIG),
@@ -604,7 +604,7 @@ def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
     FD across the whole pipeline.
     """
 
-    from witwin.radar.synthesis import synthesize_fmcw_beat
+    from witwin.radar.synthesis import synthesize_fmcw
 
     patterned = stage.apply(
         composed,
@@ -612,7 +612,7 @@ def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
         rx_pos=radar.rx_pos,
         site_positions_m=sites,
     )
-    cube = synthesize_fmcw_beat(to_synthesis(patterned), drv.make_spec())
+    cube = synthesize_fmcw(to_synthesis(patterned), drv.make_spec())
     return cube.real.square().sum() + cube.imag.square().sum()
 
 
@@ -626,7 +626,7 @@ def test_a_sensor_weight_gradient_reaches_a_synthesized_waveform_cube(spike):
     mirrored the imaginary half would still pass every operator-level test.
 
     The consumer moved with the cutover - it was the Dirichlet spectrum inside
-    ``Radar.mimo_from_trace`` and it is now ``sensors/round_trip.py`` inside
+    ``Radar.mimo_from_trace`` and it is now ``sensors.py`` inside
     ``Radar.simulate`` - and the claim did not.
     """
 

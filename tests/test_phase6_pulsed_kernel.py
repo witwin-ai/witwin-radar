@@ -63,9 +63,9 @@ from support.pulsed_grid import (  # noqa: E402
     reference_spec,
     stored,
 )
-from witwin.radar.sigproc.matched_filter import lag_axis, matched_filter  # noqa: E402
-from witwin.radar.synthesis.contracts import PulsedEchoSpec  # noqa: E402
-from witwin.radar.synthesis.pulsed_echo import synthesize_echo_rows  # noqa: E402
+from witwin.radar.processing.range_doppler import lag_axis, matched_filter  # noqa: E402
+from witwin.radar.synthesis.assembly import PulsedSpec  # noqa: E402
+from witwin.radar.synthesis.pulsed import synthesize_echo_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -263,7 +263,7 @@ def test_the_peak_magnitude_barely_moves_across_a_sub_sample_sweep():
     amplitude for any other reason would not halve.
     """
 
-    def spread(spec: PulsedEchoSpec) -> float:
+    def spread(spec: PulsedSpec) -> float:
         magnitudes = [
             _single_row_estimate(
                 spec, TAU_RT_S + k * spec.sample_period_s / 8.0
@@ -590,7 +590,7 @@ def test_a_receding_site_puts_the_slow_time_tone_at_negative_doppler():
 
     # The two published conventions disagree on sign because one of them is
     # conjugated, and that is asserted rather than left to the reader.
-    from witwin.radar.synthesis.fmcw_beat import channel_phasor_to_beat_weight
+    from witwin.radar.synthesis.fmcw import channel_phasor_to_beat_weight
 
     coefficient = torch.tensor(
         [_frozen_channel_weight()], dtype=torch.complex64, device="cuda"
@@ -655,7 +655,7 @@ def test_a_speed_past_the_unambiguous_bound_aliases():
 
 
 def _cuda_batch(*, row_valid=None, path_count: int = 1, pair_count: int = 1):
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     zeros = torch.zeros(path_count, dtype=torch.int64, device="cuda")
@@ -702,20 +702,20 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
 
     import dataclasses
 
-    from witwin.radar.synthesis.pulsed_echo import synthesize_pulsed_echo
+    from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
     spec = reference_spec(num_pulses=2, num_samples=256)
     alive = _cuda_batch(row_valid=torch.ones(1, dtype=torch.bool, device="cuda"))
     dead = _cuda_batch(row_valid=torch.zeros(1, dtype=torch.bool, device="cuda"))
 
-    assert float(synthesize_pulsed_echo(alive, spec).abs().sum()) > 0.0
-    assert float(synthesize_pulsed_echo(dead, spec).abs().sum()) == 0.0
+    assert float(synthesize_pulsed(alive, spec).abs().sum()) > 0.0
+    assert float(synthesize_pulsed(dead, spec).abs().sum()) == 0.0
 
     weight = torch.full(
         (1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"
     ).requires_grad_(True)
     live = dataclasses.replace(dead, complex_transfer_ref=weight)
-    cube = synthesize_pulsed_echo(live, spec)
+    cube = synthesize_pulsed(live, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
     assert float(weight.grad.abs().max()) == 0.0
 
@@ -954,7 +954,7 @@ def multi_endpoint_spike():
     return drv.MultiEndpointSpike()
 
 
-def _fixture_spec(num_pulses: int) -> PulsedEchoSpec:
+def _fixture_spec(num_pulses: int) -> PulsedSpec:
     from support import multi_endpoint_geometry as geo
 
     return reference_spec(
@@ -981,14 +981,14 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
 
     from support import multi_endpoint_driver as drv
     from witwin.radar.synthesis.assembly import assemble_frame_cube
-    from witwin.radar.synthesis.pulsed_echo import synthesize_pulsed_echo
+    from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
     composed, _, _ = multi_endpoint_spike.frame()
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
     assert batch.sensor_pair_count == 4
 
-    cube = synthesize_pulsed_echo(batch, spec)
+    cube = synthesize_pulsed(batch, spec)
     assert tuple(cube.shape) == (3, 4, 512)
     assert cube.dtype == torch.complex64
 
@@ -1010,16 +1010,16 @@ def test_one_pulsed_frame_is_one_launch_and_no_host_observation(
     """
 
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import pulsed_echo
+    import witwin.radar.synthesis.pulsed as pulsed
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
     composed, _, _ = multi_endpoint_spike.frame()
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
-    operators = pulsed_echo._ops()
+    operators = pulsed._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = pulsed_echo.synthesize_pulsed_echo(batch, spec)
+    cube = pulsed.synthesize_pulsed(batch, spec)
     assemble_frame_cube(cube, num_tx=2, num_rx=2)
 
     assert ledger.launches == {
@@ -1034,24 +1034,24 @@ def test_one_pulsed_frame_is_one_launch_and_no_host_observation(
 
 def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatch):
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import pulsed_echo
+    import witwin.radar.synthesis.pulsed as pulsed
 
     composed, _, _ = multi_endpoint_spike.frame(
         response=drv.make_response(requires_grad=True)
     )
     spec = _fixture_spec(2)
     batch = drv.to_synthesis(composed)
-    operators = pulsed_echo._ops()
+    operators = pulsed._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = pulsed_echo.synthesize_pulsed_echo(batch, spec)
+    cube = pulsed.synthesize_pulsed(batch, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
     assert ledger.launches["pulsed_echo_forward"] == 1
     assert ledger.launches["pulsed_echo_backward"] == 1
     assert ledger.launches["pulsed_echo_jvp"] == 0
 
 
-def test_the_compatibility_guards_run_before_any_launch(
+def test_the_contract_guards_run_before_any_launch(
     multi_endpoint_spike, monkeypatch
 ):
     """The refusal happens BEFORE the kernel runs, not after.
@@ -1063,11 +1063,11 @@ def test_the_compatibility_guards_run_before_any_launch(
     """
 
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import pulsed_echo
+    import witwin.radar.synthesis.pulsed as pulsed
 
     composed, _, _ = multi_endpoint_spike.frame()
     batch = drv.to_synthesis(composed)
-    operators = pulsed_echo._ops()
+    operators = pulsed._ops()
 
     launches = {"count": 0}
     original = operators.pulsed_echo_forward
@@ -1090,10 +1090,10 @@ def test_the_compatibility_guards_run_before_any_launch(
     )
     assert migrating.range_migration_delay_s > migrating.range_cell_delay_s
     with pytest.raises(ValueError, match="range migration"):
-        pulsed_echo.synthesize_pulsed_echo(batch, migrating)
+        pulsed.synthesize_pulsed(batch, migrating)
     assert launches["count"] == 0
 
-    pulsed_echo.synthesize_pulsed_echo(batch, _fixture_spec(3))
+    pulsed.synthesize_pulsed(batch, _fixture_spec(3))
     assert launches["count"] == 1
 
 

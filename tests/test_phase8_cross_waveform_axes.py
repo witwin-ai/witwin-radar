@@ -28,30 +28,30 @@ import torch
 from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
 from witwin.radar.processing import (
-    PROCESSING_DOPPLER_CONVENTION,
     ProcessingAxes,
     ProcessingCube,
-    range_doppler,
+    range_doppler_map,
     range_profile,
 )
+from witwin.radar.processing.signal import PROCESSING_DOPPLER_CONVENTION
 from witwin.radar.synthesis import (
-    synthesize_fmcw_beat,
-    synthesize_ofdm_cfr,
-    synthesize_pulsed_echo,
+    synthesize_fmcw,
+    synthesize_ofdm,
+    synthesize_pulsed,
 )
-from witwin.radar.synthesis.contracts import SynthesisResult
+from witwin.radar.synthesis.assembly import SynthesisResult
 
 pytestmark = pytest.mark.gpu
 
 
 WAVEFORMS = (
-    ("fmcw", grid.fmcw_spec, synthesize_fmcw_beat, SynthesisResult.from_fmcw_beat),
-    ("ofdm", grid.ofdm_spec, synthesize_ofdm_cfr, SynthesisResult.from_ofdm_cfr),
+    ("fmcw", grid.fmcw_spec, synthesize_fmcw, SynthesisResult.from_fmcw),
+    ("ofdm", grid.ofdm_spec, synthesize_ofdm, SynthesisResult.from_ofdm),
     (
         "pulsed",
         grid.pulsed_spec,
-        synthesize_pulsed_echo,
-        SynthesisResult.from_pulsed_echo,
+        synthesize_pulsed,
+        SynthesisResult.from_pulsed,
     ),
 )
 
@@ -79,7 +79,7 @@ def _measure(batch, segment, spec_of, synthesize, maker):
     spec = spec_of()
     result = maker(synthesize(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
-    rd = range_doppler(range_profile(ProcessingCube.from_synthesis(result, axes)))
+    rd = range_doppler_map(range_profile(ProcessingCube.from_synthesis(result, axes)))
     tx = segment % grid.FMCW_NUM_TX
     rx = segment // grid.FMCW_NUM_TX
     magnitude = rd.data[tx, rx].abs()

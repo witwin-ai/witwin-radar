@@ -24,11 +24,7 @@ blocks it. What each one does is name the evidence that a later real CI run
 must produce before a release claim is made, so that "we never ran it" cannot
 later be mistaken for "it passed".
 
-The one thing this register must never become is a place to move an
-inconvenient requirement. Nothing here was weakened to make a local check pass.
-Two entries - D6 and deviation P3 - record a genuine contradiction between an
-accepted decision and the policy, and they are written as open decisions with
-named owners rather than resolved by picking whichever side was cheaper.
+The one thing this register must never become is a place to move an inconvenient requirement. D6/P3 was a real policy contradiction when recorded; it is now resolved by the executable exact-runtime-identity policy described below. The remaining rows are still deferred evidence, not passing claims.
 
 ## Deferral register
 
@@ -39,7 +35,6 @@ named owners rather than resolved by picking whichever side was cheaper.
 | D3 | the full ten-image SASS set | local builds use `-DCMAKE_CUDA_ARCHITECTURES=120-real` / `WITWIN_CUDA_GENCODE_ARCHES=12.0`, because compiling ten architectures locally costs the same hours it costs a runner and produces an artifact this machine cannot run more of | `publish-witwin-radar.yml` scope `full`, then `scripts/verify_cuda_binary_arches.py` with its default expectation | `Verified CUDA architectures ...: SASS 70,75,80,86,87,89,90,100,101,120 plus sm_120 PTX` | platform release owner |
 | D4 | the "clean locked build" claim | local nvcc is 12.9.41 against the locked 12.8.1. Every locally produced binary is therefore stamped `build_type="developer"` by `scripts/build_radar_cuda_prebuilt.py`, and only a published release run passes `--release` | `publish-witwin-radar.yml` on a `release: published` event | a wheel whose `build_info()["build_type"] == "release"` and whose `cuda_compiler_version` is 12.8.1 | platform release owner |
 | D5 | the Stage-I release full build, still pending from that stage | folded here under the same owner directive rather than tracked separately, because it is the same run as D1/D3/D4 | `publish-witwin-channel.yml` scope `full` | the two-wheel Channel artifact set with its `validate-wheels` job green | Channel release owner |
-| D6 | the 8-cell Stable ABI compatibility matrix for Radar | it needs eight Torch versions across two operating systems, and - see deviation P3 - as configured six of the sixteen cells will measure a loader refusal rather than a load. The matrix is configured per policy; what it will report is a known question, not an unknown one | `publish-witwin-radar.yml` scope `full`, job `test_torch_compatibility` | for each cell, either a packaged load with `origin == "packaged"`, or a `RadarExtensionABIError` naming the mismatching runtime field | R-ADR-019 owner with the platform policy owner |
 
 ### D4, restated after the adversarial loader audit: the sidecar is self-signed
 
@@ -97,54 +92,30 @@ measurement, not an architecture-cleanup edit, so it is not made here. Core is
 read-only: recorded only. Owner: whoever next opens the Radar build for a
 performance change.
 
-### P3 - the Stable ABI matrix contradicts R-ADR-019's runtime identity check
+### P3 - cross-Torch release claim: RESOLVED by exact runtime identity
 
-**This is the most consequential open item in this register.**
+The old policy combined two incompatible statements: one binary should load
+across several Torch/CUDA versions, while the native loader required exact
+Torch, CUDA, C++ ABI, and platform identity. The previous workflow treated an
+expected loader refusal as a successful compatibility cell. That branch could
+never prove the advertised compatibility.
 
-The policy says one Stable ABI binary is built against Torch 2.10 and "loaded
-unchanged in every applicable compatibility cell", and release gate 5 repeats
-it. R-ADR-019's `validate_identity` records `torch_version`, `cuda_version`,
-`cxx_abi` and `platform_tag` at build time and compares all four against the
-live runtime before loading, treating any difference as an ABI error.
+Radar now chooses the strict identity contract. ci/release-policy.json sets
+stable_abi_cross_torch_claim to false,
 
-Measured locally on 2026-07-27, against the packaged prebuilt, by substituting
-a Torch 2.13.0 / CUDA 12.6 runtime identity:
+untime_identity_policy to xact_torch_cuda_and_abi_identity, and
+xpected_loader_refusal_is_release_success to false. The release matrix
+therefore exercises Torch 2.10/CUDA 12.8 across CPython 3.10-3.14 on Linux and
+Windows. Every cell must load the packaged binary, match the recorded Torch
+identity, and avoid JIT. A refusal fails the cell.
 
-```
-RadarExtensionABIError: ..._radar_native.pyd does not match the active runtime
-(cuda_version: record '12.8' vs runtime '12.6',
- torch_version: record '2.10.0' vs runtime '2.13.0')
-```
+This resolves former D6: there is no deferred cross-Torch evidence and no Radar
+release may advertise it. Adding another Torch/CUDA line requires a separately
+built artifact, an explicit identity/indexing policy, and a real successful
+load matrix.
 
-The fingerprint, binary digest and source digest all passed first; it is the
-runtime comparison that refuses. So six of the sixteen configured cells - the
-2.11, 2.12 and 2.13 rows on both platforms - will be refused by the loader even
-if the binary itself is perfectly Stable-ABI loadable.
-
-The compatibility job is configured with the policy's grid unchanged and asserts
-the contract as built: a matching-Torch cell must load with `origin ==
-"packaged"`, and a differing-Torch cell must be refused loudly, name the
-mismatching field, and still not JIT. Both branches are real gates - the second
-fails if the loader ever silently accepts a runtime its own record does not
-describe.
-
-What it does **not** do is claim those cells pass Stable ABI. Resolving this
-needs a decision, not a workflow edit, and there are only two honest ends:
-
-1. R-ADR-019 relaxes `torch_version` and `cuda_version` from equality to a
-   compatibility rule - for instance, requiring the recorded build Torch to be
-   at or above the Stable ABI floor and the runtime to be at or above the
-   recorded one - and keeps `cxx_abi` and `platform_tag` as equality. The
-   identity record still detects a swapped or stale binary through its digests,
-   which is the defect class it was written for.
-2. The policy's Stable ABI row for Radar changes to "one binary per Torch
-   version", with the filename or index policy the policy itself says such a
-   lane would need.
-
-Owner: the R-ADR-019 author together with the platform policy owner. Until one
-of those lands, no Radar release may claim Stable ABI coverage above the Torch
-version it was built with.
-
+Owner: Radar release-policy owner. Executable enforcement:
+ci/check_release_claims.py and ci/check_workflow_policy.py.
 ### P4 - `gpu-regression.yml` uses a self-hosted runner
 
 The policy states that GitHub-hosted runners are mandatory and `self-hosted`

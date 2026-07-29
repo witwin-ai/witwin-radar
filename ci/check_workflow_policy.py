@@ -1,11 +1,10 @@
-"""Check the radar workflows against the cross-repository prebuild policy.
+"""Check Radar workflows against the executable release policy.
 
-`GITHUB_ACTIONS_PREBUILD_MATRIX.md` (platform root, policy version 6) is the
-authority. It lives one repository up, so this file is its EXECUTABLE
-RESTATEMENT for Radar: every constant below is copied from the policy with the
-section it comes from, and `POLICY_VERSION` exists so a policy revision that
-nobody mirrored here is visible rather than silent.
-
+`ci/release-policy.json` is Radar's release authority. The platform prebuild
+matrix remains the architecture/build baseline; where its former cross-Torch
+claim conflicted with the strict native loader identity, Radar resolves the
+conflict in favor of exact Torch/CUDA/ABI identity. `POLICY_VERSION` makes
+that local resolution visible rather than silent.
 This gate is the locally runnable proxy for a remote release run. A workflow
 change cannot be validated by dispatching it - that costs a paid full-matrix
 CUDA build and a wait - so the invariants that a run would have discovered are
@@ -17,7 +16,7 @@ asserted against the checked-in YAML instead:
 * a real manylinux_2_28 image for the Linux wheel;
 * an architecture verifier run against the artifact on both platforms;
 * exactly one native member in the wheel;
-* the Stable ABI compatibility grid, cell for cell;
+* the exact Torch/CUDA native-identity grid, cell for cell;
 * GitHub-hosted runners, with one frozen exception that carries its reason.
 
 It reads the YAML, not just the text, so a check cannot be satisfied by a
@@ -38,7 +37,7 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOW_DIR / "publish-witwin-radar.yml"
 
 #: Bump only together with a review of this file against the policy document.
-POLICY_VERSION = 6
+POLICY_VERSION = 7
 
 # Policy "Required CUDA coverage": the canonical release value and the reduced
 # opt-in pull-request set.
@@ -48,16 +47,15 @@ FULL_EXPECTED_PTX = "120"
 SMOKE_GENCODE_ARCHES = "8.7;12.0+PTX"
 SMOKE_EXPECTED_SASS = ("87", "120")
 
-# Policy "Python and Torch matrix": the eight Stable ABI cells, in order.
-STABLE_ABI_CELLS = (
+# Exact runtime identity policy: one build identity, exercised across every
+# supported CPython version. Cross-Torch loader refusals are failures, not
+# successful compatibility cells.
+EXACT_RUNTIME_CELLS = (
     ("3.10", "2.10.0", "cu128"),
     ("3.11", "2.10.0", "cu128"),
     ("3.12", "2.10.0", "cu128"),
     ("3.13", "2.10.0", "cu128"),
     ("3.14", "2.10.0", "cu128"),
-    ("3.14", "2.11.0", "cu128"),
-    ("3.14", "2.12.0", "cu126"),
-    ("3.14", "2.13.0", "cu126"),
 )
 
 # Policy "Required platform coverage".
@@ -311,7 +309,7 @@ def check_wheel_shape(document: dict, failures: PolicyFailure) -> None:
             failures.add(f"no step asserts the installed package ships {sidecar}")
 
 
-def check_stable_abi_matrix(document: dict, failures: PolicyFailure) -> None:
+def check_exact_runtime_matrix(document: dict, failures: PolicyFailure) -> None:
     for job_id, job in (document.get("jobs") or {}).items():
         matrix = ((job.get("strategy") or {}).get("matrix") or {})
         cells = matrix.get("compatibility")
@@ -325,9 +323,9 @@ def check_stable_abi_matrix(document: dict, failures: PolicyFailure) -> None:
             )
             for cell in cells
         )
-        if found != STABLE_ABI_CELLS:
+        if found != EXACT_RUNTIME_CELLS:
             failures.add(
-                f"job {job_id!r} does not carry the policy's eight Stable ABI "
+                f"job {job_id!r} does not carry the exact native-identity "
                 f"cells in order: found {found!r}"
             )
         operating_systems = tuple(matrix.get("os") or ())
@@ -337,7 +335,7 @@ def check_stable_abi_matrix(document: dict, failures: PolicyFailure) -> None:
                 f"found {operating_systems!r}"
             )
         return
-    failures.add("no Stable ABI compatibility job with a `compatibility` matrix")
+    failures.add("no exact native-identity job with a `compatibility` matrix")
 
 
 def check_publish_gating(document: dict, failures: PolicyFailure) -> None:
@@ -364,7 +362,7 @@ def check_publish_gating(document: dict, failures: PolicyFailure) -> None:
 #: so "we never ran it" cannot quietly become "it passed".
 DEFERRAL_REGISTER = REPO_ROOT / "docs" / "dev" / "plans" / "phase10-deferred-release-matrix.md"
 DEFERRAL_COLUMNS = 6
-REQUIRED_DEFERRALS = ("D1", "D2", "D3", "D4", "D5", "D6")
+REQUIRED_DEFERRALS = ("D1", "D2", "D3", "D4", "D5")
 
 
 def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
@@ -433,7 +431,7 @@ def check_workflow(
     check_architectures(document, failures)
     check_verifier_and_manylinux(document, failures)
     check_wheel_shape(document, failures)
-    check_stable_abi_matrix(document, failures)
+    check_exact_runtime_matrix(document, failures)
     check_publish_gating(document, failures)
     if workflow_dir is not None:
         check_runners(workflow_dir, failures)
@@ -472,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {failure}")
         return 1
     print(
-        f"workflow policy OK: {arguments.workflow.name} against prebuild policy "
+        f"workflow policy OK: {arguments.workflow.name} against Radar release policy "
         f"version {POLICY_VERSION}"
     )
     return 0

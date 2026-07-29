@@ -14,7 +14,7 @@ What this file pins:
   assertion, because a tolerance here would hide exactly the drift the stage was
   introduced to avoid.
 * **A directional pattern is the native family's answer, not a Torch one.** The
-  ratio of the patterned to the unpatterned weight is compared against the
+  ratio of the directional to the isotropic-baseline weight is compared against the
   independent Torch pattern oracle evaluated at the row's own local-frame
   directions, row by row, which also proves that the row-to-element and
   row-to-site tables are the right way round.
@@ -46,12 +46,12 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-from witwin.radar import Radar, ScatterSitePolicy  # noqa: E402
+from witwin.radar import Radar  # noqa: E402
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology  # noqa: E402
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
 from witwin.radar.sensors import AntennaPatternSpec  # noqa: E402
-from witwin.radar.sensors.round_trip import (  # noqa: E402
-    CHANNEL_SOURCED_MODES,
+from witwin.radar.sensors import (  # noqa: E402
     ISOTROPIC_PATTERN,
     RoundTripPatternStage,
 )
@@ -81,9 +81,25 @@ DIRECTIONAL_PATTERN = AntennaPatternSpec(
 UNIT_SITE_POSITIONS_M = ((2.0, 0.6, 0.35), (1.7, -0.9, -0.5))
 
 
-def _radar() -> Radar:
+def _pattern_config(pattern: AntennaPatternSpec) -> dict:
+    config = {
+        "kind": pattern.kind,
+        "x_angles_deg": list(pattern.x_angles_deg),
+        "y_angles_deg": list(pattern.y_angles_deg),
+    }
+    if pattern.kind == "separable":
+        config["x_values"] = list(pattern.x_values)
+        config["y_values"] = list(pattern.y_values)
+    else:
+        config["values"] = [list(row) for row in pattern.values]
+    return config
+
+
+def _radar(pattern: AntennaPatternSpec = ISOTROPIC_PATTERN) -> Radar:
+    config = dict(geo.FIXTURE_RADAR_CONFIG)
+    config["antenna_pattern"] = _pattern_config(pattern)
     return Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
+        config,
         position=(0.0, 0.0, 0.0),
         target=LOOK_AT_M,
     )
@@ -108,14 +124,13 @@ def _static_scene():
     return scene
 
 
-def _simulate(radar: Radar, *, antenna_pattern=None, times=(0.0,), **options):
+def _simulate(radar: Radar, *, times=(0.0,), **options):
     policy, _ = _sites(radar)
     return radar.simulate(
         _static_scene(),
         times=times,
         response=_response(radar),
         sites=policy,
-        antenna_pattern=antenna_pattern,
         **options,
     )
 
@@ -125,54 +140,25 @@ def _simulate(radar: Radar, *, antenna_pattern=None, times=(0.0,), **options):
 # ---------------------------------------------------------------------------
 
 
-def test_an_isotropic_pattern_reproduces_the_unpatterned_cube_bitwise():
-    """The pin that lets this stage exist without moving a single number.
-
-    Every Phase 6/7/8 result was recorded with no pattern stage at all. If an
-    isotropic pattern were merely CLOSE to a no-op, introducing the stage would
-    be a numerical change wearing an architecture change's commit message.
-    """
-
-    plain = _simulate(_radar())
-    isotropic = _simulate(_radar(), antenna_pattern=ISOTROPIC_PATTERN)
-
-    assert torch.equal(plain.cube, isotropic.cube)
+def test_the_stored_isotropic_pattern_is_applied_to_every_simulation():
+    result = _simulate(_radar(ISOTROPIC_PATTERN))
+    assert result.last_radar_paths.weight_includes_antenna_pattern is True
 
 
-def test_an_isotropic_pattern_reproduces_the_composed_weight_bitwise():
-    """One level below the cube, where the stage actually multiplies."""
-
-    plain = _simulate(_radar())
-    isotropic = _simulate(_radar(), antenna_pattern=ISOTROPIC_PATTERN)
-
-    assert torch.equal(
-        plain.last_radar_paths.complex_transfer_ref,
-        isotropic.last_radar_paths.complex_transfer_ref,
-    )
-    # And the geometry is passed through by REFERENCE, not recomputed: the
-    # stage consumes the kernel's weight and discards its delay, because
-    # Channel owns the round-trip delay.
-    assert (
-        isotropic.last_radar_paths.total_delay_s
-        is isotropic.last_radar_paths.total_delay_s
-    )
-    assert torch.equal(
-        plain.last_radar_paths.total_delay_s,
-        isotropic.last_radar_paths.total_delay_s,
-    )
-
-
-def test_no_pattern_launches_no_stage_at_all():
-    """``None`` is the default and builds nothing, not an isotropic stage."""
-
-    result = _simulate(_radar())
-    assert result.last_radar_paths.weight_includes_antenna_pattern is False
-
+def test_the_stored_default_dipole_is_applied_to_every_simulation():
+    result = _simulate(_radar(AntennaPatternSpec.half_wave_dipole()))
+    assert result.last_radar_paths.weight_includes_antenna_pattern is True
 
 # ---------------------------------------------------------------------------
 # 2. A directional pattern, against the independent Torch oracle
 # ---------------------------------------------------------------------------
 
+
+def _pattern_gain_from_vectors(pattern: AntennaPatternSpec, vectors: torch.Tensor) -> torch.Tensor:
+    forward = -vectors[..., 2]
+    x_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 0], forward))
+    y_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 1], forward))
+    return pattern.evaluate_xy(x_angles_deg, y_angles_deg)
 
 def _oracle_amplitude(
     radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, pattern
@@ -200,18 +186,17 @@ def _oracle_amplitude(
     site = sites.index_select(0, site_row)
     tx = radar.tx_pos.index_select(0, tx_index)
     rx = radar.rx_pos.index_select(0, rx_index)
-    gain_tx = pattern.evaluate_vectors(radar.local_from_world_vectors(site - tx))
-    gain_rx = pattern.evaluate_vectors(radar.local_from_world_vectors(site - rx))
+    gain_tx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(site - tx))
+    gain_rx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(site - rx))
     return (gain_tx * gain_rx).clamp_min(0.0).sqrt()
 
 
 def test_a_directional_pattern_scales_each_row_by_its_own_gain():
-    radar = _radar()
-    plain = _simulate(radar)
-    plain_rows = plain.last_radar_paths
+    baseline_radar = _radar(ISOTROPIC_PATTERN)
+    plain_rows = _simulate(baseline_radar).last_radar_paths
 
-    patterned = _simulate(radar, antenna_pattern=DIRECTIONAL_PATTERN)
-    rows = patterned.last_radar_paths
+    radar = _radar(DIRECTIONAL_PATTERN)
+    rows = _simulate(radar).last_radar_paths
 
     sites = torch.tensor(
         SITE_POSITIONS_M, dtype=torch.float32, device=radar.device
@@ -236,9 +221,8 @@ def test_the_two_sites_are_attenuated_differently():
     stage that fumbled its site table would produce.
     """
 
-    radar = _radar()
-    plain = _simulate(radar).last_radar_paths
-    rows = _simulate(radar, antenna_pattern=DIRECTIONAL_PATTERN).last_radar_paths
+    plain = _simulate(_radar(ISOTROPIC_PATTERN)).last_radar_paths
+    rows = _simulate(_radar(DIRECTIONAL_PATTERN)).last_radar_paths
 
     ratio = rows.complex_transfer_ref.abs() / plain.complex_transfer_ref.abs()
     by_site: dict[int, set[float]] = {}
@@ -254,8 +238,8 @@ def test_the_two_sites_are_attenuated_differently():
 def test_the_cube_changes_when_a_pattern_is_applied():
     """The E2E statement: the gain reaches the published frame cube."""
 
-    plain = _simulate(_radar())
-    patterned = _simulate(_radar(), antenna_pattern=DIRECTIONAL_PATTERN)
+    plain = _simulate(_radar(ISOTROPIC_PATTERN))
+    patterned = _simulate(_radar(DIRECTIONAL_PATTERN))
 
     assert plain.cube.shape == patterned.cube.shape
     assert not torch.equal(plain.cube, patterned.cube)
@@ -268,8 +252,8 @@ def test_the_cube_changes_when_a_pattern_is_applied():
 
 
 def test_the_stage_publishes_its_provenance_and_synthesis_carries_it():
-    radar = _radar()
-    rows = _simulate(radar, antenna_pattern=DIRECTIONAL_PATTERN).last_radar_paths
+    radar = _radar(DIRECTIONAL_PATTERN)
+    rows = _simulate(radar).last_radar_paths
 
     assert rows.weight_includes_antenna_pattern is True
     batch = SynthesisPathBatch.from_radar_paths(
@@ -282,27 +266,13 @@ def test_the_stage_publishes_its_provenance_and_synthesis_carries_it():
     assert batch.weight_includes_tx_power is True
 
 
-def test_the_unpatterned_batch_says_so_through_synthesis_too():
-    radar = _radar()
+def test_the_stored_pattern_provenance_reaches_synthesis():
+    radar = _radar(ISOTROPIC_PATTERN)
     rows = _simulate(radar).last_radar_paths
     batch = SynthesisPathBatch.from_radar_paths(
         rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     )
-    assert batch.weight_includes_antenna_pattern is False
-
-
-def test_the_three_mode_flags_are_off_for_a_channel_sourced_weight():
-    """The single-count rule, as data rather than as a comment.
-
-    A Channel coefficient already carries the spreading term, ``sqrt(P_tx)`` and
-    the endpoint polarization projection. Turning any of these on would apply it
-    a second time and would be invisible in a magnitude plot at any single
-    range.
-    """
-
-    assert CHANNEL_SOURCED_MODES.spreading is False
-    assert CHANNEL_SOURCED_MODES.tx_power is False
-    assert CHANNEL_SOURCED_MODES.legacy_real_polarization is False
+    assert batch.weight_includes_antenna_pattern is True
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +550,7 @@ def test_a_reverse_gradient_reaches_the_frame_cube_through_the_pattern():
     a stage that detached its weight would fail.
     """
 
-    radar = _radar()
+    radar = _radar(DIRECTIONAL_PATTERN)
     policy, sites = _sites(radar, requires_grad=True)
     result = radar.simulate(
         _static_scene(),
@@ -588,7 +558,6 @@ def test_a_reverse_gradient_reaches_the_frame_cube_through_the_pattern():
         response=_response(radar),
         sites=policy,
         ad_mode="vjp",
-        antenna_pattern=DIRECTIONAL_PATTERN,
     )
     result.cube.real.square().sum().backward()
 

@@ -142,20 +142,20 @@ STRUCTURAL_SUP_ROWS = frozenset(
 #: in a diff rather than in nobody's attention.
 SECTION_ROWS = {
     "Mirrored Channel rows": 11,
-    "Aspect scatter response (`witwin/radar/scattering/aspect.py`)": 6,
-    "Two-way join and the wideband band (`witwin/radar/paths/two_way.py`)": 5,
-    "Kinematics (`witwin/radar/propagation/kinematics.py`)": 8,
-    "SMPL geometry (`witwin/radar/geometry/smpl.py`)": 6,
+    "Aspect scatter response (`witwin/radar/scattering.py`)": 6,
+    "Two-way join and the wideband band (`witwin/radar/paths.py`)": 5,
+    "Kinematics (`witwin/radar/propagation.py`)": 8,
+    "SMPL authoring (`witwin/radar/smpl.py`)": 6,
     # 12 until Phase 11 deleted DirichletSpectrumSpec with its route.
-    "The host-float rule (`witwin/radar/host_parameters.py`)": 11,
+    "The host-float rule (`witwin/radar/policy.py`)": 11,
     # 10 leaves of the family itself, plus the three Phase-11 rows for the
-    # PRODUCTION route that reaches it, `sensors/round_trip.py`. The section
+    # PRODUCTION route that reaches it, `sensors.py`. The section
     # keeps the family's name because there is still one numerical owner.
-    "Sensor weight (`witwin/radar/sensors/weights.py`)": 13,
-    "Scatter response (`witwin/radar/scattering/rcs.py`)": 6,
-    "FMCW beat synthesis (`witwin/radar/synthesis/fmcw_beat.py`)": 5,
+    "Sensor weight (`witwin/radar/sensors.py`)": 13,
+    "Scatter response (`witwin/radar/scattering.py`)": 6,
+    "FMCW beat synthesis (`witwin/radar/synthesis/fmcw.py`)": 5,
     "End-to-end waveform chains (`tests/support/waveform_chains.py`)": 9,
-    "Frontend chain (`witwin/radar/frontend/chain.py`)": 1,
+    "Frontend chain (`witwin/radar/frontend.py`)": 1,
     "Above the wall (`SUP`)": 7,
     "Below the wall (`REF`)": 16,
     "Higher order: first derivatives only, everywhere": 13,

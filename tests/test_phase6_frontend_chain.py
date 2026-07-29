@@ -395,7 +395,7 @@ def test_the_phase_noise_spectrum_follows_the_free_running_asymptote():
 
 
 def test_there_is_exactly_one_call_site_of_the_quantizer():
-    """AST scan: one in ``frontend/``, none in ``radar.py``.
+    """AST scan: one in ``frontend.py``, none in ``radar.py``.
 
     The old code had two quantiser owners and a runtime refusal to configure
     both. The refusal is unnecessary now because the second quantiser stopped
@@ -404,7 +404,7 @@ def test_there_is_exactly_one_call_site_of_the_quantizer():
     """
 
     call_sites = []
-    for path in sorted((REPO_ROOT / "witwin" / "radar" / "frontend").glob("*.py")):
+    for path in [REPO_ROOT / "witwin" / "radar" / "frontend.py"]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -417,7 +417,7 @@ def test_there_is_exactly_one_call_site_of_the_quantizer():
             )
             if name == "frontend_quantize_forward":
                 call_sites.append(path.name)
-    assert call_sites == ["chain.py"], call_sites
+    assert call_sites == ["frontend.py"], call_sites
 
     radar_source = (REPO_ROOT / "witwin" / "radar" / "radar.py").read_text(
         encoding="utf-8"

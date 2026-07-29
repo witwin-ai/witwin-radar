@@ -129,7 +129,7 @@ def test_every_gate_passes_on_the_untouched_mirror(script: str, mirror: Path) ->
 
 
 def test_g1_fires_on_a_forbidden_import(mirror: Path) -> None:
-    target = mirror / "witwin" / "radar" / "utils" / "vector.py"
+    target = mirror / "witwin" / "radar" / "radar.py"
     target.write_text(
         "import drjit\n" + target.read_text(encoding="utf-8"), encoding="utf-8"
     )
@@ -146,7 +146,7 @@ def test_g1_fires_on_a_dr_wrap_decorator(mirror: Path) -> None:
     import list is clean.
     """
 
-    target = mirror / "witwin" / "radar" / "utils" / "vector.py"
+    target = mirror / "witwin" / "radar" / "radar.py"
     target.write_text(
         target.read_text(encoding="utf-8")
         + '\n\n@dr.wrap(source="torch", target="drjit")\ndef _boundary(x):\n    return x\n',
@@ -158,7 +158,7 @@ def test_g1_fires_on_a_dr_wrap_decorator(mirror: Path) -> None:
 
 
 def test_g1_fires_on_a_lazily_imported_token(mirror: Path) -> None:
-    target = mirror / "witwin" / "radar" / "utils" / "vector.py"
+    target = mirror / "witwin" / "radar" / "radar.py"
     target.write_text(
         target.read_text(encoding="utf-8")
         + '\n\ndef _late():\n    import importlib\n\n    return importlib.import_module("drjit")\n',
@@ -218,25 +218,13 @@ def test_g1_accepts_the_channel_extra_it_is_meant_to_allow() -> None:
     assert check_production_dependencies.check_declared_dependencies(REPO_ROOT) == []
 
 
-def test_g1_fires_when_a_recorded_prose_occurrence_disappears(mirror: Path) -> None:
-    """A stale allowlist entry is a hole that nothing else reports."""
-
-    target = mirror / "witwin" / "radar" / "propagation" / "epochs.py"
-    source = target.read_text(encoding="utf-8")
-    assert "RayD" in source
-    target.write_text(source.replace("RayD", "the tracer"), encoding="utf-8")
-    completed = _run("check_production_dependencies.py", mirror)
-    assert completed.returncode == 1
-    assert "which no longer exists" in completed.stderr
-
-
 # ---------------------------------------------------------------------------
 # G2: test-oracle isolation
 # ---------------------------------------------------------------------------
 
 
 def test_g2_fires_on_a_production_import_of_the_oracle(mirror: Path) -> None:
-    target = mirror / "witwin" / "radar" / "sigproc" / "__init__.py"
+    target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
         "from tests.reference import dsp_oracles\n"
         + target.read_text(encoding="utf-8"),
@@ -284,7 +272,7 @@ def test_g2_fires_on_a_wheel_that_carries_a_test_member(
 
 
 def test_g3_fires_on_a_direct_dispatcher_call(mirror: Path) -> None:
-    target = mirror / "witwin" / "radar" / "sigproc" / "__init__.py"
+    target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
         target.read_text(encoding="utf-8")
         + "\n\ndef _straight_to_the_dispatcher(x):\n"
@@ -298,36 +286,17 @@ def test_g3_fires_on_a_direct_dispatcher_call(mirror: Path) -> None:
 
 
 def test_g3_fires_on_an_unrecorded_loader_consumer(mirror: Path) -> None:
-    target = mirror / "witwin" / "radar" / "sigproc" / "__init__.py"
+    target = mirror / "witwin" / "radar" / "processing" / "__init__.py"
     target.write_text(
         target.read_text(encoding="utf-8")
         + "\n\ndef _tenth_handle():\n"
-        "    from ..cuda import build\n\n"
+        "    from ..cuda import runtime as build\n\n"
         "    return build.build_extension()\n",
         encoding="utf-8",
     )
     completed = _run("check_raw_native_access.py", mirror)
     assert completed.returncode == 1
     assert "is not a recorded consumer" in completed.stderr
-
-
-def test_g3_fires_when_identity_gains_dispatcher_access(mirror: Path) -> None:
-    """The one module whose zero-access property is asserted positively.
-
-    `identity.py` validates before `torch.ops.load_library` and must import on
-    a machine with no CUDA. A `torch.ops` reference there is how validation
-    quietly moves to after the load.
-    """
-
-    target = mirror / "witwin" / "radar" / "cuda" / "identity.py"
-    target.write_text(
-        target.read_text(encoding="utf-8")
-        + "\n\ndef _peek():\n    import torch\n\n    return torch.ops.loaded_libraries\n",
-        encoding="utf-8",
-    )
-    completed = _run("check_raw_native_access.py", mirror)
-    assert completed.returncode == 1
-    assert "may hold no dispatcher access" in completed.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +313,7 @@ def test_g4_fires_on_torch_physics_in_a_previously_unscanned_package(
     would have landed in production without failing anything.
     """
 
-    target = mirror / "witwin" / "radar" / "processing" / "primitives.py"
+    target = mirror / "witwin" / "radar" / "processing" / "signal.py"
     target.write_text(
         target.read_text(encoding="utf-8")
         + "\n\ndef _range_field(a, b):\n    import torch\n\n    return torch.cdist(a, b)\n",
@@ -364,25 +333,23 @@ def test_g4_fires_when_an_allowed_expression_gains_a_sibling(mirror: Path) -> No
     becomes a phase evaluator.
     """
 
-    target = mirror / "witwin" / "radar" / "utils" / "vector.py"
+    target = mirror / "witwin" / "radar" / "radar.py"
     source = target.read_text(encoding="utf-8")
-    original = (
-        "    return vectors / torch.clamp("
-        "torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12)"
-    )
+    original = "        forward = forward / torch.linalg.norm(forward)"
     assert original in source
     target.write_text(
         source.replace(
             original,
-            "    lengths = torch.linalg.norm(vectors, dim=-1, keepdim=True)\n"
-            "    scale = torch.linalg.norm(vectors, dim=-1, keepdim=True)\n"
-            "    return vectors / torch.clamp(lengths * scale / scale, min=1e-12)",
+            "        length = torch.linalg.norm(forward)\n"
+            "        duplicate = torch.linalg.norm(forward)\n"
+            "        forward = forward / (length * duplicate / duplicate)",
+            1,
         ),
         encoding="utf-8",
     )
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
-    assert "the allowlist records 1" in completed.stderr
+    assert "the allowlist records 3" in completed.stderr
 
 
 def test_g4_fires_when_the_allowlist_itself_is_edited(mirror: Path) -> None:
@@ -392,7 +359,7 @@ def test_g4_fires_when_the_allowlist_itself_is_edited(mirror: Path) -> None:
     document = json.loads(path.read_text(encoding="utf-8"))
     document["entries"].append(
         {
-            "module": "witwin/radar/processing/primitives.py",
+            "module": "witwin/radar/processing/signal.py",
             "function": "_smuggled",
             "call": "torch.cdist",
             "occurrences": 1,
@@ -455,7 +422,7 @@ def test_g4_fires_when_the_fence_allowance_list_drifts(mirror: Path) -> None:
     assert empty in source
     smuggled = (
         "FENCE_ALLOWANCES = {\n"
-        '    "witwin/radar/processing/aoa.py": "smuggled in",\n'
+        '    "witwin/radar/processing/angle.py": "smuggled in",\n'
         "}"
     )
     target.write_text(source.replace(empty, smuggled, 1), encoding="utf-8")
@@ -494,44 +461,30 @@ def test_the_allowlist_records_every_measured_expression_with_a_reason() -> None
         assert entry["adr"].startswith("R-ADR-"), entry
 
 
-def test_the_recorded_debt_is_named_as_debt() -> None:
-    """Debt is not approval, and the record must keep saying so.
-
-    There were two debt categories. `work_item_8_survivor` is CLOSED: its two
-    entries were `Radar.waveform` and `NoiseModelRuntime._apply_phase_noise`,
-    and Phase 11 deleted both expressions rather than reclassifying them. The
-    category is asserted ABSENT from the description map and from the entries,
-    because "the debt disappeared from the record" and "the debt was paid" look
-    identical in a subset check.
-
-    `freeze_time_pattern_oracle` is still debt. If a later change quietly
-    reclassified it as an ordinary allowlist entry, the gate would still pass
-    and the debt would disappear from the record.
-    """
+def test_the_torch_policy_contains_no_debt_categories() -> None:
+    """Every surviving Torch expression has an accepted, named owner boundary."""
 
     document = json.loads(
         (REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8")
     )
-    debt = {"freeze_time_pattern_oracle"}
-    assert debt <= set(document["categories"])
-    for name in debt:
-        assert "DEBT" in document["categories"][name]
+    categories = document["categories"]
     recorded = {entry["category"] for entry in document["entries"]}
-    assert debt <= recorded
-    assert "work_item_8_survivor" not in document["categories"]
-    assert "work_item_8_survivor" not in recorded
-
+    assert recorded <= set(categories)
+    assert all("DEBT" not in description.upper() for description in categories.values())
+    assert "freeze_time_pattern_oracle" not in categories
+    assert "legacy_pose_authoring" not in categories
+    assert "work_item_8_survivor" not in categories
 
 def test_the_dispatcher_owner_set_is_a_single_module() -> None:
     assert check_raw_native_access.DISPATCHER_OWNERS == frozenset(
-        {"witwin/radar/cuda/build.py"}
+        {"witwin/radar/cuda/runtime.py"}
     )
     dispatcher, consumers = check_raw_native_access.scan(REPO_ROOT)
     assert set(dispatcher) == check_raw_native_access.DISPATCHER_OWNERS
     assert consumers == set(check_raw_native_access.EXPECTED_LOADER_CONSUMERS)
 
 
-def test_the_production_token_census_has_exactly_two_prose_entries() -> None:
+def test_the_production_token_census_is_empty() -> None:
     violations, census = check_production_dependencies.scan(REPO_ROOT)
     assert violations == []
     assert census == set(check_production_dependencies.ALLOWED_TOKEN_OCCURRENCES)

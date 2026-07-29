@@ -15,9 +15,7 @@ remaining use is to carry six tensors from ``_sample`` into ``_rows`` and the
 oracle. Keeping a production dataclass alive for that would have been keeping a
 module alive for its test.
 
-The three mode flags get their own tests because they are the single-count rule
-in executable form. A flag that is accepted but ignored looks exactly like a flag
-that works, in every magnitude plot anyone would draw.
+The fixed ABI assumes a Channel-composed weight and tests only pattern, intensity, geometry and AD.
 """
 
 from __future__ import annotations
@@ -56,50 +54,6 @@ def _radar(request_config=None):
     return make_radar_or_skip(request_config or STANDARD_CONFIG)
 
 
-@dataclass(frozen=True)
-class _Polarization:
-    """The three fields the kernel and the oracle both read.
-
-    ``RadarConfig.polarization`` and the ``PolarizationRuntime`` that turned it
-    into world vectors are deleted (Phase 11): the projection is a second one,
-    on top of the endpoint projection Channel already applies, and no
-    production route enables the kernel mode that implements it. The mode is
-    still in the ABI, so it still needs a contract test, and the vectors it
-    needs are declared here.
-    """
-
-    tx_world: torch.Tensor
-    rx_world: torch.Tensor
-    reflection_flip: bool = True
-
-
-def _unit_rows(vectors: torch.Tensor) -> torch.Tensor:
-    return vectors / torch.clamp(
-        torch.linalg.norm(vectors, dim=-1, keepdim=True), min=1e-12
-    )
-
-
-def _vertical_polarization(radar, *, reflection_flip: bool = True) -> _Polarization:
-    """Vertical on both sides, in world coordinates.
-
-    Vertical on both sides means a surface normal along +Y mirrors the transmit
-    vector exactly onto its own negative, which is what makes the sign
-    assertion sharp rather than approximate.
-
-    The local-to-world step and both normalisations are what
-    ``PolarizationRuntime.from_config`` did, in the same order, so the numbers
-    this produces are the numbers the deleted runtime produced.
-    """
-
-    local = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32, device=radar.device)
-    world = _unit_rows(radar.world_from_local_vectors(_unit_rows(local)))
-    return _Polarization(
-        tx_world=world.expand(radar.config.num_tx, 3).contiguous(),
-        rx_world=world.expand(radar.config.num_rx, 3).contiguous(),
-        reflection_flip=reflection_flip,
-    )
-
-
 def _sample(radar, count: int, *, seed: int = 0):
     """A ``PathSample`` of random scatterers in front of the radar."""
 
@@ -113,8 +67,8 @@ def _sample(radar, count: int, *, seed: int = 0):
         ),
         dim=-1,
     )
-    points = radar.world_from_local_points(local.to(device))
-    entry = radar.world_from_local_points(
+    points = radar._world_from_local_points(local.to(device))
+    entry = radar._world_from_local_points(
         (local + 0.05 * torch.randn(count, 3, generator=generator)).to(device)
     )
     normals = torch.nn.functional.normalize(
@@ -130,7 +84,7 @@ def _sample(radar, count: int, *, seed: int = 0):
     )
 
 
-def _rows(radar, sample, *, velocities=None, polarization=None):
+def _rows(radar, sample, *, velocities=None):
     """Enumerate the ``(tx, rx, path)`` grid as flat kernel rows.
 
     The oracle produces a ``(TX, RX, N)`` tensor; the kernel consumes a row
@@ -175,32 +129,12 @@ def _rows(radar, sample, *, velocities=None, polarization=None):
         tx_index=tx_index,
         rx_index=rx_index,
         row_kind=torch.full((rows,), ROW_KIND_VIA, dtype=torch.int32, device=device),
-        normals=sample.normals.repeat(*repeat, 1).contiguous(),
-        pol_tx=_polarization(radar, "tx", polarization),
-        pol_rx=_polarization(radar, "rx", polarization),
-        local_axes=_local_axes(radar),
+        pattern_frame=_pattern_frame(radar),
     )
     return geometry, site_in, site_out, sample.intensities.repeat(*repeat).contiguous()
 
 
-#: The polarization vectors the ABI takes but the kernel never reads when
-#: ``legacy_real_polarization`` is 0. A row of zeros would be a different
-#: statement - that the projection is onto nothing - so the filler is a real
-#: unit vector, exactly as ``sensors/round_trip.py`` does on the production
-#: route.
-_UNUSED_POLARIZATION = (0.0, 1.0, 0.0)
-
-
-def _polarization(radar, side: str, polarization=None) -> torch.Tensor:
-    if polarization is None:
-        count = radar.config.num_tx if side == "tx" else radar.config.num_rx
-        return torch.tensor([_UNUSED_POLARIZATION] * count, device=radar.device)
-    return (
-        polarization.tx_world if side == "tx" else polarization.rx_world
-    ).contiguous()
-
-
-def _local_axes(radar) -> torch.Tensor:
+def _pattern_frame(radar) -> torch.Tensor:
     """The three world-space axes of the radar's local frame, as kernel rows.
 
     ``local_from_world_vectors`` is ``v @ world_from_local``, so the local
@@ -214,14 +148,11 @@ def _local_axes(radar) -> torch.Tensor:
     return world_from_local.transpose(0, 1).contiguous()
 
 
-def _plan(radar, *, modes, tx_amplitude=1.0):
+def _plan(radar):
     from witwin.radar.sensors import SensorWeightPlan
 
     return SensorWeightPlan.build(
         radar.system_config.sensors.pattern,
-        modes=modes,
-        wavelength_m=radar.axes.wavelength_m,
-        tx_amplitude=tx_amplitude,
         c0=C0,
         device=radar.device,
     )
@@ -231,16 +162,13 @@ def _evaluate(
     radar,
     sample,
     *,
-    modes,
-    tx_amplitude=1.0,
     velocities=None,
     weight=None,
-    polarization=None,
 ):
     from witwin.radar.sensors import evaluate_sensor_weights
 
     geometry, site_in, site_out, intensity = _rows(
-        radar, sample, velocities=velocities, polarization=polarization
+        radar, sample, velocities=velocities
     )
     rows = intensity.shape[0]
     if weight is None:
@@ -253,7 +181,7 @@ def _evaluate(
         intensity=intensity,
         weight=weight,
         geometry=geometry,
-        plan=_plan(radar, modes=modes, tx_amplitude=tx_amplitude),
+        plan=_plan(radar),
     )
 
 
@@ -270,8 +198,6 @@ def test_the_kernel_pattern_gain_equals_the_torch_pattern_gain():
     published by the kernel as a diagnostic precisely so the comparison needs no
     inverse of the square root the weight applies.
     """
-
-    from witwin.radar.sensors import SensorWeightModes
     from reference.path_math import compute_antenna_pattern_gains
 
     radar = _radar()
@@ -279,9 +205,6 @@ def test_the_kernel_pattern_gain_equals_the_torch_pattern_gain():
     result = _evaluate(
         radar,
         sample,
-        modes=SensorWeightModes(
-            spreading=False, tx_power=False, legacy_real_polarization=False
-        ),
     )
     reference = compute_antenna_pattern_gains(
         radar, sample, radar.tx_pos, radar.rx_pos
@@ -306,17 +229,12 @@ def test_the_kernel_delay_and_rate_equal_the_torch_geometry():
     stationary scene and be wrong by a factor of up to two on a moving one.
     """
 
-    from witwin.radar.sensors import SensorWeightModes
-
     radar = _radar()
     sample = _sample(radar, 128, seed=5)
     velocities = torch.randn(128, 3, device=radar.device) * 4.0
     result = _evaluate(
         radar,
         sample,
-        modes=SensorWeightModes(
-            spreading=False, tx_power=False, legacy_real_polarization=False
-        ),
         velocities=velocities,
     )
 
@@ -335,216 +253,17 @@ def test_the_kernel_delay_and_rate_equal_the_torch_geometry():
     assert torch.allclose(result.delay_rate, rates / C0, rtol=1e-6, atol=1e-14)
 
 
-def test_the_full_weight_equals_the_torch_amplitude_expression():
-    """The whole of ``compute_path_amplitudes``, with every mode flag on.
-
-    This is what the legacy real-amplitude route actually asks for: intensity,
-    pattern, free-space spreading, and the transmit amplitude, in that product.
-    Pinning the composite as well as its parts is deliberate - three correct
-    factors combined in the wrong order is still the wrong number.
-    """
-
-    from witwin.radar.sensors import SensorWeightModes
-    from reference.path_math import (
-        compute_path_amplitudes,
-        compute_total_path_lengths,
-    )
-
-    radar = _radar()
-    sample = _sample(radar, 96, seed=7)
-    lengths = compute_total_path_lengths(sample, radar.tx_pos, radar.rx_pos)
-    # `radar.gain` is gone; the transmit amplitude is now an argument of the
-    # oracle and of the kernel's plan, which is the whole point of the move.
-    reference = compute_path_amplitudes(radar, sample, lengths, gain=3.0).reshape(-1)
-    result = _evaluate(
-        radar,
-        sample,
-        modes=SensorWeightModes(
-            spreading=True, tx_power=True, legacy_real_polarization=False
-        ),
-        tx_amplitude=3.0,
-    )
-    assert torch.allclose(result.weight.real, reference, rtol=1e-5, atol=1e-12)
-    assert torch.equal(result.weight.imag, torch.zeros_like(result.weight.imag))
 
 
-# ---------------------------------------------------------------------------
-# T4.3 - the provenance flags are load-bearing
-# ---------------------------------------------------------------------------
 
 
-def test_spreading_mode_zero_makes_the_weight_independent_of_range():
-    """A Channel-sourced weight already carries the spreading, once per leg.
-
-    With ``spreading = False`` the output must not change at all when the whole
-    scene moves ten times further away at a fixed direction, and with
-    ``spreading = True`` it must fall as ``1/L``. Scaling the scene about the
-    radar's own origin keeps every direction fixed, so the antenna gain is
-    unchanged and the only thing that can move is the spreading term.
-    """
-
-    from witwin.radar.sensors import SensorWeightModes
-    # A single element at the radar origin, so that scaling the scene ABOUT
-    # that origin leaves every antenna direction exactly unchanged. With an
-    # offset element the direction moves by the element offset over the range
-    # and the antenna gain moves with it, which would make this a test of the
-    # pattern rather than of the flag.
-    from conftest import MINIMAL_CONFIG
-
-    radar = _radar(MINIMAL_CONFIG)
-    near = _sample(radar, 64, seed=3)
-    origin = radar.position.to(radar.device)
-
-    def _scaled(factor: float) -> PathSample:
-        return PathSample(
-            intensities=near.intensities,
-            points=(origin + (near.points - origin) * factor).contiguous(),
-            entry_points=(origin + (near.entry_points - origin) * factor).contiguous(),
-            fixed_path_lengths=near.fixed_path_lengths * factor,
-            depths=near.depths,
-            normals=near.normals,
-        )
-
-    far = _scaled(10.0)
-    off = SensorWeightModes(
-        spreading=False, tx_power=False, legacy_real_polarization=False
-    )
-    on = SensorWeightModes(
-        spreading=True, tx_power=False, legacy_real_polarization=False
-    )
-
-    near_off = _evaluate(radar, near, modes=off).weight
-    far_off = _evaluate(radar, far, modes=off).weight
-    assert torch.allclose(near_off, far_off, rtol=1e-6, atol=1e-12)
-
-    near_on = _evaluate(radar, near, modes=on)
-    far_on = _evaluate(radar, far, modes=on)
-    ratio = near_on.weight.abs() / far_on.weight.abs().clamp(min=1e-30)
-    assert torch.allclose(ratio, torch.full_like(ratio, 10.0), rtol=1e-5)
 
 
-def test_tx_power_mode_zero_makes_the_weight_independent_of_transmit_power():
-    """A Channel-sourced weight already carries ``sqrt(P_tx)`` from ``powers_w``.
-
-    With ``tx_power = False`` the transmit amplitude argument must do nothing at
-    all - not merely something small - and with it on the weight must scale
-    exactly linearly. Passing an amplitude that the kernel then ignores is the
-    only shape this rule can take at the ABI, so it is asserted directly.
-    """
-
-    from witwin.radar.sensors import SensorWeightModes
-
-    radar = _radar()
-    sample = _sample(radar, 48, seed=13)
-    off = SensorWeightModes(
-        spreading=False, tx_power=False, legacy_real_polarization=False
-    )
-    on = SensorWeightModes(
-        spreading=False, tx_power=True, legacy_real_polarization=False
-    )
-    ignored = _evaluate(radar, sample, modes=off, tx_amplitude=7.0).weight
-    baseline = _evaluate(radar, sample, modes=off, tx_amplitude=1.0).weight
-    assert torch.equal(ignored, baseline)
-
-    applied = _evaluate(radar, sample, modes=on, tx_amplitude=7.0).weight
-    assert torch.allclose(applied, baseline * 7.0, rtol=1e-6, atol=1e-12)
 
 
-# ---------------------------------------------------------------------------
-# T4.4 - polarization sign
-# ---------------------------------------------------------------------------
 
 
-def test_the_reflection_flip_is_a_signed_factor_of_exactly_minus_one():
-    """A mirrored transmit polarization can point away from the receiver.
-
-    With a normal parallel to the transmit polarization the mirror sends it to
-    its own negative, so the projection changes sign and the weight is exactly
-    ``-1`` times the unmirrored one. Taking a magnitude here would be a silent
-    180-degree error that survives every magnitude plot, which is why the sign is
-    asserted rather than the modulus.
-    """
-
-    from witwin.radar.sensors import SensorWeightModes
-    radar = _radar()
-    polarization = _vertical_polarization(radar)
-    base = _sample(radar, 32, seed=17)
-    # The declared polarization is +Y on both sides here; a normal along +Y
-    # therefore flips the transmit vector exactly onto its negative.
-    aligned = torch.zeros_like(base.normals)
-    aligned[:, 1] = 1.0
-    sample = PathSample(
-        intensities=base.intensities,
-        points=base.points,
-        entry_points=base.entry_points,
-        fixed_path_lengths=base.fixed_path_lengths,
-        depths=base.depths,
-        normals=aligned.contiguous(),
-    )
-    flipped = _evaluate(
-        radar,
-        sample,
-        modes=SensorWeightModes(
-            spreading=False,
-            tx_power=False,
-            legacy_real_polarization=True,
-            reflection_flip=True,
-        ),
-        polarization=polarization,
-    ).weight
-    plain = _evaluate(
-        radar,
-        sample,
-        modes=SensorWeightModes(
-            spreading=False,
-            tx_power=False,
-            legacy_real_polarization=True,
-            reflection_flip=False,
-        ),
-        polarization=polarization,
-    ).weight
-    assert torch.equal(flipped, -plain)
-    assert (flipped.real <= 0).all()
-    assert (plain.real > 0).all()
-
-
-def test_the_polarization_projection_matches_the_torch_expression():
-    """Including its sign, over random normals, against the copied oracle."""
-
-    from witwin.radar.sensors import SensorWeightModes
-    from reference.path_math import compute_polarization_amplitudes
-
-    radar = _radar()
-    polarization = _vertical_polarization(radar)
-    sample = _sample(radar, 64, seed=23)
-    with_projection = _evaluate(
-        radar,
-        sample,
-        modes=SensorWeightModes(
-            spreading=False, tx_power=False, legacy_real_polarization=True
-        ),
-        polarization=polarization,
-    ).weight
-    without = _evaluate(
-        radar,
-        sample,
-        modes=SensorWeightModes(
-            spreading=False, tx_power=False, legacy_real_polarization=False
-        ),
-        polarization=polarization,
-    ).weight
-    reference = compute_polarization_amplitudes(polarization, sample)
-    assert reference is not None, "the fixture must declare a polarization"
-    ratio = with_projection.real / without.real.clamp(min=1e-20)
-    assert torch.allclose(ratio, reference.reshape(-1), rtol=1e-5, atol=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# T4.17 - AD
-# ---------------------------------------------------------------------------
-
-
-def _directional(radar, sample, modes, tangents, *, step, weight, weight_tangent):
+def _directional(radar, sample, tangents, *, step, weight, weight_tangent):
     """Central finite difference of the whole result along one direction."""
 
     from witwin.radar.sensors import evaluate_sensor_weights
@@ -560,7 +279,7 @@ def _directional(radar, sample, modes, tangents, *, step, weight, weight_tangent
             intensity=(intensity + scale * tangents["intensity"]).contiguous(),
             weight=(weight + scale * weight_tangent).contiguous(),
             geometry=geometry,
-            plan=_plan(radar, modes=modes),
+            plan=_plan(radar),
         )
 
     plus = _at(step)
@@ -587,7 +306,7 @@ def _pattern_cell(radar, geometry, site_in, site_out) -> torch.Tensor:
         site_in - radar.tx_pos[geometry.tx_index],
         site_out - radar.rx_pos[geometry.rx_index],
     ):
-        local = radar.local_from_world_vectors(vectors)
+        local = radar._local_from_world_vectors(vectors)
         forward = -local[..., 2]
         x_deg = torch.rad2deg(torch.atan2(local[..., 0], forward))
         y_deg = torch.rad2deg(torch.atan2(local[..., 1], forward))
@@ -631,13 +350,10 @@ def test_the_jvp_matches_a_central_finite_difference():
 
     from torch.autograd.forward_ad import dual_level, make_dual, unpack_dual
 
-    from witwin.radar.sensors import SensorWeightModes, evaluate_sensor_weights
+    from witwin.radar.sensors import evaluate_sensor_weights
 
     radar = _radar()
     sample = _sample(radar, 64, seed=29)
-    modes = SensorWeightModes(
-        spreading=True, tx_power=True, legacy_real_polarization=True
-    )
     geometry, site_in, site_out, intensity = _rows(
         radar, sample, velocities=torch.randn(64, 3, device=radar.device) * 3.0
     )
@@ -666,7 +382,7 @@ def test_the_jvp_matches_a_central_finite_difference():
             intensity=make_dual(intensity, tangents["intensity"]),
             weight=make_dual(weight, weight_tangent),
             geometry=geometry,
-            plan=_plan(radar, modes=modes),
+            plan=_plan(radar),
         )
         jvp_weight = unpack_dual(result.weight).tangent
         jvp_tau = unpack_dual(result.total_delay_s).tangent
@@ -683,7 +399,7 @@ def test_the_jvp_matches_a_central_finite_difference():
                 intensity=(intensity + scale * tangents["intensity"]).contiguous(),
                 weight=(weight + scale * weight_tangent).contiguous(),
                 geometry=geometry,
-                plan=_plan(radar, modes=modes),
+                plan=_plan(radar),
             )
 
         plus = _at(step)
@@ -744,13 +460,10 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
 
     from torch.autograd.forward_ad import dual_level, make_dual, unpack_dual
 
-    from witwin.radar.sensors import SensorWeightModes, evaluate_sensor_weights
+    from witwin.radar.sensors import evaluate_sensor_weights
 
     radar = _radar()
     sample = _sample(radar, 48, seed=37)
-    modes = SensorWeightModes(
-        spreading=True, tx_power=True, legacy_real_polarization=True
-    )
     geometry, site_in, site_out, intensity = _rows(
         radar, sample, velocities=torch.randn(48, 3, device=radar.device) * 2.0
     )
@@ -790,7 +503,7 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
                 torch.complex(tangents["weight_re"], tangents["weight_im"]),
             ),
             geometry=geometry,
-            plan=_plan(radar, modes=modes),
+            plan=_plan(radar),
         )
         forward = (
             (unpack_dual(result.weight).tangent.real * cotangents["weight_re"]).sum()
@@ -816,7 +529,7 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
         intensity=leaves["intensity"],
         weight=torch.complex(leaves["weight_re"], leaves["weight_im"]),
         geometry=geometry,
-        plan=_plan(radar, modes=modes),
+        plan=_plan(radar),
     )
     loss = (
         (reverse_result.weight.real * cotangents["weight_re"]).sum()
@@ -841,7 +554,7 @@ def test_the_antenna_gradient_is_a_deterministic_reduction():
     mode that makes a nondeterministic reduction expensive to find later.
     """
 
-    from witwin.radar.sensors import SensorWeightModes, evaluate_sensor_weights
+    from witwin.radar.sensors import evaluate_sensor_weights
 
     radar = _radar()
     sample = _sample(radar, 96, seed=43)
@@ -861,9 +574,6 @@ def test_the_antenna_gradient_is_a_deterministic_reduction():
             geometry=geometry,
             plan=_plan(
                 radar,
-                modes=SensorWeightModes(
-                    spreading=True, tx_power=False, legacy_real_polarization=False
-                ),
             ),
         )
         (result.weight.real * cotangent).sum().backward()

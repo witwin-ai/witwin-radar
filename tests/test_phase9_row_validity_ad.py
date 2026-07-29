@@ -285,15 +285,15 @@ def test_a_poisoned_dead_row_cannot_change_the_cube(spike, moved, kind):
     spec = wc.make_spec(kind)
     reference = wc.synthesize(kind, composed, spec)
     from witwin.radar.synthesis import (
-        synthesize_fmcw_beat,
-        synthesize_ofdm_cfr,
-        synthesize_pulsed_echo,
+        synthesize_fmcw,
+        synthesize_ofdm,
+        synthesize_pulsed,
     )
 
     owner = {
-        "fmcw": synthesize_fmcw_beat,
-        "ofdm": synthesize_ofdm_cfr,
-        "pulsed": synthesize_pulsed_echo,
+        "fmcw": synthesize_fmcw,
+        "ofdm": synthesize_ofdm,
+        "pulsed": synthesize_pulsed,
     }[kind]
     assert torch.equal(owner(poisoned, spec), reference)
     # And the poison really was large enough to be seen: applied to a LIVE row

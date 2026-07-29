@@ -1,13 +1,7 @@
-"""The removed Dr.Jit entry points fail loudly and name their replacement.
+"""The removed Dr.Jit and Dirichlet entry points remain absent.
 
-Deleting a backend is only half of the job. The other half is that the names
-which used to reach it do not come back as a bare ``ImportError`` or, worse, as
-a shim that quietly routes somewhere else: the replacement is a different
-contract, not a drop-in, so anything returning numbers under the old name would
-be returning numbers from a different model.
-
-None of this is a deprecation window. There is no flag, no environment
-variable, and no fallback path that restores the old behaviour.
+A removed public name raises Python's ordinary ``AttributeError``. No message
+proxy, alias, deprecated path, flag or fallback preserves the former contract.
 """
 
 from __future__ import annotations
@@ -35,11 +29,9 @@ def test_the_dr_jit_modules_are_gone_from_the_source_tree():
 
 
 @pytest.mark.parametrize("name", ["Tracer", "fresnel"])
-def test_a_removed_export_names_its_replacement(name):
-    with pytest.raises(AttributeError) as raised:
+def test_a_removed_export_is_absent_without_a_proxy(name):
+    with pytest.raises(AttributeError, match="has no attribute"):
         getattr(wr, name)
-    message = str(raised.value)
-    assert "removed with the Dr.Jit ray tracer" in message
     assert name not in wr.__all__
 
 
@@ -93,22 +85,7 @@ def test_simulate_group_is_gone_rather_than_permanently_refusing():
     assert not hasattr(wr.Radar, "_SIMULATE_REPLACEMENT")
 
 
-def test_the_dirichlet_entry_points_are_gone_and_name_their_replacement():
-    """This block used to assert that the SAME six methods were untouched.
-
-    Its argument was that the ``dirichlet_spectrum`` family's callers had
-    nothing to do with the tracer, so removing them alongside it would orphan
-    six native symbols for no reason. Phase 11 removes them for a reason: the
-    scene-driven entry point exists, so the whole route - nine symbols, its
-    translation unit, its solver and its path cache - goes at once, and no
-    symbol passes through a caller-free state.
-
-    ``Radar`` gets a plain ``AttributeError`` for a deleted method because a
-    class attribute has no ``__getattr__`` hook to route through; the package
-    root does have one, so the four deleted module-level names answer with a
-    message that says where to go instead.
-    """
-
+def test_the_dirichlet_entry_points_are_absent_without_a_proxy():
     for name in (
         "mimo",
         "mimo_from_trace",
@@ -121,16 +98,15 @@ def test_the_dirichlet_entry_points_are_gone_and_name_their_replacement():
     ):
         assert not hasattr(wr.Radar, name), name
 
-    for name, expected in (
-        ("Solver", "no backend selector"),
-        ("TraceResult", "ScatterSitePolicy"),
-        ("MimoPathCache", "frozen topology"),
-        ("SamplingMode", "interpolator contract"),
-        ("MotionSampling", "interpolator contract"),
+    for name in (
+        "Solver",
+        "TraceResult",
+        "MimoPathCache",
+        "SamplingMode",
+        "MotionSampling",
     ):
-        with pytest.raises(AttributeError) as raised:
+        with pytest.raises(AttributeError, match="has no attribute"):
             getattr(wr, name)
-        assert expected in str(raised.value), name
         assert name not in wr.__all__, name
 
 

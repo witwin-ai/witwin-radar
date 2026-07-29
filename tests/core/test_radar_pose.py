@@ -6,7 +6,7 @@ observational tests here used to reach the legacy trace sample
 (``solvers.common.normalize_interpolated_sample``) and the float64 path oracle
 under ``tests/reference``, both of which the Dirichlet route takes with it. They
 now go through ``Radar.simulate``, which is where a pose actually reaches the
-world: ``scene_binding.bind_radar_world`` publishes ``radar.tx_pos`` and
+world: ``simulation.bind_radar_world`` publishes ``radar.tx_pos`` and
 ``radar.rx_pos`` - the pose-transformed world positions - as the Channel
 endpoints.
 
@@ -24,9 +24,9 @@ import torch
 
 from conftest import empty_world, simulate_point_targets
 
-from witwin.radar import Radar, RadarConfig, ScatterSitePolicy
+from witwin.radar import Radar, RadarConfig
+from witwin.radar.simulation import ScatterSitePolicy
 from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.sensors import AntennaPatternSpec
 
 
 def _config() -> dict:
@@ -73,7 +73,7 @@ def _half_wave_dipole_power(angle_deg: float) -> float:
     return field * field
 
 
-def _composed_weight(radar: Radar, local_point: torch.Tensor, *, pattern) -> float:
+def _composed_weight(radar: Radar, local_point: torch.Tensor) -> float:
     """``|C_rt|`` of the single composed row for one local target position.
 
     The composed weight rather than a cube peak: the two-way join publishes one
@@ -82,7 +82,7 @@ def _composed_weight(radar: Radar, local_point: torch.Tensor, *, pattern) -> flo
     transform from a statement about an antenna pattern.
     """
 
-    world = radar.world_from_local_points(
+    world = radar._world_from_local_points(
         local_point.reshape(1, 3).to(radar.device)
     )
     radar.simulate(
@@ -96,7 +96,6 @@ def _composed_weight(radar: Radar, local_point: torch.Tensor, *, pattern) -> flo
         sites=ScatterSitePolicy.explicit(world),
         components=frozenset({"los"}),
         max_depth=0,
-        antenna_pattern=pattern,
     )
     return float(radar.last_radar_paths.complex_transfer_ref.abs().max())
 
@@ -124,7 +123,7 @@ def test_radar_transforms_local_points_and_vectors():
         dtype=torch.float32,
     )
 
-    world_points = radar.world_from_local_points(local_points)
+    world_points = radar._world_from_local_points(local_points)
     expected_points = torch.tensor(
         [
             [1.0, 2.0, 3.0],
@@ -137,7 +136,7 @@ def test_radar_transforms_local_points_and_vectors():
     assert torch.allclose(world_points, expected_points)
 
     world_forward = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float32)
-    local_forward = radar.local_from_world_vectors(world_forward)
+    local_forward = radar._local_from_world_vectors(world_forward)
     assert torch.allclose(local_forward, torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32), atol=1e-6, rtol=1e-6)
 
 
@@ -263,10 +262,8 @@ def test_a_rotated_radar_evaluates_its_pattern_in_the_local_frame():
         target=(1.0, 0.0, 0.0),
         up=(0.0, 1.0, 0.0),
     )
-    pattern = AntennaPatternSpec.half_wave_dipole()
-
-    centre = _composed_weight(radar, _local_target(0.0, 0.0), pattern=pattern)
-    off_axis = _composed_weight(radar, _local_target(0.0, 45.0), pattern=pattern)
+    centre = _composed_weight(radar, _local_target(0.0, 0.0))
+    off_axis = _composed_weight(radar, _local_target(0.0, 45.0))
 
     assert off_axis / centre == pytest.approx(
         _half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3

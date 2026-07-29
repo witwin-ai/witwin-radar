@@ -34,7 +34,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar.frontend.contracts import (  # noqa: E402
+from witwin.radar.frontend import (  # noqa: E402
     AdcSpec,
     AgcSpec,
     LnaSpec,
@@ -42,14 +42,14 @@ from witwin.radar.frontend.contracts import (  # noqa: E402
     PortSpec,
     SeedSpec,
 )
-from witwin.radar.host_parameters import (  # noqa: E402
+from witwin.radar.policy import (  # noqa: E402
     require_host_float,
     require_host_floats,
 )
-from witwin.radar.synthesis.contracts import (  # noqa: E402
-    FmcwBeatSpec,
-    OfdmCfrSpec,
-    PulsedEchoSpec,
+from witwin.radar.synthesis.assembly import (  # noqa: E402
+    FmcwSpec,
+    OfdmSpec,
+    PulsedSpec,
 )
 
 #: A working set of keyword arguments per spec, and the fields that must each
@@ -121,15 +121,15 @@ SPEC_CASES = (
     ("AgcSpec", AgcSpec, dict(target_rms=1.0),
      ("target_rms", "min_gain_db", "max_gain_db")),
     ("AdcSpec", AdcSpec, dict(bits=10, full_scale=1.0), ("bits", "full_scale")),
-    ("FmcwBeatSpec", FmcwBeatSpec, FMCW_BASE,
+    ("FmcwSpec", FmcwSpec, FMCW_BASE,
      ("num_samples", "num_chirps", "sample_period_s", "chirp_period_s",
       "slope_hz_per_s", "t_start_s", "reference_frequency_hz", "carrier_hz",
       "carrier_rate_hz", "num_tx", "num_rx")),
-    ("OfdmCfrSpec", OfdmCfrSpec, OFDM_BASE,
+    ("OfdmSpec", OfdmSpec, OFDM_BASE,
      ("num_subcarriers", "num_symbols", "subcarrier_spacing_hz",
       "cyclic_prefix_s", "reference_frequency_hz", "max_expected_delay_s",
       "carrier_hz", "carrier_rate_hz")),
-    ("PulsedEchoSpec", PulsedEchoSpec, PULSED_BASE,
+    ("PulsedSpec", PulsedSpec, PULSED_BASE,
      ("num_pulses", "num_samples", "sample_period_s", "pri_s",
       "range_gate_start_s", "pulse_width_s", "bandwidth_hz",
       "reference_frequency_hz", "max_expected_delay_rate", "carrier_hz",
@@ -151,7 +151,7 @@ def _declared_value(factory, base, field) -> float:
     """The value the working spec actually holds for ``field``.
 
     Read off the CONSTRUCTED object rather than out of ``base``, because a
-    field with a default - ``AgcSpec.min_gain_db``, ``FmcwBeatSpec.num_tx`` -
+    field with a default - ``AgcSpec.min_gain_db``, ``FmcwSpec.num_tx`` -
     is legitimately absent from the base kwargs and must still be covered. A
     zero is replaced by one so that the substituted tensor is a plausible
     value and the refusal is the only reason the construction fails.
@@ -236,7 +236,7 @@ def test_every_configuration_scalar_refuses_an_unmarked_tensor_too(
 def test_the_refusal_precedes_every_other_validation():
     """A tensor is refused even when its VALUE would also be rejected.
 
-    ``FmcwBeatSpec`` refuses a non-positive ``sample_period_s``. Ordering the
+    ``FmcwSpec`` refuses a non-positive ``sample_period_s``. Ordering the
     tensor check second would make ``sample_period_s=tensor(-1.0)`` raise a
     ValueError about positivity - true, but it would send the caller to fix the
     sign of a tensor that was never going to be accepted, and it would leave a
@@ -245,7 +245,7 @@ def test_the_refusal_precedes_every_other_validation():
 
     bad = torch.tensor(-1.0, requires_grad=True)
     with pytest.raises(TypeError) as excinfo:
-        FmcwBeatSpec(**{**FMCW_BASE, "sample_period_s": bad})
+        FmcwSpec(**{**FMCW_BASE, "sample_period_s": bad})
     assert "must be a host float" in str(excinfo.value)
 
 

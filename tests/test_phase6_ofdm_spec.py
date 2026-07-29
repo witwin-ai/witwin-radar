@@ -1,4 +1,4 @@
-"""``OfdmCfrSpec``: the OFDM grid, its derived quantities, and its refusals.
+"""``OfdmSpec``: the OFDM grid, its derived quantities, and its refusals.
 
 Every assertion here runs on the CPU. That is deliberate and it matches
 ``test_phase6_synthesis_contract``: the cyclic-prefix contract and the
@@ -24,13 +24,13 @@ import pathlib
 
 import pytest
 
-from witwin.radar.synthesis.contracts import (
+from witwin.radar.synthesis.assembly import (
     CHANNEL_PHASOR,
     CHANNEL_TIME_DEPENDENCE,
     SPEED_OF_LIGHT_M_PER_S,
     SUBCARRIER_ORIGIN_F_REF_AT_N0,
-    FmcwBeatSpec,
-    OfdmCfrSpec,
+    FmcwSpec,
+    OfdmSpec,
     WaveformSpecProtocol,
     require_single_carrier_home,
 )
@@ -45,7 +45,7 @@ NUM_SYMBOLS = 32
 MAX_DELAY_S = 1.0e-6
 
 
-def _spec(**overrides) -> OfdmCfrSpec:
+def _spec(**overrides) -> OfdmSpec:
     fields = dict(
         num_subcarriers=NUM_SUBCARRIERS,
         num_symbols=NUM_SYMBOLS,
@@ -57,7 +57,7 @@ def _spec(**overrides) -> OfdmCfrSpec:
         carrier_rate_hz=F_REF,
     )
     fields.update(overrides)
-    return OfdmCfrSpec(**fields)
+    return OfdmSpec(**fields)
 
 
 # --------------------------------------------------------------------------
@@ -177,9 +177,9 @@ def test_the_published_convention_is_carried_as_data():
     be answerable without knowing which module produced the cube.
     """
 
-    assert OfdmCfrSpec.phasor == CHANNEL_PHASOR == "exp(-j*k*d)"
-    assert OfdmCfrSpec.time_dependence == CHANNEL_TIME_DEPENDENCE
-    assert OfdmCfrSpec.applies_spreading is False
+    assert OfdmSpec.phasor == CHANNEL_PHASOR == "exp(-j*k*d)"
+    assert OfdmSpec.time_dependence == CHANNEL_TIME_DEPENDENCE
+    assert OfdmSpec.applies_spreading is False
     assert isinstance(_spec(), WaveformSpecProtocol)
 
 
@@ -193,7 +193,7 @@ def _batch():
 
     import torch
 
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     zeros = torch.zeros(1, dtype=torch.int64)
@@ -232,7 +232,7 @@ def test_an_echo_window_wider_than_the_cyclic_prefix_is_refused(delay_s):
     inequality the single-tap form needs.
     """
 
-    from witwin.radar.synthesis.contracts import require_ofdm_compatible
+    from witwin.radar.synthesis.assembly import require_ofdm_compatible
 
     spec = _spec(max_expected_delay_s=delay_s)
     with pytest.raises(ValueError, match="cyclic_prefix_s"):
@@ -240,7 +240,7 @@ def test_an_echo_window_wider_than_the_cyclic_prefix_is_refused(delay_s):
 
 
 def test_an_echo_window_inside_the_cyclic_prefix_is_accepted():
-    from witwin.radar.synthesis.contracts import require_ofdm_compatible
+    from witwin.radar.synthesis.assembly import require_ofdm_compatible
 
     require_ofdm_compatible(_batch(), _spec(max_expected_delay_s=0.999 * CYCLIC_PREFIX_S))
 
@@ -256,7 +256,7 @@ def test_there_is_no_clamping_path_in_the_ofdm_contract():
 
     module = (
         pathlib.Path(__file__).resolve().parents[1]
-        / "witwin/radar/synthesis/contracts.py"
+        / "witwin/radar/synthesis/assembly.py"
     )
     tree = ast.parse(module.read_text(encoding="utf-8"))
     function = next(
@@ -310,7 +310,7 @@ def test_the_cyclic_prefix_check_reads_configuration_and_never_a_tensor():
 
     import torch
 
-    from witwin.radar.synthesis.contracts import require_ofdm_compatible
+    from witwin.radar.synthesis.assembly import require_ofdm_compatible
 
     batch = _batch()
     long_echo = dataclasses.replace(
@@ -347,10 +347,10 @@ def test_the_carrier_home_rule_is_one_helper_and_not_two_copies():
 
     module = (
         pathlib.Path(__file__).resolve().parents[1]
-        / "witwin/radar/synthesis/contracts.py"
+        / "witwin/radar/synthesis/assembly.py"
     )
     tree = ast.parse(module.read_text(encoding="utf-8"))
-    for spec_name in ("FmcwBeatSpec", "OfdmCfrSpec"):
+    for spec_name in ("FmcwSpec", "OfdmSpec"):
         cls = next(
             node
             for node in ast.walk(tree)
@@ -371,7 +371,7 @@ def test_the_carrier_home_rule_is_one_helper_and_not_two_copies():
     # And the two produce byte-identical messages, because it is one message.
     messages = []
     for spec in (
-        lambda: FmcwBeatSpec(
+        lambda: FmcwSpec(
             num_samples=4,
             num_chirps=1,
             sample_period_s=1.0e-7,

@@ -40,7 +40,7 @@ def array_spec(num_tx: int = PIPELINE_NUM_TX, num_rx: int = PIPELINE_NUM_RX):
     """A ``SensorArraySpec`` for a nominal half-wavelength linear MIMO array."""
 
     from witwin.radar import RadarConfig
-    from witwin.radar.sensors.contracts import SensorArraySpec
+    from witwin.radar.sensors import SensorArraySpec
 
     from . import multi_endpoint_geometry as geo
 
@@ -81,6 +81,7 @@ def pipeline_inputs(*, num_chirps: int = 8):
         grid.fmcw_spec(num_chirps),
         num_tx=PIPELINE_NUM_TX,
         num_rx=PIPELINE_NUM_RX,
+        output_domain="spectrum",
     )
     return batch, spec, array_spec()
 
@@ -101,20 +102,20 @@ def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar_fast"):
         ca_cfar_fast,
         os_cfar,
         point_cloud,
-        range_doppler,
+        range_doppler_map,
         range_profile,
     )
-    from witwin.radar.synthesis import synthesize_fmcw_beat
-    from witwin.radar.synthesis.contracts import SynthesisResult
+    from witwin.radar.synthesis import synthesize_fmcw
+    from witwin.radar.synthesis.assembly import SynthesisResult
 
     detectors = {"ca_cfar": ca_cfar, "ca_cfar_fast": ca_cfar_fast, "os_cfar": os_cfar}
-    cube = synthesize_fmcw_beat(batch, spec)
-    result = SynthesisResult.from_fmcw_beat(cube, spec)
+    cube = synthesize_fmcw(batch, spec)
+    result = SynthesisResult.from_fmcw(cube, spec)
     axes = ProcessingAxes.from_synthesis(result, spec, spec_array)
     array = ArrayGeometry.from_axes(axes)
     processing = ProcessingCube.from_synthesis(result, axes)
-    profile = range_profile(processing, window="hann")
-    rd = range_doppler(profile, window="hann")
+    profile = range_profile(processing)
+    rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     cells = detectors[detector](
         combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2

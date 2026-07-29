@@ -48,7 +48,7 @@ from witwin.radar.paths import (  # noqa: E402
     RadarComponentIndex,
 )
 from witwin.radar.processing import combine_incoherent  # noqa: E402
-from witwin.radar.synthesis import select_component, synthesize_fmcw_beat  # noqa: E402
+from witwin.radar.synthesis import select_component, synthesize_fmcw  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -76,7 +76,7 @@ def index(spike):
 
 
 def _cube(batch, spec):
-    return synthesize_fmcw_beat(batch, spec)
+    return synthesize_fmcw(batch, spec)
 
 
 def _component_cubes(batch, index, spec):
@@ -320,8 +320,10 @@ def test_a_component_export_costs_one_synthesis_and_no_host_observation(
     waveform kernel again reads NO device value, so exporting components adds
     nothing to the frame's host-observation budget no matter how many classes
     are declared. The second is a number and is reported rather than asserted,
-    because it is a property of this machine: exporting ``n`` components costs
-    ``n`` synthesis launches against the one an unseparated frame pays, and the
+    because it is a property of this machine: exporting `
+`` components costs
+    `
+`` synthesis launches against the one an unseparated frame pays, and the
     measured multiplier is what the pipeline budget has to absorb.
     """
 
@@ -482,7 +484,7 @@ def test_the_target_only_cube_matches_the_float64_oracle(spike, index):
     selected = select_component(batch, index, TARGET)
     measured = _cube(selected, spec).cpu().to(torch.complex128)
 
-    from witwin.radar.synthesis import pair_tx_index
+    from witwin.radar.synthesis.assembly import pair_tx_index
 
     tx_index = pair_tx_index(
         num_tx=spec.num_tx,

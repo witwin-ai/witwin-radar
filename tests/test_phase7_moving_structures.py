@@ -40,7 +40,7 @@ pytest.importorskip("witwin.channel")
 from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
-from witwin.radar.propagation import kinematics as kin  # noqa: E402
+import witwin.radar.propagation as kin  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -382,7 +382,7 @@ def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(
 
     smpl = pytest.importorskip("smplpytorch")
     del smpl
-    from witwin.radar.geometry import SMPLBody, SmplPoseDeformation
+    from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
 
     model_root = _smpl_model_root()
     if model_root is None:
@@ -412,7 +412,7 @@ def test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference(
 def _smpl_model_root() -> str | None:
     import pathlib
 
-    from witwin.radar.geometry import smpl as smpl_module
+    import witwin.radar.smpl as smpl_module
 
     candidates = [
         pathlib.Path(smpl_module._default_smpl_model_root()),
@@ -443,7 +443,7 @@ def test_a_deforming_mesh_is_a_core_deformation_not_a_reposed_geometry():
     pytest.importorskip("smplpytorch")
     from witwin.core import PhysicalMaterial, Scene, Structure
     from witwin.core.dynamics import DeformationState, DynamicScene
-    from witwin.radar.geometry import SMPLBody, SmplPoseDeformation
+    from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
 
     model_root = _smpl_model_root()
     if model_root is None:

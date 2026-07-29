@@ -21,7 +21,6 @@ import io
 import pathlib
 import tokenize
 
-import pytest
 import torch
 
 
@@ -163,114 +162,22 @@ def test_no_detector_angle_estimator_or_beamformer_lives_outside_the_facade():
     assert offenders == [], offenders
 
 
-def test_the_whole_sigproc_package_is_re_export_only():
-    """Not one expression: every legacy name resolves into the facade.
-
-    The adapters live inside ``witwin/radar/processing/`` on purpose. That is
-    what lets the fence above be a statement about a DIRECTORY rather than a
-    list of exceptions.
-    """
-
-    for path in sorted((RADAR_ROOT / "sigproc").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            allowed = (
-                ast.Import,
-                ast.ImportFrom,
-                ast.Assign,
-                ast.Expr,
-                ast.AnnAssign,
-            )
-            assert isinstance(node, allowed), (path.name, type(node).__name__)
-        for node in ast.walk(tree):
-            assert not isinstance(node, ast.FunctionDef), path.name
-            assert not isinstance(node, ast.ClassDef), path.name
-
+def test_retired_compatibility_modules_are_absent():
+    assert not (RADAR_ROOT / "sigproc").exists()
+    assert not (PROCESSING / "adapters.py").exists()
 
 # ---------------------------------------------------------------------------
 # Deletion completeness, item by item
 # ---------------------------------------------------------------------------
 
 
-def test_item_1_frame_config_no_longer_reads_raw_configuration_fields():
-    from witwin.radar.processing.adapters import FrameConfig
-
-    source = _code(inspect.getsource(FrameConfig))
-    assert "radar.config" not in source
-    assert "cfg." not in source
-    # It publishes the two new records instead, which is the migration.
-    assert "axes_from_radar" in source
-
-
-def test_item_2_there_is_one_legacy_transform_owner_and_not_three():
-    from witwin.radar.processing import adapters
-
-    source = _code((PROCESSING / "adapters.py").read_text(encoding="utf-8"))
-    assert source.count("torch . fft . fft (") == 2, source
-    assert hasattr(adapters, "legacy_range_transform")
-    assert hasattr(adapters, "legacy_doppler_transform")
-    # Both legacy entry points and the MUSIC image go through them.
-    for name in ("range_fft", "process_rd_tensor", "radar_image"):
-        assert name in source
-
-
-def test_item_3_frame_reshape_is_gone():
-    import witwin.radar.sigproc.pointcloud as legacy
-
-    assert not hasattr(legacy, "frame_reshape")
-    with pytest.raises(ImportError):
-        from witwin.radar.sigproc.pointcloud import frame_reshape  # noqa: F401
-
-
-def test_item_4_the_second_point_cloud_pipeline_is_gone():
-    import witwin.radar.processing.adapters as adapters
-    import witwin.radar.sigproc.pointcloud as legacy
-
-    assert not hasattr(legacy, "_process_pc_cfar_tensor")
-    assert not hasattr(adapters, "_process_pc_cfar_tensor")
-    # One body, and the detector is an argument to it.
-    signature = inspect.signature(adapters._legacy_point_cloud)
-    assert "detector" in signature.parameters
-
-
-def test_item_5_reg_data_has_no_numpy_random_path():
-    from witwin.radar.processing import adapters
-
-    source = _code(inspect.getsource(adapters.reg_data))
-    assert "np . random" not in source
-    assert "np . zeros" not in source
-    # It still RETURNS a host array, which is the legacy contract, but the
-    # sampling is the detection contract's helper in torch.
-    assert "as_fixed_size" in source
-
-
-def test_item_6_the_magic_range_gate_bins_are_gone_from_the_source():
-    # By AST, not by text: the constants survive as a NAMED pair that is
-    # converted into metres, and what must be gone is the literal SLICE.
-    tree = ast.parse((PROCESSING / "adapters.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Slice):
-            continue
-        for bound in (node.lower, node.upper):
-            if isinstance(bound, ast.Constant):
-                assert bound.value not in (25, 125), ast.dump(node)
-    from witwin.radar.processing.adapters import LEGACY_RANGE_CUT_BINS
-
-    # They survive only as a NAMED pair converted into metres, which is what
-    # makes the gate a statement about the scene rather than about a bin count.
-    assert LEGACY_RANGE_CUT_BINS == (25, 125)
-    from witwin.radar.processing.adapters import _legacy_range_gate_db
-
-    assert "range_bin_m" in _code(inspect.getsource(_legacy_range_gate_db))
-
-
 def test_item_7_the_hard_coded_half_wavelength_spacing_is_gone():
-    from witwin.radar.processing import aoa
+    import witwin.radar.processing.angle as angle
 
-    source = _code((PROCESSING / "aoa.py").read_text(encoding="utf-8"))
+    source = _code((PROCESSING / "angle.py").read_text(encoding="utf-8"))
     assert "0.5" not in source
     assert "array . spacing_wavelengths" in source
-    assert "spacing_wavelengths" in _code(inspect.getsource(aoa.upa_steering))
+    assert "spacing_wavelengths" in _code(inspect.getsource(angle.upa_steering))
 
 
 def test_item_8_no_numpy_survives_in_the_processing_facade():
@@ -299,7 +206,7 @@ def test_item_9_the_tdm_compensation_has_no_python_transmitter_loop():
 
 
 def test_item_10_the_matched_filter_precision_is_an_explicit_argument():
-    from witwin.radar.processing.matched_filter import matched_filter
+    from witwin.radar.processing.range_doppler import matched_filter
 
     signature = inspect.signature(matched_filter)
     assert "dtype" in signature.parameters
@@ -319,8 +226,7 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
 
     import math
 
-    from conftest import MockRadar
-    from support.legacy_golden import GOLDEN_CONFIG
+    from conftest import PROCESSING_CONFIG, make_processing_axes
     from witwin.radar.processing import (
         ArrayGeometry,
         DetectionFrame,
@@ -330,18 +236,17 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
         ca_cfar_fast,
         conventional_steering,
         point_cloud,
-        range_doppler,
+        range_doppler_map,
         range_profile,
     )
-    from witwin.radar.processing.adapters import axes_from_radar
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
     config = {
-        **GOLDEN_CONFIG,
+        **PROCESSING_CONFIG,
         "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 0, 1]],
         "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
     }
-    axes = axes_from_radar(MockRadar(config))
+    axes = make_processing_axes(config)
     array = ArrayGeometry.from_axes(axes)
 
     generator = torch.Generator().manual_seed(2026)
@@ -360,8 +265,8 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
         data=assemble_frame_cube(rank3, num_tx=axes.num_tx, num_rx=axes.num_rx),
         axes=axes,
     )
-    profile = range_profile(cube, window="hann")
-    rd = range_doppler(profile, window="hann")
+    profile = range_profile(cube)
+    rd = range_doppler_map(profile, window="hann")
 
     directions = torch.tensor(
         [

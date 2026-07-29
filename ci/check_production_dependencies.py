@@ -58,23 +58,8 @@ FORBIDDEN_DECORATOR_SUFFIXES = ("dr.wrap", "drjit.wrap")
 #: Lower-cased substrings searched for in every string constant.
 FORBIDDEN_TOKENS = ("drjit", "mitsuba", "rayd", "sionna", "dr.wrap")
 
-#: The prose occurrences that exist today, frozen by EQUALITY as
-#: `(module, token, occurrences)`. Both are documentation of the removal, in
-#: docstrings, and both are load-bearing text rather than leftovers:
-#:
-#: * `witwin/radar/__init__.py` explains why deleting the import - rather than
-#:   deprecating it in place - is what makes the process-global "no Dr.Jit"
-#:   assertion achievable at all (R-ADR-007).
-#: * `witwin/radar/propagation/epochs.py` explains the epoch cadence by naming
-#:   the RayD scene and BVH rebuild it avoids. That rebuild happens inside
-#:   Channel, across the consumer contract; the sentence describes a cost in
-#:   another package, not a dependency of this one (R-ADR-014).
-ALLOWED_TOKEN_OCCURRENCES = frozenset(
-    {
-        ("witwin/radar/__init__.py", "drjit", 1),
-        ("witwin/radar/propagation/epochs.py", "rayd", 1),
-    }
-)
+#: No production dependency-vocabulary exceptions remain.
+ALLOWED_TOKEN_OCCURRENCES = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

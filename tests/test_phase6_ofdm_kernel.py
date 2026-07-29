@@ -26,11 +26,11 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.radar.synthesis.contracts import (  # noqa: E402
+from witwin.radar.synthesis.assembly import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
-    OfdmCfrSpec,
+    OfdmSpec,
 )
-from witwin.radar.synthesis.ofdm_cfr import synthesize_cfr_rows  # noqa: E402
+from witwin.radar.synthesis.ofdm import synthesize_cfr_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -55,7 +55,7 @@ FAR_RANGE_M = 100.0
 TAU_FAR_S = 2.0 * FAR_RANGE_M / C0
 
 
-def _spec(**overrides) -> OfdmCfrSpec:
+def _spec(**overrides) -> OfdmSpec:
     """The production carrier placement unless a test says otherwise."""
 
     fields = dict(
@@ -69,7 +69,7 @@ def _spec(**overrides) -> OfdmCfrSpec:
         carrier_rate_hz=F_REF_HZ,
     )
     fields.update(overrides)
-    return OfdmCfrSpec(**fields)
+    return OfdmSpec(**fields)
 
 
 def _frozen_channel_weight(amplitude: complex = 1.0 + 0.0j, tau: float = TAU_RT_S):
@@ -288,7 +288,7 @@ def test_a_conjugated_cube_would_fail_the_reference_identity():
 # --------------------------------------------------------------------------
 
 
-def _analytic_symbol_slope(spec: OfdmCfrSpec, subcarrier: int, rate: float) -> float:
+def _analytic_symbol_slope(spec: OfdmSpec, subcarrier: int, rate: float) -> float:
     """``-2 pi (f_ref + n df) tau_rate T_sym`` radians per symbol."""
 
     return (
@@ -300,7 +300,7 @@ def _analytic_symbol_slope(spec: OfdmCfrSpec, subcarrier: int, rate: float) -> f
     )
 
 
-def _subcarrier_only_slope(spec: OfdmCfrSpec, subcarrier: int, rate: float) -> float:
+def _subcarrier_only_slope(spec: OfdmSpec, subcarrier: int, rate: float) -> float:
     """What a frozen weight with NO carrier-rate term would leave behind."""
 
     return (
@@ -438,7 +438,7 @@ def test_a_receding_site_puts_the_cfr_tone_at_negative_doppler():
 
     # The two waveforms disagree on sign because one of them is conjugated, and
     # that is asserted rather than left to the reader.
-    from witwin.radar.synthesis.fmcw_beat import channel_phasor_to_beat_weight
+    from witwin.radar.synthesis.fmcw import channel_phasor_to_beat_weight
 
     coefficient = torch.tensor(
         [_frozen_channel_weight()], dtype=torch.complex64, device="cuda"
@@ -513,10 +513,10 @@ def test_the_cyclic_prefix_is_checked_before_any_launch(monkeypatch):
     """
 
     from support import multi_endpoint_driver as drv  # noqa: F401  (import guard)
-    from witwin.radar.synthesis import ofdm_cfr
+    import witwin.radar.synthesis.ofdm as ofdm
 
     launches = {"count": 0}
-    operators = ofdm_cfr._ops()
+    operators = ofdm._ops()
     original = operators.ofdm_cfr_forward
 
     def counting(*args, **kwargs):
@@ -528,10 +528,10 @@ def test_the_cyclic_prefix_is_checked_before_any_launch(monkeypatch):
     batch = _cuda_batch()
     spec = _spec(max_expected_delay_s=3.0e-6)
     with pytest.raises(ValueError, match="cyclic_prefix_s"):
-        ofdm_cfr.synthesize_ofdm_cfr(batch, spec)
+        ofdm.synthesize_ofdm(batch, spec)
     assert launches["count"] == 0
 
-    ofdm_cfr.synthesize_ofdm_cfr(batch, _spec())
+    ofdm.synthesize_ofdm(batch, _spec())
     assert launches["count"] == 1
 
 
@@ -541,7 +541,7 @@ def test_the_cyclic_prefix_is_checked_before_any_launch(monkeypatch):
 
 
 def _cuda_batch(*, row_valid=None, path_count: int = 1, pair_count: int = 1):
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     zeros = torch.zeros(path_count, dtype=torch.int64, device="cuda")
@@ -586,7 +586,7 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
     both the value and the gradient.
     """
 
-    from witwin.radar.synthesis.ofdm_cfr import synthesize_ofdm_cfr
+    from witwin.radar.synthesis.ofdm import synthesize_ofdm
 
     spec = _spec(num_symbols=4)
     alive = _cuda_batch(
@@ -594,8 +594,8 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
     )
     dead = _cuda_batch(row_valid=torch.zeros(1, dtype=torch.bool, device="cuda"))
 
-    assert float(synthesize_ofdm_cfr(alive, spec).abs().sum()) > 0.0
-    assert float(synthesize_ofdm_cfr(dead, spec).abs().sum()) == 0.0
+    assert float(synthesize_ofdm(alive, spec).abs().sum()) > 0.0
+    assert float(synthesize_ofdm(dead, spec).abs().sum()) == 0.0
 
     import dataclasses
 
@@ -603,7 +603,7 @@ def test_a_dead_row_contributes_exactly_zero_and_carries_no_gradient():
         (1,), _frozen_channel_weight(), dtype=torch.complex64, device="cuda"
     ).requires_grad_(True)
     live = dataclasses.replace(dead, complex_transfer_ref=weight)
-    cube = synthesize_ofdm_cfr(live, spec)
+    cube = synthesize_ofdm(live, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
     assert float(weight.grad.abs().max()) == 0.0
 
@@ -817,10 +817,10 @@ def multi_endpoint_spike():
     return drv.MultiEndpointSpike()
 
 
-def _fixture_spec(num_symbols: int) -> OfdmCfrSpec:
+def _fixture_spec(num_symbols: int) -> OfdmSpec:
     from support import multi_endpoint_geometry as geo
 
-    return OfdmCfrSpec(
+    return OfdmSpec(
         num_subcarriers=NUM_SUBCARRIERS,
         num_symbols=num_symbols,
         subcarrier_spacing_hz=DF_HZ,
@@ -843,14 +843,14 @@ def test_a_real_multi_endpoint_frame_synthesizes_and_assembles(multi_endpoint_sp
 
     from support import multi_endpoint_driver as drv
     from witwin.radar.synthesis.assembly import assemble_frame_cube
-    from witwin.radar.synthesis.ofdm_cfr import synthesize_ofdm_cfr
+    from witwin.radar.synthesis.ofdm import synthesize_ofdm
 
     composed, _, _ = multi_endpoint_spike.frame()
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
     assert batch.sensor_pair_count == 4
 
-    cube = synthesize_ofdm_cfr(batch, spec)
+    cube = synthesize_ofdm(batch, spec)
     assert tuple(cube.shape) == (3, 4, NUM_SUBCARRIERS)
     assert cube.dtype == torch.complex64
 
@@ -872,16 +872,16 @@ def test_one_ofdm_frame_is_one_launch_and_no_host_observation(
     """
 
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import ofdm_cfr
+    import witwin.radar.synthesis.ofdm as ofdm
     from witwin.radar.synthesis.assembly import assemble_frame_cube
 
     composed, _, _ = multi_endpoint_spike.frame()
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
-    operators = ofdm_cfr._ops()
+    operators = ofdm._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = ofdm_cfr.synthesize_ofdm_cfr(batch, spec)
+    cube = ofdm.synthesize_ofdm(batch, spec)
     assemble_frame_cube(cube, num_tx=2, num_rx=2)
 
     assert ledger.launches == {
@@ -896,17 +896,17 @@ def test_one_ofdm_frame_is_one_launch_and_no_host_observation(
 
 def test_one_backward_launch_per_forward_launch(multi_endpoint_spike, monkeypatch):
     from support import multi_endpoint_driver as drv
-    from witwin.radar.synthesis import ofdm_cfr
+    import witwin.radar.synthesis.ofdm as ofdm
 
     composed, _, _ = multi_endpoint_spike.frame(
         response=drv.make_response(requires_grad=True)
     )
     spec = _fixture_spec(3)
     batch = drv.to_synthesis(composed)
-    operators = ofdm_cfr._ops()
+    operators = ofdm._ops()
 
     ledger = _FrameLedger(monkeypatch, operators)
-    cube = ofdm_cfr.synthesize_ofdm_cfr(batch, spec)
+    cube = ofdm.synthesize_ofdm(batch, spec)
     (cube.real.sum() + cube.imag.sum()).backward()
     assert ledger.launches["ofdm_cfr_forward"] == 1
     assert ledger.launches["ofdm_cfr_backward"] == 1

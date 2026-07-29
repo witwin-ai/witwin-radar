@@ -23,10 +23,10 @@ import torch
 from witwin.radar.processing import (
     DetectionFrame,
     PointCloud,
-    TrackHandoff,
     nearest_neighbour_associator,
 )
-from witwin.radar.processing.pointcloud import POINT_CLOUD_COLUMNS
+from witwin.radar.processing.detection import POINT_CLOUD_COLUMNS
+from witwin.radar.processing.tracking import TrackHandoff
 
 
 RANGE_BIN_M = 0.17172175137889091
@@ -94,7 +94,7 @@ def test_the_handoff_is_explicitly_non_differentiable_and_refuses_a_gradient():
     """Refused, not detached. A silent detach is a zero gradient nobody sees.
 
     Phase 9 moved this refusal onto
-    :func:`witwin.radar.ad_contracts.refuse_derivative`, the one owner of the
+    :func:`witwin.radar.policy.refuse_derivative`, the one owner of the
     non-differentiability wall, which changed the exception type from
     ``ValueError`` to the ``RuntimeError`` the frontend ADC guard already
     raised. The type is asserted here so that the two doors of the wall cannot

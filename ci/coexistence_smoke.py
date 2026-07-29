@@ -31,7 +31,7 @@ B          ``import witwin.radar`` loads no Channel module and does not
            ``witwin/radar/__init__.py`` is what makes A2 hold for the
            Radar package too, and a future eager import would break it
            silently.
-C          ``import witwin.radar.propagation.channel_consumer`` DOES
+C          ``import witwin.radar.channel`` DOES
            pull the Channel package - it is the adapter - but not the
            Channel native extension. Importing an adapter must not cost
            a native load.
@@ -130,13 +130,13 @@ _RADAR_NATIVE_MEMBERS = (
 #: ``source_fingerprint`` hashes each file's NAME and content in this order.
 _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
-    "witwin/radar/cuda/kernels/fmcw_beat.cu",
-    "witwin/radar/cuda/kernels/frontend.cu",
-    "witwin/radar/cuda/kernels/ofdm_cfr.cu",
-    "witwin/radar/cuda/kernels/pulsed_echo.cu",
-    "witwin/radar/cuda/kernels/scatter_response.cu",
-    "witwin/radar/cuda/kernels/sensor_weight.cu",
-    "witwin/radar/cuda/kernels/two_way_join.cu",
+    "witwin/radar/cuda/fmcw_beat.cu",
+    "witwin/radar/cuda/frontend.cu",
+    "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/pulsed_echo.cu",
+    "witwin/radar/cuda/scatter_response.cu",
+    "witwin/radar/cuda/sensor_weight.cu",
+    "witwin/radar/cuda/two_way_join.cu",
 )
 
 _REQUIRES_DIST = re.compile(r"^Requires-Dist:\s*(.+)$", re.MULTILINE)
@@ -294,7 +294,7 @@ if runtimes:
     raise SystemExit(f"importing witwin.radar loaded {runtimes}")
 loader = [
     name
-    for name in ("witwin.radar.cuda.build", "witwin.radar.cuda.identity")
+    for name in ("witwin.radar.cuda.runtime", "witwin.radar.cuda.runtime")
     if name in sys.modules
 ]
 if loader:
@@ -313,7 +313,7 @@ emit(
 
 def _scenario_c() -> str:
     return '''
-import witwin.radar.propagation.channel_consumer as adapter
+import witwin.radar.channel as adapter
 
 origin = Path(adapter.__file__).resolve()
 if not inside_target(origin):
@@ -453,7 +453,7 @@ channel_native = sys.modules["witwin.channel._channel"]
 after_channel = namespaces()
 channel_namespaces = sorted(after_channel - baseline)
 
-from witwin.radar.cuda import build as radar_build
+from witwin.radar.cuda import runtime as radar_build
 
 radar = radar_build.build_extension()
 after_radar = namespaces()
@@ -479,9 +479,9 @@ from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure
 from witwin.core.identity import reserve_antenna_id
 from witwin.channel.scene import compile as compile_scene
 from witwin.radar.propagation import RadarEndpointSpec
-from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
-from witwin.radar.synthesis.contracts import FmcwBeatSpec
-from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows
+from witwin.radar.channel import ChannelPropagationAdapter
+from witwin.radar.synthesis.assembly import FmcwSpec
+from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
 REFERENCE_HZ = 77.0e9
 TX = (0.0, 0.0, 0.0)
@@ -554,7 +554,7 @@ if row_count == 0:
 
 SAMPLE_RATE_HZ = 4.4e6
 SLOPE_HZ_PER_S = 60.012e12
-spec = FmcwBeatSpec(
+spec = FmcwSpec(
     num_samples=32,
     num_chirps=2,
     sample_period_s=1.0 / SAMPLE_RATE_HZ,
@@ -568,7 +568,7 @@ spec = FmcwBeatSpec(
 delay_rate = torch.zeros_like(delay_s)
 weight = torch.ones(row_count, dtype=torch.complex64, device="cuda")
 offsets = torch.tensor([0, row_count], dtype=torch.int64, device="cuda")
-cube = synthesize_beat_rows(delay_s, delay_rate, weight, offsets, spec)
+cube = synthesize_fmcw_rows(delay_s, delay_rate, weight, offsets, spec)
 if cube.shape != (spec.num_chirps, 1, spec.num_samples):
     raise SystemExit(f"unexpected cube shape {tuple(cube.shape)}")
 
@@ -595,7 +595,7 @@ if abs(increment - predicted) > 1.0e-5 * abs(predicted):
         f"Channel delay ({predicted}); the crossing tensor is not what the "
         "kernel consumed"
     )
-perturbed = synthesize_beat_rows(
+perturbed = synthesize_fmcw_rows(
     delay_s * 1.01, delay_rate, weight, offsets, spec
 )
 if torch.allclose(cube, perturbed):
@@ -628,8 +628,8 @@ before = (
     sorted(entry.name for entry in build_root.iterdir()) if build_root.is_dir() else []
 )
 
-from witwin.radar.cuda import build as radar_build
-from witwin.radar.cuda.identity import RadarExtensionLoadError
+from witwin.radar.cuda import runtime as radar_build
+from witwin.radar.cuda.runtime import RadarExtensionLoadError
 
 packaged = radar_build.prebuilt_extension_path()
 if packaged.exists():

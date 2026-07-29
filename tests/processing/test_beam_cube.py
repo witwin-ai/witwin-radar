@@ -27,7 +27,7 @@ from witwin.radar.processing import (
     beam_cube,
     conventional_steering,
 )
-from witwin.radar.synthesis.contracts import SynthesisResult
+from witwin.radar.synthesis.assembly import SynthesisResult
 
 
 PAIRS = grid.FMCW_NUM_TX * grid.FMCW_NUM_RX
@@ -40,13 +40,13 @@ def _axes(waveform: str = "fmcw") -> ProcessingAxes:
     if waveform == "fmcw":
         spec = grid.fmcw_spec(DOPPLER)
         cube = torch.zeros((DOPPLER, PAIRS, RANGES), dtype=torch.complex64)
-        result = SynthesisResult.from_fmcw_beat(cube, spec)
+        result = SynthesisResult.from_fmcw(cube, spec)
     else:
         spec = grid.ofdm_spec(num_symbols=DOPPLER)
         cube = torch.zeros(
             (DOPPLER, PAIRS, spec.num_subcarriers), dtype=torch.complex64
         )
-        result = SynthesisResult.from_ofdm_cfr(cube, spec)
+        result = SynthesisResult.from_ofdm(cube, spec)
     return ProcessingAxes.from_synthesis(result, spec, array)
 
 

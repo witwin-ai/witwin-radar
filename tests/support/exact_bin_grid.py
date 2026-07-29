@@ -174,9 +174,9 @@ TARGET_KEY = (
 
 
 def fmcw_spec(num_chirps: int = FMCW_CHIRPS):
-    from witwin.radar.synthesis import FmcwBeatSpec
+    from witwin.radar.synthesis import FmcwSpec
 
-    return FmcwBeatSpec(
+    return FmcwSpec(
         num_samples=FMCW_SAMPLES,
         num_chirps=num_chirps,
         sample_period_s=1.0 / FMCW_SAMPLE_RATE_HZ,
@@ -188,13 +188,14 @@ def fmcw_spec(num_chirps: int = FMCW_CHIRPS):
         carrier_rate_hz=F_REF_HZ,
         num_tx=FMCW_NUM_TX,
         num_rx=FMCW_NUM_RX,
+        output_domain="beat",
     )
 
 
 def ofdm_spec(num_symbols: int = OFDM_SYMBOLS):
-    from witwin.radar.synthesis import OfdmCfrSpec
+    from witwin.radar.synthesis import OfdmSpec
 
-    return OfdmCfrSpec(
+    return OfdmSpec(
         num_subcarriers=OFDM_SUBCARRIERS,
         num_symbols=num_symbols,
         subcarrier_spacing_hz=OFDM_SPACING_HZ,
@@ -207,13 +208,13 @@ def ofdm_spec(num_symbols: int = OFDM_SYMBOLS):
 
 
 def pulsed_spec(num_pulses: int = PULSED_PULSES, *, pulse_kind: str | None = None):
-    from witwin.radar.synthesis.contracts import PULSE_KIND_LFM, PulsedEchoSpec
+    from witwin.radar.synthesis.assembly import PULSE_KIND_LFM, PulsedSpec
 
     kind = PULSE_KIND_LFM if pulse_kind is None else pulse_kind
     bandwidth = (
         PULSED_BANDWIDTH_HZ if kind == PULSE_KIND_LFM else 1.0 / PULSED_WIDTH_S
     )
-    return PulsedEchoSpec(
+    return PulsedSpec(
         num_pulses=num_pulses,
         num_samples=PULSED_SAMPLES,
         sample_period_s=PULSED_SAMPLE_PERIOD_S,
@@ -233,7 +234,7 @@ def array_spec():
     """The fixture's 2 TX x 2 RX front end, as a ``SensorArraySpec``."""
 
     from witwin.radar import RadarConfig
-    from witwin.radar.sensors.contracts import SensorArraySpec
+    from witwin.radar.sensors import SensorArraySpec
 
     return SensorArraySpec.from_radar_config(
         RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))

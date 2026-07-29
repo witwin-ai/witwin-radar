@@ -21,14 +21,14 @@ import math
 import pytest
 import torch
 
-from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
+from witwin.radar.channel import ChannelPropagationAdapter
 from witwin.radar.synthesis import (
-    OfdmCfrSpec,
+    OfdmSpec,
     SlowTimeMode,
     SynthesisPathBatch,
-    synthesize_ofdm_cfr,
+    synthesize_ofdm,
 )
-from witwin.radar.synthesis.ofdm_cfr import synthesize_cfr_rows
+from witwin.radar.synthesis.ofdm import synthesize_cfr_rows
 
 from support import multi_endpoint_driver as driver  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
@@ -46,7 +46,7 @@ SUBCARRIER_SPACING_HZ = 25.0e6
 NUM_SYMBOLS = 4
 
 
-def _spec(**overrides) -> OfdmCfrSpec:
+def _spec(**overrides) -> OfdmSpec:
     fields = dict(
         num_subcarriers=NUM_SUBCARRIERS,
         num_symbols=NUM_SYMBOLS,
@@ -58,10 +58,10 @@ def _spec(**overrides) -> OfdmCfrSpec:
         carrier_rate_hz=F_REF,
     )
     fields.update(overrides)
-    return OfdmCfrSpec(**fields)
+    return OfdmSpec(**fields)
 
 
-def _spikes(spec: OfdmCfrSpec):
+def _spikes(spec: OfdmSpec):
     """One compiled scene, two spikes: narrowband and banded, same world.
 
     The compiled scene is SHARED on purpose. A frequency-only recompile leaves
@@ -89,7 +89,7 @@ def _cube(spike, spec, response):
     batch = SynthesisPathBatch.from_radar_paths(
         composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     )
-    return synthesize_ofdm_cfr(batch, spec), composed
+    return synthesize_ofdm(batch, spec), composed
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +358,7 @@ def test_the_join_loop_costs_one_launch_per_column_and_no_host_observation():
     and asserted so that a later change to the loop is visible.
     """
 
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     spec = _spec()
     _, banded = _spikes(spec)
@@ -371,7 +371,7 @@ def test_the_join_loop_costs_one_launch_per_column_and_no_host_observation():
         launches += 1
         return original(*args, **kwargs)
 
-    import witwin.radar.paths.two_way as two_way
+    import witwin.radar.paths as two_way
 
     class _Patched:
         def __getattr__(self, name):
@@ -532,7 +532,7 @@ def test_a_band_whose_width_is_not_the_subcarrier_count_is_refused():
         composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     )
     with pytest.raises(ValueError, match="one column per subcarrier|column wideband"):
-        synthesize_ofdm_cfr(batch, spec)
+        synthesize_ofdm(batch, spec)
 
 
 def test_fmcw_refuses_the_band_it_cannot_index():
@@ -542,7 +542,7 @@ def test_fmcw_refuses_the_band_it_cannot_index():
     is no discrete grid to index and a band would be silently discarded.
     """
 
-    from witwin.radar.synthesis import FmcwBeatSpec, synthesize_fmcw_beat
+    from witwin.radar.synthesis import FmcwSpec, synthesize_fmcw
 
     spec = _spec()
     _, banded = _spikes(spec)
@@ -554,11 +554,11 @@ def test_fmcw_refuses_the_band_it_cannot_index():
     )
     from witwin.radar import RadarConfig
 
-    beat = FmcwBeatSpec.from_radar_config(
+    beat = FmcwSpec.from_radar_config(
         RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)), carrier_hz=0.0
     )
     with pytest.raises(ValueError, match="does not consume a wideband response"):
-        synthesize_fmcw_beat(batch, beat)
+        synthesize_fmcw(batch, beat)
 
 
 def test_the_offsets_grid_is_a_host_declaration_not_a_tensor():

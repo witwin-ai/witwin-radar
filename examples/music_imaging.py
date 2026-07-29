@@ -1,7 +1,7 @@
 """MUSIC imaging of two point targets with a 20 x 20 UPA.
 
     witwin.core.Scene  ->  Radar.simulate  ->  RadarSimulationResult
-                       ->  witwin.radar.processing.range_profile
+                       ->  witwin.radar.processing.range_doppler
                        ->  witwin.radar.processing.music_image
 
 The world is two point targets at the same range, half a metre either side of
@@ -47,11 +47,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from witwin.core import AntennaState, Scene  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
-from witwin.radar import Radar, RadarConfig, ScatterSitePolicy  # noqa: E402
+from witwin.radar import Radar, RadarConfig  # noqa: E402
+from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
 from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
     ProcessingAxes,
+    ProcessingCube,
     music_image,
     range_profile,
 )
@@ -138,7 +140,7 @@ def processing_axes(radar: Radar) -> ProcessingAxes:
     waveform specification and are the same for every frame.
     """
 
-    synthesis = radar.synthesize(
+    synthesis = radar._synthesize(
         radar.last_radar_paths,
         slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE,
     )
@@ -185,7 +187,7 @@ def main() -> None:
 
     axes = processing_axes(radar)
     geometry = ArrayGeometry.from_axes(axes)
-    profile = range_profile(result.cube[0], axes=axes, window="hann")
+    profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
 
     # The range gate is chosen here rather than inside the imager: reading a
     # peak off a spectrum is a modelling choice and ``music_image`` refuses to

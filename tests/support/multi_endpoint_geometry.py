@@ -497,7 +497,7 @@ def combined_rows(
     list. Within a ``(pair, site)`` cell the order is by leg identity key.
 
     This is an oracle rather than a mirror: it never touches
-    ``witwin.radar.paths._identity``, and it derives which rows exist from the
+    ``witwin.radar.paths``, and it derives which rows exist from the
     facet geometry rather than from anything Channel published.
     """
 
@@ -779,7 +779,7 @@ def rotor_site_velocities(
     """``v = omega x (p - c)`` per site, in float64, as an oracle.
 
     Written out rather than delegated to
-    ``witwin.radar.propagation.kinematics.rigid_site_velocities`` on purpose:
+    ``witwin.radar.propagation.rigid_site_velocities`` on purpose:
     the rotation test compares the production seam against this, so sharing the
     cross product would make the comparison vacuous.
     """

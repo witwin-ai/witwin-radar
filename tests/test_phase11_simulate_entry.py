@@ -25,6 +25,7 @@ it still produces a plausible cube:
 from __future__ import annotations
 
 import dataclasses
+import inspect
 
 import pytest
 import torch
@@ -36,17 +37,22 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
 import witwin.radar as wr  # noqa: E402
-from witwin.radar import (  # noqa: E402
-    Radar,
-    RadarPropagationLegs,
-    RadarSimulationResult,
+from witwin.radar import Radar  # noqa: E402
+from witwin.radar.simulation import (  # noqa: E402
     ScatterSitePolicy,
     StableIdAllocator,
 )
 from witwin.radar.paths import RadarPathBatch  # noqa: E402
-from witwin.radar.propagation.contracts import RadarLegBatch  # noqa: E402
+from witwin.radar.propagation import (  # noqa: E402
+    RadarLegBatch,
+    RadarPropagationLegs,
+)
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.simulation import DRIVER_SLOW_TIME_MODE  # noqa: E402
+from witwin.radar.sensors import ISOTROPIC_PATTERN  # noqa: E402
+from witwin.radar.simulation import (  # noqa: E402
+    DRIVER_SLOW_TIME_MODE,
+    RadarSimulationResult,
+)
 
 
 pytestmark = pytest.mark.gpu
@@ -61,8 +67,16 @@ SITE_POSITIONS_M = (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M)
 
 
 def _radar() -> Radar:
+    config = dict(geo.FIXTURE_RADAR_CONFIG)
+    config["antenna_pattern"] = {
+        "kind": ISOTROPIC_PATTERN.kind,
+        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
+        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
+        "x_values": list(ISOTROPIC_PATTERN.x_values),
+        "y_values": list(ISOTROPIC_PATTERN.y_values),
+    }
     return Radar(
-        dict(geo.FIXTURE_RADAR_CONFIG),
+        config,
         position=(0.0, 0.0, 0.0),
         target=LOOK_AT_M,
     )
@@ -122,13 +136,13 @@ def test_simulate_runs_the_whole_pipeline_and_publishes_a_frame_cube():
     )
     assert result.cube.dtype == torch.complex64
     assert result.cube.device.type == radar.device.type
-    assert result.axes == ("frame", "tx", "rx", "chirp", "sample")
+    assert result.axes == ("frame", "tx", "rx", "chirp", "range_bin")
     assert result.kind == "fmcw"
     assert result.times_s == (0.0, 1.0e-3, 2.0e-3)
     assert result.frame_count == 3
     assert result.reference_frequency_hz == geo.REFERENCE_FREQUENCY_HZ
     # The conventions come from the waveform owner rather than from this entry.
-    from witwin.radar.synthesis.contracts import BEAT_PHASOR
+    from witwin.radar.synthesis.assembly import BEAT_PHASOR
 
     assert result.phasor == BEAT_PHASOR
 
@@ -349,7 +363,7 @@ def test_the_composed_row_order_is_frame_invariant():
 
 
 def _count_freezes(monkeypatch) -> list:
-    from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
+    from witwin.radar.channel import ChannelPropagationAdapter
 
     calls: list = []
     original = ChannelPropagationAdapter.freeze
@@ -500,21 +514,10 @@ def test_simulate_group_is_deleted_rather_than_permanently_refusing():
     assert not hasattr(wr.Radar, "_SIMULATE_REPLACEMENT")
 
 
-def test_the_refreshed_slow_time_mode_is_refused_by_name():
-    """This driver composes once per frame, so its weight never walked."""
+def test_slow_time_mode_is_not_a_public_simulation_choice():
+    """The scene driver fixes its synthesis mode internally."""
 
-    from witwin.radar.synthesis import SlowTimeMode
-
-    radar = _radar()
-    with pytest.raises(ValueError, match=DRIVER_SLOW_TIME_MODE):
-        radar.simulate(
-            _static_scene(),
-            times=(0.0,),
-            response=_response(radar),
-            sites=_sites(radar),
-            slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE,
-        )
-
+    assert "slow_time_mode" not in inspect.signature(Radar.simulate).parameters
 
 def test_an_empty_time_sequence_is_refused():
     radar = _radar()

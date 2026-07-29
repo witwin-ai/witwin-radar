@@ -21,7 +21,6 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
-import types
 
 import torch
 
@@ -54,24 +53,10 @@ def _load_module(name: str, path: Path):
 
 
 def _load_cuda_build_module():
-    """Load ``build.py`` as a standalone module, exactly as before.
-
-    It imports ``identity`` as a sibling, so ``identity`` is registered under
-    the package name ``build`` expects before ``build`` executes.
-    """
+    """Load the single CUDA runtime owner without importing the Radar package."""
 
     cuda_dir = REPO_ROOT / "witwin" / "radar" / "cuda"
-    package = types.ModuleType("witwin_radar_cuda_build_pkg")
-    package.__path__ = [str(cuda_dir)]
-    sys.modules["witwin_radar_cuda_build_pkg"] = package
-    package.identity = _load_module(
-        "witwin_radar_cuda_build_pkg.identity", cuda_dir / "identity.py"
-    )
-    package.build = _load_module(
-        "witwin_radar_cuda_build_pkg.build", cuda_dir / "build.py"
-    )
-    return package.build
-
+    return _load_module("witwin_radar_cuda_runtime_build", cuda_dir / "runtime.py")
 
 def _manifest_symbols() -> list[str]:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -119,7 +104,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cuda_build = _load_cuda_build_module()
-    identity = cuda_build.identity
+    identity = cuda_build
 
     build_dir = Path(
         os.environ.get(

@@ -73,7 +73,10 @@ OWNER_PACKAGES = ("synthesis", "sensors", "frontend")
 
 def _modules(package: str) -> list[pathlib.Path]:
     root = REPO_ROOT / "witwin" / "radar" / package
-    return sorted(path for path in root.rglob("*.py"))
+    if root.is_dir():
+        return sorted(root.rglob("*.py"))
+    module = root.with_suffix(".py")
+    return [module] if module.is_file() else []
 
 
 def _tree(path: pathlib.Path) -> ast.Module:
@@ -116,8 +119,6 @@ def test_the_migrated_expressions_did_not_come_back_under_another_owner():
     migrated = (
         "compute_total_path_lengths",
         "compute_antenna_pattern_gains",
-        "compute_polarization_amplitudes",
-        "compute_path_amplitudes",
         "compute_slot_path_tensors",
     )
     offenders = []
@@ -231,7 +232,7 @@ def test_no_owner_names_drjit():
     """Zero ``drjit`` names anywhere in the production graph."""
 
     offenders = []
-    packages = (*OWNER_PACKAGES, "propagation", "paths", "scattering", "sigproc")
+    packages = (*OWNER_PACKAGES, "propagation", "paths", "scattering")
     for package in packages:
         for path in _modules(package):
             if "drjit" in path.read_text(encoding="utf-8"):
@@ -242,9 +243,9 @@ def test_no_owner_names_drjit():
 def _synthesize_source() -> ast.FunctionDef:
     tree = _tree(REPO_ROOT / "witwin" / "radar" / "radar.py")
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "synthesize":
+        if isinstance(node, ast.FunctionDef) and node.name == "_synthesize":
             return node
-    raise AssertionError("Radar.synthesize must exist")
+    raise AssertionError("Radar._synthesize must exist")
 
 
 def test_waveform_dispatch_has_no_fallback_and_no_capability_probe():
@@ -284,7 +285,7 @@ def test_an_unknown_waveform_kind_raises_at_runtime():
     radar = Radar.__new__(Radar)
     radar.system_config = _UnknownSystemConfig()
     with pytest.raises(ValueError, match="no synthesis owner"):
-        radar.synthesize(object(), slow_time_mode=None)
+        radar._synthesize(object(), slow_time_mode=None)
 
 
 # ---------------------------------------------------------------------------
@@ -292,11 +293,11 @@ def test_an_unknown_waveform_kind_raises_at_runtime():
 # ---------------------------------------------------------------------------
 
 
-#: The two package-root modules Phase 9 introduced. Both are pure policy: they
-#: decide whether a call may proceed and they never produce a number.
-PHASE9_GUARD_OWNERS = ("ad_contracts.py", "host_parameters.py")
+#: The package-root policy owner decides whether a call may proceed and never
+#: produces a number.
+PHASE9_GUARD_OWNERS = ("policy.py",)
 
-#: Everything those two modules are allowed to ask Torch. Every entry is a
+#: Everything the policy module is allowed to ask Torch. Every entry is a
 #: PREDICATE or a decorator; none of them constructs, allocates or computes.
 PHASE9_GUARD_TORCH_CALLS = frozenset(
     {
@@ -315,22 +316,29 @@ PHASE9_GUARD_TORCH_CALLS = frozenset(
 #:
 #: Equality, not containment, and for the usual reason: a second Torch physics
 #: expression added to this module must fail here, and so must a stale entry.
-PHASE9_RCS_TORCH_CALLS = {
-    ("rcs_amplitude", "torch.sqrt"),
+SCATTERING_TORCH_CALLS = {
+    ("__post_init__", "torch.all"),
+    ("__post_init__", "torch.linalg.vector_norm"),
+    ("backward", "torch.empty_like"),
+    ("evaluate", "torch.exp"),
+    ("forward", "torch.empty"),
+    ("forward", "torch.empty_like"),
     ("from_rcs", "torch.tensor"),
     ("from_values", "torch.tensor"),
-    ("evaluate", "torch.exp"),
+    ("jvp", "torch.empty"),
+    ("jvp", "torch.empty_like"),
+    ("jvp", "torch.zeros_like"),
+    ("rcs_amplitude", "torch.sqrt"),
 }
-
 #: Packages that gained a Phase-9 guard. Wider than ``OWNER_PACKAGES``: the wall
 #: is in ``processing``, the velocity refusal is in ``propagation`` and the
-#: deformation refusal is in ``geometry``.
+#: deformation refusal is in top-level ``smpl.py``.
 PHASE9_GUARDED_PACKAGES = (
     "processing",
     "propagation",
     "paths",
     "scattering",
-    "geometry",
+    "smpl",
     "sensors",
     "frontend",
     "synthesis",
@@ -343,7 +351,7 @@ PHASE9_GUARDED_PACKAGES = (
 #: driven to a loss. Recorded rather than removed: deleting it would change a
 #: working legacy capability, and that is a numerical decision with its own
 #: evidence rather than an architecture cleanup.
-PHASE9_KNOWN_REQUIRES_GRAD_ROUTES = {("geometry", "smpl.py", "_evaluate")}
+PHASE9_KNOWN_REQUIRES_GRAD_ROUTES = set()
 
 
 def _torch_calls(path: pathlib.Path) -> set:
@@ -425,21 +433,17 @@ def test_the_phase9_guard_scan_is_not_vacuous():
     assert "torch.autograd.function.once_differentiable" in calls
 
 
-def test_the_only_phase9_torch_arithmetic_is_the_rcs_amplitude_law():
-    """``from_rcs``'s ``torch.sqrt`` is result construction, and it is alone.
+def test_scattering_torch_calls_are_an_exact_audited_set():
+    """The consolidated scattering axis must not grow hidden Torch physics.
 
-    ``scattering/rcs.py`` is the one production module Phase 9 gave a new Torch
-    ARITHMETIC expression. Recording the module's whole matched set by equality
-    - rather than asserting the absence of a list of forbidden names - is what
-    makes a second one fail: a new per-path phase reimplemented in Torch here
-    is exactly the defect class this file exists for, and a scan that only
-    forbids the names somebody thought of would not catch it.
+    The exact set includes validation, native output-buffer construction, and
+    the scalar-RCS amplitude law. Any additional Torch call requires an explicit
+    architecture review instead of silently moving physics out of native code.
     """
 
-    path = REPO_ROOT / "witwin" / "radar" / "scattering" / "rcs.py"
+    path = REPO_ROOT / "witwin" / "radar" / "scattering.py"
     found = _torch_calls(path)
-    assert found == PHASE9_RCS_TORCH_CALLS, sorted(found ^ PHASE9_RCS_TORCH_CALLS)
-
+    assert found == SCATTERING_TORCH_CALLS, sorted(found ^ SCATTERING_TORCH_CALLS)
 
 def test_no_phase9_guarded_package_gates_a_route_on_requires_grad():
     """The Phase-6 rule, over every package Phase 9 touched.
@@ -466,13 +470,8 @@ def test_no_phase9_guarded_package_gates_a_route_on_requires_grad():
     assert offenders == [], offenders
 
 
-def test_the_one_recorded_requires_grad_route_still_exists():
-    """A stale allowlist entry is a hole that nothing reports.
-
-    If ``SMPLBody._evaluate``'s nudge is ever removed, this fails and the
-    allowlist above shrinks in the same change rather than outliving the branch
-    it was written for.
-    """
+def test_no_phase9_guard_branches_on_requires_grad():
+    """Derivative capability is declared at typed boundaries, never by nudging data."""
 
     found = set()
     for package in PHASE9_GUARDED_PACKAGES:
@@ -484,10 +483,7 @@ def test_the_one_recorded_requires_grad_route_still_exists():
                     found.add(
                         (package, path.name, functions.get(node.lineno, "<module>"))
                     )
-    assert found == PHASE9_KNOWN_REQUIRES_GRAD_ROUTES, sorted(
-        found ^ PHASE9_KNOWN_REQUIRES_GRAD_ROUTES
-    )
-
+    assert found == set(), sorted(found)
 
 def test_no_phase9_guard_answers_with_a_detach_or_a_zero():
     """The refusal owners must not sever a graph instead of refusing.

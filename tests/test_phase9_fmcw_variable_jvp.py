@@ -38,8 +38,8 @@ import torch.autograd.forward_ad as forward_ad
 
 from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
-from witwin.radar.synthesis.contracts import FmcwBeatSpec  # noqa: E402
-from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows  # noqa: E402
+from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -55,7 +55,7 @@ T_START_S = 6.0e-6
 #: supplies the intra-frame Doppler the frozen weight cannot carry. A spec with
 #: ``carrier_rate_hz = 0`` would make the second test below vacuous, because the
 #: naive product it refutes would be correct.
-SPEC = FmcwBeatSpec(
+SPEC = FmcwSpec(
     num_samples=32,
     num_chirps=3,
     sample_period_s=SAMPLE_PERIOD_S,
@@ -65,6 +65,7 @@ SPEC = FmcwBeatSpec(
     reference_frequency_hz=F_REF_HZ,
     carrier_hz=0.0,
     carrier_rate_hz=F_REF_HZ,
+    output_domain="beat",
 )
 
 DELAYS = (geo.round_trip_delay_s(), 2.4e-8)
@@ -159,7 +160,7 @@ def test_the_jvp_of_each_differentiable_input_matches_a_central_difference(varia
             tangent_weight = torch.complex(direction, torch.zeros_like(direction))
         else:
             tangent_weight = torch.complex(torch.zeros_like(direction), direction)
-        cube = synthesize_beat_rows(
+        cube = synthesize_fmcw_rows(
             forward_ad.make_dual(tau, tangent_tau),
             forward_ad.make_dual(rate, tangent_rate),
             forward_ad.make_dual(weight, tangent_weight),
@@ -214,7 +215,7 @@ def test_the_rate_derivative_is_not_the_delay_derivative_scaled_by_slow_time():
 
     with forward_ad.dual_level():
         dual_rate = forward_ad.make_dual(rate, torch.ones_like(rate))
-        cube = synthesize_beat_rows(single, dual_rate, weight, offsets, SPEC)
+        cube = synthesize_fmcw_rows(single, dual_rate, weight, offsets, SPEC)
         primal, tangent = forward_ad.unpack_dual(cube)
         ratio = (tangent.to(torch.complex128) / primal.to(torch.complex128)).cpu()
 
@@ -250,7 +251,7 @@ def test_the_dropped_term_is_smallest_at_the_far_end_of_the_sweep():
     looked identical; recording the span is what shows the choice was made.
 
     Measured on this spec: 215.3 at the first sample and 99.5 at the last, which
-    is the ``21x to 215x`` span ``FmcwBeatSpec``'s own docstring quotes - so
+    is the ``21x to 215x`` span ``FmcwSpec``'s own docstring quotes - so
     this also pins that documented number against the arithmetic rather than
     leaving it as prose.
     """
@@ -293,7 +294,7 @@ def test_a_rate_only_tangent_is_not_the_zero_tangent():
     offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
 
     with forward_ad.dual_level():
-        cube = synthesize_beat_rows(
+        cube = synthesize_fmcw_rows(
             single,
             forward_ad.make_dual(rate, torch.ones_like(rate)),
             weight,
@@ -310,7 +311,7 @@ def test_a_rate_only_tangent_is_not_the_zero_tangent():
     # the drift has had no slow time to accumulate. A kernel that applied the
     # rate as a constant offset would fail this and pass everything above.
     with forward_ad.dual_level():
-        cube = synthesize_beat_rows(
+        cube = synthesize_fmcw_rows(
             single,
             forward_ad.make_dual(rate, torch.ones_like(rate)),
             weight,

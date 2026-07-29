@@ -259,7 +259,7 @@ def test_repacked_sources_are_caught_by_the_source_fingerprint(wheel_smoke, tmp_
     """
 
     def mutate(record, members):
-        members["witwin/radar/cuda/kernels/fmcw_beat.cu"] = b"// a different revision\n"
+        members["witwin/radar/cuda/fmcw_beat.cu"] = b"// a different revision\n"
 
     wheel = _make_wheel(wheel_smoke, tmp_path / "repacked.whl", mutate=mutate)
     with pytest.raises(wheel_smoke.WheelSmokeError, match="source_fingerprint"):

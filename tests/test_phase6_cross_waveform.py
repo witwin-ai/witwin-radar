@@ -44,11 +44,11 @@ from support import multi_endpoint_driver as drv
 from support import multi_endpoint_geometry as geo
 from support import pulsed_grid
 from witwin.radar.synthesis import (
-    FmcwBeatSpec,
-    OfdmCfrSpec,
-    synthesize_fmcw_beat,
-    synthesize_ofdm_cfr,
-    synthesize_pulsed_echo,
+    FmcwSpec,
+    OfdmSpec,
+    synthesize_fmcw,
+    synthesize_ofdm,
+    synthesize_pulsed,
 )
 
 pytestmark = pytest.mark.gpu
@@ -89,8 +89,8 @@ PULSED_MAX_DELAY_RATE = 2.0 * 12.0 / C0
 PULSED_DELAY_RESOLUTION_S = 1.0 / pulsed_grid.BANDWIDTH_HZ
 
 
-def fmcw_spec(num_chirps: int = 4) -> FmcwBeatSpec:
-    return FmcwBeatSpec(
+def fmcw_spec(num_chirps: int = 4) -> FmcwSpec:
+    return FmcwSpec(
         num_samples=FMCW_SAMPLES,
         num_chirps=num_chirps,
         sample_period_s=FMCW_SAMPLE_PERIOD_S,
@@ -102,11 +102,12 @@ def fmcw_spec(num_chirps: int = 4) -> FmcwBeatSpec:
         carrier_rate_hz=F_REF_HZ,
         num_tx=FMCW_NUM_TX,
         num_rx=FMCW_NUM_RX,
+        output_domain="beat",
     )
 
 
-def ofdm_spec(num_symbols: int = 4) -> OfdmCfrSpec:
-    return OfdmCfrSpec(
+def ofdm_spec(num_symbols: int = 4) -> OfdmSpec:
+    return OfdmSpec(
         num_subcarriers=OFDM_SUBCARRIERS,
         num_symbols=num_symbols,
         subcarrier_spacing_hz=OFDM_DF_HZ,
@@ -169,7 +170,7 @@ def _select(batch, keep: torch.Tensor):
     counts of the surviving rows per segment.
     """
 
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
 
     index = torch.nonzero(keep, as_tuple=False).flatten()
     pair = batch.sensor_pair_index[index].contiguous()
@@ -216,7 +217,7 @@ def _live_rows(batch) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
-def fmcw_delay_s(row_samples: torch.Tensor, spec: FmcwBeatSpec) -> float:
+def fmcw_delay_s(row_samples: torch.Tensor, spec: FmcwSpec) -> float:
     """``f_beat / S`` from a parabolic fit on the fast-time FFT magnitude."""
 
     values = row_samples.detach().to(torch.complex128).cpu()
@@ -232,7 +233,7 @@ def fmcw_delay_s(row_samples: torch.Tensor, spec: FmcwBeatSpec) -> float:
     return f_beat / spec.slope_hz_per_s
 
 
-def ofdm_delay_s(row_response: torch.Tensor, spec: OfdmCfrSpec) -> float:
+def ofdm_delay_s(row_response: torch.Tensor, spec: OfdmSpec) -> float:
     """``-(1/(2 pi df)) d(arg H)/dn`` by least squares over the whole band."""
 
     values = row_response.detach().to(torch.complex128).cpu()
@@ -279,13 +280,13 @@ def test_all_three_estimators_return_the_same_round_trip_delay(frame, capsys):
 
         measured = {
             "fmcw": fmcw_delay_s(
-                synthesize_fmcw_beat(isolated, fmcw_spec(1))[0, segment], fmcw_spec(1)
+                synthesize_fmcw(isolated, fmcw_spec(1))[0, segment], fmcw_spec(1)
             ),
             "ofdm": ofdm_delay_s(
-                synthesize_ofdm_cfr(isolated, ofdm_spec(1))[0, segment], ofdm_spec(1)
+                synthesize_ofdm(isolated, ofdm_spec(1))[0, segment], ofdm_spec(1)
             ),
             "pulsed": pulsed_delay_s(
-                synthesize_pulsed_echo(isolated, pulsed_spec(1))[0, segment],
+                synthesize_pulsed(isolated, pulsed_spec(1))[0, segment],
                 pulsed_spec(1),
             ),
         }
@@ -394,9 +395,9 @@ def test_the_three_waveforms_carry_one_doppler_with_two_signs(spike):
         segment = int(batch.sensor_pair_index[row])
         isolated = _masked(batch, _one_hot(batch, row))
 
-        beat = synthesize_fmcw_beat(isolated, fmcw)
-        cfr = synthesize_ofdm_cfr(isolated, ofdm)
-        train = synthesize_pulsed_echo(isolated, pulsed)
+        beat = synthesize_fmcw(isolated, fmcw)
+        cfr = synthesize_ofdm(isolated, ofdm)
+        train = synthesize_pulsed(isolated, pulsed)
 
         # The FMCW slow-time step for a fixed pair is num_tx chirp periods:
         # TDM fires the transmitters in turn.
@@ -461,9 +462,9 @@ def test_one_amplitude_and_one_phase_reach_all_three_products(frame):
         transfer = complex(batch.complex_transfer_ref[row].cpu())
         tau = float(batch.total_delay_s[row])
 
-        beat = synthesize_fmcw_beat(isolated, fmcw)[0, segment]
-        cfr = synthesize_ofdm_cfr(isolated, ofdm)[0, segment]
-        train = synthesize_pulsed_echo(isolated, pulsed)[0, segment]
+        beat = synthesize_fmcw(isolated, fmcw)[0, segment]
+        cfr = synthesize_ofdm(isolated, ofdm)[0, segment]
+        train = synthesize_pulsed(isolated, pulsed)[0, segment]
         _, mf_peak, _ = pulsed_grid.peak_estimate(train.detach(), pulsed)
 
         magnitude = abs(transfer)
@@ -515,9 +516,9 @@ def test_a_dead_row_is_indistinguishable_from_a_row_that_never_existed(frame):
     reduced = _select(batch, keep)
     masked = _masked(batch, keep)
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(2)),
-        (synthesize_ofdm_cfr, ofdm_spec(2)),
-        (synthesize_pulsed_echo, pulsed_spec(2)),
+        (synthesize_fmcw, fmcw_spec(2)),
+        (synthesize_ofdm, ofdm_spec(2)),
+        (synthesize_pulsed, pulsed_spec(2)),
     ):
         assert torch.equal(synthesize(masked, spec), synthesize(reduced, spec)), spec
 
@@ -535,9 +536,9 @@ def test_a_dead_rows_weight_receives_exactly_zero_gradient(frame):
     keep[5] = False
 
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(2)),
-        (synthesize_ofdm_cfr, ofdm_spec(2)),
-        (synthesize_pulsed_echo, pulsed_spec(2)),
+        (synthesize_fmcw, fmcw_spec(2)),
+        (synthesize_ofdm, ofdm_spec(2)),
+        (synthesize_pulsed, pulsed_spec(2)),
     ):
         transfer = batch.complex_transfer_ref.detach().clone().requires_grad_(True)
         live = _masked(replace(batch, complex_transfer_ref=transfer), keep)
@@ -566,9 +567,9 @@ def test_every_waveform_is_linear_in_the_path_weight(frame):
     both[second] = True
 
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(2)),
-        (synthesize_ofdm_cfr, ofdm_spec(2)),
-        (synthesize_pulsed_echo, pulsed_spec(2)),
+        (synthesize_fmcw, fmcw_spec(2)),
+        (synthesize_ofdm, ofdm_spec(2)),
+        (synthesize_pulsed, pulsed_spec(2)),
     ):
         together = synthesize(_masked(batch, both), spec)
         apart = synthesize(
@@ -587,7 +588,7 @@ def test_the_frontend_agc_breaks_linearity_and_that_is_a_tested_fact(frame):
     from witwin.radar.frontend import AgcSpec, FrontendChain, FrontendSpec, PortSpec
 
     _, _, batch = frame
-    cube = synthesize_fmcw_beat(batch, fmcw_spec(2))
+    cube = synthesize_fmcw(batch, fmcw_spec(2))
     scaled = cube * 2.0
 
     without_agc = FrontendChain(FrontendSpec(port=PortSpec(reference_impedance_ohm=50.0)))
@@ -628,9 +629,9 @@ def test_permuting_rows_within_a_segment_changes_nothing_but_the_sum_order(frame
 
     permuted = _reindex(batch, order)
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(2)),
-        (synthesize_ofdm_cfr, ofdm_spec(2)),
-        (synthesize_pulsed_echo, pulsed_spec(2)),
+        (synthesize_fmcw, fmcw_spec(2)),
+        (synthesize_ofdm, ofdm_spec(2)),
+        (synthesize_pulsed, pulsed_spec(2)),
     ):
         reference = synthesize(batch, spec)
         torch.testing.assert_close(
@@ -642,7 +643,7 @@ def test_permuting_rows_within_a_segment_changes_nothing_but_the_sum_order(frame
 
 
 def _reindex(batch, order: torch.Tensor):
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
 
     topology = batch.topology
     return replace(
@@ -700,9 +701,9 @@ def test_moving_a_row_to_another_segment_moves_it_in_the_cube(frame):
     )
 
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(1)),
-        (synthesize_ofdm_cfr, ofdm_spec(1)),
-        (synthesize_pulsed_echo, pulsed_spec(1)),
+        (synthesize_fmcw, fmcw_spec(1)),
+        (synthesize_ofdm, ofdm_spec(1)),
+        (synthesize_pulsed, pulsed_spec(1)),
     ):
         before = synthesize(isolated, spec)
         after = synthesize(moved, spec)
@@ -728,9 +729,9 @@ def test_empty_pair_segments_are_exactly_zero_in_all_three_cubes(frame):
     assert len(empty) == 2
 
     for synthesize, spec in (
-        (synthesize_fmcw_beat, fmcw_spec(2)),
-        (synthesize_ofdm_cfr, ofdm_spec(2)),
-        (synthesize_pulsed_echo, pulsed_spec(2)),
+        (synthesize_fmcw, fmcw_spec(2)),
+        (synthesize_ofdm, ofdm_spec(2)),
+        (synthesize_pulsed, pulsed_spec(2)),
     ):
         cube = synthesize(batch, spec)
         for segment in empty:
@@ -751,9 +752,9 @@ def test_a_batch_with_no_rows_gives_an_all_zero_cube_of_the_right_shape(frame):
         "pulsed": (2, batch.sensor_pair_count, 512),
     }
     cubes = {
-        "fmcw": synthesize_fmcw_beat(empty_batch, fmcw_spec(2)),
-        "ofdm": synthesize_ofdm_cfr(empty_batch, ofdm_spec(2)),
-        "pulsed": synthesize_pulsed_echo(empty_batch, pulsed_spec(2)),
+        "fmcw": synthesize_fmcw(empty_batch, fmcw_spec(2)),
+        "ofdm": synthesize_ofdm(empty_batch, ofdm_spec(2)),
+        "pulsed": synthesize_pulsed(empty_batch, pulsed_spec(2)),
     }
     for name, cube in cubes.items():
         assert tuple(cube.shape) == shapes[name], name

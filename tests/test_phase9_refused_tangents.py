@@ -48,7 +48,7 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 from support import waveform_chains as wc  # noqa: E402
 
-from witwin.radar.propagation.channel_consumer import (  # noqa: E402
+from witwin.radar.channel import (  # noqa: E402
     ChannelPropagationAdapter,
 )
 
@@ -81,9 +81,9 @@ class _SynthesisCounter:
         import witwin.radar.synthesis as synthesis
 
         for name in (
-            "synthesize_fmcw_beat",
-            "synthesize_ofdm_cfr",
-            "synthesize_pulsed_echo",
+            "synthesize_fmcw",
+            "synthesize_ofdm",
+            "synthesize_pulsed",
         ):
             original = getattr(synthesis, name)
 

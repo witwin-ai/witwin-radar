@@ -163,7 +163,7 @@ check_torch_physics_allowlist: 71 modules scanned under witwin with 0 exclusions
 | production modules | 80 | 71 |
 
 The nine deleted operators are the `dirichlet_spectrum` family - a SECOND FMCW
-synthesis owner beside `synthesize_fmcw_beat`, which is what made it native
+synthesis owner beside `synthesize_fmcw`, which is what made it native
 duplicate production code. `_radar_native.pyd` was rebuilt in the same commit
 that deleted them (`cf6d836`) so the binary, the manifest and the loader's
 required-symbol set moved together; the loader refuses a mismatch.
@@ -383,8 +383,8 @@ resolve silently. What actually happened:
 
 | id | question | resolution |
 | --- | --- | --- |
-| **D5** | `sensor_weight` orphaned by deleting `sensors/legacy_paths.py`: (a) rewire, (b) delete the family, (c) defer | **(a) rewire, taken on the design DEFAULT, not on an owner ruling** - no D5 decision was found anywhere in the session scratch. `witwin/radar/sensors/round_trip.py` gives the family a production end-to-end caller on the scene-driven route, so cluster L could be deleted without the family ever passing through a caller-free state. `git revert 37aef3b` is a clean single revert if the owner prefers (b). |
-| **D6** | item 6 says MOVE the Dirichlet (M3) and receiver/noise (M2) files; criteria 4 and 6 argue DELETE | **Both resolved as DELETE**, with the reasoning written into the migration note section 8 rather than assumed. M2: `frontend/chain.py` already stated those stages were merged into `FrontendChain`, so a move relocates a shadow. M3: the route was a second FMCW synthesis owner and its `backward` symbol was already caller-free. The only genuine pure move, `DetectorType` -> `processing/contracts.py` (M1), landed as its own commit `3dc843c`. |
+| **D5** | `sensor_weight` orphaned by deleting `sensors/legacy_paths.py`: (a) rewire, (b) delete the family, (c) defer | **(a) rewire, taken on the design DEFAULT, not on an owner ruling** - no D5 decision was found anywhere in the session scratch. `witwin/radar/sensors.py` gives the family a production end-to-end caller on the scene-driven route, so cluster L could be deleted without the family ever passing through a caller-free state. `git revert 37aef3b` is a clean single revert if the owner prefers (b). |
+| **D6** | item 6 says MOVE the Dirichlet (M3) and receiver/noise (M2) files; criteria 4 and 6 argue DELETE | **Both resolved as DELETE**, with the reasoning written into the migration note section 8 rather than assumed. M2: `frontend.py` already stated those stages were merged into `FrontendChain`, so a move relocates a shadow. M3: the route was a second FMCW synthesis owner and its `backward` symbol was already caller-free. The only genuine pure move, `DetectorType` -> `processing/contracts.py` (M1), landed as its own commit `3dc843c`. |
 | **D3** | `Radar.simulate_group` - delete or leave refusing? | **Deleted.** A permanent `NotImplementedError` stub is a shim under criterion 6. Recorded as an approved public break in the migration note section 2. |
 | **D2** | scatter-site policy scope | **Deferred as designed.** `ScatterSitePolicy` supports `explicit(positions)` and `structure_anchor()`; mesh sampling is refused by name (R-ADR-020). Inventing a sampling algorithm would have been new Torch geometry in a production hot path. |
 | naming | `STABLE_TORCH_LIBRARY(witwin_radar_dirichlet_cuda, ...)` is named after the deleted route - rename it? | **No rename, because there is nothing to rename.** That symbol does not exist: `extension.cpp:3` opens `STABLE_TORCH_LIBRARY(_radar_native, m)` and all eight `..._IMPL` blocks name `_radar_native`. The claim came from pre-Phase-10 prose left in `docs/dev/audit/phase10-extension-boundary.md`, which stage `legacy-deletion` corrected in place with a supersession section. |

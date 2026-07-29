@@ -93,12 +93,12 @@ def build_info() -> dict[str, Any]:
     """The validated identity of the radar native library, or a loud failure.
 
     Loads the extension through the one owner that is allowed to
-    (:mod:`witwin.radar.cuda.build`), so the record returned is the record that
+    (:mod:`witwin.radar.cuda.runtime`), so the record returned is the record that
     was validated before ``torch.ops.load_library`` ran - not a re-read of the
     sidecar, which would answer a different question.
     """
 
-    from .cuda import build
+    from .cuda import runtime as build
 
     return build.build_extension().build_info()
 
@@ -140,7 +140,7 @@ def runtime_diagnostics() -> dict[str, Any]:
     mode it exists to remove.
     """
 
-    from .cuda.identity import RADAR_ABI_VERSION
+    from .cuda.runtime import RADAR_ABI_VERSION
 
     diagnostics: dict[str, Any] = {
         "deployment_abi": DEPLOYMENT_ABI,
@@ -215,13 +215,4 @@ def require_supported_runtime() -> dict[str, Any]:
     return diagnostics
 
 
-__all__ = [
-    "DECLARED_SM_ARCHITECTURES",
-    "DEPLOYMENT_ABI",
-    "PTX_FORWARD_COMPATIBILITY_SM",
-    "VERIFIED_SM_ARCHITECTURES",
-    "build_info",
-    "require_supported_runtime",
-    "runtime_diagnostics",
-    "sm_support",
-]
+__all__ = ["build_info", "require_supported_runtime", "runtime_diagnostics"]

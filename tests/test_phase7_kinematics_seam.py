@@ -1,7 +1,7 @@
 """The Core-kinematics-to-forward-dual seam, pinned primitive by primitive.
 
 ``RigidMotion.velocity`` and ``RigidMotion.angular_velocity`` had zero consumers
-anywhere in the platform before ``witwin.radar.propagation.kinematics`` existed:
+anywhere in the platform before ``witwin.radar.propagation`` existed:
 Channel's compiler reads only ``rotation`` and ``translation``, and every
 Doppler test built its tangent from a literal. So this file pins the two halves
 of the seam separately.
@@ -28,7 +28,7 @@ import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
 
-from witwin.radar.propagation import kinematics as kin
+import witwin.radar.propagation as kin
 
 
 # --------------------------------------------------------------------------

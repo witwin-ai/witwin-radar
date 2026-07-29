@@ -1,12 +1,6 @@
 """The float64 oracles are independent of the code they check.
 
-Phase 6 migrated ``witwin/radar/solvers/common.py``'s Torch path geometry and
-amplitude expressions into a native owner (plan work item 8), and the
-acceptance criterion for that migration was that the real-amplitude Radar
-baseline is preserved. Before that, the oracle imported
-``compute_path_amplitudes`` and ``compute_total_path_lengths`` from exactly the
-module under test, so "the reference still agrees" would have meant "the module
-still agrees with itself" - true by construction and worth nothing.
+The native sensor family is checked against independently copied path-length, path-rate and antenna-pattern expressions. Importing those expressions from the production owner would make the reference agree by construction and prove nothing.
 
 The expressions live in ``tests/reference/path_math.py``, copied verbatim.
 This file is the structural guard that keeps them copied: an AST scan over
@@ -96,8 +90,7 @@ def test_the_copy_is_still_a_real_expression_and_has_a_live_consumer():
     rather than re-exported from somewhere - a re-export would make the scan
     above pass while checking a module against itself through one more hop.
     Second, the copy is still USED: ``tests/test_phase6_sensor_weight.py`` is
-    the contract test of the live ``sensor_weight`` family and drives four of
-    these five as its reference. An oracle nobody calls is not independent, it
+    the contract test of the live ``sensor_weight`` family and drives all three as its reference. An oracle nobody calls is not independent, it
     is dead.
     """
 
@@ -108,8 +101,6 @@ def test_the_copy_is_still_a_real_expression_and_has_a_live_consumer():
     names = (
         "compute_total_path_lengths",
         "compute_total_path_length_rates",
-        "compute_path_amplitudes",
-        "compute_polarization_amplitudes",
         "compute_antenna_pattern_gains",
     )
     for name in names:
@@ -155,12 +146,12 @@ def test_no_waveform_oracle_imports_the_domain_it_validates(oracle: str):
     A spec dataclass is not a numerical implementation, so a reference may
     CONSTRUCT one - a grid has to agree with the kernel about what a symbol
     period is - but it may not import an expression from the package under
-    test. The scan therefore allows ``witwin.radar.synthesis.contracts`` by
+    test. The scan therefore allows ``witwin.radar.synthesis.assembly`` by
     name and forbids everything else in that package.
     """
 
     allowed = {
-        "witwin.radar.synthesis.contracts",
+        "witwin.radar.synthesis.assembly",
         "witwin.radar.synthesis",
     }
     offenders = sorted(
@@ -171,6 +162,6 @@ def test_no_waveform_oracle_imports_the_domain_it_validates(oracle: str):
             for prefix in FORBIDDEN_ORACLE_PREFIXES
         )
         and name not in allowed
-        and not name.startswith("witwin.radar.synthesis.contracts.")
+        and not name.startswith("witwin.radar.synthesis.assembly.")
     )
     assert offenders == [], (oracle, offenders)

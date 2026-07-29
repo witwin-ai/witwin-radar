@@ -1,5 +1,7 @@
-"""Native CUDA extension support for the radar package."""
+"""Native CUDA runtime for the radar package."""
 
-from . import build, identity
+import importlib
 
-__all__ = ["build", "identity"]
+runtime = importlib.import_module("witwin.radar.cuda.runtime")
+
+__all__ = ["runtime"]

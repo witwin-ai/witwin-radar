@@ -14,17 +14,17 @@ import torch
 
 from support import phase4_geometry as geo  # noqa: E402
 from support import reference_chain as ref  # noqa: E402
-from witwin.radar.synthesis.contracts import FmcwBeatSpec  # noqa: E402
-from witwin.radar.synthesis.fmcw_beat import (  # noqa: E402
+from witwin.radar.synthesis.assembly import FmcwSpec  # noqa: E402
+from witwin.radar.synthesis.fmcw import (  # noqa: E402
     channel_phasor_to_beat_weight,
-    synthesize_beat_rows,
+    synthesize_fmcw_rows,
 )
 
 
 pytestmark = pytest.mark.gpu
 
 
-def _spec(**overrides) -> FmcwBeatSpec:
+def _spec(**overrides) -> FmcwSpec:
     """Fixture spec.
 
     ``carrier_hz`` goes through ``from_radar_config`` rather than ``replace``
@@ -38,7 +38,8 @@ def _spec(**overrides) -> FmcwBeatSpec:
 
     config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
     carrier_hz = overrides.pop("carrier_hz", 0.0)
-    spec = FmcwBeatSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    overrides.setdefault("output_domain", "beat")
     if overrides:
         from dataclasses import replace
 
@@ -68,7 +69,7 @@ def test_primal_matches_the_float64_oracle():
         [0.5 + 0.25j, -0.125 + 0.75j],
         rates=[1.0e-9, -4.0e-10],
     )
-    measured = synthesize_beat_rows(tau, rate, weight, offsets, spec)
+    measured = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
     expected = ref.beat_samples(
         tau.cpu(), rate.cpu(), weight.cpu(), offsets.cpu(), spec
     )
@@ -81,7 +82,7 @@ def test_beat_frequency_and_peak_bin_match_the_closed_form():
     spec = _spec(num_chirps=1)
     tau_rt = geo.round_trip_delay_s()
     tau, rate, weight, offsets = _rows([tau_rt], [1.0 + 0.0j])
-    iq = synthesize_beat_rows(tau, rate, weight, offsets, spec)
+    iq = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
 
     spectrum = torch.fft.fft(iq[0, 0].cpu().to(torch.complex128))
     peak = int(spectrum.abs().argmax())
@@ -106,14 +107,14 @@ def test_tau_is_the_round_trip_delay_and_is_never_doubled():
 
     peak_single = int(
         torch.fft.fft(
-            synthesize_beat_rows(single, rate, weight, offsets, spec)[0, 0].cpu()
+            synthesize_fmcw_rows(single, rate, weight, offsets, spec)[0, 0].cpu()
         )
         .abs()
         .argmax()
     )
     peak_doubled = int(
         torch.fft.fft(
-            synthesize_beat_rows(doubled, rate2, weight2, offsets2, spec)[0, 0].cpu()
+            synthesize_fmcw_rows(doubled, rate2, weight2, offsets2, spec)[0, 0].cpu()
         )
         .abs()
         .argmax()
@@ -138,7 +139,7 @@ def test_multi_chirp_slow_time_phase_slope_carries_doppler():
     tau, rate, weight, offsets = _rows(
         [tau_rt], [1.0 + 0.0j], rates=[rate_value]
     )
-    iq = synthesize_beat_rows(tau, rate, weight, offsets, spec).cpu()
+    iq = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
 
     # Take one fast-time sample and look at how its phase walks across chirps.
     slow_time = iq[:, 0, 0].to(torch.complex128)
@@ -190,7 +191,7 @@ def test_production_carrier_placement_carries_the_same_doppler():
         tau, rate, weight, offsets = _rows(
             [tau_rt], [weight_value], rates=[rate_value]
         )
-        iq = synthesize_beat_rows(tau, rate, weight, offsets, spec).cpu()
+        iq = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
         slow = iq[:, 0, 0].to(torch.complex128)
         steps = slow[1:] * torch.conj(slow[:-1])
         return float(torch.angle(steps).mean())
@@ -231,7 +232,7 @@ def test_the_two_carrier_homes_cannot_both_be_used():
     """Both nonzero double counts the carrier, so the contract refuses it."""
 
     with pytest.raises(ValueError, match="double counts"):
-        FmcwBeatSpec(
+        FmcwSpec(
             num_samples=8,
             num_chirps=2,
             sample_period_s=1.0 / 4.4e6,
@@ -251,10 +252,10 @@ def test_segments_are_independent_and_offsets_partition_the_rows():
         [1.0 + 0.0j, 0.5 - 0.5j, -0.25 + 0.0j, 0.75 + 0.25j],
         segments=2,
     )
-    both = synthesize_beat_rows(tau, rate, weight, offsets, spec)
+    both = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
     assert tuple(both.shape) == (2, 2, spec.num_samples)
 
-    first = synthesize_beat_rows(
+    first = synthesize_fmcw_rows(
         tau[:2].contiguous(),
         rate[:2].contiguous(),
         weight[:2].contiguous(),
@@ -282,7 +283,7 @@ def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
     # t_start is zero: the whole phase is the carrier term, 0.25 of a cycle.
     carrier = 1.0e9
     tau_rt = 0.25 / carrier
-    spec = FmcwBeatSpec(
+    spec = FmcwSpec(
         num_samples=1,
         num_chirps=1,
         sample_period_s=1.0 / 4.4e6,
@@ -291,6 +292,7 @@ def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
         t_start_s=0.0,
         reference_frequency_hz=carrier,
         carrier_hz=carrier,
+        output_domain="beat",
     )
 
     # A Channel-convention coefficient with a distinctly signed imaginary part.
@@ -300,7 +302,7 @@ def test_the_conjugation_sign_is_anchored_to_a_hand_computed_sample():
     rate = torch.zeros_like(tau)
     offsets = torch.tensor([0, 1], dtype=torch.int64, device="cuda")
     measured = complex(
-        synthesize_beat_rows(tau, rate, beat, offsets, spec)[0, 0, 0].cpu()
+        synthesize_fmcw_rows(tau, rate, beat, offsets, spec)[0, 0, 0].cpu()
     )
 
     # By hand: conj(0 + 1j) = -1j, and exp(+j 2 pi * 0.25) = +1j.
@@ -332,14 +334,14 @@ def test_loading_the_extension_is_free_and_side_effect_free_after_the_first_call
 
     import os
 
-    from witwin.radar.cuda import build
-    from witwin.radar.synthesis import fmcw_beat
+    from witwin.radar.cuda import runtime as build
+    from witwin.radar.synthesis import fmcw
 
     first = build.build_extension()
     path_length = len(os.environ.get("PATH", ""))
     for _ in range(8):
         assert build.build_extension() is first
-        assert fmcw_beat._ops() is first
+        assert fmcw._ops() is first
     assert len(os.environ.get("PATH", "")) == path_length
 
 
@@ -348,8 +350,8 @@ def test_zero_weight_row_contributes_exactly_zero():
     tau, rate, weight, offsets = _rows(
         [1.0e-8, 2.0e-8], [1.0 + 0.0j, 0.0 + 0.0j]
     )
-    with_dead = synthesize_beat_rows(tau, rate, weight, offsets, spec)
-    alive = synthesize_beat_rows(
+    with_dead = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
+    alive = synthesize_fmcw_rows(
         tau[:1].contiguous(),
         rate[:1].contiguous(),
         weight[:1].contiguous(),

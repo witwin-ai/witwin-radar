@@ -25,11 +25,11 @@ import math
 import pytest
 import torch
 
-from witwin.radar.synthesis.contracts import (  # noqa: E402
+from witwin.radar.synthesis.assembly import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
-    FmcwBeatSpec,
+    FmcwSpec,
 )
-from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows  # noqa: E402
+from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -49,7 +49,7 @@ TAU_RT_S = 2.0 * RANGE_M / C0
 TAU_RATE = 2.0 * RADIAL_SPEED_MPS / C0
 
 
-def _spec(**overrides) -> FmcwBeatSpec:
+def _spec(**overrides) -> FmcwSpec:
     """The production carrier placement unless a test says otherwise."""
 
     fields = dict(
@@ -62,9 +62,10 @@ def _spec(**overrides) -> FmcwBeatSpec:
         reference_frequency_hz=FC_HZ,
         carrier_hz=0.0,
         carrier_rate_hz=FC_HZ,
+        output_domain="beat",
     )
     fields.update(overrides)
-    return FmcwBeatSpec(**fields)
+    return FmcwSpec(**fields)
 
 
 def _frozen_channel_weight(amplitude: complex = 1.0 + 0.0j) -> complex:
@@ -99,9 +100,9 @@ def _stored(delay_s: float) -> float:
     return float(torch.tensor([delay_s], dtype=torch.float32))
 
 
-def _fast_time(spec: FmcwBeatSpec, delay_s: float, weight: complex, rate=0.0):
+def _fast_time(spec: FmcwSpec, delay_s: float, weight: complex, rate=0.0):
     tau, tau_rate, w, offsets = _one_row(delay_s, weight, rate)
-    cube = synthesize_beat_rows(tau, tau_rate, w, offsets, spec)
+    cube = synthesize_fmcw_rows(tau, tau_rate, w, offsets, spec)
     return cube[0, 0].cpu().to(torch.complex128)
 
 
@@ -246,9 +247,9 @@ def test_an_on_grid_beat_tone_peaks_at_exactly_n_times_the_weight():
 # --------------------------------------------------------------------------
 
 
-def _slow_time_slope(spec: FmcwBeatSpec, weight: complex, sample: int) -> float:
+def _slow_time_slope(spec: FmcwSpec, weight: complex, sample: int) -> float:
     tau, rate, w, offsets = _one_row(TAU_RT_S, weight, TAU_RATE)
-    cube = synthesize_beat_rows(tau, rate, w, offsets, spec).cpu()
+    cube = synthesize_fmcw_rows(tau, rate, w, offsets, spec).cpu()
     slow = cube[:, 0, sample].to(torch.complex128)
     steps = slow[1:] * torch.conj(slow[:-1])
     return float(torch.angle(steps).mean())
@@ -348,7 +349,7 @@ def test_a_receding_site_puts_the_beat_cube_tone_at_positive_doppler():
     tau, rate, weight, offsets = _one_row(
         TAU_RT_S, _frozen_channel_weight(), TAU_RATE
     )
-    cube = synthesize_beat_rows(tau, rate, weight, offsets, spec).cpu()
+    cube = synthesize_fmcw_rows(tau, rate, weight, offsets, spec).cpu()
     slow = cube[:, 0, 0].to(torch.complex128)
 
     spectrum = torch.fft.fftshift(torch.fft.fft(slow)).abs()
@@ -376,16 +377,13 @@ def test_a_receding_site_puts_the_beat_cube_tone_at_positive_doppler():
 # --------------------------------------------------------------------------
 
 
-def test_the_unambiguous_speed_bound_agrees_with_the_radar_facade():
+def test_the_unambiguous_speed_bound_is_owned_by_the_fmcw_spec():
     """``lambda / (4 Tc num_tx)``, derived in one place and only one place.
 
-    ``Radar.max_doppler`` and the spec must not be two independent derivations
-    of the same bound; they are compared to the last bit, at both fixture
-    arrays, so that a change to either is a test failure rather than a slow
-    divergence between what the facade reports and what the kernel samples.
+    The spec is the only owner of this bound; both fixture arrays pin its formula.
     """
 
-    from witwin.radar import Radar, RadarConfig
+    from witwin.radar import RadarConfig
     from support import multi_endpoint_geometry as multi
     from support import phase4_geometry as single
 
@@ -395,13 +393,9 @@ def test_the_unambiguous_speed_bound_agrees_with_the_radar_facade():
 
     for geometry in (single, multi):
         config = RadarConfig.from_dict(dict(geometry.FIXTURE_RADAR_CONFIG))
-        radar = Radar(config, device="cuda")
-        spec = FmcwBeatSpec.from_radar_config(config)
+        spec = FmcwSpec.from_radar_config(config)
         assert spec.num_tx == config.num_tx
         assert spec.num_rx == config.num_rx
-        assert spec.max_unambiguous_speed_mps == pytest.approx(
-            radar.max_doppler, rel=1e-12
-        )
         assert spec.slot_period_s == pytest.approx(
             spec.chirp_period_s * config.num_tx, rel=1e-12
         )

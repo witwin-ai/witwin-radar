@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from witwin.radar.paths import _identity  # noqa: E402
+import witwin.radar.paths as paths  # noqa: E402
+from witwin.radar.paths import validate_pair_ordering  # noqa: E402
 from witwin.radar.synthesis.assembly import (  # noqa: E402
     FRAME_CUBE_AXES,
     PAIR_RANK_LAYOUT,
     assemble_frame_cube,
     pair_rx_index,
     pair_tx_index,
-    validate_pair_ordering,
 )
 
 
@@ -56,7 +56,7 @@ def _labelled_cube() -> torch.Tensor:
 
 
 def test_the_declared_pair_numbering_is_the_composers_own():
-    """``PAIR_RANK_LAYOUT`` must be what ``_identity.sink_major_rank`` does.
+    """``PAIR_RANK_LAYOUT`` must be what ``paths.sink_major_rank`` does.
 
     The assembly module writes the numbering down in prose and then relies on
     it arithmetically. If the composer ever changed convention, every statement
@@ -70,7 +70,7 @@ def test_the_declared_pair_numbering_is_the_composers_own():
 
     sources = list(range(100, 100 + NUM_TX))
     sinks = list(range(200, 200 + NUM_RX))
-    rank = _identity.sink_major_rank(sources, sinks)
+    rank = paths.sink_major_rank(sources, sinks)
     for tx, source in enumerate(sources):
         for rx, sink in enumerate(sinks):
             assert rank(source, sink) == _pair_rank(tx, rx)

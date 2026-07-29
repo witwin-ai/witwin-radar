@@ -8,7 +8,7 @@ pass the moment a field is added, which is the only way this ever goes wrong:
 nobody writes ``slope=...`` into a propagation request on purpose, they widen a
 config object that a request happens to splat.
 
-The STATIC test scans every module under ``witwin/radar/propagation/`` for the
+The STATIC test scans every module in ``witwin/radar/propagation.py`` for the
 waveform and frontend vocabulary and requires zero hits. It catches the mistake
 the runtime test cannot: a field that is read but not forwarded, which changes
 what the propagation layer KNOWS even when it does not change what it sends.
@@ -28,7 +28,7 @@ import pytest
 import torch
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-PROPAGATION_ROOT = REPO_ROOT / "witwin" / "radar" / "propagation"
+PROPAGATION_MODULE = REPO_ROOT / "witwin" / "radar" / "propagation.py"
 
 #: The exact keyword sets a propagation request is allowed to carry. Frozen by
 #: equality: ``reference_frequency_hz`` is the ONE legitimate crossing and
@@ -73,7 +73,7 @@ REEVALUATION_KEYWORDS = frozenset(
         # one frequency, this names several. What it deliberately is not is a
         # subcarrier count, a spacing, an FFT size, or a bandwidth. An OFDM
         # caller converts its subcarrier grid to Hz on the SYNTHESIS side
-        # (``OfdmCfrSpec.frequency_offsets_hz``), so propagation still never
+        # (``OfdmSpec.frequency_offsets_hz``), so propagation still never
         # learns which waveform asked - exactly the rule ``slot_count`` follows.
         "frequency_offsets_hz",
     }
@@ -110,8 +110,8 @@ def _populated_config():
     """
 
     from conftest import STANDARD_CONFIG
-    from witwin.radar.config import RadarSystemConfig
-    from witwin.radar.validation import validate_frontend_config, validate_radar_config
+    from witwin.radar.radar import RadarSystemConfig
+    from witwin.radar.radar import validate_frontend_config, validate_radar_config
 
     # The flat record carried a `polarization` block until Phase 11, and this
     # fixture set it because a boundary test on a minimal configuration proves
@@ -139,7 +139,7 @@ def _populated_config():
 
 
 def _endpoints(count: int, *, role: str):
-    from witwin.radar.propagation.contracts import RadarEndpointSpec
+    from witwin.radar.propagation import RadarEndpointSpec
 
     positions = torch.zeros(count, 3, dtype=torch.float32)
     positions[:, 2] = -torch.arange(1, count + 1, dtype=torch.float32)
@@ -256,7 +256,7 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
 
 
 def _adapter(system_config):
-    from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
+    from witwin.radar.channel import ChannelPropagationAdapter
 
     block = system_config.propagation
     return ChannelPropagationAdapter(
@@ -312,13 +312,13 @@ def test_the_adapter_constructor_accepts_only_the_propagation_block():
     FREQUENCIES in Hz - the frequencies at which the field is evaluated - and it
     is not a subcarrier count, a spacing, an FFT size, or a bandwidth. The
     waveform-to-Hz mapping lives on the waveform spec
-    (``OfdmCfrSpec.frequency_offsets_hz``), which is the side of the boundary
+    (``OfdmSpec.frequency_offsets_hz``), which is the side of the boundary
     that knows what a subcarrier is.
     """
 
     import inspect
 
-    from witwin.radar.propagation.channel_consumer import ChannelPropagationAdapter
+    from witwin.radar.channel import ChannelPropagationAdapter
 
     parameters = set(
         inspect.signature(ChannelPropagationAdapter.__init__).parameters
@@ -351,7 +351,7 @@ def test_an_ofdm_band_still_produces_exactly_one_reference_frequency(monkeypatch
 
     from dataclasses import replace
 
-    from witwin.radar.config import OfdmWaveformConfig
+    from witwin.radar.radar import OfdmWaveformConfig
 
     base = _populated_config()
     reference = base.propagation.reference_frequency_hz
@@ -454,8 +454,8 @@ def _identifier_text(path: pathlib.Path) -> list[tuple[str, str]]:
 
 
 def test_no_propagation_module_names_waveform_or_frontend_vocabulary():
-    modules = sorted(PROPAGATION_ROOT.glob("*.py"))
-    assert modules, "the propagation package moved"
+    modules = [PROPAGATION_MODULE]
+    assert PROPAGATION_MODULE.is_file(), "the propagation owner moved"
 
     docstrings = set()
     for path in modules:
@@ -492,7 +492,7 @@ def _synthesis_batch(radar, *, rows: int = 3):
     rule the applicable one.
     """
 
-    from witwin.radar.paths.contracts import RadarPathTopology
+    from witwin.radar.paths import RadarPathTopology
     from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
 
     device = radar.device
@@ -537,16 +537,18 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
     from dataclasses import replace
 
     from conftest import MINIMAL_CONFIG, make_radar_or_skip
-    from witwin.radar.config import OfdmWaveformConfig, PulsedWaveformConfig
-    from witwin.radar.synthesis import BEAT_PHASOR, CHANNEL_PHASOR, SlowTimeMode
+    from witwin.radar.radar import OfdmWaveformConfig, PulsedWaveformConfig
+    from witwin.radar.synthesis import SlowTimeMode
+    from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR
 
     radar = make_radar_or_skip(MINIMAL_CONFIG)
     batch = _synthesis_batch(radar)
     mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
 
-    beat = radar.synthesize(batch, slow_time_mode=mode)
+    beat = radar._synthesize(batch, slow_time_mode=mode)
     assert beat.kind == "fmcw"
-    assert beat.axes == ("chirp", "sensor_pair", "sample")
+    assert beat.axes == ("chirp", "sensor_pair", "range_bin")
+    assert beat.output_domain == "spectrum"
     assert beat.phasor == BEAT_PHASOR
     assert beat.cube.shape == (
         radar.config.chirp_per_frame,
@@ -564,7 +566,7 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
             max_expected_delay_s=1e-6,
         ),
     )
-    cfr = radar.synthesize(batch, slow_time_mode=mode)
+    cfr = radar._synthesize(batch, slow_time_mode=mode)
     assert cfr.kind == "ofdm"
     assert cfr.axes == ("symbol", "sensor_pair", "subcarrier")
     assert cfr.phasor == CHANNEL_PHASOR
@@ -584,7 +586,7 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
             max_expected_delay_rate=0.0,
         ),
     )
-    train = radar.synthesize(batch, slow_time_mode=mode)
+    train = radar._synthesize(batch, slow_time_mode=mode)
     assert train.kind == "pulsed"
     assert train.axes == ("pulse", "sensor_pair", "sample")
     assert train.phasor == CHANNEL_PHASOR
@@ -614,6 +616,6 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
     radar.system_config = object.__new__(type(radar.system_config))
     object.__setattr__(radar.system_config, "waveform", _Unowned())
     with pytest.raises(ValueError, match="no synthesis owner"):
-        radar.synthesize(
+        radar._synthesize(
             batch, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
         )

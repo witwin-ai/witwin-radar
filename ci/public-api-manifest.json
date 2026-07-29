@@ -1,0 +1,193 @@
+{
+  "schema_version": 2,
+  "root_class_members": {
+    "witwin.radar.Radar": [
+      "last_compiled_scene",
+      "last_propagation",
+      "last_radar_paths",
+      "last_result",
+      "last_snapshot",
+      "set_pose",
+      "simulate"
+    ]
+  },
+  "modules": {
+    "witwin.radar": {
+      "Radar": "witwin.radar.radar.Radar",
+      "RadarConfig": "witwin.radar.radar.RadarConfig"
+    },
+    "witwin.radar.capabilities": {
+      "capabilities": "witwin.radar.capabilities.capabilities"
+    },
+    "witwin.radar.deployment": {
+      "build_info": "witwin.radar.deployment.build_info",
+      "require_supported_runtime": "witwin.radar.deployment.require_supported_runtime",
+      "runtime_diagnostics": "witwin.radar.deployment.runtime_diagnostics"
+    },
+    "witwin.radar.frontend": {
+      "AdcSpec": "witwin.radar.frontend.AdcSpec",
+      "AgcSpec": "witwin.radar.frontend.AgcSpec",
+      "FrontendSpec": "witwin.radar.frontend.FrontendSpec",
+      "LnaSpec": "witwin.radar.frontend.LnaSpec",
+      "NoiseSpec": "witwin.radar.frontend.NoiseSpec",
+      "PortSpec": "witwin.radar.frontend.PortSpec",
+      "SeedSpec": "witwin.radar.frontend.SeedSpec"
+    },
+    "witwin.radar.processing": {
+      "ArrayGeometry": "witwin.radar.processing.angle.ArrayGeometry",
+      "BeamCube": "witwin.radar.processing.angle.BeamCube",
+      "DetectionFrame": "witwin.radar.processing.tracking.DetectionFrame",
+      "TrackHandoff": "witwin.radar.processing.tracking.TrackHandoff",
+      "Detections": "witwin.radar.processing.detection.Detections",
+      "POINT_CLOUD_COLUMNS": "witwin.radar.processing.detection.POINT_CLOUD_COLUMNS",
+      "PointCloud": "witwin.radar.processing.detection.PointCloud",
+      "ProcessingAxes": "witwin.radar.processing.signal.ProcessingAxes",
+      "ProcessingCube": "witwin.radar.processing.signal.ProcessingCube",
+      "RangeDopplerMap": "witwin.radar.processing.range_doppler.RangeDopplerMap",
+      "RangeProfile": "witwin.radar.processing.range_doppler.RangeProfile",
+      "beam_cube": "witwin.radar.processing.angle.beam_cube",
+      "ca_cfar": "witwin.radar.processing.detection.ca_cfar",
+      "ca_cfar_1d": "witwin.radar.processing.detection.ca_cfar_1d",
+      "ca_cfar_fast": "witwin.radar.processing.detection.ca_cfar_fast",
+      "combine_incoherent": "witwin.radar.processing.detection.combine_incoherent",
+      "conventional_steering": "witwin.radar.processing.angle.conventional_steering",
+      "fft2_aoa": "witwin.radar.processing.angle.fft2_aoa",
+      "microdoppler_spectrogram": "witwin.radar.processing.range_doppler.microdoppler_spectrogram",
+      "music_image": "witwin.radar.processing.angle.music_image",
+      "music_spectrum": "witwin.radar.processing.angle.music_spectrum",
+      "mvdr_weights": "witwin.radar.processing.angle.mvdr_weights",
+      "nearest_neighbour_associator": "witwin.radar.processing.tracking.nearest_neighbour_associator",
+      "os_cfar": "witwin.radar.processing.detection.os_cfar",
+      "phase_comparison_aoa": "witwin.radar.processing.angle.phase_comparison_aoa",
+      "point_cloud": "witwin.radar.processing.detection.point_cloud",
+      "range_doppler_map": "witwin.radar.processing.range_doppler.range_doppler_map",
+      "range_profile": "witwin.radar.processing.range_doppler.range_profile",
+      "tdm_compensate": "witwin.radar.processing.angle.tdm_compensate",
+      "lag_axis": "witwin.radar.processing.range_doppler.lag_axis",
+      "matched_filter": "witwin.radar.processing.range_doppler.matched_filter",
+      "pulse_samples": "witwin.radar.processing.range_doppler.pulse_samples"
+    },
+    "witwin.radar.scattering": {
+      "AspectScatterResponse": "witwin.radar.scattering.AspectScatterResponse",
+      "ScalarRcsResponse": "witwin.radar.scattering.ScalarRcsResponse",
+      "ScatterResponse": "witwin.radar.scattering.ScatterResponse"
+    },
+    "witwin.radar.sensors": {
+      "AntennaPatternSpec": "witwin.radar.sensors.AntennaPatternSpec",
+      "ISOTROPIC_PATTERN": "witwin.radar.sensors.ISOTROPIC_PATTERN",
+      "SensorArraySpec": "witwin.radar.sensors.SensorArraySpec",
+      "TxPowerSpec": "witwin.radar.sensors.TxPowerSpec"
+    },
+    "witwin.radar.simulation": {
+      "RadarSimulationResult": "witwin.radar.simulation.RadarSimulationResult",
+      "ScatterSitePolicy": "witwin.radar.simulation.ScatterSitePolicy",
+      "StableIdAllocator": "witwin.radar.simulation.StableIdAllocator"
+    },
+    "witwin.radar.smpl": {
+      "SMPLBody": "witwin.radar.smpl.SMPLBody",
+      "SmplPoseDeformation": "witwin.radar.smpl.SmplPoseDeformation"
+    },
+    "witwin.radar.synthesis": {
+      "FmcwSpec": "witwin.radar.synthesis.assembly.FmcwSpec",
+      "OfdmSpec": "witwin.radar.synthesis.assembly.OfdmSpec",
+      "PulsedSpec": "witwin.radar.synthesis.assembly.PulsedSpec",
+      "SlowTimeMode": "witwin.radar.synthesis.assembly.SlowTimeMode",
+      "SynthesisPathBatch": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
+      "SynthesisResult": "witwin.radar.synthesis.assembly.SynthesisResult",
+      "select_component": "witwin.radar.synthesis.assembly.select_component",
+      "synthesize_fmcw": "witwin.radar.synthesis.fmcw.synthesize_fmcw",
+      "synthesize_ofdm": "witwin.radar.synthesis.ofdm.synthesize_ofdm",
+      "synthesize_pulsed": "witwin.radar.synthesis.pulsed.synthesize_pulsed"
+    }
+  },
+  "signature_snapshot": "ci/public-api-snapshot.json",
+  "module_contracts": {
+    "witwin.radar": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "configured radar system entry"
+    },
+    "witwin.radar.capabilities": {
+      "primary_caller": "tests/test_phase10_diagnostics.py",
+      "reason": "import-safe capability reporting"
+    },
+    "witwin.radar.deployment": {
+      "primary_caller": "tests/test_phase10_diagnostics.py",
+      "reason": "runtime and native identity reporting"
+    },
+    "witwin.radar.frontend": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "receiver-chain configuration"
+    },
+    "witwin.radar.processing": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "typed signal products and processing algorithms"
+    },
+    "witwin.radar.scattering": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "declared target scatter response"
+    },
+    "witwin.radar.sensors": {
+      "primary_caller": "tests/test_phase11_antenna_pattern_route.py",
+      "reason": "array, power and pattern contracts"
+    },
+    "witwin.radar.simulation": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "scene-session inputs and typed simulation result"
+    },
+    "witwin.radar.smpl": {
+      "primary_caller": "tests/test_phase7_moving_structures.py",
+      "reason": "SMPL authoring for Core scenes"
+    },
+    "witwin.radar.synthesis": {
+      "primary_caller": "examples/single_point.py",
+      "reason": "explicit waveform synthesis API"
+    }
+  },
+  "value_exports": [
+    "witwin.radar.processing.POINT_CLOUD_COLUMNS",
+    "witwin.radar.sensors.ISOTROPIC_PATTERN"
+  ],
+  "result_contracts": {
+    "witwin.radar.simulation.RadarSimulationResult": [
+      "frame",
+      "tx",
+      "rx",
+      "slow",
+      "fast"
+    ],
+    "witwin.radar.synthesis.SynthesisResult": [
+      "slow",
+      "pair",
+      "fast"
+    ],
+    "witwin.radar.processing.ProcessingCube": [
+      "frame?",
+      "tx",
+      "rx",
+      "slow",
+      "fast"
+    ],
+    "witwin.radar.processing.RangeProfile": [
+      "...",
+      "range"
+    ],
+    "witwin.radar.processing.RangeDopplerMap": [
+      "...",
+      "doppler",
+      "range"
+    ],
+    "witwin.radar.processing.BeamCube": [
+      "direction",
+      "doppler",
+      "range"
+    ],
+    "witwin.radar.processing.Detections": [
+      "doppler",
+      "range"
+    ],
+    "witwin.radar.processing.PointCloud": [
+      "point",
+      "field"
+    ]
+  }
+}

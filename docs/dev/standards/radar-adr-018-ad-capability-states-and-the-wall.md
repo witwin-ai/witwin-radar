@@ -151,7 +151,7 @@ rather than a plea:
 
 The capability matrix records its mechanism as `torch-orchestration`, which
 R-ADR-007 allows outside the hot path, and
-`tests/test_phase6_no_torch_physics.py` pins `scattering/rcs.py`'s whole matched
+`tests/test_phase6_no_torch_physics.py` pins `scattering.py`'s whole matched
 Torch set by EQUALITY, so a second arithmetic expression in that module fails.
 
 Two consequences of the tensor route are deliberate. `requires_grad=True` is

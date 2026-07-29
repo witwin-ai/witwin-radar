@@ -88,7 +88,7 @@ QUICK_GATES = (
         (
             "-c",
             "import sys; import torch, witwin.radar; "
-            "assert 'witwin.radar.cuda.build' not in sys.modules; "
+            "assert 'witwin.radar.cuda.runtime' not in sys.modules; "
             "assert 'torch.utils.cpp_extension' not in sys.modules; "
             "assert not torch.cuda.is_initialized()",
         ),

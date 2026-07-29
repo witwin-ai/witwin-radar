@@ -31,8 +31,8 @@ import sys
 
 import pytest
 
-from witwin.radar import capabilities as capability_record
-from witwin.radar import deployment
+from witwin.radar.capabilities import capabilities as capability_record
+import witwin.radar.deployment as deployment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,12 +94,12 @@ _UNLOADABLE_PROBE = r"""
 import json, sys
 from pathlib import Path
 
-from witwin.radar.cuda import build
+from witwin.radar.cuda import runtime as build
 
 # Make every load route fail: no packaged binary, no override, no build request.
 build.prebuilt_extension_path = lambda: Path("does-not-exist.pyd")
 
-from witwin.radar import deployment
+import witwin.radar.deployment as deployment
 
 result = {}
 try:
@@ -144,7 +144,8 @@ def test_build_info_fails_loudly_where_diagnostics_degrades():
 
 
 def test_build_info_reports_the_full_validated_identity():
-    from witwin.radar.cuda import build, identity
+    from witwin.radar.cuda import runtime as build
+    identity = build
 
     if not build.prebuilt_extension_path().is_file():
         pytest.skip("no packaged prebuilt in this checkout")
@@ -204,7 +205,7 @@ def test_verified_architectures_are_a_subset_of_declared_ones():
 
 
 def test_the_capability_record_is_versioned_and_names_its_abi():
-    from witwin.radar.cuda.identity import RADAR_ABI_VERSION
+    from witwin.radar.cuda.runtime import RADAR_ABI_VERSION
 
     record = capability_record()
     assert record["schema_version"] == 1
@@ -240,7 +241,7 @@ def test_the_ad_summary_agrees_with_the_capability_matrix_document():
 def test_the_processing_wall_stages_are_the_matrix_wall_stages():
     text = MATRIX.read_text(encoding="utf-8")
     wall = capability_record()["processing_wall"]
-    for stage in ("range_profile", "range_doppler", "beam_cube", "matched_filter"):
+    for stage in ("range_profile", "range_doppler_map", "beam_cube", "matched_filter"):
         assert stage in wall["differentiable_stages"]
         assert f"processing/{stage}" in text
     for stage in ("ca_cfar", "os_cfar", "point_cloud", "fft2_aoa"):
@@ -260,10 +261,10 @@ def test_the_refused_components_are_refused_by_the_adapter():
 _CAPABILITY_PROBE = r"""
 import json, sys
 
-import witwin.radar
+from witwin.radar.capabilities import capabilities
 
 before = [name for name in sys.modules if name.startswith("witwin.channel")]
-record = witwin.radar.capabilities()
+record = capabilities()
 after = [name for name in sys.modules if name.startswith("witwin.channel")]
 
 print("PHASE10DIAG " + json.dumps({
@@ -276,8 +277,6 @@ print("PHASE10DIAG " + json.dumps({
 
 
 def test_reading_the_capability_record_never_imports_channel():
-    """Criterion A2's most likely regression, measured rather than reviewed."""
-
     result = _run(_CAPABILITY_PROBE)
     assert result["before"] == []
     assert result["after"] == [], result["after"]
@@ -286,12 +285,12 @@ def test_reading_the_capability_record_never_imports_channel():
 
 
 _CONSUMER_PRESENT_PROBE = r"""
-import json, sys
+import json
 
 import witwin.channel.propagation.consumer  # noqa: F401
-import witwin.radar
+from witwin.radar.capabilities import capabilities
 
-record = witwin.radar.capabilities()["propagation_consumer"]
+record = capabilities()["propagation_consumer"]
 print("PHASE10DIAG " + json.dumps({
     "status": record["status"],
     "contract_version": record.get("contract_version"),
@@ -301,8 +300,6 @@ print("PHASE10DIAG " + json.dumps({
 
 
 def test_the_consumer_record_is_embedded_when_channel_is_already_loaded():
-    """The other half: not_loaded must mean absent, not never-reported."""
-
     pytest.importorskip("witwin.channel")
     result = _run(_CONSUMER_PRESENT_PROBE)
     assert result["status"] == "loaded"
@@ -310,44 +307,29 @@ def test_the_consumer_record_is_embedded_when_channel_is_already_loaded():
     assert "los" in result["components"]
 
 
-_ROOT_LAZY_PROBE = r"""
+_ROOT_IMPORT_PROBE = r"""
 import json, sys
 
 import witwin.radar
 
 print("PHASE10DIAG " + json.dumps({
     "channel": [n for n in sys.modules if n.startswith("witwin.channel")],
-    "build_loaded": "witwin.radar.cuda.build" in sys.modules,
-    "has_build_info": hasattr(witwin.radar, "build_info"),
-    "has_capabilities": hasattr(witwin.radar, "capabilities"),
-    "has_runtime_diagnostics": hasattr(witwin.radar, "runtime_diagnostics"),
-    "build_loaded_after_access": "witwin.radar.cuda.build" in sys.modules,
+    "build_loaded": "witwin.radar.cuda.runtime" in sys.modules,
+    "exports": sorted(witwin.radar.__all__),
 }))
 """
 
 
-def test_the_root_exports_are_lazy_and_do_not_load_the_extension():
-    """``hasattr`` resolves them, which is the point: they exist, unloaded.
-
-    ``witwin.radar.cuda.build`` being absent from ``sys.modules`` after a bare
-    import is the property the whole Phase-10 loader contract rests on - a
-    broken prebuilt must not be able to fail an ordinary package import.
-    """
-
-    result = _run(_ROOT_LAZY_PROBE)
+def test_the_minimal_root_does_not_load_native_or_channel():
+    result = _run(_ROOT_IMPORT_PROBE)
     assert result["channel"] == []
     assert result["build_loaded"] is False
-    assert result["has_build_info"] is True
-    assert result["has_capabilities"] is True
-    assert result["has_runtime_diagnostics"] is True
+    assert result["exports"] == ["Radar", "RadarConfig"]
 
 
-def test_the_root_still_refuses_the_removed_names():
-    """The lazy hook must not have swallowed the removed-name messages."""
-
+def test_removed_names_receive_an_ordinary_attribute_error():
     import witwin.radar
 
-    with pytest.raises(AttributeError, match="Channel consumer"):
-        witwin.radar.Tracer
-    with pytest.raises(AttributeError, match="has no attribute"):
-        witwin.radar.not_a_real_name
+    for name in ("Tracer", "Scene", "Timeline", "Solver", "TraceResult"):
+        with pytest.raises(AttributeError, match="has no attribute"):
+            getattr(witwin.radar, name)

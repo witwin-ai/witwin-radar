@@ -62,13 +62,13 @@ def _rows(device: str = "cuda"):
 
 
 def _fmcw(device: str = "cuda") -> Boundary:
-    from witwin.radar.synthesis.contracts import FmcwBeatSpec
-    from witwin.radar.synthesis.fmcw_beat import synthesize_beat_rows
+    from witwin.radar.synthesis.assembly import FmcwSpec
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
     # carrier_rate_hz is non-zero on purpose: it is what makes the delay-rate
     # derivative differ from the delay derivative times the chirp time, and a
     # spec with it zeroed would exercise a simpler backward than production's.
-    spec = FmcwBeatSpec(
+    spec = FmcwSpec(
         num_samples=32,
         num_chirps=2,
         sample_period_s=1.0 / 4.4e6,
@@ -82,16 +82,16 @@ def _fmcw(device: str = "cuda") -> Boundary:
     tau, rate, weight, offsets = _rows(device)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        return synthesize_beat_rows(leaf, rate, weight, offsets, spec).abs().square().sum()
+        return synthesize_fmcw_rows(leaf, rate, weight, offsets, spec).abs().square().sum()
 
-    return Boundary("fmcw", "synthesis.fmcw_beat", tau, loss)
+    return Boundary("fmcw", "synthesis.fmcw", tau, loss)
 
 
 def _ofdm(device: str = "cuda") -> Boundary:
-    from witwin.radar.synthesis.contracts import OfdmCfrSpec
-    from witwin.radar.synthesis.ofdm_cfr import synthesize_cfr_rows
+    from witwin.radar.synthesis.assembly import OfdmSpec
+    from witwin.radar.synthesis.ofdm import synthesize_cfr_rows
 
-    spec = OfdmCfrSpec(
+    spec = OfdmSpec(
         num_subcarriers=8,
         num_symbols=2,
         subcarrier_spacing_hz=120.0e3,
@@ -106,18 +106,18 @@ def _ofdm(device: str = "cuda") -> Boundary:
     def loss(leaf: torch.Tensor) -> torch.Tensor:
         return synthesize_cfr_rows(leaf, rate, weight, offsets, spec).abs().square().sum()
 
-    return Boundary("ofdm", "synthesis.ofdm_cfr", tau, loss)
+    return Boundary("ofdm", "synthesis.ofdm", tau, loss)
 
 
 def _pulsed(device: str = "cuda") -> Boundary:
-    from witwin.radar.synthesis.contracts import PulsedEchoSpec
-    from witwin.radar.synthesis.pulsed_echo import synthesize_echo_rows
+    from witwin.radar.synthesis.assembly import PulsedSpec
+    from witwin.radar.synthesis.pulsed import synthesize_echo_rows
 
     # LFM, not rectangular. A rectangular pulse's dependence on the delay is
     # entirely through its support test, so its almost-everywhere delay
     # derivative is EXACTLY zero - a real property of the model, and a
     # higher-order test built on it would be asserting nothing.
-    spec = PulsedEchoSpec(
+    spec = PulsedSpec(
         num_pulses=2,
         num_samples=32,
         sample_period_s=2.0e-9,
@@ -142,11 +142,11 @@ def _pulsed(device: str = "cuda") -> Boundary:
             .sum()
         )
 
-    return Boundary("pulsed", "synthesis.pulsed_echo", tau, loss)
+    return Boundary("pulsed", "synthesis.pulsed", tau, loss)
 
 
 def _two_way(device: str = "cuda") -> Boundary:
-    from witwin.radar.paths.two_way import TwoWayComposer
+    from witwin.radar.paths import TwoWayComposer
     from witwin.radar.scattering import ScalarRcsResponse
 
     sources = (0,)
@@ -187,15 +187,14 @@ def _two_way(device: str = "cuda") -> Boundary:
             + (composed.total_delay_s.to(torch.float64) * 1.0e8).square().sum()
         )
 
-    return Boundary("two_way", "paths.two_way", tau_in.to(torch.float32), loss)
+    return Boundary("two_way", "witwin.radar.paths", tau_in.to(torch.float32), loss)
 
 
 def _sensor_weight(device: str = "cuda") -> Boundary:
     from witwin.radar.sensors import ROW_KIND_VIA, evaluate_sensor_weights
-    from witwin.radar.sensors.contracts import AntennaPatternSpec
-    from witwin.radar.sensors.weights import (
+    from witwin.radar.sensors import AntennaPatternSpec
+    from witwin.radar.sensors import (
         SensorWeightGeometry,
-        SensorWeightModes,
         SensorWeightPlan,
     )
 
@@ -210,24 +209,12 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
         tx_index=torch.zeros(rows, dtype=torch.int64, device=device),
         rx_index=torch.zeros(rows, dtype=torch.int64, device=device),
         row_kind=torch.full((rows,), ROW_KIND_VIA, dtype=torch.int32, device=device),
-        normals=torch.tensor(
-            [[0.0, 0.0, 1.0]] * rows, dtype=torch.float32, device=device
-        ),
-        # x polarized, which is transverse to a boresight along -z. A
-        # polarization ALONG the propagation direction projects to zero and
-        # would give a zero weight that looks exactly like a working fixture.
-        pol_tx=torch.tensor([[1.0, 0.0, 0.0]] * num_tx, dtype=torch.float32, device=device),
-        pol_rx=torch.tensor([[1.0, 0.0, 0.0]] * num_rx, dtype=torch.float32, device=device),
-        local_axes=torch.eye(3, dtype=torch.float32, device=device),
+        pattern_frame=torch.eye(3, dtype=torch.float32, device=device),
     )
     # A real half-wave dipole table rather than zeros: a zero pattern gives a
     # zero weight, and a higher-order test on a zero is a test of nothing.
     plan = SensorWeightPlan.build(
         AntennaPatternSpec.half_wave_dipole(),
-        modes=SensorWeightModes(
-            spreading=True, tx_power=False, legacy_real_polarization=False
-        ),
-        wavelength_m=3.894e-3,
         device=device,
     )
     tx_pos = torch.zeros((num_tx, 3), dtype=torch.float32, device=device)
@@ -257,7 +244,7 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
         )
         return result.weight.abs().square().sum()
 
-    return Boundary("sensor_weight", "sensors.weights", site_in, loss)
+    return Boundary("sensor_weight", "witwin.radar.sensors", site_in, loss)
 
 
 def _frontend(device: str = "cuda") -> Boundary:
@@ -302,7 +289,7 @@ def _frontend(device: str = "cuda") -> Boundary:
     def loss(leaf: torch.Tensor) -> torch.Tensor:
         return chain.apply(leaf).signal.abs().square().sum()
 
-    return Boundary("frontend", "frontend.chain", signal, loss)
+    return Boundary("frontend", "witwin.radar.frontend", signal, loss)
 
 
 def _aspect(device: str = "cuda") -> Boundary:
@@ -314,7 +301,7 @@ def _aspect(device: str = "cuda") -> Boundary:
     one place a geometry gradient enters the scatter response.
     """
 
-    from witwin.radar.paths.two_way import TwoWayComposer
+    from witwin.radar.paths import TwoWayComposer
     from witwin.radar.scattering import AspectScatterResponse
 
     sources, sites, sinks = (0,), (10, 11), (20,)
@@ -378,7 +365,7 @@ def _aspect(device: str = "cuda") -> Boundary:
         )
         return (s_re.square() + s_im.square()).sum()
 
-    return Boundary("aspect", "scattering.aspect", dir_in, loss)
+    return Boundary("aspect", "witwin.radar.scattering", dir_in, loss)
 
 
 #: The seven boundaries the Phase-9 higher-order rejection and the tape/budget

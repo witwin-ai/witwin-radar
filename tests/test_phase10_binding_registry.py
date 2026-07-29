@@ -61,7 +61,7 @@ def _mutated(tmp_path: Path, mutate) -> Path:
 
 
 def test_the_manifest_declares_schema_two_and_the_live_abi_version(manifest):
-    from witwin.radar.cuda.identity import RADAR_ABI_VERSION
+    from witwin.radar.cuda.runtime import RADAR_ABI_VERSION
 
     assert manifest["schema_version"] == 2
     assert manifest["radar_abi_version"] == RADAR_ABI_VERSION
@@ -78,7 +78,7 @@ def test_every_operator_carries_every_column(manifest):
 def test_symbols_are_unique(manifest):
     symbols = [entry["symbol"] for entry in manifest["operators"]]
     assert len(symbols) == len(set(symbols))
-    assert len(symbols) == 25
+    assert len(symbols) == 28
 
 
 def test_every_native_tu_is_a_build_input(manifest):
@@ -134,7 +134,8 @@ def test_the_error_owners_registry_names_modules_that_exist(manifest):
 def test_the_manifest_symbol_set_matches_the_packaged_sidecar(manifest):
     """Registry, shipped binary and loader agree, or this fails (A4)."""
 
-    from witwin.radar.cuda import build, identity
+    from witwin.radar.cuda import runtime as build
+    identity = build
 
     binary = build.prebuilt_extension_path()
     if not binary.is_file():
@@ -181,7 +182,7 @@ def test_a_companion_without_its_primal_fails_the_gate(tmp_path):
 
 def test_a_native_tu_outside_the_build_input_set_fails_the_gate(tmp_path):
     def mutate(data):
-        data["operators"][0]["native_tu"] = "witwin/radar/cuda/kernels/ghost.cu"
+        data["operators"][0]["native_tu"] = "witwin/radar/cuda/ghost.cu"
 
     completed = _run_gate(_mutated(tmp_path, mutate))
     assert completed.returncode == 1, completed.stdout
@@ -200,7 +201,7 @@ def test_a_missing_column_fails_the_gate(tmp_path):
 def test_a_drifted_symbol_set_fails_the_gate(tmp_path):
     """The registry cannot quietly describe a binary it does not match."""
 
-    from witwin.radar.cuda import build
+    from witwin.radar.cuda import runtime as build
 
     if not build.prebuilt_extension_path().is_file():
         pytest.skip("no packaged prebuilt in this checkout")
@@ -208,7 +209,7 @@ def test_a_drifted_symbol_set_fails_the_gate(tmp_path):
     def mutate(data):
         entry = dict(data["operators"][0])
         entry["symbol"] = "invented_operator"
-        entry["python_owner"] = "witwin/radar/cuda/build.py"
+        entry["python_owner"] = "witwin/radar/cuda/runtime.py"
         data["operators"].append(entry)
 
     completed = _run_gate(_mutated(tmp_path, mutate))

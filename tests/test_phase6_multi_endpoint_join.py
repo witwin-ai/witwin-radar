@@ -108,7 +108,7 @@ def test_the_composed_rows_are_the_ones_the_geometry_predicts(spike):
     image-source table plus the two ordering rules the join declares (sink-major
     sensor pair rank over the DECLARED endpoint lists, then the rank in the
     SORTED site ID list, then the leg identity keys). It never imports
-    ``witwin.radar.paths._identity``, so agreement here is a cross-check rather
+    ``witwin.radar.paths``, so agreement here is a cross-check rather
     than a mirror.
     """
 
@@ -173,7 +173,7 @@ def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows(spike):
     that indexes a virtual array by pair would read the wrong channel.
     """
 
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     composed, _, _ = spike.frame()
     offsets = composed.pair_offsets.tolist()
@@ -185,7 +185,7 @@ def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows(spike):
     assert empty == [1, 3]
 
     spec = drv.make_spec(num_chirps=2)
-    iq = synthesize_fmcw_beat(drv.to_synthesis(composed), spec)
+    iq = synthesize_fmcw(drv.to_synthesis(composed), spec)
     assert tuple(iq.shape) == (2, 4, spec.num_samples)
     occupied = [int(torch.count_nonzero(iq[:, rank, :])) for rank in range(4)]
     assert occupied == [2 * spec.num_samples, 0, 2 * spec.num_samples, 0]

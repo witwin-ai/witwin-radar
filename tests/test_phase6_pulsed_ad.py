@@ -42,7 +42,7 @@ from support.pulsed_grid import (  # noqa: E402
     reference_spec,
     rect_spec,
 )
-from witwin.radar.synthesis.pulsed_echo import synthesize_echo_rows  # noqa: E402
+from witwin.radar.synthesis.pulsed import synthesize_echo_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu

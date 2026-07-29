@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "living": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "FEATURE_LIST.md",
+    "PERFORMANCE.md",
+    "docs/pipeline_guide.md",
+    "docs/dev/ad-tape-and-budget-ledger.md",
+    "docs/dev/radar-ad-capability-matrix.md",
+    "docs/dev/plans/phase10-deferred-release-matrix.md",
+    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md",
+    "examples/music_imaging.py",
+    "examples/rgbd_range_doppler.py",
+    "examples/single_point.py"
+  ],
+  "historical_prefixes": [
+    "docs/dev/audit/phase10-",
+    "docs/dev/audit/phase11-",
+    "docs/dev/migration/",
+    "docs/dev/plans/channel-radar-architecture-plan.md",
+    "docs/dev/plans/phase10-acceptance-matrix.md",
+    "docs/dev/plans/stage2-phase4-entry-prep.md"
+  ],
+  "retired_living_tokens": [
+    "witwin.radar.sigproc",
+    "witwin/radar/sigproc",
+    "processing/adapters.py",
+    "witwin.radar.processing.adapters",
+    "Scene.compile_renderables",
+    "witwin.radar.Scene",
+    "witwin.radar.Tracer",
+    "witwin.radar.Timeline"
+  ],
+  "retired_token_exemptions": {
+    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md": {
+      "reason": "Active removal plan cites deleted compatibility surfaces as historical deletion targets, never as current APIs.",
+      "tokens": [
+        "processing/adapters.py",
+        "witwin.radar.sigproc",
+        "witwin/radar/sigproc"
+      ]
+    }
+  },
+  "missing_path_exemptions": {
+    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md": {
+      "reason": "Active removal plan records the deleted adapter path as a completed removal target.",
+      "paths": [
+        "witwin/radar/processing/adapters.py"
+      ]
+    }
+  },
+  "symbol_owner_tables": [
+    {
+      "path": "docs/dev/radar-ad-capability-matrix.md",
+      "columns": 8,
+      "owner_column": 5
+    },
+    {
+      "path": "docs/dev/ad-tape-and-budget-ledger.md",
+      "columns": 9,
+      "owner_column": 1
+    }
+  ]
+}

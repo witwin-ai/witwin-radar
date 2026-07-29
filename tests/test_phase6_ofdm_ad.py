@@ -30,11 +30,11 @@ import torch.autograd.forward_ad as forward_ad
 
 from support import fd  # noqa: E402
 from support import reference_ofdm as ref  # noqa: E402
-from witwin.radar.synthesis.contracts import (  # noqa: E402
+from witwin.radar.synthesis.assembly import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
-    OfdmCfrSpec,
+    OfdmSpec,
 )
-from witwin.radar.synthesis.ofdm_cfr import synthesize_cfr_rows  # noqa: E402
+from witwin.radar.synthesis.ofdm import synthesize_cfr_rows  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -51,7 +51,7 @@ NUM_SUBCARRIERS = 64
 # frozen weight cannot carry. Deriving the operator AD against this setting is
 # deliberate - carrier_rate_hz is exactly what makes d(phi)/d(tau_rate) differ
 # from d(phi)/d(tau_rt) * t_l, and a spec with it zeroed would never exercise it.
-SPEC = OfdmCfrSpec(
+SPEC = OfdmSpec(
     num_subcarriers=NUM_SUBCARRIERS,
     num_symbols=5,
     subcarrier_spacing_hz=DF_HZ,
@@ -540,7 +540,7 @@ def test_a_forward_only_dual_is_not_dropped_at_the_facade():
 def test_gradcheck_corroborates_both_modes():
     """Corroboration only, at tiny size and with stated float32 tolerances."""
 
-    spec = OfdmCfrSpec(
+    spec = OfdmSpec(
         num_subcarriers=4,
         num_symbols=2,
         subcarrier_spacing_hz=DF_HZ,

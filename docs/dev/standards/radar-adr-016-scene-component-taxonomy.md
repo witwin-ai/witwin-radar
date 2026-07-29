@@ -25,7 +25,7 @@ mode is refused. Phase 8 inherits that unpaid acceptance criterion.
 Three facts shape the answer.
 
 1. **The waveform kernels already accumulate linearly over the rows of a pair
-   segment**, and `synthesize_fmcw_beat` already masks a dead row's WEIGHT with
+   segment**, and `synthesize_fmcw` already masks a dead row's WEIGHT with
    `torch.where` before the launch - explicitly so the row is inert in the
    primal and carries no gradient. A component mask is that operation with a
    different predicate, so exporting a component needs no kernel change at all.

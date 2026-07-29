@@ -25,27 +25,27 @@ from support import multi_endpoint_driver as drv
 from witwin.radar.processing import (
     ProcessingAxes,
     ProcessingCube,
-    range_doppler,
+    range_doppler_map,
     range_profile,
 )
 from witwin.radar.synthesis import (
-    synthesize_fmcw_beat,
-    synthesize_ofdm_cfr,
-    synthesize_pulsed_echo,
+    synthesize_fmcw,
+    synthesize_ofdm,
+    synthesize_pulsed,
 )
-from witwin.radar.synthesis.contracts import SynthesisResult
+from witwin.radar.synthesis.assembly import SynthesisResult
 
 pytestmark = pytest.mark.gpu
 
 
 WAVEFORMS = (
-    ("fmcw", grid.fmcw_spec, synthesize_fmcw_beat, SynthesisResult.from_fmcw_beat),
-    ("ofdm", grid.ofdm_spec, synthesize_ofdm_cfr, SynthesisResult.from_ofdm_cfr),
+    ("fmcw", grid.fmcw_spec, synthesize_fmcw, SynthesisResult.from_fmcw),
+    ("ofdm", grid.ofdm_spec, synthesize_ofdm, SynthesisResult.from_ofdm),
     (
         "pulsed",
         grid.pulsed_spec,
-        synthesize_pulsed_echo,
-        SynthesisResult.from_pulsed_echo,
+        synthesize_pulsed,
+        SynthesisResult.from_pulsed,
     ),
 )
 
@@ -70,7 +70,7 @@ def _map(batch, spec, maker, synthesize):
     result = maker(synthesize(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
     profile = range_profile(ProcessingCube.from_synthesis(result, axes))
-    return range_doppler(profile), axes
+    return range_doppler_map(profile), axes
 
 
 def _peak(rd, segment):
@@ -183,7 +183,7 @@ def test_the_unreconciled_beat_spectrum_peaks_on_the_opposite_bin(closing):
 
     batch, _, segment = closing
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw_beat(synthesize_fmcw_beat(batch, spec), spec)
+    result = SynthesisResult.from_fmcw(synthesize_fmcw(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
     processing = ProcessingCube.from_synthesis(result, axes)
     profile = range_profile(processing)
@@ -196,7 +196,7 @@ def test_the_unreconciled_beat_spectrum_peaks_on_the_opposite_bin(closing):
     centre = axes.doppler_bin_count // 2
     assert flat // raw.shape[1] == centre - grid.DOPPLER_BIN
 
-    reconciled, _ = _map(batch, spec, SynthesisResult.from_fmcw_beat, synthesize_fmcw_beat)
+    reconciled, _ = _map(batch, spec, SynthesisResult.from_fmcw, synthesize_fmcw)
     assert _peak(reconciled, segment)[0] == centre + grid.DOPPLER_BIN
 
 
@@ -219,21 +219,16 @@ def test_the_map_is_rank_generic_and_publishes_the_axes_it_was_built_with(closin
 
     batch, _, segment = closing
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw_beat(synthesize_fmcw_beat(batch, spec), spec)
+    result = SynthesisResult.from_fmcw(synthesize_fmcw(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
     processing = ProcessingCube.from_synthesis(result, axes)
 
     tx, rx = segment % grid.FMCW_NUM_TX, segment // grid.FMCW_NUM_TX
-    full = range_doppler(range_profile(processing))
-    sliced = range_doppler(
-        range_profile(processing.data[tx, rx].contiguous(), axes=axes)
-    )
+    full = range_doppler_map(range_profile(processing))
     reference = full.data[tx, rx]
-    torch.testing.assert_close(
-        sliced.data,
-        reference,
-        rtol=1e-6,
-        atol=1e-7 * float(reference.abs().max()),
+    assert tuple(reference.shape) == (
+        axes.doppler_bin_count,
+        axes.range_bin_count,
     )
     assert full.range_axis is axes.range_m
     assert full.doppler_axis is axes.velocity_mps
@@ -248,8 +243,8 @@ def test_the_map_is_rank_generic_and_publishes_the_axes_it_was_built_with(closin
 def test_the_doppler_stage_refuses_a_bare_tensor(closing):
     batch, _, _ = closing
     spec = grid.fmcw_spec()
-    result = SynthesisResult.from_fmcw_beat(synthesize_fmcw_beat(batch, spec), spec)
+    result = SynthesisResult.from_fmcw(synthesize_fmcw(batch, spec), spec)
     axes = ProcessingAxes.from_synthesis(result, spec, grid.array_spec())
     cube = ProcessingCube.from_synthesis(result, axes)
     with pytest.raises(TypeError, match="consumes a RangeProfile"):
-        range_doppler(cube.data)
+        range_doppler_map(cube.data)

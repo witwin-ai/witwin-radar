@@ -3,7 +3,7 @@
 Until this phase the glue between a Core world and the propagation pipeline
 existed only under ``tests/support``: ``multi_endpoint_world.compile_snapshot``
 compiled, ``endpoint_batch`` packed, and the stable IDs were hard-coded fixture
-constants. ``witwin.radar.scene_binding`` is the production owner of the same
+constants. ``witwin.radar.simulation`` is the production owner of the same
 three answers, and ``compile_scene`` is the production crossing that replaces
 the fixture's private call to ``witwin.channel.scene.compile``.
 
@@ -30,7 +30,7 @@ import torch
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-from witwin.radar.scene_binding import (
+from witwin.radar.simulation import (
     DEFAULT_RECEIVER_ID_BASE,
     DEFAULT_SITE_ID_BASE,
     DEFAULT_TRANSMITTER_ID_BASE,
@@ -162,7 +162,7 @@ def test_core_mesh_still_rewrites_authored_world_coordinates_by_default():
 
     Not a test of Core: it is the pin that keeps the production binding honest
     about a default it does not control. If Core ever fixes the default, this
-    test fails and the contract note in ``scene_binding`` gets deleted with it,
+    test fails and the contract note in ``simulation`` gets deleted with it,
     which is the outcome R-ADR-009 asks for.
 
     Measured on ``world_vertices``, which is what a compiler consumes, and NOT
@@ -204,7 +204,7 @@ def test_core_mesh_still_rewrites_authored_world_coordinates_by_default():
 
 def test_components_and_max_depth_reach_the_propagation_block():
     from witwin.radar import RadarConfig
-    from witwin.radar.config import RadarSystemConfig
+    from witwin.radar.radar import RadarSystemConfig
 
     flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
     default = RadarSystemConfig.from_radar_config(flat)
@@ -224,7 +224,7 @@ def test_components_and_max_depth_reach_the_propagation_block():
 
 def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
     from witwin.radar import RadarConfig
-    from witwin.radar.config import RadarSystemConfig
+    from witwin.radar.radar import RadarSystemConfig
 
     flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
     stored = RadarSystemConfig.from_radar_config(flat)
@@ -236,7 +236,7 @@ def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
 
 def test_the_waveform_block_is_selectable_rather_than_inferred():
     from witwin.radar import RadarConfig
-    from witwin.radar.config import (
+    from witwin.radar.radar import (
         WAVEFORM_FMCW,
         WAVEFORM_OFDM,
         OfdmWaveformConfig,
@@ -282,7 +282,7 @@ def radar():
 
 @pytest.mark.gpu
 def test_the_compile_facade_produces_the_scene_the_adapter_consumes():
-    from witwin.radar.propagation.channel_consumer import (
+    from witwin.radar.channel import (
         ChannelPropagationAdapter,
         compile_scene,
     )
@@ -310,7 +310,7 @@ def test_a_reference_frequency_mismatch_is_refused_not_recompiled():
     and would say nothing about the frequency at all.
     """
 
-    from witwin.radar.propagation.channel_consumer import (
+    from witwin.radar.channel import (
         compile_scene,
         require_reference_frequency,
     )
@@ -326,7 +326,7 @@ def test_a_reference_frequency_mismatch_is_refused_not_recompiled():
 
 
 def test_require_reference_frequency_refuses_a_non_compiled_scene():
-    from witwin.radar.propagation.channel_consumer import (
+    from witwin.radar.channel import (
         require_reference_frequency,
     )
 

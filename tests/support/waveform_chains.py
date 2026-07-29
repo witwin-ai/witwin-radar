@@ -43,9 +43,9 @@ from .synthesis_batch import to_synthesis
 #: a wide band would drag in the wideband route that
 #: ``test_phase8_wideband_ofdm.py`` already owns.
 def ofdm_spec(*, num_symbols: int = 2, num_subcarriers: int = 8):
-    from witwin.radar.synthesis import OfdmCfrSpec
+    from witwin.radar.synthesis import OfdmSpec
 
-    return OfdmCfrSpec(
+    return OfdmSpec(
         num_subcarriers=num_subcarriers,
         num_symbols=num_symbols,
         subcarrier_spacing_hz=1.0e6,
@@ -62,9 +62,9 @@ def ofdm_spec(*, num_symbols: int = 2, num_subcarriers: int = 8):
 #: the 2e-8 s pulse; the 500 MHz sweep gives a 2e-9 s range cell, and with a
 #: static fixture the range-migration bound is satisfied with room to spare.
 def pulsed_spec(*, num_pulses: int = 2, num_samples: int = 32):
-    from witwin.radar.synthesis import PulsedEchoSpec
+    from witwin.radar.synthesis import PulsedSpec
 
-    return PulsedEchoSpec(
+    return PulsedSpec(
         num_pulses=num_pulses,
         num_samples=num_samples,
         sample_period_s=2.0e-9,
@@ -91,15 +91,15 @@ def synthesize(kind: str, composed, spec) -> torch.Tensor:
     """
 
     from witwin.radar.synthesis import (
-        synthesize_fmcw_beat,
-        synthesize_ofdm_cfr,
-        synthesize_pulsed_echo,
+        synthesize_fmcw,
+        synthesize_ofdm,
+        synthesize_pulsed,
     )
 
     owners = {
-        "fmcw": synthesize_fmcw_beat,
-        "ofdm": synthesize_ofdm_cfr,
-        "pulsed": synthesize_pulsed_echo,
+        "fmcw": synthesize_fmcw,
+        "ofdm": synthesize_ofdm,
+        "pulsed": synthesize_pulsed,
     }
     return owners[kind](to_synthesis(composed), spec)
 

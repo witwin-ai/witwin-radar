@@ -53,11 +53,11 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
 from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.scattering.rcs import (  # noqa: E402
+from witwin.radar.scattering import (  # noqa: E402
     SPEED_OF_LIGHT_M_PER_S,
     rcs_amplitude,
 )
-from witwin.radar.synthesis import synthesize_fmcw_beat  # noqa: E402
+from witwin.radar.synthesis import synthesize_fmcw  # noqa: E402
 
 
 pytestmark = pytest.mark.gpu
@@ -96,7 +96,7 @@ def _loss(spike, spec, response) -> torch.Tensor:
     composed, _, _ = spike.frame(
         None, response, ad_mode="none", include_delay_rate=False
     )
-    cube = synthesize_fmcw_beat(to_synthesis(composed), spec)
+    cube = synthesize_fmcw(to_synthesis(composed), spec)
     return cube.abs().square().sum()
 
 

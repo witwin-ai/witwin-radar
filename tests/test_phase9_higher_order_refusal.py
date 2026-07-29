@@ -61,13 +61,13 @@ gpu = pytest.mark.gpu
 #: it. Written out rather than discovered so that a new ``Function`` added
 #: without a first-order decision fails the structural test below.
 REGISTERED_BACKWARDS = {
-    "witwin/radar/paths/two_way.py": 1,
-    "witwin/radar/scattering/aspect.py": 1,
-    "witwin/radar/sensors/weights.py": 1,
-    "witwin/radar/synthesis/fmcw_beat.py": 1,
-    "witwin/radar/synthesis/ofdm_cfr.py": 1,
-    "witwin/radar/synthesis/pulsed_echo.py": 1,
-    "witwin/radar/frontend/chain.py": 2,
+    "witwin/radar/paths.py": 1,
+    "witwin/radar/scattering.py": 1,
+    "witwin/radar/sensors.py": 1,
+    "witwin/radar/synthesis/fmcw.py": 1,
+    "witwin/radar/synthesis/ofdm.py": 1,
+    "witwin/radar/synthesis/pulsed.py": 1,
+    "witwin/radar/frontend.py": 2,
 }
 
 
@@ -132,15 +132,15 @@ def test_every_registered_backward_is_decorated_by_the_one_owner():
 def test_the_package_names_no_second_higher_order_rule():
     """One implementation, in one file, imported by everyone else."""
 
-    from witwin.radar import ad_contracts
+    from witwin.radar import policy
 
-    assert ad_contracts.first_order_only.__module__ == "witwin.radar.ad_contracts"
+    assert policy.first_order_only.__module__ == "witwin.radar.policy"
     owners = [
         path
         for path in _radar_root().rglob("*.py")
         if "def first_order_only" in path.read_text(encoding="utf-8")
     ]
-    assert [path.name for path in owners] == ["ad_contracts.py"], owners
+    assert [path.name for path in owners] == ["policy.py"], owners
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def test_a_cotangent_that_itself_requires_grad_is_refused():
     which the grad-mode branch already refuses at every boundary above.
     """
 
-    from witwin.radar.ad_contracts import first_order_only
+    from witwin.radar.policy import first_order_only
 
     arrived: list[bool] = []
 
@@ -350,7 +350,7 @@ def test_once_differentiable_cannot_replace_the_grad_mode_check():
     assert observed == [False, False], observed
 
     # And the owner, wrapping from outside, sees it ON for the second.
-    from witwin.radar.ad_contracts import first_order_only
+    from witwin.radar.policy import first_order_only
 
     seen: list[bool] = []
 

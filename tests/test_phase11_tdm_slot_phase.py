@@ -5,7 +5,7 @@ the same claim through ``Radar.mimo`` / ``Radar.mimo_from_trace`` and the
 Dirichlet solver. The claim is unchanged and it is still worth having, because
 it is the only place the two halves of TDM meet:
 
-* ``synthesis/fmcw_beat.py`` WRITES a per-transmitter slow-time phase, because
+* ``synthesis/fmcw.py`` WRITES a per-transmitter slow-time phase, because
   a TDM front end fires its transmitters sequentially and transmitter ``m`` is
   sampled ``m T_chirp`` later than transmitter 0;
 * ``processing/aoa.py::tdm_compensate`` REMOVES it, and ``point_cloud`` calls

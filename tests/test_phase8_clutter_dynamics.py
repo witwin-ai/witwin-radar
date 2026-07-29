@@ -32,7 +32,7 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 from witwin.radar.paths import ENVIRONMENT_CLUTTER, TARGET  # noqa: E402
-from witwin.radar.propagation.epochs import (  # noqa: E402
+from witwin.radar.propagation import (  # noqa: E402
     FIRST_FRAME,
     MOTION_EVENT_CADENCE,
     ClutterComponentSpec,

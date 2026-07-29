@@ -22,13 +22,14 @@ import sys
 
 import pytest
 
-from witwin.radar.cuda import build, identity
+from witwin.radar.cuda import runtime as build
+identity = build
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CUDA_DIR = REPO_ROOT / "witwin" / "radar" / "cuda"
 
-#: Loads ``build.py`` from an arbitrary directory as a standalone package, so a
+#: Loads ``runtime.py`` from an arbitrary directory as a standalone package, so a
 #: case can point the loader at a copied source tree without touching the
 #: checkout. ``sys.argv[1]`` is that directory.
 _DRIVER = r"""
@@ -48,9 +49,8 @@ def _load(name, path):
     return module
 
 
-package.identity = _load("radar_cuda_probe.identity", os.path.join(cuda_dir, "identity.py"))
-package.build = _load("radar_cuda_probe.build", os.path.join(cuda_dir, "build.py"))
-build = package.build
+package.runtime = _load("radar_cuda_probe.runtime", os.path.join(cuda_dir, "runtime.py"))
+build = package.runtime
 
 result = {}
 try:
@@ -255,7 +255,7 @@ def test_a_mutated_source_tree_is_refused(tmp_path, packaged_binary):
     """
 
     cuda_dir = _copy_cuda_tree(tmp_path)
-    kernel = cuda_dir / "kernels" / "fmcw_beat.cu"
+    kernel = cuda_dir / "fmcw_beat.cu"
     kernel.write_bytes(kernel.read_bytes() + b"\n// phase10 mutation\n")
 
     result = _run_driver(cuda_dir, {})
@@ -422,8 +422,8 @@ def _load(name, path):
     return module
 
 
-package.identity = _load("radar_cuda_probe.identity", os.path.join(cuda_dir, "identity.py"))
-build = _load("radar_cuda_probe.build", os.path.join(cuda_dir, "build.py"))
+package.runtime = _load("radar_cuda_probe.runtime", os.path.join(cuda_dir, "runtime.py"))
+build = package.runtime
 
 result = {"import_time_cpp_extension": "torch.utils.cpp_extension" in sys.modules}
 
@@ -511,7 +511,7 @@ def test_the_loader_does_not_import_the_compiler_machinery_at_module_scope():
 
     import ast
 
-    tree = ast.parse((CUDA_DIR / "build.py").read_text(encoding="utf-8"))
+    tree = ast.parse((CUDA_DIR / "runtime.py").read_text(encoding="utf-8"))
     module_scope_imports: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Import):

@@ -37,11 +37,11 @@ def slot_of_each_row(composed, *, num_chirps: int, num_tx: int, num_rx: int):
     A composed row belongs to exactly one sensor pair, and a sensor pair is
     driven by exactly one transmitter, so a row's slow-time slot in chirp ``c``
     is ``c * num_tx + tx(pair_of_row)``. This resolves it through
-    :func:`witwin.radar.synthesis.pair_slot_index`, so the oracle reads the
+    :func:`witwin.radar.synthesis.assembly.pair_slot_index`, so the oracle reads the
     same table the beat kernel does.
     """
 
-    from witwin.radar.synthesis import pair_slot_index
+    from witwin.radar.synthesis.assembly import pair_slot_index
 
     table = pair_slot_index(
         num_chirps=num_chirps,
@@ -99,7 +99,7 @@ def refreshed_cube(frames, spec, *, num_chirps: int):
     from witwin.radar.synthesis import (
         SlowTimeMode,
         SynthesisPathBatch,
-        synthesize_fmcw_beat,
+        synthesize_fmcw,
     )
 
     if spec.carrier_hz != 0.0:
@@ -117,7 +117,7 @@ def refreshed_cube(frames, spec, *, num_chirps: int):
         batch = SynthesisPathBatch.from_radar_paths(
             composed, slow_time_mode=SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         )
-        cubes.append(synthesize_fmcw_beat(batch, one_chirp))
+        cubes.append(synthesize_fmcw(batch, one_chirp))
     return torch.cat(cubes, dim=0)
 
 

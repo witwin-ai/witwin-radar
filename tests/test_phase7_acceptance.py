@@ -173,11 +173,13 @@ def _solo_spec(*, num_chirps: int):
     """
 
     from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwBeatSpec
+    from witwin.radar.synthesis import FmcwSpec
 
     values = dict(geo.FIXTURE_RADAR_CONFIG)
     values.update(num_tx=1, num_rx=1, tx_loc=[[0, 0, 0]], rx_loc=[[0, 0, 0]])
-    spec = FmcwBeatSpec.from_radar_config(RadarConfig.from_dict(values))
+    spec = FmcwSpec.from_radar_config(
+        RadarConfig.from_dict(values), output_domain="beat"
+    )
     return replace(spec, num_chirps=num_chirps)
 
 
@@ -209,8 +211,8 @@ def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
     """
 
 
-    from witwin.radar.propagation import kinematics as kin
-    from witwin.radar.synthesis.fmcw_beat import synthesize_fmcw_beat
+    import witwin.radar.propagation as kin
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     velocity = (-SOLO_SPEED_M_PER_S, 0.0, 0.0)
     sites = kin.Kinematics(
@@ -256,7 +258,7 @@ def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
     assert -geo.REFERENCE_FREQUENCY_HZ * tau_rate > 1000.0
 
     spec = _solo_spec(num_chirps=16)
-    cube = synthesize_fmcw_beat(frame, spec).cpu()
+    cube = synthesize_fmcw(frame, spec).cpu()
     assert cube.shape[0] == 16
 
     for sample in (0, cube.shape[2] - 1):
@@ -314,7 +316,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
     """
 
     from witwin.channel.propagation import consumer
-    from witwin.radar.propagation.channel_consumer import _endpoint_batch
+    from witwin.radar.channel import _endpoint_batch
 
     times = _times()
     dynamic = world.make_dynamic_scene()

@@ -24,7 +24,7 @@ import pytest
 import torch
 
 from witwin.channel.propagation import consumer
-from witwin.radar.propagation.channel_consumer import (
+from witwin.radar.channel import (
     WIDEBAND_FREQUENCY_RESOLUTION_PHASE_BUDGET_RAD,
     ChannelPropagationAdapter,
 )
@@ -254,9 +254,9 @@ PROFILE_SPACING_HZ = 30.0e6
 
 
 def _profile_spec():
-    from witwin.radar.synthesis import OfdmCfrSpec
+    from witwin.radar.synthesis import OfdmSpec
 
-    return OfdmCfrSpec(
+    return OfdmSpec(
         num_subcarriers=PROFILE_SUBCARRIERS,
         num_symbols=1,
         subcarrier_spacing_hz=PROFILE_SPACING_HZ,
@@ -300,7 +300,7 @@ def _single_reflection_cube(offsets):
     from witwin.radar.synthesis import (
         SlowTimeMode,
         SynthesisPathBatch,
-        synthesize_ofdm_cfr,
+        synthesize_ofdm,
     )
 
     adapter = ChannelPropagationAdapter(
@@ -324,7 +324,7 @@ def _single_reflection_cube(offsets):
     composed = composer.compose(leg, include_delay_rate=False)
 
     spec = _profile_spec()
-    wide = synthesize_ofdm_cfr(
+    wide = synthesize_ofdm(
         SynthesisPathBatch.from_radar_paths(
             composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
         ),
@@ -332,7 +332,7 @@ def _single_reflection_cube(offsets):
     )
     import dataclasses
 
-    narrow = synthesize_ofdm_cfr(
+    narrow = synthesize_ofdm(
         SynthesisPathBatch.from_radar_paths(
             dataclasses.replace(
                 composed, frequency_response=None, frequency_offsets_hz=None
