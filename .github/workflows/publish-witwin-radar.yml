@@ -360,7 +360,7 @@ jobs:
           # would let pip replace the pinned Torch underneath it.
           python -m pip install --no-deps "witwin>=0.4.0,<0.5"
           python -m pip install --no-deps "$PACKAGE_DIR"/dist/*.whl
-          python - <<'PY'
+          python -I - <<'PY'
           import json
           import os
           import sys
@@ -482,7 +482,7 @@ jobs:
         env:
           EXPECTED_TORCH: ${{ matrix.compatibility.torch_version }}
         run: |
-          python - <<'PY'
+          python -I - <<'PY'
           import os
           import sys
 

@@ -114,6 +114,17 @@ def test_release_claim_gate_rejects_retired_policy_and_false_success(tmp_path: P
     assert any("loader refusal" in error for error in errors)
 
 
+def test_workflow_policy_rejects_a_wheel_smoke_shadowed_by_the_checkout(tmp_path: Path) -> None:
+    gate = _load("check_workflow_policy")
+    source = (ROOT / ".github" / "workflows" / "publish-witwin-radar.yml").read_text(encoding="utf-8")
+    mutated = source.replace("python -I - <<'PY'", "python - <<'PY'", 1)
+    assert mutated != source
+    workflow = tmp_path / "publish-witwin-radar.yml"
+    _write(workflow, mutated)
+    failures = gate.check_workflow(workflow)
+    assert any("repository checkout can shadow the installed wheel" in failure for failure in failures)
+
+
 def test_governance_inventory_gate_rejects_open_and_unproven_rows(tmp_path: Path) -> None:
     gate = _load("check_governance_inventory")
     header = "| ID | Debt | Owner | Phase | Falsifier | Scope | Status | Evidence |\n"

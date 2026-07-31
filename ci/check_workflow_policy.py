@@ -16,6 +16,7 @@ asserted against the checked-in YAML instead:
 * a real manylinux_2_28 image for the Linux wheel;
 * an architecture verifier run against the artifact on both platforms;
 * exactly one native member in the wheel;
+* wheel smoke imports run in isolated mode so the checkout cannot shadow the installed wheel;
 * the exact Torch/CUDA native-identity grid, cell for cell;
 * GitHub-hosted runners, with one frozen exception that carries its reason.
 
@@ -36,7 +37,7 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOW_DIR / "publish-witwin-radar.yml"
 
 #: Bump only together with a review of this file against the policy document.
-POLICY_VERSION = 7
+POLICY_VERSION = 8
 
 # Policy "Required CUDA coverage": the canonical release value and the reduced
 # opt-in pull-request set.
@@ -287,6 +288,13 @@ def check_wheel_shape(document: dict, failures: PolicyFailure) -> None:
     for sidecar in (".build-info.json", ".build-fingerprint"):
         if sidecar not in text:
             failures.add(f"no step asserts the installed package ships {sidecar}")
+    smoke_steps = [step for _, name, step in _steps(document) if name == "Smoke install prebuilt wheel"]
+    if len(smoke_steps) != 1:
+        failures.add(f"expected exactly one `Smoke install prebuilt wheel` step, found {len(smoke_steps)}")
+    elif "python -I - <<'PY'" not in str(smoke_steps[0].get("run", "")):
+        failures.add(
+            "the wheel smoke does not run Python in isolated mode; the repository checkout can shadow the installed wheel"
+        )
 
 
 def check_exact_runtime_matrix(document: dict, failures: PolicyFailure) -> None:
