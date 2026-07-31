@@ -668,8 +668,17 @@ jobs:
           sdists = sorted(Path("dist").glob("*.tar.gz"))
           assert len(wheels) == 2, [wheel.name for wheel in wheels]
           assert len(sdists) == 1, [sdist.name for sdist in sdists]
-          tags = {wheel.name.rsplit("-", 1)[-1].removesuffix(".whl") for wheel in wheels}
-          assert tags == {"win_amd64", "manylinux_2_28_x86_64"}, tags
+          platform_tags = {
+              wheel.name: set(wheel.name.removesuffix(".whl").rsplit("-", 1)[-1].split(".")) for wheel in wheels
+          }
+          windows = [name for name, tags in platform_tags.items() if tags == {"win_amd64"}]
+          linux = [
+              name
+              for name, tags in platform_tags.items()
+              if "manylinux_2_28_x86_64" in tags and all(tag.startswith("manylinux_") for tag in tags)
+          ]
+          assert len(windows) == 1, platform_tags
+          assert len(linux) == 1, platform_tags
           print("publishing:", ", ".join(path.name for path in wheels + sdists))
           PY
 

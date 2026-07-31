@@ -37,7 +37,7 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOW_DIR / "publish-witwin-radar.yml"
 
 #: Bump only together with a review of this file against the policy document.
-POLICY_VERSION = 8
+POLICY_VERSION = 9
 
 # Policy "Required CUDA coverage": the canonical release value and the reduced
 # opt-in pull-request set.
@@ -334,6 +334,18 @@ def check_publish_gating(document: dict, failures: PolicyFailure) -> None:
     for required in ("build_cuda_wheels", "test_torch_compatibility"):
         if required not in needs:
             failures.add(f"the publish job does not depend on {required!r}")
+    artifact_steps = [
+        step for step in publish.get("steps") or () if step.get("name") == "Validate the artifact set before publishing"
+    ]
+    if len(artifact_steps) != 1:
+        failures.add(f"expected exactly one publish artifact validation step, found {len(artifact_steps)}")
+        return
+    artifact_validation = str(artifact_steps[0].get("run", ""))
+    required_fragments = ('split(".")', '"manylinux_2_28_x86_64" in tags', 'tags == {"win_amd64"}')
+    if not all(fragment in artifact_validation for fragment in required_fragments):
+        failures.add(
+            "publish artifact validation must parse compressed wheel platform tags and require one Windows and one manylinux_2_28 wheel"
+        )
 
 
 #: Every policy row this repository cannot satisfy locally must appear in the
