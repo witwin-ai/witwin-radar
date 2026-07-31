@@ -152,6 +152,14 @@ def test_the_wheel_declares_the_two_identity_sidecars_as_artifacts():
         assert pattern in text, pattern
 
 
+def test_wheel_smoke_hashes_every_compiled_translation_unit(wheel_smoke):
+    """The packed-source audit must reproduce the native build fingerprint."""
+
+    runtime = _load("runtime_source_members", "witwin/radar/cuda/runtime.py")
+    expected = tuple(f"witwin/radar/cuda/{path.name}" for path in runtime.extension_sources())
+    assert wheel_smoke._SOURCE_MEMBERS == expected
+
+
 def test_channel_is_an_optional_extra_and_never_a_required_dependency():
     """R-ADR-008's decision, as a check rather than a paragraph."""
 
@@ -161,7 +169,7 @@ def test_channel_is_an_optional_extra_and_never_a_required_dependency():
     required = data["project"]["dependencies"]
     assert not any("channel" in entry for entry in required), required
     extras = data["project"]["optional-dependencies"]
-    assert extras["channel"] == ["witwin-channel>=0.4,<0.5"]
+    assert extras["channel"] == ["witwin-channel>=0.5.0,<0.6"]
     for entry in required + [item for value in extras.values() for item in value]:
         assert "rayd" not in entry.lower(), entry
 

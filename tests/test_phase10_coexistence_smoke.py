@@ -63,7 +63,7 @@ class TestTheRequirementParser:
             "Metadata-Version: 2.4\n"
             "Name: witwin-radar\n"
             "Requires-Dist: torch>=2.10\n"
-            "Requires-Dist: witwin-channel<0.5,>=0.4; extra == 'channel'\n"
+            "Requires-Dist: witwin-channel<0.6,>=0.5.0; extra == 'channel'\n"
             "Requires-Dist: pytest; extra == 'dev'\n"
         )
         assert smoke._requirement_names(metadata) == ["torch", "witwin-channel", "pytest"]

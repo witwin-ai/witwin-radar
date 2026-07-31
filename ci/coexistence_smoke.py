@@ -27,15 +27,14 @@ A          ``import witwin.core`` loads no Channel module, no ``rayd``,
            evidence that the mesh-SDF extension keeps an owner of its
            own rather than riding along with the world contract.
 B          ``import witwin.radar`` loads no Channel module and does not
-           import its own loader. The lazy ``__getattr__`` in
-           ``witwin/radar/__init__.py`` is what makes A2 hold for the
-           Radar package too, and a future eager import would break it
-           silently.
+           import its own loader. The narrow package-root facade is what
+           makes A2 hold for Radar too, and a future eager import would
+           break it silently.
 C          ``import witwin.radar.channel`` DOES
            pull the Channel package - it is the adapter - but not the
            Channel native extension. Importing an adapter must not cost
            a native load.
-D          ``witwin.radar.build_info()`` returns the full R-ADR-019
+D          ``witwin.radar.deployment.build_info()`` returns the full R-ADR-019
            record, ``origin == "packaged"``, and the binary it validated
            lives inside the disposable target.
 E          ``witwin.channel.build_info()`` returns its ADR-006 record
@@ -338,9 +337,10 @@ emit(
 
 def _scenario_d() -> str:
     return """
-import witwin.radar
+import witwin.radar  # noqa: F401
+from witwin.radar.deployment import build_info
 
-info = witwin.radar.build_info()
+info = build_info()
 if info["origin"] != "packaged":
     raise SystemExit(f"installed radar extension origin is {info['origin']!r}")
 extension_path = Path(info["extension_path"]).resolve()

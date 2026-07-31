@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "witwin>=0.4,<0.5",
+    "witwin>=0.4.0,<0.5",
     "numpy>=1.24",
     "torch>=2.10",
     "scipy>=1.10",
@@ -51,7 +51,7 @@ dev = [
 # still pulls in no ray-tracing distribution, which the dependency-closure
 # check in the coexistence smoke asserts.
 #
-# Pinned to `<0.5` rather than left open because Channel's propagation consumer
+# Pinned to `<0.6` rather than left open because Channel's propagation consumer
 # contract is versioned and Radar reads it; a new minor Channel is a contract
 # review, not an automatic upgrade.
 #
@@ -59,7 +59,7 @@ dev = [
 # gate `tests/test_phase5_removed_entry_points.py` scans the whole pyproject
 # text, comments included, and that scan is worth more than a comment is.
 channel = [
-    "witwin-channel>=0.4,<0.5",
+    "witwin-channel>=0.5.0,<0.6",
 ]
 
 [tool.hatch.build.targets.wheel]

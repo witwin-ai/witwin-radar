@@ -358,7 +358,7 @@ jobs:
           # all. Installed --no-deps and from the declared range: this smoke is
           # about the radar extension, and pulling Core's full dependency tree
           # would let pip replace the pinned Torch underneath it.
-          python -m pip install --no-deps "witwin>=0.4,<0.5"
+          python -m pip install --no-deps "witwin>=0.4.0,<0.5"
           python -m pip install --no-deps "$PACKAGE_DIR"/dist/*.whl
           python - <<'PY'
           import json
@@ -383,11 +383,13 @@ jobs:
               assert len(matches) == 1, (sidecar, matches)
               assert "/prebuilt/" in f"/{matches[0]}"
 
-          import witwin.radar as radar
+          import witwin.radar  # noqa: F401
+          from witwin.radar.deployment import build_info
 
-          record = radar.build_info()
+          record = build_info()
+          native_build = record["native_build"]
           assert record["origin"] == "packaged", record["origin"]
-          assert record["extension_name"] == "_radar_native", record
+          assert native_build["extension_name"] == "_radar_native", native_build
           extension_path = Path(record["extension_path"]).resolve()
           assert extension_path.name.startswith("_radar_native"), extension_path
           assert extension_path.parent.name == "prebuilt", extension_path
@@ -396,12 +398,12 @@ jobs:
           # and the sidecar beside the binary carries the same value. build_info
           # already refuses to return without this, so re-reading the sidecar
           # here is the independent half.
-          from witwin.radar.cuda import identity
+          from witwin.radar.cuda import runtime
 
-          declared = identity.fingerprint_sidecar_path(extension_path).read_text(
+          declared = runtime.fingerprint_sidecar_path(extension_path).read_text(
               encoding="ascii"
           ).strip()
-          assert declared == record["build_fingerprint"], (declared, record["build_fingerprint"])
+          assert declared == native_build["build_fingerprint"], (declared, native_build["build_fingerprint"])
 
           # Nothing imported the compiler. A silent JIT is not merely absent,
           # it is unreachable: the module that performs it was never loaded.
@@ -409,10 +411,10 @@ jobs:
 
           print(json.dumps({
               "origin": record["origin"],
-              "build_type": record["build_type"],
-              "build_fingerprint": record["build_fingerprint"],
-              "cuda_architectures": record["cuda_architectures"],
-              "operator_count": len(record["operator_symbols"]),
+              "build_type": native_build["build_type"],
+              "build_fingerprint": native_build["build_fingerprint"],
+              "cuda_architectures": native_build["cuda_architectures"],
+              "operator_count": len(native_build["operator_symbols"]),
               "extension_path": str(extension_path),
           }, indent=2, sort_keys=True))
           PY
@@ -469,7 +471,7 @@ jobs:
           python -m pip install numpy
           python -m pip install --no-cache-dir "torch==${{ matrix.compatibility.torch_version }}" \
             --index-url "https://download.pytorch.org/whl/${{ matrix.compatibility.cuda_index }}"
-          python -m pip install --no-deps "witwin>=0.4,<0.5"
+          python -m pip install --no-deps "witwin>=0.4.0,<0.5"
           python -m pip install --no-deps dist/*.whl
 
       # Radar publishes an exact native identity. Every release cell therefore
@@ -489,15 +491,17 @@ jobs:
           expected_torch = os.environ["EXPECTED_TORCH"]
           assert torch.__version__.split("+", 1)[0] == expected_torch
 
-          import witwin.radar as radar
+          import witwin.radar  # noqa: F401
+          from witwin.radar.deployment import build_info
 
-          record = radar.build_info()
+          record = build_info()
+          native_build = record["native_build"]
           assert record["origin"] == "packaged", record["origin"]
-          assert record["torch_version"] == torch.__version__.split("+", 1)[0], record
+          assert native_build["torch_version"] == torch.__version__.split("+", 1)[0], native_build
           assert "torch.utils.cpp_extension" not in sys.modules
           print(
               f"packaged exact-identity load OK with torch {torch.__version__}; "
-              f"fingerprint={record['build_fingerprint']}"
+              f"fingerprint={native_build['build_fingerprint']}"
           )
           PY
   consumer_channel_extra:
@@ -582,10 +586,10 @@ jobs:
           import witwin.radar  # noqa: F401
 
           assert not [name for name in sys.modules if name.startswith("witwin.channel")]
-          assert "witwin.radar.cuda.build" not in sys.modules
+          assert "witwin.radar.cuda.runtime" not in sys.modules
           assert "torch.utils.cpp_extension" not in sys.modules
 
-          import witwin.radar.propagation.channel_consumer  # noqa: F401
+          import witwin.radar.channel  # noqa: F401
 
           channel_modules = [name for name in sys.modules if name.startswith("witwin.channel")]
           assert channel_modules, "the adapter did not load the Channel package"

@@ -29,7 +29,7 @@ What this proves, and why each check exists:
   never be importable from an installed package.
 * finally, an isolated ``pip install --no-deps --target`` plus a ``python -I``
   subprocess that imports the package and asserts
-  ``build_info()["origin"] == "packaged"`` with every resolved origin inside
+  ``deployment.build_info()["origin"] == "packaged"`` with every resolved origin inside
   the disposable target. ``--target`` rather than a venv because it is the
   shape that also proves origin isolation, and because the ambient development
   environment has editable finders for ``witwin`` and ``witwin-radar`` that
@@ -73,6 +73,7 @@ _DSO_SUFFIXES = frozenset({".dll", ".dylib", ".pyd", ".so"})
 _SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
     "witwin/radar/cuda/fmcw_beat.cu",
+    "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
@@ -482,9 +483,10 @@ package_origin = Path(package_spec.origin).resolve()
 if not package_origin.is_relative_to(target):
     raise RuntimeError(f"package resolved outside isolated target: {{package_origin}}")
 
-import witwin.radar as radar
+import witwin.radar  # noqa: F401
+from witwin.radar.deployment import build_info
 
-info = radar.build_info()
+info = build_info()
 if info.get("origin") != "packaged":
     raise RuntimeError(f"installed radar extension origin is {{info.get('origin')!r}}")
 native_origin = Path(info["extension_path"]).resolve()
