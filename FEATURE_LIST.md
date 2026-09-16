@@ -5,6 +5,7 @@ This file describes the current surface after the breaking concept-axis consolid
 ## Simulation and propagation
 
 - `Radar.simulate(...)` is the scene-driven production entry for `witwin.core.Scene` and `DynamicScene` worlds.
+- Parameter JVP seeds do not change the simulated primal or masquerade as physical velocities.
 - `RadarSimulationResult` returns a typed `[frame, TX, RX, slow, fast]` cube with waveform, axes, phasor convention, reference frequency, epoch, and last-frame diagnostic metadata.
 - `witwin/radar/channel.py` is the single production importer of `witwin.channel`; the rest of Radar consumes Radar-owned adapter contracts.
 - Direct and multipath one-way legs are composed into round-trip paths with explicit join mode, identity, delay, delay rate, transfer provenance, and row validity.

@@ -408,6 +408,29 @@ def test_the_published_cube_is_differentiable_through_the_site_positions():
     assert bool((grad != 0).any())
 
 
+def test_parameter_jvp_does_not_change_the_primal_scene():
+    import torch.autograd.forward_ad as forward_ad
+
+    radar = _radar()
+    scene = _static_scene()
+    positions = _sites(radar).positions_m
+    response = _response(radar)
+    reference = radar.simulate(scene, times=(0.0,), response=response, sites=ScatterSitePolicy.explicit(positions))
+    for scale in (0.0, 1.0, -3.0):
+        direction = torch.zeros_like(positions)
+        direction[:, 0] = scale
+        with forward_ad.dual_level():
+            dual = forward_ad.make_dual(positions, direction)
+            result = radar.simulate(
+                scene, times=(0.0,), response=response, sites=ScatterSitePolicy.explicit(dual), ad_mode="jvp"
+            )
+            primal, tangent = forward_ad.unpack_dual(result.cube)
+            torch.testing.assert_close(primal, reference.cube, rtol=0, atol=0)
+            assert tangent is not None
+            assert bool(torch.isfinite(tangent).all())
+            assert result.last_radar_paths.delay_rate is None
+
+
 def test_components_and_max_depth_override_one_solve_and_not_the_radar():
     """A propagation request is a statement about ONE solve."""
 

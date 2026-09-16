@@ -841,7 +841,9 @@ def simulate_scene(
                 outbound_handle, binding.site_sources, binding.receivers, slot_count=1, ad_mode=ad_mode
             ),
         )
-        composed = composer.compose(legs.inbound, legs.outbound, response)
+        # The caller's AD direction is a parameter perturbation, not a time
+        # derivative. Physical motion must never depend on the JVP seed.
+        composed = composer.compose(legs.inbound, legs.outbound, response, include_delay_rate=False)
         if pattern_stage is not None:
             composed = pattern_stage.apply(
                 composed,
