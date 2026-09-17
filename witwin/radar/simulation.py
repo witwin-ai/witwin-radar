@@ -36,6 +36,32 @@ DEFAULT_SITE_ID_BASE = 3_000_000
 #: resulting complex transfer and therefore has no polarization input.
 DEFAULT_POLARIZATION = (0.0, 0.0, 1.0)
 
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveMotionSpec:
+    """Sampled error control, not a proof of absent events between probes.
+
+    The phase tolerance is radians per path, before coherent summation; the
+    amplitude tolerance is relative per path. Max interval [s] bounds the
+    topology probe spacing. Near coherent nulls a relative IQ bound cannot be
+    inferred from these path bounds. Exhausting the discovery budget raises.
+    """
+
+    phase_error_rad: float = 0.02
+    relative_amplitude_error: float = 0.02
+    max_interval_s: float = 0.002
+    max_evaluations: int = 8192
+    batch_observations: int = 256
+
+    def __post_init__(self):
+        for name in ("phase_error_rad", "relative_amplitude_error", "max_interval_s"):
+            value = getattr(self, name)
+            if isinstance(value, torch.Tensor) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be a finite positive host value")
+        for name in ("max_evaluations", "batch_observations"):
+            _positive_int(getattr(self, name), name=name)
+
+
 #: A scatter site is excited at exactly one watt.
 #:
 #: The site is a re-radiator, not a second transmitter: the whole target
@@ -575,6 +601,7 @@ class RadarSimulationResult:
     path_set_complete: bool = True
     motion_sampling: str = "static"
     output_domain: str = "beat"
+    adaptive_diagnostics: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axes):
@@ -631,6 +658,7 @@ class RadarSimulationResult:
         sample_times_s=(),
         path_set_complete: bool = True,
         motion_sampling: str = "static",
+        adaptive_diagnostics=(),
     ) -> RadarSimulationResult:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
@@ -663,6 +691,7 @@ class RadarSimulationResult:
             path_set_complete=path_set_complete,
             motion_sampling=motion_sampling,
             output_domain=synthesis.output_domain,
+            adaptive_diagnostics=tuple(adaptive_diagnostics),
         )
 
 
@@ -695,6 +724,184 @@ def _times(times: object) -> tuple[float, ...]:
     return values
 
 
+def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
+    """Control topology probes on the host; interpolate and synthesize on CUDA.
+
+    Quarter/midpoint tests bound observed errors only. Arbitrarily brief path
+    births or adversarial oscillations between probes require the ADC reference.
+    Host copies below are explicit adaptive decisions, not a differentiable
+    physics implementation. AD follows the accepted, fixed partition.
+    """
+    import numpy as np
+
+    from .paths import interpolate_path_rows
+    from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_rows
+
+    cache, partitions, pair_tables = {}, {}, {}
+    stats = {
+        "evaluations": 0,
+        "topology_refinements": 0,
+        "accepted_intervals": 0,
+        "max_tested_phase_error_rad": 0.0,
+        "max_tested_relative_amplitude_error": 0.0,
+        "max_interval_s": options.max_interval_s,
+        "exhaustive": False,
+    }
+
+    def ensure(indices):
+        missing = sorted(set(indices) - cache.keys())
+        if len(cache) + len(missing) > options.max_evaluations:
+            raise RuntimeError("adaptive motion discovery budget exhausted before satisfying error/topology tests")
+        for begin in range(0, len(missing), options.batch_observations):
+            batch = missing[begin : begin + options.batch_observations]
+            records = evaluate_many([times[index] for index in batch])
+            for index, record in zip(batch, records, strict=True):
+                cache[index] = record
+                pair_tables[index] = record[2].pair_offsets.tolist()
+
+    def prediction(left, right, index):
+        a, b = cache[left][2], cache[right][2]
+        alpha = torch.full_like(
+            a.total_delay_s, (times[index] - times[left]) / (times[right] - times[left]), dtype=torch.float64
+        )
+        return interpolate_path_rows(
+            a.total_delay_s, b.total_delay_s, a.complex_transfer_ref, b.complex_transfer_ref, alpha, carrier_hz
+        )
+
+    pending = [(0, len(times) - 1)]
+    while pending:
+        probes = {}
+        for left, right in pending:
+            probes[left, right] = sorted(
+                {left, right, (3 * left + right) // 4, (left + right) // 2, (left + 3 * right) // 4}
+            )
+        ensure(index for group in probes.values() for index in group)
+        next_pending = []
+        for (left, right), indices in probes.items():
+            identities = [cache[index][3] for index in indices]
+            topology_ok = all(key == identities[0] for key in identities)
+            phase_error = amplitude_error = 0.0
+            accepted = right - left <= 1
+            if not accepted and topology_ok and times[right] - times[left] <= options.max_interval_s:
+                for index in indices[1:-1]:
+                    delay, transfer = prediction(left, right, index)
+                    actual = cache[index][2]
+                    # These detached reads drive refinement only. They do not
+                    # replace the native, differentiable production interpolant.
+                    predicted_delay = delay.detach().double().cpu().numpy()
+                    observed_delay = actual.total_delay_s.detach().double().cpu().numpy()
+                    d = predicted_delay - observed_delay
+                    predicted = transfer.detach().cpu().numpy().astype(np.complex128)
+                    observed = actual.complex_transfer_ref.detach().cpu().numpy().astype(np.complex128)
+                    live = actual.row_valid.cpu().numpy()
+                    if not np.any(live):
+                        continue
+                    if not all(np.isfinite(value[live]).all() for value in (d, predicted, observed)):
+                        raise RuntimeError("nonfinite adaptive path probe; no error bound can be accepted")
+                    magnitude = np.maximum(np.abs(predicted), np.abs(observed))
+                    floor = max(float(magnitude.max()) * 1e-6, 1e-30)
+                    phase_live = live & (magnitude > floor)
+                    waveform_frequency = abs(spec.slope_hz_per_s) * (
+                        abs(spec.t_start_s)
+                        + (spec.num_samples - 1) * spec.sample_period_s
+                        + float(
+                            np.max(np.maximum(np.abs(predicted_delay[live]), np.abs(observed_delay[live])), initial=0)
+                        )
+                    )
+                    phase_error = max(
+                        phase_error,
+                        float(np.max(2 * np.pi * carrier_hz * np.abs(d[live]), initial=0)),
+                        float(
+                            np.max(
+                                np.abs(np.angle(predicted[phase_live] * observed[phase_live].conj()))
+                                + 2 * np.pi * waveform_frequency * np.abs(d[phase_live]),
+                                initial=0,
+                            )
+                        ),
+                    )
+                    amplitude_error = max(
+                        amplitude_error,
+                        float(
+                            np.max(
+                                np.abs(np.abs(predicted[live]) - np.abs(observed[live]))
+                                / np.maximum(magnitude[live], floor),
+                                initial=0,
+                            )
+                        ),
+                    )
+                accepted = (
+                    phase_error <= options.phase_error_rad and amplitude_error <= options.relative_amplitude_error
+                )
+            if accepted:
+                stats["accepted_intervals"] += 1
+                stats["max_tested_phase_error_rad"] = max(stats["max_tested_phase_error_rad"], phase_error)
+                stats["max_tested_relative_amplitude_error"] = max(
+                    stats["max_tested_relative_amplitude_error"], amplitude_error
+                )
+                for index in range(left, right + 1):
+                    partitions[index] = (left, right)
+            else:
+                stats["topology_refinements"] += int(not topology_ok)
+                middle = (left + right) // 2
+                next_pending.extend([(left, middle), (middle, right)])
+        pending = next_pending
+
+    pairs = spec.num_tx * spec.num_rx
+    columns = []
+    # Group equal ADC offsets so the existing FMCW phase owner evaluates all
+    # slow-time observations in one segment batch; never synthesize an N*N grid.
+    for sample in range(spec.num_samples):
+        indices = list(range(sample, len(times), spec.num_samples))
+        values = []
+        for begin in range(0, len(indices), options.batch_observations):
+            batch = indices[begin : begin + options.batch_observations]
+            d0, d1, w0, w1, fractions, clocks, valid, offsets = [], [], [], [], [], [], [], [0]
+            for index in batch:
+                left, right = (index, index) if index in cache else partitions[index]
+                a, b = cache[left][2], cache[right][2]
+                fraction = 0.0 if left == right else (times[index] - times[left]) / (times[right] - times[left])
+                d0.append(a.total_delay_s)
+                d1.append(b.total_delay_s)
+                w0.append(a.complex_transfer_ref)
+                w1.append(b.complex_transfer_ref)
+                fractions.append(torch.full_like(a.total_delay_s, fraction, dtype=torch.float64))
+                clocks.append(torch.full_like(a.total_delay_s, times[index], dtype=torch.float64))
+                valid.append(a.row_valid)
+                base = offsets[-1]
+                offsets.extend(base + value for value in pair_tables[left][1:])
+            delay, transfer = interpolate_path_rows(
+                torch.cat(d0), torch.cat(d1), torch.cat(w0), torch.cat(w1), torch.cat(fractions), carrier_hz
+            )
+            transfer = torch.where(torch.cat(valid), transfer, torch.zeros_like(transfer))
+            if frontend is not None:
+                transfer = frontend._apply_path_phase_rows(delay, transfer, torch.cat(clocks))
+            batch_spec = replace(
+                spec,
+                num_chirps=1,
+                num_samples=1,
+                num_tx=1,
+                num_rx=len(batch) * pairs,
+                output_domain="beat",
+                t_start_s=spec.t_start_s + sample * spec.sample_period_s,
+            )
+            cube = synthesize_fmcw_rows(
+                delay,
+                None,
+                channel_phasor_to_beat_weight(transfer),
+                torch.tensor(offsets, dtype=torch.int64, device=delay.device),
+                batch_spec,
+            )
+            values.append(cube.reshape(len(batch), pairs))
+        columns.append(torch.cat(values, dim=0))
+    all_slots = torch.stack(columns, dim=-1)
+    pair = torch.arange(pairs, device=all_slots.device)
+    slot = torch.arange(spec.num_chirps, device=all_slots.device)[:, None] * spec.num_tx + pair[None, :] % spec.num_tx
+    stats["evaluations"] = len(cache)
+    stats["exhaustive"] = len(cache) == len(times)
+    stats["observation_count"] = len(times)
+    return all_slots[slot, pair], stats, cache[0], cache[len(times) - 1]
+
+
 def simulate_scene(
     radar: object,
     scene: object,
@@ -712,6 +919,7 @@ def simulate_scene(
     antenna_pattern: object = None,
     sensor_endpoints: SensorEndpointIds | None = None,
     motion_sampling: str = "adc",
+    adaptive_motion: AdaptiveMotionSpec | None = None,
 ) -> RadarSimulationResult:
     """Run ``radar`` over ``scene`` at ``times`` and publish the frame cubes.
 
@@ -732,7 +940,11 @@ def simulate_scene(
     returns a new configuration rather than mutating the radar's stored one.
 
     Dynamic scenes refresh each ADC observation by default; ``motion_sampling``
-    can explicitly select a chirp-frozen approximation. Complete discovery is
+    can explicitly select ``adaptive`` with :class:`AdaptiveMotionSpec`, or a
+    chirp-frozen approximation. Adaptive FMCW batches topology-identical probes,
+    interpolates carrier-transported coefficients, and refines at observed path
+    identity/validity changes. Its sampled error tests cannot exclude arbitrarily
+    brief unseen events; ``path_set_complete`` records this boundary. Complete discovery is
     the default at every observation. A longer ``motion_event_period_frames``
     is converted from frames to observation count and marks path completeness
     false unless structure motion already forces discovery. The selected
@@ -759,8 +971,13 @@ def simulate_scene(
     from .sensors import RoundTripPatternStage
     from .synthesis.assembly import assemble_frame_cube
 
-    if motion_sampling not in ("adc", "chirp"):
-        raise ValueError("motion_sampling must be adc or chirp")
+    if motion_sampling not in ("adc", "chirp", "adaptive"):
+        raise ValueError("motion_sampling must be adc, chirp, or adaptive")
+    if adaptive_motion is not None and motion_sampling != "adaptive":
+        raise ValueError("adaptive_motion requires motion_sampling='adaptive'")
+    adaptive = AdaptiveMotionSpec() if adaptive_motion is None else adaptive_motion
+    if not isinstance(adaptive, AdaptiveMotionSpec):
+        raise TypeError("adaptive_motion must be AdaptiveMotionSpec")
     instants = _times(times)
     policy = ScatterSitePolicy.structure_anchor() if sites is None else sites
     if not isinstance(policy, ScatterSitePolicy):
@@ -839,7 +1056,7 @@ def simulate_scene(
     if path_phase_noise:
         if not isinstance(full_spec, FmcwSpec):
             raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
-        if motion_sampling != "adc":
+        if motion_sampling not in ("adc", "adaptive"):
             raise ValueError("common-oscillator phase noise requires ADC-time observations")
         sampled = True
     output_spec = full_spec
@@ -847,7 +1064,11 @@ def simulate_scene(
     # Preserve the direct-spectrum fast path only for an ideal receiver.
     if isinstance(full_spec, FmcwSpec) and radar.frontend is not None:
         full_spec = replace(full_spec, output_domain="beat")
-    adc_sampled = sampled and motion_sampling == "adc" and isinstance(full_spec, FmcwSpec)
+    if motion_sampling == "adaptive" and not isinstance(full_spec, FmcwSpec):
+        raise NotImplementedError("adaptive motion currently requires FMCW")
+    if motion_sampling == "adaptive" and motion_event_period_frames is not None:
+        raise ValueError("adaptive motion owns its topology discovery cadence")
+    adc_sampled = sampled and motion_sampling in ("adc", "adaptive") and isinstance(full_spec, FmcwSpec)
     samples_per_slot = full_spec.num_samples if adc_sampled else 1
 
     if sampled:
@@ -884,6 +1105,114 @@ def simulate_scene(
         world_motion=world_motion,
     )
 
+    def evaluate_many(query_times):
+        """Discover probes, then batch replay only identical live scene handles.
+
+        Moving compiled geometry is replayed before the next refreeze retires
+        its handles. Static geometry permits one slot batch per full leg key.
+        Host identity observations belong to adaptive control, not a replay.
+        """
+        from .paths import leg_identity
+
+        results = {}
+        groups = {}
+
+        def finish(group):
+            first = group[0][1].frozen
+            bindings = [entry[2] for entry in group]
+
+            def endpoints(name):
+                specs = [getattr(binding, name) for binding in bindings]
+                if len(specs) == 1:
+                    return specs[0]
+                return RadarEndpointSpec(
+                    **{
+                        field: None
+                        if getattr(specs[0], field) is None
+                        else torch.cat([getattr(spec, field) for spec in specs], dim=0)
+                        for field in ("stable_ids", "positions_m", "polarizations", "powers_w")
+                    }
+                )
+
+            replay = RadarPropagationLegs(
+                inbound=first.adapter.reevaluate_slots(
+                    first.handles[0],
+                    endpoints("transmitters"),
+                    endpoints("site_sinks"),
+                    slot_count=len(group),
+                    ad_mode=ad_mode,
+                ),
+                outbound=first.adapter.reevaluate_slots(
+                    first.handles[1],
+                    endpoints("site_sources"),
+                    endpoints("receivers"),
+                    slot_count=len(group),
+                    ad_mode=ad_mode,
+                ),
+            )
+            for slot, (t, frame, binding, identity) in enumerate(group):
+                legs = (
+                    replay
+                    if len(group) == 1
+                    else RadarPropagationLegs(inbound=replay.inbound.slot(slot), outbound=replay.outbound.slot(slot))
+                )
+                composer, _, pattern_stage = frame.frozen.payload
+                current_response = response.at(t) if callable(getattr(response, "at", None)) else response
+                paths = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
+                if pattern_stage is not None:
+                    paths = pattern_stage.apply(
+                        paths,
+                        tx_pos=binding.transmitters.positions_m,
+                        rx_pos=binding.receivers.positions_m,
+                        tx_targets_m=legs.inbound.departure_target_m.index_select(0, paths.topology.inbound_row),
+                        rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, paths.topology.outbound_row),
+                    )
+                if motion_sampling == "adaptive":
+                    identity = (identity, tuple(paths.row_valid.tolist()))
+                results[t] = (frame, legs, paths, identity)
+
+        for t in query_times:
+            frame = loop.frame(t)
+            binding = (
+                frame.frozen.payload[1]
+                if frame.rediscovered
+                else bind_radar_world(
+                    radar,
+                    frame.snapshot,
+                    sites=policy,
+                    ids=ids,
+                    polarization=orientation,
+                    sensor_endpoints=sensor_endpoints,
+                )
+            )
+            identity = (
+                tuple(tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles)
+                if motion_sampling == "adaptive"
+                else ()
+            )
+            entry = (t, frame, binding, identity)
+            if loop.structures_move:
+                finish([entry])
+            else:
+                groups.setdefault(identity, []).append(entry)
+        for group in groups.values():
+            finish(group)
+        return [results[t] for t in query_times]
+
+    def finish_frame(synthesis):
+        frame_cube = radar._apply_signal_models(
+            assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx),
+            phase_in_signal=path_phase_noise,
+        )
+        if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != synthesis.output_domain:
+            from .processing.range_doppler import fmcw_range_fft
+
+            frame_cube = fmcw_range_fft(frame_cube)
+            synthesis = SynthesisResult.from_fmcw(
+                frame_cube.permute(2, 1, 0, 3).reshape(full_spec.num_chirps, -1, full_spec.num_samples), output_spec
+            )
+        return frame_cube, synthesis
+
     cubes: list[torch.Tensor] = []
     epochs: list[int] = []
     reasons: list[str | None] = []
@@ -893,53 +1222,32 @@ def simulate_scene(
     epoch_frame = None
     sample_times = []
     slot_cubes = []
+    diagnostics = []
+    adaptive_active = sampled and motion_sampling == "adaptive"
+    if adaptive_active:
+        for start in instants:
+            actual_times = tuple(start + offset for offset in offsets)
+            cube, stats, first, last = _adaptive_fmcw(
+                actual_times, evaluate_many, full_spec, adaptive, reference_frequency_hz, radar.frontend
+            )
+            diagnostics.append(stats)
+            epochs.append(first[0].epoch)
+            reasons.append(first[0].reason)
+            sample_times.append(actual_times)
+            epoch_frame, legs, composed, _ = last
+            synthesis = SynthesisResult.from_fmcw(cube, replace(full_spec, output_domain="beat"))
+            frame_cube, synthesis = finish_frame(synthesis)
+            cubes.append(frame_cube)
     for frame_index, time_s in (
-        (frame_index, start + offset) for frame_index, start in enumerate(instants) for offset in offsets
+        (frame_index, start + offset)
+        for frame_index, start in enumerate(() if adaptive_active else instants)
+        for offset in offsets
     ):
-        epoch_frame = loop.frame(time_s)
+        epoch_frame, legs, composed, _ = evaluate_many([time_s])[0]
         if not slot_cubes:
             epochs.append(epoch_frame.epoch)
             reasons.append(epoch_frame.reason)
             sample_times.append(tuple(instants[frame_index] + offset for offset in offsets))
-        frozen = epoch_frame.frozen
-        inbound_handle, outbound_handle = frozen.handles
-        composer, epoch_binding, pattern_stage = frozen.payload
-        # Rebound at every frame that did not just freeze, because the site
-        # positions and the radar pose are read from the CURRENT world: a site
-        # riding a Core rigid motion moves between frames while the frozen
-        # topology and the join do not.
-        binding = (
-            epoch_binding
-            if epoch_frame.rediscovered
-            else bind_radar_world(
-                radar,
-                epoch_frame.snapshot,
-                sites=policy,
-                ids=ids,
-                polarization=orientation,
-                sensor_endpoints=sensor_endpoints,
-            )
-        )
-        legs = RadarPropagationLegs(
-            inbound=frozen.adapter.reevaluate_slots(
-                inbound_handle, binding.transmitters, binding.site_sinks, slot_count=1, ad_mode=ad_mode
-            ),
-            outbound=frozen.adapter.reevaluate_slots(
-                outbound_handle, binding.site_sources, binding.receivers, slot_count=1, ad_mode=ad_mode
-            ),
-        )
-        # The caller's AD direction is a parameter perturbation, not a time
-        # derivative. Physical motion must never depend on the JVP seed.
-        current_response = response.at(time_s) if callable(getattr(response, "at", None)) else response
-        composed = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
-        if pattern_stage is not None:
-            composed = pattern_stage.apply(
-                composed,
-                tx_pos=binding.transmitters.positions_m,
-                rx_pos=binding.receivers.positions_m,
-                tx_targets_m=legs.inbound.departure_target_m.index_select(0, composed.topology.inbound_row),
-                rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, composed.topology.outbound_row),
-            )
         if path_phase_noise:
             composed = radar.frontend.apply_path_phase(composed, time_s)
         observation_spec = (
@@ -971,17 +1279,7 @@ def simulate_scene(
                 synthesis = SynthesisResult.from_fmcw(cube, full_spec)
             else:
                 synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
-        frame_cube = radar._apply_signal_models(
-            assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx),
-            phase_in_signal=path_phase_noise,
-        )
-        if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != full_spec.output_domain:
-            from .processing.range_doppler import fmcw_range_fft
-
-            frame_cube = fmcw_range_fft(frame_cube)
-            synthesis = SynthesisResult.from_fmcw(
-                frame_cube.permute(2, 1, 0, 3).reshape(full_spec.num_chirps, -1, full_spec.num_samples), output_spec
-            )
+        frame_cube, synthesis = finish_frame(synthesis)
         cubes.append(frame_cube)
         slot_cubes = []
 
@@ -998,9 +1296,12 @@ def simulate_scene(
         last_propagation=legs,
         last_radar_paths=composed,
         sample_times_s=sample_times,
-        path_set_complete=not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move,
-        motion_sampling="static" if not sampled else ("adc" if adc_sampled else "chirp"),
+        path_set_complete=all(item["exhaustive"] for item in diagnostics)
+        if adaptive_active
+        else (not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move),
+        motion_sampling="static" if not sampled else motion_sampling,
+        adaptive_diagnostics=diagnostics,
     )
 
 
-__all__ = ["RadarSimulationResult", "ScatterSitePolicy", "SensorEndpointIds", "StableIdAllocator"]
+__all__ = ["AdaptiveMotionSpec", "RadarSimulationResult", "ScatterSitePolicy", "SensorEndpointIds", "StableIdAllocator"]

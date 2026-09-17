@@ -740,13 +740,18 @@ class FrontendChain:
         if not self.has_phase_noise or paths.path_count == 0:
             return paths
         times = torch.full_like(paths.total_delay_s, float(time_s), dtype=torch.float64)
-        phase = self.spec.noise.phase_difference(
-            times, paths.total_delay_s, seed_base=self.spec.seed.seed_base, sign=-1.0
+        return replace(
+            paths,
+            complex_transfer_ref=self._apply_path_phase_rows(paths.total_delay_s, paths.complex_transfer_ref, times),
         )
-        plan = _NoisePlan(1, paths.path_count, phase, 0.0, 1.0, self.spec.seed.seed_base, frontend_block_size())
-        weight = paths.complex_transfer_ref
+
+    def _apply_path_phase_rows(self, delays, weight, times):
+        if not self.has_phase_noise or not len(delays):
+            return weight
+        phase = self.spec.noise.phase_difference(times, delays, seed_base=self.spec.seed.seed_base, sign=-1.0)
+        plan = _NoisePlan(1, len(delays), phase, 0.0, 1.0, self.spec.seed.seed_base, frontend_block_size())
         real, imaginary, _ = _FrontendNoise.apply(weight.real.contiguous(), weight.imag.contiguous(), plan)
-        return replace(paths, complex_transfer_ref=torch.complex(real, imaginary))
+        return torch.complex(real, imaginary)
 
     @property
     def enabled_stages(self) -> tuple[str, ...]:

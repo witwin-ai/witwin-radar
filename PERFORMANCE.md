@@ -10,6 +10,27 @@ For that reason, pre-consolidation latency, FFT-count, launch-count, and allocat
 
 ## Doppler repair measurements
 
+### Adaptive motion experiment (2026-09-16)
+
+`tools/validate_adaptive_motion.py` compares complete public simulations in witwin2 on RTX 5080,
+after warming native loading. The ADC and adaptive routes use identical waveform and scene inputs.
+The heavy fixture has three reflecting walls, depth two per leg, 64 round-trip paths, 32 chirps and 64 ADC samples.
+
+| Scene | ADC time | Adaptive time | Speedup | IQ relative L2 error | RD power relative L2 error |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Radial point | 8.464 s | 2.888 s | 2.93x | 0.0002601 | 0.00004237 |
+| Rotor point | 8.555 s | 2.935 s | 2.91x | 0.0002014 | 0.00006526 |
+| Two articulated points | 8.853 s | 2.871 s | 3.08x | 0.0002150 | 0.00007299 |
+| Heavy multipath | 101.330 s | 1.580 s | 64.14x | 0.0005659 | 0.00006488 |
+
+Heavy discovery count falls from 2048 to 37; the other fixtures fall from 512 to 193.
+These are single measured runs, not latency percentiles or a real-time guarantee. Adaptive controls use
+0.02 rad phase tolerance, 0.02 relative amplitude tolerance and 2 ms maximum interval. Different motion,
+topology churn, tolerances and batch sizes change both accuracy and cost. The ADC reference remains available.
+Evidence: `output/doppler-repair/adaptive/results.json` and the saved full complex cubes.
+
+### Earlier baseline measurements
+
 Both checkouts used witwin2, Torch 2.10.0+cu128, and RTX 5080. The pre-repair
 `e0c79ad` was exported into `output/doppler-repair/baseline`, rebuilt, and ran
 the exact same `tests/test_phase8_pipeline_budget.py` measurement recipe.

@@ -13,6 +13,7 @@ Scene-driven FMCW phase noise uses one continuous-time Wiener oscillator shared 
 - Direct and multipath one-way legs are composed into round-trip paths with explicit join mode, identity, delay, delay rate, transfer provenance, and row validity.
 - Dynamic FMCW scenes default to geometry and transport refreshed at every ADC timestamp, including TDM slot offsets. Explicit `motion_sampling="chirp"` selects a stop-and-hop approximation.
 - Dynamic paths are rediscovered at every observation by default. Longer discovery cadences set `path_set_complete=False`; row-index finite differences are never used for velocity.
+- `motion_sampling="adaptive"` with `AdaptiveMotionSpec` selects carrier-aware temporal interpolation, batched propagation/synthesis, quarter-point error probes and topology refinement. Per-path phase/amplitude tolerances, maximum probe interval, discovery budget and batch size are configurable. Exhausted budgets raise. Unsampled brief events are not certified absent; `adaptive_diagnostics` and `path_set_complete` expose that limit. ADC remains the exhaustive reference default.
 - `ScatterSitePolicy.explicit(..., trajectory=...)` preserves authored material-point order across translation, rotation, or articulation. `SensorEndpointIds` maps moving Core phase centres into array order.
 - Scatter sites are declared explicitly or by a supported policy. Radar does not silently derive a different physical target set from mesh geometry.
 

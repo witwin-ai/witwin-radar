@@ -46,6 +46,7 @@
 // a non-differentiable output whose JVP contract is pure noise.
 
 #include <torch/csrc/stable/accelerator.h>
+#include <cmath>
 #include <torch/csrc/stable/c/shim.h>
 #include <torch/csrc/stable/library.h>
 #include <torch/csrc/stable/macros.h>
@@ -631,7 +632,73 @@ void two_way_join_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// Carrier-aware interpolation of a single IDENTICAL round-trip path.
+// x = [tau0, tau1, Re(C0), Im(C0), Re(C1), Im(C1), alpha]. Delays are
+// seconds, fc is Hz, alpha is a fixed time-grid coordinate. Channel convention
+// C=A exp(-j 2 pi fc tau). Transport each endpoint coefficient to the linear
+// query delay before blending amplitudes, avoiding cancellation over carrier
+// wraps. Valid only within a topology-stable, error-tested interval. No
+// spreading/scattering is added here. Oracle: test_path_interpolation.py.
+__global__ void path_interpolate_kernel(const double* x, const double* v,
+    double* out, int64_t n, double fc, int mode) {
+  const int64_t i = static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+  if (i >= n) return;
+  const double* a = x+7*i;
+  const double h=a[6], b=1-h, k=6.2831853071795864769*fc, d=a[1]-a[0];
+  double s0,c0,s1,c1;
+  sincos(-k*h*d,&s0,&c0); sincos(k*b*d,&s1,&c1);
+  const double r0=b*(a[2]*c0-a[3]*s0), j0=b*(a[2]*s0+a[3]*c0);
+  const double r1=h*(a[4]*c1-a[5]*s1), j1=h*(a[4]*s1+a[5]*c1);
+  const double dr=-k*(h*j0-b*j1), dj=k*(h*r0-b*r1);
+  const double jac[3][7]={{b,h,0,0,0,0,0},
+    {dr,-dr,b*c0,-b*s0,h*c1,-h*s1,0},
+    {dj,-dj,b*s0,b*c0,h*s1,h*c1,0}};
+  if (mode==0) { out[3*i]=b*a[0]+h*a[1]; out[3*i+1]=r0+r1; out[3*i+2]=j0+j1; }
+  else if (mode==1) {
+    for(int col=0;col<7;++col) {
+      double sum=0; for(int row=0;row<3;++row) sum+=jac[row][col]*v[3*i+row];
+      out[7*i+col]=sum;
+    }
+  } else {
+    for(int row=0;row<3;++row) {
+      double sum=0; for(int col=0;col<7;++col) sum+=jac[row][col]*v[7*i+col];
+      out[3*i+row]=sum;
+    }
+  }
+}
+
+void path_interpolate_run(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc, int mode) {
+  const torch::stable::Tensor* tensors[3] = {&x,&v,&out};
+  for (const auto* tensor : tensors) {
+    STD_TORCH_CHECK(tensor->is_cuda() && tensor->is_contiguous() &&
+      tensor->scalar_type()==torch::headeronly::ScalarType::Double,
+      "path interpolation requires contiguous CUDA doubles");
+    STD_TORCH_CHECK(tensor->get_device_index()==x.get_device_index(), "interpolation devices differ");
+  }
+  STD_TORCH_CHECK(x.dim()==2 && x.size(1)==7, "interpolation x must be [N,7]");
+  const int64_t n=x.size(0);
+  STD_TORCH_CHECK(out.numel()==n*(mode==1?7:3), "interpolation output shape");
+  STD_TORCH_CHECK(v.numel()==(mode==0?0:n*(mode==1?3:7)), "interpolation vector shape");
+  STD_TORCH_CHECK(std::isfinite(fc) && fc>0, "interpolation carrier must be positive");
+  const torch::stable::accelerator::DeviceGuard guard(x.get_device_index());
+  if(n) {
+    path_interpolate_kernel<<<(n+255)/256,256,0,join_stream(x)>>>(
+      x.const_data_ptr<double>(),v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,fc,mode);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+}
+void path_interpolate_forward(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,0); }
+void path_interpolate_backward(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,1); }
+void path_interpolate_jvp(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,2); }
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("path_interpolate_forward", TORCH_BOX(&path_interpolate_forward));
+  m.impl("path_interpolate_backward", TORCH_BOX(&path_interpolate_backward));
+  m.impl("path_interpolate_jvp", TORCH_BOX(&path_interpolate_jvp));
   m.impl("two_way_join_forward", TORCH_BOX(&two_way_join_forward_cuda));
   m.impl("two_way_join_backward", TORCH_BOX(&two_way_join_backward_cuda));
   m.impl("two_way_join_jvp", TORCH_BOX(&two_way_join_jvp_cuda));

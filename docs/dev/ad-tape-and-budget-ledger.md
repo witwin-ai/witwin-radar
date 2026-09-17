@@ -66,7 +66,17 @@ launch, and the budget pins that matter are on the whole pipeline further down.
 ## The eight tape owners
 
 The fixture is `tests/support/ad_boundaries.py`, one boundary per owner. There
-are seven boundaries and eight owners: `frontend` runs two contexts in one call.
+include the original seven boundaries and eight owners (`frontend` runs two contexts in one call),
+plus the adaptive path interpolation context introduced on 2026-09-16.
+
+Adaptive interpolation saves one float64 `[N,7]` endpoint/query table (56 N bytes) for each AD mode.
+Its forward, backward and JVP each use one native launch in `two_way_join.cu`; no native host reads.
+The explicit adaptive controller separately reads identities, validity, offsets and probe residuals
+to the host. These are topology/refinement decisions and are not covered by fixed-topology replay's
+zero-host-observation budget. Oracle: `tests/test_path_interpolation.py`.
+
+Continuous-time oscillator queries use a separate native launch before frontend rotation.
+They save no differentiable time/delay tape: Wiener time derivatives are explicitly refused.
 
 There were nine boundaries and ten owners until Phase 11 deleted the Dirichlet
 route. The two rows it removed - the chunked spectrum and the MIMO-linear frame

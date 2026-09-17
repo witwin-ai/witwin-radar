@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 5,
+  "radar_abi_version": 6,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -706,6 +706,54 @@
       "python_owner": "witwin/radar/frontend.py",
       "contract_test": "tests/test_correlated_phase_noise.py",
       "end_to_end_caller": "witwin.radar.frontend.NoiseSpec.phase_difference"
+    },
+    {
+      "symbol": "path_interpolate_forward",
+      "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "path_interpolate",
+      "launches": 1,
+      "fused_stages": [
+        "carrier_transport_interpolation"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/paths.py",
+      "contract_test": "tests/test_path_interpolation.py",
+      "end_to_end_caller": "witwin.radar.paths.interpolate_path_rows"
+    },
+    {
+      "symbol": "path_interpolate_backward",
+      "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "path_interpolate",
+      "launches": 1,
+      "fused_stages": [
+        "carrier_transport_interpolation"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/paths.py",
+      "contract_test": "tests/test_path_interpolation.py",
+      "end_to_end_caller": "witwin.radar.paths.interpolate_path_rows"
+    },
+    {
+      "symbol": "path_interpolate_jvp",
+      "family": "two_way_join",
+      "native_tu": "witwin/radar/cuda/two_way_join.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "path_interpolate",
+      "launches": 1,
+      "fused_stages": [
+        "carrier_transport_interpolation"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/paths.py",
+      "contract_test": "tests/test_path_interpolation.py",
+      "end_to_end_caller": "witwin.radar.paths.interpolate_path_rows"
     }
   ]
 }

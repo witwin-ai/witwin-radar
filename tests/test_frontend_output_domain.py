@@ -14,8 +14,9 @@ pytestmark = pytest.mark.gpu
 
 
 @pytest.mark.parametrize("moving", [False, True])
+@pytest.mark.parametrize("sampling", ["adc", "adaptive"])
 @pytest.mark.parametrize("hardware", ["adc", "agc", "thermal", "combined"])
-def test_physical_receiver_precedes_range_transform(moving, hardware):
+def test_physical_receiver_precedes_range_transform(moving, sampling, hardware):
     radar = _radar()
     radar.system_config = replace(
         radar.system_config, waveform=replace(radar.system_config.waveform, adc_samples=16, chirp_per_frame=2)
@@ -47,6 +48,7 @@ def test_physical_receiver_precedes_range_transform(moving, hardware):
             sites=ScatterSitePolicy.explicit(origin, trajectory=Linear() if moving else None),
             components=frozenset({"los"}),
             max_depth=0,
+            motion_sampling=sampling,
         )
         assert result.output_domain == domain
         assert result.frame_synthesis().output_domain == domain

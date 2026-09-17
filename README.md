@@ -4,6 +4,12 @@ WiTwin Radar is a GPU-accelerated, differentiable radar simulator. A simulation 
 
 The repository uses a breaking, concept-axis architecture. Compatibility modules and deprecated aliases are intentionally not retained.
 
+For dynamic FMCW, `Radar.simulate(..., motion_sampling="adaptive", adaptive_motion=AdaptiveMotionSpec(...))`
+uses phase-controlled temporal interpolation and batched propagation. Import `AdaptiveMotionSpec` from
+`witwin.radar.simulation`. The default `"adc"` mode remains the exhaustive reference; adaptive topology
+probes cannot certify arbitrarily brief events between observations. Receiver effects operate on beat samples
+before the requested range transform, and shared oscillator noise uses actual timestamps and path delays.
+
 ## Installation and runtime
 
 ```bash

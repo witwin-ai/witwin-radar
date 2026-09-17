@@ -59,7 +59,7 @@ gpu = pytest.mark.gpu
 #: it. Written out rather than discovered so that a new ``Function`` added
 #: without a first-order decision fails the structural test below.
 REGISTERED_BACKWARDS = {
-    "witwin/radar/paths.py": 1,
+    "witwin/radar/paths.py": 2,
     "witwin/radar/scattering.py": 2,
     "witwin/radar/sensors.py": 1,
     "witwin/radar/synthesis/fmcw.py": 1,
@@ -79,7 +79,7 @@ def _radar_root() -> pathlib.Path:
 
 
 def test_every_registered_backward_is_decorated_by_the_one_owner():
-    """Eight backwards, one decorator, no bare ``once_differentiable`` left.
+    """Ten backwards, one decorator, no bare ``once_differentiable`` left.
 
     There were ten until Phase 11 deleted the two ``dirichlet_spectrum``
     contexts with their route. The per-boundary tests below drive six of the
@@ -113,7 +113,7 @@ def test_every_registered_backward_is_decorated_by_the_one_owner():
             # put the grad-mode check inside the no_grad body and disarm it.
             assert "once_differentiable" not in names, (relative, function.name)
         assert "once_differentiable" not in source.replace("``once_differentiable``", ""), relative
-    assert total_functions == 9, total_functions
+    assert total_functions == 10, total_functions
 
 
 def test_the_package_names_no_second_higher_order_rule():

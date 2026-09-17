@@ -230,6 +230,17 @@ modes, against a fourth-order difference of the whole production chain.
 | frontend/adc | the signal | both | REF | host-declaration | witwin/radar/frontend.py::FrontendChain._quantize | tests/test_phase6_frontend_chain.py::test_the_quantizer_refuses_a_differentiable_input | refusal |
 | frontend/oscillator-time | timestamps and path delays | both | REF | host-declaration | witwin/radar/frontend.py::NoiseSpec.phase_difference | tests/test_correlated_phase_noise.py::test_delays_refuse_nonexistent_brownian_time_derivative | refusal |
 
+### Adaptive path interpolation (`witwin/radar/paths.py`)
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| paths/adaptive-interpolation | endpoint delays and complex transfers at a fixed time partition | both | SUP | native-companion | witwin/radar/paths.py::interpolate_path_rows | tests/test_path_interpolation.py::test_interpolation_preserves_carrier_wraps_and_native_derivatives | oracle-f64 |
+
+Adaptive topology and refinement decisions are held fixed under AD. Probe residuals are detached
+only to choose that discrete partition; the returned cube uses the native interpolant on live
+endpoint payloads. The public-scene adjoint is tested in
+`tests/test_adaptive_motion.py::test_adaptive_recompiles_moving_reflectors_and_preserves_scene_adjoint`.
+
 ## Processing: the non-differentiability wall
 
 The wall sits at the first DISCRETE DECISION, not at "post-processing". Above it
@@ -506,7 +517,7 @@ used where it is true; an honest partial is worth more than a claimed pass.
 
 | criterion | proved by | verdict |
 |---|---|---|
-| Capability-advertised geometry, material, frequency, target-state, RCS, waveform and receiver jvp/vjp matrix passes; unsupported cells have pre-compute failure tests | this document, 165 rows in four states with no empty test cell, enforced by `tests/test_phase9_capability_matrix.py` (18 tests, including `::test_a_supported_numerical_row_carries_a_real_oracle`, which allowlists the structural `SUP` rows so that a `DECL` row flipped to `SUP` on a declaration-style test fails instead of passing); the refusals themselves by `tests/test_phase9_host_float_refusal.py`, `tests/test_phase9_refused_tangents.py`, `tests/test_phase9_processing_wall.py`, `tests/test_phase9_velocity_leaf_refusal.py`, `tests/test_phase9_smpl_pose_refusal.py`, `tests/test_phase9_sensor_constant_refusal.py` | proved |
+| Capability-advertised geometry, material, frequency, target-state, RCS, waveform and receiver jvp/vjp matrix passes; unsupported cells have pre-compute failure tests | this document, 169 rows in four states with no empty test cell, enforced by `tests/test_phase9_capability_matrix.py` (18 tests, including `::test_a_supported_numerical_row_carries_a_real_oracle`, which allowlists the structural `SUP` rows so that a `DECL` row flipped to `SUP` on a declaration-style test fails instead of passing); the refusals themselves by `tests/test_phase9_host_float_refusal.py`, `tests/test_phase9_refused_tangents.py`, `tests/test_phase9_processing_wall.py`, `tests/test_phase9_velocity_leaf_refusal.py`, `tests/test_phase9_smpl_pose_refusal.py`, `tests/test_phase9_sensor_constant_refusal.py` | proved |
 | Tests-only finite differences or independent references validate first order | every `SUP` row carries `fd`, `oracle-f64`, `analytic`, `adjoint` or - for one of the 21 allowlisted structural claims - `declaration`; `tests/test_phase9_capability_matrix.py::test_a_supported_row_is_never_justified_by_a_refusal`, `::test_a_supported_numerical_row_carries_a_real_oracle` and `::test_the_structural_allowlist_has_no_stale_entry` enforce the vocabulary; no production finite difference exists, pinned by `tests/test_phase6_no_torch_physics.py` | proved |
 | Primal, jvp and vjp share compact path identity, row mapping and numerical convention | `tests/test_phase9_combined_ad_matrix.py::test_the_three_ad_modes_publish_the_same_compact_rows`, `::test_the_primal_is_bitwise_identical_in_all_three_ad_modes`, `::test_the_jvp_is_the_adjoint_of_the_vjp_on_one_frozen_topology`, `::test_the_three_waveforms_share_one_frozen_topology`, all on ONE frozen topology per scenario | proved |
 | Topology discovery, hard pruning, ADC, CFAR and tracking AD requests fail before any partial result | `tests/test_phase9_processing_wall.py` (25 tests, with a `_ComputeWatch` instrument that measures that nothing was computed and is calibrated against the same stages running normally), `tests/test_phase9_refused_tangents.py::test_an_unfreezable_component_is_refused_before_any_discovery`, `::test_a_primal_only_endpoint_input_is_refused_in_both_modes` | proved |

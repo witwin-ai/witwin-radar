@@ -357,10 +357,16 @@
       "module": "witwin.radar.simulation",
       "exports": [
         {
+          "name": "AdaptiveMotionSpec",
+          "kind": "class",
+          "target": "witwin.radar.simulation.AdaptiveMotionSpec",
+          "signature": "(phase_error_rad: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval_s: 'float' = 0.002, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256) -> None"
+        },
+        {
           "name": "RadarSimulationResult",
           "kind": "class",
           "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat') -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
         },
         {
           "name": "ScatterSitePolicy",
@@ -502,7 +508,7 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc') -> 'RadarSimulationResult'"
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc', adaptive_motion=None) -> 'RadarSimulationResult'"
         }
       ]
     }

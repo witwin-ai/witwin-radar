@@ -357,6 +357,43 @@ HOST_OBSERVATION_OWNERS = {
 
 def _host_observation_calls(path: pathlib.Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    if path.name == "simulation.py":
+        # Adaptive topology/refinement explicitly pays host observations. Keep
+        # the exact ADC/static routes under the original zero-read fence, and
+        # pin both the scopes and counts instead of allowlisting this module.
+        from collections import Counter
+
+        expected = {
+            "_adaptive_fmcw": {"cpu": 5, "numpy": 5, "tolist": 1},
+            "simulate_scene.evaluate_many.finish": {"tolist": 1},
+        }
+        found = {}
+
+        class AdaptiveDecisions(ast.NodeTransformer):
+            def __init__(self):
+                self.scope = []
+
+            def visit_FunctionDef(self, node):
+                self.scope.append(node.name)
+                name = ".".join(self.scope)
+                if name in expected:
+                    found[name] = dict(
+                        Counter(
+                            call.func.attr
+                            for call in ast.walk(node)
+                            if isinstance(call, ast.Call)
+                            and isinstance(call.func, ast.Attribute)
+                            and call.func.attr in HOST_OBSERVATION_METHODS
+                        )
+                    )
+                    self.scope.pop()
+                    return None
+                result = self.generic_visit(node)
+                self.scope.pop()
+                return result
+
+        tree = AdaptiveDecisions().visit(tree)
+        assert found == expected, found
     return [
         node.func.attr
         for node in ast.walk(tree)

@@ -1193,6 +1193,7 @@ class Radar:
         polarization=None,
         sensor_endpoints=None,
         motion_sampling: str = "adc",
+        adaptive_motion=None,
     ) -> RadarSimulationResult:
         """Simulate this radar over a Core world and return the frame cubes.
 
@@ -1239,6 +1240,7 @@ class Radar:
             antenna_pattern=self.system_config.sensors.pattern,
             sensor_endpoints=sensor_endpoints,
             motion_sampling=motion_sampling,
+            adaptive_motion=adaptive_motion,
         )
         self._last_result = result
         return result

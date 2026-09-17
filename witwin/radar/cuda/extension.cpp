@@ -1,6 +1,9 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(_radar_native, m) {
+  m.def("path_interpolate_forward(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");
+  m.def("path_interpolate_backward(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");
+  m.def("path_interpolate_jvp(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("scatter_direction_forward(Tensor origin, Tensor target, Tensor(a!) out) -> ()");
   m.def("scatter_direction_backward(Tensor origin, Tensor target, Tensor cotangent, Tensor(a!) out) -> ()");
   m.def("scatter_direction_jvp(Tensor origin, Tensor target, Tensor tangent, Tensor(a!) out) -> ()");

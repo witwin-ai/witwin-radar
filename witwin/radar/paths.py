@@ -33,6 +33,63 @@ from .propagation import RadarLegBatch, require_wideband_pair
 LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
 
 
+class _PathInterpolation(torch.autograd.Function):
+    """First-order native interpolation at a fixed adaptive time partition."""
+
+    @staticmethod
+    def forward(values, carrier):
+        result = values.new_empty((len(values), 3))
+        _ops().path_interpolate_forward(values, values.new_empty(0), result, carrier)
+        return result
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        values, ctx.carrier = inputs
+        ctx.save_for_backward(values)
+        ctx.save_for_forward(values)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad):
+        (values,) = ctx.saved_tensors
+        result = torch.empty_like(values)
+        _ops().path_interpolate_backward(values, grad.contiguous(), result, ctx.carrier)
+        return result, None
+
+    @staticmethod
+    def jvp(ctx, tangent, carrier_tangent):
+        (values,) = ctx.saved_tensors
+        result = values.new_empty((len(values), 3))
+        _ops().path_interpolate_jvp(values, tangent.contiguous(), result, ctx.carrier)
+        return result
+
+
+def interpolate_path_rows(delay0, delay1, transfer0, transfer1, alpha, carrier_hz):
+    """Transport Channel phasors to the interpolated delay, then blend envelopes.
+
+    Topology equality is the caller's obligation. Alpha is a fixed, dimensionless
+    control coordinate; the adaptive partition itself is not differentiated.
+    Delays [s] and complex transfers retain native first-order derivatives.
+    """
+    from .policy import refuse_derivative
+
+    refuse_derivative("adaptive time partition", "time-grid decisions are discrete", alpha=alpha)
+    values = torch.stack(
+        [
+            delay0.double(),
+            delay1.double(),
+            transfer0.real.double(),
+            transfer0.imag.double(),
+            transfer1.real.double(),
+            transfer1.imag.double(),
+            alpha.double(),
+        ],
+        dim=1,
+    ).contiguous()
+    result = _PathInterpolation.apply(values, carrier_hz)
+    return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
+
+
 def stable_ids(values, name: str) -> list[int]:
     """Normalize a stable-ID sequence to a host list of distinct ints."""
 

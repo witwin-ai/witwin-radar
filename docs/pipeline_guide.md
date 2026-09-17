@@ -2,6 +2,25 @@
 
 This is the current scene-to-product route after the breaking concept-axis consolidation. There is one production orchestration path and no legacy fallback path.
 
+Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec` from
+`witwin.radar.simulation`. Controls are `phase_error_rad`, `relative_amplitude_error`,
+`max_interval_s`, `max_evaluations`, and `batch_observations`. Native interpolation moves each
+endpoint coefficient to the query's carrier phase before blending. Quarter/midpoint probes
+test delay, complex phase, amplitude, full leg identity, and validity; mismatches subdivide.
+The native interpolant supports VJP/JVP for a fixed accepted partition. Discovery and
+refinement decisions are discrete. Budget exhaustion raises instead of returning an unchecked cube.
+
+`adaptive_diagnostics` records observation/discovery counts, tested errors, and topology refinements.
+`path_set_complete` is false unless every ADC instant was actually discovered. Probe spacing is
+not a proof that a shorter occlusion or oscillation was absent. Use `motion_sampling="adc"`
+(the default) for exhaustive comparison; `"chirp"` is an explicit stop-and-hop approximation.
+
+Receiver-enabled FMCW first synthesizes beat samples, applies receiver hardware, then computes
+the requested normalized range spectrum. Common-oscillator noise is applied per path before
+coherent summation as a delayed Wiener phase difference at absolute ADC time, including idle gaps.
+Time/delay derivatives of this nowhere-differentiable noise are refused; fixed-query signal
+derivatives remain available. A multi-region device phase-noise spectrum is not implemented.
+
 ## 1. Ownership boundaries
 
 `witwin.core` owns scenes, geometry, materials, structure identity, and motion. `witwin.channel` owns one-way electromagnetic propagation. Radar consumes those results and owns:
