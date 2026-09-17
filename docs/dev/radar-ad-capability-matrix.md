@@ -228,6 +228,7 @@ modes, against a fourth-order difference of the whole production chain.
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
 | frontend/adc | the signal | both | REF | host-declaration | witwin/radar/frontend.py::FrontendChain._quantize | tests/test_phase6_frontend_chain.py::test_the_quantizer_refuses_a_differentiable_input | refusal |
+| frontend/oscillator-time | timestamps and path delays | both | REF | host-declaration | witwin/radar/frontend.py::NoiseSpec.phase_difference | tests/test_correlated_phase_noise.py::test_delays_refuse_nonexistent_brownian_time_derivative | refusal |
 
 ## Processing: the non-differentiability wall
 

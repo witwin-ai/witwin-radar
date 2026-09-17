@@ -256,11 +256,12 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // modelling decision. Its Python owner raises on a grad-enabled or
   // forward-dual input rather than silently detaching. This is the one
   // deliberate exception to R-ADR-004's three-per-family rule. See R-ADR-004.
+  m.def("oscillator_phase_forward(Tensor times, Tensor delays, Tensor(a!) phase, float diffusion, float sign, int seed_base, int block_size) -> ()");
   m.def(
       "frontend_noise_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
-      "Tensor(b!) out_im, Tensor(c!) phase_rad, int num_outer, int num_phase, "
-      "float phase_sigma, float thermal_sigma, float lna_gain, int seed_base, "
-      "int phase_stage_id, int thermal_stage_id, int block_size) -> ()");
+      "Tensor(b!) out_im, Tensor phase_rad, int num_outer, int num_phase, "
+      "float thermal_sigma, float lna_gain, int seed_base, "
+      "int thermal_stage_id, int block_size) -> ()");
   m.def(
       "frontend_noise_backward(Tensor phase_rad, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_x_re, Tensor(b!) grad_x_im, "

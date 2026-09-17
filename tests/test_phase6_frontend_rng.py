@@ -122,10 +122,8 @@ def test_the_realisation_does_not_depend_on_the_launch_configuration(monkeypatch
     silently, because the STATISTICS are unchanged and only the realisation moves.
     Counter-based keying by the element's linear index cannot do that.
 
-    The Wiener scan is deliberately excluded from the override: its accumulation
-    ORDER is part of the realisation, so it runs single-threaded at every block
-    size and this test would not detect a change there. That is stated rather
-    than implied because it is a real limit of what is being measured.
+    Brownian bridge query scheduling is independent of the receive launch
+    width. Both noise realizations are checked after changing that width.
     """
 
     signal = _zeros()

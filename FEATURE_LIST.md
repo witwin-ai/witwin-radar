@@ -2,6 +2,8 @@
 
 This file describes the current surface after the breaking concept-axis consolidation. It does not list deleted compatibility APIs.
 
+Scene-driven FMCW phase noise uses one continuous-time Wiener oscillator shared by all paths, evaluated as the delayed transmit/receive phase difference at absolute ADC timestamps. Idle gaps and inter-path delay correlation are preserved. This white-frequency-noise model does not represent a complete multi-region device mask. Timestamp and delay derivatives of Wiener samples are explicitly refused.
+
 ## Simulation and propagation
 
 - `Radar.simulate(...)` is the scene-driven production entry for `witwin.core.Scene` and `DynamicScene` worlds.

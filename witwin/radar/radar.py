@@ -1121,7 +1121,7 @@ class Radar:
         _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
         return vectors @ world_from_local
 
-    def _apply_signal_models(self, signal: torch.Tensor) -> torch.Tensor:
+    def _apply_signal_models(self, signal: torch.Tensor, *, phase_in_signal=False) -> torch.Tensor:
         """Run the receive chain, if one is configured.
 
                 This used to CHOOSE between two owners: the frontend block, or the
@@ -1135,7 +1135,7 @@ class Radar:
 
         if self.frontend is None:
             return signal
-        return self.frontend.apply(signal).signal
+        return self.frontend.apply(signal, phase_in_signal=phase_in_signal).signal
 
     def _synthesize(self, paths, *, slow_time_mode, spec=None) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.

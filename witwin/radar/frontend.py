@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -120,26 +120,12 @@ class PortSpec:
 class NoiseSpec:
     """Thermal and oscillator noise, in physical units rather than raw sigmas.
 
-    **Two limitations of the phase-noise model are RECORDED here, not fixed.**
-    Changing either is a numerical change that needs its own decision, and
-    writing a number down that the model cannot produce is worse than leaving
-    the model as it is:
-
-    1. The Wiener accumulation assumes a UNIFORM sample spacing. A real FMCW
-       time base is not uniform - ``chirp_period_s = idle + ramp_end`` exceeds
-       ``num_samples * sample_period_s`` - and a Wiener step scales as
-       ``sigma_w^2 = 2 pi linewidth dt`` with the ACTUAL ``dt``, so the idle gap
-       needs a larger step than a sample gap. As implemented, the slow-time
-       phase-noise correlation is wrong by the duty-cycle factor.
-
-    2. RANGE CORRELATION IS ABSENT. In a homodyne FMCW receiver the local
-       oscillator and the echo come from the same source, so phase noise at the
-       beat output is suppressed by ``4 sin^2(pi f tau)`` and is essentially
-       cancelled at short range. An uncorrelated random walk therefore grossly
-       OVERSTATES close-range phase noise. No absolute phase-noise level test
-       may be written against this model until that is decided; the tested claim
-       is the ``-20 dB/decade`` asymptote of the generator itself, which is what
-       the generator actually promises.
+    The scene-driven FMCW route evaluates one common oscillator at receive
+    and delayed transmit times for each path before coherent summation. Idle
+    gaps and frame gaps use their actual SI timestamps. Standalone ``apply``
+    can model a free-running oscillator on an explicit grid, or on the uniform
+    grid declared by ``phase_sample_rate_hz``. These are different observables
+    of the same continuous-time Wiener realization, not independent generators.
 
     The model is a free-running oscillator, whose single-sideband phase-noise
     spectrum is ``L(f) = sigma_w^2 fs / (4 pi^2 f^2)`` for ``f`` well above the
@@ -246,6 +232,41 @@ class NoiseSpec:
             raise ValueError("single_sideband_dbc_per_hz needs a configured phase noise and a positive offset")
         level = sigma**2 * float(self.phase_sample_rate_hz) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
         return 10.0 * math.log10(level)
+
+    def phase_difference(self, times_s, delays_s, *, seed_base: int, sign: float = 1.0):
+        """Common-oscillator ``phi(t)-phi(t-tau)`` in radians, on actual SI time.
+
+        A white-frequency-noise oscillator has diffusion q=4*pi^2*f0^2*L(f0)
+        [rad^2/s]. The phase-difference covariance is q times the intersection
+        length of the two delay intervals; its PSD is 4*sin^2(pi*f*tau) times
+        the oscillator PSD. The native Brownian bridge shares one realization
+        across paths, antennas, queries and frames, independent of query order.
+
+        Brownian phase is not differentiable in time/delay. Geometry AD is
+        explicitly refused; signal/RCS derivatives at fixed delays remain valid.
+        Forty bridge levels resolve 0.91 ps. This is a Wiener model, without
+        a 1/f^3 region or a far-out floor. Oracle: test_correlated_phase_noise.py.
+        """
+        refuse_derivative(
+            "frontend oscillator time queries",
+            "Wiener phase is nowhere differentiable in time; fixed-delay signal derivatives remain supported.",
+            timestamps=times_s,
+            path_delays=delays_s,
+        )
+        if times_s.shape != delays_s.shape or times_s.device != delays_s.device:
+            raise ValueError("oscillator times and delays must share shape and device")
+        if not times_s.is_cuda or seed_base < 0 or sign not in (-1.0, 1.0):
+            raise ValueError("oscillator needs CUDA times, a nonnegative seed and sign +/-1")
+        times = times_s.to(torch.float64).contiguous()
+        delays = delays_s.to(torch.float64).contiguous()
+        torch._assert_async(
+            torch.all(torch.isfinite(times) & torch.isfinite(delays) & (delays >= 0)),
+            "oscillator times/delays must be finite and delays nonnegative",
+        )
+        phase = torch.empty(times.shape, device=times.device, dtype=torch.float32)
+        diffusion = self.phase_innovation_sigma_rad**2 * self.phase_sample_rate_hz
+        _ops().oscillator_phase_forward(times, delays, phase, diffusion, sign, seed_base, frontend_block_size())
+        return phase
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +487,7 @@ def _require_no_derivative(signal: torch.Tensor, stage: str) -> None:
 class _NoisePlan:
     num_outer: int
     num_phase: int
-    phase_sigma: float
+    phase: torch.Tensor
     thermal_sigma: float
     lna_gain: float
     seed_base: int
@@ -491,7 +512,7 @@ class _FrontendNoise(torch.autograd.Function):
     def forward(x_re, x_im, plan):
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
-        phase_rad = torch.empty(plan.num_phase, dtype=torch.float32, device=x_re.device)
+        phase_rad = plan.phase
         _ops().frontend_noise_forward(
             x_re,
             x_im,
@@ -500,11 +521,9 @@ class _FrontendNoise(torch.autograd.Function):
             phase_rad,
             plan.num_outer,
             plan.num_phase,
-            plan.phase_sigma,
             plan.thermal_sigma,
             plan.lna_gain,
             plan.seed_base,
-            STAGE_PHASE_NOISE,
             STAGE_THERMAL_NOISE,
             plan.block_size,
         )
@@ -709,6 +728,27 @@ class FrontendChain:
         self.spec = spec
 
     @property
+    def has_phase_noise(self) -> bool:
+        return self.spec.phase_sigma_rad() > 0.0
+
+    def apply_path_phase(self, paths, time_s):
+        """Apply the common LO difference before coherent path summation.
+
+        Paths use Channel's negative phasor, so the phase rotates negatively;
+        FMCW conjugation produces tx*conj(rx) with the positive LO difference.
+        """
+        if not self.has_phase_noise or paths.path_count == 0:
+            return paths
+        times = torch.full_like(paths.total_delay_s, float(time_s), dtype=torch.float64)
+        phase = self.spec.noise.phase_difference(
+            times, paths.total_delay_s, seed_base=self.spec.seed.seed_base, sign=-1.0
+        )
+        plan = _NoisePlan(1, paths.path_count, phase, 0.0, 1.0, self.spec.seed.seed_base, frontend_block_size())
+        weight = paths.complex_transfer_ref
+        real, imaginary, _ = _FrontendNoise.apply(weight.real.contiguous(), weight.imag.contiguous(), plan)
+        return replace(paths, complex_transfer_ref=torch.complex(real, imaginary))
+
+    @property
     def enabled_stages(self) -> tuple[str, ...]:
         """Which stages will run, in the fixed order, for reporting."""
 
@@ -723,13 +763,21 @@ class FrontendChain:
         }
         return tuple(name for name in FRONTEND_STAGE_ORDER if active[name])
 
-    def _noise_plan(self, signal: torch.Tensor, *, seed_base: int) -> _NoisePlan:
+    def _noise_plan(self, signal: torch.Tensor, *, seed_base: int, times_s=None, phase_in_signal=False) -> _NoisePlan:
         spec = self.spec
         num_phase = _phase_run_length(signal)
+        phase = torch.zeros(num_phase, dtype=torch.float32, device=signal.device)
+        if spec.phase_sigma_rad() > 0 and not phase_in_signal:
+            if times_s is None:
+                times_s = torch.arange(num_phase, device=signal.device, dtype=torch.float64)
+                times_s = times_s / spec.noise.phase_sample_rate_hz
+            if times_s.numel() != num_phase:
+                raise ValueError("phase timestamps must cover the complete receive timeline")
+            phase = spec.noise.phase_difference(times_s, times_s - times_s[0], seed_base=seed_base)
         return _NoisePlan(
             num_outer=signal.numel() // num_phase,
             num_phase=num_phase,
-            phase_sigma=spec.phase_sigma_rad(),
+            phase=phase,
             thermal_sigma=spec.thermal_sigma_volts(),
             lna_gain=spec.lna_voltage_gain(),
             seed_base=int(seed_base),
@@ -755,7 +803,9 @@ class FrontendChain:
             block_size=frontend_block_size(),
         )
 
-    def apply(self, signal: torch.Tensor, *, seed_base: int | None = None) -> FrontendOutput:
+    def apply(
+        self, signal: torch.Tensor, *, seed_base: int | None = None, times_s=None, phase_in_signal=False
+    ) -> FrontendOutput:
         """Run the whole chain, in order, once."""
 
         if not signal.is_complex():
@@ -778,7 +828,7 @@ class FrontendChain:
         clipped = None
 
         if spec.applies_noise_stage:
-            plan = self._noise_plan(working, seed_base=seed)
+            plan = self._noise_plan(working, seed_base=seed, times_s=times_s, phase_in_signal=phase_in_signal)
             flat = working.reshape(plan.num_outer, plan.num_phase)
             out_re, out_im, phase_rad = _FrontendNoise.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
             working = torch.complex(out_re, out_im).reshape(shape)

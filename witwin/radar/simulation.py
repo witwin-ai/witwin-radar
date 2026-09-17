@@ -835,6 +835,13 @@ def simulate_scene(
 
     mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     full_spec = solve_config.waveform_spec()
+    path_phase_noise = radar.frontend is not None and radar.frontend.has_phase_noise
+    if path_phase_noise:
+        if not isinstance(full_spec, FmcwSpec):
+            raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
+        if motion_sampling != "adc":
+            raise ValueError("common-oscillator phase noise requires ADC-time observations")
+        sampled = True
     output_spec = full_spec
     # Receiver nonlinearity and oscillator noise act on ADC-time samples.
     # Preserve the direct-spectrum fast path only for an ideal receiver.
@@ -933,6 +940,8 @@ def simulate_scene(
                 tx_targets_m=legs.inbound.departure_target_m.index_select(0, composed.topology.inbound_row),
                 rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, composed.topology.outbound_row),
             )
+        if path_phase_noise:
+            composed = radar.frontend.apply_path_phase(composed, time_s)
         observation_spec = (
             replace(
                 single_spec,
@@ -963,7 +972,8 @@ def simulate_scene(
             else:
                 synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
         frame_cube = radar._apply_signal_models(
-            assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx)
+            assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx),
+            phase_in_signal=path_phase_noise,
         )
         if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != full_spec.output_domain:
             from .processing.range_doppler import fmcw_range_fft

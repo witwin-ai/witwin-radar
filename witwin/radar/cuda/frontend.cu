@@ -10,7 +10,7 @@
 // operators in one sequence with no exceptions:
 //
 //   0. port      x <- x * sqrt(R)                sqrt(W) -> volts, exactly ONCE
-//   1. phase     x <- x * exp(j theta)           Wiener scan, stage 0
+//   1. phase     x <- x * exp(j theta)           supplied oscillator difference
 //   2. thermal   x <- x + n,  n ~ CN(0, 2 s^2)   stage 1, INPUT-REFERRED
 //   3. lna       x <- x * g_lna
 //   4. agc       x <- x * clamp(target/rms, ...)
@@ -49,12 +49,11 @@
 //   phase:   ONE Philox call per slow-time sample, in linear index order; word 0
 //            becomes the innovation and words 1 to 3 are discarded.
 //
-// The Wiener phase is accumulated by a SINGLE-THREADED kernel. That is a
-// deliberate choice rather than an oversight: a parallel scan would make the
-// accumulation order depend on the block size, and this family's whole claim is
-// that the realisation does not. The scan is over slow time only - one
-// innovation per slow-time sample, shared by every outer element - so it is
-// short next to the elementwise pass it feeds.
+// Oscillator phase is evaluated on actual timestamps by oscillator_phase_forward.
+// Its Brownian bridge is keyed by absolute dyadic time intervals, so the same
+// oscillator can be queried at receive and delayed transmit times without
+// inventing independent noise per path. The receive operator consumes that
+// phase; phase generation and receive rotation have distinct physical owners.
 //
 // The accumulated phase is PUBLISHED as a device tensor. The backward and jvp
 // operators consume it instead of regenerating it, which is what makes the
@@ -197,24 +196,43 @@ __device__ __forceinline__ NormalPair standard_normal_pair(
   return pair;
 }
 
-// One innovation per slow-time sample, accumulated serially so the realisation
-// cannot depend on a launch configuration.
-__global__ void frontend_phase_scan_kernel(
-    float* __restrict__ phase_rad,
-    int num_phase,
-    float phase_sigma,
-    uint64_t seed,
-    uint32_t stage_id) {
-  if (threadIdx.x != 0 || blockIdx.x != 0) {
-    return;
+// A common continuous-time Wiener oscillator, evaluated without a sample grid.
+// Each integer-second interval has a Philox-keyed endpoint and Brownian bridge.
+// Forty dyadic levels resolve 2^-40 s (~0.91 ps). The omitted bridge variance
+// is at most diffusion*2^-42 rad^2. Refining/reordering queries cannot change
+// the realization. Independent oracle: interval-overlap covariance tests.
+__device__ double oscillator_block(double u, int64_t block, uint64_t seed) {
+  const uint64_t key = seed ^ (static_cast<uint64_t>(block) * 0x9E3779B97F4A7C15ull);
+  double value = u * standard_normal_pair(key, 0, 0).first;
+  double left = 0.0, width = 1.0;
+  uint64_t node = 1;
+  for (int level = 0; level < 40; ++level) {
+    const double fraction = (u-left)/width;
+    const double tent = 2.0 * fmin(fraction, 1.0-fraction);
+    value += 0.5*sqrt(width)*tent*standard_normal_pair(key, 0, node).first;
+    width *= 0.5;
+    node *= 2;
+    if (fraction >= 0.5) { left += width; ++node; }
   }
-  double accumulated = 0.0;
-  for (int p = 0; p < num_phase; ++p) {
-    const NormalPair pair =
-        standard_normal_pair(seed, stage_id, static_cast<uint64_t>(p));
-    accumulated += static_cast<double>(phase_sigma) * static_cast<double>(pair.first);
-    phase_rad[p] = static_cast<float>(accumulated);
+  return value;
+}
+
+__global__ void oscillator_phase_kernel(
+    const double* times, const double* delays, float* phase, int64_t count,
+    double diffusion, double sign, uint64_t seed) {
+  const int64_t i = static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+  if (i >= count) return;
+  const double t=times[i], s=t-delays[i];
+  const int64_t first=static_cast<int64_t>(floor(s)), last=static_cast<int64_t>(floor(t));
+  double difference;
+  if (first == last) {
+    difference=oscillator_block(t-last,last,seed)-oscillator_block(s-first,first,seed);
+  } else {
+    difference=oscillator_block(1.0,first,seed)-oscillator_block(s-first,first,seed);
+    for (int64_t block=first+1; block<last; ++block) difference+=oscillator_block(1.0,block,seed);
+    difference+=oscillator_block(t-last,last,seed);
   }
+  phase[i]=static_cast<float>(sign*sqrt(diffusion)*difference);
 }
 
 __global__ void frontend_noise_forward_kernel(
@@ -525,26 +543,46 @@ void check_pair(
 
 }  // namespace
 
+void oscillator_phase_forward_cuda(
+    const torch::stable::Tensor& times, const torch::stable::Tensor& delays,
+    torch::stable::Tensor& phase, double diffusion, double sign,
+    int64_t seed_base, int64_t block_size) {
+  STD_TORCH_CHECK(times.is_cuda() && delays.is_cuda(), "oscillator times/delays must be CUDA");
+  STD_TORCH_CHECK(times.scalar_type()==torch::headeronly::ScalarType::Double &&
+                  delays.scalar_type()==torch::headeronly::ScalarType::Double,
+                  "oscillator times/delays must be float64 seconds");
+  STD_TORCH_CHECK(times.is_contiguous() && delays.is_contiguous(), "oscillator grids must be contiguous");
+  check_cuda_float(phase,"phase");
+  STD_TORCH_CHECK(times.numel()==delays.numel() && times.numel()==phase.numel(), "oscillator grid shape mismatch");
+  STD_TORCH_CHECK(diffusion>=0 && seed_base>=0 && (sign==1.0 || sign==-1.0), "invalid oscillator parameters");
+  // Bridge evaluation uses more registers than the elementwise receiver pass.
+  const int requested=checked_block(block_size);
+  const int block=requested > 256 ? 256 : requested;
+  if (times.numel()==0) return;
+  const torch::stable::accelerator::DeviceGuard guard(times.get_device_index());
+  oscillator_phase_kernel<<<(times.numel()+block-1)/block,block,0,current_cuda_stream(times)>>>(
+      times.const_data_ptr<double>(),delays.const_data_ptr<double>(),phase.mutable_data_ptr<float>(),
+      times.numel(),diffusion,sign,static_cast<uint64_t>(seed_base));
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void frontend_noise_forward_cuda(
     const torch::stable::Tensor& x_re,
     const torch::stable::Tensor& x_im,
     torch::stable::Tensor& out_re,
     torch::stable::Tensor& out_im,
-    torch::stable::Tensor& phase_rad,
+    const torch::stable::Tensor& phase_rad,
     int64_t num_outer,
     int64_t num_phase,
-    double phase_sigma,
     double thermal_sigma,
     double lna_gain,
     int64_t seed_base,
-    int64_t phase_stage_id,
     int64_t thermal_stage_id,
     int64_t block_size) {
   const int outer = checked_int(num_outer, "num_outer");
   const int phase = checked_int(num_phase, "num_phase");
   STD_TORCH_CHECK(outer > 0, "num_outer must be positive.");
   STD_TORCH_CHECK(phase > 0, "num_phase must be positive.");
-  STD_TORCH_CHECK(phase_sigma >= 0.0, "phase_sigma must be non-negative.");
   STD_TORCH_CHECK(thermal_sigma >= 0.0, "thermal_sigma must be non-negative.");
   STD_TORCH_CHECK(seed_base >= 0, "seed_base must be non-negative.");
   const int block = checked_block(block_size);
@@ -559,14 +597,6 @@ void frontend_noise_forward_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       out_re.get_device_index());
   const cudaStream_t stream = current_cuda_stream(out_re);
-  frontend_phase_scan_kernel<<<1, 1, 0, stream>>>(
-      phase_rad.mutable_data_ptr<float>(),
-      phase,
-      static_cast<float>(phase_sigma),
-      static_cast<uint64_t>(seed_base),
-      static_cast<uint32_t>(phase_stage_id));
-  STD_CUDA_KERNEL_LAUNCH_CHECK();
-
   frontend_noise_forward_kernel<<<
       dim3(static_cast<unsigned int>((elements + block - 1) / block), 1, 1),
       dim3(block, 1, 1),
@@ -931,6 +961,7 @@ void frontend_quantize_forward_cuda(
 }
 
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("oscillator_phase_forward", TORCH_BOX(&oscillator_phase_forward_cuda));
   m.impl("frontend_noise_forward", TORCH_BOX(&frontend_noise_forward_cuda));
   m.impl("frontend_noise_backward", TORCH_BOX(&frontend_noise_backward_cuda));
   m.impl("frontend_noise_jvp", TORCH_BOX(&frontend_noise_jvp_cuda));

@@ -284,13 +284,8 @@ def test_the_phase_noise_spectrum_follows_the_free_running_asymptote():
 
     What is asserted is the GENERATOR, not a datasheet. The model is a
     free-running oscillator: a ``-20 dB/decade`` slope with no close-in ``1/f^3``
-    region and no far-out floor. Two further limitations are recorded on
-    ``NoiseSpec`` and are deliberately NOT tested, because the model cannot
-    produce them: the Wiener accumulation assumes a uniform sample spacing while
-    a real FMCW time base has an idle gap, and range correlation is absent, so a
-    homodyne receiver's close-range phase noise is grossly overstated. Writing an
-    absolute close-range level test against this model would be asserting a
-    number the physics does not claim.
+    region and no far-out floor. Actual timestamp gaps and homodyne delay
+    correlation are separately verified in test_correlated_phase_noise.py.
     """
 
     _, _, FrontendChain, FrontendSpec, _, NoiseSpec, PortSpec, SeedSpec = _specs()

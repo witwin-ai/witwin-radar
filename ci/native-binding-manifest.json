@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 4,
+  "radar_abi_version": 5,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -528,9 +528,8 @@
       "numerical_owner": "radar",
       "ad_role": "primal",
       "ad_group": "frontend_noise",
-      "launches": 2,
+      "launches": 1,
       "fused_stages": [
-        "phase_noise_random_walk",
         "phase_rotation",
         "thermal_noise_draw",
         "lna_gain"
@@ -691,6 +690,22 @@
       "python_owner": "witwin/radar/scattering.py",
       "contract_test": "tests/test_multipath_directions.py",
       "end_to_end_caller": "witwin.radar.scattering.AspectScatterResponse.evaluate_rows"
+    },
+    {
+      "symbol": "oscillator_phase_forward",
+      "family": "frontend_chain",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "oscillator_phase",
+      "launches": 1,
+      "fused_stages": [
+        "continuous_time_wiener_difference"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/frontend.py",
+      "contract_test": "tests/test_correlated_phase_noise.py",
+      "end_to_end_caller": "witwin.radar.frontend.NoiseSpec.phase_difference"
     }
   ]
 }
