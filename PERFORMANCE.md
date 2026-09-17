@@ -134,10 +134,11 @@ The three-wall, depth-two, 64-path fixture still requires 37 discoveries: one me
 error 0.00649%. Its native ADC synthesis uses one batch. Geometry-dependent discovery remains
 the limit; hundreds of milliseconds are not established for arbitrary heavy multipath or moving meshes.
 
-The retained MATLAB CPU rotor result is 250.7 ms. The optimized WiTwin rotor is still about 2.43x
-slower for that simple point-target comparison; this work does not establish a general MATLAB speed advantage.
-MATLAB was not rerun in this optimization pass. Different precision, devices, and fractional-delay models
-remain as described in the original comparison report.
+The retained MATLAB CPU rotor result was 250.7 ms and the optimized WiTwin rotor 608.7 ms, about
+2.43x slower. That comparison is superseded: both sides were re-executed on 2026-09-17 after the
+adaptive-control work and WiTwin measured 133.63 ms against MATLAB's 216.81 ms on the same
+fixture. See the rerun section below. MATLAB was not rerun in THIS optimization pass, and
+different precision, devices and fractional-delay models remain as the comparison report states.
 
 Reproduce: `python tools/validate_rotor_performance.py --output output/rotor-optimization/final
 --baseline output/rotor-optimization/baseline --cases rotor acceleration limbs static` (one command).
@@ -164,21 +165,45 @@ These are single measured runs, not latency percentiles or a real-time guarantee
 topology churn, tolerances and batch sizes change both accuracy and cost. The ADC reference remains available.
 Evidence: `output/doppler-repair/adaptive/results.json` and the saved full complex cubes.
 
-### Actual MATLAB material/motion comparison (2026-09-16)
+### Actual MATLAB comparison, rerun (2026-09-17)
 
-Actual R2025b Update 4 comparisons now distinguish known-path synthesis from the public scene entry.
-On RTX 5080 / Ryzen 7 9800X3D, known static paths to beat IQ (including CUDA transfers) measured
-0.241–2.252 ms versus MATLAB CPU double at 16.671–2637.869 ms. These are different native precisions
-and devices, not a same-hardware algorithm speedup. MATLAB submitted full frames with NumRepetitions.
+Both sides re-executed in one session on RTX 5080 / Ryzen 7 9800X3D against MATLAB R2025b
+Update 4 with Radar Toolbox and Phased Array System Toolbox 25.2, using the same fixtures,
+sampling parameters, alignment rule and repeat counts as the 2026-09-16 run.
 
-The public adaptive dynamic scene entry was slower: acceleration 6.479 s versus 0.302 s,
-rotor 13.247 s versus 0.251 s, and two articulated point proxies 11.872 s versus 0.343 s.
-The profiles identify 677 rediscoveries and 263062 per-observation full_like calls in one rotor frame.
-Fast CUDA synthesis therefore does not establish an end-to-end dynamic-scene advantage.
-Measurements used a shared desktop; medians and raw ranges are retained, not real-time guarantees.
+The public dynamic scene entry is now faster than MATLAB on the four baseline scenes, which
+reverses that report's conclusion. One warm-up and three measured calls each:
 
-See [the full accuracy, sampling-control, and performance report](docs/dev/audit/radar-matlab-material-motion-performance-2026-09-16.md)
-and its JSON evidence index. The earlier heavy 64.14x result below is against WiTwin's own ADC reference.
+| Scene | WiTwin median | MATLAB median | MATLAB / WiTwin | WiTwin on 2026-09-16 |
+| --- | ---: | ---: | ---: | ---: |
+| static | 7.77 ms | 22.11 ms | 2.85x | 14.01 ms |
+| acceleration | 102.74 ms | 252.73 ms | 2.46x | 6478.87 ms |
+| rotor | 133.63 ms | 216.81 ms | 1.62x | 13247.48 ms |
+| limbs | 169.27 ms | 295.14 ms | 1.74x | 11871.91 ms |
+| static_os4 | 17.07 ms | 32.53 ms | 1.91x | accuracy-only |
+| rotor_os4 | 451.80 ms | 339.10 ms | 0.75x | accuracy-only |
+
+`rotor_os4` is the one scene where MATLAB is still faster: at 524288 observations per frame the
+ADC synthesis batches dominate and the probe count no longer does. Accuracy against the
+independent continuous-delay oracle improved on every dynamic scene - acceleration 0.814% to
+0.244%, rotor 0.721% to 0.460%, limbs 0.564% to 0.458% - because a 32.8 ms frame span was
+previously cut into 17 linear pieces by the 2 ms bound and is now partitioned by the phase test
+with a quartic. MATLAB's own columns are unchanged, as they must be. WiTwin is still not
+uniformly more accurate: at four-times oversampling MATLAB measures 0.291% against 0.476%.
+
+Ground four-path multipath moved the other way, 0.511% to 0.762% and 0.486% to 0.682%, because a
+reflecting world cannot be certified complete, so the bound still applies and the coarser initial
+partition uses fewer intervals. Both stay far inside the 0.02 rad tolerance.
+
+Materials are unchanged at 1.9348e-6 maximum complex absolute error over 360 combinations, and
+known static paths to beat IQ measured 0.206-1.533 ms against MATLAB CPU double at
+12.99-2167.10 ms. Those two routes were not modified. All of these are different native
+precisions and devices, not a same-hardware algorithm speedup.
+
+See [the 2026-09-17 comparison](docs/dev/audit/radar-matlab-comparison-2026-09-17.md); the
+[2026-09-16 report](docs/dev/audit/radar-matlab-material-motion-performance-2026-09-16.md) is
+retained as the historical record of the implementation it measured. The heavy 64.14x result
+below is against WiTwin's own ADC reference.
 
 ### Earlier baseline measurements
 
