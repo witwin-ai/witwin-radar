@@ -93,11 +93,11 @@ in the last float32 digits for no physical reason.
 
 | Frames | Streamed peak | Stacked peak | Peak ratio | Streamed ms/frame | Stacked ms/frame | Mismatched frames |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 | 65.5 MB | 101.2 MB | 1.55x | 138.3 | 119.8 | 0 |
-| 32 | 66.5 MB | 307.6 MB | 4.62x | 126.9 | 116.5 | 0 |
-| 128 | 66.5 MB | 1214.5 MB | 18.26x | 149.9 | 161.9 | 0 |
+| 8 | 67.4 MB | 102.3 MB | 1.52x | 110.0 | 117.9 | 0 |
+| 32 | 67.4 MB | 301.3 MB | 4.47x | 107.3 | 106.6 | 0 |
+| 128 | 67.4 MB | 1204.2 MB | 17.88x | 108.3 | 109.9 | 0 |
 
-Streamed peak allocation is flat; stacked peak tracks the frame count and reaches 1.21 GB for the
+Streamed peak allocation is flat; stacked peak tracks the frame count and reaches 1.20 GB for the
 402.7 MB cube at 128 frames, because the frame list and `torch.stack` are both live. Per-frame
 latency is the same route in both cases and the spread here is shared-desktop noise, not a
 streaming penalty. This measures one LOS walker fixture: it does not establish a per-frame cost
