@@ -37,7 +37,12 @@ import torch
 #:     their translation unit. The registered operator set went from 34 symbols
 #:     and changed the sensor-weight schema, both observable by a consumer.
 #:     fails. That is an ABI change even though the sidecar schema is unchanged.
-RADAR_ABI_VERSION = 7
+#:
+#: 8 - the ``path_interpolate`` family generalized from a fixed two-node input
+#:     of seven columns to K nodes of four columns each. The symbol names are
+#:     unchanged and the shapes are not, so an older caller reaches a library
+#:     that accepts its tensor rank and rejects its width.
+RADAR_ABI_VERSION = 8
 
 BUILD_INFO_SUFFIX = ".build-info.json"
 FINGERPRINT_SUFFIX = ".build-fingerprint"

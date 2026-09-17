@@ -64,29 +64,32 @@ class _PathInterpolation(torch.autograd.Function):
         return result
 
 
-def interpolate_path_rows(delay0, delay1, transfer0, transfer1, alpha, carrier_hz):
+def interpolate_path_rows(delays, transfers, weights, carrier_hz):
     """Transport Channel phasors to the interpolated delay, then blend envelopes.
 
-    Topology equality is the caller's obligation. Alpha is a fixed, dimensionless
-    control coordinate; the adaptive partition itself is not differentiated.
-    Delays [s] and complex transfers retain native first-order derivatives.
+    ``delays`` and ``transfers`` are ``K`` sequences of per-row node samples of
+    ONE topologically identical path; ``weights`` is ``[rows, K]``, the caller's
+    interpolation basis at the query time. Two nodes with ``(1 - alpha, alpha)``
+    is the linear rule; more nodes raise the polynomial order without changing
+    the contract. The weights must sum to one so that a query landing exactly
+    on a node reproduces it.
+
+    Topology equality and the choice of nodes are the caller's obligations. The
+    weights are a fixed, dimensionless consequence of a discrete time-grid
+    decision and are not differentiated. Delays [s] and complex transfers
+    retain native first-order derivatives.
     """
     from .policy import refuse_derivative
 
-    refuse_derivative("adaptive time partition", "time-grid decisions are discrete", alpha=alpha)
-    values = torch.stack(
-        [
-            delay0.double(),
-            delay1.double(),
-            transfer0.real.double(),
-            transfer0.imag.double(),
-            transfer1.real.double(),
-            transfer1.imag.double(),
-            alpha.double(),
-        ],
-        dim=1,
-    ).contiguous()
-    result = _PathInterpolation.apply(values, carrier_hz)
+    refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
+    if len(delays) != len(transfers) or len(delays) < 2:
+        raise ValueError(f"interpolation needs at least two aligned node samples, got {len(delays)}/{len(transfers)}")
+    if weights.shape[1] != len(delays):
+        raise ValueError(f"weights carry {weights.shape[1]} nodes for {len(delays)} node samples")
+    columns = []
+    for index, (delay, transfer) in enumerate(zip(delays, transfers, strict=True)):
+        columns += [delay.double(), transfer.real.double(), transfer.imag.double(), weights[:, index].double()]
+    result = _PathInterpolation.apply(torch.stack(columns, dim=1).contiguous(), carrier_hz)
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 

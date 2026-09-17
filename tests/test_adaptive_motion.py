@@ -1,5 +1,6 @@
 """Adaptive motion against the independently executed ADC discovery route."""
 
+import math
 from dataclasses import replace
 
 import pytest
@@ -154,11 +155,73 @@ def test_the_interval_bound_is_enforced_only_where_a_birth_is_possible():
     assert certified_stats["max_tested_phase_error_rad"] <= 0.02
 
 
+def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
+    """And is refused the chance to spend probes where it cannot buy any."""
+
+    from witwin.core import Scene
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config,
+        waveform=replace(radar.system_config.waveform, adc_samples=32, chirp_per_frame=16, output_domain="beat"),
+    )
+    # Fast, curved motion: the case where the phase test, not the interval
+    # bound, is what shortens an interval.
+    origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
+
+    class Motion:
+        def at(self, t):
+            offset = torch.tensor([[0.0, 0.004, 0.0]], device=radar.device) * math.sin(2 * math.pi * 300.0 * t)
+            rate = torch.tensor([[0.0, 0.004, 0.0]], device=radar.device) * math.cos(2 * math.pi * 300.0 * t)
+            return Kinematics(origin + offset, rate * 2 * math.pi * 300.0)
+
+    kwargs = {
+        "times": (0.0,),
+        "response": _response(radar),
+        "sites": ScatterSitePolicy.explicit(origin, trajectory=Motion()),
+        "components": frozenset({"los"}),
+        "max_depth": 0,
+    }
+    exact = radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion_sampling="adc")
+
+    def adaptive(nodes):
+        result = radar.simulate(
+            Scene(structures=(), endpoints=[]),
+            **kwargs,
+            motion_sampling="adaptive",
+            adaptive_motion=AdaptiveMotionSpec(interpolation_nodes=nodes),
+        )
+        stats = result.adaptive_diagnostics[0]
+        error = float((result.cube - exact.cube).abs().norm() / exact.cube.abs().norm())
+        return stats, error
+
+    linear, linear_error = adaptive(2)
+    quartic, quartic_error = adaptive(5)
+
+    assert linear["interpolation_nodes"] == 2
+    assert quartic["interpolation_nodes"] == 5
+    assert quartic["accepted_intervals"] < linear["accepted_intervals"]
+    assert quartic["evaluations"] < linear["evaluations"]
+    assert quartic_error < linear_error
+    for stats in (linear, quartic):
+        assert stats["max_tested_phase_error_rad"] <= 0.02
+
+    # A structured world enforces the bound, which fixes the interval count, so
+    # the order cannot lengthen anything and is not allowed to spend probes.
+    capped = radar.simulate(
+        _static_scene(), **kwargs, motion_sampling="adaptive", adaptive_motion=AdaptiveMotionSpec(interpolation_nodes=9)
+    )
+    assert capped.adaptive_diagnostics[0]["interpolation_nodes"] == 2
+    assert capped.adaptive_diagnostics[0]["max_interval_enforced"]
+
+
 def test_adaptive_options_refuse_invalid_values():
     with pytest.raises(ValueError):
         AdaptiveMotionSpec(phase_error_rad=float("nan"))
     with pytest.raises(ValueError):
         AdaptiveMotionSpec(batch_observations=0)
+    with pytest.raises(ValueError):
+        AdaptiveMotionSpec(interpolation_nodes=1)
 
 
 @pytest.mark.parametrize("baseline", [0, 1])

@@ -8,6 +8,34 @@ FMCW defaults to a normalized range spectrum. Stationary rows use native Dirichl
 
 For that reason, pre-consolidation latency, FFT-count, launch-count, and allocation tables are not presented as current evidence here. They measured the former default beat pipeline and deleted module layout. They remain available in repository history, but must not be copied into release notes for the spectrum-first implementation.
 
+## Adaptive motion control (2026-09-17)
+
+Two changes to how the adaptive route chooses its partition, measured on RTX 5080 / Ryzen 7
+9800X3D in witwin2. The probe-spacing bound is enforced only where a path birth is possible,
+and an accepted interval interpolates through `interpolation_nodes` samples instead of two.
+Neither change touches the phase or amplitude tolerance.
+
+| Public scene entry | Probes/frame before | after | ms/frame before | after |
+| --- | ---: | ---: | ---: | ---: |
+| Rotor point, 128 chirps x 128 ADC, 4 MHz | 73-101 | 9 | 75.8-81.6 | 19.0 |
+| MIMO walker, 3TX x 4RX, 128 chirps x 256 ADC | 65 | 9 | 133-148 | 128 |
+| Three-wall multipath, 64 paths, 32 x 64 | 37 | 19 | 1580 | 332 |
+
+Against the exhaustive per-ADC route in the same session, the four `validate_adaptive_motion.py`
+fixtures now measure 196x (radial), 134x (rotor), 218x (two articulated points) and 129x (heavy
+multipath), against 2.93x/2.91x/3.08x/64.14x for the 2026-09-16 tables below. Those older
+absolute seconds came from a differently loaded desktop and are not comparable directly; the
+speedup ratios are, because each is measured within one session.
+
+Accuracy moves toward the declared tolerance rather than past it: at the default 0.02 rad the
+rotor fixture goes from 8.5e-3 to 2.7e-3 relative IQ error while the two-point proxy goes from
+2.2e-4 to 4.5e-3, both inside tolerance. `tools/validate_adaptive_tolerance.py` records what a
+tolerance buys; realized IQ relative L2 measured 0.55 to 0.66 times the largest per-path phase
+residual the controller tested, on single-dominant-path, null-free fixtures.
+
+Evidence: [the interval-bound and tolerance report](docs/dev/audit/radar-adaptive-interval-bound-and-tolerance-2026-09-17.md)
+and [the interpolation-order report](docs/dev/audit/radar-adaptive-interpolation-order-2026-09-17.md).
+
 ## Long frame sequences
 
 ### Streamed against stacked frames (2026-09-17)

@@ -54,11 +54,24 @@ class AdaptiveMotionSpec:
     not enforced there - it would only buy probes that answer a question the
     certification already answered. Where the bound does apply, the run starts
     from the coarsest partition it allows rather than bisecting down to it.
+
+    ``interpolation_nodes`` is how many sampled instants carry one accepted
+    interval, and therefore the polynomial order of the delay it interpolates:
+    2 is the linear rule and 5 is a quartic. Each interval probes a grid of
+    ``2 * (nodes - 1) + 1`` instants, spends the even ones as interpolation
+    nodes and tests the error at the odd ones, so a higher order costs more
+    probes per interval and buys a much longer interval. What it CANNOT do is
+    lengthen an interval the bound above already fixed, so it applies only
+    where that bound is not enforced; ``adaptive_diagnostics`` publishes the
+    effective count. A tolerance tight enough to make intervals short is also
+    better served by fewer nodes, because then the grid, not the interval
+    length, is what costs.
     """
 
     phase_error_rad: float = 0.02
     relative_amplitude_error: float = 0.02
     max_interval_s: float = 0.002
+    interpolation_nodes: int = 5
     max_evaluations: int = 8192
     batch_observations: int = 256
 
@@ -69,6 +82,8 @@ class AdaptiveMotionSpec:
                 raise ValueError(f"{name} must be a finite positive host value")
         for name in ("max_evaluations", "batch_observations"):
             _positive_int(getattr(self, name), name=name)
+        if _positive_int(self.interpolation_nodes, name="interpolation_nodes") < 2:
+            raise ValueError("interpolation_nodes must be at least 2; one node cannot interpolate")
 
 
 #: A scatter site is excited at exactly one watt.
@@ -807,6 +822,36 @@ def _times(times: object) -> tuple[float, ...]:
     return values
 
 
+def _lagrange_weights(query_s, node_s):
+    """The Lagrange basis at ``query_s`` for each row's node instants.
+
+    ``query_s`` is ``[rows]`` and ``node_s`` is ``[rows, K]``, both absolute
+    times in seconds; the return is ``[rows, K]``, dimensionless. Row ``i``
+    holds the unique degree-``K-1`` polynomial basis through that row's own
+    nodes, so ``sum_j w_ij = 1`` identically and a query landing on a node
+    gives that node weight one. Rows are independent: the adaptive partition
+    gives different observations different intervals.
+
+    Validity: the nodes of a row must be DISTINCT, which the caller guarantees
+    by enumerating any interval too short to carry ``K`` separate instants. A
+    repeated node divides by zero here rather than silently producing a
+    plausible weight. Node spacing need not be uniform, and is not: ADC
+    instants cluster inside a chirp and jump across the idle gap.
+
+    Oracle: ``tests/test_path_interpolation.py`` checks the basis and the
+    interpolant it drives against an independent numpy/complex formulation.
+    """
+
+    import numpy as np
+
+    weights = np.ones(node_s.shape)
+    for near in range(node_s.shape[1]):
+        for far in range(node_s.shape[1]):
+            if far != near:
+                weights[:, near] *= (query_s - node_s[:, far]) / (node_s[:, near] - node_s[:, far])
+    return weights
+
+
 def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     """Control topology probes on the host; interpolate and synthesize on CUDA.
 
@@ -863,34 +908,62 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     pieces = 1 if certified else max(1, math.ceil(span / options.max_interval_s))
     edges = sorted({round(index * (len(times) - 1) / pieces) for index in range(pieces + 1)})
     pending = list(zip(edges, edges[1:], strict=False))
+
+    # A higher polynomial order buys a LONGER accepted interval. Where the
+    # interval bound is enforced the length is already decided by the bound, so
+    # extra nodes per interval cannot reduce the interval count and are pure
+    # cost: measured on the three-wall fixture, nodes 2/3/5/9 all accept nine
+    # intervals and cost 19/37/73/165 probes for the same 6e-4 IQ error. The
+    # order therefore applies only under the completeness proof. A certified
+    # world whose phase test still subdivides is exactly where it pays.
+    node_count = options.interpolation_nodes if certified else 2
+    # One candidate interval spends `node_count` instants on the interpolation
+    # and tests the error at the instants between them, so its probe grid is
+    # this wide and the even positions are the nodes.
+    grid_width = 2 * (node_count - 1) + 1
+    stats["interpolation_nodes"] = node_count
+
     while pending:
-        probes = {}
+        probes, enumerated = {}, []
         for left, right in pending:
-            probes[left, right] = sorted(
-                {left, right, (3 * left + right) // 4, (left + right) // 2, (left + 3 * right) // 4}
-            )
-        ensure(index for group in probes.values() for index in group)
+            if right - left < grid_width:
+                # Too short to carry distinct nodes. Enumerating it costs no
+                # more probes than testing it would, and an enumerated
+                # observation needs no interpolation at all.
+                enumerated.append((left, right))
+            else:
+                probes[left, right] = [
+                    left + round((right - left) * step / (grid_width - 1)) for step in range(grid_width)
+                ]
+        ensure(
+            [index for group in probes.values() for index in group]
+            + [index for left, right in enumerated for index in range(left, right + 1)]
+        )
+        stats["accepted_intervals"] += len(enumerated)
         tested = {
             (left, right): indices
             for (left, right), indices in probes.items()
-            if right - left > 1
-            and within_interval_bound(left, right)
-            and all(cache[index][3] == cache[left][3] for index in indices)
+            if within_interval_bound(left, right) and all(cache[index][3] == cache[left][3] for index in indices)
         }
-        queries = [(left, right, index) for (left, right), indices in tested.items() for index in indices[1:-1]]
+        queries = [
+            (left, right, index, tuple(indices[::2]))
+            for (left, right), indices in tested.items()
+            for index in indices[1::2]
+        ]
         observations = {}
         if queries:
-            first = [cache[left][2] for left, _, _ in queries]
-            last = [cache[right][2] for _, right, _ in queries]
-            actual = [cache[index][2] for _, _, index in queries]
+            actual = [cache[index][2] for _, _, index, _ in queries]
             counts = [len(value.total_delay_s) for value in actual]
-            fraction = [(times[index] - times[left]) / (times[right] - times[left]) for left, right, index in queries]
+            node_paths = [[cache[group[node]][2] for *_, group in queries] for node in range(len(queries[0][3]))]
+            basis = _lagrange_weights(
+                np.asarray([times[index] for _, _, index, _ in queries]),
+                np.asarray([[times[index] for index in group] for *_, group in queries]),
+            )
+            device = node_paths[0][0].total_delay_s.device
             delay, transfer = interpolate_path_rows(
-                torch.cat([value.total_delay_s for value in first]),
-                torch.cat([value.total_delay_s for value in last]),
-                torch.cat([value.complex_transfer_ref for value in first]),
-                torch.cat([value.complex_transfer_ref for value in last]),
-                torch.as_tensor(np.repeat(fraction, counts), device=first[0].total_delay_s.device),
+                [torch.cat([value.total_delay_s for value in column]) for column in node_paths],
+                [torch.cat([value.complex_transfer_ref for value in column]) for column in node_paths],
+                torch.as_tensor(np.repeat(basis, counts, axis=0), device=device),
                 carrier_hz,
             )
             observed = torch.cat([value.complex_transfer_ref for value in actual])
@@ -922,10 +995,12 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
             identities = [cache[index][3] for index in indices]
             topology_ok = all(key == identities[0] for key in identities)
             phase_error = amplitude_error = 0.0
-            accepted = right - left <= 1
-            if not accepted and topology_ok and within_interval_bound(left, right):
-                for index in indices[1:-1]:
-                    predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[left, right, index]
+            accepted = False
+            if topology_ok and within_interval_bound(left, right):
+                for index in indices[1::2]:
+                    predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[
+                        left, right, index, tuple(indices[::2])
+                    ]
                     d = predicted_delay - observed_delay
                     predicted = pr + 1j * pi
                     observed = ar + 1j * ai
@@ -975,7 +1050,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                     stats["max_tested_relative_amplitude_error"], amplitude_error
                 )
                 for index in range(left, right + 1):
-                    partitions[index] = (left, right)
+                    partitions[index] = tuple(indices[::2])
             else:
                 stats["topology_refinements"] += int(not topology_ok)
                 middle = (left + right) // 2
@@ -996,41 +1071,52 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     pairs = spec.num_tx * spec.num_rx
     counts = np.zeros((len(times), pairs), dtype=np.int64)
     counts[ordered] = np.diff(np.asarray([pair_tables[index] for index in ordered]), axis=1)
-    bounds = np.asarray([partitions[index] for index in range(len(times))], dtype=np.int64)
-    bounds[ordered] = np.asarray(ordered)[:, None]
-    left, right = bounds.T
+    # An observation reads either its own evaluated row or its interval's
+    # nodes. An evaluated observation is written as K copies of itself with the
+    # first weight one, which is the same exact answer and keeps the table
+    # rectangular without a degenerate basis.
+    node_index = np.zeros((len(times), node_count), dtype=np.int64)
+    for index, group in partitions.items():
+        node_index[index] = group
+    node_index[ordered] = np.asarray(ordered)[:, None]
     clock = np.asarray(times)
-    span = clock[right] - clock[left]
-    fraction = np.divide(clock - clock[left], span, out=np.zeros_like(clock), where=span != 0)
+    basis = np.zeros((len(times), node_count))
+    basis[:, 0] = 1.0
+    interpolated = np.ones(len(times), dtype=bool)
+    interpolated[ordered] = False
+    if interpolated.any():
+        basis[interpolated] = _lagrange_weights(clock[interpolated], clock[node_index[interpolated]])
 
     def upload(value):
         return torch.as_tensor(value, device=device)
 
     values = []
+    left = node_index[:, 0]
     row_counts = counts[left].sum(axis=1)
+    # The row bound caps the temporary node table, whose width is 4 columns per
+    # node. Stated against the two-node width so that raising the polynomial
+    # order does not silently raise peak allocation along with it.
+    row_budget = 262144 * 8 // (4 * node_count)
     cumulative = np.concatenate(([0], np.cumsum(row_counts)))
     begin = 0
     while begin < len(times):
         # Bound temporary expanded payloads by both observations and path rows.
         # One unusually large observation is indivisible and is still supported.
         stop = min(len(times), begin + options.batch_observations * spec.num_samples)
-        stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + 262144)) - 1))
+        stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + row_budget)) - 1))
         batch = np.arange(begin, stop)
         rows = row_counts[batch]
         offsets = np.concatenate(([0], np.cumsum(counts[left[batch]].ravel())))
         observation = np.repeat(batch, rows)
         local_row = np.arange(offsets[-1]) - np.repeat(np.cumsum(rows) - rows, rows)
-        first_row = upload(starts[left[observation]] + local_row)
-        last_row = upload(starts[right[observation]] + local_row)
+        node_rows = [upload(starts[node_index[observation, node]] + local_row) for node in range(node_count)]
         delay, transfer = interpolate_path_rows(
-            delays[first_row],
-            delays[last_row],
-            transfers[first_row],
-            transfers[last_row],
-            upload(fraction[observation]),
+            [delays[rows] for rows in node_rows],
+            [transfers[rows] for rows in node_rows],
+            upload(basis[observation]),
             carrier_hz,
         )
-        transfer = torch.where(validity[first_row], transfer, torch.zeros_like(transfer))
+        transfer = torch.where(validity[node_rows[0]], transfer, torch.zeros_like(transfer))
         if frontend is not None:
             transfer = frontend._apply_path_phase_rows(delay, transfer, upload(clock[observation]))
         adc_time = spec.t_start_s + (observation % spec.num_samples) * spec.sample_period_s

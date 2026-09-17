@@ -6,64 +6,157 @@ import pytest
 import torch
 
 from witwin.radar.paths import interpolate_path_rows
+from witwin.radar.simulation import _lagrange_weights
 
 pytestmark = pytest.mark.gpu
 
+FC = 77e9
 
-def test_interpolation_preserves_carrier_wraps_and_native_derivatives():
-    fc = 77e9
-    d0 = torch.tensor([20e-9, 30e-9], device="cuda", requires_grad=True)
-    d1 = torch.tensor([21e-9, 29e-9], device="cuda", requires_grad=True)
-    w0 = torch.tensor([1 + 2j, 0.3 - 0.7j], device="cuda", requires_grad=True)
-    w1 = torch.tensor([2 - 1j, 0.4 + 0.2j], device="cuda", requires_grad=True)
-    alpha = torch.tensor([0.17, 0.71], device="cuda", dtype=torch.float64)
 
-    def oracle(a, b, x, y):
-        delta = b.double() - a.double()
-        return ((1 - alpha) * a.double() + alpha * b.double()).float(), (
-            (1 - alpha) * x.cdouble() * torch.exp(-2j * math.pi * fc * alpha * delta)
-            + alpha * y.cdouble() * torch.exp(2j * math.pi * fc * (1 - alpha) * delta)
-        ).cfloat()
+def _basis(query, nodes):
+    """Independent Lagrange basis: a product loop, not the production helper."""
 
-    leaves = (d0, d1, w0, w1)
-    actual = interpolate_path_rows(*leaves, alpha, fc)
-    expected = oracle(*leaves)
-    for a, b in zip(actual, expected, strict=True):
-        torch.testing.assert_close(a, b, rtol=2e-6, atol=1e-7)
+    import numpy as np
+
+    out = []
+    for row in range(len(query)):
+        row_weights = []
+        for near in range(nodes.shape[1]):
+            value = 1.0
+            for far in range(nodes.shape[1]):
+                if far != near:
+                    value *= (query[row] - nodes[row, far]) / (nodes[row, near] - nodes[row, far])
+            row_weights.append(value)
+        out.append(row_weights)
+    return np.asarray(out)
+
+
+def _oracle(delays, transfers, weights):
+    """tau = sum w_j tau_j; C = sum w_j C_j exp(-j 2 pi fc (tau - tau_j))."""
+
+    tau = sum(weights[:, index] * delay.double() for index, delay in enumerate(delays))
+    field = sum(
+        weights[:, index] * transfer.cdouble() * torch.exp(-2j * math.pi * FC * (tau - delay.double()))
+        for index, (delay, transfer) in enumerate(zip(delays, transfers, strict=True))
+    )
+    return tau.float(), field.cfloat()
+
+
+@pytest.mark.parametrize("nodes", [2, 3, 5])
+def test_interpolation_preserves_carrier_wraps_and_native_derivatives(nodes):
+    import numpy as np
+
+    rows = 2
+    node_times = np.asarray([[20e-9 + index * 0.7e-9 + row * 1e-9 for index in range(nodes)] for row in range(rows)])
+    query = np.asarray([node_times[row, 0] + 0.37 * (node_times[row, -1] - node_times[row, 0]) for row in range(rows)])
+    weights = torch.as_tensor(_basis(query, node_times), device="cuda")
+    torch.testing.assert_close(weights.sum(dim=1), torch.ones(rows, device="cuda", dtype=torch.float64))
+
+    leaves = []
+    for index in range(nodes):
+        leaves.append(torch.as_tensor(node_times[:, index], device="cuda", dtype=torch.float32).requires_grad_())
+    for index in range(nodes):
+        phase = 0.3 + 0.5 * index
+        leaves.append(
+            torch.tensor([1 + 2j, 0.3 - 0.7j], device="cuda")
+            .mul(math.cos(phase) + 1j * math.sin(phase))
+            .requires_grad_()
+        )
+    delays, transfers = leaves[:nodes], leaves[nodes:]
+
+    actual = interpolate_path_rows(delays, transfers, weights, FC)
+    expected = _oracle(delays, transfers, weights)
+    for produced, reference in zip(actual, expected, strict=True):
+        torch.testing.assert_close(produced, reference, rtol=2e-6, atol=1e-7)
 
     def loss(values):
         return values[0].sum() * 1e8 + values[1].real.sum() + 0.3 * values[1].imag.sum()
 
+    # These nodes are 0.7 ns apart at 77 GHz, so the interpolant spans ~54
+    # carrier wraps: exactly the cancellation the transport exists to survive,
+    # and a badly conditioned place to compare float32 gradients. The delay
+    # gradient carries a 2*pi*fc factor of 4.8e11 and, for three or more nodes,
+    # a basis whose individual weights leave [0, 1]. A production interval is
+    # accepted only within 0.02 rad, where none of that applies.
     actual_grad = torch.autograd.grad(loss(actual), leaves)
     expected_grad = torch.autograd.grad(loss(expected), leaves)
-    for a, b in zip(actual_grad, expected_grad, strict=True):
-        torch.testing.assert_close(a, b, rtol=3e-6, atol=1e-6)
-    tangents = (
-        torch.full_like(d0, 1e-12),
-        torch.full_like(d1, -2e-12),
-        torch.full_like(w0, 0.1j),
-        torch.full_like(w1, 0.2),
-    )
+    for produced, reference in zip(actual_grad, expected_grad, strict=True):
+        torch.testing.assert_close(produced, reference, rtol=2e-5, atol=1e-6)
+
+    tangents = [torch.full_like(leaf, 1e-12 * (1 + index)) for index, leaf in enumerate(delays)]
+    tangents += [torch.full_like(leaf, 0.1j + 0.05 * index) for index, leaf in enumerate(transfers)]
     with torch.autograd.forward_ad.dual_level():
         duals = [torch.autograd.forward_ad.make_dual(a.detach(), t) for a, t in zip(leaves, tangents, strict=True)]
-        result = interpolate_path_rows(*duals, alpha, fc)
-        reference = oracle(*duals)
-        for a, b in zip(result, reference, strict=True):
+        result = interpolate_path_rows(duals[:nodes], duals[nodes:], weights, FC)
+        reference = _oracle(duals[:nodes], duals[nodes:], weights)
+        for produced, wanted in zip(result, reference, strict=True):
             torch.testing.assert_close(
-                torch.autograd.forward_ad.unpack_dual(a).tangent,
-                torch.autograd.forward_ad.unpack_dual(b).tangent,
+                torch.autograd.forward_ad.unpack_dual(produced).tangent,
+                torch.autograd.forward_ad.unpack_dual(wanted).tangent,
                 rtol=3e-6,
                 atol=1e-6,
             )
 
 
-def test_single_physical_path_has_no_interpolation_fade():
-    fc = 77e9
-    d0 = torch.tensor([20e-9], device="cuda")
-    d1 = torch.tensor([22e-9], device="cuda")
-    w0 = torch.exp(-2j * math.pi * fc * d0.double()).cfloat()
-    w1 = torch.exp(-2j * math.pi * fc * d1.double()).cfloat()
-    alpha = torch.tensor([0.37], device="cuda", dtype=torch.float64)
-    _, weight = interpolate_path_rows(d0, d1, w0, w1, alpha, fc)
-    expected = torch.exp(-2j * math.pi * fc * ((1 - alpha) * d0.double() + alpha * d1.double())).cfloat()
-    torch.testing.assert_close(weight, expected, rtol=1e-6, atol=1e-6)
+@pytest.mark.parametrize("nodes", [2, 3, 5])
+def test_single_physical_path_has_no_interpolation_fade(nodes):
+    """One coherent path must survive the blend at full amplitude."""
+
+    import numpy as np
+
+    node_times = np.asarray([[20e-9 + index * 0.5e-9 for index in range(nodes)]])
+    query = np.asarray([node_times[0, 0] + 0.37 * (node_times[0, -1] - node_times[0, 0])])
+    weights = torch.as_tensor(_basis(query, node_times), device="cuda")
+    delays = [torch.as_tensor(node_times[:, index], device="cuda", dtype=torch.float32) for index in range(nodes)]
+    transfers = [torch.exp(-2j * math.pi * FC * delay.double()).cfloat() for delay in delays]
+
+    tau, weight = interpolate_path_rows(delays, transfers, weights, FC)
+    expected_tau = sum(weights[:, index] * delay.double() for index, delay in enumerate(delays))
+    torch.testing.assert_close(tau, expected_tau.float(), rtol=1e-6, atol=0)
+    torch.testing.assert_close(weight, torch.exp(-2j * math.pi * FC * expected_tau).cfloat(), rtol=1e-6, atol=1e-6)
+
+
+def test_a_higher_order_basis_tracks_curvature_a_linear_one_cannot():
+    """The reason the order is configurable, as a number rather than a claim."""
+
+    import numpy as np
+
+    # A quadratic delay ramp: the linear rule must miss it and the quadratic
+    # rule must reproduce it, both measured against the same true delay.
+    def true_delay(t):
+        return 20e-9 + 3e-6 * t + 8.0 * t * t
+
+    span = 2e-4
+    query = np.asarray([0.37 * span])
+    errors = {}
+    for nodes in (2, 3):
+        node_times = np.asarray([[index * span / (nodes - 1) for index in range(nodes)]])
+        weights = torch.as_tensor(_basis(query, node_times), device="cuda")
+        delays = [
+            torch.as_tensor(true_delay(node_times[:, index]), device="cuda", dtype=torch.float64).float()
+            for index in range(nodes)
+        ]
+        transfers = [torch.exp(-2j * math.pi * FC * delay.double()).cfloat() for delay in delays]
+        tau, _ = interpolate_path_rows(delays, transfers, weights, FC)
+        errors[nodes] = abs(float(tau[0]) - true_delay(query[0]))
+
+    assert errors[3] < errors[2] / 100, errors
+
+
+def test_the_production_basis_matches_the_independent_one():
+    import numpy as np
+
+    nodes = np.asarray([[0.0, 1e-4, 2.5e-4, 4e-4, 6e-4], [1e-3, 1.1e-3, 1.25e-3, 1.4e-3, 1.6e-3]])
+    query = np.asarray([1.7e-4, 1.32e-3])
+    np.testing.assert_allclose(_lagrange_weights(query, nodes), _basis(query, nodes), rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(_lagrange_weights(query, nodes).sum(axis=1), 1.0, rtol=0, atol=1e-12)
+
+
+def test_interpolation_refuses_a_misshaped_node_set():
+    delay = torch.zeros(3, device="cuda")
+    transfer = torch.zeros(3, device="cuda", dtype=torch.complex64)
+    weights = torch.ones((3, 2), device="cuda", dtype=torch.float64) / 2
+    with pytest.raises(ValueError, match="at least two"):
+        interpolate_path_rows([delay], [transfer], weights, FC)
+    with pytest.raises(ValueError, match="nodes for"):
+        interpolate_path_rows([delay] * 3, [transfer] * 3, weights, FC)

@@ -13,7 +13,12 @@ iteration starts.
 
 Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec` from
 `witwin.radar.simulation`. Controls are `phase_error_rad`, `relative_amplitude_error`,
-`max_interval_s`, `max_evaluations`, and `batch_observations`. `max_interval_s` bounds how long
+`max_interval_s`, `interpolation_nodes`, `max_evaluations`, and `batch_observations`.
+`interpolation_nodes` is the number of sampled instants one accepted interval interpolates
+through, so 2 is the linear rule and the default 5 is a quartic; each interval probes a grid of
+`2 * (nodes - 1) + 1` instants and tests the error at the ones between the nodes. A higher order
+buys a longer interval, which it cannot do where the probe-spacing bound already fixes the
+interval length, so it applies only where that bound is not enforced. `max_interval_s` bounds how long
 the run may go without looking for a path birth; it is a topology-safety bound, not an accuracy
 control, and it is not enforced where the candidate family is certified complete for all time.
 Where it applies, the initial partition is the coarsest one it allows. Native interpolation moves each
@@ -38,7 +43,8 @@ topology reuse. Source mutations, retired handles and version changes still inva
 with geometry keep discovery at the error-control probes, including path births and disappearances.
 Static geometry permits slot-major propagation, composition and antenna weighting in batches.
 ADC synthesis gathers cached path rows; it no longer creates a delay/clock tensor for every sample.
-Each synthesis batch is bounded by `batch_observations * num_samples` observations and 262144 rows
+Each synthesis batch is bounded by `batch_observations * num_samples` observations and by a row
+budget that scales with the node-table width, so raising the order does not raise peak allocation
 (a single larger observation is indivisible). Probe batches still use `batch_observations` directly.
 The phase/amplitude tolerances and maximum probe spacing are unchanged by these scheduling choices.
 

@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 7,
+  "radar_abi_version": 8,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [

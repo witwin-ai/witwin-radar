@@ -632,38 +632,63 @@ void two_way_join_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-// Carrier-aware interpolation of a single IDENTICAL round-trip path.
-// x = [tau0, tau1, Re(C0), Im(C0), Re(C1), Im(C1), alpha]. Delays are
-// seconds, fc is Hz, alpha is a fixed time-grid coordinate. Channel convention
-// C=A exp(-j 2 pi fc tau). Transport each endpoint coefficient to the linear
-// query delay before blending amplitudes, avoiding cancellation over carrier
-// wraps. Valid only within a topology-stable, error-tested interval. No
+// Carrier-aware interpolation of a single IDENTICAL round-trip path through K
+// sampled nodes. Row i of x is K groups of four doubles: (tau_j [s], Re(C_j),
+// Im(C_j), w_j). fc is Hz. Channel convention C = A exp(-j 2 pi fc tau).
+//
+//   tau   = sum_j w_j tau_j
+//   theta = -2 pi fc (tau - tau_j)
+//   C     = sum_j w_j C_j exp(j theta_j)
+//
+// Each node coefficient is transported to the query delay BEFORE the envelopes
+// are blended, which is what avoids cancellation across carrier wraps; the
+// weights blend envelopes only. w is the caller's Lagrange basis at the query
+// time, so K=2 with w=(1-alpha, alpha) is the linear rule and the polynomial
+// order is the caller's choice. The weights must sum to one - a partition of
+// unity is what makes an exactly-sampled query reproduce its node - and they
+// are a discrete time-grid decision, so the kernel publishes NO derivative for
+// them. Valid only within a topology-stable, error-tested interval. No
 // spreading/scattering is added here. Oracle: test_path_interpolation.py.
 __global__ void path_interpolate_kernel(const double* x, const double* v,
-    double* out, int64_t n, double fc, int mode) {
+    double* out, int64_t n, int64_t nodes, double fc, int mode) {
   const int64_t i = static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
   if (i >= n) return;
-  const double* a = x+7*i;
-  const double h=a[6], b=1-h, k=6.2831853071795864769*fc, d=a[1]-a[0];
-  double s0,c0,s1,c1;
-  sincos(-k*h*d,&s0,&c0); sincos(k*b*d,&s1,&c1);
-  const double r0=b*(a[2]*c0-a[3]*s0), j0=b*(a[2]*s0+a[3]*c0);
-  const double r1=h*(a[4]*c1-a[5]*s1), j1=h*(a[4]*s1+a[5]*c1);
-  const double dr=-k*(h*j0-b*j1), dj=k*(h*r0-b*r1);
-  const double jac[3][7]={{b,h,0,0,0,0,0},
-    {dr,-dr,b*c0,-b*s0,h*c1,-h*s1,0},
-    {dj,-dj,b*s0,b*c0,h*s1,h*c1,0}};
-  if (mode==0) { out[3*i]=b*a[0]+h*a[1]; out[3*i+1]=r0+r1; out[3*i+2]=j0+j1; }
-  else if (mode==1) {
-    for(int col=0;col<7;++col) {
-      double sum=0; for(int row=0;row<3;++row) sum+=jac[row][col]*v[3*i+row];
-      out[7*i+col]=sum;
+  const double* a = x+4*nodes*i;
+  const double k = 6.2831853071795864769*fc;
+  double tau = 0;
+  for (int64_t j=0;j<nodes;++j) tau += a[4*j+3]*a[4*j];
+  // Transported, weighted sum. theta is recomputed rather than cached so the
+  // register cost does not grow with the node count.
+  double re = 0, im = 0;
+  for (int64_t j=0;j<nodes;++j) {
+    double s,c; sincos(-k*(tau-a[4*j]),&s,&c);
+    re += a[4*j+3]*(a[4*j+1]*c-a[4*j+2]*s);
+    im += a[4*j+3]*(a[4*j+1]*s+a[4*j+2]*c);
+  }
+  if (mode==0) { out[3*i]=tau; out[3*i+1]=re; out[3*i+2]=im; }
+  else {
+    // Column m of the Jacobian, for node m. d(theta_j)/d(tau_m) = -k(w_m -
+    // delta_jm) collapses the transported sum into the published re/im, so a
+    // delay column needs only this node's own transported value.
+    double* row = out+(mode==1 ? 4*nodes*i : 3*i);
+    const double* vec = v+(mode==1 ? 3*i : 4*nodes*i);
+    double jvp[3] = {0,0,0};
+    for (int64_t j=0;j<nodes;++j) {
+      double s,c; sincos(-k*(tau-a[4*j]),&s,&c);
+      const double w=a[4*j+3];
+      const double rj=a[4*j+1]*c-a[4*j+2]*s, ij=a[4*j+1]*s+a[4*j+2]*c;
+      const double jac[3][3]={{w,0,0},{k*w*(im-ij),w*c,-w*s},{-k*w*(re-rj),w*s,w*c}};
+      if (mode==1) {
+        for(int col=0;col<3;++col) {
+          double sum=0; for(int r=0;r<3;++r) sum+=jac[r][col]*vec[r];
+          row[4*j+col]=sum;
+        }
+        row[4*j+3]=0;
+      } else {
+        for(int r=0;r<3;++r) for(int col=0;col<3;++col) jvp[r]+=jac[r][col]*vec[4*j+col];
+      }
     }
-  } else {
-    for(int row=0;row<3;++row) {
-      double sum=0; for(int col=0;col<7;++col) sum+=jac[row][col]*v[7*i+col];
-      out[3*i+row]=sum;
-    }
+    if (mode==2) for(int r=0;r<3;++r) row[r]=jvp[r];
   }
 }
 
@@ -676,15 +701,16 @@ void path_interpolate_run(const torch::stable::Tensor& x, const torch::stable::T
       "path interpolation requires contiguous CUDA doubles");
     STD_TORCH_CHECK(tensor->get_device_index()==x.get_device_index(), "interpolation devices differ");
   }
-  STD_TORCH_CHECK(x.dim()==2 && x.size(1)==7, "interpolation x must be [N,7]");
-  const int64_t n=x.size(0);
-  STD_TORCH_CHECK(out.numel()==n*(mode==1?7:3), "interpolation output shape");
-  STD_TORCH_CHECK(v.numel()==(mode==0?0:n*(mode==1?3:7)), "interpolation vector shape");
+  STD_TORCH_CHECK(x.dim()==2 && x.size(1)>=8 && x.size(1)%4==0,
+    "interpolation x must be [N,4K] with K>=2 nodes of (delay, re, im, weight)");
+  const int64_t n=x.size(0), nodes=x.size(1)/4, wide=4*nodes;
+  STD_TORCH_CHECK(out.numel()==n*(mode==1?wide:3), "interpolation output shape");
+  STD_TORCH_CHECK(v.numel()==(mode==0?0:n*(mode==1?3:wide)), "interpolation vector shape");
   STD_TORCH_CHECK(std::isfinite(fc) && fc>0, "interpolation carrier must be positive");
   const torch::stable::accelerator::DeviceGuard guard(x.get_device_index());
   if(n) {
     path_interpolate_kernel<<<(n+255)/256,256,0,join_stream(x)>>>(
-      x.const_data_ptr<double>(),v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,fc,mode);
+      x.const_data_ptr<double>(),v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,nodes,fc,mode);
     STD_CUDA_KERNEL_LAUNCH_CHECK();
   }
 }
