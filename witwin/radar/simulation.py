@@ -43,9 +43,17 @@ class AdaptiveMotionSpec:
     """Sampled error control, not a proof of absent events between probes.
 
     The phase tolerance is radians per path, before coherent summation; the
-    amplitude tolerance is relative per path. Max interval [s] bounds the
-    topology probe spacing. Near coherent nulls a relative IQ bound cannot be
-    inferred from these path bounds. Exhausting the discovery budget raises.
+    amplitude tolerance is relative per path. Near coherent nulls a relative IQ
+    bound cannot be inferred from these path bounds. Exhausting the discovery
+    budget raises.
+
+    ``max_interval_s`` bounds how long the run may go without LOOKING for a
+    path birth, which is the one thing no error test can detect. It is not an
+    accuracy control: the phase and amplitude tolerances are. A family that is
+    certified complete for all time cannot gain or lose a row, so the bound is
+    not enforced there - it would only buy probes that answer a question the
+    certification already answered. Where the bound does apply, the run starts
+    from the coarsest partition it allows rather than bisecting down to it.
     """
 
     phase_error_rad: float = 0.02
@@ -835,7 +843,26 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                 cache[index] = record
                 pair_tables[index] = record[2].pair_offsets.tolist()
 
-    pending = [(0, len(times) - 1)]
+    # The maximum interval bounds how long the run can go without LOOKING for a
+    # path birth; accuracy is bounded by the phase/amplitude tests instead. A
+    # family certified complete for all time cannot gain or lose a row, so the
+    # bound has no work to do there and forcing it costs probes for nothing.
+    # Probing the two endpoints first is what makes the certification readable:
+    # the first observation of a run discovers and therefore cannot carry it.
+    ensure((0, len(times) - 1))
+    certified = bool(cache[len(times) - 1][0].topology_complete)
+    stats["max_interval_enforced"] = not certified
+
+    def within_interval_bound(left, right):
+        return certified or times[right] - times[left] <= options.max_interval_s
+
+    # Start from the coarsest partition the interval bound allows rather than
+    # bisecting down to it: the intervening levels are guaranteed to fail that
+    # bound, and their probes answer a question already decided here.
+    span = times[-1] - times[0]
+    pieces = 1 if certified else max(1, math.ceil(span / options.max_interval_s))
+    edges = sorted({round(index * (len(times) - 1) / pieces) for index in range(pieces + 1)})
+    pending = list(zip(edges, edges[1:], strict=False))
     while pending:
         probes = {}
         for left, right in pending:
@@ -847,7 +874,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
             (left, right): indices
             for (left, right), indices in probes.items()
             if right - left > 1
-            and times[right] - times[left] <= options.max_interval_s
+            and within_interval_bound(left, right)
             and all(cache[index][3] == cache[left][3] for index in indices)
         }
         queries = [(left, right, index) for (left, right), indices in tested.items() for index in indices[1:-1]]
@@ -896,7 +923,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
             topology_ok = all(key == identities[0] for key in identities)
             phase_error = amplitude_error = 0.0
             accepted = right - left <= 1
-            if not accepted and topology_ok and times[right] - times[left] <= options.max_interval_s:
+            if not accepted and topology_ok and within_interval_bound(left, right):
                 for index in indices[1:-1]:
                     predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[left, right, index]
                     d = predicted_delay - observed_delay

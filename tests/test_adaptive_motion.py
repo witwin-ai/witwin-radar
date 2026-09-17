@@ -99,6 +99,61 @@ def test_completeness_and_exhaustiveness_are_reported_separately():
     assert not structured.motion_sampling_exhaustive
 
 
+def test_the_interval_bound_is_enforced_only_where_a_birth_is_possible():
+    """The bound looks for path births; a certified family cannot have one."""
+
+    from witwin.core import Scene
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config,
+        waveform=replace(radar.system_config.waveform, adc_samples=16, chirp_per_frame=8, output_domain="beat"),
+    )
+    origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
+    velocity = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
+
+    class Motion:
+        def at(self, t):
+            return Kinematics(origin + velocity * t, velocity)
+
+    kwargs = {
+        "times": (0.0,),
+        "response": _response(radar),
+        "sites": ScatterSitePolicy.explicit(origin, trajectory=Motion()),
+        "components": frozenset({"los"}),
+        "max_depth": 0,
+        "motion_sampling": "adaptive",
+    }
+    spec = radar.system_config.waveform_spec()
+    span = spec.num_chirps * spec.num_tx * spec.chirp_period_s
+
+    def probe(scene, cap):
+        result = radar.simulate(scene, **kwargs, adaptive_motion=AdaptiveMotionSpec(max_interval_s=cap))
+        return result, result.adaptive_diagnostics[0]
+
+    # A bound far below the frame span would force many intervals if enforced.
+    tight = span / 8
+    certified, certified_stats = probe(Scene(structures=(), endpoints=[]), tight)
+    structured, structured_stats = probe(_static_scene(), tight)
+
+    assert not certified_stats["max_interval_enforced"]
+    assert structured_stats["max_interval_enforced"]
+    assert certified_stats["accepted_intervals"] < structured_stats["accepted_intervals"]
+    assert certified_stats["evaluations"] < structured_stats["evaluations"]
+
+    # Enforcement is the only difference: the same world with a bound wider
+    # than the frame must cost exactly what the certified run cost.
+    unbounded, unbounded_stats = probe(Scene(structures=(), endpoints=[]), 4 * span)
+    assert unbounded_stats["evaluations"] == certified_stats["evaluations"]
+    torch.testing.assert_close(unbounded.cube, certified.cube, rtol=0, atol=0)
+
+    # And relaxing it does not cost accuracy the tests did not already bound.
+    exact = radar.simulate(Scene(structures=(), endpoints=[]), **{**kwargs, "motion_sampling": "adc"})
+    error = (certified.cube - exact.cube).abs().norm() / exact.cube.abs().norm()
+    assert error < 0.012, float(error)
+    assert certified_stats["max_tested_phase_error_rad"] <= 0.02
+
+
 def test_adaptive_options_refuse_invalid_values():
     with pytest.raises(ValueError):
         AdaptiveMotionSpec(phase_error_rad=float("nan"))

@@ -13,7 +13,10 @@ iteration starts.
 
 Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec` from
 `witwin.radar.simulation`. Controls are `phase_error_rad`, `relative_amplitude_error`,
-`max_interval_s`, `max_evaluations`, and `batch_observations`. Native interpolation moves each
+`max_interval_s`, `max_evaluations`, and `batch_observations`. `max_interval_s` bounds how long
+the run may go without looking for a path birth; it is a topology-safety bound, not an accuracy
+control, and it is not enforced where the candidate family is certified complete for all time.
+Where it applies, the initial partition is the coarsest one it allows. Native interpolation moves each
 endpoint coefficient to the query's carrier phase before blending. Quarter/midpoint probes
 test delay, complex phase, amplitude, full leg identity, and validity; mismatches subdivide.
 The native interpolant supports VJP/JVP for a fixed accepted partition. Discovery and
