@@ -1,0 +1,385 @@
+{
+  "date": "2026-09-16",
+  "implementation_commits": [
+    "9f5f99e",
+    "52f50bc",
+    "e6210eb"
+  ],
+  "environment": {
+    "python_environment": "witwin2",
+    "device": "RTX 5080",
+    "torch": "2.10.0+cu128",
+    "platform": "Windows"
+  },
+  "acceptance": {
+    "gpu": {
+      "passed": 1531,
+      "skipped": 12,
+      "failed": 0,
+      "seconds": 309.44,
+      "skip_reasons": {
+        "missing_smpl_assets": 11,
+        "external_nightly_coexistence": 1
+      },
+      "missing_channel_skips": 0
+    },
+    "quick": {
+      "passed": 697,
+      "skipped": 846,
+      "failed": 0,
+      "coverage_percent": 57
+    },
+    "additional_static_gates_passed": 9,
+    "ruff_files": 215
+  },
+  "native_build": {
+    "binary_sha256": "27c9eab148ac6c91bf6445039c0887a76d8f03a23720289ce9f5fb7aa26d5209",
+    "build_fingerprint": "92d3fcc85bd2a2bfa6ec7b50ae629ce35ea0311676a3753a87b873f88dc08e5e",
+    "build_type": "developer",
+    "compiler": "msvc 19.44.35228",
+    "cuda_architectures": [
+      "120"
+    ],
+    "cuda_compiler_version": "12.9.41",
+    "cuda_version": "12.8",
+    "cxx_abi": "msvc",
+    "extension_name": "_radar_native",
+    "operator_symbols": [
+      "fmcw_beat_backward",
+      "fmcw_beat_forward",
+      "fmcw_beat_jvp",
+      "fmcw_spectrum_backward",
+      "fmcw_spectrum_forward",
+      "fmcw_spectrum_jvp",
+      "frontend_agc_backward",
+      "frontend_agc_forward",
+      "frontend_agc_jvp",
+      "frontend_noise_backward",
+      "frontend_noise_forward",
+      "frontend_noise_jvp",
+      "frontend_quantize_forward",
+      "ofdm_cfr_backward",
+      "ofdm_cfr_forward",
+      "ofdm_cfr_jvp",
+      "oscillator_phase_forward",
+      "path_interpolate_backward",
+      "path_interpolate_forward",
+      "path_interpolate_jvp",
+      "pulsed_echo_backward",
+      "pulsed_echo_forward",
+      "pulsed_echo_jvp",
+      "scatter_direction_backward",
+      "scatter_direction_forward",
+      "scatter_direction_jvp",
+      "scatter_response_aspect_backward",
+      "scatter_response_aspect_forward",
+      "scatter_response_aspect_jvp",
+      "sensor_weight_backward",
+      "sensor_weight_forward",
+      "sensor_weight_jvp",
+      "two_way_join_backward",
+      "two_way_join_forward",
+      "two_way_join_jvp"
+    ],
+    "platform_tag": "win_amd64",
+    "python_abi": "stable-abi-v1",
+    "radar_abi_version": 6,
+    "radar_git_dirty": true,
+    "radar_git_sha": "52f50bcc92205ea4170753af3a02b34a0bf61146",
+    "source_fingerprint": "a2c4d98f4a8aacc9f7aaf72521fd0489389d1ec9ba7401610496b4901d870afb",
+    "torch_target_version": "0x020a000000000000",
+    "torch_version": "2.10.0"
+  },
+  "channel_build_fingerprint": "183118e96d75856e71df2f90c621fa191d6151d2b63ec12fd5f71062e49ed73f",
+  "experiments": {
+    "radial": {
+      "iq_relative_l2": 0.0002600844600237906,
+      "rd_power_relative_l2": 4.2365853005321696e-05,
+      "exact_seconds": 8.463758099998813,
+      "adaptive_seconds": 2.8883808000027784,
+      "speedup": 2.930277787468561,
+      "exact_discoveries": 512,
+      "adaptive_discoveries": 193,
+      "paths": 1,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008654378346750754,
+          "max_tested_relative_amplitude_error": 3.7519233686133067e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "rotor": {
+      "iq_relative_l2": 0.0002013934135902673,
+      "rd_power_relative_l2": 6.526127981487662e-05,
+      "exact_seconds": 8.555492599996796,
+      "adaptive_seconds": 2.93504280000343,
+      "speedup": 2.9149464532465417,
+      "exact_discoveries": 512,
+      "adaptive_discoveries": 193,
+      "paths": 1,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008654378346750754,
+          "max_tested_relative_amplitude_error": 4.1417892361656595e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "limbs": {
+      "iq_relative_l2": 0.00021500205912161618,
+      "rd_power_relative_l2": 7.299330172827467e-05,
+      "exact_seconds": 8.852510199998505,
+      "adaptive_seconds": 2.8707177999967826,
+      "speedup": 3.0837270734199045,
+      "exact_discoveries": 512,
+      "adaptive_discoveries": 193,
+      "paths": 2,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008654378346750754,
+          "max_tested_relative_amplitude_error": 4.489000763481219e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "heavy": {
+      "iq_relative_l2": 0.0005659482558257878,
+      "rd_power_relative_l2": 6.488343206001446e-05,
+      "exact_seconds": 101.33022940000228,
+      "adaptive_seconds": 1.5797466999938479,
+      "speedup": 64.1433398154254,
+      "exact_discoveries": 2048,
+      "adaptive_discoveries": 37,
+      "paths": 64,
+      "diagnostics": [
+        {
+          "evaluations": 37,
+          "topology_refinements": 0,
+          "accepted_intervals": 9,
+          "max_tested_phase_error_rad": 0.006974933391191454,
+          "max_tested_relative_amplitude_error": 0.00037349808859334137,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 2048
+        }
+      ]
+    }
+  },
+  "final_replay": {
+    "radial": {
+      "bitwise_matches_measured_cube": true,
+      "iq_relative_l2": 0.00026008443091996014,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008594107979093268,
+          "max_tested_relative_amplitude_error": 3.7519233686133067e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "rotor": {
+      "bitwise_matches_measured_cube": true,
+      "iq_relative_l2": 0.0002013933553826064,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008594107979093268,
+          "max_tested_relative_amplitude_error": 4.1417892361656595e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "limbs": {
+      "bitwise_matches_measured_cube": true,
+      "iq_relative_l2": 0.00021500213188119233,
+      "diagnostics": [
+        {
+          "evaluations": 193,
+          "topology_refinements": 0,
+          "accepted_intervals": 48,
+          "max_tested_phase_error_rad": 0.0008594107979093268,
+          "max_tested_relative_amplitude_error": 4.489000763481219e-07,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 512
+        }
+      ]
+    },
+    "heavy": {
+      "bitwise_matches_measured_cube": true,
+      "iq_relative_l2": 0.0005659480229951441,
+      "diagnostics": [
+        {
+          "evaluations": 37,
+          "topology_refinements": 0,
+          "accepted_intervals": 9,
+          "max_tested_phase_error_rad": 0.006875286383274615,
+          "max_tested_relative_amplitude_error": 0.00037349808859334137,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 2048
+        }
+      ]
+    }
+  },
+  "matlab": {
+    "status": "blocked_matlab_startup_timeout",
+    "execution": {
+      "comparison_executed": false,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
+      "elapsed_seconds": 120.4294004,
+      "completed": false,
+      "exit_code": null,
+      "timeout_seconds": 120
+    },
+    "matlab_script_validated": false,
+    "radar_toolbox_runtime_identity_available": false
+  },
+  "evidence_files": [
+    {
+      "path": "output/doppler-repair/frontend-domain-tests.log",
+      "bytes": 115,
+      "sha256": "becc892ef50c10491c9c679242b86eef74e129189066e5d212c046ae3732db38"
+    },
+    {
+      "path": "output/doppler-repair/oscillator-final-tests.log",
+      "bytes": 987,
+      "sha256": "f9f958eba89ae64c14384d34e7ba2a9f5b90c0e4cfbee83c7674784793633925"
+    },
+    {
+      "path": "output/doppler-repair/adaptive-final-targeted.log",
+      "bytes": 1832,
+      "sha256": "58621dc52534df6bbce1ae934e513487213f748521f3d651becccb00dfcb20ff"
+    },
+    {
+      "path": "output/doppler-repair/adaptive-domain-final.log",
+      "bytes": 981,
+      "sha256": "9f794590eec0da564fc2cadee610463dd2b7de772cee55a248bcb70ece501f42"
+    },
+    {
+      "path": "output/doppler-repair/frontend-adaptive-full-gpu-final.log",
+      "bytes": 8602,
+      "sha256": "838db54ae645259d2a9ac29a16ece2e9d18eb6d957800c89a57526cf07f9a75a"
+    },
+    {
+      "path": "output/doppler-repair/frontend-adaptive-quick-final.log",
+      "bytes": 11785,
+      "sha256": "2c3359f602de50e916fc1110cf6f8dd7a5023a1cb1604dcddd4f1ddd7a1ca0e2"
+    },
+    {
+      "path": "output/doppler-repair/frontend-adaptive-static.log",
+      "bytes": 322,
+      "sha256": "37fffebf0af31ce1aa6eedb670b7d54853f6722c8b41ea5550d44c464f4935e7"
+    },
+    {
+      "path": "output/doppler-repair/adaptive-final-replay.log",
+      "bytes": 1476,
+      "sha256": "f20d57a0a40542bb831662214f535e2cb8f794fd3ba4f1e214d9e0830636dd05"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/heavy-adaptive.pt",
+      "bytes": 18074,
+      "sha256": "0682f53aa068c40cd4c6e016a4727d5c0e15f7835c38abea1bd2b662347e3b1a"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/heavy-adc.pt",
+      "bytes": 17975,
+      "sha256": "a8bfe2d7dcbf9633fb654b3c5c358e35d3d25288cb850635d84d3b0215e36bd8"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/limbs-adaptive.pt",
+      "bytes": 5786,
+      "sha256": "aca406e128152831189c79079744953e94b56ab32c552b222567445403562210"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/limbs-adc.pt",
+      "bytes": 5687,
+      "sha256": "d6c54ff271f690bb8fac2189f090fb44773635b7465cb7b753ef0e3152684671"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/radial-adaptive.pt",
+      "bytes": 5793,
+      "sha256": "2959f1ff70898f7f42377e65a12a385f286e11122332215fd927d270b393bdb9"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/radial-adc.pt",
+      "bytes": 5694,
+      "sha256": "a920ee2e052b867b97ebdba14b193e4cc1834647568844201fbe12e8b231f168"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/rotor-adaptive.pt",
+      "bytes": 5786,
+      "sha256": "fc1ea46d53fd6c25a663040fdd571d1c4bafaf1b6d95aa843cdfa6f37cc6c8c4"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/rotor-adc.pt",
+      "bytes": 5687,
+      "sha256": "e2c764486cb79267328d50d417e0c03bad800d99c5ad821047685d86f95cab49"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/final-replay.json",
+      "bytes": 1961,
+      "sha256": "69c99c166bd4059f919fc4a945bd6c461c3125e4207f6e74a56d736171b998e9"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/results.json",
+      "bytes": 2806,
+      "sha256": "59840c4c41108ba2780bdf46aba83434257cc80bca9f4b78793e8f13e153e22d"
+    },
+    {
+      "path": "output/doppler-repair/adaptive/heavy-comparison.png",
+      "bytes": 102782,
+      "sha256": "f05b09832a763a9115966ed7207a244bc4f3ffd625984eeef53b452d13b2a7a3"
+    },
+    {
+      "path": "output/doppler-repair/matlab/multipath-input.mat",
+      "bytes": 1049688,
+      "sha256": "58bfc8805a9b2f87c6abdbb87d9c9c55798b3c2bd4f8894dafe84e49035d4e00"
+    },
+    {
+      "path": "output/doppler-repair/matlab/radial-input.mat",
+      "bytes": 1049640,
+      "sha256": "b6737f8b1a017a25cac9091a43ca16f057335b6ca44848a27ac5f962ed2fe551"
+    },
+    {
+      "path": "output/doppler-repair/matlab/static-input.mat",
+      "bytes": 1049640,
+      "sha256": "d371da473b39f17ffb603fc18d3e66ad44c2366bf7d5de37505b203d913657ef"
+    },
+    {
+      "path": "output/doppler-repair/matlab/launch-status.json",
+      "bytes": 204,
+      "sha256": "d8f7ecd6cc426a7ea5eace8e7511df157ceb3b1b8b2ef281acddfa11ea84fb06"
+    },
+    {
+      "path": "output/doppler-repair/matlab/status.json",
+      "bytes": 377,
+      "sha256": "e3479f5a8064c0a9da8e1cc9d16f7fb4bf2833a24d459027764510f053399ad3"
+    }
+  ]
+}
