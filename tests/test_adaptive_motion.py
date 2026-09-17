@@ -100,59 +100,83 @@ def test_completeness_and_exhaustiveness_are_reported_separately():
     assert not structured.motion_sampling_exhaustive
 
 
-def test_the_interval_bound_is_enforced_only_where_a_birth_is_possible():
-    """The bound looks for path births; a certified family cannot have one."""
+def test_the_probe_grid_bound_is_enforced_even_for_a_certified_family():
+    """Every tolerance here is sampled, so the grid spacing is the real control.
+
+    A sinusoid whose period divides the probe grid's step sits at a zero of
+    every node and every test instant. The controller then measures no error at
+    all and accepts an interpolant that misses the whole oscillation. Only
+    ``max_interval_s`` limits that step, which is why a proof that no path can
+    be BORN must not relax it: the proof says nothing about how fast one moves.
+    """
+
+    import math
 
     from witwin.core import Scene
 
     radar = _radar()
     radar.system_config = replace(
         radar.system_config,
-        waveform=replace(radar.system_config.waveform, adc_samples=16, chirp_per_frame=8, output_domain="beat"),
+        waveform=replace(
+            radar.system_config.waveform,
+            adc_samples=64,
+            chirp_per_frame=64,
+            sample_rate=4000,
+            adc_start_time=0,
+            ramp_end_time=16,
+            idle_time=0,
+            output_domain="beat",
+        ),
     )
-    origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
-    velocity = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
+    spec = radar.system_config.waveform_spec()
+    span = (spec.num_chirps * spec.num_tx * spec.num_samples - 1) * spec.sample_period_s
+    origin = torch.tensor([[3.0, 0.0, 0.0]], device=radar.device)
 
-    class Motion:
+    # One whole-frame interval at the default order steps the grid by span/8.
+    # This motion completes a full period in exactly that step.
+    hidden_hz = 8.0 / span
+    amplitude = 4.0e-4  # metres; 1.29 rad of round-trip carrier phase at 77 GHz
+
+    class Hidden:
         def at(self, t):
-            return Kinematics(origin + velocity * t, velocity)
+            phase = 2 * math.pi * hidden_hz * t
+            offset = torch.tensor([[amplitude * math.sin(phase), 0.0, 0.0]], device=radar.device)
+            rate = amplitude * 2 * math.pi * hidden_hz * math.cos(phase)
+            return Kinematics(origin + offset, torch.tensor([[rate, 0.0, 0.0]], device=radar.device))
 
     kwargs = {
         "times": (0.0,),
         "response": _response(radar),
-        "sites": ScatterSitePolicy.explicit(origin, trajectory=Motion()),
+        "sites": ScatterSitePolicy.explicit(origin, trajectory=Hidden()),
         "components": frozenset({"los"}),
         "max_depth": 0,
-        "motion_sampling": "adaptive",
     }
-    spec = radar.system_config.waveform_spec()
-    span = spec.num_chirps * spec.num_tx * spec.chirp_period_s
+    scene = Scene(structures=(), endpoints=[])
+    exact = radar.simulate(scene, **kwargs, motion_sampling="adc")
 
-    def probe(scene, cap):
-        result = radar.simulate(scene, **kwargs, adaptive_motion=AdaptiveMotionSpec(max_interval_s=cap))
-        return result, result.adaptive_diagnostics[0]
+    def adaptive(cap):
+        result = radar.simulate(
+            scene, **kwargs, motion_sampling="adaptive", adaptive_motion=AdaptiveMotionSpec(max_interval_s=cap)
+        )
+        error = float((result.cube - exact.cube).abs().norm() / exact.cube.abs().norm())
+        return result.adaptive_diagnostics[0], error
 
-    # A bound far below the frame span would force many intervals if enforced.
-    tight = span / 8
-    certified, certified_stats = probe(Scene(structures=(), endpoints=[]), tight)
-    structured, structured_stats = probe(_static_scene(), tight)
+    # A bound the caller sized from the motion resolves it.
+    resolved, resolved_error = adaptive(1.0 / (16 * hidden_hz))
+    assert resolved_error < 0.05, (resolved_error, resolved)
 
-    assert not certified_stats["max_interval_enforced"]
-    assert structured_stats["max_interval_enforced"]
-    assert certified_stats["accepted_intervals"] < structured_stats["accepted_intervals"]
-    assert certified_stats["evaluations"] < structured_stats["evaluations"]
+    # The world is certified complete, and that must not buy a coarser grid.
+    assert resolved["topology_proved_complete"]
+    assert resolved["accepted_intervals"] > 1
 
-    # Enforcement is the only difference: the same world with a bound wider
-    # than the frame must cost exactly what the certified run cost.
-    unbounded, unbounded_stats = probe(Scene(structures=(), endpoints=[]), 4 * span)
-    assert unbounded_stats["evaluations"] == certified_stats["evaluations"]
-    torch.testing.assert_close(unbounded.cube, certified.cube, rtol=0, atol=0)
-
-    # And relaxing it does not cost accuracy the tests did not already bound.
-    exact = radar.simulate(Scene(structures=(), endpoints=[]), **{**kwargs, "motion_sampling": "adc"})
-    error = (certified.cube - exact.cube).abs().norm() / exact.cube.abs().norm()
-    assert error < 0.012, float(error)
-    assert certified_stats["max_tested_phase_error_rad"] <= 0.02
+    # A bound wider than the frame is the aliasing case, and it is the caller's
+    # declaration that produces it rather than something the controller does
+    # behind their back. The sampled test still reports success, which is
+    # exactly why the bound cannot be inferred.
+    aliased, aliased_error = adaptive(4 * span)
+    assert aliased["accepted_intervals"] == 1
+    assert aliased["max_tested_phase_error_rad"] <= 0.02
+    assert aliased_error > 0.5, (aliased_error, aliased)
 
 
 def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
@@ -206,13 +230,12 @@ def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
     for stats in (linear, quartic):
         assert stats["max_tested_phase_error_rad"] <= 0.02
 
-    # A structured world enforces the bound, which fixes the interval count, so
-    # the order cannot lengthen anything and is not allowed to spend probes.
+    # The order is the caller's declaration everywhere, including a structured
+    # world; what changes is whether it can buy anything.
     capped = radar.simulate(
         _static_scene(), **kwargs, motion_sampling="adaptive", adaptive_motion=AdaptiveMotionSpec(interpolation_nodes=9)
     )
-    assert capped.adaptive_diagnostics[0]["interpolation_nodes"] == 2
-    assert capped.adaptive_diagnostics[0]["max_interval_enforced"]
+    assert capped.adaptive_diagnostics[0]["interpolation_nodes"] == 9
 
 
 def test_adaptive_options_refuse_invalid_values():
@@ -231,13 +254,17 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
     from witwin.radar.simulation import _adaptive_fmcw
     from witwin.radar.synthesis.assembly import FmcwSpec
 
-    times = tuple(index * 1e-6 for index in range(33))
-    spec = FmcwSpec(33, 1, 1e-6, 1e-3, 0.0, 0.0, 77e9, carrier_rate_hz=77e9, output_domain="beat")
+    # Long enough that the default order's nine-instant grid can accept whole
+    # intervals away from the event, and the event placed on a top-level grid
+    # instant so that it is SEEN - an event between probes is the documented
+    # blind spot, not what this test is about.
+    times = tuple(index * 1e-6 for index in range(129))
+    spec = FmcwSpec(129, 1, 1e-6, 1e-3, 0.0, 0.0, 77e9, carrier_rate_hz=77e9, output_domain="beat")
 
     def evaluate(queries):
         records = []
         for time in queries:
-            count = baseline + int(12e-6 <= time <= 20e-6)
+            count = baseline + int(60e-6 <= time <= 68e-6)
             paths = SimpleNamespace(
                 total_delay_s=torch.full((count,), 20e-9, device="cuda"),
                 complex_transfer_ref=torch.ones(count, device="cuda", dtype=torch.complex64),
@@ -250,7 +277,7 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
         return records
 
     result, stats, _, _ = _adaptive_fmcw(times, evaluate, spec, AdaptiveMotionSpec(), 77e9, None)
-    expected = torch.tensor([float(baseline + int(12e-6 <= t <= 20e-6)) for t in times], device="cuda")
+    expected = torch.tensor([float(baseline + int(60e-6 <= t <= 68e-6)) for t in times], device="cuda")
     torch.testing.assert_close(result[0, 0].real, expected, rtol=0, atol=0)
     assert stats["topology_refinements"] > 0
     assert stats["evaluations"] < len(times)

@@ -3,7 +3,8 @@
 This is the current scene-to-product route after the breaking concept-axis consolidation. There is one production orchestration path and no legacy fallback path.
 
 `Radar.simulate(...)` runs a session to completion and stacks every frame, so peak device
-allocation is roughly twice the published cube. `Radar.stream(...)` runs the identical session
+allocation scales with the sequence: measured at about three times the published cube for a
+128-frame run, because the per-frame list and `torch.stack` are both live. `Radar.stream(...)` runs the identical session
 and yields each frame as a one-frame `RadarSimulationResult`, which keeps peak allocation
 independent of the frame count. Both consume one frame generator, so the physics, the epoch
 loop and the synthesis route have a single owner. A streamed result aliases that frame's device
@@ -15,13 +16,14 @@ Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec`
 `witwin.radar.simulation`. Controls are `phase_error_rad`, `relative_amplitude_error`,
 `max_interval_s`, `interpolation_nodes`, `max_evaluations`, and `batch_observations`.
 `interpolation_nodes` is the number of sampled instants one accepted interval interpolates
-through, so 2 is the linear rule and the default 5 is a quartic; each interval probes a grid of
+through, so the default 2 is the linear rule and 5 is a quartic; each interval probes a grid of
 `2 * (nodes - 1) + 1` instants and tests the error at the ones between the nodes. A higher order
 buys a longer interval, which it cannot do where the probe-spacing bound already fixes the
-interval length, so it applies only where that bound is not enforced. `max_interval_s` bounds how long
-the run may go without looking for a path birth; it is a topology-safety bound, not an accuracy
-control, and it is not enforced where the candidate family is certified complete for all time.
-Where it applies, the initial partition is the coarsest one it allows. Native interpolation moves each
+length, so raise it only where the phase test is what shortens an interval.
+`max_interval_s` is the probe-spacing floor and is enforced unconditionally, including for a
+family certified complete for all time. Every tolerance here is checked by sampling and therefore
+cannot see motion periodic at the probe grid's step; this bound is what sets that step. The
+initial partition is the coarsest one it allows. Native interpolation moves each
 endpoint coefficient to the query's carrier phase before blending. Quarter/midpoint probes
 test delay, complex phase, amplitude, full leg identity, and validity; mismatches subdivide.
 The native interpolant supports VJP/JVP for a fixed accepted partition. Discovery and

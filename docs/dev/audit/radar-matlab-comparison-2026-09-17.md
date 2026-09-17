@@ -1,4 +1,4 @@
-# MATLAB 对照复跑：动态场景性能结论反转（2026-09-17）
+# MATLAB 对照复跑：动态场景性能结论部分反转（2026-09-17）
 
 本报告**取代** [2026-09-16 扩展对照报告](radar-matlab-material-motion-performance-2026-09-16.md)
 的"轨迹和场景到 beat IQ"性能结论，并更新其精度表。材质与已知路径两节结论不变。
@@ -8,14 +8,17 @@
 
 ## 结论
 
-上一版写的"本组动态场景 WiTwin 约慢 21～53 倍，故当前不具备普遍端到端性能优势"**已不成立**。
-同一 fixture、同一机器、同一次会话重测：WiTwin 在四个基准动态场景上比 MATLAB 快 **1.6～2.9 倍**。
+上一版写的"本组动态场景 WiTwin 约慢 21～53 倍，故当前不具备普遍端到端性能优势"**已不成立**，
+但反转是**部分的**：同一 fixture、同一机器、同一次会话重测，WiTwin 在 static、acceleration、
+limbs 和 static_os4 上快 1.4～3.0 倍，在两个转子场景上仍慢（0.78× 与 0.68×）。
 
-这个反转来自本轮六项长序列改进（`docs/dev/audit/radar-long-sequence-program-acceptance-2026-09-17.md`），
-不是测量口径变化：fixture、采样参数、对齐规则、重复次数与上一版一致。
+转子正是相位检验绑定的 micro-Doppler 场景，也正是 `interpolation_nodes` 存在的理由：
+把它从默认的 2 提到 5，同一转子场景从 0.271 s 降到 0.174 s，对 MATLAB 的 0.212 s 变为快 1.22 倍。
+默认值保持 2，因为其余三个 fixture 在 2 上最快（见
+[探针间隔上限的回退与修正](radar-probe-spacing-bound-correction-2026-09-17.md)）。
 
-**仍然成立的限定**：4 倍过采样的旋转场景 WiTwin 慢 0.75 倍（MATLAB 更快）；
-该场景下 MATLAB 的解析参考误差 0.291% 仍低于 WiTwin 的 0.476%。
+精度与上一版基本持平（±0.3 个百分点），不是改善：加速来自初始分区更粗，不是来自更稀疏地采样运动。
+4 倍过采样的旋转场景下 MATLAB 的解析参考误差 0.291% 仍低于 WiTwin 的 0.819%。
 这仍是部署入口比较，不是同硬件、同精度、同算法工作量的比较。
 
 ## 环境与边界
@@ -38,6 +41,7 @@
 ```powershell
 python tools/compare_matlab_scenarios.py motion --output output/matlab-2026-09-17/motion --cases static acceleration rotor limbs static_os4 rotor_os4
 python tools/compare_matlab_scenarios.py motion --output output/matlab-2026-09-17/ground --cases ground_concrete ground_metal --accuracy-only
+python tools/compare_matlab_scenarios.py motion --output output/matlab-2026-09-17/rotor-nodes5 --cases rotor rotor_os4 --interpolation-nodes 5
 python tools/compare_matlab_scenarios.py materials --output output/matlab-2026-09-17
 python tools/compare_matlab_scenarios.py performance --output output/matlab-2026-09-17
 # 地面 _os4 控制组是同一输入交给 MATLAB 用 4 倍内部采样率重算，复制输入文件后再启动：
@@ -53,59 +57,66 @@ python tools/compare_matlab_scenarios.py plot --output output/matlab-2026-09-17
 `fresh_results` 等于 `expected_cases`（6／4／6）。原始复数输出、日志、图和
 `comparison.json` 保存在 `output/matlab-2026-09-17`。
 
-## 动态场景性能：结论反转
+## 动态场景性能：部分反转
 
 两端均为 77 GHz、1 W、1 m² 各向同性点 RCS、理想无噪声接收机。
 基线 4 MHz、128 ADC、32 us chirp；静态 128 chirp，动态 1024 chirp。
 `_os4` 把采样率与 ADC 数同时乘 4（512 ADC × 1024 chirp = 524288 个观测），保持扫频斜率与时长。
 MATLAB 按 chirp 更新位姿、通道内使用速度模型；WiTwin 按相位容差探测并插值到 ADC。
 
-| 场景 | WiTwin 中位数 s | 实测范围 | MATLAB 中位数 s | 实测范围 | MATLAB/WiTwin |
-| --- | ---: | --- | ---: | --- | ---: |
-| static | **0.00777** | 0.00776–0.00827 | 0.02211 | 0.02178–0.02359 | **2.85×** |
-| acceleration | **0.10274** | 0.10227–0.10278 | 0.25273 | 0.24557–0.27561 | **2.46×** |
-| rotor | **0.13363** | 0.13202–0.13380 | 0.21681 | 0.21182–0.22918 | **1.62×** |
-| limbs | **0.16927** | 0.14885–0.19943 | 0.29514 | 0.27818–0.31549 | **1.74×** |
-| static_os4 | **0.01707** | 0.01143–0.01837 | 0.03253 | 0.03169–0.03270 | **1.91×** |
-| rotor_os4 | 0.45180 | 0.42250–0.50178 | 0.33910 | 0.30536–0.38939 | **0.75×** |
+默认 `interpolation_nodes=2`：
+
+| 场景 | WiTwin 中位数 s | MATLAB 中位数 s | MATLAB/WiTwin |
+| --- | ---: | ---: | ---: |
+| static | **0.00766** | 0.02311 | **3.02×** |
+| acceleration | **0.10331** | 0.24820 | **2.40×** |
+| limbs | **0.20619** | 0.29018 | **1.41×** |
+| static_os4 | **0.01518** | 0.03389 | **2.23×** |
+| rotor | 0.27099 | 0.21186 | **0.78×** |
+| rotor_os4 | 0.44648 | 0.30337 | **0.68×** |
+
+显式 `--interpolation-nodes 5`（相位检验绑定的场景才该这样设）：
+
+| 场景 | WiTwin 中位数 s | MATLAB 中位数 s | MATLAB/WiTwin |
+| --- | ---: | ---: | ---: |
+| rotor | **0.17428** | 0.21186 | **1.22×** |
+| rotor_os4 | 0.53714 | 0.30337 | 0.56× |
 
 与上一版同一 fixture 的对照（MATLAB 侧两次会话的差异属于机器负载，不是实现变化）：
 
 | 场景 | WiTwin 2026-09-16 | WiTwin 2026-09-17 | 提升 | 上一版 WiTwin/MATLAB 耗时比 | 本版 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| static | 0.01401 | 0.00777 | 1.8× | 0.59 | 0.35 |
-| acceleration | 6.47887 | 0.10274 | **63×** | 21.45 | 0.41 |
-| rotor | 13.24748 | 0.13363 | **99×** | 52.83 | 0.62 |
-| limbs | 11.87191 | 0.16927 | **70×** | 34.66 | 0.57 |
+| static | 0.01401 | 0.00766 | 1.8× | 0.59 | 0.33 |
+| acceleration | 6.47887 | 0.10331 | **63×** | 21.45 | 0.42 |
+| rotor | 13.24748 | 0.27099 | **49×** | 52.83 | 1.28 |
+| limbs | 11.87191 | 0.20619 | **58×** | 34.66 | 0.71 |
 
-rotor_os4 是唯一 MATLAB 更快的场景：524288 个观测下 WiTwin 的 ADC 合成批次成为主导，
-探针数已经不是瓶颈。这条不能推广成"高采样率下 MATLAB 总是更快"，
-也不能用其余五行推广成"WiTwin 在所有动态场景更快"。
+rotor_os4 在两种阶数下都是 MATLAB 更快：524288 个观测下 WiTwin 的 ADC 合成批次成为主导，
+探针数已经不是瓶颈，提高阶数反而让每次合成的节点表更宽。
+不能用其余各行推广成"WiTwin 在所有动态场景更快"。
 
 ![Measured performance boundaries](../../../output/matlab-2026-09-17/performance-comparison.png)
 
-## 精度：动态场景全面改善，地面多径略降
+## 精度：与上一版基本持平
 
 独立 NumPy oracle 在每个 ADC 时刻按同样的 float32 作者位姿计算连续延迟标量雷达方程。
 两端统一剔除最大传播延迟加 0.8 us 的前沿和首个 chirp。全部为未经全局幅相校准的原始差异。
 
 | 场景 | 两端原始 IQ 差异 | WiTwin／连续 oracle | （上一版） | MATLAB／连续 oracle | 两端 micro-Doppler 功率差异 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| acceleration | 2.193% | **0.244%** | 0.814% | 2.184% | 3.311% |
-| limbs | 2.221% | **0.458%** | 0.564% | 2.193% | 3.283% |
-| rotor | 2.229% | **0.460%** | 0.721% | 2.192% | 3.330% |
-| rotor_os4 | 0.487% | **0.476%** | 0.752% | 0.291% | 0.334% |
+| acceleration | 2.259% | 0.763% | 0.814% | 2.184% | 3.311% |
+| limbs | 2.354% | 0.825% | 0.564% | 2.193% | 3.417% |
+| rotor | 2.328% | 0.800% | 0.721% | 2.192% | 3.358% |
+| rotor_os4 | 0.853% | 0.819% | 0.752% | 0.291% | 0.396% |
 | static | 2.181% | 0.046% | 0.046% | 2.177% | 3.316% |
 | static_os4 | 0.144% | 0.046% | 0.046% | 0.139% | 0.207% |
 
-WiTwin 对连续 oracle 的误差在四个动态场景上都下降（加速点 3.3 倍）。
-原因是这些 fixture 的帧观测跨度 32.8 ms 远大于原 2 ms 区间上限：
-上一版被上限强制切成 17 段线性插值，本版由相位检验用四次插值决定分段。
+精度与上一版基本持平：加速点略好（0.814%→0.763%），双肢体与转子略差
+（0.564%→0.825%、0.721%→0.800%），全部仍在 0.02 rad 容差内。
+变化来自初始分区取上限允许的最粗等分，段数比原来的二分结果少。
 MATLAB 列与上一版逐位一致，符合预期——MATLAB 侧没有变化。
 
-**仍然不能宣称 WiTwin 普遍更准**：`rotor_os4` 下 MATLAB 的 0.291% 仍优于 WiTwin 的 0.476%。
-差距从 2.58 倍收窄到 1.64 倍，但方向没有变。MATLAB 过采样降低其分数延迟插值误差，
-WiTwin 的残差主要受自适应容差与 float32 路径精度限制。
+**仍然不能宣称 WiTwin 普遍更准**：`rotor_os4` 下 MATLAB 的 0.291% 仍优于 WiTwin 的 0.819%。
 
 ![Actual micro-Doppler comparison](../../../output/matlab-2026-09-17/microdoppler-comparison.png)
 
@@ -128,12 +139,12 @@ WiTwin 由有限大平面真实发现 LOS／反射并组合四条往返路径，
 20 MHz 的 17%／32% 仍然主要来自 MATLAB 的级联分数延迟滤波：80 MHz 控制组把它降到
 0.538%／0.922%，而 WiTwin 的值不随 MATLAB 采样率变化。
 
-WiTwin 这里**变差了**，0.511%→0.762%、0.486%→0.682%。这是预期的代价而不是缺陷：
-地面场景有反射几何，拓扑不可证明完整，因此区间上限仍然强制、插值阶数固定为 2，
-而本轮改动让初始分区取上限允许的最粗等分，段数比上一版少。误差仍远在 0.02 rad 容差内。
+WiTwin 这里**变差了**，0.511%→0.762%、0.486%→0.682%，与动态场景同源：
+初始分区取上限允许的最粗等分，段数比上一版少。误差仍远在 0.02 rad 容差内。
 代价是 80 MHz 控制组下 concrete 的胜负翻转：MATLAB 0.538% 现在优于 WiTwin 0.762%；
-metal 仍是 WiTwin 0.682% 优于 MATLAB 0.922%。需要更小误差的调用方按标定调低
-`phase_error_rad`（实测 IQ 相对 L2 ≈ 0.55–0.66 × 实测最大每路径相位残差）。
+metal 仍是 WiTwin 0.682% 优于 MATLAB 0.922%。需要更小误差的调用方调低 `phase_error_rad`：
+实测 IQ 相对 L2 与实测最大每路径相位残差之比落在 0.44–1.19，因此把容差取成目标 IQ 误差本身
+即可（最坏约 1.2 倍），不要按更宽松的比例去放。
 
 ## 材质与已知路径：结论不变
 

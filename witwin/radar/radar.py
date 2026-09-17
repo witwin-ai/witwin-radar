@@ -1273,9 +1273,11 @@ class Radar:
         spent more memory than :meth:`simulate` would have, not less.
 
         The four typed diagnostics track the frame just yielded, which is what
-        makes them readable from inside the consuming loop. Arguments are
-        validated when iteration starts rather than when this returns, because
-        this is a generator.
+        makes them readable from inside the consuming loop; if a later frame
+        raises, they stay on the last frame that was successfully yielded
+        rather than clearing, because that frame is the one the caller has.
+        Arguments are validated when iteration starts rather than when this
+        returns, because this is a generator.
         """
 
         from .simulation import stream_scene

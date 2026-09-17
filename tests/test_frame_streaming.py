@@ -149,6 +149,27 @@ def test_streaming_holds_nothing_per_frame():
     assert resident(2) == resident(4 * FRAMES)
 
 
+@pytest.mark.parametrize("sampling", ["adc", "chirp", "adaptive"])
+def test_retained_state_describes_the_observation_that_closed_the_frame(sampling):
+    """A sampled frame opens and closes at different world instants."""
+
+    radar = _small(_radar())
+    kwargs = _session(radar, 2)
+    result = radar.simulate(_static_scene(), **kwargs, motion_sampling=sampling)
+
+    # The site moves, so the snapshot of the frame's last observation is not the
+    # snapshot of its first. Publishing the opening one would silently describe
+    # a world the simulation had already left.
+    opening, closing = result.sample_times_s[-1][0], result.sample_times_s[-1][-1]
+    assert closing > opening
+    assert result.last_snapshot.time_s == pytest.approx(closing, abs=1e-12)
+    assert result.last_snapshot.time_s != pytest.approx(opening, abs=1e-12)
+
+    # The four diagnostics describe ONE observation, so they must agree.
+    assert result.last_compiled_scene is not None
+    assert result.last_propagation is not None and result.last_radar_paths is not None
+
+
 def test_streaming_reports_the_frame_it_just_yielded():
     radar = _small(_radar())
     kwargs = _session(radar, FRAMES)

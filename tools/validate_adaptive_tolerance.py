@@ -151,7 +151,6 @@ def run(name):
                 "rd_power_relative_l2": relative(power.abs().square(), reference_rd.abs().square()),
                 "evaluations": stats["evaluations"],
                 "accepted_intervals": stats["accepted_intervals"],
-                "max_interval_enforced": stats["max_interval_enforced"],
                 "seconds": seconds,
                 "speedup_vs_adc": reference_s / seconds,
                 "path_set_complete": result.path_set_complete,

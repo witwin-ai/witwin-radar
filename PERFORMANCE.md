@@ -11,30 +11,41 @@ For that reason, pre-consolidation latency, FFT-count, launch-count, and allocat
 ## Adaptive motion control (2026-09-17)
 
 Two changes to how the adaptive route chooses its partition, measured on RTX 5080 / Ryzen 7
-9800X3D in witwin2. The probe-spacing bound is enforced only where a path birth is possible,
-and an accepted interval interpolates through `interpolation_nodes` samples instead of two.
-Neither change touches the phase or amplitude tolerance.
+9800X3D in witwin2. The run starts from the coarsest partition the probe-spacing bound allows
+instead of bisecting down to it, and an accepted interval may interpolate through
+`interpolation_nodes` samples instead of two. Neither change touches the phase or amplitude
+tolerance, and neither relaxes the bound.
 
-| Public scene entry | Probes/frame before | after | ms/frame before | after |
-| --- | ---: | ---: | ---: | ---: |
-| Rotor point, 128 chirps x 128 ADC, 4 MHz | 73-101 | 9 | 75.8-81.6 | 19.0 |
-| MIMO walker, 3TX x 4RX, 128 chirps x 256 ADC | 65 | 9 | 133-148 | 128 |
-| Three-wall multipath, 64 paths, 32 x 64 | 37 | 19 | 1580 | 332 |
+An earlier revision of this work DID relax that bound for a topologically certified family, on the
+argument that it only guarded against path births. That was wrong and is reverted: every tolerance
+here is checked by sampling, motion periodic at the probe grid's step is invisible to all of them,
+and this bound is what sets that step. See
+[the correction](docs/dev/audit/radar-probe-spacing-bound-correction-2026-09-17.md), which carries
+the reproduction - a grid-periodic 0.4 mm motion passing the phase test at 0.0095 rad with 0.87
+relative IQ error.
 
-Against the exhaustive per-ADC route in the same session, the four `validate_adaptive_motion.py`
-fixtures now measure 196x (radial), 134x (rotor), 218x (two articulated points) and 129x (heavy
-multipath), against 2.93x/2.91x/3.08x/64.14x for the 2026-09-16 tables below. Those older
-absolute seconds came from a differently loaded desktop and are not comparable directly; the
-speedup ratios are, because each is measured within one session.
+Against the exhaustive per-ADC route in the same session, `tools/validate_adaptive_motion.py`:
 
-Accuracy moves toward the declared tolerance rather than past it: at the default 0.02 rad the
-rotor fixture goes from 8.5e-3 to 2.7e-3 relative IQ error while the two-point proxy goes from
-2.2e-4 to 4.5e-3, both inside tolerance. `tools/validate_adaptive_tolerance.py` records what a
-tolerance buys; realized IQ relative L2 measured 0.55 to 0.66 times the largest per-path phase
-residual the controller tested, on single-dominant-path, null-free fixtures.
+| Fixture | Probes before | after | IQ relative L2 before | after | Speedup before | after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| radial point | 193 | 97 | 2.601e-4 | 2.80e-4 | 2.93x | 120.4x |
+| rotor point | 193 | 97 | 2.014e-4 | 2.26e-4 | 2.91x | 119.1x |
+| two articulated points | 193 | 97 | 2.150e-4 | 2.49e-4 | 3.08x | 92.5x |
+| heavy multipath | 37 | 19 | 5.659e-4 | 5.68e-4 | 64.14x | 141.3x |
 
-Evidence: [the interval-bound and tolerance report](docs/dev/audit/radar-adaptive-interval-bound-and-tolerance-2026-09-17.md)
-and [the interpolation-order report](docs/dev/audit/radar-adaptive-interpolation-order-2026-09-17.md).
+Accuracy is unchanged within 0.3e-4; the speedup comes from the initial partition, not from
+sampling the motion any more coarsely.
+
+`interpolation_nodes` defaults to 2, the linear rule. Raise it only where the phase test, not the
+bound, is what shortens an interval. Measured per frame at 2/3/5 nodes: an 80 Hz rotor on a
+4.096 ms frame gives 38/21/25 probes and 36.0/22.2/21.7 ms, while a 24.96 ms MIMO frame gives
+27/53/105 probes and 95.5/166.7/173.5 ms for one unchanged 13-interval partition.
+
+`tools/validate_adaptive_tolerance.py` records what a tolerance buys. Realized IQ relative L2
+divided by the largest per-path phase residual the controller tested measured **0.44 to 1.19**
+across both fixtures and six tolerances; the ratio exceeds one at the tightest setting, where 126
+interval errors add in the coherent sum rather than averaging down. Set the tolerance to the
+target IQ error rather than above it.
 
 ### Probe efficiency, and why there is no warm start
 
@@ -46,14 +57,13 @@ could recover.
 
 | Fixture | Frames | Tolerance | Probes | Partition floor | Recoverable |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Three-wall multipath, 32 x 64 | 3 | 0.02 | 69 | 69 | 0 (0.000%) |
-| Rotor point, 128 x 128 | 4 | 0.02 | 36 | 36 | 0 (0.000%) |
-| Same rotor, tight tolerance | 2 | 0.002 | 23511 | 23498 | 13 (0.055%) |
+| Three-wall multipath, 32 x 64 | 3 | 0.02 | 69 | 69 | 0 (0.0%) |
+| Rotor point, 128 x 128 | 4 | 0.02 | 171 | 160 | 11 (6.4%) |
+| Same rotor, tight tolerance | 2 | 0.002 | 2173 | 2064 | 109 (5.0%) |
 
 The probe cache already shares a rejected interval's grid with its children, so no probe is paid
-twice, and the coarsest-initial-partition change removed the one systematically wasted level.
-A warm start is therefore not implemented: it would still pay the same floor, for at most 0.055%,
-while carrying a stale partition across frames. Recorded in
+twice. A warm start would still pay the same floor, for at most 6.4%, while carrying a stale
+partition across frames; it is therefore not implemented. Recorded in
 [the warm-start headroom report](docs/dev/audit/radar-adaptive-warm-start-headroom-2026-09-17.md).
 
 ### Topology discovery is the remaining heavy-multipath limit
@@ -93,12 +103,13 @@ in the last float32 digits for no physical reason.
 
 | Frames | Streamed peak | Stacked peak | Peak ratio | Streamed ms/frame | Stacked ms/frame | Mismatched frames |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 | 67.4 MB | 102.3 MB | 1.52x | 110.0 | 117.9 | 0 |
-| 32 | 67.4 MB | 301.3 MB | 4.47x | 107.3 | 106.6 | 0 |
-| 128 | 67.4 MB | 1204.2 MB | 17.88x | 108.3 | 109.9 | 0 |
+| 8 | 73.2 MiB | 106.2 MiB | 1.45x | 109.9 | 246.9 | 0 |
+| 32 | 73.2 MiB | 303.6 MiB | 4.15x | 112.1 | 108.1 | 0 |
+| 128 | 73.2 MiB | 1233.4 MiB | 16.85x | 115.2 | 111.3 | 0 |
 
-Streamed peak allocation is flat; stacked peak tracks the frame count and reaches 1.20 GB for the
-402.7 MB cube at 128 frames, because the frame list and `torch.stack` are both live. Per-frame
+All sizes are MiB. Streamed peak allocation is flat; stacked peak tracks the frame count and
+reaches 1233.4 MiB against a 384 MiB cube at 128 frames - about 3.2x the cube - because the frame
+list and `torch.stack` are both live. The 8-frame stacked figure is a warm-up outlier. Per-frame
 latency is the same route in both cases and the spread here is shared-desktop noise, not a
 streaming penalty. This measures one LOS walker fixture: it does not establish a per-frame cost
 for heavy multipath or moving meshes.
@@ -136,8 +147,9 @@ the limit; hundreds of milliseconds are not established for arbitrary heavy mult
 
 The retained MATLAB CPU rotor result was 250.7 ms and the optimized WiTwin rotor 608.7 ms, about
 2.43x slower. That comparison is superseded: both sides were re-executed on 2026-09-17 after the
-adaptive-control work and WiTwin measured 133.63 ms against MATLAB's 216.81 ms on the same
-fixture. See the rerun section below. MATLAB was not rerun in THIS optimization pass, and
+adaptive-control work and WiTwin measured 270.99 ms against MATLAB's 211.86 ms on the same
+fixture at the default order, or 174.28 ms with `interpolation_nodes=5`. See the rerun section
+below. MATLAB was not rerun in THIS optimization pass, and
 different precision, devices and fractional-delay models remain as the comparison report states.
 
 Reproduce: `python tools/validate_rotor_performance.py --output output/rotor-optimization/final
@@ -171,29 +183,31 @@ Both sides re-executed in one session on RTX 5080 / Ryzen 7 9800X3D against MATL
 Update 4 with Radar Toolbox and Phased Array System Toolbox 25.2, using the same fixtures,
 sampling parameters, alignment rule and repeat counts as the 2026-09-16 run.
 
-The public dynamic scene entry is now faster than MATLAB on the four baseline scenes, which
-reverses that report's conclusion. One warm-up and three measured calls each:
+That report concluded the public dynamic scene entry was 21 to 53 times slower than MATLAB's
+analytic point-target entry. It is now faster on four of the six scenes and slower on the two
+rotor scenes, at the default `interpolation_nodes=2`:
 
 | Scene | WiTwin median | MATLAB median | MATLAB / WiTwin | WiTwin on 2026-09-16 |
 | --- | ---: | ---: | ---: | ---: |
-| static | 7.77 ms | 22.11 ms | 2.85x | 14.01 ms |
-| acceleration | 102.74 ms | 252.73 ms | 2.46x | 6478.87 ms |
-| rotor | 133.63 ms | 216.81 ms | 1.62x | 13247.48 ms |
-| limbs | 169.27 ms | 295.14 ms | 1.74x | 11871.91 ms |
-| static_os4 | 17.07 ms | 32.53 ms | 1.91x | accuracy-only |
-| rotor_os4 | 451.80 ms | 339.10 ms | 0.75x | accuracy-only |
+| static | 7.66 ms | 23.11 ms | 3.02x | 14.01 ms |
+| acceleration | 103.31 ms | 248.20 ms | 2.40x | 6478.87 ms |
+| limbs | 206.19 ms | 290.18 ms | 1.41x | 11871.91 ms |
+| static_os4 | 15.18 ms | 33.89 ms | 2.23x | accuracy-only |
+| rotor | 270.99 ms | 211.86 ms | 0.78x | 13247.48 ms |
+| rotor_os4 | 446.48 ms | 303.37 ms | 0.68x | accuracy-only |
 
-`rotor_os4` is the one scene where MATLAB is still faster: at 524288 observations per frame the
-ADC synthesis batches dominate and the probe count no longer does. Accuracy against the
-independent continuous-delay oracle improved on every dynamic scene - acceleration 0.814% to
-0.244%, rotor 0.721% to 0.460%, limbs 0.564% to 0.458% - because a 32.8 ms frame span was
-previously cut into 17 linear pieces by the 2 ms bound and is now partitioned by the phase test
-with a quartic. MATLAB's own columns are unchanged, as they must be. WiTwin is still not
-uniformly more accurate: at four-times oversampling MATLAB measures 0.291% against 0.476%.
+The rotor is the micro-Doppler case where the phase test, not the probe-spacing bound, shortens
+the intervals, which is what `interpolation_nodes` is for. With
+`--interpolation-nodes 5` the same rotor scene measures 174.28 ms, 1.22x faster than MATLAB;
+`rotor_os4` stays slower at 537.14 ms because its 524288 observations per frame are dominated by
+ADC synthesis rather than by probes. The default stays at 2 because the other fixtures are
+fastest there.
 
-Ground four-path multipath moved the other way, 0.511% to 0.762% and 0.486% to 0.682%, because a
-reflecting world cannot be certified complete, so the bound still applies and the coarser initial
-partition uses fewer intervals. Both stay far inside the 0.02 rad tolerance.
+Accuracy against the independent continuous-delay oracle is within 0.3 percentage points of the
+2026-09-16 run - acceleration 0.814% to 0.763%, rotor 0.721% to 0.800%, limbs 0.564% to 0.825% -
+all inside the 0.02 rad tolerance. Ground four-path multipath moved the same way, 0.511% to
+0.762% and 0.486% to 0.682%. WiTwin is not uniformly more accurate: at four-times oversampling
+MATLAB measures 0.291% against 0.819%.
 
 Materials are unchanged at 1.9348e-6 maximum complex absolute error over 360 combinations, and
 known static paths to beat IQ measured 0.206-1.533 ms against MATLAB CPU double at

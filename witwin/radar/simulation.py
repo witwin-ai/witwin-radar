@@ -47,31 +47,37 @@ class AdaptiveMotionSpec:
     bound cannot be inferred from these path bounds. Exhausting the discovery
     budget raises.
 
-    ``max_interval_s`` bounds how long the run may go without LOOKING for a
-    path birth, which is the one thing no error test can detect. It is not an
-    accuracy control: the phase and amplitude tolerances are. A family that is
-    certified complete for all time cannot gain or lose a row, so the bound is
-    not enforced there - it would only buy probes that answer a question the
-    certification already answered. Where the bound does apply, the run starts
-    from the coarsest partition it allows rather than bisecting down to it.
+    ``max_interval_s`` is the PROBE-SPACING FLOOR and it always applies. Every
+    tolerance here is checked by sampling, so it bounds only what it samples:
+    motion periodic at the probe grid's spacing, or at a divisor of it, sits at
+    a zero of every probe and is invisible to all of these tests. This bound is
+    what sets that spacing, and it is therefore an accuracy control as much as
+    a topology one. It is NOT relaxed for a topologically certified family: the
+    certification says no path can be born, not that no path moves fast. Within
+    the bound the run starts from the coarsest partition it allows rather than
+    bisecting down to it. A caller who knows the motion's bandwidth should set
+    this from it; the grid is ``2 * (nodes - 1)`` steps across one interval.
 
     ``interpolation_nodes`` is how many sampled instants carry one accepted
     interval, and therefore the polynomial order of the delay it interpolates:
-    2 is the linear rule and 5 is a quartic. Each interval probes a grid of
-    ``2 * (nodes - 1) + 1`` instants, spends the even ones as interpolation
-    nodes and tests the error at the odd ones, so a higher order costs more
-    probes per interval and buys a much longer interval. What it CANNOT do is
-    lengthen an interval the bound above already fixed, so it applies only
-    where that bound is not enforced; ``adaptive_diagnostics`` publishes the
-    effective count. A tolerance tight enough to make intervals short is also
-    better served by fewer nodes, because then the grid, not the interval
-    length, is what costs.
+    the default 2 is the linear rule and 5 is a quartic. Each interval probes a
+    grid of ``2 * (nodes - 1) + 1`` instants, spends the even ones as
+    interpolation nodes and tests the error at the odd ones.
+
+    Raise it when the PHASE TEST is what shortens your intervals, which is
+    micro-Doppler at a high carrier: on a 4.096 ms frame of an 80 Hz rotor,
+    2/3/5 nodes measured 38/21/25 probes and 36.0/22.2/21.7 ms per frame. Leave
+    it at 2 when the bound above decides the length instead, because then the
+    order cannot reduce the interval count and only multiplies each interval's
+    grid: the same measurement on a 24.96 ms MIMO frame gave 27/53/105 probes
+    and 95.5/166.7/173.5 ms for one unchanged 13-interval partition. Raising it
+    never makes a coarse grid safe - the grid still has to resolve the motion.
     """
 
     phase_error_rad: float = 0.02
     relative_amplitude_error: float = 0.02
     max_interval_s: float = 0.002
-    interpolation_nodes: int = 5
+    interpolation_nodes: int = 2
     max_evaluations: int = 8192
     batch_observations: int = 256
 
@@ -888,35 +894,32 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                 cache[index] = record
                 pair_tables[index] = record[2].pair_offsets.tolist()
 
-    # The maximum interval bounds how long the run can go without LOOKING for a
-    # path birth; accuracy is bounded by the phase/amplitude tests instead. A
-    # family certified complete for all time cannot gain or lose a row, so the
-    # bound has no work to do there and forcing it costs probes for nothing.
-    # Probing the two endpoints first is what makes the certification readable:
-    # the first observation of a run discovers and therefore cannot carry it.
-    ensure((0, len(times) - 1))
-    certified = bool(cache[len(times) - 1][0].topology_complete)
-    stats["max_interval_enforced"] = not certified
-
+    # The maximum interval is the probe-spacing FLOOR, and it is unconditional.
+    # Every error test here is a sampled test: it can only see motion at the
+    # instants it probes. A sinusoid whose period divides the grid spacing sits
+    # at a zero of every node and every test point, so the controller measures
+    # no error at all while the interpolant misses the whole oscillation. This
+    # bound is the only thing that sets how fine that grid is, which is why it
+    # is not skipped for a topologically certified family: the certification
+    # says no path can be BORN, and says nothing about how fast one moves.
     def within_interval_bound(left, right):
-        return certified or times[right] - times[left] <= options.max_interval_s
+        return times[right] - times[left] <= options.max_interval_s
 
-    # Start from the coarsest partition the interval bound allows rather than
-    # bisecting down to it: the intervening levels are guaranteed to fail that
-    # bound, and their probes answer a question already decided here.
+    # Start from the coarsest partition the bound allows rather than bisecting
+    # down to it: the intervening levels are guaranteed to fail that bound, and
+    # their probes answer a question already decided here.
     span = times[-1] - times[0]
-    pieces = 1 if certified else max(1, math.ceil(span / options.max_interval_s))
+    pieces = max(1, math.ceil(span / options.max_interval_s))
     edges = sorted({round(index * (len(times) - 1) / pieces) for index in range(pieces + 1)})
     pending = list(zip(edges, edges[1:], strict=False))
 
-    # A higher polynomial order buys a LONGER accepted interval. Where the
-    # interval bound is enforced the length is already decided by the bound, so
-    # extra nodes per interval cannot reduce the interval count and are pure
-    # cost: measured on the three-wall fixture, nodes 2/3/5/9 all accept nine
-    # intervals and cost 19/37/73/165 probes for the same 6e-4 IQ error. The
-    # order therefore applies only under the completeness proof. A certified
-    # world whose phase test still subdivides is exactly where it pays.
-    node_count = options.interpolation_nodes if certified else 2
+    # A higher polynomial order buys a LONGER accepted interval, so it pays only
+    # where the phase test, not the bound above, is what shortens one. Where the
+    # bound decides the length the order cannot reduce the interval count and
+    # multiplies the per-interval grid instead: on the three-wall fixture nodes
+    # 2/3/5/9 all accept nine intervals for the same 6e-4 error. The caller owns
+    # that trade because only the caller knows which regime the motion is in.
+    node_count = options.interpolation_nodes
     # One candidate interval spends `node_count` instants on the interpolation
     # and tests the error at the instants between them, so its probe grid is
     # this wide and the even positions are the nodes.
@@ -1552,20 +1555,30 @@ def _scene_frames(
     sampled_completeness = not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move
     published_sampling = "static" if not sampled else motion_sampling
 
-    def record(frame_cube, synthesis, time_s, frame_times, epoch_frame, legs, composed, stats):
+    def record(frame_cube, synthesis, time_s, frame_times, opened, closed, legs, composed, stats):
+        """Assemble one frame's record from its FIRST and LAST observations.
+
+        Those are two different epochs on a sampled route and the result wants
+        both. ``epoch`` and ``reason`` answer "what did this frame cost to
+        start", so they come from the observation that opened it. The retained
+        ``last_*`` diagnostics answer "what world did the simulation last run
+        against", so they come from the one that closed it, alongside the legs
+        and paths - which are already the closing observation's.
+        """
+
         complete = sampled_completeness if stats is None else stats["exhaustive"] or stats["topology_proved_complete"]
         return _SceneFrame(
             cube=frame_cube,
             synthesis=synthesis,
             time_s=float(time_s),
             sample_times_s=tuple(float(value) for value in frame_times),
-            epoch=int(epoch_frame.epoch),
-            reason=epoch_frame.reason,
+            epoch=int(opened.epoch),
+            reason=opened.reason,
             path_set_complete=bool(complete),
             motion_sampling_exhaustive=True if stats is None else bool(stats["exhaustive"]),
             compile_count=int(loop.compile_count),
             discovery_count=int(loop.discovery_count),
-            epoch_frame=epoch_frame,
+            epoch_frame=closed,
             legs=legs,
             composed=composed,
             diagnostics=stats,
@@ -1583,7 +1596,7 @@ def _scene_frames(
             epoch_frame, legs, composed, _ = last
             synthesis = SynthesisResult.from_fmcw(cube, replace(full_spec, output_domain="beat"))
             frame_cube, synthesis = finish_frame(synthesis)
-            yield record(frame_cube, synthesis, start, actual_times, first[0], legs, composed, stats)
+            yield record(frame_cube, synthesis, start, actual_times, first[0], epoch_frame, legs, composed, stats)
     for frame_index, time_s in (
         (frame_index, start + offset)
         for frame_index, start in enumerate(() if adaptive_active else instants)
@@ -1626,16 +1639,20 @@ def _scene_frames(
                 synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
         frame_cube, synthesis = finish_frame(synthesis)
         slot_cubes = []
-        yield record(frame_cube, synthesis, instants[frame_index], frame_times, frame_epoch, legs, composed, None)
+        yield record(
+            frame_cube, synthesis, instants[frame_index], frame_times, frame_epoch, epoch_frame, legs, composed, None
+        )
 
 
 def simulate_scene(*args, **kwargs) -> RadarSimulationResult:
     """Run one scene session to completion and stack every frame.
 
     The whole sequence stays in device memory: the frame cubes accumulate and
-    :meth:`RadarSimulationResult.from_frames` stacks them, so peak allocation is
-    roughly twice the published cube. Use :func:`stream_scene` for a sequence
-    long enough that this is the binding constraint.
+    :meth:`RadarSimulationResult.from_frames` stacks them, so peak allocation
+    scales with the frame count - measured near three times the published cube
+    at 128 frames, because the list and the stack are both live. Use
+    :func:`stream_scene` for a sequence long enough that this is the binding
+    constraint.
     """
 
     return _assemble(list(_scene_frames(*args, **kwargs)))

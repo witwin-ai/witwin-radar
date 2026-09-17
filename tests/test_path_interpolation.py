@@ -75,13 +75,16 @@ def test_interpolation_preserves_carrier_wraps_and_native_derivatives(nodes):
     # These nodes are 0.7 ns apart at 77 GHz, so the interpolant spans ~54
     # carrier wraps: exactly the cancellation the transport exists to survive,
     # and a badly conditioned place to compare float32 gradients. The delay
-    # gradient carries a 2*pi*fc factor of 4.8e11 and, for three or more nodes,
-    # a basis whose individual weights leave [0, 1]. A production interval is
-    # accepted only within 0.02 rad, where none of that applies.
+    # gradient carries a 2*pi*fc factor of 4.8e11. Three nodes put the worst
+    # cancellation in the basis - its weights leave [0, 1] while still summing
+    # to one - and need a looser bound than two or five do; that is a property
+    # of THIS fixture, not of the kernel, and a production interval is accepted
+    # only within 0.02 rad where none of it applies.
     actual_grad = torch.autograd.grad(loss(actual), leaves)
     expected_grad = torch.autograd.grad(loss(expected), leaves)
+    tolerance = 2e-5 if nodes == 3 else 3e-6
     for produced, reference in zip(actual_grad, expected_grad, strict=True):
-        torch.testing.assert_close(produced, reference, rtol=2e-5, atol=1e-6)
+        torch.testing.assert_close(produced, reference, rtol=tolerance, atol=1e-6)
 
     tangents = [torch.full_like(leaf, 1e-12 * (1 + index)) for index, leaf in enumerate(delays)]
     tangents += [torch.full_like(leaf, 0.1j + 0.05 * index) for index, leaf in enumerate(transfers)]

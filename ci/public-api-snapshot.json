@@ -360,7 +360,7 @@
           "name": "AdaptiveMotionSpec",
           "kind": "class",
           "target": "witwin.radar.simulation.AdaptiveMotionSpec",
-          "signature": "(phase_error_rad: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval_s: 'float' = 0.002, interpolation_nodes: 'int' = 5, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256) -> None"
+          "signature": "(phase_error_rad: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval_s: 'float' = 0.002, interpolation_nodes: 'int' = 2, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256) -> None"
         },
         {
           "name": "RadarSimulationResult",

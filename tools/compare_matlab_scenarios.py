@@ -201,7 +201,7 @@ class ExperimentMotion:
         )
 
 
-def motion_export(directory, cases, accuracy_only=False):
+def motion_export(directory, cases, accuracy_only=False, interpolation_nodes=2):
     from tools.validate_doppler_motion import make_radar
     from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
 
@@ -260,7 +260,7 @@ def motion_export(directory, cases, accuracy_only=False):
             "components": frozenset({"los", "reflection"}) if ground else frozenset({"los"}),
             "max_depth": 1 if ground else 0,
             "motion_sampling": "adaptive",
-            "adaptive_motion": AdaptiveMotionSpec(phase_error_rad=0.02),
+            "adaptive_motion": AdaptiveMotionSpec(phase_error_rad=0.02, interpolation_nodes=interpolation_nodes),
         }
         print("starting scene", kind, flush=True)
         result, seconds = timed(
@@ -588,12 +588,19 @@ if __name__ == "__main__":
         default=("static", "acceleration", "rotor", "limbs"),
     )
     parser.add_argument("--accuracy-only", action="store_true")
+    parser.add_argument(
+        "--interpolation-nodes",
+        type=int,
+        default=2,
+        help="adaptive interpolation order; raise it where the phase test, not the probe-spacing bound, "
+        "is what shortens an interval",
+    )
     args = parser.parse_args()
     if args.action == "plot":
         plot_results(args.output)
     elif args.action == "analyze":
         analyze(args.output)
     elif args.action == "motion":
-        motion_export(args.output, args.cases, args.accuracy_only)
+        motion_export(args.output, args.cases, args.accuracy_only, args.interpolation_nodes)
     else:
         (material_export if args.action == "materials" else performance_export)(args.output)
