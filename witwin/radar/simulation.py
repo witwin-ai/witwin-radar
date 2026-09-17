@@ -573,6 +573,16 @@ class RadarSimulationResult:
     of the result. Keeping the last one is the diagnostic the plan asked for and
     the smallest retention that answers it.
 
+    ``path_set_complete`` and ``motion_sampling_exhaustive`` are TWO
+    statements, and a consumer that needs to know how much to trust a run
+    needs both. The first says no path birth can have been missed - because
+    every observation was evaluated, or because the candidate family was
+    certified complete for all time. The second says no observation's transport
+    was interpolated between probes. Adaptive sampling routinely gives the
+    first and not the second, which is exactly the trade it exists to make;
+    collapsing them into one flag would report a proven-complete adaptive run
+    as if it might have lost a path.
+
     RETENTION, stated because these members are a real tensor lifetime. The
     ``last_*`` members alias the frame's own batches, so holding this result
     holds that frame's device tensors - and, when ``ad_mode`` asked for a graph,
@@ -599,6 +609,7 @@ class RadarSimulationResult:
     last_radar_paths: object
     sample_times_s: tuple[tuple[float, ...], ...] = ()
     path_set_complete: bool = True
+    motion_sampling_exhaustive: bool = True
     motion_sampling: str = "static"
     output_domain: str = "beat"
     adaptive_diagnostics: tuple[dict, ...] = ()
@@ -657,6 +668,7 @@ class RadarSimulationResult:
         last_radar_paths: object,
         sample_times_s=(),
         path_set_complete: bool = True,
+        motion_sampling_exhaustive: bool = True,
         motion_sampling: str = "static",
         adaptive_diagnostics=(),
     ) -> RadarSimulationResult:
@@ -689,6 +701,7 @@ class RadarSimulationResult:
             last_radar_paths=last_radar_paths,
             sample_times_s=tuple(tuple(float(t) for t in frame) for frame in sample_times_s),
             path_set_complete=path_set_complete,
+            motion_sampling_exhaustive=motion_sampling_exhaustive,
             motion_sampling=motion_sampling,
             output_domain=synthesis.output_domain,
             adaptive_diagnostics=tuple(adaptive_diagnostics),
@@ -746,6 +759,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
         "max_tested_relative_amplitude_error": 0.0,
         "max_interval_s": options.max_interval_s,
         "exhaustive": False,
+        "topology_proved_complete": False,
     }
 
     def ensure(indices):
@@ -942,6 +956,22 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     slot = torch.arange(spec.num_chirps, device=all_slots.device)[:, None] * spec.num_tx + pair[None, :] % spec.num_tx
     stats["evaluations"] = len(cache)
     stats["exhaustive"] = len(cache) == len(times)
+    # Two independent reasons no path birth can have been missed: every
+    # observation was evaluated, or the family was certified complete for all
+    # time. Neither implies the other.
+    #
+    # The certification is a property of the world and the propagation
+    # configuration, not of an instant, so one probe carrying it proves the
+    # family cannot change. The first probe of a run cannot carry it - nothing
+    # is frozen yet - but it rediscovers, which enumerates the family at its
+    # own instant. Those two together cover the frame. A probe that neither
+    # certifies nor rediscovers leaves a gap and is refused. A source mutation
+    # strictly between two probes remains outside every sampled test, as
+    # AdaptiveMotionSpec states.
+    frames = [cache[index][0] for index in cache]
+    stats["topology_proved_complete"] = any(frame.topology_complete for frame in frames) and all(
+        frame.topology_complete or frame.rediscovered for frame in frames
+    )
     stats["observation_count"] = len(times)
     stats["synthesis_batches"] = len(values)
     return all_slots[slot, pair], stats, cache[0], cache[len(times) - 1]
@@ -989,7 +1019,10 @@ def simulate_scene(
     chirp-frozen approximation. Adaptive FMCW batches topology-identical probes,
     interpolates carrier-transported coefficients, and refines at observed path
     identity/validity changes. Its sampled error tests cannot exclude arbitrarily
-    brief unseen events; ``path_set_complete`` records this boundary. Complete discovery is
+    brief unseen events between probes, so ``path_set_complete`` is true only
+    when every observation was evaluated or the candidate family was certified
+    complete for all time; ``motion_sampling_exhaustive`` separately records
+    whether any observation was interpolated. Complete discovery is
     the default at every observation. A longer ``motion_event_period_frames``
     is converted from frames to observation count and marks path completeness
     false unless structure motion already forces discovery. The selected
@@ -1414,9 +1447,10 @@ def simulate_scene(
         last_propagation=legs,
         last_radar_paths=composed,
         sample_times_s=sample_times,
-        path_set_complete=all(item["exhaustive"] for item in diagnostics)
+        path_set_complete=all(item["exhaustive"] or item["topology_proved_complete"] for item in diagnostics)
         if adaptive_active
         else (not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move),
+        motion_sampling_exhaustive=all(item["exhaustive"] for item in diagnostics) if adaptive_active else True,
         motion_sampling="static" if not sampled else motion_sampling,
         adaptive_diagnostics=diagnostics,
     )

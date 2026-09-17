@@ -456,6 +456,16 @@ class EpochFrame:
     not. It is a string a caller can log or assert on rather than a boolean,
     because "the wall moved" and "the declared cadence came round" are
     different events with different budgets even though both cost a discovery.
+
+    ``topology_complete`` is the caller's standing certification, as HONOURED
+    for this frame: the candidate family is complete for ALL time, so no path
+    can be born between two observations however far apart they are. That is
+    strictly stronger than ``rediscovered``, which enumerates the family at one
+    instant and says nothing about the gap to the next one. It is published
+    because a consumer that skipped observations cannot otherwise distinguish
+    "the topology was proven complete and only motion was interpolated" from "a
+    short-lived path may have been missed". ``False`` is the absence of a
+    proof, never a proof of incompleteness.
     """
 
     frame_index: int
@@ -467,6 +477,7 @@ class EpochFrame:
     recompiled: bool
     rediscovered: bool
     reason: str | None
+    topology_complete: bool = False
 
 
 #: How a declared scene component moves, and therefore what the loop must pay
@@ -780,6 +791,7 @@ class SceneEpochLoop:
             recompiled=recompiled,
             rediscovered=reason is not None,
             reason=reason,
+            topology_complete=bool(topology_complete),
         )
 
     # -- the three decisions ------------------------------------------------

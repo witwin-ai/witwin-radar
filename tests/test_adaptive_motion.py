@@ -60,6 +60,45 @@ def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
         )
 
 
+def test_completeness_and_exhaustiveness_are_reported_separately():
+    """An empty LOS world proves the family without enumerating observations."""
+
+    from witwin.core import Scene
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config,
+        waveform=replace(radar.system_config.waveform, adc_samples=16, chirp_per_frame=4, output_domain="beat"),
+    )
+    origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
+    velocity = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
+
+    class Motion:
+        def at(self, t):
+            return Kinematics(origin + velocity * t, velocity)
+
+    kwargs = {
+        "times": (0.0,),
+        "response": _response(radar),
+        "sites": ScatterSitePolicy.explicit(origin, trajectory=Motion()),
+        "components": frozenset({"los"}),
+        "max_depth": 0,
+    }
+    empty = radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion_sampling="adaptive")
+    assert empty.path_set_complete
+    assert not empty.motion_sampling_exhaustive
+    assert empty.adaptive_diagnostics[0]["topology_proved_complete"]
+    assert not empty.adaptive_diagnostics[0]["exhaustive"]
+
+    exact = radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion_sampling="adc")
+    assert exact.path_set_complete and exact.motion_sampling_exhaustive
+
+    # A structured world cannot be certified, so neither statement holds.
+    structured = radar.simulate(_static_scene(), **kwargs, motion_sampling="adaptive")
+    assert not structured.path_set_complete
+    assert not structured.motion_sampling_exhaustive
+
+
 def test_adaptive_options_refuse_invalid_values():
     with pytest.raises(ValueError):
         AdaptiveMotionSpec(phase_error_rad=float("nan"))
@@ -87,7 +126,9 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
                 row_valid=torch.ones(count, device="cuda", dtype=torch.bool),
                 pair_offsets=torch.tensor([0, count], device="cuda", dtype=torch.int64),
             )
-            records.append((None, None, paths, tuple(range(count))))
+            records.append(
+                (SimpleNamespace(topology_complete=False, rediscovered=True), None, paths, tuple(range(count)))
+            )
         return records
 
     result, stats, _, _ = _adaptive_fmcw(times, evaluate, spec, AdaptiveMotionSpec(), 77e9, None)

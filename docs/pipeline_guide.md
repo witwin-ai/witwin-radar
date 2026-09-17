@@ -12,8 +12,13 @@ refinement decisions are discrete. Budget exhaustion raises instead of returning
 
 `adaptive_diagnostics` records evaluation counts, tested errors, topology refinements and native
 synthesis batch counts. `result.discovery_count` separately counts topology discoveries.
-`path_set_complete` is false unless every ADC instant was evaluated. Probe spacing is
-not a proof that a shorter occlusion or oscillation was absent. Use `motion_sampling="adc"`
+`path_set_complete` and `motion_sampling_exhaustive` are two separate statements.
+The first is true when no path birth can have been missed, either because every ADC
+instant was evaluated or because the candidate family was certified complete for all
+time. The second is true only when no observation's transport was interpolated. An
+adaptive run in a certifiable world therefore reports completeness without
+exhaustiveness. Probe spacing is not a proof that a shorter occlusion or oscillation was
+absent in a world that cannot be certified. Use `motion_sampling="adc"`
 (the default) for exhaustive comparison; `"chirp"` is an explicit stop-and-hop approximation.
 
 An empty authored world with LOS-only propagation and all endpoint pairs already present permits
