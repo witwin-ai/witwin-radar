@@ -74,7 +74,7 @@ CHANNEL_PHASOR = "exp(-j*k*d)"
 CHANNEL_TIME_DEPENDENCE = "exp(+j*2*pi*f*t)"
 
 #: The FMCW beat cube's convention, which is the CONJUGATE of Channel's.
-#: De-chirping multiplies the echo by the conjugate of the transmitted chirp, so
+#: De-chirping multiplies the transmitted chirp by the conjugate of the echo, so
 #: the beat-domain phasor advances with ``+j`` while a Channel transport advances
 #: with ``-j``. Both are correct and they are different products; naming the beat
 #: one here is what lets a result carry its convention as data instead of a

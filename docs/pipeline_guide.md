@@ -20,7 +20,7 @@ Only `witwin/radar/channel.py` imports Channel in production. The boundary publi
 
 FMCW configuration includes `output_domain`:
 
-- omitted or `"spectrum"` — direct native Dirichlet range spectrum;
+- omitted or `"spectrum"` — normalized range spectrum;
 - `"beat"` — explicit synthesized time-domain beat samples.
 
 The default is spectrum. The beat route is an opt-in output domain, not a fallback.
@@ -35,7 +35,7 @@ The scatter response is required because target reflectivity is a physical choic
 
 `witwin/radar/simulation.py` owns the frame loop:
 
-1. sample the Core world at the requested frame time;
+1. sample the Core world at waveform observation times within each requested frame;
 2. compile or reuse the Channel scene epoch;
 3. discover or reevaluate one-way topology according to policy;
 4. compose direct or two-way round trips;
@@ -48,13 +48,37 @@ The scatter response is required because target reflectivity is a physical choic
 
 The returned `RadarSimulationResult.cube` has axes `[frame, TX, RX, slow, fast]`. Its metadata also includes frame times, waveform kind, named axes, phasor/time convention, reference frequency, epoch information, and last-frame typed diagnostics.
 
+Dynamic FMCW calls default to `motion_sampling="adc"`. The world is evaluated at
+`frame_time + (chirp*num_tx+tx)*chirp_period + adc_start + sample*sample_period`.
+The result records `sample_times_s` and `motion_sampling`; diagnostics describe
+the last observation. This handles moving reflectors as well as moving sites,
+without subtracting rows from different discovered path sets. It uses the
+quasistatic Channel model at each observation, not relativistic retarded-time
+moving-boundary propagation.
+
+For a faster declared stop-and-hop approximation, select `motion_sampling="chirp"`.
+Its geometry/weight is frozen within each chirp. OFDM refreshes per symbol and
+pulsed simulation per pulse; those remain block-frozen models.
+A custom site trajectory exposes `at(time_s) -> Kinematics` and returns the same
+ordered material points at every time. Rotation/articulation must change their
+positions: an angular-velocity label alone cannot move an authored point.
+Parameter JVPs differentiate the trajectory; they never become physical velocity.
+Low-level synthesis `delay_rate` explicitly means physical `d(tau)/dt`.
+
+Full discovery runs at each dynamic observation by default. An explicitly longer
+`motion_event_period_frames` trades completeness for speed and publishes
+`path_set_complete=False` unless structure motion already forces discovery.
+Visibility changes are real discontinuities: no smoothing or velocity clipping
+is applied across them. Complete means complete within the requested supported
+Channel components and discovery policy, not all conceivable propagation physics.
+
 ## 5. FMCW synthesis domains
 
 `witwin/radar/synthesis/fmcw.py` is the sole FMCW synthesis owner. It consumes compact path rows and conjugates the Channel transfer coefficient exactly once into the beat convention.
 
 ### Default spectrum route
 
-The native spectrum kernel evaluates each path as a Dirichlet contribution directly at range bins. It does not synthesize ADC samples followed by a Python-side FFT. Forward, reverse-mode, and JVP all dispatch to matching spectrum operators.
+The native spectrum kernel evaluates stationary rows as Dirichlet contributions. A nonzero physical delay rate makes fast-time phase quadratic, so moving rows use an exact finite DFT sum in native CUDA. The common phase owner is `cuda/fmcw_phase.cuh`; backward and JVP differentiate that same continuous-delay equation. ADC-refreshed scenes evaluate propagation and native beat synthesis at each observation, then call the processing-owned normalized range transform.
 
 The fast axis of the result is `range`, and its length is the configured FMCW sample/bin count.
 
@@ -72,6 +96,11 @@ Build processing metadata from the synthesis result and radar array configuratio
 - beat input is transformed along its sample axis;
 - Range-Doppler processing transforms slow time and preserves the range axis;
 - angle, beamforming, CFAR, point-cloud, and tracking stages consume typed products rather than unlabelled tensors.
+
+`microdoppler_spectrogram` consumes `SlowTimeSignal(samples, times_s, phasor)`.
+Use one sensor pair and range gate per sequence. Timestamps must be uniform;
+segment frame gaps before STFT. Frequencies use `f_D=-f_ref*d(tau)/dt`
+(receding negative), independent of the source beat/Channel convention.
 
 A tensor shape alone is not sufficient to choose a processing route; spectrum and beat outputs can have the same rank and fast-axis length.
 

@@ -49,6 +49,7 @@ import torch
 from .signal import (
     DEFAULT_WINDOW,
     ProcessingCube,
+    _doppler_sign_from_phasor,
     _require_complex,
     pulse_replica,
     remove_mean,
@@ -271,6 +272,11 @@ def _unpack(cube: ProcessingCube):
     return cube.data, cube.axes
 
 
+def fmcw_range_fft(samples: torch.Tensor) -> torch.Tensor:
+    """Normalized range DFT of explicit ADC samples, including refreshed scenes."""
+    return torch.fft.fft(samples, dim=-1, norm="forward")
+
+
 def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc: bool = False) -> RangeProfile:
     """Convert one typed synthesis/processing cube to a range profile.
 
@@ -334,7 +340,7 @@ def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc:
             else:
                 windowed = taper(data, name, dim=-1)
                 # Amplitude normalised: the unnormalised beat FFT peaks at N |C|.
-                profile = torch.fft.fft(windowed, dim=-1, norm="forward")
+                profile = fmcw_range_fft(windowed)
         else:
             windowed = taper(data, name, dim=-1)
             # The CIR. The inverse transform already carries the 1 / N_sc that
@@ -517,29 +523,47 @@ def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann"):
     return torch.fft.fftshift(torch.fft.fft(samples * taper, dim=-1), dim=-1)
 
 
-def microdoppler_spectrogram(
-    samples: torch.Tensor, *, slot_period_s: float, window_slots: int, hop_slots: int, window: str = "hann"
-):
-    """A short-time slow-time transform: the micro-Doppler spectrogram.
+@dataclass(frozen=True, slots=True, eq=False)
+class SlowTimeSignal:
+    """Complex samples [..., time], absolute SI timestamps, and source phasor.
 
-    Returns ``(times_s, frequencies_hz, spectrum)`` where ``spectrum`` has shape
-    ``[..., frames, window_slots]``, complex, with the Doppler axis
-    ``fftshift``ed exactly as :func:`slow_time_spectrum` leaves it.
-
-    ``times_s`` is the CENTRE of each window, not its start. A cadence read off
-    window starts is late by half a window, which for a rotor whose flash lasts
-    a fraction of a window is the difference between a symmetric spectrogram and
-    one that looks like it has a lag.
-
-    The framing is explicit rather than a stride trick: ``unfold`` produces a
-    view whose windows overlap in storage, and multiplying it by a window in
-    place would corrupt the neighbours. This takes the copy on purpose.
+    One sequence represents one sensor pair and one range gate. TDM transmitter
+    interleaving and gaps between frames are not uniform slow-time samples.
+    Resample or segment those explicitly before asking for an STFT.
     """
 
-    if not isinstance(samples, torch.Tensor):
-        raise TypeError(f"samples must be a torch.Tensor, got {type(samples).__name__}")
-    if samples.ndim < 1:
-        raise ValueError("samples must have a trailing slow-time axis")
+    samples: torch.Tensor
+    times_s: tuple[float, ...]
+    phasor: str
+
+    def __post_init__(self):
+        import math
+
+        _require_complex("samples", self.samples)
+        if self.samples.ndim < 1 or len(self.times_s) != self.samples.shape[-1] or len(self.times_s) < 2:
+            raise ValueError("timestamps must match a slow-time axis of at least two samples")
+        if not all(math.isfinite(t) for t in self.times_s):
+            raise ValueError("slow-time timestamps must be finite")
+        period = self.times_s[1] - self.times_s[0]
+        if period <= 0 or any(
+            not math.isclose(b - a, period, rel_tol=1e-6, abs_tol=1e-12)
+            for a, b in zip(self.times_s, self.times_s[1:], strict=False)
+        ):
+            raise ValueError("slow-time timestamps must be strictly increasing and uniform; split frame gaps")
+        _doppler_sign_from_phasor(self.phasor)
+
+
+def microdoppler_spectrogram(signal: SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = "hann"):
+    """STFT with canonical physical Doppler f_D=-f_ref*d(tau)/dt.
+
+    Return absolute window-centre times, signed frequencies, and complex
+    spectra [..., windows, frequency]. Beat-domain bins are reversed using the
+    declared phasor, exactly as for range_doppler_map. No time gaps are hidden.
+    """
+    if not isinstance(signal, SlowTimeSignal):
+        raise TypeError("microdoppler_spectrogram requires a SlowTimeSignal with timestamps and phasor")
+    samples = signal.samples
+    slot_period_s = signal.times_s[1] - signal.times_s[0]
     slots = int(samples.shape[-1])
     for name, value in (("window_slots", window_slots), ("hop_slots", hop_slots)):
         if type(value) is not int or value < 1:
@@ -557,12 +581,15 @@ def microdoppler_spectrogram(
     # unfold gives [..., frames, window_slots] already; the transform is over
     # the window axis, which slow_time_spectrum takes as the trailing one.
     spectrum = slow_time_spectrum(framed, window=window)
+    if _doppler_sign_from_phasor(signal.phasor) == 1:
+        bins = torch.remainder(-torch.arange(window_slots, device=samples.device), window_slots)
+        spectrum = torch.fft.fftshift(torch.fft.ifftshift(spectrum, dim=-1).index_select(-1, bins), dim=-1)
     frequencies = doppler_frequencies_hz(window_slots, slot_period_s, device=samples.device)
     centre = (window_slots - 1) / 2.0
     times = (torch.arange(frames, dtype=torch.float64, device=samples.device) * hop_slots + centre) * float(
         slot_period_s
     )
-    return times, frequencies, spectrum
+    return times + signal.times_s[0], frequencies, spectrum
 
 
 def dominant_frequencies_hz(spectrum: torch.Tensor, frequencies_hz: torch.Tensor):

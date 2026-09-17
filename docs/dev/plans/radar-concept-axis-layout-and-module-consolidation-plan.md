@@ -1088,3 +1088,7 @@ This plan is complete only when:
 - an adversarial audit finds no behavior change hidden inside the consolidation;
 - the completion record names exact commits, native fingerprints, environment,
   commands and outcomes.
+
+## September 2026 correctness amendment
+
+The module consolidation remains complete. The Doppler repair supersedes the stationary-only Dirichlet description for moving paths: `cuda/fmcw_phase.cuh` owns continuous-delay FMCW phase, and scene orchestration refreshes geometry at ADC timestamps. Output defaults remain spectrum. See `docs/pipeline_guide.md` and the Doppler acceptance report.

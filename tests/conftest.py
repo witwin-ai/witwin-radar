@@ -443,7 +443,6 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes
     from witwin.radar.scattering import ScalarRcsResponse
     from witwin.radar.simulation import ScatterSitePolicy
-    from witwin.radar.synthesis import SlowTimeMode
 
     local_positions, local_velocities, moving = _target_tensors(radar, targets)
     world_positions = radar._world_from_local_points(local_positions)
@@ -451,40 +450,23 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
         sigma_m2, reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz, device=radar.device
     )
 
-    def solve(sites, ad_mode):
-        return radar.simulate(
-            empty_world(),
-            times=(0.0,),
-            response=response,
-            sites=ScatterSitePolicy.explicit(sites),
-            components=frozenset({"los"}),
-            max_depth=0,
-            ad_mode=ad_mode,
-        )
+    world_velocity = radar._world_from_local_vectors(local_velocities)
 
-    if moving:
-        track = kin.Kinematics(
-            positions_m=world_positions, velocities_m_per_s=radar._world_from_local_vectors(local_velocities)
-        )
-        with kin.two_way_duals(sites=track) as duals:
-            result = solve(duals.sites, "jvp")
-            # The published cube is a dual inside the level and a bare tensor
-            # outside it. Unpacking the primal here is what makes the two cases
-            # return the same type; the TANGENT of the cube is not the Doppler -
-            # the Doppler is already inside the primal, carried by the join's
-            # ``delay_rate`` and consumed by the waveform kernel's slow-time
-            # carrier.
-            cube = _primal(result.cube).detach().clone()
-            synthesis = radar._synthesize(
-                radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-            )
-            synthesis = _detached_synthesis(synthesis)
-    else:
-        result = solve(world_positions, "none")
-        cube = result.cube
-        synthesis = radar._synthesize(
-            radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-        )
+    class LinearSites:
+        def at(self, time_s):
+            return kin.Kinematics(world_positions + time_s * world_velocity, world_velocity)
+
+    result = radar.simulate(
+        empty_world(),
+        times=(0.0,),
+        response=response,
+        sites=ScatterSitePolicy.explicit(world_positions, trajectory=LinearSites() if moving else None),
+        components=frozenset({"los"}),
+        max_depth=0,
+        motion_sampling="chirp",
+    )
+    cube = result.cube
+    synthesis = result.frame_synthesis()
 
     axes = ProcessingAxes.from_synthesis(
         synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array

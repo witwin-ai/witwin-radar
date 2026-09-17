@@ -35,6 +35,7 @@ def test_orbit_phase_and_tdm_match_independent_geometric_delay():
         sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
         components=frozenset({"los"}),
         max_depth=0,
+        motion_sampling="chirp",
     )
     spec = radar.system_config.waveform_spec()
     # Invert only the declared spectrum. Test the first ADC sample of each TX.
@@ -68,6 +69,7 @@ def test_dynamic_default_discovers_endpoint_born_reflections():
     trajectory = Crossing()
     args = {
         "times": (0.0, 0.001),
+        "motion_sampling": "chirp",
         "response": _response(radar),
         "sites": ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
     }

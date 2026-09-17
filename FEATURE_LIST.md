@@ -9,13 +9,16 @@ This file describes the current surface after the breaking concept-axis consolid
 - `RadarSimulationResult` returns a typed `[frame, TX, RX, slow, fast]` cube with waveform, axes, phasor convention, reference frequency, epoch, and last-frame diagnostic metadata.
 - `witwin/radar/channel.py` is the single production importer of `witwin.channel`; the rest of Radar consumes Radar-owned adapter contracts.
 - Direct and multipath one-way legs are composed into round-trip paths with explicit join mode, identity, delay, delay rate, transfer provenance, and row validity.
-- Fixed-topology reuse and rediscovery are separate policies; dynamic scenes can be sampled per requested frame time.
+- Dynamic FMCW scenes default to geometry and transport refreshed at every ADC timestamp, including TDM slot offsets. Explicit `motion_sampling="chirp"` selects a stop-and-hop approximation.
+- Dynamic paths are rediscovered at every observation by default. Longer discovery cadences set `path_set_complete=False`; row-index finite differences are never used for velocity.
+- `ScatterSitePolicy.explicit(..., trajectory=...)` preserves authored material-point order across translation, rotation, or articulation. `SensorEndpointIds` maps moving Core phase centres into array order.
 - Scatter sites are declared explicitly or by a supported policy. Radar does not silently derive a different physical target set from mesh geometry.
 
 ## Waveform synthesis
 
 - FMCW, OFDM, and pulsed synthesis have separate owners under `witwin/radar/synthesis/` and share typed path/result assembly.
-- FMCW directly generates a Dirichlet range spectrum in native CUDA by default.
+- FMCW outputs a normalized range spectrum by default: native Dirichlet evaluation for stationary rows, native quadratic-phase summation for linearly moving rows, and the processing-owned range transform for ADC-refreshed scenes.
+- The linear-delay native model includes ADC start time and fast-time motion, with matching analytic VJP/JVP.
 - `FmcwSpec.output_domain="spectrum"` is the default; `output_domain="beat"` explicitly selects synthesized time-domain beat samples.
 - The FMCW spectrum and beat paths each expose native forward, analytical backward, and JVP operators through the one Radar native runtime.
 - TDM slot timing is derived from the transmitter index of each sensor-pair segment.
@@ -24,8 +27,8 @@ This file describes the current surface after the breaking concept-axis consolid
 
 ## Radar physics
 
-- Scalar-RCS and aspect-dependent scatter responses.
-- Round-trip antenna pattern and transmit-power weighting.
+- Scalar-RCS and aspect-dependent scatter responses, including reflected outbound paths with differentiable departure bearings.
+- Round-trip antenna pattern and transmit-power weighting using actual first/last path segments.
 - Receiver frontend contracts for LNA, noise, AGC, ADC, port mapping, and deterministic seeds.
 - Radar-owned SMPL authoring layered on Core geometry.
 - Explicit AD/host-observation policy, first-order reverse mode, and forward-mode JVP coverage for native hot paths.
@@ -36,7 +39,7 @@ The `witwin.radar.processing` facade exports typed products and algorithms for:
 
 - signal cube normalization and processing axes;
 - range profiles and Range-Doppler maps;
-- matched filtering and micro-Doppler;
+- matched filtering and `SlowTimeSignal`-based micro-Doppler with explicit timestamps and phasor, physical Doppler sign, and rejection of frame gaps;
 - phase-comparison and FFT AoA;
 - conventional, MVDR, and MUSIC beamforming/imaging;
 - CA-CFAR and OS-CFAR detection;

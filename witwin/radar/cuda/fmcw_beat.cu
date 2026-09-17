@@ -59,6 +59,7 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "fmcw_phase.cuh"
 
 #include <cstdint>
 #include <limits>
@@ -111,27 +112,13 @@ __device__ __forceinline__ int clamped_tx_index(
 // formed and wrapped in double before it is handed to the single-precision
 // trigonometric unit.
 __device__ __forceinline__ BeatPhase beat_phase(
-    const double tau,
-    const double tau_drift,
-    const double t_slot,
-    const double t_m,
-    const double slope,
-    const double carrier_hz,
-    const double carrier_rate_hz,
-    const double t_start) {
-  const double cycles = carrier_hz * tau + carrier_rate_hz * tau_drift +
-      slope * tau * (t_start - 0.5 * tau) + slope * tau * t_m;
-  const double frac = cycles - floor(cycles);
-  float sin_phi;
-  float cos_phi;
+    const double tau0, const double rate, const double t_slot, const double t_m,
+    const double slope, const double carrier_hz, const double carrier_rate_hz, const double t_start) {
+  const auto terms = fmcw_phase_terms(tau0, rate, t_slot, t_start+t_m, slope, carrier_hz, carrier_rate_hz);
+  const double frac = terms.cycles - floor(terms.cycles);
+  float sin_phi, cos_phi;
   sincosf(static_cast<float>(kTwoPiD * frac), &sin_phi, &cos_phi);
-  const double dphi_dtau_rt =
-      kTwoPiD * (carrier_hz + slope * t_start - slope * tau + slope * t_m);
-  return {
-      sin_phi,
-      cos_phi,
-      dphi_dtau_rt,
-      t_slot * (dphi_dtau_rt + kTwoPiD * carrier_rate_hz)};
+  return {sin_phi, cos_phi, terms.d_tau, terms.d_rate};
 }
 
 __global__ void fmcw_beat_forward_kernel(
@@ -182,10 +169,10 @@ __global__ void fmcw_beat_forward_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = static_cast<double>(tau_rt[k]);
+    const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = beat_phase(
-        tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+        tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     acc_re += w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -244,10 +231,10 @@ __global__ void fmcw_beat_jvp_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = static_cast<double>(tau_rt[k]);
+    const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = beat_phase(
-        tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+        tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -321,14 +308,13 @@ __global__ void fmcw_beat_backward_kernel(
 
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
     const double t_slot = slot_time(chirp, tx_index, num_tx, chirp_period_s);
-    const double drift = rate * t_slot;
-    const double tau = base_tau + drift;
+    const double tau = base_tau;
     const int64_t row_base =
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_samples;
     for (int sample = 0; sample < num_samples; ++sample) {
       const double t_m = static_cast<double>(sample) * sample_period_s;
       const BeatPhase phase = beat_phase(
-          tau, drift, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
+          tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, t_start);
       const float g_re = grad_out_re[row_base + sample];
       const float g_im = grad_out_im[row_base + sample];
       const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;

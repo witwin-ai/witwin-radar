@@ -98,3 +98,4 @@ All maintained scene-driven examples require CUDA and Channel.
 ## License and citation
 
 WiTwin Radar uses the WiTwin dual-license model. See the [WiTwin licensing page](https://witwin.ai/license). The simulator is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis); cite the RF-Genesis SenSys 2023 paper when that prior work is relevant.
+Dynamic FMCW simulation refreshes the scene at each ADC observation by default, including TDM timing. `motion_sampling="chirp"` selects the faster stop-and-hop approximation. See `docs/pipeline_guide.md` for trajectories, path completeness, and typed micro-Doppler timestamps.

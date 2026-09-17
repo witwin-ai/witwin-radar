@@ -123,8 +123,10 @@ def source_digest(paths: Iterable[Path]) -> str:
     kernel is a different build input.
     """
 
+    paths = tuple(paths)
+    headers = sorted({header for path in paths for header in path.parent.glob("*.cuh")})
     digest = hashlib.sha256()
-    for path in paths:
+    for path in (*paths, *headers):
         digest.update(path.name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())

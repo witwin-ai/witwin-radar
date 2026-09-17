@@ -579,6 +579,8 @@ class RadarSimulationResult:
     last_radar_paths: object
     sample_times_s: tuple[tuple[float, ...], ...] = ()
     path_set_complete: bool = True
+    motion_sampling: str = "static"
+    output_domain: str = "beat"
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axes):
@@ -600,6 +602,23 @@ class RadarSimulationResult:
     def frame_count(self) -> int:
         return int(self.cube.shape[0])
 
+    def frame_synthesis(self, frame_index: int = 0):
+        """Expose a simulated frame and its recorded axes without resynthesis."""
+        from .synthesis.assembly import SynthesisResult
+
+        frame = self.cube[frame_index]
+        tx, rx, slow, fast = frame.shape
+        packed = frame.permute(2, 1, 0, 3).reshape(slow, rx * tx, fast)
+        return SynthesisResult(
+            cube=packed,
+            kind=self.kind,
+            axes=(self.axes[-2], "sensor_pair", self.axes[-1]),
+            phasor=self.phasor,
+            time_dependence=self.time_dependence,
+            reference_frequency_hz=self.reference_frequency_hz,
+            output_domain=self.output_domain,
+        )
+
     @classmethod
     def from_frames(
         cls,
@@ -617,6 +636,7 @@ class RadarSimulationResult:
         last_radar_paths: object,
         sample_times_s=(),
         path_set_complete: bool = True,
+        motion_sampling: str = "static",
     ) -> RadarSimulationResult:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
@@ -647,6 +667,8 @@ class RadarSimulationResult:
             last_radar_paths=last_radar_paths,
             sample_times_s=tuple(tuple(float(t) for t in frame) for frame in sample_times_s),
             path_set_complete=path_set_complete,
+            motion_sampling=motion_sampling,
+            output_domain=synthesis.output_domain,
         )
 
 
@@ -664,25 +686,6 @@ def _dynamic_scene(scene: object) -> object:
     from witwin.core.dynamics import DynamicScene
 
     return DynamicScene(scene)
-
-
-def _slow_time_mode(declared: object):
-    from .synthesis import SlowTimeMode
-
-    if declared is None:
-        return SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    mode = SlowTimeMode(declared)
-    if mode is not SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE:
-        raise ValueError(
-            f"this entry point composes ONCE per frame, so its weight is "
-            f"{DRIVER_SLOW_TIME_MODE!r} and cannot be declared {mode.value!r}. "
-            "A refreshed weight is one that already walked across slow time; "
-            "declaring it for a weight frozen at the frame's tau_rt drops the "
-            "kernel's carrier-rate term and understates intra-frame Doppler "
-            "while still producing a plausible cube. Drive the refreshed mode "
-            "from a slot-batched replay instead"
-        )
-    return mode
 
 
 def _times(times: object) -> tuple[float, ...]:
@@ -707,7 +710,6 @@ def simulate_scene(
     sites: object = None,
     components: frozenset[str] | None = None,
     max_depth: int | None = None,
-    slow_time_mode: object = None,
     ad_mode: str = "none",
     world_motion: str = "frozen_world",
     motion_event_period_frames: int | None = None,
@@ -715,6 +717,7 @@ def simulate_scene(
     polarization: object = None,
     antenna_pattern: object = None,
     sensor_endpoints: SensorEndpointIds | None = None,
+    motion_sampling: str = "adc",
 ) -> RadarSimulationResult:
     """Run ``radar`` over ``scene`` at ``times`` and publish the frame cubes.
 
@@ -764,8 +767,9 @@ def simulate_scene(
     from .sensors import RoundTripPatternStage
     from .synthesis.assembly import assemble_frame_cube
 
+    if motion_sampling not in ("adc", "chirp"):
+        raise ValueError("motion_sampling must be adc or chirp")
     instants = _times(times)
-    mode = _slow_time_mode(slow_time_mode)
     policy = ScatterSitePolicy.structure_anchor() if sites is None else sites
     if not isinstance(policy, ScatterSitePolicy):
         raise TypeError(
@@ -835,12 +839,29 @@ def simulate_scene(
         or policy.trajectory is not None
         or callable(getattr(response, "at", None))
     )
-    from .synthesis.assembly import SlowTimeMode, waveform_sampling
+    from .synthesis.assembly import FmcwSpec, SlowTimeMode, SynthesisResult, waveform_sampling
+
+    mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
+    full_spec = solve_config.waveform_spec()
+    adc_sampled = sampled and motion_sampling == "adc" and isinstance(full_spec, FmcwSpec)
+    samples_per_slot = full_spec.num_samples if adc_sampled else 1
 
     if sampled:
         offsets, pair_samples, single_spec = waveform_sampling(
             solve_config.waveform_spec(), num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
         )
+        if adc_sampled:
+            if (
+                full_spec.t_start_s + (full_spec.num_samples - 1) * full_spec.sample_period_s
+                >= full_spec.chirp_period_s
+            ):
+                raise ValueError("ADC observations must fit inside each chirp period")
+            offsets = tuple(
+                slot + full_spec.t_start_s + m * full_spec.sample_period_s
+                for slot in offsets
+                for m in range(full_spec.num_samples)
+            )
+            single_spec = replace(single_spec, num_samples=1, output_domain="beat")
         mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         # A version poll cannot detect endpoint-induced path births. Complete
         # dynamic sampling therefore rediscovers at each observed instant.
@@ -848,6 +869,8 @@ def simulate_scene(
     else:
         offsets, pair_samples, single_spec = (0.0,), None, None
         cadence = motion_event_period_frames
+    if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
+        raise ValueError("dynamic frames must not overlap in observation time")
     loop = SceneEpochLoop(
         dynamic,
         reference_frequency_hz=reference_frequency_hz,
@@ -913,8 +936,16 @@ def simulate_scene(
                 tx_targets_m=legs.inbound.departure_target_m.index_select(0, composed.topology.inbound_row),
                 rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, composed.topology.outbound_row),
             )
+        observation_spec = (
+            replace(
+                single_spec,
+                t_start_s=full_spec.t_start_s + (len(slot_cubes) % samples_per_slot) * full_spec.sample_period_s,
+            )
+            if adc_sampled
+            else single_spec
+        )
         synthesis = (
-            radar._synthesize(composed, slow_time_mode=mode, spec=single_spec)
+            radar._synthesize(composed, slow_time_mode=mode, spec=observation_spec)
             if sampled
             else radar._synthesize(composed, slow_time_mode=mode)
         )
@@ -924,7 +955,16 @@ def simulate_scene(
         if sampled:
             stacked = torch.cat(slot_cubes, dim=0)
             pairs = torch.arange(array.num_tx * array.num_rx, device=stacked.device)
-            synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
+            if adc_sampled:
+                stacked = stacked.reshape(-1, samples_per_slot, len(pairs)).transpose(1, 2)
+                cube = stacked[pair_samples, pairs]
+                if full_spec.output_domain == "spectrum":
+                    from .processing.range_doppler import fmcw_range_fft
+
+                    cube = fmcw_range_fft(cube)
+                synthesis = SynthesisResult.from_fmcw(cube, full_spec)
+            else:
+                synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
         cubes.append(
             radar._apply_signal_models(assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx))
         )
@@ -944,6 +984,7 @@ def simulate_scene(
         last_radar_paths=composed,
         sample_times_s=sample_times,
         path_set_complete=not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move,
+        motion_sampling="static" if not sampled else ("adc" if adc_sampled else "chirp"),
     )
 
 

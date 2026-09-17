@@ -90,7 +90,7 @@ STRUCTURAL_SUP_ROWS = frozenset(
 #: in a diff rather than in nobody's attention.
 SECTION_ROWS = {
     "Mirrored Channel rows": 11,
-    "Aspect scatter response (`witwin/radar/scattering.py`)": 6,
+    "Aspect scatter response (`witwin/radar/scattering.py`)": 7,
     "Two-way join and the wideband band (`witwin/radar/paths.py`)": 5,
     "Kinematics (`witwin/radar/propagation.py`)": 8,
     "SMPL authoring (`witwin/radar/smpl.py`)": 6,

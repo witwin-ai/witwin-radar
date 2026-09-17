@@ -26,6 +26,7 @@ from .detection import (
 from .range_doppler import (
     RangeDopplerMap,
     RangeProfile,
+    SlowTimeSignal,
     lag_axis,
     matched_filter,
     microdoppler_spectrogram,
@@ -48,6 +49,7 @@ __all__ = [
     "TrackHandoff",
     "RangeDopplerMap",
     "RangeProfile",
+    "SlowTimeSignal",
     "beam_cube",
     "ca_cfar",
     "ca_cfar_1d",

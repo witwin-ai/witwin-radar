@@ -50,8 +50,8 @@ def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     """Convert a Channel transfer coefficient into an FMCW beat weight.
 
     Channel publishes ``exp(-j * k * d)`` under an ``exp(+j * 2 * pi * f * t)``
-    time dependence. FMCW de-chirping multiplies the received signal by the
-    conjugate of the transmitted chirp, so the beat-domain phasor advances with
+    time dependence. FMCW de-chirping multiplies the transmitted chirp by the
+    conjugate of the received signal, so the beat-domain phasor advances with
     ``+j``. The two conventions are therefore conjugates, and a Channel
     coefficient becomes a beat weight by conjugation.
 

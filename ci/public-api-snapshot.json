@@ -163,6 +163,12 @@
           "signature": "(data: torch.Tensor, axes: object, window: str, window_coherent_gain: float) -> None"
         },
         {
+          "name": "SlowTimeSignal",
+          "kind": "class",
+          "target": "witwin.radar.processing.range_doppler.SlowTimeSignal",
+          "signature": "(samples: torch.Tensor, times_s: tuple[float, ...], phasor: str) -> None"
+        },
+        {
           "name": "TrackHandoff",
           "kind": "class",
           "target": "witwin.radar.processing.tracking.TrackHandoff",
@@ -226,7 +232,7 @@
           "name": "microdoppler_spectrogram",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.microdoppler_spectrogram",
-          "signature": "(samples: torch.Tensor, *, slot_period_s: float, window_slots: int, hop_slots: int, window: str = 'hann')"
+          "signature": "(signal: witwin.radar.processing.range_doppler.SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = 'hann')"
         },
         {
           "name": "music_image",
@@ -354,7 +360,7 @@
           "name": "RadarSimulationResult",
           "kind": "class",
           "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True) -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat') -> None"
         },
         {
           "name": "ScatterSitePolicy",
@@ -496,7 +502,7 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None) -> 'RadarSimulationResult'"
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc') -> 'RadarSimulationResult'"
         }
       ]
     }

@@ -131,7 +131,7 @@ def beat_samples(
     for segment in range(num_segments):
         t_c = (chirps * num_tx + tx_of_segment[segment]) * spec.chirp_period_s
         for row in range(offsets[segment], offsets[segment + 1]):
-            drift = delay_rate[row].to(torch.float64) * t_c.reshape(-1, 1)
+            drift = delay_rate[row].to(torch.float64) * (t_c.reshape(-1, 1) + spec.t_start_s + t_m.reshape(1, -1))
             tau = total_delay_s[row].to(torch.float64) + drift
             cycles = (
                 spec.carrier_hz * tau

@@ -89,7 +89,9 @@ def _static_scene():
 
 
 def _simulate(radar: Radar, scene, times, **options) -> RadarSimulationResult:
-    return radar.simulate(scene, times=times, response=_response(radar), sites=_sites(radar), **options)
+    return radar.simulate(
+        scene, times=times, response=_response(radar), sites=_sites(radar), motion_sampling="chirp", **options
+    )
 
 
 # ---------------------------------------------------------------------------

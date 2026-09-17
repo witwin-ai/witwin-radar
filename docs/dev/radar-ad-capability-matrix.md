@@ -73,7 +73,8 @@ tree before ADR-043 and it is now the falsifier.
 | aspect/evaluate_rows | endpoint positions through dir_out | vjp | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse | tests/test_phase9_aspect_direction_ad.py::test_a_reverse_aspect_gradient_reaches_the_site_positions | fd |
 | aspect/evaluate_rows | endpoint positions through dir_in and dir_out | jvp | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse | tests/test_phase9_aspect_direction_ad.py::test_a_forward_tangent_on_the_sites_reaches_the_aspect_response | adjoint |
 | aspect/compose/fmcw | endpoint positions to a synthesized cube | both | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse | tests/test_phase9_aspect_direction_ad.py::test_the_aspect_direction_gradient_reaches_a_synthesized_fmcw_loss, tests/test_phase9_aspect_direction_ad.py::test_the_direction_term_is_load_bearing_in_the_synthesized_loss | fd |
-| aspect/evaluate_rows | outbound leg above depth zero | both | REF | host-declaration | witwin/radar/scattering.py::_AspectResponse | tests/test_phase7_scatter_response_kernel.py::test_the_response_refuses_a_higher_order_outbound_leg | refusal |
+| aspect/evaluate_rows | outbound reflection segment endpoints | both | SUP | native-companion | witwin/radar/scattering.py::_ScatterDirection | tests/test_multipath_directions.py::test_native_scatter_direction_primal_vjp_and_jvp, tests/test_multipath_directions.py::test_outbound_reflection_aspect_uses_departure_and_carries_gradients | fd |
+| aspect/evaluate_rows | missing outbound reflection geometry | both | REF | host-declaration | witwin/radar/scattering.py::AspectScatterResponse | tests/test_phase7_scatter_response_kernel.py::test_the_response_refuses_missing_departure_geometry | refusal |
 
 ### Two-way join and the wideband band (`witwin/radar/paths.py`)
 

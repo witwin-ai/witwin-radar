@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -284,6 +285,7 @@ def test_frozen_and_refreshed_modes_agree(spike, spec):
     velocity = (-1.0, 0.0, 0.0)
     times = _slot_times(spec)
     slots = int(times.shape[0])
+    spec = replace(spec, num_samples=1, t_start_s=0.0)
     base = spike.site_tensor()
     response = drv.make_response()
 

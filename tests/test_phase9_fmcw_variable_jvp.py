@@ -212,6 +212,7 @@ def test_the_rate_derivative_is_not_the_delay_derivative_scaled_by_slow_time():
     sample = SPEC.num_samples - 1
     t_c = chirp * SPEC.chirp_period_s * SPEC.num_tx
     t_m = sample * SPEC.sample_period_s
+    t_c += SPEC.t_start_s + t_m
     stored_tau = float(single.cpu()) + float(rate.cpu()) * t_c
     chirp_hz = SPEC.slope_hz_per_s * (SPEC.t_start_s - stored_tau + t_m)
 
@@ -285,10 +286,9 @@ def test_a_rate_only_tangent_is_not_the_zero_tangent():
 
     assert magnitude > 1.0e6 * reference
 
-    # And the FIRST chirp's tangent is exactly zero, because ``t_c = 0`` there:
-    # the drift has had no slow time to accumulate. A kernel that applied the
-    # rate as a constant offset would fail this and pass everything above.
+    # Fast time and ADC start contribute even in the first chirp.
+    # The rate derivative must therefore already be nonzero there.
     with forward_ad.dual_level():
         cube = synthesize_fmcw_rows(single, forward_ad.make_dual(rate, torch.ones_like(rate)), weight, offsets, SPEC)
         first_chirp = forward_ad.unpack_dual(cube).tangent[0]
-    assert float(first_chirp.abs().max()) == 0.0
+    assert float(first_chirp.abs().max()) > 1.0e6

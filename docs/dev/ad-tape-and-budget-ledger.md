@@ -30,6 +30,13 @@ read out of a live context, and
 the two tables against the module's constants. Editing a number here without
 editing the constant fails.
 
+The September 2026 Doppler repair adds `_ScatterDirection` in `scattering.py`.
+It saves two `[K,3]` float32 position arrays (24 K bytes of aliased inputs),
+launches once in forward and once in either AD companion, and uses the same
+first-order refusal guard. These are structural counts; historical timings
+below do not measure this owner or per-ADC scene sampling. Scene sampling
+retains one first-order graph per observation only when AD is requested.
+
 ## How to read a row
 
 - **saved tensors** are the literal names, in save order, so the row is

@@ -216,6 +216,7 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
                 # that omitted it would make this file the only place the
                 # adapter is exercised against a geometry that does not exist.
                 "field_direction": torch.zeros(rows, 3, dtype=torch.float32),
+                "interaction_positions_m": torch.zeros(rows, 1, 3, dtype=torch.float32),
             },
         )()
         transport = type("_Transport", (), {"coefficient": torch.zeros(rows, dtype=torch.complex64)})()

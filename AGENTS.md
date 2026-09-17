@@ -40,7 +40,7 @@ python ci/check_duplicate_code.py
 
 ## FMCW output contract
 
-FMCW synthesis generates the Dirichlet range spectrum directly in native CUDA by default. `FmcwSpec.output_domain` and the flat configuration field `output_domain` default to `"spectrum"`. Use `output_domain="beat"` only when a caller explicitly needs the synthesized time-domain beat signal. Processing must use the `SynthesisResult.axes` metadata instead of inferring the domain from tensor shape.
+FMCW output defaults to a normalized range spectrum. Stationary paths use native CUDA Dirichlet evaluation; linearly moving paths use native continuous-delay phase summation; ADC-refreshed scenes use native sample synthesis and the processing-owned range transform. `FmcwSpec.output_domain` and the flat configuration field `output_domain` default to `"spectrum"`. Use `output_domain="beat"` only when a caller explicitly needs the synthesized time-domain beat signal. Processing must use the `SynthesisResult.axes` metadata instead of inferring the domain from tensor shape.
 
 ## Public entry points
 

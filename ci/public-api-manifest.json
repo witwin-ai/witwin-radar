@@ -65,7 +65,8 @@
       "tdm_compensate": "witwin.radar.processing.angle.tdm_compensate",
       "lag_axis": "witwin.radar.processing.range_doppler.lag_axis",
       "matched_filter": "witwin.radar.processing.range_doppler.matched_filter",
-      "pulse_samples": "witwin.radar.processing.range_doppler.pulse_samples"
+      "pulse_samples": "witwin.radar.processing.range_doppler.pulse_samples",
+      "SlowTimeSignal": "witwin.radar.processing.range_doppler.SlowTimeSignal"
     },
     "witwin.radar.scattering": {
       "AspectScatterResponse": "witwin.radar.scattering.AspectScatterResponse",

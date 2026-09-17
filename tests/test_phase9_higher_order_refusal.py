@@ -60,7 +60,7 @@ gpu = pytest.mark.gpu
 #: without a first-order decision fails the structural test below.
 REGISTERED_BACKWARDS = {
     "witwin/radar/paths.py": 1,
-    "witwin/radar/scattering.py": 1,
+    "witwin/radar/scattering.py": 2,
     "witwin/radar/sensors.py": 1,
     "witwin/radar/synthesis/fmcw.py": 1,
     "witwin/radar/synthesis/ofdm.py": 1,
@@ -113,7 +113,7 @@ def test_every_registered_backward_is_decorated_by_the_one_owner():
             # put the grad-mode check inside the no_grad body and disarm it.
             assert "once_differentiable" not in names, (relative, function.name)
         assert "once_differentiable" not in source.replace("``once_differentiable``", ""), relative
-    assert total_functions == 8, total_functions
+    assert total_functions == 9, total_functions
 
 
 def test_the_package_names_no_second_higher_order_rule():

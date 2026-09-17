@@ -59,6 +59,7 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "fmcw_phase.cuh"
 
 #include <cstdint>
 #include <limits>
@@ -141,7 +142,7 @@ __device__ __forceinline__ int clamped_tx_index(
 
 __device__ __forceinline__ SpectrumResponse spectrum_response(
     const double tau,
-    const double drift,
+    const double rate,
     const double t_slot,
     const int bin,
     const int num_bins,
@@ -149,7 +150,22 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
     const double slope,
     const double carrier_hz,
     const double carrier_rate_hz,
-    const double t_start) {
+    const double t_start, const bool derivatives) {
+  if (rate != 0.0 || derivatives) {
+    double re=0., im=0., tr=0., ti=0., rr=0., ri=0.;
+    for (int m=0; m<num_bins; ++m) {
+      const auto term = fmcw_phase_terms(tau, rate, t_slot, t_start+m*sample_period_s, slope, carrier_hz, carrier_rate_hz);
+      const auto z = cexp_cycles(term.cycles-static_cast<double>(bin)*m/num_bins);
+      re+=z.re; im+=z.im;
+      tr-=term.d_tau*z.im; ti+=term.d_tau*z.re;
+      rr-=term.d_rate*z.im; ri+=term.d_rate*z.re;
+    }
+    const double n=num_bins;
+    return {{static_cast<float>(re/n),static_cast<float>(im/n)},
+            {static_cast<float>(tr/n),static_cast<float>(ti/n)},
+            {static_cast<float>(rr/n),static_cast<float>(ri/n)}};
+  }
+  const double drift = 0.0;
   const double base_cycles = carrier_hz * tau + carrier_rate_hz * drift +
       slope * tau * (t_start - 0.5 * tau);
   const Complex phase = cexp_cycles(base_cycles);
@@ -215,11 +231,11 @@ __global__ void fmcw_spectrum_forward_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = static_cast<double>(tau_rt[k]);
+    const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
-        tau, drift, t_slot, bin, num_bins, sample_period_s, slope,
-        carrier_hz, carrier_rate_hz, t_start);
+        tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+        carrier_hz, carrier_rate_hz, t_start, false);
     const float wr = weight_re[k];
     const float wi = weight_im[k];
     acc_re += wr * response.value.re - wi * response.value.im;
@@ -269,11 +285,11 @@ __global__ void fmcw_spectrum_jvp_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = start; k < end; ++k) {
-    const double drift = static_cast<double>(tau_rate[k]) * t_slot;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = static_cast<double>(tau_rt[k]);
+    const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
-        tau, drift, t_slot, bin, num_bins, sample_period_s, slope,
-        carrier_hz, carrier_rate_hz, t_start);
+        tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+        carrier_hz, carrier_rate_hz, t_start, true);
     const float wr = weight_re[k];
     const float wi = weight_im[k];
     const float twr = tan_weight_re[k];
@@ -339,14 +355,13 @@ __global__ void fmcw_spectrum_backward_kernel(
   double d_wi = 0.0;
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
     const double t_slot = slot_time(chirp, tx, num_tx, chirp_period_s);
-    const double drift = rate * t_slot;
-    const double tau = base_tau + drift;
+    const double tau = base_tau;
     const int64_t row =
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_bins;
     for (int bin = 0; bin < num_bins; ++bin) {
       const SpectrumResponse response = spectrum_response(
-          tau, drift, t_slot, bin, num_bins, sample_period_s, slope,
-          carrier_hz, carrier_rate_hz, t_start);
+          tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+          carrier_hz, carrier_rate_hz, t_start, true);
       const float gr = grad_out_re[row + bin];
       const float gi = grad_out_im[row + bin];
       d_wr += static_cast<double>(gr) * response.value.re +

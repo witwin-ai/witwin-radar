@@ -646,7 +646,7 @@
     },
     {
       "symbol": "scatter_direction_forward",
-      "family": "scatter_direction",
+      "family": "scatter_response_aspect",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
       "numerical_owner": "radar",
       "ad_role": "primal",
@@ -662,7 +662,7 @@
     },
     {
       "symbol": "scatter_direction_backward",
-      "family": "scatter_direction",
+      "family": "scatter_response_aspect",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
       "numerical_owner": "radar",
       "ad_role": "backward",
@@ -678,7 +678,7 @@
     },
     {
       "symbol": "scatter_direction_jvp",
-      "family": "scatter_direction",
+      "family": "scatter_response_aspect",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
       "numerical_owner": "radar",
       "ad_role": "jvp",
