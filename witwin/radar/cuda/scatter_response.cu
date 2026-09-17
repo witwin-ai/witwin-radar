@@ -691,7 +691,54 @@ void scatter_response_aspect_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// Unit departure bearing u=(b-a)/|b-a|. Positions are metres. Both JVP and
+// VJP apply the symmetric Jacobian (I-u*u^T)/|b-a|. Degenerate/dead segments
+// return zero. tests/test_multipath_directions.py supplies independent oracles.
+template <bool Derivative>
+__global__ void scatter_direction_kernel(
+    const float* a, const float* b, const float* tangent, float* out, int n) {
+  const int row = blockIdx.x * blockDim.x + threadIdx.x;
+  if (row >= n) return;
+  const Vec3 av = load3(a, row), bv = load3(b, row);
+  const Vec3 d{bv.x-av.x, bv.y-av.y, bv.z-av.z};
+  const double length = sqrt(dot3(d, d));
+  Vec3 result{0., 0., 0.};
+  if (length > 1e-20) {
+    const Vec3 u{d.x/length, d.y/length, d.z/length};
+    if constexpr (Derivative) {
+      const Vec3 v = load3(tangent, row);
+      const double parallel = dot3(u, v);
+      result = {(v.x-u.x*parallel)/length, (v.y-u.y*parallel)/length, (v.z-u.z*parallel)/length};
+    } else result = u;
+  }
+  out[3*row] = result.x; out[3*row+1] = result.y; out[3*row+2] = result.z;
+}
+
+template <bool Derivative>
+void scatter_direction_launch(const torch::stable::Tensor& a, const torch::stable::Tensor& b,
+    const torch::stable::Tensor& v, torch::stable::Tensor out) {
+  const int n = checked_int(a.numel()/3, "rows");
+  check_vec3(a, n, "origin"); check_vec3(b, n, "target"); check_vec3(out, n, "output");
+  if constexpr (Derivative) check_vec3(v, n, "direction");
+  STD_TORCH_CHECK(a.get_device_index() == b.get_device_index() &&
+      a.get_device_index() == out.get_device_index() && a.get_device_index() == v.get_device_index(),
+      "scatter direction tensors must share a CUDA device");
+  if (!n) return;
+  const torch::stable::accelerator::DeviceGuard guard(a.get_device_index());
+  scatter_direction_kernel<Derivative><<<linear_grid(n), dim3(kBlock,1,1), 0, response_stream(out)>>>(
+      a.const_data_ptr<float>(), b.const_data_ptr<float>(), v.const_data_ptr<float>(), out.mutable_data_ptr<float>(), n);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void scatter_direction_forward_cuda(const torch::stable::Tensor& a, const torch::stable::Tensor& b,
+    torch::stable::Tensor out) { scatter_direction_launch<false>(a, b, a, out); }
+void scatter_direction_derivative_cuda(const torch::stable::Tensor& a, const torch::stable::Tensor& b,
+    const torch::stable::Tensor& v, torch::stable::Tensor out) { scatter_direction_launch<true>(a, b, v, out); }
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("scatter_direction_forward", TORCH_BOX(&scatter_direction_forward_cuda));
+  m.impl("scatter_direction_backward", TORCH_BOX(&scatter_direction_derivative_cuda));
+  m.impl("scatter_direction_jvp", TORCH_BOX(&scatter_direction_derivative_cuda));
   m.impl(
       "scatter_response_aspect_forward",
       TORCH_BOX(&scatter_response_aspect_forward_cuda));

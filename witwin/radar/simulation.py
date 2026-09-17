@@ -910,7 +910,8 @@ def simulate_scene(
                 composed,
                 tx_pos=binding.transmitters.positions_m,
                 rx_pos=binding.receivers.positions_m,
-                site_positions_m=binding.site_positions_m,
+                tx_targets_m=legs.inbound.departure_target_m.index_select(0, composed.topology.inbound_row),
+                rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, composed.topology.outbound_row),
             )
         synthesis = (
             radar._synthesize(composed, slow_time_mode=mode, spec=single_spec)

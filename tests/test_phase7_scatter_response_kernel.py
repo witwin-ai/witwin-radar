@@ -344,7 +344,7 @@ def test_the_response_refuses_a_leg_without_a_direction():
         composer.compose(inbound, outbound, response)
 
 
-def test_the_response_refuses_a_higher_order_outbound_leg():
+def test_the_response_refuses_missing_departure_geometry():
     """The one honest limitation of reading the published direction basis.
 
     A leg publishes the direction of its FINAL segment. For the outbound leg
@@ -364,7 +364,7 @@ def test_the_response_refuses_a_higher_order_outbound_leg():
     inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=dir_in)
     outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
 
-    with pytest.raises(NotImplementedError, match="DEPARTURE direction"):
+    with pytest.raises(ValueError, match="departure segment endpoints"):
         composer.compose(inbound, outbound, response)
 
 

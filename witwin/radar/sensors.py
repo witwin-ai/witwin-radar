@@ -972,18 +972,20 @@ class RoundTripPatternStage:
         )
 
     def apply(
-        self, paths: RadarPathBatch, *, tx_pos: torch.Tensor, rx_pos: torch.Tensor, site_positions_m: torch.Tensor
+        self,
+        paths: RadarPathBatch,
+        *,
+        tx_pos: torch.Tensor,
+        rx_pos: torch.Tensor,
+        tx_targets_m: torch.Tensor,
+        rx_targets_m: torch.Tensor,
     ) -> RadarPathBatch:
         """Publish ``paths`` with the transmit and receive pattern gains applied.
 
-        The three position tensors are the binding's own objects and are passed
-        through by reference, so a ``requires_grad`` leaf or a forward-AD dual on
-        the radar's elements or on a site reaches the native companions.
-        ``site_in`` and ``site_out`` are the SAME gathered tensor: a site is one
-        point, the transmit pattern reads the direction to it and the receive
-        pattern reads the direction from it, and autograd accumulates both
-        gradients into the one leaf. Building the gather twice would halve that
-        gradient and zero half of a tangent.
+        ``tx_targets_m`` and ``rx_targets_m`` are per-composed-row points on
+        the first and last propagation segments. For a reflected leg these are
+        interaction points, not the scatter site. Gathering Channel's live
+        geometry preserves derivatives through reflection points.
 
         Everything except the weight passes through untouched - the same
         objects, not copies - so row identity, row order, storage aliasing,
@@ -1015,13 +1017,12 @@ class RoundTripPatternStage:
                 f"frozen against {self.row_count}; the batch does not belong to "
                 "this frozen topology"
             )
-        site = site_positions_m.index_select(0, self.site_slot)
         geometry = self._geometry()
         weight = evaluate_sensor_weights(
             tx_pos=tx_pos,
             rx_pos=rx_pos,
-            site_in=site,
-            site_out=site,
+            site_in=tx_targets_m,
+            site_out=rx_targets_m,
             intensity=self.unit_intensity,
             weight=paths.complex_transfer_ref,
             geometry=geometry,
@@ -1039,7 +1040,7 @@ class RoundTripPatternStage:
             row_valid=paths.row_valid,
             topology=paths.topology,
             join_mode=paths.join_mode,
-            frequency_response=self._apply_band(paths, geometry, tx_pos, rx_pos, site),
+            frequency_response=self._apply_band(paths, geometry, tx_pos, rx_pos, tx_targets_m, rx_targets_m),
             frequency_offsets_hz=paths.frequency_offsets_hz,
             weight_includes_antenna_pattern=True,
         )
@@ -1050,7 +1051,8 @@ class RoundTripPatternStage:
         geometry: SensorWeightGeometry,
         tx_pos: torch.Tensor,
         rx_pos: torch.Tensor,
-        site: torch.Tensor,
+        site_in: torch.Tensor,
+        site_out: torch.Tensor,
     ) -> torch.Tensor | None:
         """The same real gain, applied to every column of a composed band.
 
@@ -1072,8 +1074,8 @@ class RoundTripPatternStage:
             evaluate_sensor_weights(
                 tx_pos=tx_pos,
                 rx_pos=rx_pos,
-                site_in=site,
-                site_out=site,
+                site_in=site_in,
+                site_out=site_out,
                 intensity=self.unit_intensity,
                 weight=paths.frequency_response[:, index],
                 geometry=geometry,

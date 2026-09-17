@@ -312,6 +312,38 @@ ASPECT_SCATTER_LAW = "S = amplitude * max(-dot(dir_in, axis), 0)^n * max(dot(dir
 _OWNER = "witwin.radar.scattering.AspectScatterResponse"
 
 
+class _ScatterDirection(torch.autograd.Function):
+    """Native unit departure bearing, with the same Jacobian in both AD modes."""
+
+    @staticmethod
+    def forward(origin, target):
+        out = torch.empty_like(origin)
+        _ops().scatter_direction_forward(origin.contiguous(), target.contiguous(), out)
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(*inputs)
+        ctx.save_for_forward(*inputs)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, gradient):
+        origin, target = ctx.saved_tensors
+        projected = torch.empty_like(origin)
+        _ops().scatter_direction_backward(origin.contiguous(), target.contiguous(), gradient.contiguous(), projected)
+        return -projected, projected
+
+    @staticmethod
+    def jvp(ctx, d_origin, d_target):
+        origin, target = ctx.saved_tensors
+        d_origin = torch.zeros_like(origin) if d_origin is None else d_origin
+        d_target = torch.zeros_like(target) if d_target is None else d_target
+        out = torch.empty_like(origin)
+        _ops().scatter_direction_jvp(origin.contiguous(), target.contiguous(), (d_target - d_origin).contiguous(), out)
+        return out
+
+
 class _AspectResponse(torch.autograd.Function):
     """Autograd bridge for the three aspect-response operators.
 
@@ -629,18 +661,13 @@ class AspectScatterResponse:
             raise ValueError(
                 f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
             )
-        if composer.outbound_max_depth != 0:
-            raise NotImplementedError(
-                "an aspect-dependent response needs the DEPARTURE direction at "
-                "the site, and a leg publishes the direction of its final "
-                f"segment; this join's outbound leg reaches depth "
-                f"{composer.outbound_max_depth}, whose published direction is "
-                "the arrival direction at the receiver. Freeze the outbound leg "
-                "with line-of-sight rows only, or use a response that does not "
-                "depend on the scattering direction"
-            )
         dir_in = _require_direction(inbound, composer.inbound_row_count, "inbound")
-        dir_out = _require_direction(outbound, composer.outbound_row_count, "outbound")
+        if composer.outbound_max_depth == 0:
+            dir_out = _require_direction(outbound, composer.outbound_row_count, "outbound")
+        else:
+            if outbound.departure_origin_m is None or outbound.departure_target_m is None:
+                raise ValueError("outbound reflection requires actual departure segment endpoints")
+            dir_out = _ScatterDirection.apply(outbound.departure_origin_m, outbound.departure_target_m)
         tables = _BackwardTables(
             by_in_offsets=composer.by_inbound_offsets,
             by_in_rows=composer.by_inbound_rows,

@@ -385,7 +385,11 @@ def test_the_production_route_still_carries_the_position_gradient():
     )
     sites = torch.tensor(PRODUCTION_SITE_POSITIONS_M, dtype=torch.float32, device="cuda").requires_grad_(True)
     weight = stage.apply(
-        composed, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=sites
+        composed,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        tx_targets_m=(sites).index_select(0, stage.site_slot),
+        rx_targets_m=(sites).index_select(0, stage.site_slot),
     ).complex_transfer_ref
     (weight.real.square().sum() + weight.imag.square().sum()).backward()
     assert sites.grad is not None

@@ -588,6 +588,17 @@ class ChannelPropagationAdapter:
                     f"{transport.frequency_offsets_hz!r} that is not the "
                     f"declared {self._offsets!r}"
                 )
+        source_positions = sources.positions_m.index_select(0, paths.topology.source_index.long())
+        sink_positions = sinks.positions_m.index_select(0, paths.topology.sink_index.long())
+        interactions = geometry.interaction_positions_m
+        if interactions.shape[1]:
+            reflected = (paths.topology.depth > 0)[:, None]
+            first = torch.where(reflected, interactions[:, 0], sink_positions)
+            row = torch.arange(paths.path_count, device=interactions.device)
+            last = interactions[row, (paths.topology.depth.long() - 1).clamp_min(0)]
+            last = torch.where(reflected, last, source_positions)
+        else:
+            first, last = sink_positions, source_positions
         return RadarLegBatch(
             leg_count=paths.path_count,
             pair_count=paths.pair_count,
@@ -613,6 +624,9 @@ class ChannelPropagationAdapter:
             # geometry, so copying it would break the zero-copy discipline for
             # the one consumer that needs a gradient through a direction.
             field_direction=geometry.field_direction,
+            departure_origin_m=source_positions,
+            departure_target_m=first,
+            arrival_origin_m=last,
             # Aliased from the consumer, paired with the grid this adapter built
             # once. Neither is copied, so a gradient reaches the endpoints
             # through every column exactly as it does through the reference one.

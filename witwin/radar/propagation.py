@@ -240,6 +240,9 @@ class RadarLegBatch:
     diagnostics: object
     slot_count: int = 1
     field_direction: torch.Tensor | None = None
+    departure_origin_m: torch.Tensor | None = None
+    departure_target_m: torch.Tensor | None = None
+    arrival_origin_m: torch.Tensor | None = None
     frequency_response: torch.Tensor | None = None
     frequency_offsets_hz: torch.Tensor | None = None
 
@@ -281,6 +284,9 @@ class RadarLegBatch:
             _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
         if self.field_direction is not None:
             _require_tensor("field_direction", self.field_direction, dtype=torch.float32, shape=(self.leg_count, 3))
+        for name in ("departure_origin_m", "departure_target_m", "arrival_origin_m"):
+            if getattr(self, name) is not None:
+                _require_tensor(name, getattr(self, name), dtype=torch.float32, shape=(self.leg_count, 3))
         require_wideband_pair(self.frequency_response, self.frequency_offsets_hz, self.leg_count)
 
     @property
@@ -356,6 +362,9 @@ class RadarLegBatch:
             diagnostics=self.diagnostics,
             slot_count=1,
             field_direction=narrow(self.field_direction),
+            departure_origin_m=narrow(self.departure_origin_m),
+            departure_target_m=narrow(self.departure_target_m),
+            arrival_origin_m=narrow(self.arrival_origin_m),
             # Rows narrow, the band does not: the grid is a declaration shared
             # by every slot, so it is aliased rather than sliced.
             frequency_response=narrow(self.frequency_response),

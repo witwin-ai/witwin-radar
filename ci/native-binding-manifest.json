@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 3,
+  "radar_abi_version": 4,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -643,6 +643,54 @@
       "python_owner": "witwin/radar/frontend.py",
       "contract_test": "tests/test_phase6_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.FrontendChain._quantize"
+    },
+    {
+      "symbol": "scatter_direction_forward",
+      "family": "scatter_direction",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "scatter_direction",
+      "launches": 1,
+      "fused_stages": [
+        "unit_departure_bearing"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/scattering.py",
+      "contract_test": "tests/test_multipath_directions.py",
+      "end_to_end_caller": "witwin.radar.scattering.AspectScatterResponse.evaluate_rows"
+    },
+    {
+      "symbol": "scatter_direction_backward",
+      "family": "scatter_direction",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "scatter_direction",
+      "launches": 1,
+      "fused_stages": [
+        "unit_departure_bearing"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/scattering.py",
+      "contract_test": "tests/test_multipath_directions.py",
+      "end_to_end_caller": "witwin.radar.scattering.AspectScatterResponse.evaluate_rows"
+    },
+    {
+      "symbol": "scatter_direction_jvp",
+      "family": "scatter_direction",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "scatter_direction",
+      "launches": 1,
+      "fused_stages": [
+        "unit_departure_bearing"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/scattering.py",
+      "contract_test": "tests/test_multipath_directions.py",
+      "end_to_end_caller": "witwin.radar.scattering.AspectScatterResponse.evaluate_rows"
     }
   ]
 }

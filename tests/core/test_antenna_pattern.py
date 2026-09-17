@@ -115,7 +115,13 @@ def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.
 
     stage, batch = _one_row_stage(radar)
     site = _target_position(x_deg, y_deg, radius).to(device=radar.device).unsqueeze(0)
-    published = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=site)
+    published = stage.apply(
+        batch,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        tx_targets_m=(site).index_select(0, stage.site_slot),
+        rx_targets_m=(site).index_select(0, stage.site_slot),
+    )
     return published.complex_transfer_ref.abs().max()
 
 

@@ -514,7 +514,13 @@ def _pattern_loss(radar, stage, composed, sites: torch.Tensor) -> torch.Tensor:
 
     from witwin.radar.synthesis import synthesize_fmcw
 
-    patterned = stage.apply(composed, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=sites)
+    patterned = stage.apply(
+        composed,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        tx_targets_m=(sites).index_select(0, stage.site_slot),
+        rx_targets_m=(sites).index_select(0, stage.site_slot),
+    )
     cube = synthesize_fmcw(to_synthesis(patterned), drv.make_spec())
     return cube.real.square().sum() + cube.imag.square().sum()
 

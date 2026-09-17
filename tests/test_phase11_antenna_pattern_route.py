@@ -171,8 +171,14 @@ def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, 
     site = sites.index_select(0, site_row)
     tx = radar.tx_pos.index_select(0, tx_index)
     rx = radar.rx_pos.index_select(0, rx_index)
-    gain_tx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(site - tx))
-    gain_rx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(site - rx))
+    # Independent image-source construction for the fixture plane x=4 m.
+    legs = radar.last_propagation
+    mirrored = site.clone()
+    mirrored[:, 0] = 8.0 - site[:, 0]
+    tx_target = torch.where((legs.inbound.depth[paths.topology.inbound_row] > 0)[:, None], mirrored, site)
+    rx_target = torch.where((legs.outbound.depth[paths.topology.outbound_row] > 0)[:, None], mirrored, site)
+    gain_tx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(tx_target - tx))
+    gain_rx = _pattern_gain_from_vectors(pattern, radar._local_from_world_vectors(rx_target - rx))
     return (gain_tx * gain_rx).clamp_min(0.0).sqrt()
 
 
@@ -313,7 +319,13 @@ def _unit_sites(radar: Radar, *, requires_grad: bool = False) -> torch.Tensor:
 
 
 def _unit_loss(stage, batch, sites, tx_pos, rx_pos) -> torch.Tensor:
-    weight = stage.apply(batch, tx_pos=tx_pos, rx_pos=rx_pos, site_positions_m=sites).complex_transfer_ref
+    weight = stage.apply(
+        batch,
+        tx_pos=tx_pos,
+        rx_pos=rx_pos,
+        tx_targets_m=(sites).index_select(0, stage.site_slot),
+        rx_targets_m=(sites).index_select(0, stage.site_slot),
+    ).complex_transfer_ref
     # A squared magnitude, so the loss is real and smooth in the gain and has
     # no phase in it at all: the stage multiplies by a REAL scale.
     return weight.real.square().sum() + weight.imag.square().sum()
@@ -322,9 +334,21 @@ def _unit_loss(stage, batch, sites, tx_pos, rx_pos) -> torch.Tensor:
 def test_applying_the_stage_twice_is_refused():
     radar = _radar()
     stage, batch = _unit_stage(radar, DIRECTIONAL_PATTERN)
-    once = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+    once = stage.apply(
+        batch,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        tx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+        rx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+    )
     with pytest.raises(ValueError, match="weight_includes_antenna_pattern"):
-        stage.apply(once, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+        stage.apply(
+            once,
+            tx_pos=radar.tx_pos,
+            rx_pos=radar.rx_pos,
+            tx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+            rx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+        )
 
 
 def test_a_direct_join_is_refused_by_name():
@@ -334,7 +358,13 @@ def test_a_direct_join_is_refused_by_name():
 
     direct = dataclasses.replace(batch, join_mode="direct")
     with pytest.raises(NotImplementedError, match="join_mode"):
-        stage.apply(direct, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+        stage.apply(
+            direct,
+            tx_pos=radar.tx_pos,
+            rx_pos=radar.rx_pos,
+            tx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+            rx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+        )
 
 
 def test_a_batch_from_another_topology_is_refused():
@@ -360,7 +390,13 @@ def test_a_batch_from_another_topology_is_refused():
         ),
     )
     with pytest.raises(ValueError, match="frozen topology"):
-        stage.apply(shrunk, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+        stage.apply(
+            shrunk,
+            tx_pos=radar.tx_pos,
+            rx_pos=radar.rx_pos,
+            tx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+            rx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+        )
 
 
 def test_a_pattern_that_is_not_a_spec_is_refused():
@@ -380,7 +416,13 @@ def test_a_pattern_that_is_not_a_spec_is_refused():
 def test_the_isotropic_stage_is_the_identity_on_a_unit_batch():
     radar = _radar()
     stage, batch = _unit_stage(radar, ISOTROPIC_PATTERN)
-    published = stage.apply(batch, tx_pos=radar.tx_pos, rx_pos=radar.rx_pos, site_positions_m=_unit_sites(radar))
+    published = stage.apply(
+        batch,
+        tx_pos=radar.tx_pos,
+        rx_pos=radar.rx_pos,
+        tx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+        rx_targets_m=(_unit_sites(radar)).index_select(0, stage.site_slot),
+    )
     assert torch.equal(published.complex_transfer_ref, batch.complex_transfer_ref)
 
 
