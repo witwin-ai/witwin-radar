@@ -759,15 +759,6 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                 cache[index] = record
                 pair_tables[index] = record[2].pair_offsets.tolist()
 
-    def prediction(left, right, index):
-        a, b = cache[left][2], cache[right][2]
-        alpha = torch.full_like(
-            a.total_delay_s, (times[index] - times[left]) / (times[right] - times[left]), dtype=torch.float64
-        )
-        return interpolate_path_rows(
-            a.total_delay_s, b.total_delay_s, a.complex_transfer_ref, b.complex_transfer_ref, alpha, carrier_hz
-        )
-
     pending = [(0, len(times) - 1)]
     while pending:
         probes = {}
@@ -776,6 +767,53 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                 {left, right, (3 * left + right) // 4, (left + right) // 2, (left + 3 * right) // 4}
             )
         ensure(index for group in probes.values() for index in group)
+        tested = {
+            (left, right): indices
+            for (left, right), indices in probes.items()
+            if right - left > 1
+            and times[right] - times[left] <= options.max_interval_s
+            and all(cache[index][3] == cache[left][3] for index in indices)
+        }
+        queries = [(left, right, index) for (left, right), indices in tested.items() for index in indices[1:-1]]
+        observations = {}
+        if queries:
+            first = [cache[left][2] for left, _, _ in queries]
+            last = [cache[right][2] for _, right, _ in queries]
+            actual = [cache[index][2] for _, _, index in queries]
+            counts = [len(value.total_delay_s) for value in actual]
+            fraction = [(times[index] - times[left]) / (times[right] - times[left]) for left, right, index in queries]
+            delay, transfer = interpolate_path_rows(
+                torch.cat([value.total_delay_s for value in first]),
+                torch.cat([value.total_delay_s for value in last]),
+                torch.cat([value.complex_transfer_ref for value in first]),
+                torch.cat([value.complex_transfer_ref for value in last]),
+                torch.as_tensor(np.repeat(fraction, counts), device=first[0].total_delay_s.device),
+                carrier_hz,
+            )
+            observed = torch.cat([value.complex_transfer_ref for value in actual])
+            # One synchronization per refinement round. These detached columns
+            # drive host decisions only; production rows retain their AD tape.
+            columns = (
+                torch.stack(
+                    [
+                        delay.double(),
+                        torch.cat([value.total_delay_s for value in actual]).double(),
+                        transfer.real.double(),
+                        transfer.imag.double(),
+                        observed.real.double(),
+                        observed.imag.double(),
+                        torch.cat([value.row_valid for value in actual]).double(),
+                    ],
+                    dim=1,
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            begin = 0
+            for query, count in zip(queries, counts, strict=True):
+                observations[query] = columns[begin : begin + count].T
+                begin += count
         next_pending = []
         for (left, right), indices in probes.items():
             identities = [cache[index][3] for index in indices]
@@ -784,16 +822,11 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
             accepted = right - left <= 1
             if not accepted and topology_ok and times[right] - times[left] <= options.max_interval_s:
                 for index in indices[1:-1]:
-                    delay, transfer = prediction(left, right, index)
-                    actual = cache[index][2]
-                    # These detached reads drive refinement only. They do not
-                    # replace the native, differentiable production interpolant.
-                    predicted_delay = delay.detach().double().cpu().numpy()
-                    observed_delay = actual.total_delay_s.detach().double().cpu().numpy()
+                    predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[left, right, index]
                     d = predicted_delay - observed_delay
-                    predicted = transfer.detach().cpu().numpy().astype(np.complex128)
-                    observed = actual.complex_transfer_ref.detach().cpu().numpy().astype(np.complex128)
-                    live = actual.row_valid.cpu().numpy()
+                    predicted = pr + 1j * pi
+                    observed = ar + 1j * ai
+                    live = flags.astype(bool)
                     if not np.any(live):
                         continue
                     if not all(np.isfinite(value[live]).all() for value in (d, predicted, observed)):
@@ -1122,6 +1155,10 @@ def simulate_scene(
         world_motion=world_motion,
     )
 
+    identity_cache = {}
+    slot_composers = {}
+    slot_patterns = {}
+
     def evaluate_many(query_times):
         """Discover probes, then batch replay only identical live scene handles.
 
@@ -1167,6 +1204,30 @@ def simulate_scene(
                     ad_mode=ad_mode,
                 ),
             )
+            composer, _, pattern_stage = first.payload
+            batched_paths = None
+            if len(group) > 1 and not callable(getattr(response, "at", None)):
+                key = (group[0][3], len(group))
+                if key not in slot_composers:
+                    slot_composers[key] = composer._for_slots(len(group))
+                batched_paths = slot_composers[key].compose(
+                    replay.inbound, replay.outbound, response, include_delay_rate=False
+                )
+                if pattern_stage is not None:
+                    if key not in slot_patterns:
+                        slot_patterns[key] = pattern_stage._for_slots(len(group))
+                    batched_paths = slot_patterns[key].apply(
+                        batched_paths,
+                        tx_pos=endpoints("transmitters").positions_m,
+                        rx_pos=endpoints("receivers").positions_m,
+                        tx_targets_m=replay.inbound.departure_target_m.index_select(
+                            0, batched_paths.topology.inbound_row
+                        ),
+                        rx_targets_m=replay.outbound.arrival_origin_m.index_select(
+                            0, batched_paths.topology.outbound_row
+                        ),
+                    )
+                valid_rows = batched_paths.row_valid.reshape(len(group), -1).tolist()
             for slot, (t, frame, binding, identity) in enumerate(group):
                 legs = (
                     replay
@@ -1175,8 +1236,25 @@ def simulate_scene(
                 )
                 composer, _, pattern_stage = frame.frozen.payload
                 current_response = response.at(t) if callable(getattr(response, "at", None)) else response
-                paths = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
-                if pattern_stage is not None:
+                if batched_paths is None:
+                    paths = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
+                else:
+                    selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
+                    paths = replace(
+                        batched_paths,
+                        sensor_pair_count=composer.sensor_pair_count,
+                        path_count=composer.path_count,
+                        sensor_pair_index=composer.sensor_pair_index,
+                        pair_offsets=composer.pair_offsets,
+                        topology=composer.topology,
+                        total_delay_s=batched_paths.total_delay_s[selection],
+                        complex_transfer_ref=batched_paths.complex_transfer_ref[selection],
+                        row_valid=batched_paths.row_valid[selection],
+                        frequency_response=None
+                        if batched_paths.frequency_response is None
+                        else batched_paths.frequency_response[selection],
+                    )
+                if pattern_stage is not None and batched_paths is None:
                     paths = pattern_stage.apply(
                         paths,
                         tx_pos=binding.transmitters.positions_m,
@@ -1185,15 +1263,40 @@ def simulate_scene(
                         rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, paths.topology.outbound_row),
                     )
                 if motion_sampling == "adaptive":
-                    identity = (identity, tuple(paths.row_valid.tolist()))
+                    identity = (
+                        identity,
+                        tuple(paths.row_valid.tolist() if batched_paths is None else valid_rows[slot]),
+                    )
                 results[t] = (frame, legs, paths, identity)
 
         for t in query_times:
-            frame = loop.frame(t)
-            binding = (
-                frame.frozen.payload[1]
-                if frame.rediscovered
-                else bind_radar_world(
+            frozen = loop.frozen
+            # Only an empty authored world proves the absence of occluders and
+            # reflection/diffraction births. Require every endpoint pair to be
+            # present too: a degenerate initial LOS discovery cannot certify it.
+            complete_los = (
+                motion_sampling == "adaptive"
+                and not dynamic.scene.structures
+                and propagation.components == frozenset({"los"})
+                and frozen is not None
+                and frozen.handles[0].row_count == array.num_tx * frozen.payload[1].site_count
+                and frozen.handles[1].row_count == array.num_rx * frozen.payload[1].site_count
+            )
+            frame = loop.frame(t, topology_complete=complete_los)
+            template = frame.frozen.payload[1]
+            if frame.rediscovered:
+                binding = template
+            elif policy.source == SITE_SOURCE_EXPLICIT and sensor_endpoints is None:
+                positions = policy.resolve(frame.snapshot, device=template.device)
+                if positions.shape != template.site_positions_m.shape:
+                    raise ValueError("a site trajectory must preserve the declared site count")
+                binding = replace(
+                    template,
+                    site_sources=replace(template.site_sources, positions_m=positions),
+                    site_sinks=replace(template.site_sinks, positions_m=positions),
+                )
+            else:
+                binding = bind_radar_world(
                     radar,
                     frame.snapshot,
                     sites=policy,
@@ -1201,12 +1304,13 @@ def simulate_scene(
                     polarization=orientation,
                     sensor_endpoints=sensor_endpoints,
                 )
-            )
-            identity = (
-                tuple(tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles)
-                if motion_sampling == "adaptive"
-                else ()
-            )
+            identity = ()
+            if motion_sampling == "adaptive":
+                if frame.epoch not in identity_cache:
+                    identity_cache[frame.epoch] = tuple(
+                        tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles
+                    )
+                identity = identity_cache[frame.epoch]
             entry = (t, frame, binding, identity)
             if loop.structures_move:
                 finish([entry])

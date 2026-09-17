@@ -20,7 +20,7 @@ given, so this package never crosses the Channel boundary either.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import torch
@@ -941,6 +941,54 @@ class TwoWayComposer:
             join_mode="multipath",
             frequency_response=frequency_response,
             frequency_offsets_hz=(None if band is None else inbound.frequency_offsets_hz),
+        )
+
+    def _for_slots(self, count: int) -> TwoWayComposer:
+        """Block-diagonal join tables for a fixed topology's slot-major replay.
+
+        Sites remain shared across slots, including their gradient owners.
+        Only integer routing tables are replicated; the composition equation
+        and its AD remain owned by the ordinary native join.
+        """
+        device = self.inbound_row.device
+        slot = torch.arange(count, device=device, dtype=torch.int64)[:, None]
+        rows = self.path_count
+
+        def shifted(table, stride):
+            return (table[None, :] + slot * stride).reshape(-1)
+
+        def csr(offsets):
+            return torch.cat((shifted(offsets[:-1], rows), offsets[-1:] * count))
+
+        inbound = shifted(self.inbound_row, self.inbound_row_count)
+        outbound = shifted(self.outbound_row, self.outbound_row_count)
+        responses = self.response_slot.repeat(count)
+        return replace(
+            self,
+            inbound_row=inbound,
+            outbound_row=outbound,
+            response_slot=responses,
+            topology=RadarPathTopology(
+                self.topology.radar_source_id.repeat(count),
+                self.topology.site_id.repeat(count),
+                self.topology.radar_sink_id.repeat(count),
+                inbound,
+                outbound,
+            ),
+            sensor_pair_index=shifted(self.sensor_pair_index, self.sensor_pair_count),
+            pair_offsets=csr(self.pair_offsets),
+            sensor_pair_count=self.sensor_pair_count * count,
+            inbound_row_count=self.inbound_row_count * count,
+            outbound_row_count=self.outbound_row_count * count,
+            by_inbound_offsets=csr(self.by_inbound_offsets),
+            by_inbound_rows=shifted(self.by_inbound_rows, rows),
+            by_outbound_offsets=csr(self.by_outbound_offsets),
+            by_outbound_rows=shifted(self.by_outbound_rows, rows),
+            by_response_offsets=self.by_response_offsets * count,
+            by_response_rows=torch.argsort(responses, stable=True),
+            row_slot=torch.arange(count * rows, device=device, dtype=torch.int64),
+            by_row_offsets=torch.arange(count * rows + 1, device=device, dtype=torch.int64),
+            by_row_rows=torch.arange(count * rows, device=device, dtype=torch.int64),
         )
 
     def _band(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> int | None:

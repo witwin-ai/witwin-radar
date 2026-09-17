@@ -971,6 +971,27 @@ class RoundTripPatternStage:
             pattern_frame=self.pattern_frame,
         )
 
+    def _for_slots(self, count: int) -> RoundTripPatternStage:
+        """Replicate routing for slot-major endpoints, sharing antenna tables."""
+        from dataclasses import replace
+
+        slot = torch.arange(count, device=self.tx_index.device, dtype=torch.int64)[:, None]
+        return replace(
+            self,
+            num_tx=self.num_tx * count,
+            num_rx=self.num_rx * count,
+            row_count=self.row_count * count,
+            tx_index=(self.tx_index[None, :] + slot * self.num_tx).reshape(-1),
+            rx_index=(self.rx_index[None, :] + slot * self.num_rx).reshape(-1),
+            site_slot=self.site_slot.repeat(count),
+            row_kind=self.row_kind.repeat(count),
+            zero_rows=self.zero_rows.repeat(count),
+            zero_vectors=self.zero_vectors.repeat(count, 1),
+            unit_intensity=self.unit_intensity.repeat(count),
+            tx_velocity=self.tx_velocity.repeat(count, 1),
+            rx_velocity=self.rx_velocity.repeat(count, 1),
+        )
+
     def apply(
         self,
         paths: RadarPathBatch,

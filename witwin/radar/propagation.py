@@ -751,7 +751,7 @@ class SceneEpochLoop:
 
     # -- one frame ----------------------------------------------------------
 
-    def frame(self, time_s: float) -> EpochFrame:
+    def frame(self, time_s: float, *, topology_complete: bool = False) -> EpochFrame:
         """Advance the world to ``time_s`` and return this frame's epoch state.
 
         Everything expensive that this frame needs has happened by the time
@@ -764,7 +764,10 @@ class SceneEpochLoop:
         snapshot = self._dynamic.at(time_s)
         mutated = self._revalidate_source()
         recompiled = self._recompile(snapshot, force=mutated)
-        reason = self._rediscovery_reason(recompiled, mutated)
+        # A caller may certify that all possible rows already exist (e.g. the
+        # Cartesian LOS family in an empty world). This suppresses only the
+        # motion cadence, never source mutation, retirement or version checks.
+        reason = self._rediscovery_reason(recompiled, mutated, topology_complete)
         if reason is not None:
             self._rediscover(snapshot, reason)
         return EpochFrame(
@@ -831,7 +834,7 @@ class SceneEpochLoop:
             self._frozen.adapter.refreeze(self._compiled, world_motion=self._world_motion)
         return True
 
-    def _rediscovery_reason(self, recompiled: bool, mutated: bool) -> str | None:
+    def _rediscovery_reason(self, recompiled: bool, mutated: bool, topology_complete: bool = False) -> str | None:
         """Name why this frame must rediscover, or ``None`` to replay.
 
         Order matters and is by cost, not by importance: the first frame has no
@@ -849,7 +852,7 @@ class SceneEpochLoop:
         if recompiled and self._world_motion == "frozen_world":
             # refreeze() retired every handle; there is nothing left to replay.
             return STRUCTURE_MOTION
-        if self._motion_event_due():
+        if self._motion_event_due() and not topology_complete:
             return MOTION_EVENT_CADENCE
         return self._poll()
 
