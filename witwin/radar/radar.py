@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -1244,6 +1244,63 @@ class Radar:
         )
         self._last_result = result
         return result
+
+    def stream(
+        self,
+        scene,
+        *,
+        times,
+        response,
+        sites=None,
+        components=None,
+        max_depth=None,
+        ad_mode: str = "none",
+        world_motion: str = "frozen_world",
+        motion_event_period_frames: int | None = None,
+        ids=None,
+        polarization=None,
+        sensor_endpoints=None,
+        motion_sampling: str = "adc",
+        adaptive_motion=None,
+    ) -> Iterator[RadarSimulationResult]:
+        """Simulate the same session as :meth:`simulate`, one frame at a time.
+
+        Yields a one-frame :class:`RadarSimulationResult` per instant in
+        ``times``, so a sequence long enough to exhaust device memory as a
+        single stacked cube can still be produced and consumed. The physics,
+        the session state and the per-frame cubes are the same; only the
+        retention differs, and a caller that keeps every yielded result has
+        spent more memory than :meth:`simulate` would have, not less.
+
+        The four typed diagnostics track the frame just yielded, which is what
+        makes them readable from inside the consuming loop. Arguments are
+        validated when iteration starts rather than when this returns, because
+        this is a generator.
+        """
+
+        from .simulation import stream_scene
+
+        self._last_result = None
+        for frame in stream_scene(
+            self,
+            scene,
+            times=times,
+            response=response,
+            sites=sites,
+            components=components,
+            max_depth=max_depth,
+            ad_mode=ad_mode,
+            world_motion=world_motion,
+            motion_event_period_frames=motion_event_period_frames,
+            ids=ids,
+            polarization=polarization,
+            antenna_pattern=self.system_config.sensors.pattern,
+            sensor_endpoints=sensor_endpoints,
+            motion_sampling=motion_sampling,
+            adaptive_motion=adaptive_motion,
+        ):
+            self._last_result = frame
+            yield frame
 
     # -- the four typed diagnostics (Phase 11 work item 2) ------------------
     #

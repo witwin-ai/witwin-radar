@@ -7,6 +7,7 @@ Scene-driven FMCW phase noise uses one continuous-time Wiener oscillator shared 
 ## Simulation and propagation
 
 - `Radar.simulate(...)` is the scene-driven production entry for `witwin.core.Scene` and `DynamicScene` worlds.
+- `Radar.stream(...)` runs the identical session and yields one-frame results, so a sequence longer than device memory can hold as a stacked cube is still producible. Frames are bit-exact against `simulate`; peak allocation stops tracking the frame count.
 - Parameter JVP seeds do not change the simulated primal or masquerade as physical velocities.
 - `RadarSimulationResult` returns a typed `[frame, TX, RX, slow, fast]` cube with waveform, axes, phasor convention, reference frequency, epoch, and last-frame diagnostic metadata.
 - `witwin/radar/channel.py` is the single production importer of `witwin.channel`; the rest of Radar consumes Radar-owned adapter contracts.

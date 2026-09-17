@@ -67,6 +67,8 @@ The result carries named axes and an output-domain field. Downstream processing 
 
 `Radar.simulate(...)` is the scene-driven entry point. It accepts a Core scene, frame times, an explicit scatter response, and an explicit or policy-defined set of scatter sites. It returns `RadarSimulationResult`, whose cube is organized as `[frame, TX, RX, slow, fast]` and whose metadata states the waveform and fast-axis domain.
 
+`Radar.stream(...)` runs the same session and yields each frame as its own one-frame `RadarSimulationResult`. Use it when the sequence is longer than the stacked cube can be held in device memory; the frames are bit-exact against `simulate` and peak allocation no longer scales with the frame count.
+
 `Radar.synthesize(...)` is the lower-level path-to-waveform entry. It dispatches from the stored waveform kind and requires an explicit slow-time mode.
 
 Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds.

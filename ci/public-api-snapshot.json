@@ -509,6 +509,11 @@
           "name": "simulate",
           "kind": "function",
           "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc', adaptive_motion=None) -> 'RadarSimulationResult'"
+        },
+        {
+          "name": "stream",
+          "kind": "function",
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc', adaptive_motion=None) -> 'Iterator[RadarSimulationResult]'"
         }
       ]
     }

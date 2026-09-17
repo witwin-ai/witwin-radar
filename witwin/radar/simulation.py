@@ -11,6 +11,7 @@ incomplete path set. No velocity is inferred by subtracting adjacent path rows.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 
 import torch
@@ -708,6 +709,67 @@ class RadarSimulationResult:
         )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _SceneFrame:
+    """One produced frame and the session state as of that frame.
+
+    The unit a scene session yields, so that stacking the sequence and
+    streaming it read the same record. Everything a one-frame
+    :class:`RadarSimulationResult` needs is here; nothing that only makes sense
+    for a whole run is. ``diagnostics`` is ``None`` for a route that does not
+    adapt, which is what distinguishes "this route publishes no probe record"
+    from "the probes found nothing".
+
+    The tensor members ALIAS the frame's own device storage. This record is a
+    hand-off, not a retention point.
+    """
+
+    cube: torch.Tensor
+    synthesis: object
+    time_s: float
+    sample_times_s: tuple[float, ...]
+    epoch: int
+    reason: str | None
+    path_set_complete: bool
+    motion_sampling_exhaustive: bool
+    compile_count: int
+    discovery_count: int
+    epoch_frame: object
+    legs: object
+    composed: object
+    diagnostics: dict | None
+    motion_sampling: str
+
+
+def _assemble(frames: list[_SceneFrame]) -> RadarSimulationResult:
+    """Stack one or more session frames into the published result.
+
+    The run-level completeness statements are conjunctions: one frame that
+    could have missed a path birth makes the sequence one that could have
+    missed a path birth.
+    """
+
+    last = frames[-1]
+    return RadarSimulationResult.from_frames(
+        [frame.cube for frame in frames],
+        times_s=[frame.time_s for frame in frames],
+        synthesis=last.synthesis,
+        epochs=[frame.epoch for frame in frames],
+        rediscovery_reasons=[frame.reason for frame in frames],
+        compile_count=last.compile_count,
+        discovery_count=last.discovery_count,
+        last_snapshot=last.epoch_frame.snapshot,
+        last_compiled_scene=last.epoch_frame.compiled,
+        last_propagation=last.legs,
+        last_radar_paths=last.composed,
+        sample_times_s=[frame.sample_times_s for frame in frames],
+        path_set_complete=all(frame.path_set_complete for frame in frames),
+        motion_sampling_exhaustive=all(frame.motion_sampling_exhaustive for frame in frames),
+        motion_sampling=last.motion_sampling,
+        adaptive_diagnostics=[frame.diagnostics for frame in frames if frame.diagnostics is not None],
+    )
+
+
 def _dynamic_scene(scene: object) -> object:
     """A ``DynamicScene`` for whichever of the two Core worlds was passed.
 
@@ -977,7 +1039,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     return all_slots[slot, pair], stats, cache[0], cache[len(times) - 1]
 
 
-def simulate_scene(
+def _scene_frames(
     radar: object,
     scene: object,
     *,
@@ -995,8 +1057,15 @@ def simulate_scene(
     sensor_endpoints: SensorEndpointIds | None = None,
     motion_sampling: str = "adc",
     adaptive_motion: AdaptiveMotionSpec | None = None,
-) -> RadarSimulationResult:
-    """Run ``radar`` over ``scene`` at ``times`` and publish the frame cubes.
+) -> Iterator[_SceneFrame]:
+    """Run ``radar`` over ``scene`` at ``times``, yielding one frame at a time.
+
+    The single owner of the scene session. :func:`simulate_scene` and
+    :func:`stream_scene` differ only in how much of this they retain, so the
+    session setup, the epoch loop and the synthesis route are not written twice.
+    Argument validation happens on the FIRST iteration, as it does for any
+    generator; ``simulate_scene`` consumes immediately and therefore still
+    raises from its own call.
 
     This is the whole of :meth:`witwin.radar.Radar.simulate`; the method is a
     delegation so that the assembly lives next to the contracts it assembles
@@ -1364,16 +1433,33 @@ def simulate_scene(
             )
         return frame_cube, synthesis
 
-    cubes: list[torch.Tensor] = []
-    epochs: list[int] = []
-    reasons: list[str | None] = []
-    synthesis = None
-    legs = None
-    composed = None
-    epoch_frame = None
-    sample_times = []
+    # Whether a non-adaptive route can have missed a path birth is a property
+    # of the declared cadence and world motion, not of any one frame, so it is
+    # decided once here and repeated on every frame the run publishes.
+    sampled_completeness = not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move
+    published_sampling = "static" if not sampled else motion_sampling
+
+    def record(frame_cube, synthesis, time_s, frame_times, epoch_frame, legs, composed, stats):
+        complete = sampled_completeness if stats is None else stats["exhaustive"] or stats["topology_proved_complete"]
+        return _SceneFrame(
+            cube=frame_cube,
+            synthesis=synthesis,
+            time_s=float(time_s),
+            sample_times_s=tuple(float(value) for value in frame_times),
+            epoch=int(epoch_frame.epoch),
+            reason=epoch_frame.reason,
+            path_set_complete=bool(complete),
+            motion_sampling_exhaustive=True if stats is None else bool(stats["exhaustive"]),
+            compile_count=int(loop.compile_count),
+            discovery_count=int(loop.discovery_count),
+            epoch_frame=epoch_frame,
+            legs=legs,
+            composed=composed,
+            diagnostics=stats,
+            motion_sampling=published_sampling,
+        )
+
     slot_cubes = []
-    diagnostics = []
     adaptive_active = sampled and motion_sampling == "adaptive"
     if adaptive_active:
         for start in instants:
@@ -1381,14 +1467,10 @@ def simulate_scene(
             cube, stats, first, last = _adaptive_fmcw(
                 actual_times, evaluate_many, full_spec, adaptive, reference_frequency_hz, radar.frontend
             )
-            diagnostics.append(stats)
-            epochs.append(first[0].epoch)
-            reasons.append(first[0].reason)
-            sample_times.append(actual_times)
             epoch_frame, legs, composed, _ = last
             synthesis = SynthesisResult.from_fmcw(cube, replace(full_spec, output_domain="beat"))
             frame_cube, synthesis = finish_frame(synthesis)
-            cubes.append(frame_cube)
+            yield record(frame_cube, synthesis, start, actual_times, first[0], legs, composed, stats)
     for frame_index, time_s in (
         (frame_index, start + offset)
         for frame_index, start in enumerate(() if adaptive_active else instants)
@@ -1396,9 +1478,8 @@ def simulate_scene(
     ):
         epoch_frame, legs, composed, _ = evaluate_many([time_s])[0]
         if not slot_cubes:
-            epochs.append(epoch_frame.epoch)
-            reasons.append(epoch_frame.reason)
-            sample_times.append(tuple(instants[frame_index] + offset for offset in offsets))
+            frame_epoch = epoch_frame
+            frame_times = tuple(instants[frame_index] + offset for offset in offsets)
         if path_phase_noise:
             composed = radar.frontend.apply_path_phase(composed, time_s)
         observation_spec = (
@@ -1431,29 +1512,38 @@ def simulate_scene(
             else:
                 synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
         frame_cube, synthesis = finish_frame(synthesis)
-        cubes.append(frame_cube)
         slot_cubes = []
+        yield record(frame_cube, synthesis, instants[frame_index], frame_times, frame_epoch, legs, composed, None)
 
-    return RadarSimulationResult.from_frames(
-        cubes,
-        times_s=instants,
-        synthesis=synthesis,
-        epochs=epochs,
-        rediscovery_reasons=reasons,
-        compile_count=loop.compile_count,
-        discovery_count=loop.discovery_count,
-        last_snapshot=epoch_frame.snapshot,
-        last_compiled_scene=epoch_frame.compiled,
-        last_propagation=legs,
-        last_radar_paths=composed,
-        sample_times_s=sample_times,
-        path_set_complete=all(item["exhaustive"] or item["topology_proved_complete"] for item in diagnostics)
-        if adaptive_active
-        else (not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move),
-        motion_sampling_exhaustive=all(item["exhaustive"] for item in diagnostics) if adaptive_active else True,
-        motion_sampling="static" if not sampled else motion_sampling,
-        adaptive_diagnostics=diagnostics,
-    )
+
+def simulate_scene(*args, **kwargs) -> RadarSimulationResult:
+    """Run one scene session to completion and stack every frame.
+
+    The whole sequence stays in device memory: the frame cubes accumulate and
+    :meth:`RadarSimulationResult.from_frames` stacks them, so peak allocation is
+    roughly twice the published cube. Use :func:`stream_scene` for a sequence
+    long enough that this is the binding constraint.
+    """
+
+    return _assemble(list(_scene_frames(*args, **kwargs)))
+
+
+def stream_scene(*args, **kwargs) -> Iterator[RadarSimulationResult]:
+    """Yield each frame of a scene session as its own one-frame result.
+
+    Same physics, same session state and the same per-frame cubes as
+    :func:`simulate_scene`; the difference is that nothing here retains a frame
+    the caller has released, so a sequence of any length costs one frame of
+    device memory plus whatever the caller keeps.
+
+    A yielded result ALIASES that frame's device tensors through its four
+    ``last_*`` members, exactly as the stacked result does. Holding every
+    yielded result therefore costs MORE than calling :func:`simulate_scene`,
+    not less: the point of this entry is that the caller consumes and drops.
+    """
+
+    for frame in _scene_frames(*args, **kwargs):
+        yield _assemble([frame])
 
 
 __all__ = ["AdaptiveMotionSpec", "RadarSimulationResult", "ScatterSitePolicy", "SensorEndpointIds", "StableIdAllocator"]

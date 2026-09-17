@@ -365,7 +365,7 @@ def _host_observation_calls(path: pathlib.Path) -> list[str]:
 
         expected = {
             "_adaptive_fmcw": {"cpu": 1, "numpy": 1, "tolist": 1},
-            "simulate_scene.evaluate_many.finish": {"tolist": 2},
+            "_scene_frames.evaluate_many.finish": {"tolist": 2},
         }
         found = {}
 

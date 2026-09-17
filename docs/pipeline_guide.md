@@ -2,6 +2,15 @@
 
 This is the current scene-to-product route after the breaking concept-axis consolidation. There is one production orchestration path and no legacy fallback path.
 
+`Radar.simulate(...)` runs a session to completion and stacks every frame, so peak device
+allocation is roughly twice the published cube. `Radar.stream(...)` runs the identical session
+and yields each frame as a one-frame `RadarSimulationResult`, which keeps peak allocation
+independent of the frame count. Both consume one frame generator, so the physics, the epoch
+loop and the synthesis route have a single owner. A streamed result aliases that frame's device
+tensors through its four `last_*` members exactly as the stacked result does: holding every
+yielded frame costs more than stacking, not less. Generator arguments are validated when
+iteration starts.
+
 Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec` from
 `witwin.radar.simulation`. Controls are `phase_error_rad`, `relative_amplitude_error`,
 `max_interval_s`, `max_evaluations`, and `batch_observations`. Native interpolation moves each

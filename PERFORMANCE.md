@@ -8,6 +8,32 @@ FMCW defaults to a normalized range spectrum. Stationary rows use native Dirichl
 
 For that reason, pre-consolidation latency, FFT-count, launch-count, and allocation tables are not presented as current evidence here. They measured the former default beat pipeline and deleted module layout. They remain available in repository history, but must not be copied into release notes for the spectrum-first implementation.
 
+## Long frame sequences
+
+### Streamed against stacked frames (2026-09-17)
+
+`tools/validate_frame_streaming.py` produces the same 3TX x 4RX, 128-chirp, 256-sample adaptive
+walker session through both public entries in witwin2 on RTX 5080, after one warm-up sequence.
+Peak allocation is measured around the run and is relative to the resident bytes before it.
+Every frame is compared with `torch.equal` against the stacked cube's frame; a per-frame
+comparison rather than one reduction over the whole cube, because the two summation trees differ
+in the last float32 digits for no physical reason.
+
+| Frames | Streamed peak | Stacked peak | Peak ratio | Streamed ms/frame | Stacked ms/frame | Mismatched frames |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 65.5 MB | 101.2 MB | 1.55x | 138.3 | 119.8 | 0 |
+| 32 | 66.5 MB | 307.6 MB | 4.62x | 126.9 | 116.5 | 0 |
+| 128 | 66.5 MB | 1214.5 MB | 18.26x | 149.9 | 161.9 | 0 |
+
+Streamed peak allocation is flat; stacked peak tracks the frame count and reaches 1.21 GB for the
+402.7 MB cube at 128 frames, because the frame list and `torch.stack` are both live. Per-frame
+latency is the same route in both cases and the spread here is shared-desktop noise, not a
+streaming penalty. This measures one LOS walker fixture: it does not establish a per-frame cost
+for heavy multipath or moving meshes.
+
+Reproduce: `python tools/validate_frame_streaming.py --frames 8 32 128`.
+Evidence: `output/frame-streaming/results.json`.
+
 ## Doppler repair measurements
 
 ### Rotor scheduling optimization (2026-09-17)
