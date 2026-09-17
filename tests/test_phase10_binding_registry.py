@@ -77,7 +77,7 @@ def test_every_operator_carries_every_column(manifest):
 def test_symbols_are_unique(manifest):
     symbols = [entry["symbol"] for entry in manifest["operators"]]
     assert len(symbols) == len(set(symbols))
-    assert len(symbols) == 35
+    assert len(symbols) == 38
 
 
 def test_every_native_tu_is_a_build_input(manifest):

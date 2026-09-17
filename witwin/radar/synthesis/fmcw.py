@@ -199,6 +199,58 @@ class _FmcwSynthesis(torch.autograd.Function):
         return tan_out_re, tan_out_im
 
 
+class _FmcwObservations(torch.autograd.Function):
+    """Native CSR observation synthesis with fixed ADC scheduling."""
+
+    @staticmethod
+    def forward(values, offsets, segment, slope, carrier):
+        result = values.new_empty((len(offsets) - 1, 2))
+        _ops().fmcw_observation_forward(values, offsets, segment, values.new_empty(0), result, slope, carrier)
+        return result
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        values, offsets, segment, ctx.slope, ctx.carrier = inputs
+        ctx.save_for_backward(values, offsets, segment)
+        ctx.save_for_forward(values, offsets, segment)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, gradient):
+        values, offsets, segment = ctx.saved_tensors
+        result = torch.empty_like(values)
+        _ops().fmcw_observation_backward(
+            values, offsets, segment, gradient.contiguous(), result, ctx.slope, ctx.carrier
+        )
+        return result, None, None, None, None
+
+    @staticmethod
+    def jvp(ctx, tangent, offsets_tangent, segment_tangent, slope_tangent, carrier_tangent):
+        values, offsets, segment = ctx.saved_tensors
+        result = values.new_empty((len(offsets) - 1, 2))
+        _ops().fmcw_observation_jvp(values, offsets, segment, tangent.contiguous(), result, ctx.slope, ctx.carrier)
+        return result
+
+
+def _synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec):
+    """One complex beat value per CSR segment, using refreshed path rows.
+
+    Delay [s] and conjugated Channel weight are differentiable. Chirp-local
+    ADC times [s] are fixed schedule metadata. There is no delay-rate term:
+    each row already describes its observation instant.
+    """
+    from ..policy import refuse_derivative
+
+    refuse_derivative("FMCW observation schedule", "ADC times are fixed metadata", adc_time=adc_time)
+    if delay.shape != weight.shape or delay.shape != adc_time.shape:
+        raise ValueError("observation delay, weight and ADC time must have the same shape")
+    values = torch.stack([delay.double(), weight.real.double(), weight.imag.double(), adc_time.double()], dim=1)
+    result = _FmcwObservations.apply(
+        values, offsets.contiguous(), _segment_of_each_path(offsets, len(delay)), spec.slope_hz_per_s, spec.carrier_hz
+    )
+    return torch.complex(result[:, 0].float(), result[:, 1].float())
+
+
 def synthesize_fmcw_rows(
     total_delay_s: torch.Tensor,
     delay_rate: torch.Tensor | None,

@@ -735,7 +735,7 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     import numpy as np
 
     from .paths import interpolate_path_rows
-    from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_rows
+    from .synthesis.fmcw import _synthesize_fmcw_observations, channel_phasor_to_beat_weight
 
     cache, partitions, pair_tables = {}, {}, {}
     stats = {
@@ -903,52 +903,47 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     def upload(value):
         return torch.as_tensor(value, device=device)
 
-    columns = []
-    # Group equal ADC offsets so the existing FMCW phase owner evaluates all
-    # slow-time observations in one segment batch; never synthesize an N*N grid.
-    for sample in range(spec.num_samples):
-        indices = list(range(sample, len(times), spec.num_samples))
-        values = []
-        for begin in range(0, len(indices), options.batch_observations):
-            batch = indices[begin : begin + options.batch_observations]
-            batch = np.asarray(batch)
-            row_counts = counts[left[batch]].sum(axis=1)
-            offsets = np.concatenate(([0], np.cumsum(counts[left[batch]].ravel())))
-            observation = np.repeat(np.arange(len(batch)), row_counts)
-            local_row = np.arange(offsets[-1]) - np.repeat(np.cumsum(row_counts) - row_counts, row_counts)
-            first_row = upload(starts[left[batch]][observation] + local_row)
-            last_row = upload(starts[right[batch]][observation] + local_row)
-            delay, transfer = interpolate_path_rows(
-                delays[first_row],
-                delays[last_row],
-                transfers[first_row],
-                transfers[last_row],
-                upload(fraction[batch][observation]),
-                carrier_hz,
-            )
-            transfer = torch.where(validity[first_row], transfer, torch.zeros_like(transfer))
-            if frontend is not None:
-                transfer = frontend._apply_path_phase_rows(delay, transfer, upload(clock[batch][observation]))
-            batch_spec = replace(
-                spec,
-                num_chirps=1,
-                num_samples=1,
-                num_tx=1,
-                num_rx=len(batch) * pairs,
-                output_domain="beat",
-                t_start_s=spec.t_start_s + sample * spec.sample_period_s,
-            )
-            cube = synthesize_fmcw_rows(
-                delay, None, channel_phasor_to_beat_weight(transfer), upload(offsets), batch_spec
-            )
-            values.append(cube.reshape(len(batch), pairs))
-        columns.append(torch.cat(values, dim=0))
-    all_slots = torch.stack(columns, dim=-1)
+    values = []
+    row_counts = counts[left].sum(axis=1)
+    cumulative = np.concatenate(([0], np.cumsum(row_counts)))
+    begin = 0
+    while begin < len(times):
+        # Bound temporary expanded payloads by both observations and path rows.
+        # One unusually large observation is indivisible and is still supported.
+        stop = min(len(times), begin + options.batch_observations * spec.num_samples)
+        stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + 262144)) - 1))
+        batch = np.arange(begin, stop)
+        rows = row_counts[batch]
+        offsets = np.concatenate(([0], np.cumsum(counts[left[batch]].ravel())))
+        observation = np.repeat(batch, rows)
+        local_row = np.arange(offsets[-1]) - np.repeat(np.cumsum(rows) - rows, rows)
+        first_row = upload(starts[left[observation]] + local_row)
+        last_row = upload(starts[right[observation]] + local_row)
+        delay, transfer = interpolate_path_rows(
+            delays[first_row],
+            delays[last_row],
+            transfers[first_row],
+            transfers[last_row],
+            upload(fraction[observation]),
+            carrier_hz,
+        )
+        transfer = torch.where(validity[first_row], transfer, torch.zeros_like(transfer))
+        if frontend is not None:
+            transfer = frontend._apply_path_phase_rows(delay, transfer, upload(clock[observation]))
+        adc_time = spec.t_start_s + (observation % spec.num_samples) * spec.sample_period_s
+        values.append(
+            _synthesize_fmcw_observations(
+                delay, channel_phasor_to_beat_weight(transfer), upload(offsets), upload(adc_time), spec
+            ).reshape(len(batch), pairs)
+        )
+        begin = stop
+    all_slots = torch.cat(values).reshape(-1, spec.num_samples, pairs).transpose(1, 2)
     pair = torch.arange(pairs, device=all_slots.device)
     slot = torch.arange(spec.num_chirps, device=all_slots.device)[:, None] * spec.num_tx + pair[None, :] % spec.num_tx
     stats["evaluations"] = len(cache)
     stats["exhaustive"] = len(cache) == len(times)
     stats["observation_count"] = len(times)
+    stats["synthesis_batches"] = len(values)
     return all_slots[slot, pair], stats, cache[0], cache[len(times) - 1]
 
 

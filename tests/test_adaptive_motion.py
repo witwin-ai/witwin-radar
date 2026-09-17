@@ -130,3 +130,43 @@ def test_adaptive_recompiles_moving_reflectors_and_preserves_scene_adjoint():
         primal, tangent = ad.unpack_dual(solve(dual, "adaptive", "jvp").cube)
         torch.testing.assert_close(primal, result.cube, rtol=0, atol=0)
         torch.testing.assert_close(tangent.real.sum(), (gradient * direction).sum(), rtol=3e-4, atol=1e-7)
+
+
+def test_batched_multi_site_reflections_keep_site_gradients_and_topology_probes():
+    import torch.autograd.forward_ad as ad
+    from support import multi_endpoint_world as world
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config,
+        waveform=replace(radar.system_config.waveform, adc_samples=4, chirp_per_frame=3, output_domain="beat"),
+    )
+    origin = torch.tensor([[2.0, 0.6, 0.0], [2.2, -0.4, 0.1]], device=radar.device)
+    scene = world.make_dynamic_scene(wall_velocity=(0.0, 0.0, 0.0)).scene
+
+    def solve(point, sampling, mode):
+        class Motion:
+            def at(self, t):
+                return Kinematics(point + t * 0.7, torch.full_like(point, 0.7))
+
+        return radar.simulate(
+            scene,
+            times=(0.0,),
+            sites=ScatterSitePolicy.explicit(point, trajectory=Motion()),
+            response=_response(radar),
+            motion_sampling=sampling,
+            ad_mode=mode,
+        )
+
+    exact = solve(origin, "adc", "none")
+    result = solve(origin, "adaptive", "none")
+    assert result.discovery_count > 1  # Geometry prevents the complete-LOS certificate.
+    assert result.last_radar_paths.path_count > 2
+    assert (result.cube - exact.cube).norm() / exact.cube.norm() < 0.012
+    leaf = origin.clone().requires_grad_()
+    gradient = torch.autograd.grad(solve(leaf, "adaptive", "vjp").cube.real.sum(), leaf)[0]
+    direction = torch.tensor([[0.3, -0.4, 0.0], [-0.2, 0.1, 0.5]], device=radar.device)
+    with ad.dual_level():
+        primal, tangent = ad.unpack_dual(solve(ad.make_dual(origin, direction), "adaptive", "jvp").cube)
+        torch.testing.assert_close(primal, result.cube, rtol=0, atol=0)
+        torch.testing.assert_close(tangent.real.sum(), (gradient * direction).sum(), rtol=4e-4, atol=1e-7)

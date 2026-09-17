@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 6,
+  "radar_abi_version": 7,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -754,6 +754,54 @@
       "python_owner": "witwin/radar/paths.py",
       "contract_test": "tests/test_path_interpolation.py",
       "end_to_end_caller": "witwin.radar.paths.interpolate_path_rows"
+    },
+    {
+      "symbol": "fmcw_observation_forward",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "fmcw_observation",
+      "launches": 1,
+      "fused_stages": [
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_fmcw_observations.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
+    },
+    {
+      "symbol": "fmcw_observation_backward",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "fmcw_observation",
+      "launches": 1,
+      "fused_stages": [
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_fmcw_observations.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
+    },
+    {
+      "symbol": "fmcw_observation_jvp",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "fmcw_observation",
+      "launches": 1,
+      "fused_stages": [
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_fmcw_observations.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
     }
   ]
 }

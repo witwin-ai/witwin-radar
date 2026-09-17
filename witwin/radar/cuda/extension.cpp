@@ -1,6 +1,9 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(_radar_native, m) {
+  m.def("fmcw_observation_forward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
+  m.def("fmcw_observation_backward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
+  m.def("fmcw_observation_jvp(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
   m.def("path_interpolate_forward(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("path_interpolate_backward(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("path_interpolate_jvp(Tensor x, Tensor vector, Tensor(a!) output, float carrier) -> ()");

@@ -30,6 +30,7 @@
 #include "fmcw_phase.cuh"
 
 #include <cstdint>
+#include <cmath>
 #include <limits>
 
 namespace {
@@ -632,7 +633,83 @@ void fmcw_beat_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// Refreshed rows at arbitrary ADC times. x=[tau(s), Re(weight), Im(weight),
+// chirp-local u(s)]; carrier already belongs to the conjugated Channel weight
+// in scene synthesis. Each CSR segment is one observation/sensor pair. The
+// phase owner and float sin/cos rounding are shared with the regular beat
+// kernel above. Time is a fixed schedule, not an AD input. Oracle:
+// test_fmcw_observations.py (independent complex phase and directional AD).
+template<int Mode>
+__global__ void fmcw_observation_kernel(const double* x, const int64_t* offsets,
+    const int64_t* segment, const double* v, double* out, int64_t rows,
+    int64_t segments, double slope, double carrier) {
+  const int64_t i=static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i >= (Mode==1 ? rows : segments)) return;
+  if constexpr(Mode==1) {
+    const int64_t owner=segment[i];
+    if(owner<0 || owner>=segments) { for(int k=0;k<4;++k) out[4*i+k]=0; return; }
+    const double* a=x+4*i;
+    const auto p=beat_phase(a[0],0,0,a[3],slope,carrier,0,0);
+    const double r=a[1]*p.cos_phi-a[2]*p.sin_phi, j=a[1]*p.sin_phi+a[2]*p.cos_phi;
+    const double gr=v[2*owner], gj=v[2*owner+1];
+    out[4*i]=p.dphi_dtau_rt*(-gr*j+gj*r);
+    out[4*i+1]=gr*p.cos_phi+gj*p.sin_phi;
+    out[4*i+2]=-gr*p.sin_phi+gj*p.cos_phi;
+    out[4*i+3]=0;
+  } else {
+    const int64_t lo=offsets[i], hi=offsets[i+1];
+    double r=0,j=0;
+    if(lo>=0 && hi>=lo && hi<=rows) for(int64_t k=lo;k<hi;++k) {
+      const double* a=x+4*k;
+      const auto p=beat_phase(a[0],0,0,a[3],slope,carrier,0,0);
+      const double wr=a[1]*p.cos_phi-a[2]*p.sin_phi, wi=a[1]*p.sin_phi+a[2]*p.cos_phi;
+      if constexpr(Mode==0) { r+=wr; j+=wi; }
+      else {
+        const double* d=v+4*k;
+        r+=d[1]*p.cos_phi-d[2]*p.sin_phi-wi*p.dphi_dtau_rt*d[0];
+        j+=d[1]*p.sin_phi+d[2]*p.cos_phi+wr*p.dphi_dtau_rt*d[0];
+      }
+    }
+    out[2*i]=r; out[2*i+1]=j;
+  }
+}
+
+template<int Mode>
+void fmcw_observation_run(const torch::stable::Tensor& x, const torch::stable::Tensor& offsets,
+    const torch::stable::Tensor& segment, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double slope, double carrier) {
+  const torch::stable::Tensor* payloads[3]={&x,&v,&out};
+  for(const auto* t : payloads) {
+    STD_TORCH_CHECK(t->is_cuda() && t->is_contiguous() &&
+      t->scalar_type()==torch::headeronly::ScalarType::Double,
+      "observation payloads require contiguous CUDA doubles");
+    STD_TORCH_CHECK(t->get_device_index()==x.get_device_index(), "observation devices differ");
+  }
+  for(const auto* t : {&offsets,&segment}) {
+    check_cuda_long(*t,"observation routing");
+    STD_TORCH_CHECK(t->get_device_index()==x.get_device_index(), "observation routing devices differ");
+  }
+  STD_TORCH_CHECK(x.dim()==2 && x.size(1)==4, "observation x must be [N,4]");
+  STD_TORCH_CHECK(offsets.dim()==1 && offsets.numel()>=2, "observation offsets must be [segments+1]");
+  const int64_t rows=x.size(0), segments=offsets.numel()-1;
+  STD_TORCH_CHECK(segment.numel()==rows, "observation segment count mismatch");
+  STD_TORCH_CHECK(out.numel()==(Mode==1 ? rows*4 : segments*2), "observation output shape");
+  STD_TORCH_CHECK(v.numel()==(Mode==0 ? 0 : Mode==1 ? segments*2 : rows*4), "observation vector shape");
+  STD_TORCH_CHECK(std::isfinite(slope) && std::isfinite(carrier), "observation phase constants must be finite");
+  const torch::stable::accelerator::DeviceGuard guard(x.get_device_index());
+  const int64_t n=Mode==1 ? rows : segments;
+  if(n) {
+    fmcw_observation_kernel<Mode><<<(n+255)/256,256,0,current_cuda_stream(x)>>>(
+      x.const_data_ptr<double>(),offsets.const_data_ptr<int64_t>(),segment.const_data_ptr<int64_t>(),
+      v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),rows,segments,slope,carrier);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("fmcw_observation_forward", TORCH_BOX(&fmcw_observation_run<0>));
+  m.impl("fmcw_observation_backward", TORCH_BOX(&fmcw_observation_run<1>));
+  m.impl("fmcw_observation_jvp", TORCH_BOX(&fmcw_observation_run<2>));
   m.impl("fmcw_beat_forward", TORCH_BOX(&fmcw_beat_forward_cuda));
   m.impl("fmcw_beat_backward", TORCH_BOX(&fmcw_beat_backward_cuda));
   m.impl("fmcw_beat_jvp", TORCH_BOX(&fmcw_beat_jvp_cuda));

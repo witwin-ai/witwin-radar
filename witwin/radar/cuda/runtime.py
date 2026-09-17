@@ -37,7 +37,7 @@ import torch
 #:     their translation unit. The registered operator set went from 34 symbols
 #:     and changed the sensor-weight schema, both observable by a consumer.
 #:     fails. That is an ABI change even though the sidecar schema is unchanged.
-RADAR_ABI_VERSION = 6
+RADAR_ABI_VERSION = 7
 
 BUILD_INFO_SUFFIX = ".build-info.json"
 FINGERPRINT_SUFFIX = ".build-fingerprint"
