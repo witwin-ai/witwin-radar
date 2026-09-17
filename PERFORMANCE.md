@@ -1,14 +1,40 @@
 # Radar Performance
 
-Status: measurement contract current; post-consolidation GPU numbers not yet recorded.
+Status: local Doppler repair measurements recorded on 2026-09-16; release-platform benchmarks remain separate.
 
 ## What changed
 
-FMCW now generates the Dirichlet range spectrum directly in native CUDA by default. The synthesized beat-signal route is explicit with `output_domain="beat"`. That changes the default pipeline's work: spectrum input must not pay a second range FFT, while beat input still does.
+FMCW defaults to a normalized range spectrum. Stationary rows use native Dirichlet synthesis; linear moving rows include continuous fast-time phase, and refreshed dynamic scenes evaluate each ADC observation. The synthesized beat-signal route is explicit with `output_domain="beat"`. That changes the default pipeline's work: spectrum input must not pay a second range FFT, while beat input still does.
 
 For that reason, pre-consolidation latency, FFT-count, launch-count, and allocation tables are not presented as current evidence here. They measured the former default beat pipeline and deleted module layout. They remain available in repository history, but must not be copied into release notes for the spectrum-first implementation.
 
-No new GPU benchmark was run as part of the documentation/governance cleanup. A checked-in command is an evidence recipe, not a successful measurement.
+## Doppler repair measurements
+
+Both checkouts used witwin2, Torch 2.10.0+cu128, and RTX 5080. The pre-repair
+`e0c79ad` was exported into `output/doppler-repair/baseline`, rebuilt, and ran
+the exact same `tests/test_phase8_pipeline_budget.py` measurement recipe.
+
+| Measured route | Before repair | Repaired (isolated targeted run) |
+| --- | ---: | ---: |
+| Full DSP pipeline, best of three medians | 3.6963 ms | 3.1512 ms |
+| Static scene, marginal frame | 8.66685 ms | 8.65955 ms |
+| Pipeline peak allocation | 0.9404 MB | 0.9404 MB |
+
+The old 2.899/5.044 ms limits fail on the unmodified baseline as well. Budgets
+are re-derived from rounded baseline measurements (3.70/8.67 ms) with the same
+1.30 factor; exact operation counts and memory limits are unchanged. These are
+local environment measurements, not a claim of a general speed improvement.
+Logs: `output/doppler-repair/baseline-performance.log` and
+`output/doppler-repair/stage4-migration.log`.
+
+Dynamic ADC sampling deliberately pays discovery/replay at every observation.
+It is a correctness reference, not a real-time implementation. The cost scales
+with chirps * transmitters * ADC samples, and a moving mesh also incurs compile
+work. Explicit chirp sampling freezes fast-time geometry; longer rediscovery
+cadences may miss path births. Those tradeoffs are recorded in result metadata.
+The native finite-sum spectrum for nonzero linear delay rates costs O(N^2) per
+path rather than the stationary Dirichlet O(N). `tools/validate_doppler_motion.py`
+records actual scene timings together with independent IQ/STFT errors.
 
 ## Maintained benchmark
 

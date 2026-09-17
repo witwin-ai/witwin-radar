@@ -85,3 +85,121 @@ def test_invalid_frame_times_are_refused(times):
     radar = _radar()
     with pytest.raises(ValueError, match="finite|increasing"):
         radar.simulate(_static_scene(), times=times, response=_response(radar))
+
+
+def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
+    from dataclasses import replace
+
+    import torch.autograd.forward_ad as ad
+
+    radar = _radar()
+    # A small complete ADC grid, including both transmitters.
+    radar.system_config = replace(
+        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=2)
+    )
+    base = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
+
+    def solve(origin, mode):
+        class Linear:
+            def at(self, t):
+                velocity = torch.tensor([[0.5, 0.2, 0.0]], device=origin.device)
+                return Kinematics(origin + t * velocity, velocity)
+
+        return radar.simulate(
+            _static_scene(),
+            times=(0.0,),
+            response=_response(radar),
+            sites=ScatterSitePolicy.explicit(origin, trajectory=Linear()),
+            components=frozenset({"los"}),
+            max_depth=0,
+            ad_mode=mode,
+        ).cube
+
+    reference = solve(base, "none")
+    leaf = base.clone().requires_grad_()
+    reverse = torch.autograd.grad(solve(leaf, "vjp").real.sum(), leaf)[0]
+    direction = torch.tensor([[0.3, -0.4, 0.0]], device=base.device)
+    for scale in (0.0, 1.0, -2.0):
+        with ad.dual_level():
+            primal, tangent = ad.unpack_dual(solve(ad.make_dual(base, scale * direction), "jvp"))
+            torch.testing.assert_close(primal, reference, rtol=0, atol=0)
+            torch.testing.assert_close(tangent.real.sum(), (reverse * (scale * direction)).sum(), rtol=3e-5, atol=1e-8)
+
+
+def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
+    from dataclasses import replace
+
+    from witwin.core.dynamics import DynamicScene, LinearTrajectory
+    from witwin.core.scene import AntennaState, Scene
+
+    from witwin.radar.simulation import SensorEndpointIds
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=2)
+    )
+    endpoints = [
+        AntennaState(77110 + i, "tx" if i < 2 else "rx", p.cpu())
+        for i, p in enumerate(torch.cat([radar.tx_pos, radar.rx_pos]))
+    ]
+    scene = Scene(structures=(), endpoints=endpoints)
+    trajectories = {e.antenna_id: LinearTrajectory(origin=(0, 0, 0), velocity=(0.3, 0, 0)) for e in endpoints}
+    dynamic = DynamicScene(scene, endpoint_trajectories=trajectories)
+    sites = ScatterSitePolicy.explicit(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
+    args = {
+        "times": (0.0,),
+        "response": _response(radar),
+        "sites": sites,
+        "components": frozenset({"los"}),
+        "max_depth": 0,
+    }
+    with pytest.raises(ValueError, match="sensor_endpoints"):
+        radar.simulate(dynamic, **args)
+    result = radar.simulate(dynamic, sensor_endpoints=SensorEndpointIds((77110, 77111), (77112, 77113)), **args)
+    last_time = result.sample_times_s[0][-1]
+    expected_tx = radar.tx_pos + torch.tensor([0.3 * last_time, 0, 0], device=radar.device)
+    torch.testing.assert_close(result.last_propagation.inbound.departure_origin_m, expected_tx, rtol=0, atol=1e-8)
+    assert result.path_set_complete and result.motion_sampling == "adc"
+
+
+def test_moving_wall_round_trip_phase_matches_independent_image_geometry():
+    from dataclasses import replace
+
+    from support import multi_endpoint_world as world
+
+    radar = _radar()
+    radar.system_config = replace(
+        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=1)
+    )
+    scene = world.make_dynamic_scene(wall_velocity=(4.0, 0.0, 0.0))
+    site = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
+    results = [
+        radar.simulate(scene, times=(t,), response=_response(radar), sites=ScatterSitePolicy.explicit(site))
+        for t in (0.0, 1e-4)
+    ]
+    predicted = []
+    for result in results:
+        paths, legs = result.last_radar_paths, result.last_propagation
+        t = result.sample_times_s[0][-1]
+        mirror = site.double().clone()
+        wall_x = torch.tensor(4 + 4 * t, dtype=torch.float32, device=radar.device).double()
+        mirror[:, 0] = 2 * wall_x - mirror[:, 0]
+        inbound = legs.inbound.depth[paths.topology.inbound_row] > 0
+        outbound = legs.outbound.depth[paths.topology.outbound_row] > 0
+        tx_target = torch.where(inbound[:, None], mirror, site.double())
+        rx_target = torch.where(outbound[:, None], mirror, site.double())
+        pair = paths.sensor_pair_index
+        length = (tx_target - radar.tx_pos[pair % 2].double()).norm(dim=-1)
+        length += (rx_target - radar.rx_pos[pair // 2].double()).norm(dim=-1)
+        delay = length / 299792458
+        torch.testing.assert_close(paths.total_delay_s.double(), delay, rtol=2e-7, atol=1e-14)
+        predicted.append(delay)
+    first, last = (result.last_radar_paths for result in results)
+    torch.testing.assert_close(first.topology.inbound_row, last.topology.inbound_row)
+    torch.testing.assert_close(first.topology.outbound_row, last.topology.outbound_row)
+    expected = -77e9 * (predicted[1] - predicted[0]) / 1e-4
+    measured = torch.angle(last.complex_transfer_ref * first.complex_transfer_ref.conj()).double() / (
+        2 * math.pi * 1e-4
+    )
+    assert float(expected.abs().max()) > 4000
+    torch.testing.assert_close(measured, expected, rtol=0, atol=2.0)

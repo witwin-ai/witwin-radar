@@ -519,12 +519,6 @@ def bind_radar_world(
     )
 
 
-#: What this driver declares to the waveform kernel about the composed weight.
-#:
-#: Named rather than inlined so the refusal below and the value it enforces are
-#: the same statement.
-DRIVER_SLOW_TIME_MODE = "frozen_weight_with_carrier_rate"
-
 #: The axis names of the published multi-frame cube. The last two are the
 #: waveform's own slow and fast axes and are filled in from the synthesis
 #: result, so an OFDM run publishes ``("frame", "tx", "rx", "symbol",
@@ -737,14 +731,12 @@ def simulate_scene(
     :meth:`~witwin.radar.radar.RadarSystemConfig.with_propagation`, which
     returns a new configuration rather than mutating the radar's stored one.
 
-    ``world_motion`` and ``motion_event_period_frames`` are
-    :class:`~witwin.radar.propagation.SceneEpochLoop`'s own two
-    arguments, forwarded verbatim. A caller that would rather describe its scene
-    by its parts resolves
-    :func:`~witwin.radar.propagation.epoch_policy` first and passes the
-    two fields it produces; the loop never reads a component declaration, and
-    keeping that one-way is what stops "which parts does this scene have" and
-    "when does the pipeline pay" from becoming one question.
+    Dynamic scenes refresh each ADC observation by default; ``motion_sampling``
+    can explicitly select a chirp-frozen approximation. Complete discovery is
+    the default at every observation. A longer ``motion_event_period_frames``
+    is converted from frames to observation count and marks path completeness
+    false unless structure motion already forces discovery. The selected
+    ``world_motion`` still controls whether compiled handles may be replayed.
 
     ``ad_mode`` is forwarded to every replay. ``"none"`` is the default and
     builds no graph; ``"vjp"`` makes the published cube differentiable with

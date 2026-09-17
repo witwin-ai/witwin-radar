@@ -1,0 +1,256 @@
+{
+  "environment": {
+    "python": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "executable": "C:\\Users\\Asixa\\miniconda3\\envs\\witwin2\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "torch": "2.10.0",
+    "cuda": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5080",
+    "radar": {
+      "origin": "packaged",
+      "extension_path": "E:\\Code\\witwin-platform\\radar\\witwin\\radar\\cuda\\prebuilt\\_radar_native.pyd",
+      "radar_abi_version": 4,
+      "native_build": {
+        "binary_sha256": "e1d673d92fa1df2775ac382e7ffb32c00859eb5a3a21ece66249971c33254fb0",
+        "build_fingerprint": "4035dcdd9978c926c7036b7b1972ab1ab677efd130268f2b2a075daee5fc0964",
+        "build_type": "developer",
+        "compiler": "msvc 19.44.35228",
+        "cuda_architectures": [
+          "120"
+        ],
+        "cuda_compiler_version": "12.9.41",
+        "cuda_version": "12.8",
+        "cxx_abi": "msvc",
+        "extension_name": "_radar_native",
+        "operator_symbols": [
+          "fmcw_beat_backward",
+          "fmcw_beat_forward",
+          "fmcw_beat_jvp",
+          "fmcw_spectrum_backward",
+          "fmcw_spectrum_forward",
+          "fmcw_spectrum_jvp",
+          "frontend_agc_backward",
+          "frontend_agc_forward",
+          "frontend_agc_jvp",
+          "frontend_noise_backward",
+          "frontend_noise_forward",
+          "frontend_noise_jvp",
+          "frontend_quantize_forward",
+          "ofdm_cfr_backward",
+          "ofdm_cfr_forward",
+          "ofdm_cfr_jvp",
+          "pulsed_echo_backward",
+          "pulsed_echo_forward",
+          "pulsed_echo_jvp",
+          "scatter_direction_backward",
+          "scatter_direction_forward",
+          "scatter_direction_jvp",
+          "scatter_response_aspect_backward",
+          "scatter_response_aspect_forward",
+          "scatter_response_aspect_jvp",
+          "sensor_weight_backward",
+          "sensor_weight_forward",
+          "sensor_weight_jvp",
+          "two_way_join_backward",
+          "two_way_join_forward",
+          "two_way_join_jvp"
+        ],
+        "platform_tag": "win_amd64",
+        "python_abi": "stable-abi-v1",
+        "radar_abi_version": 4,
+        "radar_git_dirty": true,
+        "radar_git_sha": "94c3a83038cfa4c95e65a3c1bcae7b40207c4f41",
+        "source_fingerprint": "d37a6a2e94d27de028d62f33a9b860b777b4baa640b75c2b6a1165c824263e02",
+        "torch_target_version": "0x020a000000000000",
+        "torch_version": "2.10.0"
+      }
+    },
+    "channel": {
+      "backend": "channel",
+      "uses_dr_jit": false,
+      "uses_rayd_native": true,
+      "rayd_integration": "source-linked",
+      "uses_path_native": true,
+      "cuda_available": true,
+      "optix_available": true,
+      "material_abi_version": 3,
+      "channel_abi_version": 1,
+      "channel_git_sha": "f88c806caa38c371af5d0d043a9abca801d4c6ae",
+      "channel_git_dirty": true,
+      "rayd_repository_url": "https://github.com/Asixa/RayD",
+      "rayd_commit": "c7a99979d0fdcc67b2ec8a12246a7df597603409",
+      "rayd_dirty": false,
+      "rayd_integration_abi_kind": "source-header-set-sha256",
+      "rayd_integration_abi_path": "include/rayd/integration.h",
+      "rayd_integration_abi_sha256": "db48cdb91b31c00a14259f912f8b504eb2485a031b036c6f79688cb5452670c4",
+      "rayd_source_kind": "git-checkout",
+      "rayd_source_manifest_sha256": "c4fb39b27eeea2588615d1493c6fe3f4fc0202017341fa320dafdcacb595b1c1",
+      "torch_version": "2.10.0",
+      "cuda_version": "12.8",
+      "cuda_compiler_version": "12.9.41",
+      "compiler": "MSVC-19.44.35207.1",
+      "cxx_abi": "msvc",
+      "cuda_architectures": [
+        "120-real"
+      ],
+      "build_type": "Release",
+      "build_fingerprint": "183118e96d75856e71df2f90c621fa191d6151d2b63ec12fd5f71062e49ed73f"
+    }
+  },
+  "gpu_suite": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "12",
+      "tests": "1511",
+      "time": "304.060",
+      "timestamp": "2026-09-16T17:43:08.378678-07:00",
+      "hostname": "XYWorkstation"
+    }
+  ],
+  "skips": [
+    {
+      "test": "tests.test_phase10_coexistence_smoke.TestTheEvidenceContract.test_a_present_evidence_file_reports_all_nine_scenarios",
+      "reason": "no coexistence evidence in this checkout; the smoke is a nightly gate"
+    },
+    {
+      "test": "tests.test_phase7_microdoppler.test_smpl_limb_microdoppler_matches_an_independent_reference",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase7_moving_structures.test_the_analytic_deformation_velocity_matches_a_two_snapshot_difference",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase7_moving_structures.test_a_deforming_mesh_is_a_core_deformation_not_a_reposed_geometry",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge[pose]",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge[shape]",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_a_pose_carrying_a_forward_dual_is_refused_too",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_a_pose_rate_that_requires_grad_is_refused_by_adr_038",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_a_transform_derivative_is_refused_by_rest_mesh",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_the_rest_mesh_of_an_undifferentiated_body_is_unchanged",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate",
+      "reason": "no SMPL model files available in this checkout"
+    },
+    {
+      "test": "tests.test_phase9_smpl_pose_refusal.test_the_smpl_body_itself_still_publishes_a_pose_gradient",
+      "reason": "no SMPL model files available in this checkout"
+    }
+  ],
+  "cpu_quick": {
+    "passed": 697,
+    "skipped": 813,
+    "seconds": 124.53
+  },
+  "static_gates": [
+    {
+      "gate": "architecture",
+      "exit_code": 0,
+      "output": "ci/check_architecture.py: OK\n"
+    },
+    {
+      "gate": "duplicate_code",
+      "exit_code": 0,
+      "output": "ci/check_duplicate_code.py: OK\n"
+    },
+    {
+      "gate": "documentation_surface",
+      "exit_code": 0,
+      "output": "ci/check_documentation_surface.py: OK\n"
+    },
+    {
+      "gate": "governance_inventory",
+      "exit_code": 0,
+      "output": "ci/check_governance_inventory.py: OK\n"
+    },
+    {
+      "gate": "no_compatibility",
+      "exit_code": 0,
+      "output": "ci/check_no_compatibility.py: OK\n"
+    },
+    {
+      "gate": "public_api_manifest",
+      "exit_code": 0,
+      "output": "ci/check_public_api_manifest.py: OK\n"
+    },
+    {
+      "gate": "release_claims",
+      "exit_code": 0,
+      "output": "ci/check_release_claims.py: OK\n"
+    },
+    {
+      "gate": "required_channel_coverage",
+      "exit_code": 0,
+      "output": "ci/check_required_channel_coverage.py: OK\n"
+    },
+    {
+      "gate": "workflow_references",
+      "exit_code": 0,
+      "output": "ci/check_workflow_references.py: OK\n"
+    },
+    {
+      "gate": "native_bindings",
+      "exit_code": 0,
+      "output": "native binding manifest OK: schema 2, 31 operators, 11 AD groups, 6 error owners\n  symbol-set tie checked against _radar_native.pyd (31 symbols)\n"
+    }
+  ],
+  "independent_experiments": {
+    "continuous_chirp": {
+      "measured_fast_time_hz": 1482102.37648244,
+      "oracle_fast_time_hz": 1482102.3754905753,
+      "max_iq_error": 2.647186213423763e-07
+    },
+    "radial": {
+      "relative_iq_rms_error": 1.143964624520497e-06,
+      "relative_stft_error": 1.220995206345599e-06,
+      "seconds": 21.782681200005754,
+      "observations": 512,
+      "discoveries": 512,
+      "motion_sampling": "adc",
+      "path_set_complete": true,
+      "peak_hz": -109.375,
+      "expected_hz": -102.73774132103082
+    },
+    "rotor": {
+      "relative_iq_rms_error": 0.00018452364440714456,
+      "relative_stft_error": 0.00018047277326042977,
+      "seconds": 10.186501700001827,
+      "observations": 512,
+      "discoveries": 512,
+      "motion_sampling": "adc",
+      "path_set_complete": true
+    },
+    "two_limb_proxy": {
+      "relative_iq_rms_error": 0.00040853794229787265,
+      "relative_stft_error": 0.0004098231101822981,
+      "seconds": 9.781900199996016,
+      "observations": 512,
+      "discoveries": 512,
+      "motion_sampling": "adc",
+      "path_set_complete": true
+    }
+  },
+  "experiment_native_fingerprint": "b170ee1e35e359e7af421cda79385efd57315229caee002db61468b83acb90f4"
+}

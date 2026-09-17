@@ -28,7 +28,7 @@ renaming, reclassifying, grandfathering, or adding an allowlist is not closure.
 | GOV-017 | configuration ownership | `radar.py::RadarConfig`, `config.py::RadarSystemConfig`, waveform blocks and `FmcwSpec.from_radar_config` | configuration and SI conversion have two owners | 2/F | one config owner and one config-to-spec conversion | closed | config.py removed; radar.py owns RadarConfig and waveform-spec conversion |
 | GOV-018 | axes ownership | `config.py::RadarAxes`, Radar convenience properties, `processing.axes::ProcessingAxes` | physical axes have two owners | 2/6 | only `ProcessingAxes` remains | closed | RadarAxes removed; ProcessingAxes is the sole physical-axis record |
 | GOV-019 | typed handoff | `RadarSimulationResult` to `ProcessingCube` | formal pipeline needs a bare tensor plus axes | 2/6 | typed simulation-frame processing entry and no bare-tensor overload | closed | range_profile requires ProcessingCube and refuses bare tensors |
-| GOV-020 | native compatibility | sensor weight mode flags, `PolarizationSpec`, `from_real_amplitudes` | deleted real-amplitude route remains in Python and native ABI | 1/7 | Channel-sourced parity with retired flags/schemas absent | closed | native manifest has 28 current operators; real-amplitude schemas and sensor mode flags absent |
+| GOV-020 | native compatibility | sensor weight mode flags, `PolarizationSpec`, `from_real_amplitudes` | deleted real-amplitude route remains in Python and native ABI | 1/7 | Channel-sourced parity with retired flags/schemas absent | closed | native manifest has 31 current operators; real-amplitude schemas and sensor mode flags absent |
 | GOV-021 | API governance | public facade packages | old snapshot omits public owner facades and target inventory | G/1 | generated snapshot equals `ci/public-api-manifest.json` | closed | generated schema-v2 snapshot covers every symbol in all 10 public facades |
 | GOV-022 | API semantics | `Radar.simulate::slow_time_mode` | public argument has one accepted value and no choice | 2 | argument absent; driver fixes the mode internally | closed | Radar.simulate signature has no slow_time_mode parameter |
 | GOV-023 | configuration semantics | stored antenna pattern versus `simulate(antenna_pattern=None)` | `None` means both default dipole and no pattern | 2/4 | one owner and one meaning | closed | Radar sensor configuration is the only pattern owner; every simulation applies it |
@@ -53,3 +53,14 @@ Numerical processing coverage under `tests/processing/` remains. Any deleted
 test that also covers a current owner must first be rewritten against that
 owner; deleting the compatibility import is not permission to lose the
 underlying numerical invariant.
+
+## Doppler correctness follow-up (2026-09-16)
+
+The post-consolidation physics audit and its repair are tracked separately in
+`radar-doppler-correctness-audit-2026-09-16.md` and
+`radar-doppler-correctness-acceptance-2026-09-16.md`. Dynamic FMCW now refreshes
+transport at ADC observations, parameter tangents do not define physical
+velocity, and multipath responses consume actual endpoint segments. The native
+inventory includes three scatter-direction companions (31 operators total).
+The acceptance record distinguishes local executed evidence from asset and
+release-platform coverage that was not executed.

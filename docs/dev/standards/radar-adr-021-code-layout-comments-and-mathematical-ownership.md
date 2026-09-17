@@ -91,7 +91,7 @@ Historical documents stay historical. Living documents are listed in
 | scattering response | `witwin.radar.scattering` | response coefficient only; no sensor or waveform gain |
 | antenna, sensor, and array weighting | `witwin.radar.sensors` | no repeated propagation or scattering factor |
 | receiver, noise, gain, and ADC effects | `witwin.radar.frontend` | frontend effects occur after field synthesis |
-| waveform grids and synthesis phasors | `witwin.radar.synthesis.*` | FMCW spectrum is direct Dirichlet CUDA by default; beat synthesis is explicit |
+| waveform grids and synthesis phasors | `witwin.radar.synthesis.*` | FMCW defaults to normalized spectrum; continuous phase lives in `cuda/fmcw_phase.cuh`; only stationary rows admit Dirichlet evaluation |
 | FFT axes, range/Doppler/angle products, detection and tracking | `witwin.radar.processing.*` | consume result metadata; do not infer the domain from tensor shape |
 
 Every new or changed equation must state, in its owning module or ADR:

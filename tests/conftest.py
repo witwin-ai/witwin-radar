@@ -285,14 +285,9 @@ def mock_radar():
 #   is no tolerance that recovers it - the fix is a pose whose boresight is not
 #   the polarization axis.
 #
-# * **Intra-frame Doppler is opened by the caller.** ``Radar.simulate`` has no
-#   ``velocities=`` keyword (a named Phase-11 scope boundary), so a moving target
-#   is driven by dualising the site tensor with
-#   ``witwin.radar.propagation.two_way_duals`` and asking for
-#   ``ad_mode="jvp"``. The site policy passes its tensor through by identity, so
-#   the dual reaches the legs and the join publishes ``delay_rate``, which is
-#   what the waveform kernel's slow-time carrier consumes. Nothing here computes
-#   a Doppler shift.
+# * Moving targets use authored trajectories through the public scene entry.
+#   These DSP tests explicitly select chirp-frozen motion to isolate slow-time
+#   processing. Continuous ADC motion has separate independent phase oracles.
 
 #: The boresight this suite poses its radars along, in world coordinates.
 SCENE_DRIVEN_LOOK_AT_M = (1.0, 0.0, 0.0)
@@ -345,14 +340,9 @@ class PointTargetFrame:
     cannot be turned into metres, and rebuilding the record per stage is how two
     stages end up describing different arrays.
 
-    The axes record is derived from a SECOND synthesis of the same composed
-    rows. ``RadarSimulationResult`` publishes the stacked cube and the waveform
-    conventions but not the rank-3 ``SynthesisResult`` that
-    ``ProcessingAxes.from_synthesis`` reads, so a consumer that wants
-    ``processing/`` on a ``Radar.simulate`` product has to re-synthesize one
-    frame to get it. That is a real gap in the entry point and it is recorded as
-    one; :meth:`assert_axes_describe_the_cube` pins that the two agree BITWISE,
-    so the workaround cannot quietly start describing something else.
+    Metadata comes from ``RadarSimulationResult.frame_synthesis()`` and the
+    original waveform spec. No second synthesis can freeze a moving frame or
+    replace its frontend output while constructing processing metadata.
     """
 
     def __init__(self, result, cube, axes, array, synthesis):

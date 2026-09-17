@@ -1,54 +1,22 @@
-// Complex FMCW Dirichlet spectrum synthesis over a chirp's fast-time axis.
+// Complex FMCW range-spectrum synthesis; the phase equation is owned by fmcw_phase.cuh.
 //
-// This is the Phase-4 `_radar_native` synthesis primitive. Radar ships ONE
-// native artifact, so every family registers in the same `_radar_native`
-// library (R-ADR-004; the Phase-10 rename made the physical stem match this
-// logical name).
+// SI units: tau0 is round-trip delay [s], rate=d(tau)/dt [s/s], slope [Hz/s],
+// carrier and carrier_rate [Hz], u=t_start+m*sample_period [s]. The TDM slot
+// starts at (chirp*num_tx+tx_index)*chirp_period [s]. The linear-delay model
+// evaluates tau=tau0+rate*(slot+u), including motion during the ADC window.
 //
-// Convention, taken from `dirichlet.cu` `path_response` and NOT re-derived:
+// The beat is tx*conj(rx), with exp(+j*2*pi*cycles). Channel weights are
+// conjugated once by the Python facade. When the weight owns the carrier at
+// tau0, carrier=0 and carrier_rate=fc applies only the delay change; otherwise
+// carrier=fc and carrier_rate=0. Round-trip delay is never doubled here.
+// Channel owns spreading; Radar owns scattering and sensor weighting.
 //
-//   cycles(tau, t_slot, t_m) = carrier_hz * tau
-//                            + carrier_rate_hz * (tau - tau_rt)
-//                            + slope * tau * (t_start - 0.5 * tau)
-//                            + slope * tau * t_m
-//   t_slot(c, p)          = (c * num_tx + segment_tx_index[p]) * chirp_period
-//   tau(c, p)             = tau_rt + tau_rate * t_slot(c, p)
-//   s[c][p][m]            = sum_k w[k] * exp(+j * 2 * pi * cycles)
-//
-// TDM-MIMO fires the transmitters SEQUENTIALLY, one chirp period apart, so the
-// slow-time coordinate of a (chirp, sensor pair) cell is its TDM SLOT, not its
-// chirp index. `segment_tx_index[p]` is which transmitter owns sensor pair `p`,
-// and `num_tx` is how many slots one chirp loop holds. This is the same slot
-// time `dirichlet.cu`'s MIMO kernel, `solvers/common.py::collect_interpolated_
-// samples`, and `sigproc/pointcloud.py::_compensate_tdm_phase` already assume;
-// synthesizing it here is what makes the per-TX motion phase a physical
-// consequence of the kernel rather than a downstream reinterpretation.
-// `num_tx = 1` with a zero index table gives `(c * 1 + 0) * Tc == c * Tc`, i.e.
-// bit-identical output to the pre-TDM kernel.
-//
-// `carrier_rate_hz` exists because the carrier has two homes and only one of
-// them can express intra-frame Doppler. When the weight carries the carrier
-// phase (a Channel coefficient, `carrier_hz = 0`), that phase was formed at the
-// FROZEN per-frame `tau_rt` and is constant across chirps, so the slow-time
-// phase walk loses its dominant term `f_c * tau_rate * t_c` and understates
-// Doppler by 21x to 215x over the fixture's fast-time axis. Applying
-// `carrier_rate_hz` to the delay CHANGE `(tau - tau_rt) = tau_rate * t_c`
-// restores exactly that term without re-applying the absolute carrier phase the
-// weight already holds. Setting both to `fc` would double count and is refused
-// by the Python contract.
-//
-// Four rules this file encodes, each pinned by a test:
-//
-//  1. `tau_rt` is the ROUND-TRIP delay and is consumed directly. The existing
-//     Dirichlet path computes `tau = 2 * distance / c0`, which is a monostatic
-//     assumption; a two-leg round trip already knows its own total delay and
-//     doubling it here would produce a self-consistent, exactly 2x wrong range.
-//  2. The phasor is `+j`. Channel publishes `exp(-j * k * d)`; the two are
-//     conjugates and the single conversion site is the Python synthesis facade.
-//  3. The cycle count is accumulated in double and wrapped to [0, 1) before
-//     `sincosf`. At ~47 cycles of `f_beat * t_m` a naive float32 phase costs
-//     about 1e-2 rad, which is the same magnitude as the gradients under test.
-//     Fast math stays off.
+// Spectrum is the 1/N DFT: stationary rows use Dirichlet, moving rows finite sums.
+// The model holds weights and delay rate fixed. Curved trajectories, moving
+// reflectors, amplitude changes and topology events require refreshed scene
+// observations; Radar.simulate defaults to per-ADC sampling for dynamic FMCW.
+// Phase uses double accumulation and cycle wrapping before sincosf.
+// Independent oracle: tests/test_fmcw_continuous_motion.py (primal/JVP/VJP).
 
 #include <torch/csrc/stable/accelerator.h>
 #include <torch/csrc/stable/c/shim.h>
