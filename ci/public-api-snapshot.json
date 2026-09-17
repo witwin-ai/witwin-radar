@@ -354,13 +354,19 @@
           "name": "RadarSimulationResult",
           "kind": "class",
           "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object') -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True) -> None"
         },
         {
           "name": "ScatterSitePolicy",
           "kind": "class",
           "target": "witwin.radar.simulation.ScatterSitePolicy",
-          "signature": "(source: 'str', positions_m: 'object | None' = None, structure_ids: 'tuple[int, ...] | None' = None, stable_ids: 'tuple[int, ...] | None' = None, power_w: 'float' = 1.0) -> None"
+          "signature": "(source: 'str', positions_m: 'object | None' = None, structure_ids: 'tuple[int, ...] | None' = None, stable_ids: 'tuple[int, ...] | None' = None, power_w: 'float' = 1.0, trajectory: 'object | None' = None) -> None"
+        },
+        {
+          "name": "SensorEndpointIds",
+          "kind": "class",
+          "target": "witwin.radar.simulation.SensorEndpointIds",
+          "signature": "(transmitters: 'tuple[int, ...]', receivers: 'tuple[int, ...]') -> None"
         },
         {
           "name": "StableIdAllocator",
@@ -490,7 +496,7 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None) -> 'RadarSimulationResult'"
+          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None) -> 'RadarSimulationResult'"
         }
       ]
     }

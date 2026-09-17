@@ -81,7 +81,8 @@
     "witwin.radar.simulation": {
       "RadarSimulationResult": "witwin.radar.simulation.RadarSimulationResult",
       "ScatterSitePolicy": "witwin.radar.simulation.ScatterSitePolicy",
-      "StableIdAllocator": "witwin.radar.simulation.StableIdAllocator"
+      "StableIdAllocator": "witwin.radar.simulation.StableIdAllocator",
+      "SensorEndpointIds": "witwin.radar.simulation.SensorEndpointIds"
     },
     "witwin.radar.smpl": {
       "SMPLBody": "witwin.radar.smpl.SMPLBody",

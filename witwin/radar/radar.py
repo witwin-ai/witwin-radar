@@ -1137,7 +1137,7 @@ class Radar:
             return signal
         return self.frontend.apply(signal).signal
 
-    def _synthesize(self, paths, *, slow_time_mode) -> SynthesisResult:
+    def _synthesize(self, paths, *, slow_time_mode, spec=None) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.
 
         Dispatch is a dict lookup on the STORED ``waveform.kind``. It is not a
@@ -1174,7 +1174,7 @@ class Radar:
             else SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=slow_time_mode)
         )
         synthesize, build_result = owners[kind]
-        spec = self.system_config.waveform_spec()
+        spec = self.system_config.waveform_spec() if spec is None else spec
         return build_result(synthesize(batch, spec), spec)
 
     def simulate(
@@ -1191,6 +1191,7 @@ class Radar:
         motion_event_period_frames: int | None = None,
         ids=None,
         polarization=None,
+        sensor_endpoints=None,
     ) -> RadarSimulationResult:
         """Simulate this radar over a Core world and return the frame cubes.
 
@@ -1236,6 +1237,7 @@ class Radar:
             ids=ids,
             polarization=polarization,
             antenna_pattern=self.system_config.sensors.pattern,
+            sensor_endpoints=sensor_endpoints,
         )
         self._last_result = result
         return result

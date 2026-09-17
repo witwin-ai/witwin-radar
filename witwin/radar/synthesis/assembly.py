@@ -1625,6 +1625,36 @@ def tdm_slot_count(*, num_chirps: int, num_tx: int) -> int:
     return num_chirps * num_tx
 
 
+def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
+    """World-time offsets, pair gather indices, and a single-slot waveform.
+
+    Every refreshed coefficient belongs to exactly one world instant. TDM
+    pairs select their transmitter's instant; OFDM and pulsed pairs share it.
+    Geometry is not interpolated across rows or topology epochs.
+    """
+
+    pairs = _require_array(num_tx, num_rx)
+    if isinstance(spec, FmcwSpec):
+        count = tdm_slot_count(num_chirps=spec.num_chirps, num_tx=num_tx)
+        times = tuple(slot * spec.chirp_period_s for slot in range(count))
+        index = pair_slot_index(
+            num_chirps=spec.num_chirps, num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device=device
+        )
+        single = replace(spec, num_chirps=1, carrier_rate_hz=0.0)
+    else:
+        if isinstance(spec, OfdmSpec):
+            count, period = spec.num_symbols, spec.symbol_period_s
+            single = replace(spec, num_symbols=1, carrier_rate_hz=0.0)
+        elif isinstance(spec, PulsedSpec):
+            count, period = spec.num_pulses, spec.pri_s
+            single = replace(spec, num_pulses=1, carrier_rate_hz=0.0)
+        else:
+            raise TypeError("unsupported waveform sampling contract")
+        times = tuple(slot * period for slot in range(count))
+        index = torch.arange(count, device=device).reshape(-1, 1).expand(-1, pairs)
+    return times, index, single
+
+
 def pair_slot_index(
     *, num_chirps: int, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str
 ) -> torch.Tensor:

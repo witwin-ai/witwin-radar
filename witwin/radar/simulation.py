@@ -1,58 +1,17 @@
-"""The scene-driven entry point: one Core world in, one frame cube out.
+"""Scene-driven radar assembly with motion evaluated at waveform observation times.
 
-Phase 11 work item 1. Until this module existed ``Radar.simulate`` was a
-refusal, and the only thing that assembled the pipeline end to end was fixture
-orchestration under ``tests/support``. Everything that orchestration called was
-already a production owner - the compile facade, the epoch loop, the propagation
-adapter, the two-way join, the waveform kernels, the frame assembly - so this
-module invents no physics and no geometry. It is the ASSEMBLY, and the assembly
-is the thing that was missing.
-
-The chain, once per frame, in the order it runs:
-
-    SceneEpochLoop.frame(t)          which world, and what does it cost
-      -> bind_radar_world             endpoints, sites and their stable IDs
-      -> reevaluate_slots x 2         one consumer call per leg, no discovery
-      -> TwoWayComposer.compose       the round trip, on the device
-      -> RoundTripPatternStage.apply  the array pattern, when one was declared
-      -> Radar.synthesize             the waveform this radar declares
-      -> assemble_frame_cube          [chirp, pair, sample] -> [TX, RX, ...]
-      -> Radar._apply_signal_models    the receive chain, if one is configured
-
-Four decisions are written here rather than left to a reader:
-
-**The binding is rebuilt every frame, the topology is not.** ``bind_radar_world``
-reads the CURRENT snapshot, so a site riding a Core rigid motion moves between
-frames; the frozen leg topologies and the join are built once per topology epoch
-and replayed. Rebuilding the binding is what a moving world costs, and it is the
-same three small constant tensors per endpoint set that the fixture already
-built per frame - it adds no discovery, no preparation and no host observation.
-
-**The frozen slow-time mode is the only mode this driver can honestly declare.**
-It composes ONCE per frame, so the weight does not walk across chirps and the
-waveform kernel owns the slow-time carrier. Declaring
-``REFRESHED_WEIGHT_NO_RATE`` here would tell the kernel that a weight which
-never walked has already walked, which drops the intra-frame Doppler while still
-producing a plausible cube. It is refused by name.
-
-**A scatter response has no default.** ``response`` is required. The two-way
-join multiplies the round trip by the target's complex response, and every
-possible default - unit amplitude, unit RCS, zero phase - is a statement about
-how strongly the target scatters. Guessing it would put a number nobody chose
-into every result.
-
-**Intra-frame Doppler needs a velocity dual and this entry does not open one.**
-``delay_rate`` is unpacked from a forward-AD tangent, and the tangent has to be
-authored from Core kinematics - :func:`witwin.radar.propagation.two_way_duals`
-is that owner. Frame-to-frame motion is fully modelled here, because every frame
-re-resolves the world at its own instant; the slow-time walk WITHIN one frame is
-zero unless a caller drives the kinematics seam itself. That is a named Phase-11
-scope boundary, not an approximation hidden in a default.
+Core owns geometry and authored motion; Channel evaluates each one-way path;
+Radar composes the round trip and synthesizes the waveform. Dynamic observations
+refresh the complex transport, so no parameter JVP is interpreted as velocity.
+Topology is rediscovered at every observation by default: replay alone cannot
+identify new paths. An explicitly longer discovery cadence is reported as an
+incomplete path set. No velocity is inferred by subtracting adjacent path rows.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -199,8 +158,13 @@ class ScatterSitePolicy:
     structure_ids: tuple[int, ...] | None = None
     stable_ids: tuple[int, ...] | None = None
     power_w: float = SITE_EXCITATION_POWER_W
+    trajectory: object | None = None
 
     def __post_init__(self) -> None:
+        if self.trajectory is not None and not callable(getattr(self.trajectory, "at", None)):
+            raise TypeError("a site trajectory must expose at(time_s) returning Kinematics")
+        if self.trajectory is not None and self.source != SITE_SOURCE_EXPLICIT:
+            raise ValueError("a site trajectory requires explicit material-point positions")
         if self.source not in SITE_SOURCES:
             raise ValueError(f"source must be one of {list(SITE_SOURCES)}, got {self.source!r}")
         if self.source == SITE_SOURCE_EXPLICIT:
@@ -225,13 +189,19 @@ class ScatterSitePolicy:
 
     @classmethod
     def explicit(
-        cls, positions_m: object, *, stable_ids: tuple[int, ...] | None = None, power_w: float = SITE_EXCITATION_POWER_W
+        cls,
+        positions_m: object,
+        *,
+        stable_ids: tuple[int, ...] | None = None,
+        power_w: float = SITE_EXCITATION_POWER_W,
+        trajectory: object | None = None,
     ) -> ScatterSitePolicy:
         return cls(
             source=SITE_SOURCE_EXPLICIT,
             positions_m=positions_m,
             stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
             power_w=power_w,
+            trajectory=trajectory,
         )
 
     @classmethod
@@ -261,6 +231,16 @@ class ScatterSitePolicy:
         """The ``(S, 3)`` float32 site positions this policy names."""
 
         if self.source == SITE_SOURCE_EXPLICIT:
+            if self.trajectory is not None:
+                from .propagation import Kinematics
+
+                sample = self.trajectory.at(snapshot.time_s)
+                if not isinstance(sample, Kinematics):
+                    raise TypeError("site trajectory.at(time_s) must return Kinematics")
+                positions = _site_positions(sample.positions_m, device=device)
+                if positions.shape != _site_positions(self.positions_m, device=device).shape:
+                    raise ValueError("a site trajectory must preserve material-point count and ordering")
+                return positions
             return _site_positions(self.positions_m, device=device)
         return _structure_anchor_positions(snapshot, self.structure_ids, device=device)
 
@@ -443,6 +423,24 @@ def _array_positions(radar: object, name: str) -> torch.Tensor:
     return positions
 
 
+@dataclass(frozen=True, slots=True)
+class SensorEndpointIds:
+    """Core phase-centre IDs in the radar's TX and RX array order.
+
+    Endpoint trajectories move phase centres. The antenna orientation remains
+    the Radar pose; rotating elements must author their pattern pose explicitly.
+    """
+
+    transmitters: tuple[int, ...]
+    receivers: tuple[int, ...]
+
+    def __post_init__(self):
+        for name in ("transmitters", "receivers"):
+            values = getattr(self, name)
+            if not values or len(set(values)) != len(values):
+                raise ValueError(f"{name} must contain distinct endpoint IDs")
+
+
 def bind_radar_world(
     radar: object,
     snapshot: object,
@@ -450,6 +448,7 @@ def bind_radar_world(
     sites: ScatterSitePolicy,
     ids: StableIdAllocator | None = None,
     polarization: object = DEFAULT_POLARIZATION,
+    sensor_endpoints: SensorEndpointIds | None = None,
 ) -> RadarWorldBinding:
     """Turn one ``Radar`` plus one ``SceneSnapshot`` into endpoint specs.
 
@@ -471,6 +470,16 @@ def bind_radar_world(
     transmitter_positions = _array_positions(radar, "tx_pos")
     receiver_positions = _array_positions(radar, "rx_pos")
     device = transmitter_positions.device
+    if sensor_endpoints is not None:
+        from .propagation import endpoint_kinematics
+
+        if not isinstance(sensor_endpoints, SensorEndpointIds):
+            raise TypeError("sensor_endpoints must be SensorEndpointIds")
+        tx = endpoint_kinematics(snapshot, sensor_endpoints.transmitters, device=device)
+        rx = endpoint_kinematics(snapshot, sensor_endpoints.receivers, device=device)
+        if tx.positions_m.shape != transmitter_positions.shape or rx.positions_m.shape != receiver_positions.shape:
+            raise ValueError("sensor endpoint counts must match the radar array")
+        transmitter_positions, receiver_positions = tx.positions_m, rx.positions_m
     if receiver_positions.device != device:
         raise ValueError(
             f"radar.tx_pos is on {device} but radar.rx_pos is on {receiver_positions.device}; one radar is one device"
@@ -568,6 +577,8 @@ class RadarSimulationResult:
     last_compiled_scene: object
     last_propagation: object
     last_radar_paths: object
+    sample_times_s: tuple[tuple[float, ...], ...] = ()
+    path_set_complete: bool = True
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axes):
@@ -604,6 +615,8 @@ class RadarSimulationResult:
         last_compiled_scene: object,
         last_propagation: object,
         last_radar_paths: object,
+        sample_times_s=(),
+        path_set_complete: bool = True,
     ) -> RadarSimulationResult:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
@@ -632,6 +645,8 @@ class RadarSimulationResult:
             last_compiled_scene=last_compiled_scene,
             last_propagation=last_propagation,
             last_radar_paths=last_radar_paths,
+            sample_times_s=tuple(tuple(float(t) for t in frame) for frame in sample_times_s),
+            path_set_complete=path_set_complete,
         )
 
 
@@ -676,6 +691,10 @@ def _times(times: object) -> tuple[float, ...]:
         raise ValueError(
             "times must name at least one frame instant; an empty sequence asks for a simulation of nothing"
         )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("frame times must be finite")
+    if any(later <= earlier for earlier, later in zip(values, values[1:], strict=False)):
+        raise ValueError("frame times must be strictly increasing")
     return values
 
 
@@ -695,6 +714,7 @@ def simulate_scene(
     ids: object = None,
     polarization: object = None,
     antenna_pattern: object = None,
+    sensor_endpoints: SensorEndpointIds | None = None,
 ) -> RadarSimulationResult:
     """Run ``radar`` over ``scene`` at ``times`` and publish the frame cubes.
 
@@ -760,7 +780,9 @@ def simulate_scene(
     reference_frequency_hz = propagation.reference_frequency_hz
 
     def bind(compiled, snapshot, previous):
-        binding = bind_radar_world(radar, snapshot, sites=policy, ids=ids, polarization=orientation)
+        binding = bind_radar_world(
+            radar, snapshot, sites=policy, ids=ids, polarization=orientation, sensor_endpoints=sensor_endpoints
+        )
         adapter = (
             ChannelPropagationAdapter(
                 compiled,
@@ -803,12 +825,35 @@ def simulate_scene(
         # the two would agree - which is exactly why building both is waste.
         return FrozenEpoch(adapter=adapter, handles=(inbound, outbound), payload=(composer, binding, stage))
 
+    dynamic = _dynamic_scene(scene)
+    if dynamic.endpoint_trajectories and sensor_endpoints is None:
+        raise ValueError("moving Core endpoints require explicit sensor_endpoints in array order")
+    sampled = bool(
+        dynamic.structure_trajectories
+        or dynamic.structure_deformations
+        or dynamic.endpoint_trajectories
+        or policy.trajectory is not None
+        or callable(getattr(response, "at", None))
+    )
+    from .synthesis.assembly import SlowTimeMode, waveform_sampling
+
+    if sampled:
+        offsets, pair_samples, single_spec = waveform_sampling(
+            solve_config.waveform_spec(), num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
+        )
+        mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
+        # A version poll cannot detect endpoint-induced path births. Complete
+        # dynamic sampling therefore rediscovers at each observed instant.
+        cadence = 1 if motion_event_period_frames is None else motion_event_period_frames * len(offsets)
+    else:
+        offsets, pair_samples, single_spec = (0.0,), None, None
+        cadence = motion_event_period_frames
     loop = SceneEpochLoop(
-        _dynamic_scene(scene),
+        dynamic,
         reference_frequency_hz=reference_frequency_hz,
         bind=bind,
         compile_scene=compile_scene,
-        motion_event_period_frames=motion_event_period_frames,
+        motion_event_period_frames=cadence,
         world_motion=world_motion,
     )
 
@@ -819,8 +864,16 @@ def simulate_scene(
     legs = None
     composed = None
     epoch_frame = None
-    for time_s in instants:
+    sample_times = []
+    slot_cubes = []
+    for frame_index, time_s in (
+        (frame_index, start + offset) for frame_index, start in enumerate(instants) for offset in offsets
+    ):
         epoch_frame = loop.frame(time_s)
+        if not slot_cubes:
+            epochs.append(epoch_frame.epoch)
+            reasons.append(epoch_frame.reason)
+            sample_times.append(tuple(instants[frame_index] + offset for offset in offsets))
         frozen = epoch_frame.frozen
         inbound_handle, outbound_handle = frozen.handles
         composer, epoch_binding, pattern_stage = frozen.payload
@@ -831,7 +884,14 @@ def simulate_scene(
         binding = (
             epoch_binding
             if epoch_frame.rediscovered
-            else bind_radar_world(radar, epoch_frame.snapshot, sites=policy, ids=ids, polarization=orientation)
+            else bind_radar_world(
+                radar,
+                epoch_frame.snapshot,
+                sites=policy,
+                ids=ids,
+                polarization=orientation,
+                sensor_endpoints=sensor_endpoints,
+            )
         )
         legs = RadarPropagationLegs(
             inbound=frozen.adapter.reevaluate_slots(
@@ -843,7 +903,8 @@ def simulate_scene(
         )
         # The caller's AD direction is a parameter perturbation, not a time
         # derivative. Physical motion must never depend on the JVP seed.
-        composed = composer.compose(legs.inbound, legs.outbound, response, include_delay_rate=False)
+        current_response = response.at(time_s) if callable(getattr(response, "at", None)) else response
+        composed = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
         if pattern_stage is not None:
             composed = pattern_stage.apply(
                 composed,
@@ -851,12 +912,22 @@ def simulate_scene(
                 rx_pos=binding.receivers.positions_m,
                 site_positions_m=binding.site_positions_m,
             )
-        synthesis = radar._synthesize(composed, slow_time_mode=mode)
+        synthesis = (
+            radar._synthesize(composed, slow_time_mode=mode, spec=single_spec)
+            if sampled
+            else radar._synthesize(composed, slow_time_mode=mode)
+        )
+        slot_cubes.append(synthesis.cube)
+        if len(slot_cubes) < len(offsets):
+            continue
+        if sampled:
+            stacked = torch.cat(slot_cubes, dim=0)
+            pairs = torch.arange(array.num_tx * array.num_rx, device=stacked.device)
+            synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
         cubes.append(
             radar._apply_signal_models(assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx))
         )
-        epochs.append(epoch_frame.epoch)
-        reasons.append(epoch_frame.reason)
+        slot_cubes = []
 
     return RadarSimulationResult.from_frames(
         cubes,
@@ -870,7 +941,9 @@ def simulate_scene(
         last_compiled_scene=epoch_frame.compiled,
         last_propagation=legs,
         last_radar_paths=composed,
+        sample_times_s=sample_times,
+        path_set_complete=not sampled or cadence == 1 or world_motion == "frozen_world" and loop.structures_move,
     )
 
 
-__all__ = ["RadarSimulationResult", "ScatterSitePolicy", "StableIdAllocator"]
+__all__ = ["RadarSimulationResult", "ScatterSitePolicy", "SensorEndpointIds", "StableIdAllocator"]

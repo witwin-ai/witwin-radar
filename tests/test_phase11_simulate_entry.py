@@ -352,10 +352,12 @@ def test_a_moving_world_discovers_exactly_once_per_epoch(monkeypatch):
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
     result = _simulate(radar, dynamic, (0.0, 1.0e-3, 2.0e-3))
 
-    assert result.epochs == (0, 1, 2)
+    slots = len(result.sample_times_s[0])
+    assert result.epochs == (0, slots, 2 * slots)
     assert result.rediscovery_reasons == ("first_frame", "structure_motion", "structure_motion")
-    assert result.compile_count == 3
-    assert result.discovery_count == len(set(result.epochs)) == 3
+    assert result.compile_count == 3 * slots
+    assert result.discovery_count == 3 * slots
+    assert result.path_set_complete
     assert len(freezes) == 2 * result.discovery_count, freezes
 
 
@@ -371,11 +373,14 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
     freezes = _count_freezes(monkeypatch)
     radar = _radar()
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
-    result = _simulate(radar, dynamic, (0.0, 1.0e-3, 2.0e-3), world_motion="fixed_winner_replay")
+    result = _simulate(
+        radar, dynamic, (0.0, 1.0e-3, 2.0e-3), world_motion="fixed_winner_replay", motion_event_period_frames=10
+    )
 
     assert result.epochs == (0, 0, 0)
     assert result.discovery_count == 1
-    assert result.compile_count == 3
+    assert result.compile_count == 3 * len(result.sample_times_s[0])
+    assert not result.path_set_complete
     assert len(freezes) == 2, freezes
     # And the replay really tracked the moved wall.
     assert not torch.equal(result.cube[0], result.cube[2])
