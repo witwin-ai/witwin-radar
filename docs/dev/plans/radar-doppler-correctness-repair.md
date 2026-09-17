@@ -30,3 +30,9 @@ Independent continuous-chirp, radial, rotor, two-limb proxy, moving-wall,
 and coplanar triangle-winner checks passed. Final results and runtime identity:
 `../audit/radar-doppler-correctness-acceptance-2026-09-16.md` and the adjacent
 `radar-doppler-correctness-evidence-2026-09-16.json`.
+
+User-requested follow-up: three-wall, depth-two multipath, one moving target,
+two frames of 2048 ADC observations each. Each frame has 64 round trips;
+the four strongest peaks agree with independent image geometry within one
+range/velocity bin. Multiple range regions brighten, fade, or move at different
+rates. Reproducible tool: `tools/validate_heavy_multipath.py`.

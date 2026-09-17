@@ -38,7 +38,8 @@ delay-rate 在 1e-15 s/s 容差内一致。微多普勒来自连续材料点轨�
 2. `15b876d`：波形时间上的动态场景、轨迹、endpoint 和路径重发现。
 3. `db74db7`：多径方向图和散射出射方向，含 native AD companions。
 4. `94c3a83`：chirp 内连续运动、逐 ADC 默认、typed micro-Doppler。
-5. 本记录所在提交：完整回归、独立物理实验、性能基线核对与验收证据。
+5. `5f82fe9`：完整回归、独立物理实验、性能基线核对与验收证据。
+6. 后续独立提交：按用户追加要求验证多径密集场景的 Range–Doppler 热度变化。
 
 ## 已执行验收
 
@@ -74,6 +75,47 @@ delay-rate 在 1e-15 s/s 容差内一致。微多普勒来自连续材料点轨�
 77 GHz、3.7 m、2 m/s 的 chirp 内运动实验：实测 fast-time 频率 1482102.376482 Hz，
 独立 oracle 1482102.375491 Hz；最大 IQ 误差 2.647e-7。
 图：`output/doppler-repair/experiments/microdoppler.png`；数值：同目录 `results.json`。
+
+### 多径密集场景：一个目标，多个距离热区
+
+追加实验由 `tools/validate_heavy_multipath.py --chirps 32 --samples 64` 执行。
+三面静态墙位于 x=6 m、y=±2 m，单程最多两次反射；一个目标从 (2, 0.35, 0) m
+以 (0.8, 0.3, 0) m/s 移动。比较 t=0 与 0.5 s 两帧，77 GHz、5 MSPS、
+60 THz/s、500 us chirp 周期。每帧 2048 次 ADC 观测和发现，均为完整策略。
+这里墙壁提供传播反射，散射目标只有一个；没有加入墙面自身的独立静态杂波点。
+
+两帧均得到 8 条 inbound × 8 条 outbound = **64 条双程组合**，合并互易路径后
+为 36 个 image-pair 组，部分组继续在当前分辨率内重合。独立镜像几何的单程长度
+最大误差分别为 9.552e-7 m、9.569e-7 m。两帧最强四个分离峰均匹配镜像预测，
+误差小于一个距离 bin（0.19518 m）和一个速度 bin（0.12167 m/s）。
+
+| 热区 | t=0 实测距离 bin | t=0.5 实测距离 bin | 峰值功率变化（统一参考） |
+| --- | ---: | ---: | ---: |
+| 主径 | 1.95 m | 2.54 m | 0 → −3.06 dB |
+| 一侧墙混合路径 | 3.32 m | 3.71 m | −3.79 → −12.63 dB |
+| 另一侧墙混合路径 | 3.12 m | 3.32 m | −8.69 → −4.59 dB |
+| 约 6 m 的重合多径区 | 6.05 m | 6.05 m | −9.03 → −12.02 dB |
+
+主径连续几何距离是 2.037 → 2.458 m，表中的 bin 跳转不是目标瞬移。
+约 6 m 区域包含后墙混合路径及未分辨贡献，不能把整个 bin 唯一归属给一条路径。
+这里速度轴采用 closing-positive；后墙混合路径的预测等效速度约 −0.025/−0.031 m/s，
+尽管物体实际仍以 (0.8, 0.3, 0) m/s 运动。
+
+原因是每条双程路径 q 有自己的总长 Lq，图上等效距离 Rq=Lq/2，物理 Doppler
+fq=−(fc/c) dLq/dt。目标移动会同时改变多个 Lq、方向投影、反射幅度与相干叠加。
+因此同一个物体会在多个距离处产生移动、增强或减弱的热区，而且不同路径可以有不同甚至
+相反的 Doppler 符号。不可将每个多径峰直接解释为另一个实体，也不可把强度变化直接当作速度。
+这些是可分辨多径的物理 ghost；当延迟/Doppler 差小于分辨率时，主要体现为同一单元内的相干
+增强/衰落，而非独立峰。独立文献核对：[MathWorks 多径 ghost 的实际路径说明](https://www.mathworks.com/help/driving/ug/radar-ghost-multipath.html)
+及 [RF propagation：ghost 与 fading 的分辨条件](https://www.mathworks.com/help/radar/ug/rf-propagation-fundamental-concepts.html)。
+
+图使用统一参考功率，range Hann 窗、Doppler 矩形窗；弱竖条包含有限 CPI 的窗旁瓣，
+不是每条弱条纹都代表一条路径。白叉是独立镜像预测。两帧耗时 117.64/101.20 s。
+这次验证没有执行随机大场景统计或更高阶反射的全面覆盖。
+
+图与原始 tensor：`output/doppler-repair/heavy-multipath/range-doppler.png`、`rd-0.0.pt`、`rd-0.5.pt`。
+路径数据：`results.json`；峰值独立验证：`peak-validation.json`。这些数值也进入本记录的
+已提交 evidence JSON；通过 `--analyze-only` 可以重新检查并绘图而无需重新仿真。
 
 ## 性能与适用边界
 

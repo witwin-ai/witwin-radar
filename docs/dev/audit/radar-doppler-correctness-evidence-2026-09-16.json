@@ -252,5 +252,1610 @@
       "path_set_complete": true
     }
   },
-  "experiment_native_fingerprint": "b170ee1e35e359e7af421cda79385efd57315229caee002db61468b83acb90f4"
+  "experiment_native_fingerprint": "b170ee1e35e359e7af421cda79385efd57315229caee002db61468b83acb90f4",
+  "heavy_multipath": {
+    "configuration": {
+      "chirps": 32,
+      "adc_samples": 64,
+      "fc_hz": 77000000000.0,
+      "sample_rate_hz": 5000000.0,
+      "slope_hz_per_s": 60000000000000.0,
+      "chirp_period_s": 0.0005,
+      "range_window": "hann",
+      "doppler_window": "rectangular",
+      "max_depth_per_leg": 2,
+      "wall_count": 3,
+      "moving_target_count": 1,
+      "velocity_mps": [
+        0.8,
+        0.3,
+        0
+      ]
+    },
+    "frames": [
+      {
+        "frame_start_s": 0.0,
+        "seconds": 117.63807440000528,
+        "observations": 2048,
+        "discoveries": 2048,
+        "path_set_complete": true,
+        "motion_sampling": "adc",
+        "round_trip_rows": 64,
+        "inbound_legs": 8,
+        "outbound_legs": 8,
+        "max_image_length_error_m": 9.552141202462394e-07,
+        "groups": [
+          {
+            "images": [
+              [],
+              []
+            ],
+            "equivalent_range_m": 2.036912729551209,
+            "closing_velocity_mps": -0.8398329932936218,
+            "physical_doppler_hz": -431.4127240893357,
+            "rows": 1,
+            "coherent_amplitude": 2.8941562798066195e-09,
+            "bin_power": 1.637995870277e-18
+          },
+          {
+            "images": [
+              [],
+              [
+                0
+              ]
+            ],
+            "equivalent_range_m": 6.018455791283998,
+            "closing_velocity_mps": -0.02544976998642584,
+            "physical_doppler_hz": -13.07325942772576,
+            "rows": 2,
+            "coherent_amplitude": 9.40273245324098e-10,
+            "bin_power": 2.0459123379368595e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 3.414684806048362,
+            "closing_velocity_mps": -0.7235881450054487,
+            "physical_doppler_hz": -371.69905832267165,
+            "rows": 2,
+            "coherent_amplitude": 1.9331615637775894e-09,
+            "bin_power": 6.840303901058258e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 3.099945252840926,
+            "closing_velocity_mps": -0.4812507739976506,
+            "physical_doppler_hz": -247.2130876475825,
+            "rows": 2,
+            "coherent_amplitude": 9.782818818619463e-10,
+            "bin_power": 2.2126859081003867e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.337792497158265,
+            "closing_velocity_mps": 0.007267152298807367,
+            "physical_doppler_hz": 3.733054065077029,
+            "rows": 2,
+            "coherent_amplitude": 7.47354237314607e-10,
+            "bin_power": 1.7122963089744159e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.4686537594482765,
+            "closing_velocity_mps": -0.11307744586449031,
+            "physical_doppler_hz": -58.086606912344365,
+            "rows": 2,
+            "coherent_amplitude": 4.668743994778351e-10,
+            "bin_power": 5.382293962998639e-20
+          },
+          {
+            "images": [
+              [],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 5.313403176853374,
+            "closing_velocity_mps": -0.6591899259792038,
+            "physical_doppler_hz": -338.61842048340446,
+            "rows": 2,
+            "coherent_amplitude": 3.498326700075165e-10,
+            "bin_power": 1.2662557557350608e-20
+          },
+          {
+            "images": [
+              [],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 4.971675131214781,
+            "closing_velocity_mps": -0.37632331212065645,
+            "physical_doppler_hz": -193.31303546862773,
+            "rows": 2,
+            "coherent_amplitude": 2.0281795770340635e-10,
+            "bin_power": 7.813800097768787e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0
+              ]
+            ],
+            "equivalent_range_m": 9.999998853016788,
+            "closing_velocity_mps": 0.7889334533207701,
+            "physical_doppler_hz": 405.2662052338842,
+            "rows": 1,
+            "coherent_amplitude": 7.637060355342729e-11,
+            "bin_power": 4.408705047742496e-22
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.3962278677811515,
+            "closing_velocity_mps": 0.09079507830174738,
+            "physical_doppler_hz": 46.64040633893831,
+            "rows": 2,
+            "coherent_amplitude": 3.140293696741406e-10,
+            "bin_power": 2.2321132787619602e-20
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.081488314573715,
+            "closing_velocity_mps": 0.33313244930954533,
+            "physical_doppler_hz": 171.12637701402744,
+            "rows": 2,
+            "coherent_amplitude": 1.589154532988177e-10,
+            "bin_power": 4.360792387906209e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 10.319335558891055,
+            "closing_velocity_mps": 0.8216503756060034,
+            "physical_doppler_hz": 422.072518726687,
+            "rows": 2,
+            "coherent_amplitude": 1.2140277222561386e-10,
+            "bin_power": 3.3712289105772414e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 10.450196821181066,
+            "closing_velocity_mps": 0.7013057774427056,
+            "physical_doppler_hz": 360.25285774926556,
+            "rows": 2,
+            "coherent_amplitude": 7.584067414661055e-11,
+            "bin_power": 1.6063992898621848e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.294946238586164,
+            "closing_velocity_mps": 0.15519329732799222,
+            "physical_doppler_hz": 79.72104417820546,
+            "rows": 2,
+            "coherent_amplitude": 5.68280143002321e-11,
+            "bin_power": 6.310823628024697e-22
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 8.95321819294757,
+            "closing_velocity_mps": 0.43805991118653953,
+            "physical_doppler_hz": 225.0264291929822,
+            "rows": 2,
+            "coherent_amplitude": 3.294644101803832e-11,
+            "bin_power": 2.0410643749422507e-22
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 4.792456882545515,
+            "closing_velocity_mps": -0.6073432967172754,
+            "physical_doppler_hz": -311.9853925560075,
+            "rows": 1,
+            "coherent_amplitude": 3.228154666768686e-10,
+            "bin_power": 1.8394986249209146e-20
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 4.477717329338079,
+            "closing_velocity_mps": -0.36500592570947743,
+            "physical_doppler_hz": -187.49942188091845,
+            "rows": 2,
+            "coherent_amplitude": 3.2672336952978386e-10,
+            "bin_power": 2.43106911845043e-20
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.715564573655419,
+            "closing_velocity_mps": 0.12351200058698059,
+            "physical_doppler_hz": 63.446719831741106,
+            "rows": 2,
+            "coherent_amplitude": 2.4959891509630587e-10,
+            "bin_power": 1.1779711890099309e-20
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.84642583594543,
+            "closing_velocity_mps": 0.003167402423682908,
+            "physical_doppler_hz": 1.6270588543197035,
+            "rows": 2,
+            "coherent_amplitude": 1.5592517877830873e-10,
+            "bin_power": 5.523130590353098e-21
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.6911752533505275,
+            "closing_velocity_mps": -0.5429450776910305,
+            "physical_doppler_hz": -278.9047547167404,
+            "rows": 2,
+            "coherent_amplitude": 1.1683596469722687e-10,
+            "bin_power": 1.1758684417706521e-21
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.3494472077119335,
+            "closing_velocity_mps": -0.26007846383248323,
+            "physical_doppler_hz": -133.59936970196367,
+            "rows": 2,
+            "coherent_amplitude": 6.773647430167322e-11,
+            "bin_power": 3.0408496215802593e-21
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 4.162977776130643,
+            "closing_velocity_mps": -0.12266855470167942,
+            "physical_doppler_hz": -63.013451205829305,
+            "rows": 1,
+            "coherent_amplitude": 8.26696398069766e-11,
+            "bin_power": 1.306293478425258e-21
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.400825020447982,
+            "closing_velocity_mps": 0.3658493715947786,
+            "physical_doppler_hz": 187.93269050683023,
+            "rows": 2,
+            "coherent_amplitude": 1.263102376766994e-10,
+            "bin_power": 6.237347734917219e-21
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.531686282737994,
+            "closing_velocity_mps": 0.2455047734314809,
+            "physical_doppler_hz": 126.11302952940883,
+            "rows": 2,
+            "coherent_amplitude": 7.890637888522192e-11,
+            "bin_power": 8.821250144153863e-22
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.376435700143091,
+            "closing_velocity_mps": -0.30060770668323256,
+            "physical_doppler_hz": -154.4187840416513,
+            "rows": 2,
+            "coherent_amplitude": 5.912517148625826e-11,
+            "bin_power": 3.0408496215802593e-21
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.034707654504498,
+            "closing_velocity_mps": -0.017741092824685264,
+            "physical_doppler_hz": -9.113399026874553,
+            "rows": 2,
+            "coherent_amplitude": 3.42782348306895e-11,
+            "bin_power": 2.0459123379368595e-19
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 10.769533527055334,
+            "closing_velocity_mps": 0.7340226997279389,
+            "physical_doppler_hz": 377.0591712420684,
+            "rows": 2,
+            "coherent_amplitude": 6.028018828688215e-11,
+            "bin_power": 1.0430476913448752e-21
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 10.900394789345345,
+            "closing_velocity_mps": 0.6136781015646412,
+            "physical_doppler_hz": 315.239510264647,
+            "rows": 1,
+            "coherent_amplitude": 1.882860646039309e-11,
+            "bin_power": 7.008305284122059e-23
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.745144206750442,
+            "closing_velocity_mps": 0.06756562144992775,
+            "physical_doppler_hz": 34.70769669358685,
+            "rows": 2,
+            "coherent_amplitude": 2.8216844849865893e-11,
+            "bin_power": 2.0109946380659086e-22
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 9.40341616111185,
+            "closing_velocity_mps": 0.35043223530847506,
+            "physical_doppler_hz": 180.0130817083636,
+            "rows": 2,
+            "coherent_amplitude": 1.6358915209358107e-11,
+            "bin_power": 9.060405128930755e-23
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 9.272554898821838,
+            "closing_velocity_mps": 0.47077683347177274,
+            "physical_doppler_hz": 241.83274268578498,
+            "rows": 2,
+            "coherent_amplitude": 2.618669548185628e-11,
+            "bin_power": 1.8971627667489856e-22
+          },
+          {
+            "images": [
+              [
+                1,
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 8.248165578516947,
+            "closing_velocity_mps": -0.1956802448062384,
+            "physical_doppler_hz": -100.51873186269655,
+            "rows": 2,
+            "coherent_amplitude": 1.2257864234730483e-11,
+            "bin_power": 2.3064547908340036e-23
+          },
+          {
+            "images": [
+              [
+                1,
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.906437532878352,
+            "closing_velocity_mps": 0.08718636905230889,
+            "physical_doppler_hz": 44.78665315208019,
+            "rows": 1,
+            "coherent_amplitude": 3.5532936946076724e-12,
+            "bin_power": 5.730949015992284e-22
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.614282944460431,
+            "closing_velocity_mps": 0.18791021961322543,
+            "physical_doppler_hz": 96.52735767100825,
+            "rows": 2,
+            "coherent_amplitude": 4.5168419956609514e-11,
+            "bin_power": 2.411921896656325e-22
+          },
+          {
+            "images": [
+              [
+                2,
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 8.58989362415554,
+            "closing_velocity_mps": -0.4785468586647857,
+            "physical_doppler_hz": -245.82411687747327,
+            "rows": 1,
+            "coherent_amplitude": 1.057155247010809e-11,
+            "bin_power": 2.985425794235918e-23
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 10.638672264765322,
+            "closing_velocity_mps": 0.8543672978912366,
+            "physical_doppler_hz": 438.87883221948977,
+            "rows": 1,
+            "coherent_amplitude": 4.824711085713745e-11,
+            "bin_power": 4.656470480854312e-22
+          }
+        ]
+      },
+      {
+        "frame_start_s": 0.5,
+        "seconds": 101.20335219999833,
+        "observations": 2048,
+        "discoveries": 2048,
+        "path_set_complete": true,
+        "motion_sampling": "adc",
+        "round_trip_rows": 64,
+        "inbound_legs": 8,
+        "outbound_legs": 8,
+        "max_image_length_error_m": 9.569263941244799e-07,
+        "groups": [
+          {
+            "images": [
+              [],
+              []
+            ],
+            "equivalent_range_m": 2.458084705490232,
+            "closing_velocity_mps": -0.8444243580131249,
+            "physical_doppler_hz": -433.77125629364974,
+            "rows": 1,
+            "coherent_amplitude": 1.989460150017179e-09,
+            "bin_power": 8.10537790327249e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                0
+              ]
+            ],
+            "equivalent_range_m": 6.032508333760177,
+            "closing_velocity_mps": -0.030602580155731918,
+            "physical_doppler_hz": -15.720199818978486,
+            "rows": 2,
+            "coherent_amplitude": 8.106664569134045e-10,
+            "bin_power": 1.0280853996245974e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 3.7815318223756393,
+            "closing_velocity_mps": -0.743042753043499,
+            "physical_doppler_hz": -381.6926707632479,
+            "rows": 2,
+            "coherent_amplitude": 6.849596837125866e-10,
+            "bin_power": 8.948594316728654e-20
+          },
+          {
+            "images": [
+              [],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 3.35174999090629,
+            "closing_velocity_mps": -0.5253430266029739,
+            "physical_doppler_hz": -269.8627798597188,
+            "rows": 2,
+            "coherent_amplitude": 1.905488421380129e-09,
+            "bin_power": 5.694622046532633e-19
+          },
+          {
+            "images": [
+              [],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.334786964751823,
+            "closing_velocity_mps": 0.004970056609139184,
+            "physical_doppler_hz": 2.5530619513031056,
+            "rows": 2,
+            "coherent_amplitude": 6.449505105990066e-10,
+            "bin_power": 6.053338095701174e-20
+          },
+          {
+            "images": [
+              [],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.527904760706134,
+            "closing_velocity_mps": -0.12383051662888522,
+            "physical_doppler_hz": -63.61033792534008,
+            "rows": 2,
+            "coherent_amplitude": 5.523259518343559e-10,
+            "bin_power": 5.2719222198899226e-20
+          },
+          {
+            "images": [
+              [],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 5.647170902290519,
+            "closing_velocity_mps": -0.6754679775054211,
+            "physical_doppler_hz": -346.98027171795917,
+            "rows": 2,
+            "coherent_amplitude": 1.0005295213191458e-10,
+            "bin_power": 1.5307217553879944e-21
+          },
+          {
+            "images": [
+              [],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 5.166202538637268,
+            "closing_velocity_mps": -0.4016177987503228,
+            "physical_doppler_hz": -206.3065275896624,
+            "rows": 2,
+            "coherent_amplitude": 3.385138886884056e-10,
+            "bin_power": 1.4775142106687662e-20
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0
+              ]
+            ],
+            "equivalent_range_m": 9.606931962030123,
+            "closing_velocity_mps": 0.783219197701661,
+            "physical_doppler_hz": 402.3308566556928,
+            "rows": 1,
+            "coherent_amplitude": 8.25827606024578e-11,
+            "bin_power": 6.787620751688884e-22
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.355955450645585,
+            "closing_velocity_mps": 0.07077902481389398,
+            "physical_doppler_hz": 36.35838571142331,
+            "rows": 2,
+            "coherent_amplitude": 1.3955389557349898e-10,
+            "bin_power": 4.118613251206611e-22
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.926173619176236,
+            "closing_velocity_mps": 0.2884787512544191,
+            "physical_doppler_hz": 148.1882766149525,
+            "rows": 2,
+            "coherent_amplitude": 3.8822478693315283e-10,
+            "bin_power": 1.6142360183725578e-20
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 9.909210593021768,
+            "closing_velocity_mps": 0.8187918344665321,
+            "physical_doppler_hz": 420.6041184259744,
+            "rows": 2,
+            "coherent_amplitude": 1.3140241326241664e-10,
+            "bin_power": 2.2167632622854195e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 10.10232838897608,
+            "closing_velocity_mps": 0.6899912612285077,
+            "physical_doppler_hz": 354.44071854933117,
+            "rows": 2,
+            "coherent_amplitude": 1.1253112460125425e-10,
+            "bin_power": 2.293649861780937e-21
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.221594530560465,
+            "closing_velocity_mps": 0.1383538003519718,
+            "physical_doppler_hz": 71.07078475671211,
+            "rows": 2,
+            "coherent_amplitude": 2.0384830220220932e-11,
+            "bin_power": 5.873784462894925e-23
+          },
+          {
+            "images": [
+              [
+                0
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 8.740626166907214,
+            "closing_velocity_mps": 0.4122039791070702,
+            "physical_doppler_hz": 211.74452888500886,
+            "rows": 2,
+            "coherent_amplitude": 6.896892184727057e-11,
+            "bin_power": 5.2689042223444545e-22
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                1
+              ]
+            ],
+            "equivalent_range_m": 5.104978939261047,
+            "closing_velocity_mps": -0.6416611480738731,
+            "physical_doppler_hz": -329.61408523284615,
+            "rows": 1,
+            "coherent_amplitude": 5.895691815665096e-11,
+            "bin_power": 2.1676773548683464e-24
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 4.675197107791698,
+            "closing_velocity_mps": -0.423961421633348,
+            "physical_doppler_hz": -217.78419432931696,
+            "rows": 2,
+            "coherent_amplitude": 3.280243468763764e-10,
+            "bin_power": 1.0142522740639399e-20
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.6582340816372305,
+            "closing_velocity_mps": 0.10635166157876508,
+            "physical_doppler_hz": 54.6316474817049,
+            "rows": 2,
+            "coherent_amplitude": 1.1102637349416098e-10,
+            "bin_power": 4.042303618266285e-21
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.851351877591542,
+            "closing_velocity_mps": -0.02244891165925933,
+            "physical_doppler_hz": -11.53175239493829,
+            "rows": 2,
+            "coherent_amplitude": 9.508132233574207e-11,
+            "bin_power": 2.803886811839217e-21
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.970618019175927,
+            "closing_velocity_mps": -0.5740863725357952,
+            "physical_doppler_hz": -294.90168618755735,
+            "rows": 2,
+            "coherent_amplitude": 1.722382669552324e-11,
+            "bin_power": 1.9667113947259116e-22
+          },
+          {
+            "images": [
+              [
+                1
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.489649655522676,
+            "closing_velocity_mps": -0.3002361937806969,
+            "physical_doppler_hz": -154.2279420592606,
+            "rows": 2,
+            "coherent_amplitude": 5.827418859486732e-11,
+            "bin_power": 6.835016019745542e-22
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                2
+              ]
+            ],
+            "equivalent_range_m": 4.2454152763223485,
+            "closing_velocity_mps": -0.20626169519282292,
+            "physical_doppler_hz": -105.95430342578774,
+            "rows": 1,
+            "coherent_amplitude": 4.5626524151270273e-10,
+            "bin_power": 3.601314327448016e-20
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.228452250167882,
+            "closing_velocity_mps": 0.3240513880192902,
+            "physical_doppler_hz": 166.46153838523412,
+            "rows": 2,
+            "coherent_amplitude": 3.0886412190469493e-10,
+            "bin_power": 1.0617441542312044e-20
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 7.421570046122193,
+            "closing_velocity_mps": 0.19525081478126577,
+            "physical_doppler_hz": 100.29813850859094,
+            "rows": 2,
+            "coherent_amplitude": 2.645065980942456e-10,
+            "bin_power": 2.2399521075356073e-20
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 6.540836187706578,
+            "closing_velocity_mps": -0.35638664609527015,
+            "physical_doppler_hz": -183.07179528402813,
+            "rows": 2,
+            "coherent_amplitude": 4.791494176569668e-11,
+            "bin_power": 1.2245956099579105e-22
+          },
+          {
+            "images": [
+              [
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 6.0598678240533275,
+            "closing_velocity_mps": -0.08253646734017177,
+            "physical_doppler_hz": -42.39805115573138,
+            "rows": 2,
+            "coherent_amplitude": 1.6211288246487573e-10,
+            "bin_power": 1.2095552712426783e-20
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 10.404607019967726,
+            "closing_velocity_mps": 0.7255638979933788,
+            "physical_doppler_hz": 372.7139803196128,
+            "rows": 2,
+            "coherent_amplitude": 8.952753255200645e-11,
+            "bin_power": 1.1401296348850298e-21
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "equivalent_range_m": 10.597724815922037,
+            "closing_velocity_mps": 0.5967633247553544,
+            "physical_doppler_hz": 306.5505804429696,
+            "rows": 1,
+            "coherent_amplitude": 3.833504133744456e-11,
+            "bin_power": 3.1480727570211518e-22
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.716990957506422,
+            "closing_velocity_mps": 0.045125863878818506,
+            "physical_doppler_hz": 23.180646650350525,
+            "rows": 2,
+            "coherent_amplitude": 1.388866038042775e-11,
+            "bin_power": 3.327819195005701e-23
+          },
+          {
+            "images": [
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 9.236022593853171,
+            "closing_velocity_mps": 0.3189760426339169,
+            "physical_doppler_hz": 163.85439077864729,
+            "rows": 2,
+            "coherent_amplitude": 4.6990135524795225e-11,
+            "bin_power": 5.700442691936557e-22
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 9.04290479789886,
+            "closing_velocity_mps": 0.4477766158719413,
+            "physical_doppler_hz": 230.01779065529047,
+            "rows": 2,
+            "coherent_amplitude": 5.4870336432680394e-11,
+            "bin_power": 3.1897748474792657e-22
+          },
+          {
+            "images": [
+              [
+                1,
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 8.355288735437556,
+            "closing_velocity_mps": -0.23266141824261902,
+            "physical_doppler_hz": -119.51554301397178,
+            "rows": 2,
+            "coherent_amplitude": 8.512186476650551e-12,
+            "bin_power": 1.6901766146083566e-23
+          },
+          {
+            "images": [
+              [
+                1,
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "equivalent_range_m": 7.8743203717843056,
+            "closing_velocity_mps": 0.04118876051247938,
+            "physical_doppler_hz": 21.15820111432498,
+            "rows": 1,
+            "coherent_amplitude": 1.4399841314714628e-11,
+            "bin_power": 2.803886811839217e-21
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 9.52387316155211,
+            "closing_velocity_mps": 0.1739264371168429,
+            "physical_doppler_hz": 89.34404652699371,
+            "rows": 2,
+            "coherent_amplitude": 1.621776685971713e-11,
+            "bin_power": 2.6279818740276045e-23
+          },
+          {
+            "images": [
+              [
+                2,
+                1
+              ],
+              [
+                2,
+                1
+              ]
+            ],
+            "equivalent_range_m": 8.836257099090806,
+            "closing_velocity_mps": -0.5065115969977174,
+            "physical_doppler_hz": -260.18928714226854,
+            "rows": 1,
+            "coherent_amplitude": 1.2579541382350211e-12,
+            "bin_power": 7.489485863289679e-25
+          },
+          {
+            "images": [
+              [
+                0,
+                2
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "equivalent_range_m": 10.211489224013414,
+            "closing_velocity_mps": 0.8543644712314032,
+            "physical_doppler_hz": 438.87738019625596,
+            "rows": 1,
+            "coherent_amplitude": 5.227060826218855e-11,
+            "bin_power": 3.8679377417698717e-22
+          }
+        ]
+      }
+    ],
+    "peak_validation": [
+      {
+        "time_s": 0.0,
+        "range_resolution_m": 0.19517738151041666,
+        "velocity_resolution_mps": 0.12166901704545463,
+        "peaks": [
+          {
+            "range_m": 1.9517738151041666,
+            "closing_velocity_mps": -0.8516831193181817,
+            "power_db_shared_reference": 0.0,
+            "closest_image_pair": [
+              [],
+              []
+            ],
+            "range_error_m": 0.08513891444704225,
+            "velocity_error_mps": 0.011850126024559926,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 3.3180154856770834,
+            "closing_velocity_mps": -0.7300141022727272,
+            "power_db_shared_reference": -3.7923738956451416,
+            "closest_image_pair": [
+              [],
+              [
+                1
+              ]
+            ],
+            "range_error_m": 0.09666932037127873,
+            "velocity_error_mps": 0.00642595726727857,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 3.1228381041666666,
+            "closing_velocity_mps": -0.4866760681818182,
+            "power_db_shared_reference": -8.693929672241211,
+            "closest_image_pair": [
+              [],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.022892851325740704,
+            "velocity_error_mps": 0.005425294184167595,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 6.050498826822917,
+            "closing_velocity_mps": 0.0,
+            "power_db_shared_reference": -9.034257888793945,
+            "closest_image_pair": [
+              [
+                2
+              ],
+              [
+                1,
+                2
+              ]
+            ],
+            "range_error_m": 0.0157911723184192,
+            "velocity_error_mps": 0.017741092824685264,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 6.44085358984375,
+            "closing_velocity_mps": 0.0,
+            "power_db_shared_reference": -12.426920890808105,
+            "closest_image_pair": [
+              [],
+              [
+                0,
+                2
+              ]
+            ],
+            "range_error_m": 0.10306109268548447,
+            "velocity_error_mps": 0.007267152298807367,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 2.342128578125,
+            "closing_velocity_mps": -0.8516831193181817,
+            "power_db_shared_reference": -15.91993236541748,
+            "closest_image_pair": [
+              [],
+              []
+            ],
+            "range_error_m": 0.30521584857379125,
+            "velocity_error_mps": 0.011850126024559926,
+            "within_one_bin": false
+          },
+          {
+            "range_m": 3.7083702486979164,
+            "closing_velocity_mps": -0.7300141022727272,
+            "power_db_shared_reference": -17.780569076538086,
+            "closest_image_pair": [
+              [],
+              [
+                1
+              ]
+            ],
+            "range_error_m": 0.2936854426495543,
+            "velocity_error_mps": 0.00642595726727857,
+            "within_one_bin": false
+          },
+          {
+            "range_m": 4.489079774739583,
+            "closing_velocity_mps": -0.3650070511363636,
+            "power_db_shared_reference": -18.28515625,
+            "closest_image_pair": [
+              [
+                1
+              ],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.011362445401504218,
+            "velocity_error_mps": 1.125426886183778e-06,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 7.416740497395833,
+            "closing_velocity_mps": 0.12166901704545455,
+            "power_db_shared_reference": -18.65596580505371,
+            "closest_image_pair": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ],
+            "range_error_m": 0.020512629614681366,
+            "velocity_error_mps": 0.03087393874370717,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 4.8794345377604165,
+            "closing_velocity_mps": -0.6083450852272727,
+            "power_db_shared_reference": -19.49613380432129,
+            "closest_image_pair": [
+              [
+                1
+              ],
+              [
+                1
+              ]
+            ],
+            "range_error_m": 0.08697765521490108,
+            "velocity_error_mps": 0.0010017885099973256,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 5.26978930078125,
+            "closing_velocity_mps": -0.6083450852272727,
+            "power_db_shared_reference": -21.1179141998291,
+            "closest_image_pair": [
+              [],
+              [
+                2,
+                1
+              ]
+            ],
+            "range_error_m": 0.04361387607212386,
+            "velocity_error_mps": 0.050844840751931075,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 7.807095260416666,
+            "closing_velocity_mps": 0.12166901704545455,
+            "power_db_shared_reference": -21.431781768798828,
+            "closest_image_pair": [
+              [
+                1
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "range_error_m": 0.09153068676124754,
+            "velocity_error_mps": 0.0018429835415260387,
+            "within_one_bin": true
+          }
+        ]
+      },
+      {
+        "time_s": 0.5,
+        "range_resolution_m": 0.19517738151041666,
+        "velocity_resolution_mps": 0.12166901704545463,
+        "peaks": [
+          {
+            "range_m": 2.537305959635417,
+            "closing_velocity_mps": -0.8516831193181817,
+            "power_db_shared_reference": -3.0553956031799316,
+            "closest_image_pair": [
+              [],
+              []
+            ],
+            "range_error_m": 0.07922125414518488,
+            "velocity_error_mps": 0.007258761305056871,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 3.3180154856770834,
+            "closing_velocity_mps": -0.4866760681818182,
+            "power_db_shared_reference": -4.588479042053223,
+            "closest_image_pair": [
+              [],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.033734505229206846,
+            "velocity_error_mps": 0.03866695842115575,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 6.050498826822917,
+            "closing_velocity_mps": 0.0,
+            "power_db_shared_reference": -12.022836685180664,
+            "closest_image_pair": [
+              [],
+              [
+                0
+              ]
+            ],
+            "range_error_m": 0.017990493062740143,
+            "velocity_error_mps": 0.030602580155731918,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 3.7083702486979164,
+            "closing_velocity_mps": -0.7300141022727272,
+            "power_db_shared_reference": -12.625579833984375,
+            "closest_image_pair": [
+              [],
+              [
+                1
+              ]
+            ],
+            "range_error_m": 0.07316157367772291,
+            "velocity_error_mps": 0.013028650770771755,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 6.44085358984375,
+            "closing_velocity_mps": 0.0,
+            "power_db_shared_reference": -13.690443992614746,
+            "closest_image_pair": [
+              [],
+              [
+                0,
+                2
+              ]
+            ],
+            "range_error_m": 0.10606662509192688,
+            "velocity_error_mps": 0.004970056609139184,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 4.293902393229167,
+            "closing_velocity_mps": -0.2433380340909091,
+            "power_db_shared_reference": -16.57851791381836,
+            "closest_image_pair": [
+              [
+                2
+              ],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.04848711690681817,
+            "velocity_error_mps": 0.037076338898086175,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 3.3180154856770834,
+            "closing_velocity_mps": -0.7300141022727272,
+            "power_db_shared_reference": -17.515331268310547,
+            "closest_image_pair": [
+              [],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.033734505229206846,
+            "velocity_error_mps": 0.2046710756697533,
+            "within_one_bin": false
+          },
+          {
+            "range_m": 7.416740497395833,
+            "closing_velocity_mps": 0.2433380340909091,
+            "power_db_shared_reference": -18.6407413482666,
+            "closest_image_pair": [
+              [
+                2
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "range_error_m": 0.004829548726360322,
+            "velocity_error_mps": 0.048087219309643325,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 6.831208352864583,
+            "closing_velocity_mps": 0.2433380340909091,
+            "power_db_shared_reference": -20.063457489013672,
+            "closest_image_pair": [
+              [
+                0
+              ],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.09496526631165292,
+            "velocity_error_mps": 0.04514071716350998,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 5.074611919270834,
+            "closing_velocity_mps": -0.3650070511363636,
+            "power_db_shared_reference": -20.447811126708984,
+            "closest_image_pair": [
+              [],
+              [
+                1,
+                2
+              ]
+            ],
+            "range_error_m": 0.09159061936643464,
+            "velocity_error_mps": 0.03661074761395916,
+            "within_one_bin": true
+          },
+          {
+            "range_m": 2.1469511966145833,
+            "closing_velocity_mps": -0.8516831193181817,
+            "power_db_shared_reference": -20.453598022460938,
+            "closest_image_pair": [
+              [],
+              []
+            ],
+            "range_error_m": 0.3111335088756486,
+            "velocity_error_mps": 0.007258761305056871,
+            "within_one_bin": false
+          },
+          {
+            "range_m": 3.3180154856770834,
+            "closing_velocity_mps": -0.2433380340909091,
+            "power_db_shared_reference": -20.97295379638672,
+            "closest_image_pair": [
+              [],
+              [
+                2
+              ]
+            ],
+            "range_error_m": 0.033734505229206846,
+            "velocity_error_mps": 0.28200499251206484,
+            "within_one_bin": false
+          }
+        ]
+      }
+    ]
+  }
 }
