@@ -6,8 +6,8 @@ The per-path, per-sample sum
 
 runs entirely inside a CUDA kernel. Torch's role here is validation, buffer
 allocation, autograd dispatch, and result assembly; it never evaluates the
-phasor sum. Three registered operators  -  forward, backward, jvp  -  have
-exactly one Python owner, this module.
+phasor sum. Beat, spectrum and refreshed-observation families each provide
+forward, backward and jvp operators, all owned by this module.
 
 Two structural contracts, each with a test:
 

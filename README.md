@@ -9,6 +9,9 @@ uses phase-controlled temporal interpolation and batched propagation. Import `Ad
 `witwin.radar.simulation`. The default `"adc"` mode remains the exhaustive reference; adaptive topology
 probes cannot certify arbitrarily brief events between observations. Receiver effects operate on beat samples
 before the requested range transform, and shared oscillator noise uses actual timestamps and path delays.
+Adaptive replay reuses a complete LOS topology in an empty world and batches propagation, joins,
+antenna weighting and ADC synthesis. The measured 128-sample × 1024-chirp rotor scene now takes
+about 0.61 s on RTX 5080; see [performance evidence and limits](PERFORMANCE.md).
 
 ## Installation and runtime
 

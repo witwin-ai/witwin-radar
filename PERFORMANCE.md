@@ -10,6 +10,43 @@ For that reason, pre-consolidation latency, FFT-count, launch-count, and allocat
 
 ## Doppler repair measurements
 
+### Rotor scheduling optimization (2026-09-17)
+
+Completed-GPU end-to-end timing in witwin2, RTX 5080 / Ryzen 7 9800X3D, with one warmup and
+three measured calls to `Radar.simulate`. Same 77 GHz, 128 ADC samples, 1024 chirps, 80 Hz
+orbital point target, empty LOS world, unit-RCS/antenna and 0.02 rad adaptive tolerance as the
+MATLAB comparison. This is a complete public scene call, including discovery, rather than known-path synthesis.
+
+| Scene | Median | Measured range | Independent ADC-oracle IQ relative L2 |
+| --- | ---: | ---: | ---: |
+| Rotor, before this optimization | 16.165 s | 14.870–19.294 s | 0.7207% |
+| Rotor, optimized | 608.7 ms | 571.8–818.5 ms | 0.7207% |
+| Accelerating point, optimized | 242.2 ms | 217.3–306.2 ms | 0.8132% |
+| Two articulated point proxies, optimized | 519.9 ms | 442.9–599.3 ms | 0.5643% |
+| Static point, 128 chirps | 19.46 ms | 18.16–19.55 ms | 0.0463% |
+
+Rotor speedup is 26.56x against the same-session baseline; the full IQ relative change is
+3.26e-8. The earlier optimized run measured 497–586 ms, median 566 ms; the final repeat above
+is retained rather than selecting the faster run. Shared-desktop latency is not a real-time guarantee.
+677 phase probes and 169 accepted intervals remain; discoveries fall from 677 to 1, and native
+ADC synthesis calls from 512 to 4. The initial 263062 per-observation `full_like` calls disappear.
+
+The three-wall, depth-two, 64-path fixture still requires 37 discoveries: one measured run took
+1.356 s versus the exhaustive ADC reference's 96.321 s (71.0x), IQ error 0.0566%, RD power
+error 0.00649%. Its native ADC synthesis uses one batch. Geometry-dependent discovery remains
+the limit; hundreds of milliseconds are not established for arbitrary heavy multipath or moving meshes.
+
+The retained MATLAB CPU rotor result is 250.7 ms. The optimized WiTwin rotor is still about 2.43x
+slower for that simple point-target comparison; this work does not establish a general MATLAB speed advantage.
+MATLAB was not rerun in this optimization pass. Different precision, devices, and fractional-delay models
+remain as described in the original comparison report.
+
+Reproduce: `python tools/validate_rotor_performance.py --output output/rotor-optimization/final
+--baseline output/rotor-optimization/baseline --cases rotor acceleration limbs static` (one command).
+Evidence: `output/rotor-optimization/final/acceptance.json`, the saved MAT cubes, and
+[the optimization acceptance report](docs/dev/audit/radar-rotor-optimization-2026-09-17.md).
+The following 2026-09-16 tables are historical pre-optimization measurements.
+
 ### Adaptive motion experiment (2026-09-16)
 
 `tools/validate_adaptive_motion.py` compares complete public simulations in witwin2 on RTX 5080,

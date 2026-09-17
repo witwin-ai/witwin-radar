@@ -108,8 +108,8 @@ def test_every_context_read_sits_inside_a_tape_owner():
 def test_the_context_scan_is_not_vacuous():
     """Calibration: the scan finds the reads that are supposed to be there.
 
-    Ten owners each read their tape in backward and jvp: twenty reads,
-    including scatter direction and adaptive path interpolation. A scanner that
+    Eleven owners each read their tape in backward and jvp: twenty-two reads,
+    including refreshed ADC observations and adaptive path interpolation. A scanner that
     silently matched nothing would make the assertion above pass forever.
     """
 
@@ -117,7 +117,7 @@ def test_the_context_scan_is_not_vacuous():
     live = {name: reads for name, reads in found.items() if reads}
     assert set(live) == TAPE_OWNER_FILES, sorted(live)
     total = sum(len(reads) for reads in live.values())
-    assert total == 20, {name: len(reads) for name, reads in live.items()}
+    assert total == 22, {name: len(reads) for name, reads in live.items()}
 
 
 def test_no_production_module_stores_a_context_on_an_object():

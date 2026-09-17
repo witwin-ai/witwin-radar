@@ -10,10 +10,20 @@ test delay, complex phase, amplitude, full leg identity, and validity; mismatche
 The native interpolant supports VJP/JVP for a fixed accepted partition. Discovery and
 refinement decisions are discrete. Budget exhaustion raises instead of returning an unchecked cube.
 
-`adaptive_diagnostics` records observation/discovery counts, tested errors, and topology refinements.
-`path_set_complete` is false unless every ADC instant was actually discovered. Probe spacing is
+`adaptive_diagnostics` records evaluation counts, tested errors, topology refinements and native
+synthesis batch counts. `result.discovery_count` separately counts topology discoveries.
+`path_set_complete` is false unless every ADC instant was evaluated. Probe spacing is
 not a proof that a shorter occlusion or oscillation was absent. Use `motion_sampling="adc"`
 (the default) for exhaustive comparison; `"chirp"` is an explicit stop-and-hop approximation.
+
+An empty authored world with LOS-only propagation and all endpoint pairs already present permits
+topology reuse. Source mutations, retired handles and version changes still invalidate it. Worlds
+with geometry keep discovery at the error-control probes, including path births and disappearances.
+Static geometry permits slot-major propagation, composition and antenna weighting in batches.
+ADC synthesis gathers cached path rows; it no longer creates a delay/clock tensor for every sample.
+Each synthesis batch is bounded by `batch_observations * num_samples` observations and 262144 rows
+(a single larger observation is indivisible). Probe batches still use `batch_observations` directly.
+The phase/amplitude tolerances and maximum probe spacing are unchanged by these scheduling choices.
 
 Receiver-enabled FMCW first synthesizes beat samples, applies receiver hardware, then computes
 the requested normalized range spectrum. Common-oscillator noise is applied per path before

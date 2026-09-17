@@ -1266,12 +1266,14 @@ def simulate_scene(
 
         for t in query_times:
             frozen = loop.frozen
+            authored_world = getattr(dynamic, "scene", None)
             # Only an empty authored world proves the absence of occluders and
             # reflection/diffraction births. Require every endpoint pair to be
             # present too: a degenerate initial LOS discovery cannot certify it.
             complete_los = (
                 motion_sampling == "adaptive"
-                and not dynamic.scene.structures
+                and authored_world is not None
+                and not authored_world.structures
                 and propagation.components == frozenset({"los"})
                 and frozen is not None
                 and frozen.handles[0].row_count == array.num_tx * frozen.payload[1].site_count

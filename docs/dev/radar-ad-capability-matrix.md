@@ -203,7 +203,6 @@ per-path product downstream of it is still a native kernel.
 | synthesis/fmcw_beat | weight real and imaginary parts | jvp | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis | tests/test_phase9_fmcw_variable_jvp.py::test_the_jvp_of_each_differentiable_input_matches_a_central_difference | oracle-f64 |
 | synthesis/fmcw_beat | tau_rt, tau_rate, weight | vjp | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis | tests/test_phase4_fmcw_beat_ad.py::test_native_vjp_matches_the_oracle, tests/test_phase4_fmcw_beat_ad.py::test_multi_segment_vjp_matches_the_oracle | oracle-f64 |
 | synthesis/fmcw_beat | tau_rate at the first chirp | jvp | ZERO | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis | tests/test_phase9_fmcw_variable_jvp.py::test_a_rate_only_tangent_is_not_the_zero_tangent | analytic |
-
 | synthesis/fmcw_observation | refreshed delay and complex weight | both | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwObservations | tests/test_fmcw_observations.py::test_ragged_observations_match_complex_oracle_and_ad | oracle-f64 |
 | synthesis/fmcw_observation | ADC time | both | REF | native-companion | witwin/radar/synthesis/fmcw.py::_synthesize_fmcw_observations | tests/test_fmcw_observations.py::test_empty_observations_and_time_derivative_refusal | refusal |
 

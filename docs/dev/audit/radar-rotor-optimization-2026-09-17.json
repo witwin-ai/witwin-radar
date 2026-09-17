@@ -1,0 +1,691 @@
+{
+  "date": "2026-09-17",
+  "status": "declared_rotor_latency_target_met; full_GPU_acceptance_not_green_due_to_existing_timing_gate",
+  "environment": {
+    "python_environment": "witwin2",
+    "gpu": "NVIDIA GeForce RTX 5080",
+    "cpu": "AMD Ryzen 7 9800X3D",
+    "driver": "596.49",
+    "driver_model": "WDDM",
+    "shared_desktop": true,
+    "after_test_gpu_util_percent": [
+      39,
+      44
+    ]
+  },
+  "radar_native_build": {
+    "binary_sha256": "8adfdf98382b458370c9ddfbc2430e50ad44c7554fc6d2134478e407496c421b",
+    "build_fingerprint": "3b561b65a7bf2187bd113f64b4c12a2055c2894d0461f5f805c06484be0342a3",
+    "build_type": "developer",
+    "compiler": "msvc 19.44.35228",
+    "cuda_architectures": [
+      "120"
+    ],
+    "cuda_compiler_version": "12.9.41",
+    "cuda_version": "12.8",
+    "cxx_abi": "msvc",
+    "extension_name": "_radar_native",
+    "operator_symbols": [
+      "fmcw_beat_backward",
+      "fmcw_beat_forward",
+      "fmcw_beat_jvp",
+      "fmcw_observation_backward",
+      "fmcw_observation_forward",
+      "fmcw_observation_jvp",
+      "fmcw_spectrum_backward",
+      "fmcw_spectrum_forward",
+      "fmcw_spectrum_jvp",
+      "frontend_agc_backward",
+      "frontend_agc_forward",
+      "frontend_agc_jvp",
+      "frontend_noise_backward",
+      "frontend_noise_forward",
+      "frontend_noise_jvp",
+      "frontend_quantize_forward",
+      "ofdm_cfr_backward",
+      "ofdm_cfr_forward",
+      "ofdm_cfr_jvp",
+      "oscillator_phase_forward",
+      "path_interpolate_backward",
+      "path_interpolate_forward",
+      "path_interpolate_jvp",
+      "pulsed_echo_backward",
+      "pulsed_echo_forward",
+      "pulsed_echo_jvp",
+      "scatter_direction_backward",
+      "scatter_direction_forward",
+      "scatter_direction_jvp",
+      "scatter_response_aspect_backward",
+      "scatter_response_aspect_forward",
+      "scatter_response_aspect_jvp",
+      "sensor_weight_backward",
+      "sensor_weight_forward",
+      "sensor_weight_jvp",
+      "two_way_join_backward",
+      "two_way_join_forward",
+      "two_way_join_jvp"
+    ],
+    "platform_tag": "win_amd64",
+    "python_abi": "stable-abi-v1",
+    "radar_abi_version": 7,
+    "radar_git_dirty": true,
+    "radar_git_sha": "4b6fbff0c42158e556070d965d6d63c2dac0a63a",
+    "source_fingerprint": "a834ce64b27aa57ee4e8a3ecfb283cc8b0e3edb4c9077fce696bc2d1d5af7d82",
+    "torch_target_version": "0x020a000000000000",
+    "torch_version": "2.10.0"
+  },
+  "channel_build_fingerprint": "183118e96d75856e71df2f90c621fa191d6151d2b63ec12fd5f71062e49ed73f",
+  "implementation_commits": [
+    "4c60a7f",
+    "4b6fbff",
+    "d200971"
+  ],
+  "benchmark": {
+    "rotor": {
+      "timing": {
+        "repeats": 3,
+        "median_seconds": 0.6087030999915441,
+        "p95_seconds": 0.7975466799980495,
+        "min_seconds": 0.5718431000132114,
+        "max_seconds": 0.8185292999987723
+      },
+      "oracle_iq_relative_l2": 0.007206725355056965,
+      "input_sha256": "8ae05817b8bf6a600fe51dfeff77efaa3619af3533bfc0d87a571e13c509ceed",
+      "diagnostics": {
+        "seconds": [
+          0.6087030999915441,
+          0.5718431000132114,
+          0.8185292999987723
+        ],
+        "discovery_count": 1,
+        "path_count": 1,
+        "adaptive": [
+          {
+            "evaluations": 677,
+            "topology_refinements": 0,
+            "accepted_intervals": 169,
+            "max_tested_phase_error_rad": 0.018468963960070004,
+            "max_tested_relative_amplitude_error": 5.961369765518426e-06,
+            "max_interval_s": 0.002,
+            "exhaustive": false,
+            "observation_count": 131072,
+            "synthesis_batches": 4
+          }
+        ]
+      },
+      "baseline": {
+        "repeats": 3,
+        "median_seconds": 16.164633799999137,
+        "p95_seconds": 18.980966270001954,
+        "min_seconds": 14.869938300005742,
+        "max_seconds": 19.293892100002267
+      },
+      "baseline_sha256": "c24c5f672763fd2749efb1d4e576cfc6f8cace6c1e489486bc1f68b81f39d2df",
+      "iq_change_relative_l2": 3.26434737019099e-08,
+      "speedup": 26.555859170462067
+    },
+    "acceleration": {
+      "timing": {
+        "repeats": 3,
+        "median_seconds": 0.24215890000050422,
+        "p95_seconds": 0.29977024000691016,
+        "min_seconds": 0.21734649999416433,
+        "max_seconds": 0.30617150000762194
+      },
+      "oracle_iq_relative_l2": 0.00813225419170527,
+      "input_sha256": "d09233d6f8de438a58839fe9447a760d04a0cfdadda305fb07aa0fa2da7c6591",
+      "diagnostics": {
+        "seconds": [
+          0.21734649999416433,
+          0.24215890000050422,
+          0.30617150000762194
+        ],
+        "discovery_count": 1,
+        "path_count": 1,
+        "adaptive": [
+          {
+            "evaluations": 137,
+            "topology_refinements": 0,
+            "accepted_intervals": 34,
+            "max_tested_phase_error_rad": 0.015390960537766127,
+            "max_tested_relative_amplitude_error": 4.536643551884566e-06,
+            "max_interval_s": 0.002,
+            "exhaustive": false,
+            "observation_count": 131072,
+            "synthesis_batches": 4
+          }
+        ]
+      }
+    },
+    "limbs": {
+      "timing": {
+        "repeats": 3,
+        "median_seconds": 0.5198715000005905,
+        "p95_seconds": 0.5913931500006584,
+        "min_seconds": 0.4428849999967497,
+        "max_seconds": 0.5993400000006659
+      },
+      "oracle_iq_relative_l2": 0.0056432647420908335,
+      "input_sha256": "98edd7d97257eb9b0cd8dd1e9dd5b4c56ba14f771abd0de4076f1b784cb95490",
+      "diagnostics": {
+        "seconds": [
+          0.5993400000006659,
+          0.4428849999967497,
+          0.5198715000005905
+        ],
+        "discovery_count": 1,
+        "path_count": 2,
+        "adaptive": [
+          {
+            "evaluations": 569,
+            "topology_refinements": 0,
+            "accepted_intervals": 142,
+            "max_tested_phase_error_rad": 0.018469054937786417,
+            "max_tested_relative_amplitude_error": 5.650047423796026e-06,
+            "max_interval_s": 0.002,
+            "exhaustive": false,
+            "observation_count": 131072,
+            "synthesis_batches": 4
+          }
+        ]
+      }
+    },
+    "static": {
+      "timing": {
+        "repeats": 3,
+        "median_seconds": 0.019464099998003803,
+        "p95_seconds": 0.0195410499945865,
+        "min_seconds": 0.018163999993703328,
+        "max_seconds": 0.0195495999942068
+      },
+      "oracle_iq_relative_l2": 0.0004630388735553773,
+      "input_sha256": "67c9a19c456649357f30a94b01e645257933a9a2ccbc4d143f7a07a9523f62ae",
+      "diagnostics": {
+        "seconds": [
+          0.0195495999942068,
+          0.019464099998003803,
+          0.018163999993703328
+        ],
+        "discovery_count": 1,
+        "path_count": 1,
+        "adaptive": []
+      }
+    }
+  },
+  "heavy": {
+    "heavy": {
+      "iq_relative_l2": 0.000565946102142334,
+      "rd_power_relative_l2": 6.487341306637973e-05,
+      "exact_seconds": 96.32148139999481,
+      "adaptive_seconds": 1.3564732000086224,
+      "speedup": 71.00876110149655,
+      "exact_discoveries": 2048,
+      "adaptive_discoveries": 37,
+      "paths": 64,
+      "diagnostics": [
+        {
+          "evaluations": 37,
+          "topology_refinements": 0,
+          "accepted_intervals": 9,
+          "max_tested_phase_error_rad": 0.006875286383274615,
+          "max_tested_relative_amplitude_error": 0.00037349808859334137,
+          "max_interval_s": 0.002,
+          "exhaustive": false,
+          "observation_count": 2048,
+          "synthesis_batches": 1
+        }
+      ]
+    }
+  },
+  "matlab_retained_comparison": {
+    "rotor": {
+      "change_vs_preoptimization_iq": 3.26434737019099e-08,
+      "versus_retained_matlab": {
+        "raw_iq_relative_l2": 0.0233660416225253,
+        "aligned_iq_relative_l2": 0.016219865168174315,
+        "global_alignment_real": 0.9835432241260813,
+        "global_alignment_imag": 0.0017041827437741742,
+        "rd_power_relative_l2": 0.030317288943354708,
+        "guard_samples": 5
+      },
+      "matlab_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.2507424,
+        "p95_seconds": 0.25335375,
+        "min_seconds": 0.2305111,
+        "max_seconds": 0.2536439
+      },
+      "new_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.6087030999915441,
+        "p95_seconds": 0.7975466799980495,
+        "min_seconds": 0.5718431000132114,
+        "max_seconds": 0.8185292999987723
+      }
+    },
+    "acceleration": {
+      "change_vs_preoptimization_iq": 3.143222571111437e-08,
+      "versus_retained_matlab": {
+        "raw_iq_relative_l2": 0.023109751588916365,
+        "aligned_iq_relative_l2": 0.015073356305600928,
+        "global_alignment_real": 0.9836139744940373,
+        "global_alignment_imag": -0.005334259972790808,
+        "rd_power_relative_l2": 0.028425925169609633,
+        "guard_samples": 5
+      },
+      "matlab_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.3020056,
+        "p95_seconds": 0.30890752,
+        "min_seconds": 0.2848605,
+        "max_seconds": 0.3096744
+      },
+      "new_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.24215890000050422,
+        "p95_seconds": 0.29977024000691016,
+        "min_seconds": 0.21734649999416433,
+        "max_seconds": 0.30617150000762194
+      }
+    },
+    "limbs": {
+      "change_vs_preoptimization_iq": 4.820112664560838e-08,
+      "versus_retained_matlab": {
+        "raw_iq_relative_l2": 0.022998538999102414,
+        "aligned_iq_relative_l2": 0.01541523565081974,
+        "global_alignment_real": 0.9835463541876983,
+        "global_alignment_imag": 0.003338370288719907,
+        "rd_power_relative_l2": 0.030097675129438565,
+        "guard_samples": 5
+      },
+      "matlab_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.342537,
+        "p95_seconds": 0.35184084,
+        "min_seconds": 0.3315446,
+        "max_seconds": 0.3528746
+      },
+      "new_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.5198715000005905,
+        "p95_seconds": 0.5913931500006584,
+        "min_seconds": 0.4428849999967497,
+        "max_seconds": 0.5993400000006659
+      }
+    },
+    "static": {
+      "change_vs_preoptimization_iq": 0.0,
+      "versus_retained_matlab": {
+        "raw_iq_relative_l2": 0.022167017780975205,
+        "aligned_iq_relative_l2": 0.014453766072454141,
+        "global_alignment_real": 0.983577221946157,
+        "global_alignment_imag": 0.0019007511456797912,
+        "rd_power_relative_l2": 0.028707191001476805,
+        "guard_samples": 5
+      },
+      "matlab_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.0236901,
+        "p95_seconds": 0.02423082,
+        "min_seconds": 0.0232812,
+        "max_seconds": 0.0242909
+      },
+      "new_seconds": {
+        "repeats": 3,
+        "median_seconds": 0.019464099998003803,
+        "p95_seconds": 0.0195410499945865,
+        "min_seconds": 0.018163999993703328,
+        "max_seconds": 0.0195495999942068
+      }
+    }
+  },
+  "matlab_rerun": false,
+  "tests": {
+    "targeted_gpu": {
+      "passed": 50
+    },
+    "cpu_quick": {
+      "passed": 701,
+      "skipped": 850,
+      "coverage_percent": 56
+    },
+    "full_gpu_first": {
+      "passed": 1536,
+      "failed": 3,
+      "skipped": 12
+    },
+    "full_gpu_final": {
+      "passed": 1538,
+      "failed": 1,
+      "skipped": 12,
+      "missing_channel_skips": 0,
+      "smpl_asset_skips": 11,
+      "external_nightly_skips": 1
+    },
+    "static_gates": {
+      "required_passed": 9,
+      "ruff_passed": true,
+      "native_bindings_passed": true
+    }
+  },
+  "remaining_gate": {
+    "test": "tests/test_phase9_backward_budget.py::test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve",
+    "original_bounds": [
+      1,
+      2
+    ],
+    "full_suite_ratios": [
+      2.0495,
+      0.7899
+    ],
+    "isolated_original_ratio": 1.2168,
+    "experimental_balanced_order_ratios": [
+      1.7024,
+      2.2992,
+      1.2568
+    ],
+    "experimental_test_changes_reverted": true,
+    "threshold_changed": false,
+    "no_user_process_stopped": true
+  },
+  "limits": [
+    "No real-time guarantee on shared desktop",
+    "Hundreds of milliseconds measured for empty-world fixed-RCS orbital-point rotor, not arbitrary moving meshes",
+    "64-path heavy case remains 1.356 seconds",
+    "Time-varying response callbacks remain per probe",
+    "Adaptive error tests cannot prove absence of arbitrarily brief events",
+    "No Linux/wheel/release-matrix claim"
+  ],
+  "artifacts": [
+    {
+      "path": "output/rotor-optimization/baseline/rotor-diagnostics.json",
+      "bytes": 503,
+      "sha256": "51c670e92f0f2caf89e55458f87f138f374071fe3153ef7289ed8ee5462d2edd"
+    },
+    {
+      "path": "output/rotor-optimization/baseline/rotor-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "c24c5f672763fd2749efb1d4e576cfc6f8cace6c1e489486bc1f68b81f39d2df"
+    },
+    {
+      "path": "output/rotor-optimization/channel-budget-balanced-1.log",
+      "bytes": 769,
+      "sha256": "87254458b283b65ff093e2947a5bd3f094a79b19a090da14d5f92f35bc3b0250"
+    },
+    {
+      "path": "output/rotor-optimization/channel-budget-balanced-2.log",
+      "bytes": 4406,
+      "sha256": "5db8b9a82a8533ded1f05e4547bc35910805bc01c2757005c4a8832b5ac37429"
+    },
+    {
+      "path": "output/rotor-optimization/channel-budget-balanced-3.log",
+      "bytes": 770,
+      "sha256": "872bcf8a630385b29c0e82c6166000804d072203f295d174bf57c9298af7f7bb"
+    },
+    {
+      "path": "output/rotor-optimization/channel-budget-recheck.log",
+      "bytes": 770,
+      "sha256": "0a27c05fc4a305730c7a8603e6bd113b35840616b8c9a2e2f5c3e6605f979367"
+    },
+    {
+      "path": "output/rotor-optimization/contracts.log",
+      "bytes": 5417,
+      "sha256": "6500431f9d886a56fb0b48f815abdcf55aecc5ca00959c66f12b0194a38ca551"
+    },
+    {
+      "path": "output/rotor-optimization/final/acceleration-diagnostics.json",
+      "bytes": 534,
+      "sha256": "a75d6b7db8566676bf50a27e37057c36b01e3841388937915129134c3e53d302"
+    },
+    {
+      "path": "output/rotor-optimization/final/acceleration-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "d09233d6f8de438a58839fe9447a760d04a0cfdadda305fb07aa0fa2da7c6591"
+    },
+    {
+      "path": "output/rotor-optimization/final/acceptance.json",
+      "bytes": 4059,
+      "sha256": "e0bfa1ef6b32f97b6c3e65c8dc72f51991acc5533d97e5a2515c1e74e694682b"
+    },
+    {
+      "path": "output/rotor-optimization/final/limbs-diagnostics.json",
+      "bytes": 532,
+      "sha256": "6acb1b0c34d64e90e3c9b048cf98a96b9406d00bc924711e077193e6cd113074"
+    },
+    {
+      "path": "output/rotor-optimization/final/limbs-motion-input.mat",
+      "bytes": 1098808,
+      "sha256": "98edd7d97257eb9b0cd8dd1e9dd5b4c56ba14f771abd0de4076f1b784cb95490"
+    },
+    {
+      "path": "output/rotor-optimization/final/rotor-diagnostics.json",
+      "bytes": 532,
+      "sha256": "9a53587de1578e5f6d26d0382e0cdc9ddb3ff0502999a6f3cf59b099c2943554"
+    },
+    {
+      "path": "output/rotor-optimization/final/rotor-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "8ae05817b8bf6a600fe51dfeff77efaa3619af3533bfc0d87a571e13c509ceed"
+    },
+    {
+      "path": "output/rotor-optimization/final/static-diagnostics.json",
+      "bytes": 169,
+      "sha256": "4b47ac619c9cd3827257156c27e7c61811f7d2d18cb601f38738f1fcaddefabf"
+    },
+    {
+      "path": "output/rotor-optimization/final/static-motion-input.mat",
+      "bytes": 135224,
+      "sha256": "67c9a19c456649357f30a94b01e645257933a9a2ccbc4d143f7a07a9523f62ae"
+    },
+    {
+      "path": "output/rotor-optimization/final-benchmark.log",
+      "bytes": 4502,
+      "sha256": "5337bb199cf90cc408c4ce2b668b69e5c52c265ad39b4e5b203fc21f51c36f96"
+    },
+    {
+      "path": "output/rotor-optimization/final.prof",
+      "bytes": 1313343,
+      "sha256": "1b064da9da9f0ad0188891edc8b9308d8bce99f93be22fbcad798f83378268a3"
+    },
+    {
+      "path": "output/rotor-optimization/full-gpu-final.log",
+      "bytes": 11958,
+      "sha256": "b99eeb3f439ba356974dfeb58465458935da4936e7feea3af80fdef1c1944ef4"
+    },
+    {
+      "path": "output/rotor-optimization/full-gpu.log",
+      "bytes": 15001,
+      "sha256": "e6c8df09f3205bf67a1e97898ce4c96cb8fc5629d9f4f17712511de666f1f732"
+    },
+    {
+      "path": "output/rotor-optimization/gpu-shared-desktop.txt",
+      "bytes": 3755,
+      "sha256": "c2cd1275c44fc6ddefcb72244a4497968ee05a3fbf09c9667dca5afa000c3984"
+    },
+    {
+      "path": "output/rotor-optimization/heavy/heavy-adaptive.pt",
+      "bytes": 18074,
+      "sha256": "230a1636a860307cac17688a4d3ece81e5c210949270e0ae8a13efd2e0e8ee51"
+    },
+    {
+      "path": "output/rotor-optimization/heavy/heavy-adc.pt",
+      "bytes": 17975,
+      "sha256": "a8bfe2d7dcbf9633fb654b3c5c358e35d3d25288cb850635d84d3b0215e36bd8"
+    },
+    {
+      "path": "output/rotor-optimization/heavy/results.json",
+      "bytes": 736,
+      "sha256": "d38c16837b6060b6056a96cc4e4e24358d4d425bddf7ad8982bc8894daaedb4c"
+    },
+    {
+      "path": "output/rotor-optimization/heavy.log",
+      "bytes": 571,
+      "sha256": "9ed38faf2adca52be3f309361dfb28797bf7b33a7f6ee87a8482295c34872d0b"
+    },
+    {
+      "path": "output/rotor-optimization/native-build.log",
+      "bytes": 2988,
+      "sha256": "8a71568217db942ee60c26935685c69fda56f9fc02ff19f79cb22d5d9d49c76d"
+    },
+    {
+      "path": "output/rotor-optimization/profile/rotor-diagnostics.json",
+      "bytes": 482,
+      "sha256": "3c6294a3619a96a88b34e6d9494f53b401654a00806fa891fe18e925abf9baa7"
+    },
+    {
+      "path": "output/rotor-optimization/profile/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "fe0e236eae6d3fb43cbc142322bf56700608316c89897da200c8a6fafcf7e5b3"
+    },
+    {
+      "path": "output/rotor-optimization/profile-counts.json",
+      "bytes": 2898,
+      "sha256": "78bb3bab010ce23c834c495252eef0702e6c78ac0ca951477406e7be622316f7"
+    },
+    {
+      "path": "output/rotor-optimization/profile.log",
+      "bytes": 65,
+      "sha256": "647b192e2299d40e2a308d6e3e0cd17684604c26150ae016e81a9f79e79f7bea"
+    },
+    {
+      "path": "output/rotor-optimization/profile.txt",
+      "bytes": 4200,
+      "sha256": "34a841911cf7c3e4bbea1bcee202d880c753983646676d1d3590d79d1c91d4f9"
+    },
+    {
+      "path": "output/rotor-optimization/quick-final.log",
+      "bytes": 11852,
+      "sha256": "17e4d8a2d567a004a5b18ee20196614ca674c8d64c11b6a65308d8d2376e2f88"
+    },
+    {
+      "path": "output/rotor-optimization/quick.log",
+      "bytes": 279,
+      "sha256": "cb9e552ce48900fec23c6bbd1d3b03af57b8798b32f3837cb161efcd7701ed32"
+    },
+    {
+      "path": "output/rotor-optimization/retained-matlab-comparison.json",
+      "bytes": 3284,
+      "sha256": "de4013710f3461920653ad2fb78349ddce5440d283207d5139cdeaaeafc17a08"
+    },
+    {
+      "path": "output/rotor-optimization/stage1/rotor-diagnostics.json",
+      "bytes": 453,
+      "sha256": "ab663c542a0c3780a65be5fc06838c5e4a691144df997bbf02b1b72086b672f0"
+    },
+    {
+      "path": "output/rotor-optimization/stage1/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "d0e6aa1b4cabbfadc6dc227056bfa9b69a7bb62e3f64fa5335c9e797ecbfda30"
+    },
+    {
+      "path": "output/rotor-optimization/stage1-tests.log",
+      "bytes": 980,
+      "sha256": "c4dc3cb538c4db8d01003477c184aaeafcf3d1e884577dbe937ce773d18d2f27"
+    },
+    {
+      "path": "output/rotor-optimization/stage2-final-tests.log",
+      "bytes": 981,
+      "sha256": "0c6dbfca15e486aa9d076a8c9b6b0d8f84a92f8c1776bd135f9b732c0c06e41b"
+    },
+    {
+      "path": "output/rotor-optimization/stage2-tests.log",
+      "bytes": 980,
+      "sha256": "7ae6d698398f504066098fdb61a0c2f34a83d9c7653771b77ae653880867222c"
+    },
+    {
+      "path": "output/rotor-optimization/stage2a/rotor-diagnostics.json",
+      "bytes": 451,
+      "sha256": "0154a96fde39f6ab659a54d7bd85e64176598efa3b9a1a36eb0d0a2d7644c079"
+    },
+    {
+      "path": "output/rotor-optimization/stage2a/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "57a2565fab7ebbb71163d613c424a901001cd5c7fcdf0c7af811bff7927178ae"
+    },
+    {
+      "path": "output/rotor-optimization/stage2a-profile/rotor-diagnostics.json",
+      "bytes": 449,
+      "sha256": "31465e420d3466c9096ba32a64b5d5fcf4f9ad45b2a30b3b428febafb2ec0054"
+    },
+    {
+      "path": "output/rotor-optimization/stage2a-profile/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "2182705b9fa344036f8c50110877e24623e4d48999f1c0bfd8f6bc6790f4a449"
+    },
+    {
+      "path": "output/rotor-optimization/stage2a.prof",
+      "bytes": 1310279,
+      "sha256": "f44fe333582f46e9541ccf98d78c1bdfe2932c39a85f12d792214e6183baffe1"
+    },
+    {
+      "path": "output/rotor-optimization/stage2b/rotor-diagnostics.json",
+      "bytes": 450,
+      "sha256": "e8f9323b19c1886d7799a220b0f955453ac05d6f87256af2fa0c2b3b75a83c2d"
+    },
+    {
+      "path": "output/rotor-optimization/stage2b/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "f48714e35e1f6dba8df5d2f90a46097cd966579d2d0c830f5c7b59d63f5cf75d"
+    },
+    {
+      "path": "output/rotor-optimization/stage2b-profile/rotor-diagnostics.json",
+      "bytes": 451,
+      "sha256": "de42111aef4850ce74ead323d53bd3982ae7eac62dfe19e6961df072a9b2baac"
+    },
+    {
+      "path": "output/rotor-optimization/stage2b-profile/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "b5c0534c990be4a1f0a30d07f28f84b0e1900ff6bd1bc99977d1c21c36678d15"
+    },
+    {
+      "path": "output/rotor-optimization/stage2b.prof",
+      "bytes": 1311533,
+      "sha256": "6a85480b311af7348c5a73d23d6b96ba23b7772f95ed7c39d5a663236f3b16fa"
+    },
+    {
+      "path": "output/rotor-optimization/stage2c/rotor-diagnostics.json",
+      "bytes": 450,
+      "sha256": "34905ba66572f1df25a5931e4ca4487d7be5f2e8880c3ed3c452e9b6cf8a4be8"
+    },
+    {
+      "path": "output/rotor-optimization/stage2c/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "f8c17b77d763eef89a6ba182d544ea92c5b03d28ca3a523f578237b8dcecc845"
+    },
+    {
+      "path": "output/rotor-optimization/stage3/rotor-diagnostics.json",
+      "bytes": 502,
+      "sha256": "b2bf3b244f21e9faf080267443c3326c4e67700d6fc9b2e65ba96c4ce72e640e"
+    },
+    {
+      "path": "output/rotor-optimization/stage3/rotor-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "f7a2f91045ed2154e61dc855f9980b7d3f44ee3736aadef46f90b451f4c1fbae"
+    },
+    {
+      "path": "output/rotor-optimization/stage3-comparison.json",
+      "bytes": 543,
+      "sha256": "194e66432ef8422c1df63a02b2150bdd26ffc28fca2f4b02b94d4c372415ab18"
+    },
+    {
+      "path": "output/rotor-optimization/stage3-final-tests.log",
+      "bytes": 991,
+      "sha256": "0ae2d2b948a8a0968133be52a7026ac082280018791e6fc76378558564b5492c"
+    },
+    {
+      "path": "output/rotor-optimization/stage3-tests.log",
+      "bytes": 983,
+      "sha256": "3d26899eb723bbbb91dbcb1fddbca418e17467ab14c0201dec68d5f971706299"
+    },
+    {
+      "path": "output/rotor-optimization/static-gates-final.log",
+      "bytes": 528,
+      "sha256": "3e1290a9687e1c15d6f1b515fd87d1eaefb3ff568e8e6571ff5a8d53346ade58"
+    },
+    {
+      "path": "output/rotor-optimization/static-gates.log",
+      "bytes": 334,
+      "sha256": "add9eeba3a9e8505eee41cd074bfbb4c715a37628811449d0f2df77e82760c54"
+    }
+  ]
+}
