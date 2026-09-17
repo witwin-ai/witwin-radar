@@ -36,6 +36,26 @@ residual the controller tested, on single-dominant-path, null-free fixtures.
 Evidence: [the interval-bound and tolerance report](docs/dev/audit/radar-adaptive-interval-bound-and-tolerance-2026-09-17.md)
 and [the interpolation-order report](docs/dev/audit/radar-adaptive-interpolation-order-2026-09-17.md).
 
+### Probe efficiency, and why there is no warm start
+
+`tools/validate_adaptive_probe_efficiency.py` measures the adaptive probe count against the
+floor a published partition cannot go below: `2*(nodes-1)*intervals + 1`, because each accepted
+interval needs its own nodes and the instants between them. Everything above that floor went to
+a rejected interval, and that excess is the whole budget a cross-frame partition warm start
+could recover.
+
+| Fixture | Frames | Tolerance | Probes | Partition floor | Recoverable |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Three-wall multipath, 32 x 64 | 3 | 0.02 | 69 | 69 | 0 (0.000%) |
+| Rotor point, 128 x 128 | 4 | 0.02 | 36 | 36 | 0 (0.000%) |
+| Same rotor, tight tolerance | 2 | 0.002 | 23511 | 23498 | 13 (0.055%) |
+
+The probe cache already shares a rejected interval's grid with its children, so no probe is paid
+twice, and the coarsest-initial-partition change removed the one systematically wasted level.
+A warm start is therefore not implemented: it would still pay the same floor, for at most 0.055%,
+while carrying a stale partition across frames. Recorded in
+[the warm-start headroom report](docs/dev/audit/radar-adaptive-warm-start-headroom-2026-09-17.md).
+
 ## Long frame sequences
 
 ### Streamed against stacked frames (2026-09-17)
