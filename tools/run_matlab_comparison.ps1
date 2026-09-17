@@ -1,18 +1,24 @@
 param(
     [string]$MatlabExe = 'D:\Softwares\MATLAB\bin\matlab.exe',
-    [int]$TimeoutSeconds = 120
+    [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
+    [string]$OutputDirectory = 'output/doppler-repair/matlab',
+    [switch]$IsolatedPreferences
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
-$taskOutput = Join-Path $taskRoot 'output\doppler-repair\matlab'
+$taskOutput = [IO.Path]::GetFullPath((Join-Path $taskRoot $OutputDirectory))
 New-Item -ItemType Directory -Force -Path $taskOutput | Out-Null
-$taskPrefs = Join-Path $taskOutput 'preferences'
-New-Item -ItemType Directory -Force -Path $taskPrefs | Out-Null
-$env:MATLAB_PREFDIR = $taskPrefs
+if ($IsolatedPreferences) {
+    $taskPrefs = Join-Path $taskOutput 'preferences'
+    New-Item -ItemType Directory -Force -Path $taskPrefs | Out-Null
+    $env:MATLAB_PREFDIR = $taskPrefs
+}
 $taskLog = Join-Path $taskOutput 'matlab-run.log'
-$taskArguments = @('-wait', '-batch', '"addpath(''tools''); compare_matlab_radar(''output/doppler-repair/matlab'')"',
+$taskMatlabDirectory = $taskOutput.Replace('\', '/').Replace("'", "''")
+$taskArguments = @('-wait', '-batch', ('"addpath(''tools''); compare_matlab_radar(''' + $taskMatlabDirectory + ''')"'),
     '-logfile', ('"' + $taskLog + '"'))
 $taskClock = [Diagnostics.Stopwatch]::StartNew()
+$taskStartedUtc = [DateTime]::UtcNow
 $taskProcess = Start-Process -FilePath $MatlabExe -ArgumentList $taskArguments -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru
 $taskCompleted = $taskProcess.WaitForExit($TimeoutSeconds * 1000)
 if (!$taskCompleted) {
@@ -23,13 +29,22 @@ if (!$taskCompleted) {
     }
     Stop-Process -Id $taskProcess.Id -Force -ErrorAction SilentlyContinue
 }
+$taskExpected = @(Get-ChildItem -LiteralPath $taskOutput -Filter '*-input.mat' | ForEach-Object {
+    Join-Path $taskOutput ($_.Name.Replace('-input.mat', '-matlab.mat'))
+})
+$taskFresh = @($taskExpected | Where-Object {
+    (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).LastWriteTimeUtc -ge $taskStartedUtc
+})
 $taskStatus = @{
     executable = $MatlabExe
     completed = $taskCompleted
     elapsed_seconds = $taskClock.Elapsed.TotalSeconds
     timeout_seconds = $TimeoutSeconds
     exit_code = $(if ($taskCompleted) { $taskProcess.ExitCode } else { $null })
-    comparison_executed = (Test-Path (Join-Path $taskOutput 'multipath-matlab.mat'))
+    comparison_executed = ($taskCompleted -and $taskProcess.ExitCode -eq 0 -and
+        $taskExpected.Count -gt 0 -and $taskFresh.Count -eq $taskExpected.Count)
+    expected_cases = $taskExpected.Count
+    fresh_results = $taskFresh.Count
 }
 $taskStatus | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskOutput 'launch-status.json')
 $taskStatus | ConvertTo-Json

@@ -79,28 +79,79 @@ Channel 使用已有开发二进制，指纹：
 183118e96d75856e71df2f90c621fa191d6151d2b63ec12fd5f71062e49ed73f。
 本轮没有重编译 Channel，也没有完成新的 Linux／wheel／远程发布矩阵。
 
-## MATLAB Radar Toolbox：执行受阻，未通过对比
+## MATLAB Radar Toolbox：真实执行完成，指定路径对照通过
 
-本机安装树为 D:/Softwares/MATLAB，VersionInfo 报告 R2025b Update 4。
-普通批处理及无 JVM 启动均未产生有效输出；最后一次实际对比启动在 120 秒后超时，
-本次启动的进程已清理。output/doppler-repair/matlab/launch-status.json 明确记录
-completed=false、comparison_executed=false。
+本节更新替代此前的启动受阻结论；原始超时证据保留在 output/doppler-repair/matlab。
+用户登录后，批处理恢复正常，MATLAB 自身确认两个工具箱许可证均可用，但最初缺少 Radar Toolbox 文件。
+经用户批准，使用 MathWorks 官方签名的 MPM 安装 R2025bU4 Radar_Toolbox。
+文件安装完成后，安装器在 Windows 注册子进程处报告 system:740（需要提升权限），未正常退出。
+随后保留原有 MATLAB 路径、合并新默认工具箱路径、刷新缓存并保存路径；
+新的独立 MATLAB 进程成功发现工具箱并完成全部七组 radarTransceiver 执行。
+因此确认工具箱在 MATLAB 中可用，但不把 MPM 的失败退出写成成功。
 
-安装树中找到了 Phased Array System Toolbox 文件，未找到 radarTransceiver。
-最终工具箱和许可证状态尚未由可运行的 MATLAB 自身确认。Phased Array System Toolbox
-不能直接冒充 Radar Toolbox 的实机对比。
+实际版本为 25.2.0.3150157 (R2025b) Update 4，Radar Toolbox 与 Phased Array System Toolbox 均为 25.2。
+最新身份、原始复数输出、退出状态及指标保存在 output/doppler-repair/matlab-final。
+launch-status.json 记录 exit_code=0、expected_cases=7、fresh_results=7；
+脚本逐个检查本次启动后的文件时间，旧结果文件不能冒充本次成功。
 
-已交付可复跑材料：
+### 实验边界与误差
 
-- tools/compare_matlab_radar.py：导出静态、径向和三条指定路径的匹配 FMCW 输入及 WiTwin 复数结果；导出已运行并核对每组 [512,256] 形状。
-- tools/compare_matlab_radar.m：实际调用 radarTransceiver，记录 MATLAB／工具箱身份并保存结果。由于启动失败，此脚本尚未完成 MATLAB 语法／运行验证。
-- tools/run_matlab_comparison.ps1：限定等待时间、记录退出／超时状态，只结束本次启动的进程。
-- Python --analyze 只读取真实 MATLAB 输出；同时报告原始 IQ 误差及单一全局复数校准后的误差，不会默默消除偏差。传播滤波启动区的排除范围写入结果。
+使用 77 GHz 载频、10 MHz 扫频、256 个 chirp，基线采样率 20 MHz、每 chirp 512 点。
+静止单径总长 60 m；径向单径总长 60 m、总路程变化率 2 m/s；
+三径总长为 60/180/300 m、变化率 2/1/-1 m/s、实数幅度 1/0.6/0.3。
+两端使用完全相同的 float32 可表示延迟和延迟变化率，以及无噪声、单位增益硬件。
+正 beat 定义为 tx*conj(rx)，等效距离 L/2，正向远离速度 (dL/dt)/2。
+MATLAB 由 radarTransceiver 生成接收信号，再调用 dechirp；未以 Python 解析值代替 MATLAB。
 
-这套对照首先覆盖指定路径的波形合成，不能代替 mesh 场景求解、多径发现、完整器件相噪、
-散射材料或商业实时性能验收。两端计时边界不同，脚本不据此发布性能倍数。
+下面是未经全局幅相校准的相对 L2 误差。两端统一剔除最大传播延迟加 0.8 us 的
+chirp 起始区，以及第一个 chirp；范围写入每组 JSON。四倍采样保持扫频带宽和 chirp 时长。
+整采样控制使用 2^24 Hz 采样、恰好 4 个采样间隔的静态延迟，以消除分数延迟插值。
+
+| 场景 | 原始 IQ 相对误差 | RD 功率相对误差 |
+|---|---:|---:|
+| static | 0.0050169497 | 0.005864795 |
+| radial | 0.0058274904 | 0.0067705408 |
+| multipath | 0.01069665 | 0.0092813756 |
+| static_os4 | 0.0014923431 | 0.0019087613 |
+| radial_os4 | 0.0017307589 | 0.0022042839 |
+| multipath_os4 | 0.0031013278 | 0.0029896841 |
+| static_integer | 9.8861483e-08 | 2.0179611e-08 |
+
+七组中的各路径均得到相同的距离／多普勒 FFT 峰值网格。三径峰值分别对应约
+30/90/150 m，以及 +1/+0.5/-0.5 m/s。这验证的是指定路径输入；三条路径不是由本次
+MATLAB 实验的实体几何自动发现，不能作为同一物体在某个具体场景中必有这三条路径的证明。
+
+![Actual MATLAB and WiTwin multipath comparison](../../../output/doppler-repair/matlab-final/range-doppler-comparison.png)
+
+图使用相同 Hann 窗和同一功率基准，右图为功率差的绝对值；红叉为指定路径的预期位置。
+
+### 差异解释与验收范围
+
+对已安装 R2025bU4 实现的只读检查发现，radarTransceiver 的路径通道采用线性分数延迟插值；
+chirp 内保持包络延迟，并施加指定载频 Doppler。WiTwin 直接计算连续延迟的解析 beat 相位，
+包括 chirp 内延迟变化。独立的线性采样延迟诊断 oracle 与真实 MATLAB 输出相差不超过
+2.4e-11；整采样静态控制下 WiTwin 与 MATLAB 的原始 IQ 误差约 9.9e-8，
+四倍采样使三组原始 IQ 误差均下降。这些证据支持主要残差来自采样延迟模型差异，
+没有发现本组实验中的载频相位、多普勒符号或二倍路程系数错误。
+诊断 oracle 只解释误差，不替换外部结果，也不回写生产代码以模仿 MATLAB 的插值误差。
+
+本套明确的工程验收界限为普通指定路径原始 IQ 误差小于 2%、整采样控制小于 1e-6、
+MATLAB 与声明的线性延迟诊断模型误差小于 1e-8、各路径峰值网格一致，且四倍采样误差下降。
+这些阈值是在本轮诊断后为可重复回归设置的，不属于事先注册的盲测标准。
+七组均满足界限；分析器在缺失外部输出、数值超限或峰值不一致时失败。
+额外两个合成文件测试验证缺失结果拒绝与错误 Doppler 拒绝；这些是对照工具测试，
+不计为真实 MATLAB 实验。原有生产 GPU 验收仍是前文记录的 1531 passed / 12 skipped，
+本次未修改生产代码或重新声称执行整套 GPU 测试。
+
+本次对照覆盖理想硬件与指定路径波形，不覆盖两端 mesh 求径、拓扑发现、micro-Doppler 动画、
+材料散射、完整硬件相噪模型或商业实时性能。此前 rotor／limbs／heavy 自适应对照仍属于
+WiTwin 自身逐 ADC 参考验收，不能改称 MATLAB 的 micro-Doppler 或 heavy 场景验收。
+两端计时边界不同，已记录时间但不据此给出性能倍数，也不宣称与商业仿真器全面等价。
+
+复跑：先在 witwin2 执行 tools/compare_matlab_radar.py --output <目录>，
+再执行 tools/run_matlab_comparison.ps1 -OutputDirectory <同一目录>，
+最后执行 Python 工具 --analyze --plot --output <同一目录>。
+启动器默认继承用户登录配置；只有显式 -IsolatedPreferences 时才使用隔离配置。
 官方依据：[radarTransceiver](https://www.mathworks.com/help/radar/ref/radartransceiver-system-object.html)、
-[FMCW 仿真与处理示例](https://www.mathworks.com/help/radar/ug/simulate-an-automotive-4d-imaging-mimo-radar.html)。
-
-恢复条件是该 MATLAB 能正常完成批处理，并提供 Radar Toolbox／Phased Array System Toolbox。
-恢复后运行 PowerShell 工具，再运行 Python --analyze；得到实际输出前，不宣称与 MATLAB 等价。
+[dechirp](https://www.mathworks.com/help/phased/ref/dechirp.html)、
+[MPM 安装](https://www.mathworks.com/help/install/ug/mpminstall.html)。

@@ -248,17 +248,351 @@
     }
   },
   "matlab": {
-    "status": "blocked_matlab_startup_timeout",
+    "status": "passed_declared_path_level_bounds",
+    "actual_matlab_cases": 7,
+    "failures": [],
+    "limits": {
+      "raw_iq": 0.02,
+      "integer_delay_iq": 1e-06,
+      "matlab_linear_delay_model": 1e-08
+    },
+    "scope": "ideal hardware and declared paths; excludes scene discovery and matched-scope performance",
+    "identity": {
+      "version": "25.2.0.3150157 (R2025b) Update 4",
+      "products": [
+        {
+          "Name": "DSP System Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Image Processing Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "MATLAB",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Phased Array System Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Radar Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Signal Processing Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        }
+      ],
+      "radarTransceiver": "D:\\Softwares\\MATLAB\\toolbox\\radar\\radar\\radarTransceiver.m",
+      "radarLicense": 1,
+      "phasedLicense": 1
+    },
     "execution": {
-      "comparison_executed": false,
+      "elapsed_seconds": 8.5054987,
       "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
-      "elapsed_seconds": 120.4294004,
-      "completed": false,
-      "exit_code": null,
+      "expected_cases": 7,
+      "exit_code": 0,
+      "comparison_executed": true,
+      "fresh_results": 7,
+      "completed": true,
       "timeout_seconds": 120
     },
-    "matlab_script_validated": false,
-    "radar_toolbox_runtime_identity_available": false
+    "matlab_script_validated": true,
+    "comparison": {
+      "multipath": {
+        "raw_iq_relative_l2": 0.010696649682653306,
+        "aligned_iq_relative_l2": 0.007950800148041004,
+        "single_global_alignment_real": 1.005358249909358,
+        "single_global_alignment_imag": 0.004800713916389652,
+        "excluded_startup_samples": 37,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.008952999996836297,
+        "matlab_transceiver_seconds": 0.7357305,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 2.3236790514141994e-11,
+        "range_doppler": {
+          "power_relative_l2": 0.00928137560222151,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.9999999768089025,
+              "witwin_peak_bins": [
+                2,
+                131
+              ],
+              "matlab_peak_bins": [
+                2,
+                131
+              ],
+              "same_peak_bins": true
+            },
+            {
+              "expected_equivalent_range_m": 90.00000070862774,
+              "expected_receding_velocity_m_s": 0.49999998840445126,
+              "witwin_peak_bins": [
+                6,
+                130
+              ],
+              "matlab_peak_bins": [
+                6,
+                130
+              ],
+              "same_peak_bins": true
+            },
+            {
+              "expected_equivalent_range_m": 149.9999926604321,
+              "expected_receding_velocity_m_s": -0.49999998840445126,
+              "witwin_peak_bins": [
+                10,
+                126
+              ],
+              "matlab_peak_bins": [
+                10,
+                126
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "multipath_os4": {
+        "raw_iq_relative_l2": 0.0031013278068454074,
+        "aligned_iq_relative_l2": 0.0023070168444745322,
+        "single_global_alignment_real": 1.0020444562734696,
+        "single_global_alignment_imag": 0.0003656280452595184,
+        "excluded_startup_samples": 145,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.008308999997097999,
+        "matlab_transceiver_seconds": 0.3156973,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 2.3291787661583072e-11,
+        "range_doppler": {
+          "power_relative_l2": 0.002989684077149164,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.9999999768089025,
+              "witwin_peak_bins": [
+                2,
+                131
+              ],
+              "matlab_peak_bins": [
+                2,
+                131
+              ],
+              "same_peak_bins": true
+            },
+            {
+              "expected_equivalent_range_m": 90.00000070862774,
+              "expected_receding_velocity_m_s": 0.49999998840445126,
+              "witwin_peak_bins": [
+                6,
+                130
+              ],
+              "matlab_peak_bins": [
+                6,
+                130
+              ],
+              "same_peak_bins": true
+            },
+            {
+              "expected_equivalent_range_m": 149.9999926604321,
+              "expected_receding_velocity_m_s": -0.49999998840445126,
+              "witwin_peak_bins": [
+                10,
+                126
+              ],
+              "matlab_peak_bins": [
+                10,
+                126
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "radial": {
+        "raw_iq_relative_l2": 0.005827490433546888,
+        "aligned_iq_relative_l2": 0.0037679230243600936,
+        "single_global_alignment_real": 1.0032715433775166,
+        "single_global_alignment_imag": 0.0030313998934598345,
+        "excluded_startup_samples": 21,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.0053809000019100495,
+        "matlab_transceiver_seconds": 0.2714851,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 9.800556507128608e-12,
+        "range_doppler": {
+          "power_relative_l2": 0.006770540844711367,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.9999999768089025,
+              "witwin_peak_bins": [
+                2,
+                131
+              ],
+              "matlab_peak_bins": [
+                2,
+                131
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "radial_os4": {
+        "raw_iq_relative_l2": 0.0017307589388823412,
+        "aligned_iq_relative_l2": 0.0011349759517134568,
+        "single_global_alignment_real": 1.0012837371539707,
+        "single_global_alignment_imag": 0.00025251500585621826,
+        "excluded_startup_samples": 81,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.011991500003205147,
+        "matlab_transceiver_seconds": 0.2050442,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 9.79928334104378e-12,
+        "range_doppler": {
+          "power_relative_l2": 0.00220428388749558,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.9999999768089025,
+              "witwin_peak_bins": [
+                2,
+                131
+              ],
+              "matlab_peak_bins": [
+                2,
+                131
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "static": {
+        "raw_iq_relative_l2": 0.005016949672687494,
+        "aligned_iq_relative_l2": 0.0032281704778138846,
+        "single_global_alignment_real": 1.002826617486716,
+        "single_global_alignment_imag": 0.0026158516818317492,
+        "excluded_startup_samples": 21,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.0034211000020150095,
+        "matlab_transceiver_seconds": 0.264842,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 1.4526343226998057e-11,
+        "range_doppler": {
+          "power_relative_l2": 0.005864795025977464,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.0,
+              "witwin_peak_bins": [
+                2,
+                128
+              ],
+              "matlab_peak_bins": [
+                2,
+                128
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "static_integer": {
+        "raw_iq_relative_l2": 9.886148319928898e-08,
+        "aligned_iq_relative_l2": 9.829940507277175e-08,
+        "single_global_alignment_real": 1.0000000101701225,
+        "single_global_alignment_imag": -2.7180936409661153e-09,
+        "excluded_startup_samples": 18,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.011575600001378916,
+        "matlab_transceiver_seconds": 0.1610512,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 1.3122602024910282e-14,
+        "range_doppler": {
+          "power_relative_l2": 2.0179610683324058e-08,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 35.73804593086243,
+              "expected_receding_velocity_m_s": 0.0,
+              "witwin_peak_bins": [
+                3,
+                128
+              ],
+              "matlab_peak_bins": [
+                3,
+                128
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      },
+      "static_os4": {
+        "raw_iq_relative_l2": 0.0014923431322906994,
+        "aligned_iq_relative_l2": 0.0009744546091848254,
+        "single_global_alignment_real": 1.001110714042042,
+        "single_global_alignment_imag": 0.00021605727968223218,
+        "excluded_startup_samples": 81,
+        "excluded_chirps": 1,
+        "witwin_cuda_synthesis_seconds": 0.0036665000006905757,
+        "matlab_transceiver_seconds": 0.1941636,
+        "timing_scope_comparable": false,
+        "matlab_vs_linear_delay_oracle_relative_l2": 1.452379778304956e-11,
+        "range_doppler": {
+          "power_relative_l2": 0.001908761295405264,
+          "paths": [
+            {
+              "expected_equivalent_range_m": 30.000000236209246,
+              "expected_receding_velocity_m_s": 0.0,
+              "witwin_peak_bins": [
+                2,
+                128
+              ],
+              "matlab_peak_bins": [
+                2,
+                128
+              ],
+              "same_peak_bins": true
+            }
+          ]
+        }
+      }
+    },
+    "installation": {
+      "release": "R2025bU4",
+      "product": "Radar_Toolbox",
+      "mpm_exit_code": -1,
+      "mpm_finalization_error": "registerWithOS requires elevation: system 740",
+      "recovery": "preserved old path, merged restoredefaultpath, rehash toolboxcache, savepath; fresh MATLAB runs verified"
+    },
+    "inspected_vendor_source_identity": [
+      {
+        "path": "D:\\Softwares\\MATLAB\\toolbox\\radar\\radar\\radarTransceiver.m",
+        "sha256": "d76c1245dc6bb2d4be956c3aa29d939f33a64ea1beece111ec03db462c766454"
+      },
+      {
+        "path": "D:\\Softwares\\MATLAB\\toolbox\\phased\\phased\\+phased\\+internal\\PathChannel.m",
+        "sha256": "54efb98274b444b4218536503d969f9769a8d82a08954842b3ebdaadc37176cb"
+      }
+    ]
   },
   "evidence_files": [
     {
@@ -380,6 +714,224 @@
       "path": "output/doppler-repair/matlab/status.json",
       "bytes": 377,
       "sha256": "e3479f5a8064c0a9da8e1cc9d16f7fb4bf2833a24d459027764510f053399ad3"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/launch-status.json",
+      "bytes": 199,
+      "sha256": "25bec712f6d726876312c0bff03b441f4495dc5201cfcdabe1832494e46fe732"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/matlab-identity.json",
+      "bytes": 571,
+      "sha256": "2b152ed985df2ed57375be4f9c8b220b096b440580251c9ed2ce986da6a398b2"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/matlab-run.log",
+      "bytes": 257,
+      "sha256": "f480dd0d7c3d5095c9c2fbd6f8b379b5b849227bd3121001c4a8002ba6b9056a"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/multipath-input.mat",
+      "bytes": 1049688,
+      "sha256": "58bfc8805a9b2f87c6abdbb87d9c9c55798b3c2bd4f8894dafe84e49035d4e00"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/radial-input.mat",
+      "bytes": 1049640,
+      "sha256": "b6737f8b1a017a25cac9091a43ca16f057335b6ca44848a27ac5f962ed2fe551"
+    },
+    {
+      "path": "output/doppler-repair/matlab-login-retry/static-input.mat",
+      "bytes": 1049640,
+      "sha256": "d371da473b39f17ffb603fc18d3e66ad44c2366bf7d5de37505b203d913657ef"
+    },
+    {
+      "path": "output/doppler-repair/matlab-install/install.log",
+      "bytes": 630,
+      "sha256": "7a9dcfb51a4d8d96eaeb4971f73e373aa100041a5b13d9063f9b28cd03cff06a"
+    },
+    {
+      "path": "output/doppler-repair/matlab-install/path-registration.log",
+      "bytes": 59,
+      "sha256": "546fcc251b675d4289e42bc03405d80575f58770bc9306bad6b21c1c7bf05f22"
+    },
+    {
+      "path": "output/doppler-repair/matlab-install/rehash.log",
+      "bytes": 160,
+      "sha256": "50a5abe46265549474db286abc2b77aef60c794302040b3312f458c7b542662a"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/comparison.json",
+      "bytes": 1355,
+      "sha256": "0e0eca7e72495aef4c7008a1fd0f320785635319021fcb21bb16d2460a227ca4"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/launch-status.json",
+      "bytes": 197,
+      "sha256": "83f43c15b6a152d7553131b8dcfb43ede3c67073f5b6270b17015c62adefeb0c"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/matlab-identity.json",
+      "bytes": 719,
+      "sha256": "6d2f8b32d965ec4b99e7d4c48bb34d3530c769ebc7f009e819b17c4fcf442d8e"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/matlab-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/multipath-input.mat",
+      "bytes": 1049688,
+      "sha256": "58bfc8805a9b2f87c6abdbb87d9c9c55798b3c2bd4f8894dafe84e49035d4e00"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/multipath-matlab.mat",
+      "bytes": 2009685,
+      "sha256": "15d08ccc710b1770b0c3c34539273405c4e45bb56a3bd40a7e2fed9a55b8f6dd"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/radial-input.mat",
+      "bytes": 1049640,
+      "sha256": "b6737f8b1a017a25cac9091a43ca16f057335b6ca44848a27ac5f962ed2fe551"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/radial-matlab.mat",
+      "bytes": 2003237,
+      "sha256": "bc9ecd630615fbef3093dbd6dcafc217fb696c93e4797b82c932325fb3da38c9"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/static-input.mat",
+      "bytes": 1049640,
+      "sha256": "d371da473b39f17ffb603fc18d3e66ad44c2366bf7d5de37505b203d913657ef"
+    },
+    {
+      "path": "output/doppler-repair/matlab-actual/static-matlab.mat",
+      "bytes": 1022169,
+      "sha256": "4e8759ebb62308a48d392a07d2ecca1156c4c10925f33727a6a949647ad8fe96"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/analysis.log",
+      "bytes": 8194,
+      "sha256": "042d47ee3cf8b61a40afad50fd7ddc80c95c241f6451a598f00acf85b8722520"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/comparison.json",
+      "bytes": 8194,
+      "sha256": "042d47ee3cf8b61a40afad50fd7ddc80c95c241f6451a598f00acf85b8722520"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/harness-tests.log",
+      "bytes": 718,
+      "sha256": "6ca15c8064b952a644add8a0c05c6021808b32bc419658f958f54cea95695eef"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/launch-status.json",
+      "bytes": 244,
+      "sha256": "ec155392fe74b7e2cd42ecd98cba4e4520414dcb428965de585a8d5564ca4b56"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/matlab-identity.json",
+      "bytes": 719,
+      "sha256": "6d2f8b32d965ec4b99e7d4c48bb34d3530c769ebc7f009e819b17c4fcf442d8e"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/matlab-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/multipath-input.mat",
+      "bytes": 1049688,
+      "sha256": "01f48c7583ab751d56a88ae31a7a0ab49f7358bbc640320ba83e5e3182d52d49"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/multipath-matlab.mat",
+      "bytes": 2009685,
+      "sha256": "85ad0a55d6c2afd2c275dfeebdb4e85f16b4852c1104b39f03089131e69922dd"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/multipath_os4-input.mat",
+      "bytes": 4195416,
+      "sha256": "f4e83c1e6a77a05e550858ead522b1d2940a3ee6ff73b4b3acb465d200c63dd0"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/multipath_os4-matlab.mat",
+      "bytes": 8024652,
+      "sha256": "472814c6aff22076d356240ca84804e04996313c6e649b5c32463a5c505c909c"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/radial-input.mat",
+      "bytes": 1049640,
+      "sha256": "efcc6651342a59d2e9e660a17ff4740ee87e29dfe2c0be6ee4f1480f8e0c87d4"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/radial-matlab.mat",
+      "bytes": 2003237,
+      "sha256": "50fe3509f38f76402c02eb1e64bb61cbda062af5d4c7188e175f98d544fe6e70"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/radial_os4-input.mat",
+      "bytes": 4195368,
+      "sha256": "a79c18ae35a00d5a2e850e554c80bd226701d41937cc27affcb455cabd34bfb4"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/radial_os4-matlab.mat",
+      "bytes": 7993902,
+      "sha256": "7903298754fe53209ef9393543061101d64de7a59859b177fe95c4125668d9f4"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/range-doppler-comparison.png",
+      "bytes": 94442,
+      "sha256": "5a9d14c6b6a334285d896135c394c636a1e8adc97cb290a2f6bfb961359cb274"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static-input.mat",
+      "bytes": 1049640,
+      "sha256": "7529bd686962ae9861b02b24de3273f67689a08c71bdf2d205e7aa9fb2174329"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static-matlab.mat",
+      "bytes": 1022169,
+      "sha256": "f4e739f6aeb77802c002df9e5599c7099008b3e324ff75fcf4ef9337a41c428c"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static_integer-input.mat",
+      "bytes": 1049640,
+      "sha256": "cd4bcd829d4bf740bb089fb05a6b7a8918f28d09b7c89deeaf4a74252ee19c1d"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static_integer-matlab.mat",
+      "bytes": 1021130,
+      "sha256": "b89f3341c4097e34418be4fc462c527bc88062b0356dcdea936e346694aa4994"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static_os4-input.mat",
+      "bytes": 4195368,
+      "sha256": "e53b2d82866d6839ace4273ce35e1179025da371cce3702c55c4f34ecf7c9d6d"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/static_os4-matlab.mat",
+      "bytes": 7997392,
+      "sha256": "6e6cb8b9a9c58c3ddd9163bb12c1cfe2916065ca5d9d000e31be407f7142f431"
+    },
+    {
+      "path": "output/doppler-repair/matlab-final/status.json",
+      "bytes": 322,
+      "sha256": "9044b584122ed96a29df2ad8b52b16aeac84cb87e7c86d657e0032de5c96fa0a"
     }
-  ]
+  ],
+  "matlab_historical_startup_attempt": {
+    "status": "blocked_matlab_startup_timeout",
+    "execution": {
+      "comparison_executed": false,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
+      "elapsed_seconds": 120.4294004,
+      "completed": false,
+      "exit_code": null,
+      "timeout_seconds": 120
+    },
+    "matlab_script_validated": false,
+    "radar_toolbox_runtime_identity_available": false
+  }
 }

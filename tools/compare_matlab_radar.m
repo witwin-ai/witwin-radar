@@ -12,7 +12,10 @@ assert(fid >= 0, 'Cannot write MATLAB identity');
 fprintf(fid,'%s',jsonencode(identity)); fclose(fid);
 assert(~isempty(identity.radarTransceiver) && identity.radarLicense, ...
     'WiTwin:MissingRadarToolbox','Radar Toolbox radarTransceiver is required');
-for name = ["static","radial","multipath"]
+inputs = dir(fullfile(directory,'*-input.mat'));
+assert(~isempty(inputs), 'No exported WiTwin inputs found');
+for inputIndex = 1:numel(inputs)
+    name = erase(string(inputs(inputIndex).name),"-input.mat");
     data = load(fullfile(directory,name+"-input.mat"));
     waveform = phased.FMCWWaveform('SampleRate',data.fs, ...
         'SweepTime',data.period,'SweepBandwidth',data.slope*data.period, ...
@@ -22,7 +25,7 @@ for name = ["static","radial","multipath"]
         'TransmitAntenna',phased.Radiator('Sensor',antenna,'OperatingFrequency',data.fc), ...
         'ReceiveAntenna',phased.Collector('Sensor',antenna,'OperatingFrequency',data.fc), ...
         'Transmitter',phased.Transmitter('PeakPower',1,'Gain',0), ...
-        'Receiver',phased.ReceiverPreamp('SampleRate',data.fs,'Gain',0, ...
+        'Receiver',phased.ReceiverPreamp('Gain',0, ...
             'NoiseMethod','Noise power','NoisePower',0), ...
         'NumRepetitions',1);
     reference = waveform();
@@ -31,7 +34,7 @@ for name = ["static","radial","multipath"]
     paths = repmat(prototype,1,numel(data.lengths));
     matlab_iq = complex(zeros(data.samples,data.chirps));
     tic;
-    for chirp = 1:data.chirps
+    for chirp = 1:double(data.chirps)
         t = (chirp-1)*data.period;
         for path = 1:numel(paths)
             paths(path).PathLength = data.lengths(path)+data.rates(path)*t;
