@@ -29,6 +29,22 @@ These are single measured runs, not latency percentiles or a real-time guarantee
 topology churn, tolerances and batch sizes change both accuracy and cost. The ADC reference remains available.
 Evidence: `output/doppler-repair/adaptive/results.json` and the saved full complex cubes.
 
+### Actual MATLAB material/motion comparison (2026-09-16)
+
+Actual R2025b Update 4 comparisons now distinguish known-path synthesis from the public scene entry.
+On RTX 5080 / Ryzen 7 9800X3D, known static paths to beat IQ (including CUDA transfers) measured
+0.241–2.252 ms versus MATLAB CPU double at 16.671–2637.869 ms. These are different native precisions
+and devices, not a same-hardware algorithm speedup. MATLAB submitted full frames with NumRepetitions.
+
+The public adaptive dynamic scene entry was slower: acceleration 6.479 s versus 0.302 s,
+rotor 13.247 s versus 0.251 s, and two articulated point proxies 11.872 s versus 0.343 s.
+The profiles identify 677 rediscoveries and 263062 per-observation full_like calls in one rotor frame.
+Fast CUDA synthesis therefore does not establish an end-to-end dynamic-scene advantage.
+Measurements used a shared desktop; medians and raw ranges are retained, not real-time guarantees.
+
+See [the full accuracy, sampling-control, and performance report](docs/dev/audit/radar-matlab-material-motion-performance-2026-09-16.md)
+and its JSON evidence index. The earlier heavy 64.14x result below is against WiTwin's own ADC reference.
+
 ### Earlier baseline measurements
 
 Both checkouts used witwin2, Torch 2.10.0+cu128, and RTX 5080. The pre-repair

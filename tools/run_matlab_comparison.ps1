@@ -2,6 +2,7 @@ param(
     [string]$MatlabExe = 'D:\Softwares\MATLAB\bin\matlab.exe',
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
     [string]$OutputDirectory = 'output/doppler-repair/matlab',
+    [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$ComparisonFunction = 'compare_matlab_radar',
     [switch]$IsolatedPreferences
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +16,7 @@ if ($IsolatedPreferences) {
 }
 $taskLog = Join-Path $taskOutput 'matlab-run.log'
 $taskMatlabDirectory = $taskOutput.Replace('\', '/').Replace("'", "''")
-$taskArguments = @('-wait', '-batch', ('"addpath(''tools''); compare_matlab_radar(''' + $taskMatlabDirectory + ''')"'),
+$taskArguments = @('-wait', '-batch', ('"addpath(''tools''); ' + $ComparisonFunction + '(''' + $taskMatlabDirectory + ''')"'),
     '-logfile', ('"' + $taskLog + '"'))
 $taskClock = [Diagnostics.Stopwatch]::StartNew()
 $taskStartedUtc = [DateTime]::UtcNow
@@ -49,4 +50,5 @@ $taskStatus = @{
 $taskStatus | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskOutput 'launch-status.json')
 $taskStatus | ConvertTo-Json
 if (!$taskCompleted) { exit 124 }
+if ($taskProcess.ExitCode -eq 0 -and !$taskStatus.comparison_executed) { exit 2 }
 exit $taskProcess.ExitCode

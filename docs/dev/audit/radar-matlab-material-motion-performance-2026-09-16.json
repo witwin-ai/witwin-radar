@@ -1,0 +1,1087 @@
+{
+  "date": "2026-09-16",
+  "previous_stage_commit": "dc41203",
+  "environment": {
+    "python": "witwin2",
+    "gpu": "RTX 5080",
+    "cpu": {
+      "Name": "AMD Ryzen 7 9800X3D 8-Core Processor           ",
+      "NumberOfCores": 8,
+      "NumberOfLogicalProcessors": 16
+    },
+    "matlab": {
+      "version": "25.2.0.3150157 (R2025b) Update 4",
+      "products": [
+        {
+          "Name": "DSP System Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Image Processing Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "MATLAB",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Phased Array System Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Radar Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        },
+        {
+          "Name": "Signal Processing Toolbox",
+          "Version": "25.2",
+          "Release": "(R2025b)",
+          "Date": "28-Jul-2025"
+        }
+      ],
+      "radarTransceiver": "D:\\Softwares\\MATLAB\\toolbox\\radar\\radar\\radarTransceiver.m",
+      "reflectionModel": "D:\\Softwares\\MATLAB\\toolbox\\radar\\radar\\+radar\\+scenario\\SurfaceReflectionCoefficient.m"
+    },
+    "radar_native_build_fingerprint": "92d3fcc85bd2a2bfa6ec7b50ae629ce35ea0311676a3753a87b873f88dc08e5e",
+    "shared_desktop": true,
+    "same_hardware_same_precision_comparison": false
+  },
+  "comparisons": {
+    "materials": {
+      "cases": 360,
+      "maximum_absolute_error": 1.934841398059195e-06,
+      "groups": {
+        "concrete_like_1000m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.4504442759893954e-07,
+          "relative_l2": 9.355967767437335e-08,
+          "reference": "actual Radar Toolbox Fresnel"
+        },
+        "concrete_like_0.003m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.638340283947864e-06,
+          "relative_l2": 7.151984010167082e-07,
+          "reference": "Radar Toolbox interfaces plus independent Airy slab oracle"
+        },
+        "copper_like_1000m": {
+          "cases": 36,
+          "max_complex_absolute_error": 2.413443560589379e-07,
+          "relative_l2": 1.0986497742308261e-07,
+          "reference": "actual Radar Toolbox Fresnel"
+        },
+        "copper_like_0.003m": {
+          "cases": 36,
+          "max_complex_absolute_error": 2.413443560589379e-07,
+          "relative_l2": 1.0986497742308261e-07,
+          "reference": "Radar Toolbox interfaces plus independent Airy slab oracle"
+        },
+        "glass_like_1000m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.8211295986365138e-07,
+          "relative_l2": 1.2920789389063647e-07,
+          "reference": "actual Radar Toolbox Fresnel"
+        },
+        "glass_like_0.003m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.2992614709379456e-06,
+          "relative_l2": 7.10025341079786e-07,
+          "reference": "Radar Toolbox interfaces plus independent Airy slab oracle"
+        },
+        "low_loss_dielectric_1000m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.818936131676314e-07,
+          "relative_l2": 1.0299880309150308e-07,
+          "reference": "actual Radar Toolbox Fresnel"
+        },
+        "low_loss_dielectric_0.003m": {
+          "cases": 36,
+          "max_complex_absolute_error": 5.392807810739949e-07,
+          "relative_l2": 3.109870445432053e-07,
+          "reference": "Radar Toolbox interfaces plus independent Airy slab oracle"
+        },
+        "wet_soil_like_1000m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.960423340034341e-07,
+          "relative_l2": 1.0771842017646031e-07,
+          "reference": "actual Radar Toolbox Fresnel"
+        },
+        "wet_soil_like_0.003m": {
+          "cases": 36,
+          "max_complex_absolute_error": 1.934841398059195e-06,
+          "relative_l2": 9.874204058957194e-07,
+          "reference": "Radar Toolbox interfaces plus independent Airy slab oracle"
+        }
+      }
+    },
+    "path_to_iq_performance": {
+      "n128_c64_p1": {
+        "raw_iq_relative_l2": 1.184902933050083e-07,
+        "aligned_iq_relative_l2": 1.1791982762464116e-07,
+        "global_alignment_real": 1.0000000108064209,
+        "global_alignment_imag": -4.2526623057561075e-09,
+        "rd_power_relative_l2": 2.411569469427635e-08,
+        "guard_samples": 17,
+        "gpu_resident": {
+          "repeats": 31,
+          "median_seconds": 9.859999408945441e-05,
+          "p95_seconds": 0.00022760000138077885,
+          "min_seconds": 8.489999163430184e-05,
+          "max_seconds": 0.0003437999985180795
+        },
+        "gpu_with_host_transfers": {
+          "repeats": 31,
+          "median_seconds": 0.0002406999992672354,
+          "p95_seconds": 0.001079999994544778,
+          "min_seconds": 0.00020319999021012336,
+          "max_seconds": 0.004634600001736544
+        },
+        "matlab_cpu_double": {
+          "repeats": 11,
+          "median_seconds": 0.0166714,
+          "p95_seconds": 0.020611400000000002,
+          "min_seconds": 0.015446,
+          "max_seconds": 0.0225651
+        },
+        "matlab_output_dtype": "double",
+        "witwin_output_dtype": "complex64",
+        "matlab_over_gpu_host_ratio": 69.2621522673571
+      },
+      "n512_c256_p1": {
+        "raw_iq_relative_l2": 1.1474568061576048e-07,
+        "aligned_iq_relative_l2": 1.1423462909570863e-07,
+        "global_alignment_real": 1.0000000102972721,
+        "global_alignment_imag": -3.314653847118528e-09,
+        "rd_power_relative_l2": 1.7516805810007977e-08,
+        "guard_samples": 17,
+        "gpu_resident": {
+          "repeats": 31,
+          "median_seconds": 0.00010059999476652592,
+          "p95_seconds": 0.0010566499913693406,
+          "min_seconds": 8.610000077169389e-05,
+          "max_seconds": 0.0021938999998383224
+        },
+        "gpu_with_host_transfers": {
+          "repeats": 31,
+          "median_seconds": 0.00031149999995250255,
+          "p95_seconds": 0.001141799999459181,
+          "min_seconds": 0.00027209999097976834,
+          "max_seconds": 0.006126200009020977
+        },
+        "matlab_cpu_double": {
+          "repeats": 11,
+          "median_seconds": 0.1138002,
+          "p95_seconds": 0.12307505,
+          "min_seconds": 0.1041567,
+          "max_seconds": 0.1250592
+        },
+        "matlab_output_dtype": "double",
+        "witwin_output_dtype": "complex64",
+        "matlab_over_gpu_host_ratio": 365.3296950797824
+      },
+      "n512_c256_p16": {
+        "raw_iq_relative_l2": 1.0024861257623087e-07,
+        "aligned_iq_relative_l2": 1.0007973217278236e-07,
+        "global_alignment_real": 1.000000004532719,
+        "global_alignment_imag": -3.644995327390047e-09,
+        "rd_power_relative_l2": 2.017709152501693e-08,
+        "guard_samples": 32,
+        "gpu_resident": {
+          "repeats": 31,
+          "median_seconds": 0.0002730999985942617,
+          "p95_seconds": 0.0010088999988511205,
+          "min_seconds": 0.00022119999630376697,
+          "max_seconds": 0.0013814999983878806
+        },
+        "gpu_with_host_transfers": {
+          "repeats": 31,
+          "median_seconds": 0.00047459999041166157,
+          "p95_seconds": 0.0033825000064098276,
+          "min_seconds": 0.00035600000410340726,
+          "max_seconds": 0.005719100008718669
+        },
+        "matlab_cpu_double": {
+          "repeats": 11,
+          "median_seconds": 0.2199849,
+          "p95_seconds": 0.2695388,
+          "min_seconds": 0.2064189,
+          "max_seconds": 0.273643
+        },
+        "matlab_output_dtype": "double",
+        "witwin_output_dtype": "complex64",
+        "matlab_over_gpu_host_ratio": 463.5164442569586
+      },
+      "n512_c256_p256": {
+        "raw_iq_relative_l2": 3.4907365337532025e-07,
+        "aligned_iq_relative_l2": 3.4580494715725695e-07,
+        "global_alignment_real": 1.0000000475812367,
+        "global_alignment_imag": 2.7166784774193475e-09,
+        "rd_power_relative_l2": 1.6894627566231087e-07,
+        "guard_samples": 272,
+        "gpu_resident": {
+          "repeats": 31,
+          "median_seconds": 0.0024356999929295853,
+          "p95_seconds": 0.006355900004564319,
+          "min_seconds": 0.0014193999959388748,
+          "max_seconds": 0.006886299990583211
+        },
+        "gpu_with_host_transfers": {
+          "repeats": 31,
+          "median_seconds": 0.002251600002637133,
+          "p95_seconds": 0.007490699994377792,
+          "min_seconds": 0.0017081000114558265,
+          "max_seconds": 0.007864100000006147
+        },
+        "matlab_cpu_double": {
+          "repeats": 11,
+          "median_seconds": 2.6378686,
+          "p95_seconds": 2.74420685,
+          "min_seconds": 2.6116128,
+          "max_seconds": 2.7990502
+        },
+        "matlab_output_dtype": "double",
+        "witwin_output_dtype": "complex64",
+        "matlab_over_gpu_host_ratio": 1171.5529387593085
+      },
+      "n512_c256_p64": {
+        "raw_iq_relative_l2": 1.5299879205024578e-07,
+        "aligned_iq_relative_l2": 1.5291594679536686e-07,
+        "global_alignment_real": 0.9999999959966986,
+        "global_alignment_imag": -3.052402659852386e-09,
+        "rd_power_relative_l2": 5.1874729623270966e-08,
+        "guard_samples": 80,
+        "gpu_resident": {
+          "repeats": 31,
+          "median_seconds": 0.0006626999966101721,
+          "p95_seconds": 0.0020115000079385936,
+          "min_seconds": 0.000411000000895001,
+          "max_seconds": 0.0024437999963993207
+        },
+        "gpu_with_host_transfers": {
+          "repeats": 31,
+          "median_seconds": 0.0007020999910309911,
+          "p95_seconds": 0.003983000002335757,
+          "min_seconds": 0.0006049000076018274,
+          "max_seconds": 0.006006299998261966
+        },
+        "matlab_cpu_double": {
+          "repeats": 11,
+          "median_seconds": 0.7109538,
+          "p95_seconds": 0.74873675,
+          "min_seconds": 0.671052,
+          "max_seconds": 0.7584409
+        },
+        "matlab_output_dtype": "double",
+        "witwin_output_dtype": "complex64",
+        "matlab_over_gpu_host_ratio": 1012.6104672868712
+      }
+    },
+    "scene_motion": {
+      "acceleration": {
+        "raw_iq_relative_l2": 0.022733990319383716,
+        "aligned_iq_relative_l2": 0.015073355786055806,
+        "global_alignment_real": 1.0163981391273809,
+        "global_alignment_imag": 0.005512052542057994,
+        "rd_power_relative_l2": 0.027642408839041736,
+        "guard_samples": 5,
+        "microdoppler_power_relative_l2": 0.03311509475885056,
+        "witwin_scene": {
+          "repeats": 3,
+          "median_seconds": 6.478870700004336,
+          "p95_seconds": 6.981298400000378,
+          "min_seconds": 6.4013945999977295,
+          "max_seconds": 7.037123699999938
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.3020056,
+          "p95_seconds": 0.30890752,
+          "min_seconds": 0.2848605,
+          "max_seconds": 0.3096744
+        },
+        "matlab_over_witwin_ratio": 0.046613926096688095,
+        "witwin_vs_continuous_oracle_relative_l2": 0.008136216115050322,
+        "matlab_vs_continuous_oracle_relative_l2": 0.021838876058299813,
+        "accuracy_only": false
+      },
+      "limbs": {
+        "raw_iq_relative_l2": 0.022622948464222508,
+        "aligned_iq_relative_l2": 0.015415235958742769,
+        "global_alignment_real": 1.0164755574413775,
+        "global_alignment_imag": -0.00345013922591634,
+        "rd_power_relative_l2": 0.029225658264618357,
+        "guard_samples": 5,
+        "microdoppler_power_relative_l2": 0.03391591849993091,
+        "witwin_scene": {
+          "repeats": 3,
+          "median_seconds": 11.871905799998785,
+          "p95_seconds": 11.927112700005818,
+          "min_seconds": 11.693217200001527,
+          "max_seconds": 11.9332468000066
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.342537,
+          "p95_seconds": 0.35184084,
+          "min_seconds": 0.3315446,
+          "max_seconds": 0.3528746
+        },
+        "matlab_over_witwin_ratio": 0.028852739043805,
+        "witwin_vs_continuous_oracle_relative_l2": 0.00564202841152094,
+        "matlab_vs_continuous_oracle_relative_l2": 0.021929890780658105,
+        "accuracy_only": false
+      },
+      "rotor": {
+        "raw_iq_relative_l2": 0.022984570063304035,
+        "aligned_iq_relative_l2": 0.01621986359552317,
+        "global_alignment_real": 1.0164614953439495,
+        "global_alignment_imag": -0.0017612201444957654,
+        "rd_power_relative_l2": 0.029451709905059725,
+        "guard_samples": 5,
+        "microdoppler_power_relative_l2": 0.033570128090371416,
+        "witwin_scene": {
+          "repeats": 3,
+          "median_seconds": 13.247475099997246,
+          "p95_seconds": 13.874451099998987,
+          "min_seconds": 13.138586400003987,
+          "max_seconds": 13.94411509999918
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.2507424,
+          "p95_seconds": 0.25335375,
+          "min_seconds": 0.2305111,
+          "max_seconds": 0.2536439
+        },
+        "matlab_over_witwin_ratio": 0.018927561524539276,
+        "witwin_vs_continuous_oracle_relative_l2": 0.00720906882637884,
+        "matlab_vs_continuous_oracle_relative_l2": 0.021924154625142463,
+        "accuracy_only": false
+      },
+      "rotor_os4": {
+        "raw_iq_relative_l2": 0.007755193480871935,
+        "aligned_iq_relative_l2": 0.007677689453708875,
+        "global_alignment_real": 1.0010171814232938,
+        "global_alignment_imag": -0.0004049170222765111,
+        "rd_power_relative_l2": 0.0077097444109463864,
+        "guard_samples": 17,
+        "microdoppler_power_relative_l2": 0.0038803663348224915,
+        "witwin_scene": {
+          "repeats": 1,
+          "median_seconds": 34.23103170000104,
+          "p95_seconds": 34.23103170000104,
+          "min_seconds": 34.23103170000104,
+          "max_seconds": 34.23103170000104
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.4095046,
+          "p95_seconds": 0.41457799,
+          "min_seconds": 0.3956887,
+          "max_seconds": 0.4151417
+        },
+        "matlab_over_witwin_ratio": 0.011962964002630033,
+        "witwin_vs_continuous_oracle_relative_l2": 0.007518457500180724,
+        "matlab_vs_continuous_oracle_relative_l2": 0.002906580673696935,
+        "accuracy_only": true
+      },
+      "static": {
+        "raw_iq_relative_l2": 0.021805291475889246,
+        "aligned_iq_relative_l2": 0.014453766153285185,
+        "global_alignment_real": 1.0164808368056324,
+        "global_alignment_imag": -0.0019643369854549383,
+        "rd_power_relative_l2": 0.027907373882505367,
+        "guard_samples": 5,
+        "microdoppler_power_relative_l2": 0.03316281915187285,
+        "witwin_scene": {
+          "repeats": 3,
+          "median_seconds": 0.014006800003699027,
+          "p95_seconds": 0.016330240001843778,
+          "min_seconds": 0.009539599996060133,
+          "max_seconds": 0.016588400001637638
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.0236901,
+          "p95_seconds": 0.02423082,
+          "min_seconds": 0.0232812,
+          "max_seconds": 0.0242909
+        },
+        "matlab_over_witwin_ratio": 1.6913284971402267,
+        "witwin_vs_continuous_oracle_relative_l2": 0.00046303826792861054,
+        "matlab_vs_continuous_oracle_relative_l2": 0.021769737271773695,
+        "accuracy_only": false
+      },
+      "static_os4": {
+        "raw_iq_relative_l2": 0.0014427320824487346,
+        "aligned_iq_relative_l2": 0.000909642480369816,
+        "global_alignment_real": 1.0010463903070115,
+        "global_alignment_imag": -0.00040214521441515443,
+        "rd_power_relative_l2": 0.001770914578990893,
+        "guard_samples": 17,
+        "microdoppler_power_relative_l2": 0.002074517445875167,
+        "witwin_scene": {
+          "repeats": 1,
+          "median_seconds": 0.019020499996258877,
+          "p95_seconds": 0.019020499996258877,
+          "min_seconds": 0.019020499996258877,
+          "max_seconds": 0.019020499996258877
+        },
+        "matlab_scene": {
+          "repeats": 3,
+          "median_seconds": 0.0445031,
+          "p95_seconds": 0.04835501,
+          "min_seconds": 0.0444183,
+          "max_seconds": 0.048783
+        },
+        "matlab_over_witwin_ratio": 2.339743960923912,
+        "witwin_vs_continuous_oracle_relative_l2": 0.0004630414343724372,
+        "matlab_vs_continuous_oracle_relative_l2": 0.0013870954028513789,
+        "accuracy_only": true
+      }
+    },
+    "ground_motion": {
+      "ground_concrete": {
+        "raw_iq_relative_l2": 0.16999263890003147,
+        "aligned_iq_relative_l2": 0.1691260579298632,
+        "global_alignment_real": 1.0165749171217557,
+        "global_alignment_imag": 0.006158136999920278,
+        "rd_power_relative_l2": 0.12044022390664208,
+        "guard_samples": 25,
+        "witwin_vs_continuous_oracle_relative_l2": 0.005112022491865659,
+        "matlab_vs_continuous_oracle_relative_l2": 0.17000916284369896,
+        "matlab_internal_sample_rate_hz": 20000000.0,
+        "scope": "moving point + smooth half-space, four coherent round trips; MATLAB twoRayChannel composition",
+        "accuracy_only": true
+      },
+      "ground_concrete_os4": {
+        "raw_iq_relative_l2": 0.007026944419718742,
+        "aligned_iq_relative_l2": 0.005439221301186795,
+        "global_alignment_real": 1.0021356584984766,
+        "global_alignment_imag": 0.003913733178822349,
+        "rd_power_relative_l2": 0.004845086089888343,
+        "guard_samples": 25,
+        "witwin_vs_continuous_oracle_relative_l2": 0.005112022491865659,
+        "matlab_vs_continuous_oracle_relative_l2": 0.005377196105197863,
+        "matlab_internal_sample_rate_hz": 80000000.0,
+        "scope": "moving point + smooth half-space, four coherent round trips; MATLAB twoRayChannel composition",
+        "accuracy_only": true
+      },
+      "ground_metal": {
+        "raw_iq_relative_l2": 0.3203741738280473,
+        "aligned_iq_relative_l2": 0.31334377277594616,
+        "global_alignment_real": 1.0748998234912672,
+        "global_alignment_imag": 0.009931719269995634,
+        "rd_power_relative_l2": 0.3009728790741171,
+        "guard_samples": 25,
+        "witwin_vs_continuous_oracle_relative_l2": 0.004855389826579177,
+        "matlab_vs_continuous_oracle_relative_l2": 0.3204127361827736,
+        "matlab_internal_sample_rate_hz": 20000000.0,
+        "scope": "moving point + smooth half-space, four coherent round trips; MATLAB twoRayChannel composition",
+        "accuracy_only": true
+      },
+      "ground_metal_os4": {
+        "raw_iq_relative_l2": 0.010031874854775235,
+        "aligned_iq_relative_l2": 0.008332691362522966,
+        "global_alignment_real": 1.0048226884749663,
+        "global_alignment_imag": 0.0028723845788003496,
+        "rd_power_relative_l2": 0.009935749484248302,
+        "guard_samples": 25,
+        "witwin_vs_continuous_oracle_relative_l2": 0.004855389826579177,
+        "matlab_vs_continuous_oracle_relative_l2": 0.00921661907044235,
+        "matlab_internal_sample_rate_hz": 80000000.0,
+        "scope": "moving point + smooth half-space, four coherent round trips; MATLAB twoRayChannel composition",
+        "accuracy_only": true
+      }
+    }
+  },
+  "profile": [
+    {
+      "file": "~",
+      "line": 0,
+      "name": "<built-in method torch.tensor>",
+      "primitive_calls": 19526,
+      "calls": 19526,
+      "self_seconds": 2.8678118,
+      "cumulative_seconds": 2.8710025000000003
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "name": "<built-in method torch.full_like>",
+      "primitive_calls": 263062,
+      "calls": 263062,
+      "self_seconds": 2.1641549,
+      "cumulative_seconds": 2.1641549
+    },
+    {
+      "file": "E:\\Code\\witwin-platform\\radar\\witwin\\radar\\simulation.py",
+      "line": 1108,
+      "name": "evaluate_many",
+      "primitive_calls": 9,
+      "calls": 9,
+      "self_seconds": 0.0030770000000000003,
+      "cumulative_seconds": 9.5920676
+    },
+    {
+      "file": "E:\\Code\\witwin-platform\\radar\\witwin\\radar\\propagation.py",
+      "line": 878,
+      "name": "_rediscover",
+      "primitive_calls": 677,
+      "calls": 677,
+      "self_seconds": 0.0017762000000000001,
+      "cumulative_seconds": 7.9807449
+    },
+    {
+      "file": "E:\\Code\\witwin-platform\\radar\\witwin\\radar\\simulation.py",
+      "line": 905,
+      "name": "simulate_scene",
+      "primitive_calls": 1,
+      "calls": 1,
+      "self_seconds": 0.074738,
+      "cumulative_seconds": 15.417476700000002
+    },
+    {
+      "file": "E:\\Code\\witwin-platform\\radar\\witwin\\radar\\simulation.py",
+      "line": 727,
+      "name": "_adaptive_fmcw",
+      "primitive_calls": 1,
+      "calls": 1,
+      "self_seconds": 0.5293316,
+      "cumulative_seconds": 15.281083400000002
+    }
+  ],
+  "executions": {
+    "materials_and_path_performance": {
+      "comparison_executed": true,
+      "exit_code": 0,
+      "elapsed_seconds": 58.7512237,
+      "expected_cases": 6,
+      "fresh_results": 6,
+      "timeout_seconds": 300,
+      "completed": true,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe"
+    },
+    "motion": {
+      "comparison_executed": true,
+      "elapsed_seconds": 12.4651508,
+      "completed": true,
+      "timeout_seconds": 180,
+      "expected_cases": 6,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
+      "fresh_results": 6,
+      "exit_code": 0
+    },
+    "ground": {
+      "elapsed_seconds": 51.2355262,
+      "completed": true,
+      "fresh_results": 4,
+      "timeout_seconds": 180,
+      "comparison_executed": true,
+      "expected_cases": 4,
+      "exit_code": 0,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe"
+    }
+  },
+  "checks": {
+    "harness_tests_passed": 4,
+    "harness_log": "output/matlab-scenarios/harness-tests.log",
+    "ruff_format_passed": true,
+    "ruff_check_passed": true,
+    "additional_static_gates_passed": 9,
+    "final_bound_callable_cuda_smoke_cases": 5,
+    "smoke_log": "output/matlab-scenarios/final-smoke.log",
+    "launcher_positive": {
+      "comparison_executed": true,
+      "fresh_results": 1,
+      "exit_code": 0,
+      "completed": true,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
+      "expected_cases": 1,
+      "timeout_seconds": 60,
+      "elapsed_seconds": 6.181134
+    },
+    "launcher_negative_matlab_zero_exit_without_output_rejected": true,
+    "launcher_negative": {
+      "completed": true,
+      "elapsed_seconds": 5.6582542,
+      "timeout_seconds": 60,
+      "expected_cases": 1,
+      "exit_code": 0,
+      "comparison_executed": false,
+      "executable": "D:\\Softwares\\MATLAB\\bin\\matlab.exe",
+      "fresh_results": 0
+    }
+  },
+  "artifacts": [
+    {
+      "path": "output/matlab-scenarios/analysis.log",
+      "bytes": 17530,
+      "sha256": "d5b96d55137cf5469858a0538375350712e0b7fb9890f95d7bcb47dc5b696f71"
+    },
+    {
+      "path": "output/matlab-scenarios/check-architecture.log",
+      "bytes": 30,
+      "sha256": "03bc81f58f28adefc3f9d92fe61d1448b4f121c1bf996ebe7ee27c7c4bfc1309"
+    },
+    {
+      "path": "output/matlab-scenarios/check-documentation_surface.log",
+      "bytes": 39,
+      "sha256": "b0f853d11f4f9daf725187d772c7a7cc2548f25e7d28e61583638b57c31d61d7"
+    },
+    {
+      "path": "output/matlab-scenarios/check-duplicate_code.log",
+      "bytes": 32,
+      "sha256": "9bc42ac5242f8247c8fc592fdcccf42fcd6f0d69f4b82011d2eb4da78ff57fa9"
+    },
+    {
+      "path": "output/matlab-scenarios/check-governance_inventory.log",
+      "bytes": 38,
+      "sha256": "5883e8e6a4c77c69f99e2b71b29ae3c0c5096b351edd3aaf6ba2cb5d642237ae"
+    },
+    {
+      "path": "output/matlab-scenarios/check-no_compatibility.log",
+      "bytes": 34,
+      "sha256": "6b9797b6ef2b61e27a6d9095b6850bacb53499d8f06e4352bde6f325065ebae3"
+    },
+    {
+      "path": "output/matlab-scenarios/check-public_api_manifest.log",
+      "bytes": 37,
+      "sha256": "490850328d2693a2f4bdf05141505aea23a2edf8a19be5011a3de33236e7d598"
+    },
+    {
+      "path": "output/matlab-scenarios/check-release_claims.log",
+      "bytes": 32,
+      "sha256": "5bd39639dbc5d1e3da7a16fd30b88c7b14bc7afa1d769a878b0371183e84b598"
+    },
+    {
+      "path": "output/matlab-scenarios/check-required_channel_coverage.log",
+      "bytes": 43,
+      "sha256": "caacd9791d80f1d99bc9a05338f6d6b5e35dcdc99377a9ea2e299d3eb64799f8"
+    },
+    {
+      "path": "output/matlab-scenarios/check-ruff-check.log",
+      "bytes": 20,
+      "sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0"
+    },
+    {
+      "path": "output/matlab-scenarios/check-ruff-format.log",
+      "bytes": 29,
+      "sha256": "5e729b74297805fa55354191cd9651e15b144e0bdff6f449898a964fa3ef0736"
+    },
+    {
+      "path": "output/matlab-scenarios/check-workflow_references.log",
+      "bytes": 37,
+      "sha256": "05c955cf21ee08daee21d14e1c5087ef31b8732ab09c7f10dba8d591155bd6ca"
+    },
+    {
+      "path": "output/matlab-scenarios/comparison.json",
+      "bytes": 17530,
+      "sha256": "d5b96d55137cf5469858a0538375350712e0b7fb9890f95d7bcb47dc5b696f71"
+    },
+    {
+      "path": "output/matlab-scenarios/cpu-identity.json",
+      "bytes": 126,
+      "sha256": "c7c364006373b3c9bbf2205b0eff60c4efae4a9d1ef0a3e67776ac07cc8fda73"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke/n128_c64_p1-performance-input.mat",
+      "bytes": 67032,
+      "sha256": "3b31ab1bfcbdf9caf80cef40c68837e0f21433691aa07ed30fed9ed906dc780a"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke/n512_c256_p1-performance-input.mat",
+      "bytes": 1050072,
+      "sha256": "0e47e65908eaea805adbf7e19bad52f3183a6b73fb806ceb0cd986927d6dcbcd"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke/n512_c256_p16-performance-input.mat",
+      "bytes": 1050552,
+      "sha256": "bf712e418a21ab43155bcbff679c66b6ef65e389661e4b577e74e466c62cf6b3"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke/n512_c256_p256-performance-input.mat",
+      "bytes": 1058232,
+      "sha256": "3c04f561cc6efe13d11e44cd9ceac0e0fefc1422a81b9fceed0194162a026801"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke/n512_c256_p64-performance-input.mat",
+      "bytes": 1052088,
+      "sha256": "42177c079b7cff8f19fd463c25fd29eca5500411c310b2a7630d3b773adb24df"
+    },
+    {
+      "path": "output/matlab-scenarios/final-smoke.log",
+      "bytes": 294,
+      "sha256": "9cb5440e447ddf33151990267d0cdbe48a7a3ad4c69b8f82799ca468b4954610"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_concrete-diagnostics.json",
+      "bytes": 452,
+      "sha256": "48a656a46a580310a44d4fc6ded8b61dba4118ecad216494b96062d5914deb19"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_concrete-motion-input.mat",
+      "bytes": 2110504,
+      "sha256": "35425e46d432ce97e09ba00affc2b8451860356d6e937d972f16e152350a4518"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_concrete-motion-matlab.mat",
+      "bytes": 8031161,
+      "sha256": "e948a12162190207aacc146714bb40da4485f807d4efbfb9200a1fca2eb3cb81"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_concrete_os4-motion-input.mat",
+      "bytes": 2110504,
+      "sha256": "35425e46d432ce97e09ba00affc2b8451860356d6e937d972f16e152350a4518"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_concrete_os4-motion-matlab.mat",
+      "bytes": 20031715,
+      "sha256": "7a9df7c7b4e587bd4c19f054daa762d953e45cc073396224ccf69afff0fe9877"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_metal-diagnostics.json",
+      "bytes": 451,
+      "sha256": "436c223d16e8e771e4d8de56e05bb2694d04a7f0f8bd8c6ec88de8fc73fce2b8"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_metal-motion-input.mat",
+      "bytes": 2110504,
+      "sha256": "56cfed9e3401406857e9407b88cd4ca4132b19f388d39183822bdb679ad96b57"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_metal-motion-matlab.mat",
+      "bytes": 8041545,
+      "sha256": "91928ac96dbdaf31219a6ef5d8113052470a159969b02ef259b2afc6cb76d775"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_metal_os4-motion-input.mat",
+      "bytes": 2110504,
+      "sha256": "56cfed9e3401406857e9407b88cd4ca4132b19f388d39183822bdb679ad96b57"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/ground_metal_os4-motion-matlab.mat",
+      "bytes": 20035572,
+      "sha256": "d2470267ceeb18c49ab32abc28377700700d7c4c0a6557102b42025fc75867ed"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/launch-status.json",
+      "bytes": 245,
+      "sha256": "22088df516049d36e55da8320f8e7f76e3965e1cf0ec695991abd8a6ae1d6c78"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/matlab-identity.json",
+      "bytes": 800,
+      "sha256": "d75de28fa12685c04b1e3ef26cd5d09ee45994c24edd2ed8606652b9222fb819"
+    },
+    {
+      "path": "output/matlab-scenarios/ground/matlab-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output/matlab-scenarios/harness-tests.log",
+      "bytes": 100,
+      "sha256": "9b89572e69044e5d8d479467e791ec2f5e14ad53ae413c3d1b3fd2be94dfd9b5"
+    },
+    {
+      "path": "output/matlab-scenarios/launch-status.json",
+      "bytes": 245,
+      "sha256": "96ef521f1b590c2d1fc4c5081f70aa489a9a9a0c47aecc6d8d96f58a62b29588"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-negative/launch-status.json",
+      "bytes": 244,
+      "sha256": "46d6dfba412a53b3a4bbf1afbcab2560938f4c1b970e25d618f484ca04733bc0"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-negative/materials-input.mat",
+      "bytes": 28016,
+      "sha256": "2aa09912d684ab6938a8ab4c2b79a413e451a94842da7a6bf5a3bcf97d9e17dc"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-negative/matlab-run.log",
+      "bytes": 72,
+      "sha256": "38af19dc1fb46a92cbf4d4ae8ae94f80de947fe2c1df146c703bb8da4151339b"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-positive/launch-status.json",
+      "bytes": 242,
+      "sha256": "034f7587529b53792cf077beec23d221e69768f527ce03e39a3ea019a4d7ee7d"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-positive/materials-input.mat",
+      "bytes": 28016,
+      "sha256": "2aa09912d684ab6938a8ab4c2b79a413e451a94842da7a6bf5a3bcf97d9e17dc"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-positive/materials-matlab.mat",
+      "bytes": 8047,
+      "sha256": "9038f68274010e8822ed1f6b56e641974b52282dda98ad8cfb6a30d1f998b845"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-positive/matlab-identity.json",
+      "bytes": 800,
+      "sha256": "d75de28fa12685c04b1e3ef26cd5d09ee45994c24edd2ed8606652b9222fb819"
+    },
+    {
+      "path": "output/matlab-scenarios/launcher-positive/matlab-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output/matlab-scenarios/materials-input.mat",
+      "bytes": 28016,
+      "sha256": "2aa09912d684ab6938a8ab4c2b79a413e451a94842da7a6bf5a3bcf97d9e17dc"
+    },
+    {
+      "path": "output/matlab-scenarios/materials-matlab.mat",
+      "bytes": 8047,
+      "sha256": "bda4be972e9f1d09b3ec39522bd45650813932e5de4c12a13efdb181a7f633f5"
+    },
+    {
+      "path": "output/matlab-scenarios/matlab-identity.json",
+      "bytes": 800,
+      "sha256": "d75de28fa12685c04b1e3ef26cd5d09ee45994c24edd2ed8606652b9222fb819"
+    },
+    {
+      "path": "output/matlab-scenarios/matlab-run.log",
+      "bytes": 218,
+      "sha256": "281f6cae2f9b73f5d286d0f32c8d5381715986388845a6cf3573c881a3c367a2"
+    },
+    {
+      "path": "output/matlab-scenarios/microdoppler-comparison.png",
+      "bytes": 151302,
+      "sha256": "ab9e4ac7ace75115934aabff3647dfd8738244c98a51ee64a9df8b8dbccf4842"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/acceleration-diagnostics.json",
+      "bytes": 480,
+      "sha256": "a8ee29cfa8be2730bc6099299773e3c15ac92c41314c15cd9cf8445cdbcaa49c"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/acceleration-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "84351cf9e7e853b5a10193c7fe8958540c7f096ae3f685a3eeba46a2519b76e1"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/acceleration-motion-matlab.mat",
+      "bytes": 1965252,
+      "sha256": "cade046892b4a4a5ebbd6554631d28b18b042261221f7719a5dfaf11824042f2"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/launch-status.json",
+      "bytes": 245,
+      "sha256": "ba4bcd348c2c2657edab23b3489220bedd89e2f031672deb7203394ead0e0b00"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/limbs-diagnostics.json",
+      "bytes": 481,
+      "sha256": "d279121775ba26f884d6a6ca331dc963cf9653a63e5b8b8b05998241011691ee"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/limbs-motion-input.mat",
+      "bytes": 1098808,
+      "sha256": "03878f4111d7a235353940ae1c8cda1b65227fb317921194c00a3def8151fc2b"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/limbs-motion-matlab.mat",
+      "bytes": 1970654,
+      "sha256": "82c51b87f7c10058098c91ed597d1561f2f067e214389395729f9b1406b0b137"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/matlab-identity.json",
+      "bytes": 800,
+      "sha256": "d75de28fa12685c04b1e3ef26cd5d09ee45994c24edd2ed8606652b9222fb819"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/matlab-run.log",
+      "bytes": 203,
+      "sha256": "df62340d88ed6045971e66910ceea60fd978de0b624287ae87a0c0ead38ab1aa"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor-diagnostics.json",
+      "bytes": 482,
+      "sha256": "ade72276958fc2b0ecf89cb1309d17dd914f5ab989dc997b41ac51cc3a66aed0"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor-motion-input.mat",
+      "bytes": 1074232,
+      "sha256": "a346d808210ca99dd058d1fca0eac230d1a1bad98381d9d43dc3564b276ab04c"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor-motion-matlab.mat",
+      "bytes": 1965994,
+      "sha256": "d2830d9dd98dcf3d1bd3cc6e9b16f4a9d974b2a43f718a9580f48c962fe497a7"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor_os4-diagnostics.json",
+      "bytes": 432,
+      "sha256": "f6429309f7292b37e805f0998ca116500133d1655a56fbd39976799ee31e48a0"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor_os4-motion-input.mat",
+      "bytes": 4219808,
+      "sha256": "61ea77fdeb2e39734400faa4f3afd3d6144658ce7ada137cb842d72681a69615"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/rotor_os4-motion-matlab.mat",
+      "bytes": 7779407,
+      "sha256": "ad89c92e57f9be4e0bea37558f314cdb186181bbc4df16f34379525458f9d85e"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static-diagnostics.json",
+      "bytes": 171,
+      "sha256": "5249bfac4bea339e405895b3dbb770048e7d1275ef16f02c18380fbdc746321d"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static-motion-input.mat",
+      "bytes": 135224,
+      "sha256": "9ebf3c26e4a9f20a8872d127ba5b7f779e2280cd59af37ca07d0fb32e22064dc"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static-motion-matlab.mat",
+      "bytes": 34769,
+      "sha256": "ec38daa1b9977fbdd94063b705ea5dc81730c3e19a0fff8192082662431a891f"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static_os4-diagnostics.json",
+      "bytes": 97,
+      "sha256": "9f7ee86513ffee09b2f0fa0eeb88067d76ae32e5a2b58945b7cd2cbbb30012c1"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static_os4-motion-input.mat",
+      "bytes": 528288,
+      "sha256": "8a7869cbdb8336a66d033c16a937b880bfed4bfedbf7d03eb75c444d14bc55eb"
+    },
+    {
+      "path": "output/matlab-scenarios/motion/static_os4-motion-matlab.mat",
+      "bytes": 494027,
+      "sha256": "17b81f997a8c178a0dcb4afb0a016b73bdf3f9f2d70f4b0c9f19675b4709a211"
+    },
+    {
+      "path": "output/matlab-scenarios/n128_c64_p1-performance-input.mat",
+      "bytes": 67032,
+      "sha256": "56f9d13bbe664601243fd59f599e28a03475ab725e28bc997b6a2b9c670ebc34"
+    },
+    {
+      "path": "output/matlab-scenarios/n128_c64_p1-performance-matlab.mat",
+      "bytes": 18164,
+      "sha256": "482777dcc8ccb76865e4b6c0ed5eb1ba1cbaa123b0dc7e44a15b386dbe6a5482"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p1-performance-input.mat",
+      "bytes": 1050072,
+      "sha256": "12e50c588cba0e9b35dc51d34e808bc78dbb04e59ba9c36c1fa9a4984c9a8d69"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p1-performance-matlab.mat",
+      "bytes": 1020475,
+      "sha256": "1f91823e6b354c38db6997d9cdd4c79c0ee97a3a5b00219f9702ce91f561dbb0"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p16-performance-input.mat",
+      "bytes": 1050552,
+      "sha256": "ec52ef5872d6547654251a8b2a1d137d53318d346a4c395ec109bd0e3009bf35"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p16-performance-matlab.mat",
+      "bytes": 1031084,
+      "sha256": "f544daa3f771ad752b5d1a17c34b7fe0ca888df360e0be3e06e2765c764f3fa2"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p256-performance-input.mat",
+      "bytes": 1058232,
+      "sha256": "4f05fab50a82ab50ad93cc22ce5618e283136762595ca2c548ddad5dc1350230"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p256-performance-matlab.mat",
+      "bytes": 1031375,
+      "sha256": "ab3d74a691942411a6eddebd69f930682b68ebe7c0a5cbc986416a46ddc7633a"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p64-performance-input.mat",
+      "bytes": 1052088,
+      "sha256": "61abd80a0ffdf7dc54b50a813924575a1dd399a90dedddb34f196c2a5c135c6a"
+    },
+    {
+      "path": "output/matlab-scenarios/n512_c256_p64-performance-matlab.mat",
+      "bytes": 1030648,
+      "sha256": "d5934670e8925d4a08c38ef511927f8078ddc1b44ae0f581957368d4dfd63ccb"
+    },
+    {
+      "path": "output/matlab-scenarios/performance-comparison.png",
+      "bytes": 109389,
+      "sha256": "ed74be8a0ed5b2c722823d679ae1d82eea2163f1b760e5e39fa2bec33b1c5468"
+    },
+    {
+      "path": "output/matlab-scenarios/profile/cumulative.txt",
+      "bytes": 4195,
+      "sha256": "2d7e4bc44a1977c3f3f7e97d20117464e3e9e875fe8b6159d1024cb2477b10d2"
+    },
+    {
+      "path": "output/matlab-scenarios/profile/rotor-diagnostics.json",
+      "bytes": 453,
+      "sha256": "736ee6cd4349c71cb30365da79836e821dcd34d3066c38f80486e23b634a64fb"
+    },
+    {
+      "path": "output/matlab-scenarios/profile/rotor-motion-input.mat",
+      "bytes": 1074216,
+      "sha256": "9983ebcbe48a54b03763df6f31d2a0b7a955cd4d83c871fb5bfcff09ca866718"
+    },
+    {
+      "path": "output/matlab-scenarios/profile/rotor.prof",
+      "bytes": 1307672,
+      "sha256": "dcdd552f21bcea0afa7aaf0d022d1d93ef7cedac969405a374e5c21e4d351aba"
+    },
+    {
+      "path": "output/matlab-scenarios/profile/run.log",
+      "bytes": 65,
+      "sha256": "37f3a1837f90bdd771760d46a828dacc935b06359c87e45de4aa79c2603ed96d"
+    },
+    {
+      "path": "output/doppler-repair/matlab-motion-export.log",
+      "bytes": 433,
+      "sha256": "d083d75f65fff6ab647fcf2b6bf878e24e15722b4cbdc46465a0cd08a5753acf"
+    },
+    {
+      "path": "output/doppler-repair/matlab-motion-final.log",
+      "bytes": 428,
+      "sha256": "603f819d83af3e87c39dc3f8cfb0016b12d06c40835d31438869a07382023a7a"
+    },
+    {
+      "path": "output/doppler-repair/matlab-static-final.log",
+      "bytes": 113,
+      "sha256": "a04a1e71a2485c9d199ff8d183706e1df96611e17db8d6384034ec2162dd3a1f"
+    },
+    {
+      "path": "output/doppler-repair/matlab-motion-controls.log",
+      "bytes": 149,
+      "sha256": "83739e0bf84351c573b32c8bbe003f6a274a83d1ae0028a343e9b9d4ebe7da92"
+    },
+    {
+      "path": "output/doppler-repair/matlab-ground-final.log",
+      "bytes": 163,
+      "sha256": "26789b21ba84573e7de8d361f3248af5109ae59cc91741626aac5e0c243eabf5"
+    },
+    {
+      "path": "output/doppler-repair/material-export.log",
+      "bytes": 1471,
+      "sha256": "ee3d00060fd8dc506924d1648a05b36dfed43417cbcffeddb6c294b01d8c8a68"
+    },
+    {
+      "path": "output/doppler-repair/matlab-performance-final.log",
+      "bytes": 295,
+      "sha256": "973533e86f56210b5b4ff32c78f4e5c7d59169bfc165123dc69c1e43efbef193"
+    }
+  ]
+}

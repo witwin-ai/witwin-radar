@@ -155,3 +155,7 @@ WiTwin 自身逐 ADC 参考验收，不能改称 MATLAB 的 micro-Doppler 或 he
 官方依据：[radarTransceiver](https://www.mathworks.com/help/radar/ref/radartransceiver-system-object.html)、
 [dechirp](https://www.mathworks.com/help/phased/ref/dechirp.html)、
 [MPM 安装](https://www.mathworks.com/help/install/ug/mpminstall.html)。
+
+后续实际材质、完整动态场景、地面多径和重复性能对照见
+[扩展报告](radar-matlab-material-motion-performance-2026-09-16.md)。
+其中完整动态入口仍明显慢于本次 MATLAB 点目标基线，不能由原生合成或自身 ADC 对照推断商业性能优势。
