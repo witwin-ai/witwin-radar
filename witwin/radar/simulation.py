@@ -835,12 +835,17 @@ def simulate_scene(
 
     mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     full_spec = solve_config.waveform_spec()
+    output_spec = full_spec
+    # Receiver nonlinearity and oscillator noise act on ADC-time samples.
+    # Preserve the direct-spectrum fast path only for an ideal receiver.
+    if isinstance(full_spec, FmcwSpec) and radar.frontend is not None:
+        full_spec = replace(full_spec, output_domain="beat")
     adc_sampled = sampled and motion_sampling == "adc" and isinstance(full_spec, FmcwSpec)
     samples_per_slot = full_spec.num_samples if adc_sampled else 1
 
     if sampled:
         offsets, pair_samples, single_spec = waveform_sampling(
-            solve_config.waveform_spec(), num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
+            full_spec, num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
         )
         if adc_sampled:
             if (
@@ -939,7 +944,7 @@ def simulate_scene(
         synthesis = (
             radar._synthesize(composed, slow_time_mode=mode, spec=observation_spec)
             if sampled
-            else radar._synthesize(composed, slow_time_mode=mode)
+            else radar._synthesize(composed, slow_time_mode=mode, spec=full_spec)
         )
         slot_cubes.append(synthesis.cube)
         if len(slot_cubes) < len(offsets):
@@ -957,9 +962,17 @@ def simulate_scene(
                 synthesis = SynthesisResult.from_fmcw(cube, full_spec)
             else:
                 synthesis = replace(synthesis, cube=stacked[pair_samples, pairs])
-        cubes.append(
-            radar._apply_signal_models(assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx))
+        frame_cube = radar._apply_signal_models(
+            assemble_frame_cube(synthesis.cube, num_tx=array.num_tx, num_rx=array.num_rx)
         )
+        if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != full_spec.output_domain:
+            from .processing.range_doppler import fmcw_range_fft
+
+            frame_cube = fmcw_range_fft(frame_cube)
+            synthesis = SynthesisResult.from_fmcw(
+                frame_cube.permute(2, 1, 0, 3).reshape(full_spec.num_chirps, -1, full_spec.num_samples), output_spec
+            )
+        cubes.append(frame_cube)
         slot_cubes = []
 
     return RadarSimulationResult.from_frames(

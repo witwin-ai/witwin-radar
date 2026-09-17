@@ -30,6 +30,7 @@ This file describes the current surface after the breaking concept-axis consolid
 - Scalar-RCS and aspect-dependent scatter responses, including reflected outbound paths with differentiable departure bearings.
 - Round-trip antenna pattern and transmit-power weighting using actual first/last path segments.
 - Receiver frontend contracts for LNA, noise, AGC, ADC, port mapping, and deterministic seeds.
+- FMCW receiver stages run on beat samples before the output range FFT, so beat/spectrum selections share one physical ADC and gain/noise realization.
 - Radar-owned SMPL authoring layered on Core geometry.
 - Explicit AD/host-observation policy, first-order reverse mode, and forward-mode JVP coverage for native hot paths.
 
