@@ -56,6 +56,30 @@ A warm start is therefore not implemented: it would still pay the same floor, fo
 while carrying a stale partition across frames. Recorded in
 [the warm-start headroom report](docs/dev/audit/radar-adaptive-warm-start-headroom-2026-09-17.md).
 
+### Topology discovery is the remaining heavy-multipath limit
+
+A probe in a world that cannot be certified complete needs its own topology discovery: that is
+what a probe is. In the three-wall fixture those discoveries are 69% of the frame, spent across
+two Channel calls per probe. `tools/validate_discovery_batching.py` measures whether that is
+per-call overhead by packing P endpoint pairs into one discovery, which Channel evaluates as the
+full P x P cross product because `PropagationRequest` carries no pairing restriction.
+
+| Packed probes | Pairs solved | One call | P separate calls | Batching speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 9.49 ms | 9.49 ms | 1.00x |
+| 8 | 64 | 21.94 ms | 75.88 ms | 3.46x |
+| 19 | 361 | 43.48 ms | 180.22 ms | 4.15x |
+| 38 | 1444 | 79.47 ms | 360.45 ms | 4.54x |
+
+Fixed overhead is about 9.4 ms per call against a 0.05 ms marginal cost per pair, so batching
+would pay roughly 4x on discovery and 2.4x end to end on that frame even paying the cross
+product. It is not implemented: consuming a packed discovery per probe needs either a pairing
+restriction on the request or a way to split a `PreparedFixedTopology` by endpoint id, and
+Channel offers neither. Per-probe path families are ragged, which is exactly what the probe
+detects, so Radar cannot rebuild them from a packed handle. Recorded, with the required
+capability spelled out, in
+[the discovery-batching blocker report](docs/dev/audit/radar-discovery-batching-blocker-2026-09-17.md).
+
 ## Long frame sequences
 
 ### Streamed against stacked frames (2026-09-17)
