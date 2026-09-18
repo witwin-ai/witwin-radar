@@ -67,7 +67,9 @@ def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
     # The four typed diagnostics live on the result the call returned. There is
     # no retention site on the radar at all, which is a stronger statement than
     # the ``None`` this used to assert: a stale world cannot be read off a
-    # radar that has nowhere to keep one.
+    # radar that has nowhere to keep one. ``last_result`` is a fifth name that
+    # neither object has ever carried; it is checked because it is the obvious
+    # name for a convenience handle that would put run state back on the radar.
     for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
         assert not hasattr(wr.Radar, name), name
 

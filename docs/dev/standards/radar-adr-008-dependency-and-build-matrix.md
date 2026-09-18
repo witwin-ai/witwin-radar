@@ -22,7 +22,7 @@ be applied.
 
 ### The optional dependency has to be real
 
-`witwin/radar/propagation/__init__.py` deliberately does not import the adapter,
+`witwin/radar/propagation.py` deliberately does not import the Channel adapter,
 so `import witwin.radar.propagation` works without Channel installed. Every test
 that imports Channel carries a module-scope `pytest.importorskip`. The ubuntu CPU
 quality job therefore stays green without adding the dependency.

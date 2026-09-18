@@ -28,16 +28,19 @@ axis, transverse to the boresight whichever way the radar points - so no vector
 has to be written down and none can be silently parallel to the boresight.
 
 INTRA-FRAME DOPPLER, stated because it changes what the second axis of these
-maps means. ``Radar.simulate`` composes the round trip ONCE per frame, so the
-128 chirps of one frame are identical and every return lands in the zero-Doppler
-bin. Frame-to-frame motion is fully modelled - each output frame re-samples the
-depth sequence at its own instant - but the WITHIN-frame slow-time walk needs a
-forward-AD velocity dual that this entry point does not open, and that is a
-named Phase-11 deferral rather than an approximation hidden in a default. Two
-consequences: the velocity axis of every map below is a zero-Doppler line, and
-``--static-clutter-removal`` defaults to OFF because subtracting the slow-time
-mean of identical chirps subtracts the entire signal. See
-``docs/pipeline_guide.md``.
+maps means. THIS EXAMPLE'S FIXTURE has no intra-frame Doppler: each frame hands
+``Radar.simulate`` a fresh ``PointTargets`` set with no trajectory on it and no
+receiver phase noise, so the default ``Motion.auto()`` resolves to ONE
+observation per frame, the 128 chirps of that frame are identical, and every
+return lands in the zero-Doppler bin. That is a property of the depth-sequence
+fixture, not of the entry point: give the session something that moves - a
+target or structure trajectory, an endpoint trajectory, oscillator phase noise -
+and ``Motion.auto()`` resolves to per-ADC sampling and the within-frame
+slow-time walk is modelled. Frame-to-frame motion is modelled either way, since
+each output frame re-samples the depth sequence at its own instant. Two
+consequences follow FOR THIS FIXTURE: the velocity axis of every map below is a
+zero-Doppler line, and ``--static-clutter-removal`` defaults to OFF because
+subtracting the slow-time mean of identical chirps subtracts the entire signal.
 
 Usage:
     python -m examples.rgbd_range_doppler --input path/to/depths.npy
@@ -738,9 +741,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Subtract the slow-time mean before the Doppler FFT. OFF by default: "
-            "Radar.simulate composes once per frame, so every chirp of one frame "
-            "is identical and the slow-time mean is the WHOLE signal. See the "
-            "intra-frame Doppler note in this module's docstring."
+            "this example's targets carry no trajectory, so Motion.auto() resolves "
+            "to one observation per frame, every chirp of one frame is identical "
+            "and the slow-time mean is the WHOLE signal. See the intra-frame "
+            "Doppler note in this module's docstring."
         ),
     )
     parser.add_argument("--db-min", type=float, default=None, help="PNG color lower bound in dB.")

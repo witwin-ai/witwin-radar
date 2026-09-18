@@ -206,10 +206,10 @@ def test_the_segment_mapping_is_the_half_open_partition():
     in the previous one.
     """
 
-    from witwin.radar.synthesis.fmcw import _segment_of_each_path
+    from witwin.radar.synthesis.assembly import segment_of_each_row
 
     offsets = torch.tensor(MULTI_OFFSETS, dtype=torch.int64, device="cuda")
-    mapping = _segment_of_each_path(offsets, len(MULTI_DELAYS))
+    mapping = segment_of_each_row(offsets, len(MULTI_DELAYS))
     assert mapping.tolist() == [0, 0, 1, 1, 1]
     # An empty trailing segment claims no rows.
     assert 2 not in mapping.tolist()

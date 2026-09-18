@@ -1,11 +1,13 @@
 """Antenna-pattern interpolation, measured through the production route.
 
 This file used to drive the pattern through ``solvers.common`` and compare it
-with ``tests/reference/path_math.py``. Both belong to the legacy Dirichlet
-route that Phase 11 deletes, so the same four questions are now asked of the
-route that survives: :class:`witwin.radar.sensors.RoundTripPatternStage`, which
-applies the transmit and receive pattern gain to a composed round-trip batch
-through the native ``sensor_weight`` family.
+with ``tests/reference/path_math.py``. ``solvers.common`` belonged to the legacy
+Dirichlet route and went with it when Phase 11 deleted that route; ``path_math``
+stayed, as the independent oracle for the live ``sensor_weight`` family. So the
+same four questions are now asked of the route that survives:
+:class:`witwin.radar.sensors.RoundTripPatternStage`, which applies the transmit
+and receive pattern gain to a composed round-trip batch through the native
+``sensor_weight`` family.
 
 The measured quantity is unchanged and so are the expected numbers. With one
 transmitter and one receiver co-located at the radar origin, the transmit and
@@ -25,12 +27,12 @@ its Torch oracle is pinned separately, over random directions, by
 
 from __future__ import annotations
 
-import math
 import types
 
 import pytest
 import torch
 
+from core import half_wave_dipole_power, local_target_position
 from witwin.radar import Radar
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology
 from witwin.radar.sensors import Pattern, RoundTripPatternStage
@@ -74,12 +76,6 @@ def _make_radar(*, antenna_pattern=None, **overrides) -> Radar:
     return Radar.from_dict(config, **overrides)
 
 
-def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
-    direction = torch.tensor([math.tan(math.radians(x_deg)), math.tan(math.radians(y_deg)), -1.0], dtype=torch.float32)
-    direction = direction / torch.linalg.norm(direction)
-    return direction * radius
-
-
 def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]:
     """The stage and a unit-weight batch for a single-element single-site array.
 
@@ -120,7 +116,7 @@ def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.
     """The composed weight's magnitude for a target at that off-boresight angle."""
 
     stage, batch = _one_row_stage(radar)
-    site = _target_position(x_deg, y_deg, radius).to(device=radar.device).unsqueeze(0)
+    site = local_target_position(x_deg, y_deg, radius).to(device=radar.device).unsqueeze(0)
     published = stage.apply(
         batch,
         tx_pos=radar.tx_pos,
@@ -129,15 +125,6 @@ def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.
         rx_targets_m=(site).index_select(0, stage.site_slot),
     )
     return published.complex_transfer_ref.abs().max()
-
-
-def _half_wave_dipole_power(angle_deg: float) -> float:
-    angle_rad = math.radians(angle_deg)
-    cos_angle = math.cos(angle_rad)
-    if abs(cos_angle) < 1e-8:
-        return 0.0
-    field = math.cos(0.5 * math.pi * math.sin(angle_rad)) / cos_angle
-    return field * field
 
 
 def _bilinear_value(
@@ -223,7 +210,7 @@ def test_dipole_signal_matches_expected_gain(angle_deg: float):
     off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
     measured_ratio = (off_axis_peak / center_peak).item()
 
-    assert measured_ratio == pytest.approx(_half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3)
+    assert measured_ratio == pytest.approx(half_wave_dipole_power(angle_deg), rel=5e-3, abs=5e-3)
 
 
 def test_flat_custom_pattern_keeps_signal_constant():

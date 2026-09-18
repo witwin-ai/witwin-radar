@@ -96,7 +96,7 @@ shapes are not public API.
 ### No partial results
 
 A contract, ABI, device, or capability failure fails loudly BEFORE any
-`RadarPathBatch` or IQ tensor exists. A missing forward tangent in `ad_mode="jvp"`
+`RadarPathBatch` or IQ tensor exists. A missing forward tangent in `grad="jvp"`
 raises rather than publishing `delay_rate = 0`, which would be indistinguishable
 from a static scene.
 

@@ -55,6 +55,7 @@ from .signal import (
     remove_mean,
     taper,
     window_coherent_gain,
+    window_values,
 )
 from .signal import matched_filter as _correlate
 
@@ -467,21 +468,20 @@ Conventions, both of which change the answer:
 #: A rectangular window leaks about -13 dB into the first sidelobe, which for a
 #: rotor is the same order as the blade flash it is there to resolve; the
 #: periodic Hann window leaks -31 dB and costs 1.5 bins of main-lobe width.
-#: Named rather than hard coded because a caller comparing against an analytic
-#: unwindowed spectrum has to be able to turn it off.
-WINDOWS = ("hann", "rectangular")
+#: What the micro-Doppler stage accepts, which is narrower than the package's
+#: window family: a caller comparing against an analytic unwindowed spectrum
+#: has to be able to turn the taper off, and a symmetric window would make the
+#: DFT of a pure tone asymmetric about its bin, which is the property a
+#: band-edge measurement leans on. The windows themselves belong to
+#: :func:`~witwin.radar.processing.signal.window_values`; this names a subset,
+#: it does not define a second family.
+MICRODOPPLER_WINDOWS = ("hann", "rectangular")
 
 
 def _window(name: str, length: int, *, dtype, device) -> torch.Tensor:
-    if name not in WINDOWS:
-        raise ValueError(f"window must be one of {WINDOWS}, got {name!r}")
-    if name == "rectangular":
-        return torch.ones(length, dtype=dtype, device=device)
-    # Periodic, not symmetric: a symmetric window makes the DFT of a pure tone
-    # asymmetric about its bin, which is exactly the property a micro-Doppler
-    # band-edge measurement leans on.
-    index = torch.arange(length, dtype=dtype, device=device)
-    return 0.5 - 0.5 * torch.cos(2.0 * torch.pi * index / length)
+    if name not in MICRODOPPLER_WINDOWS:
+        raise ValueError(f"window must be one of {MICRODOPPLER_WINDOWS}, got {name!r}")
+    return window_values(name, length, dtype=dtype, device=device)
 
 
 def doppler_frequencies_hz(slot_count: int, slot_period_s: float, *, device=None):
@@ -610,7 +610,7 @@ def dominant_frequencies_hz(spectrum: torch.Tensor, frequencies_hz: torch.Tensor
 
 
 __all__ = [
-    "WINDOWS",
+    "MICRODOPPLER_WINDOWS",
     "dominant_frequencies_hz",
     "doppler_frequencies_hz",
     "microdoppler_spectrogram",

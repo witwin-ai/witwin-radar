@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import pathlib
-import sys
-
 import torch
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 
 def test_box_to_mesh_is_differentiable():

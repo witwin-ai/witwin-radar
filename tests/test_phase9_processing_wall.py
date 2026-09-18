@@ -458,9 +458,10 @@ def test_the_detectors_still_detect_and_the_guard_changed_no_value(scene):
     """Over-refusing is the opposite mistake and is just as easy to make.
 
     The guard raises or it does nothing: a detached clone of a grad-carrying map
-    gives bitwise the same detection as the plain map. The broader
-    no-regression evidence is the bitwise legacy goldens in
-    ``tests/processing/test_cutover.py``, which still pass.
+    gives bitwise the same detection as the plain map. The evidence is in this
+    test - ``torch.equal`` on both published fields, the mask and the threshold
+    - plus a non-empty mask, so a guard that quietly detected nothing would
+    fail here rather than pass on two empty tensors.
     """
 
     detached = ca_cfar_fast(scene.power.clone().requires_grad_(True).detach(), **DETECTOR)

@@ -1,10 +1,4 @@
-"""Build the Phase-4 fixture world with witwin.core and compile it.
-
-Provisional dependency note (owner-approved deviation, R-ADR-008): Phase 4
-consumes ``witwin-channel`` and ``witwin`` from source checkouts rather than
-from pinned release wheels, because the release artifacts were still building.
-The artifact pin plus a required-consumer CI job is the recorded follow-up.
-"""
+"""Build the Phase-4 fixture world with witwin.core and compile it."""
 
 from __future__ import annotations
 

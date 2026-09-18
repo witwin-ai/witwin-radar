@@ -1,9 +1,5 @@
 """Build the multi-endpoint fixture world with witwin.core and compile it.
 
-Provisional dependency note (owner-approved deviation, R-ADR-008): like the
-Phase-4 fixture, this consumes ``witwin-channel`` and ``witwin`` from source
-checkouts rather than from pinned release wheels.
-
 This is a sibling of ``phase4_world`` rather than an extension of it. The
 Phase-4 ``endpoint_spec`` builds exactly ONE row (``positions.reshape(1, 3)``,
 a single stable ID) and every Phase-4/5 expectation depends on that; batching it

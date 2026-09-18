@@ -20,12 +20,11 @@ The three pure-algebra tests stay CPU-only. The two observational ones are
 
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 from conftest import empty_world, simulate_point_targets
 
+from core import half_wave_dipole_power, local_target_position
 from witwin.radar import Pattern, PointTargets, Radar
 
 
@@ -45,21 +44,6 @@ def _config() -> dict:
         "tx_loc": [[0, 0, 0]],
         "rx_loc": [[0, 0, 0]],
     }
-
-
-def _local_target(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
-    direction = torch.tensor([math.tan(math.radians(x_deg)), math.tan(math.radians(y_deg)), -1.0], dtype=torch.float32)
-    direction = direction / torch.linalg.norm(direction)
-    return direction * radius
-
-
-def _half_wave_dipole_power(angle_deg: float) -> float:
-    angle_rad = math.radians(angle_deg)
-    cos_angle = math.cos(angle_rad)
-    if abs(cos_angle) < 1e-8:
-        return 0.0
-    field = math.cos(0.5 * math.pi * math.sin(angle_rad)) / cos_angle
-    return field * field
 
 
 def _composed_weight(radar: Radar, local_point: torch.Tensor) -> float:
@@ -207,7 +191,7 @@ def test_a_rotated_radar_evaluates_its_pattern_in_the_local_frame():
     radar = Radar.from_dict(
         _config(), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0), up=(0.0, 1.0, 0.0), pattern=Pattern.dipole()
     )
-    centre = _composed_weight(radar, _local_target(0.0, 0.0))
-    off_axis = _composed_weight(radar, _local_target(45.0, 0.0))
+    centre = _composed_weight(radar, local_target_position(0.0, 0.0))
+    off_axis = _composed_weight(radar, local_target_position(45.0, 0.0))
 
-    assert off_axis / centre == pytest.approx(_half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3)
+    assert off_axis / centre == pytest.approx(half_wave_dipole_power(45.0), rel=5e-3, abs=5e-3)

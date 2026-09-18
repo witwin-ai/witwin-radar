@@ -205,6 +205,10 @@ def test_the_radar_has_nowhere_to_keep_a_stale_world():
     property this pins is stronger and needs no lifecycle: there is no attribute
     to read, before a call or after one, and a caller therefore cannot pick up a
     world some earlier call simulated and believe it describes this radar.
+
+    The name tuple is five long. ``last_result`` has never existed on a radar or
+    on a result; it is checked because it is the obvious name for a convenience
+    handle, and the point of the test is that no such handle can appear.
     """
 
     radar = _radar()

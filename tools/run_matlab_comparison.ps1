@@ -1,11 +1,20 @@
 param(
-    [string]$MatlabExe = 'D:\Softwares\MATLAB\bin\matlab.exe',
+    # No default path. The one that used to sit here resolved on exactly one
+    # machine, so every other machine got a launch failure phrased as a missing
+    # file rather than as a missing argument. Pass -MatlabExe, or set
+    # WITWIN_MATLAB_EXE once per shell.
+    [string]$MatlabExe = '',
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
     [string]$OutputDirectory = 'output/doppler-repair/matlab',
     [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*$')][string]$ComparisonFunction = 'compare_matlab_radar',
     [switch]$IsolatedPreferences
 )
 $ErrorActionPreference = 'Stop'
+if (-not $MatlabExe) { $MatlabExe = $env:WITWIN_MATLAB_EXE }
+if (-not $MatlabExe) {
+    throw 'No MATLAB executable: pass -MatlabExe <path to matlab.exe> or set $env:WITWIN_MATLAB_EXE. This script has no default path.'
+}
+if (-not (Test-Path -LiteralPath $MatlabExe)) { throw "MATLAB executable not found: $MatlabExe" }
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskOutput = [IO.Path]::GetFullPath((Join-Path $taskRoot $OutputDirectory))
 New-Item -ItemType Directory -Force -Path $taskOutput | Out-Null

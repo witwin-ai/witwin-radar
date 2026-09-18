@@ -11,9 +11,6 @@ compared against it. A float32 finite difference on the production loss is not
 a usable oracle: the loss is dominated by terms that are almost independent of
 the parameter under test, so the difference of two nearly equal float32 numbers
 can return a confident zero.
-
-Provisional dependency note (R-ADR-008): Channel and Core are consumed from
-source checkouts, not pinned release wheels.
 """
 
 from __future__ import annotations

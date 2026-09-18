@@ -14,9 +14,9 @@ easiest of the four ways to reach one:
 * **string literals** (AST). `importlib.import_module("drjit")` is an import
   that no import scan sees, and it is exactly what a "temporary" fallback
   looks like. The cost of closing that hole is that ordinary PROSE about the
-  removal matches too, so the two prose occurrences that exist today are
-  frozen by equality with the reason each one is there. A third occurrence
-  fails until somebody records it, and a recorded one that disappears fails
+  removal matches too, so every such occurrence is frozen by equality in
+  `ALLOWED_TOKEN_OCCURRENCES` together with the reason it is there. An
+  occurrence nobody recorded fails, and a recorded one that disappears fails
   too - a stale allowlist entry is a hole nothing reports.
 * **declared distributions** (`pyproject.toml`). No import is needed at all:
   one requirement line makes pip install a ray-tracing runtime beside this

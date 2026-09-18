@@ -7,8 +7,8 @@ before the code implemented it.
 
 ## Context
 
-`witwin/radar/cuda/build.py` resolved four load routes and the DEFAULT one was
-the unsafe one:
+The `build.py` module that once sat under `witwin/radar/cuda/` resolved four
+load routes and the DEFAULT one was the unsafe one:
 
 | route | trigger | failure behaviour |
 |---|---|---|
@@ -228,8 +228,11 @@ intended.
 - The identity chain costs one 1.4 MB SHA-256 plus nine source digests per
   process, measured at 3.6 ms, once, behind the existing `_LOADED_MODULE` memo.
   Total validated load is 6.3 ms against a 50 ms ceiling.
-- `witwin/radar/cuda/identity.py` has no `torch.ops` access and is importable
-  without CUDA, so an artifact can be validated on a machine that cannot run it.
+- The identity chain reaches no `torch.ops` symbol and needs no CUDA, so an
+  artifact can be validated on a machine that cannot run it. It shares
+  `witwin/radar/cuda/runtime.py` with the loader and the dispatcher accessor,
+  which are the only parts of that module that touch `torch.ops`; reading and
+  hashing the sidecars does not.
 
 ## Acceptance evidence
 

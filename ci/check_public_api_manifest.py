@@ -41,9 +41,19 @@ def audit_policy(manifest: dict[str, object], repo: Path) -> list[str]:
     if set(contracts) != modules:
         errors.append("module_contracts must cover every public module exactly")
     for module, contract in contracts.items():
-        caller = repo / contract.get("primary_caller", "")
+        relative = str(contract.get("primary_caller", ""))
+        caller = repo / relative
         if not caller.is_file():
             errors.append(f"{module} names missing primary caller {caller}")
+        # The file has to NAME the module. Without this, `primary_caller` is
+        # decoration: three contracts pointed at an example that imports
+        # neither the module nor anything from it, and the gate was happy
+        # because the file existed. Substring rather than an import scan on
+        # purpose - a caller that reaches the module through the root facade,
+        # or that names it in a refusal message, is still a real caller, and
+        # the failure this catches is a name that appears nowhere at all.
+        elif module not in caller.read_text(encoding="utf-8", errors="replace"):
+            errors.append(f"{module} names primary caller {relative} which never mentions it")
         if not str(contract.get("reason", "")).strip():
             errors.append(f"{module} has no public-retention reason")
 

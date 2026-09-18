@@ -17,6 +17,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
 
@@ -68,7 +70,6 @@ artifacts = [
     "witwin/radar/cuda/**/*.cpp",
     "witwin/radar/cuda/**/*.cu",
     "witwin/radar/cuda/**/*.cuh",
-    "witwin/radar/cuda/**/*.h",
     "witwin/radar/cuda/prebuilt/*.pyd",
     "witwin/radar/cuda/prebuilt/*.so",
     # R-ADR-019: the loader validates the binary against these two sidecars

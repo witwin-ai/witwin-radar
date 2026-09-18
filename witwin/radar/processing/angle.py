@@ -49,7 +49,7 @@ import torch
 
 from ..policy import refuse_derivative
 from .range_doppler import RangeDopplerMap
-from .signal import _require_complex
+from .signal import _require_complex, real_dtype_of
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -413,10 +413,6 @@ def _require_virtual(virtual_ant: torch.Tensor, array: ArrayGeometry) -> None:
         )
 
 
-def _real_dtype(tensor: torch.Tensor) -> torch.dtype:
-    return torch.float64 if tensor.dtype == torch.complex128 else torch.float32
-
-
 # ---------------------------------------------------------------------------
 # TDM compensation
 # ---------------------------------------------------------------------------
@@ -545,7 +541,7 @@ def phase_comparison_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft
     num_rx = array.num_rx
     detections = int(virtual_ant.shape[1])
     device = virtual_ant.device
-    real_dtype = _real_dtype(virtual_ant)
+    real_dtype = real_dtype_of(virtual_ant)
     column = torch.arange(detections, device=device)
 
     n_az = min(2 * num_rx, fft_size)
@@ -612,7 +608,7 @@ def fft2_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int =
     num_rx = array.num_rx
     detections = int(virtual_ant.shape[1])
     device = virtual_ant.device
-    real_dtype = _real_dtype(virtual_ant)
+    real_dtype = real_dtype_of(virtual_ant)
 
     reshaped = virtual_ant.reshape(num_tx, num_rx, detections)
     rows = num_tx // 2

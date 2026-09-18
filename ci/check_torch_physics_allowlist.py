@@ -47,13 +47,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ALLOWLIST_PATH = REPO_ROOT / "ci" / "torch-physics-allowlist.json"
 
 #: sha256 over the canonical JSON of the WHOLE allowlist document. It is held
 #: here rather than inside the JSON on purpose: a digest a document carries is
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
-FROZEN_BASELINE_DIGEST = "6ca05d72e34a2306cc11488f7b862ea896120cc0d64bcd8d661accc15c097bce"
+FROZEN_BASELINE_DIGEST = "4eff9e51607b8e5cb67cf62d94689b812814d7657cd033d1a28da9a6c1a0b739"
 
 SCHEMA_VERSION = 1
 

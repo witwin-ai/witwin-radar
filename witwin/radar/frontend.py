@@ -16,8 +16,6 @@ import torch
 from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative, require_host_floats
 
-__all__ = ["Adc", "Agc", "Noise"]
-
 #: Boltzmann's constant, exact in SI since 2019.
 BOLTZMANN_J_PER_K = 1.380649e-23
 
@@ -48,11 +46,11 @@ _PORT_REASON = (
 )
 
 #: Why every noise scalar has no derivative. All four parameterise a
-#: counter-based Philox draw in ``frontend.py``; a pathwise derivative
+#: counter-based Philox draw in :class:`_FrontendNoise`; a pathwise derivative
 #: through an RNG stream is not defined by any accepted contract here, and a
 #: reparameterised noise model is a separate decision with its own ADR.
 _NOISE_REASON = (
-    "every scalar on NoiseSpec parameterises a counter-based Philox draw - the "
+    "every scalar on Noise parameterises a counter-based Philox draw - the "
     "thermal sigma and the Wiener step are the standard deviations of a "
     "realisation, not a smooth function of the signal. A pathwise derivative "
     "through an RNG stream is not defined by any contract this package "
@@ -82,8 +80,8 @@ _AGC_REASON = (
 )
 
 #: Why the ADC grid has no derivative. Both fields define ``round``'s step and
-#: clip level, and the quantiser already refuses a differentiable SIGNAL at
-#: ``frontend.py``. Refusing the grid as well keeps the wall in one
+#: clip level, and :meth:`FrontendChain._quantize` already refuses a
+#: differentiable SIGNAL. Refusing the grid as well keeps the wall in one
 #: piece: a full-scale leaf would be a derivative of a staircase's placement.
 _ADC_REASON = (
     "bits and full_scale define the quantiser's grid, and `round` has a zero "
@@ -424,21 +422,6 @@ class FrontendSpec:
 
     def lna_voltage_gain(self) -> float:
         return 1.0 if self.lna is None else 10.0 ** (float(self.lna) / 20.0)
-
-
-__all__ = [
-    "AGC_MODES",
-    "AGC_MODE_GLOBAL",
-    "AGC_MODE_PER_RX",
-    "BOLTZMANN_J_PER_K",
-    "FRONTEND_STAGE_ORDER",
-    "REFERENCE_TEMPERATURE_K",
-    "STAGE_PHASE_NOISE",
-    "STAGE_THERMAL_NOISE",
-    "Adc",
-    "Agc",
-    "Noise",
-]
 
 
 #: Launch width for the elementwise passes. An environment override exists so a

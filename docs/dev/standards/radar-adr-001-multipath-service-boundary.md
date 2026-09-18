@@ -35,7 +35,7 @@ Channel's propagation stack. Specifically:
   `witwin.channel.runtime.extension`.
 
 Exactly one Radar module crosses the boundary:
-`witwin/radar/propagation/channel_consumer.py`.
+`witwin/radar/channel.py`.
 
 ## Consequences
 

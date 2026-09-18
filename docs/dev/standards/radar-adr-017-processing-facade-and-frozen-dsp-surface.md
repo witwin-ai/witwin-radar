@@ -44,11 +44,14 @@ SynthesisResult -> ProcessingCube -> range_profile -> range_doppler_map
                 -> beam_cube -> ca_cfar -> point_cloud -> DetectionFrame
 ```
 
-`witwin/radar/sigproc/` keeps its entire public surface. Every module under it is
-re-export only, asserted by AST: no function definition, no class definition, not
-one expression. The adapters live INSIDE the facade, in
-`processing/adapters.py`, which is what lets the fence below be a statement about
-a DIRECTORY rather than a list of exceptions.
+The adapters live INSIDE the facade, which is what lets the fence below be a
+statement about a DIRECTORY rather than a list of exceptions.
+
+The migration this ADR accepted also kept the former `sigproc` package as its
+entire public surface, re-export only and asserted by AST: no function
+definition, no class definition, not one expression. The concept-axis
+consolidation later deleted that package and the `adapters` module inside the
+facade, so what survives from this section is the directory statement.
 
 ### 2. `ProcessingAxes` is the one metadata, axes and units record
 
@@ -93,12 +96,14 @@ both reconciliations rather than two sign decisions that can drift.
 No `torch.fft`, no CFAR, no angle estimator and no beamformer expression appears
 anywhere under `witwin/radar/` outside `witwin/radar/processing/`.
 
-One named allowance, with a reason: `witwin/radar/solvers/solver_dirichlet.py`
-inverts a SYNTHESIZED spectrum into time samples. That transform is part of
-producing the received signal, not of reading it, and it predates the processing
-chain. The allowance is not a blanket - a test asserts that the module still
-CALLS `ifft` and contains no forward transform, no `fftshift` and no detector, so
-the exception cannot quietly grow into a processing path.
+This ADR accepted one named allowance, with a reason: the Dirichlet solver
+module inverted a SYNTHESIZED spectrum into time samples, which is part of
+producing the received signal rather than of reading it, and it predated the
+processing chain. The consolidation deleted that module together with the
+`dirichlet_spectrum` operator family, and the allowance went with it. The fence
+is now unconditional: no `torch.fft` call remains under `witwin/radar/` outside
+`witwin/radar/processing/`, and the range transform a session needs is reached
+by importing the processing owner rather than by writing a second one.
 
 ### 5. The frozen vendor DSP primitive list
 

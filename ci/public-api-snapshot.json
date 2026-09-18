@@ -87,7 +87,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.simulation.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'object', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'object', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'spectrum', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
         },
         {
           "name": "StructureTargets",

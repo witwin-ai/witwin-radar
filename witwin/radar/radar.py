@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import torch
 
 from .frontend import Adc, Agc, FrontendSpec, Noise
+from .policy import refuse_derivative
 from .sensors import Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_ENERGY,
@@ -305,7 +306,6 @@ class SensorConfig:
 
     array: SensorArraySpec
     pattern: Pattern
-    power_dbm: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,8 +436,22 @@ def _positive_int(name: str, value: Any) -> int:
 
 
 def vec3_tensor(value, *, name: str) -> torch.Tensor:
-    """Coerce to a CPU float32 tensor of shape (3,)."""
+    """Coerce a pose vector to a CPU float32 tensor of shape (3,).
 
+    A tensor carrying a gradient or a forward tangent is REFUSED rather than
+    detached. Detaching is what this used to do, and it is the failure mode
+    :mod:`witwin.radar.policy` exists to prevent: every element position is
+    derived from the pose, so a severed tape left a caller who had marked
+    ``position`` reading ``grad is None`` with nothing having said why.
+    """
+
+    refuse_derivative(
+        "witwin.radar.radar.vec3_tensor",
+        "the pose is a host declaration and every element position is derived from "
+        "it, so a derivative here would be severed rather than carried; "
+        "differentiate Core phase centres through sensor endpoints instead",
+        **{name: value},
+    )
     if isinstance(value, torch.Tensor):
         tensor = value.detach().to(device="cpu", dtype=torch.float32).reshape(-1)
     else:
@@ -477,7 +491,14 @@ class Radar:
 
     Immutable. :meth:`replace` returns a new radar rather than editing this
     one, so a radar captured in a closure or held by a result cannot change
-    underneath it, and a pose built from a tensor with a tape keeps that tape.
+    underneath it.
+
+    The pose is a HOST declaration. A tensor carrying a gradient or a forward
+    tangent is refused rather than detached, because every element position is
+    derived from it and a severed tape would publish ``grad is None`` with
+    nothing raised. The differentiable route to moving element positions is
+    ``endpoints=SensorEndpointIds(...)`` against Core phase centres that carry
+    their own tape, which is the one the capability matrix lists.
 
     Four verbs use it, and they are two halves and their fusion.
     :meth:`trace` runs the world half and keeps the composed round trips;
@@ -514,7 +535,8 @@ class Radar:
     impedance: float = 50.0
     #: The Philox base seed every receiver stage derives its own stream from.
     seed: int = 0
-    #: Radar origin in world coordinates, m. May be a tensor with a tape.
+    #: Radar origin in world coordinates, m. A host declaration: a tensor
+    #: carrying a derivative is refused, not detached.
     position: Any = (0.0, 0.0, 0.0)
     #: The point the boresight looks at, world coordinates, m.
     look_at: Any = (0.0, 0.0, -1.0)
@@ -574,7 +596,7 @@ class Radar:
             "system_config",
             RadarSystemConfig(
                 waveform=self.waveform,
-                sensors=SensorConfig(array=array, pattern=self.pattern, power_dbm=float(self.power)),
+                sensors=SensorConfig(array=array, pattern=self.pattern),
                 propagation=PropagationConfig(reference_frequency_hz=float(self.carrier)),
                 frontend=self._build_frontend_spec(),
             ),
@@ -764,10 +786,6 @@ class Radar:
     def _world_from_local_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
         _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
         return vectors @ world_from_local.transpose(0, 1)
-
-    def _local_from_world_points(self, points: torch.Tensor) -> torch.Tensor:
-        position, world_from_local = self._world_from_local_matrix(device=points.device, dtype=points.dtype)
-        return (points - position) @ world_from_local
 
     def _local_from_world_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
         _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)

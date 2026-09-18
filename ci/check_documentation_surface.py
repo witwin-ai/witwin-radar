@@ -72,10 +72,42 @@ def _audit_symbol_owner_tables(repo: Path, manifest: dict) -> list[str]:
     return errors
 
 
+def _living_documents(repo: Path, manifest: dict, errors: list[str]) -> list[str]:
+    """Expand the ``living`` list, resolving a trailing-slash entry to its Markdown files.
+
+    A directory entry exists so that a whole living FAMILY - the accepted ADRs
+    are the one that matters - is classified by adding the family rather than
+    by remembering to add each new member. A member that nobody lists is a
+    member nobody checks, which is how twelve accepted ADRs came to name
+    deleted modules.
+
+    A member that ``historical_prefixes`` claims is skipped rather than
+    reported as classified twice: superseding one ADR is then a one-line
+    addition to that list, not a reason to expand the family back into a
+    hand-maintained file list.
+    """
+
+    prefixes = tuple(manifest.get("historical_prefixes", ()))
+    resolved: list[str] = []
+    for relative in manifest["living"]:
+        if not relative.endswith("/"):
+            resolved.append(relative)
+            continue
+        directory = repo / relative
+        if not directory.is_dir():
+            errors.append(f"living directory is missing: {relative}")
+            continue
+        members = sorted(path.relative_to(repo).as_posix() for path in directory.rglob("*.md"))
+        if not members:
+            errors.append(f"living directory holds no Markdown document: {relative}")
+        resolved.extend(member for member in members if not member.startswith(prefixes))
+    return resolved
+
+
 def audit(repo: Path) -> list[str]:
     manifest = json.loads((repo / "ci" / "documentation-manifest.json").read_text(encoding="utf-8"))
     errors: list[str] = []
-    living = manifest["living"]
+    living = _living_documents(repo, manifest, errors)
     for relative in living:
         path = repo / relative
         if not path.is_file():

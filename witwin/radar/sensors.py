@@ -20,8 +20,6 @@ from .cuda import native_ops as _ops
 from .paths import RadarPathBatch
 from .policy import first_order_only
 
-__all__ = ["Pattern"]
-
 DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
 
 
@@ -375,9 +373,6 @@ def watts_from_dbm(power_dbm: float) -> float:
     """
 
     return 1e-3 * (10.0 ** (float(power_dbm) / 10.0))
-
-
-__all__ = ["PATTERN_KINDS", "PATTERN_KIND_CODE", "PATTERN_KIND_MAP", "PATTERN_KIND_SEPARABLE", "Pattern"]
 
 
 #: A row that interacts at a site, and a row that goes straight from a
@@ -810,9 +805,6 @@ def evaluate_sensor_weights(
     return SensorWeightResult.from_components(out_re, out_im, total_delay_s, delay_rate, pattern_gain)
 
 
-__all__ = ["Pattern"]
-
-
 def _pattern_plan(pattern: Pattern, *, reference_frequency_hz: float, device: torch.device) -> SensorWeightPlan:
     if not isinstance(pattern, Pattern):
         raise TypeError(
@@ -883,9 +875,9 @@ class RoundTripPatternStage:
         """Build the constant tables for one frozen :class:`TwoWayComposer`.
 
         ``site_ids`` is the binding's host tuple, in the order its site position
-        tensor is laid out. Passing it rather than reading the composer's
-        ``topology.site_id`` back to the host is deliberate: the host tuple is
-        already there, and the device column is not.
+                tensor is laid out. Passing it rather than reading the composer's
+                ``topology.site_id`` back to the host is deliberate: the host tuple is
+                already there, and the device column is not.
         """
 
         array = radar.system_config.sensors.array

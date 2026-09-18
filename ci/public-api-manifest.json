@@ -135,11 +135,11 @@
       "reason": "typed signal products and processing algorithms"
     },
     "witwin.radar.scattering": {
-      "primary_caller": "examples/single_point.py",
+      "primary_caller": "tests/test_phase7_scatter_response_kernel.py",
       "reason": "declared target scatter response"
     },
     "witwin.radar.simulation": {
-      "primary_caller": "examples/single_point.py",
+      "primary_caller": "tests/test_phase11_simulate_entry.py",
       "reason": "phase-centre identity for a radar on a moving structure"
     },
     "witwin.radar.smpl": {
@@ -147,7 +147,7 @@
       "reason": "SMPL authoring for Core scenes"
     },
     "witwin.radar.synthesis": {
-      "primary_caller": "examples/single_point.py",
+      "primary_caller": "tests/processing/test_cube.py",
       "reason": "explicit waveform synthesis API"
     }
   },

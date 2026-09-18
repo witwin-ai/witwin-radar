@@ -238,7 +238,7 @@ _MESH_SITE_DEFERRAL = (
     "deferral (R-ADR-020). A sampling rule is a geometry algorithm, and "
     "geometry on a production path belongs to Channel's native geometry owner, "
     "not to a Torch expression in Radar. Declare the sites instead - "
-    "ScatterSitePolicy.explicit(positions) - or give the structure a rigid "
+    "PointTargets(positions=...) - or give the structure a rigid "
     "motion so that Core publishes a world anchor for it"
 )
 
@@ -352,7 +352,7 @@ class ScatterSitePolicy:
         if self.source == SITE_SOURCE_EXPLICIT:
             if self.positions_m is None:
                 raise ValueError(
-                    "an explicit site policy requires positions_m; ScatterSitePolicy.explicit(positions) builds one"
+                    "an explicit site policy requires positions_m; PointTargets(positions=...) supplies them"
                 )
             if self.structure_ids is not None:
                 raise ValueError(
@@ -628,7 +628,6 @@ def bind_radar_world(
     snapshot: object,
     *,
     sites: ScatterSitePolicy,
-    ids: StableIdAllocator | None = None,
     polarization: object = DEFAULT_POLARIZATION,
     sensor_endpoints: SensorEndpointIds | None = None,
 ) -> RadarWorldBinding:
@@ -638,8 +637,10 @@ def bind_radar_world(
     watts; the receive elements become SINKS with no power at all. Both come
     from ``radar.tx_pos`` / ``radar.rx_pos``, which are the pose-transformed
     world positions the radar already maintains - they are used as they stand
-    rather than rebuilt, so a radar whose pose is a differentiable quantity
-    keeps that property here.
+    rather than rebuilt, so a caller who supplied moving Core phase centres
+    through ``sensor_endpoints`` keeps their tape all the way into both legs.
+    The radar's own pose carries none: it is a host declaration, and
+    :func:`~witwin.radar.radar.vec3_tensor` refuses a derivative in it.
 
     ``snapshot`` is required even for an explicit site policy. A binding is
     against a world at an instant, and letting it be optional would invite a
@@ -668,8 +669,7 @@ def bind_radar_world(
         )
     site_positions = sites.resolve(snapshot, device=device)
 
-    allocator = StableIdAllocator() if ids is None else ids
-    transmitter_ids, receiver_ids, allocated_site_ids = allocator.allocate(
+    transmitter_ids, receiver_ids, allocated_site_ids = StableIdAllocator().allocate(
         transmitter_count=int(transmitter_positions.shape[0]),
         receiver_count=int(receiver_positions.shape[0]),
         site_count=int(site_positions.shape[0]),
@@ -776,7 +776,10 @@ class Result:
     path_set_complete: bool = True
     motion_sampling_exhaustive: bool = True
     motion_sampling: str = "static"
-    output_domain: str = "beat"
+    #: Matches the package default. ``from_frames`` always supplies the
+    #: synthesis result's own domain, so this is only reachable by direct
+    #: construction - which is exactly why it must not read "beat".
+    output_domain: str = "spectrum"
     adaptive_diagnostics: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
@@ -1574,64 +1577,62 @@ def _open_session(
     components: frozenset[str] | None = None,
     max_depth: int | None = None,
     ad_mode: str = "none",
-    ids: object = None,
     polarization: object = None,
     antenna_pattern: object = None,
     sensor_endpoints: SensorEndpointIds | None = None,
     motion: Motion | None = None,
 ) -> Iterator[_SceneFrame]:
-    """Run ``radar`` over ``scene`` at ``times``, yielding one frame at a time.
+    """Open one scene session: the world half, and what the instrument half needs.
 
-    The single owner of the scene session. :func:`simulate_scene` and
-    :func:`stream_scene` differ only in how much of this they retain, so the
-    session setup, the epoch loop and the synthesis route are not written twice.
-    Argument validation happens on the FIRST iteration, as it does for any
-    generator; ``simulate_scene`` consumes immediately and therefore still
-    raises from its own call.
+    The single owner of the session. All four public verbs come through here -
+    :meth:`~witwin.radar.Radar.trace` drains the frame traces into a
+    :class:`Paths`, and :meth:`~witwin.radar.Radar.simulate`,
+    :meth:`~witwin.radar.Radar.stream` and :meth:`~witwin.radar.Radar.echo`
+    hand each one to :func:`_echo_frame` - so the setup, the epoch loop and the
+    synthesis route are written once. Returns the session record and a
+    generator of per-frame traces.
 
-    This is the whole of :meth:`witwin.radar.Radar.simulate`; the method is a
-    delegation so that the assembly lives next to the contracts it assembles
-    rather than inside the radar's own configuration and pose module.
+    Arguments arrive already resolved by
+    :meth:`~witwin.radar.Radar._session`, which is the only caller that builds
+    them; none of the defaults below is reached from the public surface. They
+    are kept because this function is also the one a test drives directly.
 
-    ``sites`` is a :class:`ScatterSitePolicy` and
-    defaults to ``ScatterSitePolicy.structure_anchor()`` - one site at every
-    Core-owned structure world anchor. A structure with no rigid motion has no
-    such anchor and the policy refuses it by name; that refusal is the design
+    ``sites`` is the internal :class:`ScatterSitePolicy` that
+    :mod:`witwin.radar.targets` builds from ``PointTargets`` or
+    ``StructureTargets``. A structure with no rigid motion has no Core-owned
+    world anchor and is refused by name; that refusal is the design
     (R-ADR-020), because the alternative is a mesh-sampling rule, which is a
     geometry algorithm and does not belong in a Torch expression here.
 
-    ``components`` and ``max_depth`` override the radar's propagation block for
-    THIS call through
+    ``components`` and ``max_depth`` carry the ``los`` / ``reflections``
+    request for THIS call through
     :meth:`~witwin.radar.radar.RadarSystemConfig.with_propagation`, which
     returns a new configuration rather than mutating the radar's stored one.
 
-    Dynamic scenes refresh each ADC observation by default; ``motion_sampling``
-    can explicitly select ``adaptive`` with :class:`AdaptiveMotionSpec`, or a
-    chirp-frozen approximation. Adaptive FMCW batches topology-identical probes,
-    interpolates carrier-transported coefficients, and refines at observed path
-    identity/validity changes. Its sampled error tests cannot exclude arbitrarily
-    brief unseen events between probes, so ``path_set_complete`` is true only
-    when every observation was evaluated or the candidate family was certified
-    complete for all time; ``motion_sampling_exhaustive`` separately records
-    whether any observation was interpolated. Complete discovery is
-    the default at every observation. A longer ``motion_event_period_frames``
-    is converted from frames to observation count and marks path completeness
-    false unless structure motion already forces discovery. The selected
-    ``world_motion`` still controls whether compiled handles may be replayed.
+    ``motion`` is a :class:`Motion`. ``Motion.auto()`` resolves below, once it
+    is known whether anything moves within a frame and whether the receiver
+    carries oscillator phase noise. Adaptive FMCW batches topology-identical
+    probes, interpolates carrier-transported coefficients, and refines at
+    observed path identity and validity changes; its sampled error tests cannot
+    exclude arbitrarily brief unseen events between probes, so
+    ``path_set_complete`` is true only when every observation was evaluated or
+    the candidate family was certified complete for all time, and
+    ``motion_sampling_exhaustive`` separately records whether any observation
+    was interpolated. ``Motion.rediscover_every_frames`` converts from frames
+    to observation count and marks path completeness false unless structure
+    motion already forces discovery; ``Motion.world`` still controls whether
+    compiled handles may be replayed.
 
     ``ad_mode`` is forwarded to every replay. ``"none"`` is the default and
     builds no graph; ``"vjp"`` makes the published cube differentiable with
     respect to the endpoint and site positions the binding passed through by
     identity.
 
-    ``antenna_pattern`` is an
-    :class:`~witwin.radar.sensors.AntennaPatternSpec` and defaults to
-    ``None``, which applies no pattern and launches no extra kernel. It does NOT
-    default to ``radar.system_config.sensors``: that spec falls back to
-    a half-wave dipole, so adopting it here would attenuate every result by a
-    number nobody chose. Pass that spec to use it,
-    :data:`~witwin.radar.sensors.ISOTROPIC_PATTERN` to run the stage
-    as a proven no-op, or leave it ``None``.
+    ``antenna_pattern`` is a :class:`~witwin.radar.sensors.Pattern`. A radar
+    always supplies one - :attr:`~witwin.radar.Radar.pattern` defaults to
+    ``Pattern.isotropic()`` - so the stage runs on every solve, including for
+    the isotropic default, where it multiplies by exactly one. ``None`` skips
+    the stage entirely and is reachable only by driving this function directly.
     """
 
     from .channel import ChannelPropagationAdapter, compile_scene
@@ -1661,7 +1662,7 @@ def _open_session(
 
     def bind(compiled, snapshot, previous):
         binding = bind_radar_world(
-            radar, snapshot, sites=policy, ids=ids, polarization=orientation, sensor_endpoints=sensor_endpoints
+            radar, snapshot, sites=policy, polarization=orientation, sensor_endpoints=sensor_endpoints
         )
         adapter = (
             ChannelPropagationAdapter(
@@ -1713,7 +1714,6 @@ def _open_session(
         or dynamic.structure_deformations
         or dynamic.endpoint_trajectories
         or policy.trajectory is not None
-        or callable(getattr(response, "at", None))
     )
     from .synthesis.assembly import FmcwSpec, SlowTimeMode, waveform_sampling
 
@@ -1846,7 +1846,7 @@ def _open_session(
             )
             composer, _, pattern_stage = first.payload
             batched_paths = None
-            if len(group) > 1 and not callable(getattr(response, "at", None)):
+            if len(group) > 1:
                 key = (group[0][3], len(group))
                 if key not in slot_composers:
                     slot_composers[key] = composer._for_slots(len(group))
@@ -1875,9 +1875,8 @@ def _open_session(
                     else RadarPropagationLegs(inbound=replay.inbound.slot(slot), outbound=replay.outbound.slot(slot))
                 )
                 composer, _, pattern_stage = frame.frozen.payload
-                current_response = response.at(t) if callable(getattr(response, "at", None)) else response
                 if batched_paths is None:
-                    paths = composer.compose(legs.inbound, legs.outbound, current_response, include_delay_rate=False)
+                    paths = composer.compose(legs.inbound, legs.outbound, response, include_delay_rate=False)
                 else:
                     selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
                     paths = replace(
@@ -1939,12 +1938,7 @@ def _open_session(
                 )
             else:
                 binding = bind_radar_world(
-                    radar,
-                    frame.snapshot,
-                    sites=policy,
-                    ids=ids,
-                    polarization=orientation,
-                    sensor_endpoints=sensor_endpoints,
+                    radar, frame.snapshot, sites=policy, polarization=orientation, sensor_endpoints=sensor_endpoints
                 )
             identity = ()
             if motion_sampling == "adaptive":

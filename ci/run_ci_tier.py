@@ -85,9 +85,30 @@ QUICK_GATES = (
     # reported an unused MODULE, which is how `witwin/radar/timeline.py`
     # survived four phases after its last consumer went away.
     Gate("quick.orphan-modules", ("ci/check_orphan_modules.py",)),
+    # The governance gates. They were hand-run for as long as they existed,
+    # which is the same as not existing on any day nobody remembered to type
+    # them, and README already told readers the quick tier ran them. Each one
+    # parses JSON, Markdown, YAML or the AST of the tree; the only one that
+    # imports anything is the public-API manifest's live half, which imports
+    # the pure-Python package the `quick.import-no-native` gate below already
+    # proves loads no CUDA. So they cost seconds and belong in the cheapest
+    # tier rather than in a developer's memory.
+    Gate("quick.architecture", ("ci/check_architecture.py",)),
+    Gate("quick.public-api-manifest", ("ci/check_public_api_manifest.py",)),
+    Gate("quick.single-definition", ("ci/check_single_definition.py",)),
+    Gate("quick.no-compatibility", ("ci/check_no_compatibility.py",)),
+    Gate("quick.documentation-surface", ("ci/check_documentation_surface.py",)),
+    Gate("quick.release-claims", ("ci/check_release_claims.py",)),
+    Gate("quick.workflow-references", ("ci/check_workflow_references.py",)),
+    Gate("quick.governance-inventory", ("ci/check_governance_inventory.py",)),
+    Gate("quick.required-channel-coverage", ("ci/check_required_channel_coverage.py",)),
     # Importing the package must not load the loader, the compiler, or CUDA.
-    # The lazy __getattr__ in witwin/radar/__init__.py is what makes that true
-    # and this is the gate that notices when an eager import creeps back in.
+    # What makes that true is that `witwin/radar/__init__.py` imports only the
+    # pure-Python concept owners, and every native entry sits behind
+    # `witwin.radar.cuda.runtime`, which nothing on the import path touches.
+    # There is no lazy `__getattr__` doing it - `ci/check_no_compatibility.py`
+    # fails the build if one is reintroduced - so an eager import of the
+    # runtime is not hidden by anything, and this gate is what notices it.
     Gate(
         "quick.import-no-native",
         (
@@ -154,10 +175,7 @@ RELEASE_GATES = (
     # compute_120 PTX. A developer build restricted to the local architecture
     # FAILS here, which is the correct answer: only a release-matrix binary can
     # pass it, and that is what makes it a release gate.
-    Gate(
-        "release.arch-verification",
-        ("scripts/verify_cuda_binary_arches.py", "--stem", "_radar_native", "witwin/radar/cuda/prebuilt"),
-    ),
+    Gate("release.arch-verification", ("scripts/verify_cuda_binary_arches.py", "witwin/radar/cuda/prebuilt")),
 )
 
 

@@ -61,7 +61,7 @@ permission with it.
 ### 2. The response is a new native family, and the join is untouched
 
 `scatter_response_aspect_{forward,jvp,backward}` in
-`witwin/radar/cuda/kernels/scatter_response.cu` evaluate
+`witwin/radar/cuda/scatter_response.cu` evaluate
 
 ```
 ci = -dot(dir_in[i], axis[s])          incidence cosine at the site

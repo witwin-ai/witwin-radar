@@ -35,7 +35,11 @@ from support import multi_endpoint_world as world  # noqa: E402
 from witwin.radar.paths import ENVIRONMENT_CLUTTER, TARGET  # noqa: E402
 from witwin.radar.propagation import FIRST_FRAME, MOTION_EVENT_CADENCE, ClutterComponentSpec, epoch_policy  # noqa: E402
 
-pytestmark = pytest.mark.gpu
+# ``gpu`` is per test rather than per module. The four declaration tests below
+# resolve a policy - ``consumer.capabilities()``, ``ClutterComponentSpec`` and
+# ``epoch_policy`` - and allocate no tensor, so they are the half of this file
+# that a CPU run can still check. The four loop tests drive ``SceneEpochLoop``
+# on device and say so individually.
 
 #: The consumer's freezable component set, quoted rather than copied. Every
 #: mobility refusal below is measured against THIS, so a Channel that widens or
@@ -85,7 +89,10 @@ def test_each_mobility_mix_resolves_to_one_loop_configuration():
     rediscover = ClutterComponentSpec("foliage", "rediscover", rediscovery_period_frames=4)
     faster = ClutterComponentSpec("rotor", "rediscover", rediscovery_period_frames=2)
 
-    assert _policy(static) == _policy(static)
+    # The policy is a function of the DECLARATION, not of the object identity
+    # behind it: a second spec built from the same arguments must resolve to
+    # the same loop configuration.
+    assert _policy(static) == _policy(ClutterComponentSpec("wall", "static"))
     for specs, expected in (
         ((static,), ("frozen_world", None)),
         ((static, replay), ("fixed_winner_replay", None)),
@@ -139,6 +146,7 @@ def test_a_cadence_belongs_to_a_rediscovering_component_and_to_nothing_else():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.gpu
 def test_static_clutter_never_recompiles_and_never_rediscovers():
     """Exact integers over eight frames, against the loop's own counters.
 
@@ -183,6 +191,7 @@ def test_static_clutter_never_recompiles_and_never_rediscovers():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.gpu
 def test_replayed_clutter_evolves_without_a_single_rediscovery():
     """A moving wall, replayed: the clutter rows move and the target rows do not.
 
@@ -221,6 +230,7 @@ def test_replayed_clutter_evolves_without_a_single_rediscovery():
     print(f"\nreplayed clutter delay drift over 3 ms: {float(moved.min()):.3e} to {float(moved.max()):.3e} s")
 
 
+@pytest.mark.gpu
 def test_a_dying_clutter_row_is_a_complete_answer_and_keeps_its_class():
     """Validity and class are orthogonal, and the payload is exactly zero.
 
@@ -263,6 +273,7 @@ def test_a_dying_clutter_row_is_a_complete_answer_and_keeps_its_class():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.gpu
 def test_replay_cannot_gain_a_clutter_row_and_a_cadence_recovers_it():
     """Both halves, explicitly. This is the designed limitation of replay.
 

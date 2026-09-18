@@ -96,6 +96,42 @@ def _cycles(graph: dict[str, set[str]]) -> list[tuple[str, ...]]:
     return sorted(found)
 
 
+def _audit_surface_split(repo: Path, manifest: dict, target: set[str]) -> list[str]:
+    """Tie ``public_facades`` and ``internal_modules`` to the manifests that decide them.
+
+    Both keys sat here with no reader at all, so the split they declare could
+    disagree with `ci/public-api-manifest.json` indefinitely and nothing would
+    say so - which is how `witwin.radar.frontend` came to be called a public
+    owner in one file and an internal module in this one. The public list is
+    checked for EQUALITY against the public API manifest's modules, because a
+    facade this file names and that file does not export is a contradiction in
+    one direction and an unlisted public module in the other. The internal list
+    is checked for the weaker property it actually claims: target modules, not
+    public ones.
+
+    Both keys are optional, so a caller auditing a partial tree with ``--root``
+    is not forced to restate a surface it is not testing.
+    """
+
+    errors: list[str] = []
+    facades = manifest.get("public_facades")
+    internal = manifest.get("internal_modules")
+    if facades is not None:
+        public_manifest = repo / "ci" / "public-api-manifest.json"
+        if not public_manifest.is_file():
+            errors.append("public_facades is declared but ci/public-api-manifest.json is missing")
+        else:
+            exported = list(json.loads(public_manifest.read_text(encoding="utf-8"))["modules"])
+            if sorted(facades) != sorted(exported):
+                errors.append(f"public_facades differ from the public API manifest: {sorted(facades)} vs {exported}")
+    if internal is not None:
+        errors.extend(f"internal module is not a target module: {name}" for name in sorted(set(internal) - target))
+        if facades is not None:
+            both = sorted(set(internal) & set(facades))
+            errors.extend(f"module is declared both public and internal: {name}" for name in both)
+    return errors
+
+
 def audit(repo: Path) -> list[str]:
     manifest = json.loads((repo / "ci" / "architecture-manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
@@ -116,6 +152,7 @@ def audit(repo: Path) -> list[str]:
     for concept, owner in sorted(owners.items()):
         if owner not in target:
             errors.append(f"concept {concept!r} names non-target owner {owner!r}")
+    errors.extend(_audit_surface_split(repo, manifest, target))
 
     graph: dict[str, set[str]] = {}
     channel_importers = []

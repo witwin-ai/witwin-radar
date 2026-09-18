@@ -39,7 +39,11 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-pytestmark = pytest.mark.gpu
+# ``gpu`` is per test rather than per module. Section 1 is a pure AST scan over
+# the tree and builds no tensor, and it is this file's own name-rot gate: under
+# a module marker the gate that catches a renamed test would itself be skipped
+# by the default ``pytest tests/`` run. Sections 2 and 3 need CUDA and say so
+# individually.
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -184,6 +188,7 @@ def solo():
     )
 
 
+@pytest.mark.gpu
 def test_the_slow_time_slope_has_the_dimension_of_the_measured_rate(solo):
     """``d(phase)/d(chirp) = 2 pi tau_rate Tc (fc + S (t0 - tau + t_m))``.
 
@@ -273,6 +278,7 @@ def _times() -> torch.Tensor:
     return SNAPSHOT_TIME_S + index * SLOT_PERIOD_S
 
 
+@pytest.mark.gpu
 def test_channel_cir_and_radar_frames_use_the_same_world_state():
     """One ``DynamicScene``, one ``times_s``, two consumers, one answer.
 

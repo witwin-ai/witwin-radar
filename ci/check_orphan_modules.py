@@ -37,15 +37,21 @@ from pathlib import Path
 PACKAGE = "witwin.radar"
 
 # Modules a user imports directly, so no in-tree production module has to.
+#
+# Two entries are INTERNAL owners rather than public ones and say so. They are
+# not load-bearing: both are reachable from the root facade, so removing them
+# leaves nothing unreachable. Keeping them costs nothing and names the two
+# modules whose public status changed, which is what stops the next reader
+# concluding from the list alone that they are exported.
 ENTRY_POINTS: dict[str, str] = {
-    "witwin.radar": "minimal Radar/RadarConfig system facade",
+    "witwin.radar": "the root facade: the flat Radar record, its waveforms and its four verbs",
     "witwin.radar.capabilities": "public capability report owner",
     "witwin.radar.deployment": "public deployment/runtime report owner",
-    "witwin.radar.frontend": "public receiver-frontend owner",
+    "witwin.radar.frontend": "internal receiver-chain owner; ci/public-api-manifest.json exports nothing from it",
     "witwin.radar.smpl": "public SMPL authoring facade",
     "witwin.radar.processing": "public signal-processing facade",
     "witwin.radar.scattering": "public scatter-response owner",
-    "witwin.radar.sensors": "public sensor contract owner",
+    "witwin.radar.sensors": "internal array-geometry and weighting owner; not a public module",
     "witwin.radar.simulation": "public simulation/session result owner",
     "witwin.radar.synthesis": "public waveform synthesis facade",
 }

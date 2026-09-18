@@ -1,8 +1,4 @@
-"""Phase-4 adapter contract: Radar consuming ONLY the Channel consumer facade.
-
-Provisional dependency note (R-ADR-008): Channel is consumed from a source
-checkout, not a pinned release wheel. The pin is the recorded follow-up.
-"""
+"""Phase-4 adapter contract: Radar consuming ONLY the Channel consumer facade."""
 
 from __future__ import annotations
 

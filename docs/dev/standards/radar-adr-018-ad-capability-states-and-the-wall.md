@@ -76,7 +76,7 @@ and pins the mirrored Channel rows against the live `capabilities()` record.
 
 ### 2. The wall sits at the first discrete decision, not at "post-processing"
 
-`witwin/radar/ad_contracts.py::refuse_derivative` is the single guard, and it
+`witwin/radar/policy.py::refuse_derivative` is the single guard, and it
 checks BOTH `requires_grad` and `unpack_dual(...).tangent`, at function entry,
 before any compute.
 
@@ -112,7 +112,7 @@ rather than for the modelling decision.
 
 ### 3. Every noise and receiver continuous parameter has a decision
 
-`witwin/radar/host_parameters.py::require_host_floats` refuses **any**
+`witwin/radar/policy.py::require_host_floats` refuses **any**
 `torch.Tensor` spec value, not only a grad-carrying one. Raising on any tensor
 is deliberate twice over: a tensor that happens not to require grad today is the
 exact input that starts requiring grad tomorrow, and `float()` on a device
@@ -121,11 +121,11 @@ tensor is a silent host synchronisation as well as a silent detach. The previous
 
 | Parameter | Decision | Reason |
 |---|---|---|
-| `LnaSpec.gain_db` | `REF` | Device configuration, not scene state. Its derivative would be perfectly well defined - a smooth multiplicative factor on the whole signal - and the native frontend operator carries no tangent or gradient slot for it. Deferred with a named owner rather than pretended away. |
-| `AgcSpec.target_rms` | `REF` | A control setpoint. The stage is already non-linear in the signal, and a global AGC makes a magnitude loss EXACTLY constant - measured - so a gradient here would be a correctly-zero number with a misleading name. |
-| `NoiseSpec.noise_figure_db`, `antenna_temperature_k`, `bandwidth_hz`, `phase_noise_dbc_per_hz` | `REF` | Each parameterises a counter-based Philox draw. A pathwise derivative through an RNG stream is not defined by any accepted contract here. A reparameterised noise model is the shape that would make these meaningful and is a separate ADR. |
-| `PortSpec.reference_impedance_ohm` | `REF` | A unit convention. |
-| `AdcSpec.full_scale`, `AdcSpec.bits` | `REF` | Behind the ADC wall regardless of their own smoothness. |
+| `FrontendSpec.lna`, a voltage gain in dB | `REF` | Device configuration, not scene state. Its derivative would be perfectly well defined - a smooth multiplicative factor on the whole signal - and the native frontend operator carries no tangent or gradient slot for it. Deferred with a named owner rather than pretended away. |
+| `Agc.target_rms` | `REF` | A control setpoint. The stage is already non-linear in the signal, and a global AGC makes a magnitude loss EXACTLY constant - measured - so a gradient here would be a correctly-zero number with a misleading name. |
+| `Noise.figure`, `Noise.antenna_temperature`, `Noise.bandwidth`, `Noise.phase_density` | `REF` | Each parameterises a counter-based Philox draw. A pathwise derivative through an RNG stream is not defined by any accepted contract here. A reparameterised noise model is the shape that would make these meaningful and is a separate ADR. |
+| `FrontendSpec.impedance`, the sqrt(W) to volt conversion | `REF` | A unit convention. |
+| `Adc.full_scale`, `Adc.bits` | `REF` | Behind the ADC wall regardless of their own smoothness. |
 | FMCW slope, carrier and period; OFDM `subcarrier_spacing_hz`; pulse-shape scalars | `REF` | Host declarations that SELECT a waveform. Several of them change the SHAPE of the output as well as its value, and a derivative taken across a sampling-grid change is not the derivative of a fixed function. |
 | `AspectScatterResponse.exponent` | `REF` | Selects the scattering law rather than parameterising it continuously in a way any consumer optimises. |
 | `frequency_offsets_hz`, including a SEQUENCE whose entries are tensors | `REF` | The declared band is a host grid. This one was found by Phase 9's own combined-input matrix and closed in the same phase; before the fix a marked offset ran the whole wideband solve and returned no gradient with only a Torch `UserWarning`. |
@@ -167,7 +167,7 @@ therefore produces `nan`, visibly, rather than a clamped plausible number.
 Radar publishes first derivatives and nothing higher. Every second-order request
 fails loudly, before any partial second-order result, naming the owner.
 
-`witwin/radar/ad_contracts.py::first_order_only` decorates every registered
+`witwin/radar/policy.py::first_order_only` decorates every registered
 `backward` in the package - ten of them - and refuses three compositions:
 
 - **reverse over reverse.** `create_graph=True` is exactly what leaves grad mode

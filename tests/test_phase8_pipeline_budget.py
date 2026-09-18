@@ -347,7 +347,8 @@ def test_the_simulation_frame_cost_has_not_regressed(capsys):
     under ``tests/support``: two leg reevaluations plus one composition. The
     production entry is now ``Radar.simulate``, which is the object worth
     budgeting, and it does strictly MORE per frame - one ``bind_radar_world``,
-    one ``Radar.synthesize``, one ``assemble_frame_cube`` and one
+    one ``Radar._synthesize`` behind the public ``Radar.echo`` over the traced
+    rows, one ``assemble_frame_cube`` and one
     ``apply_signal_models`` on top of the same three steps.
 
     **The budget was not raised for that.** ``MEASURED_SIMULATION_FRAME_MS``

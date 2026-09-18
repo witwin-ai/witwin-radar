@@ -24,8 +24,7 @@
     ]
   ],
   "categories": {
-    "freeze_time_pose": "Pose, axis and layout normalisation. Runs once per radar, per set_pose or per authored motion, never per path. R-ADR-007 lists Core scene authoring and typed-contract construction in the Torch allowlist.",
-    "freeze_time_validation": "A constructor-time precondition. It produces no simulated quantity; it decides whether an authored value is legal.",
+    "freeze_time_pose": "Pose, axis and layout normalisation. Runs once per radar construction - Radar is immutable, so a pose change is a new record - or per authored motion, never per path. R-ADR-007 lists Core scene authoring and typed-contract construction in the Torch allowlist.",
     "dsp_window": "A window function over a sample or bin axis, downstream of the radar cube. R-ADR-017's frozen DSP surface and R-ADR-007's DSP exception.",
     "dsp_replica": "A reference waveform or steering vector built for correlation or estimation, downstream of the cube. It reconstructs a KNOWN transmit or array law to match against measured samples; it does not evaluate scene propagation.",
     "dsp_estimation": "Angle, Doppler or phase estimation over the cube. Behind the R-ADR-018 non-differentiability wall.",
@@ -94,15 +93,6 @@
       "occurrences": 1,
       "category": "dsp_replica",
       "reason": "The conventional beamformer's steering vector over the same array-geometry dictionary.",
-      "adr": "R-ADR-017"
-    },
-    {
-      "module": "witwin/radar/processing/range_doppler.py",
-      "function": "_window",
-      "call": "torch.cos",
-      "occurrences": 1,
-      "category": "dsp_window",
-      "reason": "The short-time transform's analysis window, over the frame index.",
       "adr": "R-ADR-017"
     },
     {

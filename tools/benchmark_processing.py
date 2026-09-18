@@ -1,8 +1,8 @@
 """Benchmark the Radar processing chain, stage by stage and end to end.
 
-This is the measurement behind Phase-8 work item 7. The owner directive is that
-Phase 8 ships NO native DSP; this tool exists to justify that default with
-numbers rather than to look for permission to break it. It is run and recorded
+This is the measurement behind Phase-8 work item 7, which decided that the
+repository ships NO native DSP. That decision stands and this tool is what keeps
+justifying it with numbers rather than with a preference. It is run and recorded
 regardless of the expected answer.
 
 Timing convention, deliberately identical to the deleted
@@ -60,6 +60,12 @@ if str(REPO_ROOT / "tests") not in sys.path:
 
 FIXTURE = {"chirps": 8, "num_tx": 2, "num_rx": 2, "pairs": 4, "samples": 256, "label": "fixture"}
 REALISTIC = {"chirps": 128, "num_tx": 3, "num_rx": 4, "pairs": 12, "samples": 256, "label": "realistic"}
+
+#: Every measurable stage group. ``--groups`` is CONSTRAINED to these rather
+#: than matched by `in`, because a misspelled group used to select nothing,
+#: print an empty table and exit 0 - and `gpu-regression.yml` runs this tool,
+#: so that is a green GPU job that measured nothing.
+GROUPS = ("transforms", "cfar", "aoa", "cube", "pipeline")
 
 #: The 3 TX x 4 RX front end the end-to-end pipeline declares. Twelve virtual
 #: elements is the smallest array on which both angle routes and the point cloud
@@ -486,10 +492,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--runs", type=int, default=100)
     parser.add_argument(
-        "--groups",
-        nargs="+",
-        default=["transforms", "cfar", "aoa", "cube", "pipeline"],
-        help="Which stage groups to measure.",
+        "--groups", nargs="+", choices=GROUPS, default=list(GROUPS), help="Which stage groups to measure."
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON after the table.")
     return parser.parse_args()
@@ -516,6 +519,8 @@ def main() -> None:
             rows += group_cube(size, args)
     if "pipeline" in args.groups:
         rows += group_pipeline(args)
+    if not rows:
+        raise RuntimeError(f"no rows were measured for groups {sorted(args.groups)}; nothing was benchmarked.")
 
     print(f"{'group':<11} {'size':<10} {'stage':<32} {'median_ms':>10} {'peak_mb':>9} {'fft':>4} {'host':>5}  note")
     print("-" * 122)

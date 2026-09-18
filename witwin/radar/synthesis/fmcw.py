@@ -28,7 +28,7 @@ import torch
 
 from ..cuda import native_ops as _ops
 from ..policy import first_order_only
-from .assembly import FmcwSpec, SynthesisPathBatch, pair_tx_index, require_compatible
+from .assembly import FmcwSpec, SynthesisPathBatch, pair_tx_index, require_compatible, segment_of_each_row
 
 
 def _forward_op(domain: str):
@@ -63,19 +63,6 @@ def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     if coefficient.dtype not in (torch.complex64, torch.complex128):
         raise TypeError(f"a Channel transfer coefficient must be complex, got {coefficient.dtype}")
     return torch.conj(coefficient).resolve_conj()
-
-
-def _segment_of_each_path(path_offsets: torch.Tensor, path_count: int) -> torch.Tensor:
-    """Map each compact row to its sensor-pair segment.
-
-    ``right=True`` is required: an offsets table is a half-open partition, so
-    a row whose index equals a boundary belongs to the NEXT segment. The output
-    shape comes from ``path_count``, a host int the compact contract already
-    published, so this adds no cardinality observation.
-    """
-
-    rows = torch.arange(path_count, device=path_offsets.device, dtype=torch.int64)
-    return torch.bucketize(rows, path_offsets[1:], right=True)
 
 
 class _FmcwSynthesis(torch.autograd.Function):
@@ -246,7 +233,7 @@ def _synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec):
         raise ValueError("observation delay, weight and ADC time must have the same shape")
     values = torch.stack([delay.double(), weight.real.double(), weight.imag.double(), adc_time.double()], dim=1)
     result = _FmcwObservations.apply(
-        values, offsets.contiguous(), _segment_of_each_path(offsets, len(delay)), spec.slope_hz_per_s, spec.carrier_hz
+        values, offsets.contiguous(), segment_of_each_row(offsets, len(delay)), spec.slope_hz_per_s, spec.carrier_hz
     )
     return torch.complex(result[:, 0].float(), result[:, 1].float())
 
@@ -313,7 +300,7 @@ def synthesize_fmcw_rows(
                 f"{tuple(segment_tx_index.shape)}"
             )
         tx_index = segment_tx_index
-    segment = _segment_of_each_path(pair_offsets, path_count)
+    segment = segment_of_each_row(pair_offsets, path_count)
     # Torch-owned, autograd-aware accessors: the real pair crosses the
     # boundary, never the complex tensor.
     out_re, out_im = _FmcwSynthesis.apply(

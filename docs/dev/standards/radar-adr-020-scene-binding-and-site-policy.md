@@ -119,7 +119,8 @@ builds three small constant tensors, and reads nothing back to the host.
 
 ### 4. Scatter sites are declared, never derived from geometry
 
-`ScatterSitePolicy` has exactly two sources:
+`ScatterSitePolicy` - an INTERNAL record in `witwin/radar/simulation.py`, never
+a public export - has exactly two sources:
 
 * **`explicit`** - the caller hands over an `(S, 3)` tensor or a sequence of
   triples. A live tensor is passed through **untouched**: not moved, not cast,
@@ -215,7 +216,7 @@ a `radar.py` change and belongs to the stage that owns that file.
   The boundary property that matters - a single crossing file, no solver, no
   enumerated engine, no internal contracts, no raw extension - is unchanged and
   still asserted.
-* `witwin/radar/scene_binding.py` joins the scanned module set in
+* `witwin/radar/simulation.py`, which owns the binding, is in the scanned module set of
   `tests/test_phase4_import_boundary.py`, so it is held to the same
   no-host-observation and no-Dr.Jit rules as the rest of the per-frame path.
 * Radar has a reproducible endpoint identity scheme for the first time. Two runs

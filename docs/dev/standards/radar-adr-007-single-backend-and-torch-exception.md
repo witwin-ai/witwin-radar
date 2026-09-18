@@ -15,12 +15,12 @@ API -- but where the line sits.
 ### The hot loop is native
 
 Per-path, per-sample waveform evaluation runs in a CUDA kernel. The FMCW beat
-sum is the Phase-4 instance: `witwin/radar/cuda/kernels/fmcw_beat.cu` owns it,
+sum is the Phase-4 instance: `witwin/radar/cuda/fmcw_beat.cu` owns it,
 and the Python facade contains no loop, no comprehension, and no
 `torch.exp`/`sin`/`cos` over paths.
 
 The per-frame two-way join is the Phase-5 instance:
-`witwin/radar/cuda/kernels/two_way_join.cu` owns it. The AST scan for that one
+`witwin/radar/cuda/two_way_join.cu` owns it. The AST scan for that one
 is scoped to the `compose` FUNCTION rather than to the module, because `freeze`
 legitimately iterates - once per frozen topology, on the host, after the
 consumer has already synchronized. Scanning the whole file would either forbid
@@ -90,7 +90,7 @@ CPU reference belongs.
 
 The original text follows, for the record.
 
-> Per-path geometry and amplitude math in `witwin/radar/solvers/common.py` is
+> Per-path geometry and amplitude math in `solvers/common.py` is
 > Torch, is production, and is NOT removed here. The reason is not convenience.
 > `solver_dirichlet.py` consumes six of its helpers, and six of the nine
 > manifested native symbols are the `dirichlet_spectrum` family whose
@@ -104,9 +104,13 @@ The original text follows, for the record.
 
 What did move is the pair of helpers with ZERO production callers,
 `pytorch_chirp_reference` and `pytorch_mimo_from_samples`. A CPU/Torch reference
-oracle belongs under `tests/`, and those two were shipping inside the wheel;
-they are now `tests/reference/dsp_oracles.py`, unchanged, so every comparison
-that used them still means the same thing.
+oracle belongs under `tests/`, and those two were shipping inside the wheel, so
+this ADR moved them out of the package. They have since been deleted along with
+their last consumer and neither name exists anywhere in the tree today. The
+decision the move encoded outlives them: a Torch reference oracle lives under
+`tests/reference/`, which is where the surviving ones are, and
+`ci/check_test_oracle_isolation.py` fails a production module that imports one
+and a wheel that ships one.
 
 The residual surface was FROZEN by test:
 `test_the_residual_torch_path_surface_is_frozen` enumerated exactly the names

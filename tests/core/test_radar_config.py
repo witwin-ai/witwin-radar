@@ -248,6 +248,16 @@ def test_radar_builds_runtime_antenna_pattern(standard_config):
 
 @pytest.mark.gpu
 class TestRadarConstruction:
+    """What a ``Radar`` built from a flat mapping owns, and what it does not.
+
+    A ``test_radar_matches_formula`` case stood here and compared
+    ``waveform_spec().max_unambiguous_speed_mps`` with the same property read
+    back through ``mock.axes``. ``ProcessingAxes.from_synthesis`` copies that
+    float straight through, and both sides came from one config, so the case
+    compared a value with itself. The closed form is checked once, against the
+    wavelength and the slot period, in ``TestParameterFormulas.test_max_doppler``.
+    """
+
     def test_radar_creates_from_a_validated_config(self, standard_config):
         try:
             radar = Radar.from_dict(standard_config)
@@ -271,12 +281,6 @@ class TestRadarConstruction:
         assert radar == Radar.from_dict(standard_config)
         with pytest.raises(dataclasses.FrozenInstanceError):
             radar.carrier = 24e9
-
-    def test_radar_matches_formula(self, standard_config):
-        radar = Radar.from_dict(standard_config)
-        mock = MockRadar(standard_config)
-        spec = radar.waveform_spec()
-        assert spec.max_unambiguous_speed_mps == pytest.approx(mock.axes.max_unambiguous_speed_mps, rel=1e-10)
 
     def test_radar_has_no_processing_axis_state(self, standard_config):
         radar = Radar.from_dict(standard_config)

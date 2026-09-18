@@ -33,7 +33,7 @@ Three further facts constrain the answer.
 
 ## Decision
 
-`witwin/radar/propagation/kinematics.py` is the SINGLE Radar owner of the
+`witwin/radar/propagation.py` is the SINGLE Radar owner of the
 conversion from a Core snapshot to `(positions, velocities)`, and of the dual
 level those tensors are covered by.
 

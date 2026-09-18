@@ -18,8 +18,9 @@ compiles, propagation runs, paths are found, and every number is
 self-consistent -- and wrong, because the wall is not where the caller put it.
 
 This is not hypothetical. It cost a five-variable bisection during Stage-II
-readiness work to locate. Channel's own `tests/support/core_world.py` already
-passes `recenter=False` in `make_mesh_structure`, which is evidence that the
+readiness work to locate. Channel's own `core_world.py` world helper, under
+`tests/support/` in THAT repository, already passes `recenter=False` in
+`make_mesh_structure`, which is evidence that the
 default is wrong for world-authored geometry and that the workaround is already
 being copied around by hand.
 

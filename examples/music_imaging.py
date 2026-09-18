@@ -21,11 +21,13 @@ a real thermal-noise front end at a 10 dB noise figure, declared as a ``Noise``
 field of the radar: ``Radar.from_dict`` reads the flat FMCW mapping and takes
 every other field as a keyword override, so the chain arrives in the same call.
 
-Note also that ``Radar.simulate`` composes the round trip ONCE per frame, so the
-eight chirps of one frame are identical snapshots and the covariance is
-decorrelated by the spatial smoothing rather than by slow time. Intra-frame
-Doppler needs a forward-AD velocity dual and is a named Phase-11 deferral; see
-``docs/pipeline_guide.md``.
+Note also that this example's two targets carry no trajectory and its receiver
+declares no oscillator phase noise, so the default ``Motion.auto()`` resolves to
+ONE observation per frame: the eight chirps of one frame are identical snapshots
+and the covariance is decorrelated by the spatial smoothing rather than by slow
+time. That is this fixture's property, not a limit of ``Radar.simulate`` - a
+session with anything moving in it resolves to per-ADC sampling and does carry
+intra-frame Doppler.
 
 Usage:
     python -m examples.music_imaging

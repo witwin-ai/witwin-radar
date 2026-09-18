@@ -8,7 +8,7 @@ Dirichlet family removed (Phase 11)
 Every count and every `dirichlet` reference below is a Phase-4 to Phase-10
 measurement and is retained as the record of those phases. What changed:
 
-* `witwin/radar/cuda/kernels/dirichlet.cu` is deleted. The build input is eight
+* The `dirichlet.cu` kernel source under `witwin/radar/cuda/` is deleted. The build input is eight
   sources; the binary registers 25 operators, not 34.
 * `RADAR_ABI_VERSION` is 2. The operator set shrank, which a consumer can
   observe as a lookup that no longer resolves, so it is an ABI change even
@@ -163,7 +163,7 @@ measured.
 
 `two_way_join_forward`, `two_way_join_backward`, and `two_way_join_jvp` are the
 second family in the binary. Their Python owner is
-`witwin/radar/paths/two_way.py`.
+`witwin/radar/paths.py`.
 
 Why a kernel, from measurement rather than assumption: the Torch composition
 they replace issued roughly 17-19 device-side aten ops per frame - 8

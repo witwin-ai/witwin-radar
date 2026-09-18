@@ -1,9 +1,8 @@
 """What ``witwin.radar`` can do, as a versioned record.
 
-Channel has had a capability manifest since Plan 07 and Radar has been reading
-it (``channel.py``) without publishing one of its own.
-That asymmetry is Phase-10 work item 3: a consumer that cannot describe itself
-cannot be validated by its own consumers either.
+Radar read Channel's capability manifest for a long time without publishing one
+of its own. This module closed that asymmetry (Phase-10 item 3): a consumer
+that cannot describe itself cannot be validated by its own consumers either.
 
 Three rules this record obeys, each of which is the reason for a design choice
 that would otherwise look arbitrary:

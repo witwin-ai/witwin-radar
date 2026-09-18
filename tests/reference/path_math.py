@@ -1,10 +1,12 @@
-"""Private path geometry and antenna-pattern expressions for the DSP oracles.
+"""The independent Torch oracle for the native ``sensor_weight`` family.
 
-These are a deliberate, verbatim copy of the two production helpers that
-``dsp_oracles`` used to import from ``witwin.radar.solvers.common``. They are
-copied rather than imported because the oracle is the INDEPENDENT reference the
-native sensor geometry criterion is checked against, and an oracle that
-imports the module the migration rewrites checks that module against itself.
+Round-trip path length, path-length rate, and transmit/receive antenna-pattern
+gain, written in Torch so ``tests/test_phase6_sensor_weight.py`` can pin the
+CUDA kernel against them term for term.
+``tests/test_phase6_oracle_independence.py`` is the structural guard that keeps
+this module from importing ``witwin.radar.sensors`` or
+``witwin.radar.synthesis``: an oracle that imports the owner it checks agrees
+by construction and proves nothing.
 
 Verbatim is the whole point. The expression order, the clamps, the broadcast
 shapes, and the order of the multiplications are reproduced exactly, so the

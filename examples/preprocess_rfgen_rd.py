@@ -1,7 +1,10 @@
 """
 Preprocess an RFGen RGBD recording into a single .npz file.
 
-The expected source layout matches the user's RFGen_RD folder:
+``--input-dir`` is REQUIRED and names the RFGen_RD recording folder. It has no
+default because the only default that ever worked was one author's absolute
+path; a script that silently reads somebody else's machine is worse than one
+that asks. The expected layout inside it:
     - bin_depths_short_resized.npy : depth frames in meters, shape (T, H, W)
     - color.mp4                    : optional RGB preview video
 
@@ -21,12 +24,12 @@ import pathlib
 import cv2
 import numpy as np
 
-DEFAULT_INPUT_DIR = pathlib.Path(r"E:\Research2026\RFGen1.7\RFGen_RD")
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-dir", type=pathlib.Path, default=DEFAULT_INPUT_DIR)
+    parser.add_argument(
+        "--input-dir", type=pathlib.Path, required=True, help="RFGen_RD recording folder holding the depth .npy."
+    )
     parser.add_argument("--depth-npy", type=str, default="bin_depths_short_resized.npy")
     parser.add_argument("--color-video", type=str, default="color.mp4")
     parser.add_argument(

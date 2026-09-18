@@ -1,9 +1,11 @@
 """Freeze the reset Radar root surface, including signatures and defaults.
 
-The target owner inventory lives in ``ci/public-api-manifest.json``. This file
-keeps the executable signature snapshot for the part of that target that is
-already live: the package root and the public members of ``Radar``. Owner
-facades join this generator when their concept-axis move lands.
+The owner inventory lives in ``ci/public-api-manifest.json``. This file keeps
+the executable signature snapshot of it. What the snapshot covers is not
+decided here: the scope is exactly the ``modules`` list in that manifest, plus
+the public members of ``Radar`` named in ``root_class_members``, both read at
+import below. A module joins or leaves the snapshot by being added to or
+removed from that list.
 """
 
 from __future__ import annotations
@@ -151,7 +153,10 @@ def test_the_radar_holds_no_run_state() -> None:
 
     The four typed diagnostics live on the result that produced them. A copy on
     the radar would be a second owner, and a call that raised part way through
-    would leave it describing a world that call never simulated.
+    would leave it describing a world that call never simulated. The fifth name
+    checked below, ``last_result``, has never existed on either object; it is
+    here because it is the obvious name for the convenience handle that would
+    reintroduce run state.
     """
 
     for name in ("last_result", "last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):

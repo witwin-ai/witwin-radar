@@ -1,6 +1,6 @@
 """One point target in front of a wall, through the scene-driven pipeline.
 
-This is the smallest complete use of the Phase-11 entry point:
+This is the smallest complete use of the scene-driven entry point:
 
     witwin.core.Scene  ->  Radar.simulate  ->  Result
                        ->  witwin.radar.processing

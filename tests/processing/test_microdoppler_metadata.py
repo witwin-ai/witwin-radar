@@ -1,3 +1,16 @@
+"""Micro-Doppler metadata: the absolute window centres and the reconciled Doppler sign.
+
+``SlowTimeSignal`` carries the phasor its producer published, and the
+spectrogram reconciles it, so one physical motion written in the beat
+convention ``conj(exp(-j*k*d))`` and the same motion written in the Channel
+convention ``exp(-j*k*d)`` - complex conjugates of each other as slow-time
+sequences - must land on the SAME signed bin of the returned frequency axis.
+That is why the synthetic tone below flips sign with the phasor while the
+asserted peak does not, and why the window centres are absolute instants read
+off the sample labels rather than offsets from zero: a caller that stitches two
+frames reads a time, not a position in a buffer.
+"""
+
 import math
 
 import pytest
