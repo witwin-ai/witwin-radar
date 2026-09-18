@@ -3,6 +3,7 @@
 import math
 from dataclasses import replace
 
+import numpy as np
 import pytest
 import torch
 from support.simulate_fixture import fixture_radar, point_targets, static_scene
@@ -48,7 +49,9 @@ def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
     assert adaptive.discovery_count < exact.discovery_count
     assert not adaptive.path_set_complete
     assert adaptive.motion_sampling == "adaptive"
-    assert adaptive.sample_times_s == exact.sample_times_s
+    assert all(
+        np.array_equal(left, right) for left, right in zip(adaptive.sample_times_s, exact.sample_times_s, strict=True)
+    )
     assert adaptive.adaptive_diagnostics[0]["max_tested_phase_error_rad"] <= 0.02
     with pytest.raises(RuntimeError, match="budget exhausted"):
         radar.simulate(static_scene(), **kwargs, motion=Motion.adaptive(max_evaluations=2))

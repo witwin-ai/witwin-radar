@@ -777,7 +777,11 @@ class Result:
     last_compiled_scene: object
     last_propagation: object
     last_radar_paths: object
-    sample_times_s: tuple[tuple[float, ...], ...]
+    #: Every observation instant of every frame, ``float64[observations]``
+    #: per frame. An ADC-refreshed frame schedules one per chirp,
+    #: transmitter and sample, so this is an array rather than a tuple of
+    #: Python floats: materialising those costs more than the frame does.
+    sample_times_s: tuple[object, ...]
     path_set_complete: bool
     motion_sampling_exhaustive: bool
     motion_sampling: str
@@ -888,7 +892,7 @@ class Result:
             last_compiled_scene=last_compiled_scene,
             last_propagation=last_propagation,
             last_radar_paths=last_radar_paths,
-            sample_times_s=tuple(tuple(float(t) for t in frame) for frame in sample_times_s),
+            sample_times_s=tuple(sample_times_s),
             path_set_complete=path_set_complete,
             motion_sampling_exhaustive=motion_sampling_exhaustive,
             motion_sampling=motion_sampling,
@@ -1009,7 +1013,7 @@ class _SceneFrame:
     cube: torch.Tensor
     synthesis: object
     time_s: float
-    sample_times_s: tuple[float, ...]
+    sample_times_s: object
     epoch: int
     reason: str | None
     path_set_complete: bool
@@ -1098,6 +1102,12 @@ class _AdaptiveTable:
     evaluated itself appears as K copies of itself with the first weight one,
     the same exact answer on a rectangular table without a degenerate basis.
 
+    ``starts[i]`` is where evaluated observation ``i``'s rows begin in
+    ``delays``; ``bounds`` says where each sensor pair's block begins inside
+    one such observation and holds ONE ROW PER EVALUATED OBSERVATION, reached
+    through ``rank[i]``. Both are indexed by a node, never by the observation
+    being interpolated, because only an evaluated observation owns rows.
+
     The tensors ALIAS the frame's own device storage. This is a hand-off, not a
     retention point, except when :func:`trace_scene` keeps it on purpose.
     """
@@ -1106,7 +1116,8 @@ class _AdaptiveTable:
     transfers: torch.Tensor
     validity: torch.Tensor
     starts: object
-    counts: object
+    bounds: object
+    rank: object
     node_index: object
     basis: object
     clock: object
@@ -1143,7 +1154,7 @@ class _FrameTrace:
     """
 
     time_s: float
-    sample_times_s: tuple[float, ...]
+    sample_times_s: object
     observations: object
     path_set_complete: bool
     motion_sampling_exhaustive: bool
@@ -1169,7 +1180,10 @@ class _Session:
     full_spec: object
     output_spec: object
     single_spec: object
-    offsets: tuple[float, ...]
+    #: World-time offsets of this session's observations within a frame,
+    #: ``float64[observations]``. An ADC-refreshed frame has one per
+    #: chirp, transmitter and sample, which is why it is an array.
+    offsets: object
     pair_samples: object
     sampled: bool
     adc_sampled: bool
@@ -1238,7 +1252,7 @@ def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
     # measured with one rule and spent by another bounds nothing.
     from .paths import interpolate_path_rows
 
-    cache, partitions, pair_tables = {}, {}, {}
+    cache, partitions, pair_tables = {}, [], {}
     stats = {
         "evaluations": 0,
         "topology_refinements": 0,
@@ -1256,7 +1270,7 @@ def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
             raise RuntimeError("adaptive motion discovery budget exhausted before satisfying error/topology tests")
         for begin in range(0, len(missing), options.batch_observations):
             batch = missing[begin : begin + options.batch_observations]
-            records = evaluate_many([times[index] for index in batch])
+            records = evaluate_many([float(times[index]) for index in batch])
             for index, record in zip(batch, records, strict=True):
                 cache[index] = record
                 pair_tables[index] = record[2].pair_offsets.tolist()
@@ -1420,8 +1434,7 @@ def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
                 stats["max_tested_relative_amplitude_error"] = max(
                     stats["max_tested_relative_amplitude_error"], amplitude_error
                 )
-                for index in range(left, right + 1):
-                    partitions[index] = tuple(indices[::2])
+                partitions.append((left, right, indices[::2]))
             else:
                 stats["topology_refinements"] += int(not topology_ok)
                 middle = (left + right) // 2
@@ -1440,15 +1453,29 @@ def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
     starts = np.zeros(len(times), dtype=np.int64)
     starts[ordered] = np.cumsum([0] + [len(record.total_delay_s) for record in records[:-1]])
     pairs = spec.num_tx * spec.num_rx
-    counts = np.zeros((len(times), pairs), dtype=np.int64)
-    counts[ordered] = np.diff(np.asarray([pair_tables[index] for index in ordered]), axis=1)
+    # ``pair_offsets`` already IS the exclusive prefix of an observation's rows
+    # over its sensor pairs, so pair ``p`` owns rows ``bounds[p]:bounds[p + 1]``
+    # of that observation's block and no cumulative sum is owed here. One row
+    # per EVALUATED observation, reached through ``rank``: an interpolated
+    # observation reads its interval's nodes and never a row of its own, so a
+    # table with one row per observation would be zeros for all but these.
+    bounds = np.asarray([pair_tables[index] for index in ordered])
+    rank = np.zeros(len(times), dtype=np.int64)
+    rank[ordered] = np.arange(len(ordered))
     # An observation reads either its own evaluated row or its interval's
     # nodes. An evaluated observation is written as K copies of itself with the
     # first weight one, which is the same exact answer and keeps the table
     # rectangular without a degenerate basis.
+    #
+    # Written one slice per accepted interval, not one row per observation: the
+    # partition holds as many distinct answers as it has intervals, and an ADC
+    # frame has four orders of magnitude more observations than intervals. A
+    # later interval overwrites an earlier one where they meet, which is the
+    # accept order, and an interval endpoint is always itself a probe, so the
+    # self-reference on the next line settles every shared row anyway.
     node_index = np.zeros((len(times), node_count), dtype=np.int64)
-    for index, group in partitions.items():
-        node_index[index] = group
+    for left, right, group in partitions:
+        node_index[left : right + 1] = group
     node_index[ordered] = np.asarray(ordered)[:, None]
     clock = np.asarray(times)
     basis = np.zeros((len(times), node_count))
@@ -1482,7 +1509,8 @@ def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
         transfers=transfers,
         validity=validity,
         starts=starts,
-        counts=counts,
+        bounds=bounds,
+        rank=rank,
         node_index=node_index,
         basis=basis,
         clock=clock,
@@ -1511,7 +1539,8 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_observations
 
     delays, transfers, validity = table.delays, table.transfers, table.validity
-    starts, counts, node_index, basis, clock = table.starts, table.counts, table.node_index, table.basis, table.clock
+    starts, bounds, rank = table.starts, table.bounds, table.rank
+    node_index, basis, clock = table.node_index, table.basis, table.clock
     node_count, pairs, device = table.node_count, table.pairs, table.device
     observations_total = table.observation_count
 
@@ -1520,7 +1549,21 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
 
     values = []
     left = node_index[:, 0]
-    row_counts = counts[left].sum(axis=1)
+    # An observation sits in one TDM slot and hears one transmitter. Under
+    # PAIR_RANK_LAYOUT that transmitter's pairs are the ``num_rx`` ranks
+    # congruent to it modulo ``num_tx``; the rest carry no signal this
+    # observation can receive and the slot gather at the end discards them.
+    # Synthesizing only the active pairs is the same cube for ``1/num_tx`` of
+    # the rows, which is the frame's dominant cost.
+    receivers = pairs // spec.num_tx
+    active_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * np.arange(
+        receivers
+    )
+    # An accepted interval's nodes share a topology identity and therefore
+    # share their pair layout, so one node's bounds describe every observation
+    # the interval covers; only the base offsets in ``starts`` differ.
+    node_rank = rank[left][:, None]
+    row_counts = (bounds[node_rank, active_pairs + 1] - bounds[node_rank, active_pairs]).sum(axis=1)
     # The row bound caps the temporary node table, whose width is 4 columns per
     # node. Stated against the two-node width so that raising the polynomial
     # order does not silently raise peak allocation along with it.
@@ -1533,10 +1576,13 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
         stop = min(observations_total, begin + options.batch_observations * spec.num_samples)
         stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + row_budget)) - 1))
         batch = np.arange(begin, stop)
-        rows = row_counts[batch]
-        offsets = np.concatenate(([0], np.cumsum(counts[left[batch]].ravel())))
-        observation = np.repeat(batch, rows)
-        local_row = np.arange(offsets[-1]) - np.repeat(np.cumsum(rows) - rows, rows)
+        evaluated, active = node_rank[batch], active_pairs[batch]
+        segment_prefix = bounds[evaluated, active].ravel()
+        segment_counts = bounds[evaluated, active + 1].ravel() - segment_prefix
+        offsets = np.concatenate(([0], np.cumsum(segment_counts)))
+        segment = np.repeat(np.arange(segment_counts.size), segment_counts)
+        local_row = segment_prefix[segment] + np.arange(offsets[-1]) - offsets[segment]
+        observation = np.repeat(batch, row_counts[batch])
         node_rows = [upload(starts[node_index[observation, node]] + local_row) for node in range(node_count)]
         delay, transfer = interpolate_path_rows(
             [delays[rows] for rows in node_rows],
@@ -1551,13 +1597,16 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
         values.append(
             synthesize_fmcw_observations(
                 delay, channel_phasor_to_beat_weight(transfer), upload(offsets), upload(adc_time), spec
-            ).reshape(len(batch), pairs)
+            ).reshape(len(batch), receivers)
         )
         begin = stop
-    all_slots = torch.cat(values).reshape(-1, spec.num_samples, pairs).transpose(1, 2)
+    # Each slot now carries its own transmitter's receivers, so the gather
+    # reads a pair by its receiver rank ``pair // num_tx`` in the slot its
+    # transmitter rank ``pair % num_tx`` selects.
+    all_slots = torch.cat(values).reshape(-1, spec.num_samples, receivers).transpose(1, 2)
     pair = torch.arange(pairs, device=all_slots.device)
     slot = torch.arange(spec.num_chirps, device=all_slots.device)[:, None] * spec.num_tx + pair[None, :] % spec.num_tx
-    return all_slots[slot, pair], len(values)
+    return all_slots[slot, pair // spec.num_tx], len(values)
 
 
 def _open_session(
@@ -1748,24 +1797,27 @@ def _open_session(
         offsets, pair_samples, single_spec = waveform_sampling(
             full_spec, num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
         )
+        offsets = np.asarray(offsets, dtype=np.float64)
         if adc_sampled:
             if (
                 full_spec.t_start_s + (full_spec.num_samples - 1) * full_spec.sample_period_s
                 >= full_spec.chirp_period_s
             ):
                 raise ValueError("ADC observations must fit inside each chirp period")
-            offsets = tuple(
-                slot + full_spec.t_start_s + m * full_spec.sample_period_s
-                for slot in offsets
-                for m in range(full_spec.num_samples)
-            )
+            # An ADC frame has chirps * transmitters * samples observations, so
+            # the schedule is an array rather than Python floats: the same
+            # additions in the same order, paid once by numpy instead of once
+            # per observation by the interpreter.
+            offsets = (
+                offsets[:, None] + full_spec.t_start_s + np.arange(full_spec.num_samples) * full_spec.sample_period_s
+            ).ravel()
             single_spec = replace(single_spec, num_samples=1, output_domain="beat")
         mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         # A version poll cannot detect endpoint-induced path births. Complete
         # dynamic sampling therefore rediscovers at each observed instant.
         cadence = 1 if motion_event_period_frames is None else motion_event_period_frames * len(offsets)
     else:
-        offsets, pair_samples, single_spec = (0.0,), None, None
+        offsets, pair_samples, single_spec = np.zeros(1), None, None
         cadence = motion_event_period_frames
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
@@ -2001,14 +2053,14 @@ def _open_session(
         """
 
         for offset in offsets:
-            time_s = start + offset
+            time_s = float(start + offset)
             epoch_frame, legs, composed, _ = evaluate_many([time_s])[0]
-            yield _Observation(time_s=float(time_s), epoch_frame=epoch_frame, legs=legs, composed=composed)
+            yield _Observation(time_s=time_s, epoch_frame=epoch_frame, legs=legs, composed=composed)
 
     def traces():
         if sampled and motion_sampling == "adaptive":
             for start in instants:
-                actual_times = tuple(start + offset for offset in offsets)
+                actual_times = start + offsets
                 table, stats, first, last = _adaptive_trace(
                     actual_times, evaluate_many, full_spec, adaptive, reference_frequency_hz
                 )
@@ -2030,7 +2082,7 @@ def _open_session(
         for start in instants:
             yield _FrameTrace(
                 time_s=float(start),
-                sample_times_s=tuple(start + offset for offset in offsets),
+                sample_times_s=start + offsets,
                 observations=observations(start),
                 path_set_complete=bool(sampled_completeness),
                 motion_sampling_exhaustive=True,
@@ -2204,8 +2256,9 @@ class Paths:
     waveform: object
     #: Frame instants, s.
     times: tuple[float, ...]
-    #: Every observation instant of every frame, s.
-    sample_times: tuple[tuple[float, ...], ...]
+    #: Every observation instant of every frame, ``float64[observations]``
+    #: per frame.
+    sample_times: tuple[object, ...]
     #: The propagation request these rows answer. ``path_set_complete`` is a
     #: statement relative to it, not an absolute one.
     los: bool

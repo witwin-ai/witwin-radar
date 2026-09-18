@@ -1,6 +1,74 @@
 # Radar Performance
 
-Status: local measurements recorded 2026-09-16 to 2026-09-17; release-platform benchmarks remain separate.
+Status: local measurements recorded 2026-09-16 to 2026-09-18; release-platform benchmarks remain separate.
+
+## Per-observation host cost (2026-09-18)
+
+The adaptive route's frame was host-bound, not device-bound. On the public scene entry with a
+3 TX x 4 RX, 128-chirp, 256-sample walker at 10 fps, RTX 5080 / Ryzen 7 9800X3D in witwin2,
+CUDA events around the two native calls measured **3.2 ms of a 99 ms frame**, 3.1%. The rest was
+the interpreter carrying a 98304-entry per-observation schedule through structures whose distinct
+answers number in the tens: the adaptive controller evaluated 27 probes and accepted 13 intervals
+for that same frame, and discovery and compilation each ran once.
+
+Four changes, none of which touches a tolerance, a partition decision or the physics. Every cube
+below is bit-identical to the pre-change cube under `torch.equal`, on both a bound-limited MIMO
+walker and a phase-limited rotor.
+
+| Change | What it replaced |
+| --- | --- |
+| The accepted partition writes one slice per interval | One dict entry and one numpy row per observation |
+| The observation schedule is a `float64` array | Three full-length passes building Python floats |
+| The echo synthesizes only each slot's own transmitter | All `num_tx * num_rx` pairs, then discarding `1 - 1/num_tx` |
+| Pair row bounds are held per evaluated observation | An `[observations, pairs]` table that was zeros except at the probes |
+
+The third is the largest and needs the layout stated: under `PAIR_RANK_LAYOUT` a pair's
+transmitter rank is `pair % num_tx`, a TDM observation sits in one slot and hears one
+transmitter, and the slot gather at the end of the frame already discarded the rest. The rows
+were synthesized and thrown away.
+
+Frame latency on that walker, median of seven complete `Radar.simulate` calls:
+
+| Stage | ms/frame | of the original |
+| --- | ---: | ---: |
+| Before | 104.9 | 1.00x |
+| Partition slices | 75.9 | 1.38x |
+| Array schedule | 72.4 | 1.45x |
+| Transmitter-restricted echo | 46.8 | 2.24x |
+| Array-valued published schedule | 41.0 | **2.56x** |
+
+The maintained sequence measurement, `tools/validate_frame_streaming.py --frames 8 32 128`, on
+the same fixture and machine:
+
+| Frames | Streamed peak | Stacked peak | Peak ratio | Streamed ms/frame | Stacked ms/frame | Mismatched frames |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 56.2 MiB | 93.1 MiB | 1.66x | 39.4 | 39.9 | 0 |
+| 32 | 56.2 MiB | 300.6 MiB | 5.35x | 40.1 | 40.5 | 0 |
+| 128 | 56.2 MiB | 1230.3 MiB | 21.91x | 38.3 | 39.4 | 0 |
+
+128 frames at 10 fps is 12.8 s of scene time produced in **4.90 s**, against 13.86 s before;
+1 minute of that session's data is about 23 s of wall time. Streamed peak allocation is flat and
+fell from 67.4 MB, because the per-observation pair table is gone. This is one LOS walker
+fixture: it does not establish a per-frame cost for heavy multipath or moving meshes, whose limit
+remains topology discovery.
+
+Accuracy is unchanged, not improved. `tools/validate_adaptive_motion.py` in the same session
+measures IQ relative L2 of 2.80e-4, 2.26e-4, 2.49e-4 and 5.68e-4 on radial, rotor, limbs and
+heavy multipath, the same four values the 2026-09-17 table records. The published
+`synthesis_batches` diagnostic falls where the transmitter restriction lets more observations fit
+one row budget, which is the change working, not a new bound.
+
+Do not read that tool's speedup COLUMN as a result of this work in either direction. Its four
+fixtures are 512 and 2048 observations against 97 and 19 probes, so they measure the probe path
+and not the per-observation bookkeeping this section changed; the ratios it reported in the same
+session are 96.1x, 94.7x, 95.9x and 143.5x against the 2026-09-17 row's 120.4x, 119.1x, 92.5x and
+141.3x, which is single-run spread on a shared desktop at that fixture size. The frame-latency and
+sequence tables above are the measurement this work is claimed on.
+
+Reproduce: `python tools/validate_frame_streaming.py --frames 8 32 128` and
+`python tools/validate_adaptive_motion.py`. Evidence: `output/frame-streaming/results.json`,
+`output/doppler-repair/adaptive/results.json` and
+[the host-cost report](docs/dev/audit/radar-frame-host-cost-2026-09-18.md).
 
 ## What changed
 
@@ -93,6 +161,10 @@ capability spelled out, in
 ## Long frame sequences
 
 ### Streamed against stacked frames (2026-09-17)
+
+Superseded by the 2026-09-18 host-cost section above, which reran this tool on the same fixture
+and overwrote the results file cited below. The retention property this section establishes still
+holds; only the latencies moved.
 
 `tools/validate_frame_streaming.py` produces the same 3TX x 4RX, 128-chirp, 256-sample adaptive
 walker session through both public entries in witwin2 on RTX 5080, after one warm-up sequence.

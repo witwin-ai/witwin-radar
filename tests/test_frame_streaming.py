@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+import numpy as np
 import pytest
 import torch
 from support import multi_endpoint_driver as drv
@@ -56,7 +57,7 @@ def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(motion):
     for index, frame in enumerate(streamed):
         assert frame.frame_count == 1
         assert frame.times_s == (stacked.times_s[index],)
-        assert frame.sample_times_s == (stacked.sample_times_s[index],)
+        assert np.array_equal(frame.sample_times_s[0], stacked.sample_times_s[index])
         assert frame.epochs == (stacked.epochs[index],)
         assert frame.rediscovery_reasons == (stacked.rediscovery_reasons[index],)
         assert frame.axis_names == stacked.axis_names

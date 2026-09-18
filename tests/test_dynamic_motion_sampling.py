@@ -128,7 +128,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     with pytest.raises(ValueError, match="sensor_endpoints"):
         radar.simulate(dynamic, targets, **args)
     result = radar.simulate(dynamic, targets, endpoints=SensorEndpointIds((77110, 77111), (77112, 77113)), **args)
-    last_time = result.sample_times_s[0][-1]
+    last_time = float(result.sample_times_s[0][-1])
     expected_tx = radar.tx_pos + torch.tensor([0.3 * last_time, 0, 0], device=radar.device)
     torch.testing.assert_close(result.last_propagation.inbound.departure_origin_m, expected_tx, rtol=0, atol=1e-8)
     assert result.path_set_complete and result.motion_sampling == "adc"
