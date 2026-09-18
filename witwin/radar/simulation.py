@@ -144,7 +144,7 @@ class Motion:
             raise ValueError(f"Motion.kind must be one of {list(MOTION_KINDS)}, got {self.kind!r}")
 
     @classmethod
-    def auto(cls, **options) -> Motion:
+    def auto(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
         """Resample at every ADC instant when anything moves, else once a frame.
 
         "Anything moves" is a property of the session, not of this record:
@@ -153,28 +153,39 @@ class Motion:
         ADC-time observations to place its delayed phase difference.
         """
 
-        return cls(kind="auto", **options)
+        return cls(kind="auto", rediscover_every_frames=rediscover_every_frames, world=world)
 
     @classmethod
-    def static(cls, **options) -> Motion:
+    def static(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
         """One observation per frame. Refused for a world that moves."""
 
-        return cls(kind="static", **options)
+        return cls(kind="static", rediscover_every_frames=rediscover_every_frames, world=world)
 
     @classmethod
-    def chirp(cls, **options) -> Motion:
+    def chirp(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
         """Stop and hop: geometry frozen within each chirp, symbol or pulse."""
 
-        return cls(kind="chirp", **options)
+        return cls(kind="chirp", rediscover_every_frames=rediscover_every_frames, world=world)
 
     @classmethod
-    def adc(cls, **options) -> Motion:
+    def adc(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
         """Resample at every ADC instant. The exhaustive reference."""
 
-        return cls(kind="adc", **options)
+        return cls(kind="adc", rediscover_every_frames=rediscover_every_frames, world=world)
 
     @classmethod
-    def adaptive(cls, **options) -> Motion:
+    def adaptive(
+        cls,
+        *,
+        phase_error: float = 0.02,
+        relative_amplitude_error: float = 0.02,
+        max_interval: float = 0.002,
+        nodes: int = 2,
+        max_evaluations: int = 8192,
+        batch_observations: int = 256,
+        rediscover_every_frames: int | None = None,
+        world: str = "frozen_world",
+    ) -> Motion:
         """Interpolate between error-controlled probes. FMCW only.
 
         Faster than :meth:`adc` by 3 to 64 times on the measured scenes, and it
@@ -184,7 +195,17 @@ class Motion:
         that limit is readable rather than implied.
         """
 
-        return cls(kind="adaptive", **options)
+        return cls(
+            kind="adaptive",
+            phase_error=phase_error,
+            relative_amplitude_error=relative_amplitude_error,
+            max_interval=max_interval,
+            nodes=nodes,
+            max_evaluations=max_evaluations,
+            batch_observations=batch_observations,
+            rediscover_every_frames=rediscover_every_frames,
+            world=world,
+        )
 
     def _adaptive_spec(self) -> AdaptiveMotionSpec:
         return AdaptiveMotionSpec(
