@@ -210,7 +210,7 @@ def test_adaptive_options_refuse_invalid_values(options):
 def test_short_lived_topology_event_is_refined_without_blending_path_identities(baseline):
     from types import SimpleNamespace
 
-    from witwin.radar.simulation import _adaptive_fmcw
+    from witwin.radar.simulation import _adaptive_echo, _adaptive_trace
     from witwin.radar.synthesis.assembly import FmcwSpec
 
     # Long enough that the default order's nine-instant grid can accept whole
@@ -235,7 +235,13 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
             )
         return records
 
-    result, stats, _, _ = _adaptive_fmcw(times, evaluate, spec, AdaptiveMotionSpec(), 77e9, None)
+    # The two halves composed: refinement decides the partition, synthesis
+    # reads it. Calling them in sequence here is what the production route
+    # does, and it keeps this test measuring the refinement rather than the
+    # seam between them.
+    options = AdaptiveMotionSpec()
+    table, stats, _, _ = _adaptive_trace(times, evaluate, spec, options, 77e9)
+    result, _ = _adaptive_echo(table, spec, options, 77e9, None)
     expected = torch.tensor([float(baseline + int(60e-6 <= t <= 68e-6)) for t in times], device="cuda")
     torch.testing.assert_close(result[0, 0].real, expected, rtol=0, atol=0)
     assert stats["topology_refinements"] > 0

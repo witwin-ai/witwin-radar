@@ -307,6 +307,7 @@ def test_the_minimal_root_does_not_load_native_or_channel():
         "Motion",
         "Noise",
         "Ofdm",
+        "Paths",
         "Pattern",
         "PointTargets",
         "Pulsed",

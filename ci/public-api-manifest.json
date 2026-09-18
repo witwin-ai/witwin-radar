@@ -6,6 +6,7 @@
       "agc",
       "antenna_unit",
       "device",
+      "echo",
       "from_dict",
       "from_json",
       "impedance",
@@ -21,6 +22,7 @@
       "simulate",
       "stream",
       "to",
+      "trace",
       "transmit_power_watts",
       "up",
       "waveform_spec",
@@ -36,6 +38,7 @@
       "Motion": "witwin.radar.simulation.Motion",
       "Noise": "witwin.radar.frontend.Noise",
       "Ofdm": "witwin.radar.radar.Ofdm",
+      "Paths": "witwin.radar.simulation.Paths",
       "Pattern": "witwin.radar.sensors.Pattern",
       "PointTargets": "witwin.radar.targets.PointTargets",
       "Pulsed": "witwin.radar.radar.Pulsed",
@@ -192,6 +195,11 @@
       "rx",
       "slow",
       "fast"
+    ],
+    "witwin.radar.Paths": [
+      "frame",
+      "observation",
+      "row"
     ]
   }
 }

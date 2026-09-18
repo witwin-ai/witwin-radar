@@ -48,6 +48,12 @@
           "signature": "(subcarrier_spacing: 'float', num_subcarriers: 'int', cyclic_prefix: 'float', num_symbols: 'int', max_expected_delay: 'float', subcarrier_origin: 'str' = 'f_ref_at_n0') -> None"
         },
         {
+          "name": "Paths",
+          "kind": "class",
+          "target": "witwin.radar.simulation.Paths",
+          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[tuple[float, ...], ...]', los: 'bool', reflections: 'int', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[dict, ...]', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', _session: 'object', _frames: 'tuple') -> None"
+        },
+        {
           "name": "Pattern",
           "kind": "class",
           "target": "witwin.radar.sensors.Pattern",
@@ -464,6 +470,11 @@
           "kind": "value"
         },
         {
+          "name": "echo",
+          "kind": "function",
+          "signature": "(self, paths: 'Paths') -> 'RadarSimulationResult'"
+        },
+        {
           "name": "from_dict",
           "kind": "value"
         },
@@ -528,6 +539,11 @@
           "name": "to",
           "kind": "function",
           "signature": "(self, device: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "trace",
+          "kind": "function",
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Paths'"
         },
         {
           "name": "transmit_power_watts",

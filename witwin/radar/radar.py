@@ -44,7 +44,7 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .simulation import Motion, RadarSimulationResult
+    from .simulation import Motion, Paths, RadarSimulationResult
     from .synthesis import SynthesisResult
     from .targets import PointTargets, StructureTargets
 
@@ -479,11 +479,14 @@ class Radar:
     one, so a radar captured in a closure or held by a result cannot change
     underneath it, and a pose built from a tensor with a tape keeps that tape.
 
-    Two verbs use it. :meth:`simulate` runs a session to completion and stacks
-    every frame; :meth:`stream` runs the identical session and yields one frame
-    at a time, so a sequence too long to hold as a stacked cube is still
-    producible. They share one frame generator, so the physics, the epoch loop
-    and the synthesis route have a single owner.
+    Four verbs use it, and they are two halves and their fusion.
+    :meth:`trace` runs the world half and keeps the composed round trips;
+    :meth:`echo` runs the instrument half over those rows. :meth:`simulate`
+    fuses the two and stacks every frame; :meth:`stream` fuses them and yields
+    one frame at a time, so a sequence too long to hold as a stacked cube is
+    still producible. All four share one session loop and one synthesis route,
+    so ``echo(trace(...))`` and ``simulate(...)`` are the same numbers and not
+    merely the same physics.
     """
 
     #: Reference frequency, Hz. The carrier the array spacing, the propagation
@@ -821,6 +824,56 @@ class Radar:
         return build_result(synthesize(batch, spec), spec)
 
     # -- entry points ------------------------------------------------------
+
+    def trace(
+        self,
+        scene,
+        targets: PointTargets | StructureTargets,
+        *,
+        times,
+        los: bool = True,
+        reflections: int = 1,
+        motion: Motion | None = None,
+        grad: str = "none",
+        endpoints=None,
+    ) -> Paths:
+        """Compose this radar's round trips over a Core world and keep them.
+
+        The world half of the pipeline: sampling the world at the waveform's
+        observation instants, compiling or reusing the Channel epoch,
+        discovering the topology, joining the two legs through the scatter
+        response, and weighting by the array's pattern. It stops there. The
+        waveform, the receive chain and the output domain belong to
+        :meth:`echo`, which is what lets a receiver sweep re-use one trace.
+
+        Arguments are :meth:`simulate`'s. What differs is the retention:
+        :class:`~witwin.radar.simulation.Paths` holds every evaluated
+        observation's rows, so an ADC-refreshed sequence costs real device
+        memory. Read that record's docstring before tracing a long one.
+        """
+
+        from .simulation import trace_scene
+
+        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        return trace_scene(self, scene, **session)
+
+    def echo(self, paths: Paths) -> RadarSimulationResult:
+        """Run this radar's instrument half over already-composed rows.
+
+        Synthesizes the waveform at each traced observation, applies the
+        receive chain, lands the frame in the declared output domain and
+        assembles the typed result. ``radar.echo(radar.trace(...))`` is
+        bit-identical to ``radar.simulate(...)``.
+
+        The radar echoing does not have to be the one that traced. Its receive
+        chain, its seed and its FMCW output domain are free; anything the
+        observation schedule was derived from is not, and is refused by name
+        rather than replayed against a schedule that no longer describes it.
+        """
+
+        from .simulation import echo_paths
+
+        return echo_paths(self, paths)
 
     def simulate(
         self,

@@ -364,8 +364,8 @@ def _host_observation_calls(path: pathlib.Path) -> list[str]:
         from collections import Counter
 
         expected = {
-            "_adaptive_fmcw": {"cpu": 1, "numpy": 1, "tolist": 1},
-            "_scene_frames.evaluate_many.finish": {"tolist": 2},
+            "_adaptive_trace": {"cpu": 1, "numpy": 1, "tolist": 1},
+            "_open_session.evaluate_many.finish": {"tolist": 2},
         }
         found = {}
 
