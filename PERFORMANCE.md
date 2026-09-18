@@ -2,6 +2,64 @@
 
 Status: local measurements recorded 2026-09-16 to 2026-09-18; release-platform benchmarks remain separate.
 
+## Device-side row expansion and deferred leg narrowing (2026-09-18)
+
+The two limits the host-cost section below left standing, measured on RTX 5080 / Ryzen 7 9800X3D
+in witwin2. They are different limits in different regimes, which is why both were needed: a frame
+with many observations spends its time expanding rows, and a frame with many probes spends its
+time per probe.
+
+**The echo expands its row maps on the device.** The host holds a partition of tens of intervals
+and a compact per-observation column set; expanding those into one integer per row and sending the
+result is work the device can do from what it already has. At this frame's 393216 rows, measured
+standalone, the two routes are 9.23 ms of numpy plus transfer against 0.64 ms of device work, for
+identical indices. Host-to-device traffic falls from about 15 MB per frame to about 5 MB, uploaded
+once instead of per batch. Every `repeat_interleave` declares its `output_size` from the host's own
+row totals, so nothing here synchronizes and `_adaptive_echo` still observes the device zero times,
+which `tests/test_import_boundary.py` enforces.
+
+**A batched group no longer narrows its slots eagerly.** `RadarLegBatch.slot(...)` builds a
+revalidated single-slot batch, and the replay loop built two of them for every observation. A
+batched group composes once and reads nothing from the individual slots - the rows it needs are
+already sliced out of the composed batch - so those narrowings served only the record's `legs`
+member, which on the adaptive route is published for exactly one observation per frame. Deferring
+it behind a callable takes the count from 310 narrowings per frame to **2**, measured on the
+155-probe rotor.
+
+Per-frame latency, median of seven complete `Radar.simulate` calls, on three fixtures chosen for
+three regimes:
+
+| Fixture | observations | probes | before | device expansion | + deferred narrowing |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MIMO walker, 3x4, 128 x 256 | 98304 | 27 | 50.3 ms | 23.7 ms | **21.6 ms** |
+| Rotor point, 1x1, 128 x 128 | 16384 | 155 | 124.2 ms | 68.3 ms | **48.3 ms** |
+| Two scatterers, 3x4, 32 x 64 | 6144 | 27 | 20.3 ms | 10.2 ms | **10.1 ms** |
+
+Every cube is bit-identical to the pre-change cube under `torch.equal` at each step, on all three.
+
+`tools/validate_frame_streaming.py --frames 8 32 128`, same fixture and machine:
+
+| Frames | Streamed peak | Stacked peak | Peak ratio | Streamed ms/frame | Stacked ms/frame | Mismatched frames |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 76.4 MiB | 113.4 MiB | 1.48x | 18.4 | 19.8 | 0 |
+| 32 | 75.4 MiB | 293.6 MiB | 3.89x | 20.2 | 22.7 | 0 |
+| 128 | 76.4 MiB | 1223.4 MiB | 16.01x | 19.6 | 20.1 | 0 |
+
+128 frames at 10 fps is 12.8 s of scene time produced in **2.51 s**, against 4.90 s before this
+section and 13.86 s before the host-cost work; 1 minute of that session's data is about **12 s** of
+wall time. Streamed peak allocation is still flat in the frame count, which is the property
+`stream` exists for, but it ROSE from 56.2 MiB to 76.4 MiB: the row maps are now device tensors and
+several of them are live at once inside a batch. The row budget still bounds them - it is the same
+knob against a larger constant - and the trade is 20 MiB of flat allocation for half the latency.
+
+Accuracy is unchanged. `tools/validate_adaptive_motion.py` measures IQ relative L2 of 2.8020e-4,
+2.2612e-4, 2.4938e-4 and 5.6830e-4, `tools/validate_doppler_motion.py` 1.144e-6, 1.845e-4 and
+4.085e-4, and `tools/validate_heavy_multipath.py` still places its four strongest peaks within one
+range/velocity bin of image geometry - every one of these the same digits as before the change.
+
+Reproduce: `python tools/validate_frame_streaming.py --frames 8 32 128`. Evidence:
+[the row-expansion report](docs/dev/audit/radar-row-expansion-and-probe-cost-2026-09-18.md).
+
 ## Per-observation host cost (2026-09-18)
 
 The adaptive route's frame was host-bound, not device-bound. On the public scene entry with a

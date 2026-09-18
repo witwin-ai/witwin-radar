@@ -1539,16 +1539,12 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_observations
 
     delays, transfers, validity = table.delays, table.transfers, table.validity
-    starts, bounds, rank = table.starts, table.bounds, table.rank
-    node_index, basis, clock = table.node_index, table.basis, table.clock
     node_count, pairs, device = table.node_count, table.pairs, table.device
     observations_total = table.observation_count
 
     def upload(value):
         return torch.as_tensor(value, device=device)
 
-    values = []
-    left = node_index[:, 0]
     # An observation sits in one TDM slot and hears one transmitter. Under
     # PAIR_RANK_LAYOUT that transmitter's pairs are the ``num_rx`` ranks
     # congruent to it modulo ``num_tx``; the rest carry no signal this
@@ -1556,48 +1552,72 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     # Synthesizing only the active pairs is the same cube for ``1/num_tx`` of
     # the rows, which is the frame's dominant cost.
     receivers = pairs // spec.num_tx
-    active_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * np.arange(
-        receivers
-    )
     # An accepted interval's nodes share a topology identity and therefore
     # share their pair layout, so one node's bounds describe every observation
     # the interval covers; only the base offsets in ``starts`` differ.
-    node_rank = rank[left][:, None]
-    row_counts = (bounds[node_rank, active_pairs + 1] - bounds[node_rank, active_pairs]).sum(axis=1)
+    slot_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * np.arange(
+        receivers
+    )
+    node_rank = table.rank[table.node_index[:, 0]][:, None]
+    row_counts = (table.bounds[node_rank, slot_pairs + 1] - table.bounds[node_rank, slot_pairs]).sum(axis=1)
     # The row bound caps the temporary node table, whose width is 4 columns per
     # node. Stated against the two-node width so that raising the polynomial
     # order does not silently raise peak allocation along with it.
     row_budget = 262144 * 8 // (4 * node_count)
     cumulative = np.concatenate(([0], np.cumsum(row_counts)))
+
+    # The per-row maps are expanded ON the device from these per-observation
+    # columns. Expanding them here instead would author one integer per row on
+    # the host and then send it: measured at this frame's 393216 rows, 9.23 ms
+    # of numpy and transfer against 0.64 ms of device work for identical
+    # indices. What stays on the host is the batching bound above, which reads
+    # only row totals - this function may not observe the device at all, and
+    # ``tests/test_import_boundary.py`` holds it to that.
+    bounds, starts, basis = upload(table.bounds), upload(table.starts), upload(table.basis)
+    nodes, owners, counts = upload(table.node_index), upload(node_rank[:, 0]), upload(row_counts)
+    clock = upload(table.clock) if frontend is not None else None
+    receiver_rank = torch.arange(receivers, device=device)
+
+    values = []
     begin = 0
     while begin < observations_total:
         # Bound temporary expanded payloads by both observations and path rows.
         # One unusually large observation is indivisible and is still supported.
         stop = min(observations_total, begin + options.batch_observations * spec.num_samples)
         stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + row_budget)) - 1))
-        batch = np.arange(begin, stop)
-        evaluated, active = node_rank[batch], active_pairs[batch]
-        segment_prefix = bounds[evaluated, active].ravel()
-        segment_counts = bounds[evaluated, active + 1].ravel() - segment_prefix
-        offsets = np.concatenate(([0], np.cumsum(segment_counts)))
-        segment = np.repeat(np.arange(segment_counts.size), segment_counts)
-        local_row = segment_prefix[segment] + np.arange(offsets[-1]) - offsets[segment]
-        observation = np.repeat(batch, row_counts[batch])
-        node_rows = [upload(starts[node_index[observation, node]] + local_row) for node in range(node_count)]
+        # Known from the host's own row totals, which is what lets every
+        # ``repeat_interleave`` below declare its output size instead of
+        # synchronizing to discover it.
+        total = int(cumulative[stop] - cumulative[begin])
+        batch = torch.arange(begin, stop, device=device)
+        owner = owners[batch][:, None]
+        active = (batch // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * receiver_rank
+        segment_prefix = bounds[owner, active].ravel()
+        segment_counts = bounds[owner, active + 1].ravel() - segment_prefix
+        offsets = torch.cat((segment_counts.new_zeros(1), torch.cumsum(segment_counts, 0)))
+        segment = torch.repeat_interleave(
+            torch.arange(segment_counts.numel(), device=device), segment_counts, output_size=total
+        )
+        local_row = segment_prefix[segment] + torch.arange(total, device=device) - offsets[segment]
+        observation = torch.repeat_interleave(batch, counts[batch], output_size=total)
+        node_rows = [starts[nodes[observation, node]] + local_row for node in range(node_count)]
         delay, transfer = interpolate_path_rows(
             [delays[rows] for rows in node_rows],
             [transfers[rows] for rows in node_rows],
-            upload(basis[observation]),
+            basis[observation],
             carrier_hz,
         )
         transfer = torch.where(validity[node_rows[0]], transfer, torch.zeros_like(transfer))
         if frontend is not None:
-            transfer = frontend._apply_path_phase_rows(delay, transfer, upload(clock[observation]))
-        adc_time = spec.t_start_s + (observation % spec.num_samples) * spec.sample_period_s
+            transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
+        # float64 explicitly: an int64 tensor times a Python float promotes to
+        # the DEFAULT dtype, which would silently synthesize the ADC instants
+        # in float32.
+        adc_time = spec.t_start_s + (observation % spec.num_samples).double() * spec.sample_period_s
         values.append(
             synthesize_fmcw_observations(
-                delay, channel_phasor_to_beat_weight(transfer), upload(offsets), upload(adc_time), spec
-            ).reshape(len(batch), receivers)
+                delay, channel_phasor_to_beat_weight(transfer), offsets, adc_time, spec
+            ).reshape(stop - begin, receivers)
         )
         begin = stop
     # Each slot now carries its own transmitter's receivers, so the gather
@@ -1837,6 +1857,12 @@ def _open_session(
     def evaluate_many(query_times):
         """Discover probes, then batch replay only identical live scene handles.
 
+        One record per query instant: the epoch frame, a CALLABLE returning
+        that instant's legs, the composed rows, and the identity the adaptive
+        controller tests. The legs are a callable because a batched group
+        never reads them and the adaptive controller never reads them either;
+        only an observation that gets published pays for the narrowing.
+
         Moving compiled geometry is replayed before the next refreeze retires
         its handles. Static geometry permits one slot batch per full leg key.
         Host identity observations belong to adaptive control, not a replay.
@@ -1897,14 +1923,27 @@ def _open_session(
                 )
                 valid_rows = batched_paths.row_valid.reshape(len(group), -1).tolist()
             for slot, (t, frame, binding, identity) in enumerate(group):
+                # The per-slot narrowing is DEFERRED, because a batched group
+                # composes once and then reads nothing from its individual
+                # slots: the rows it needs are already sliced out of
+                # ``batched_paths``. Narrowing eagerly builds two revalidated
+                # single-slot batches per observation for a record whose legs
+                # only a published observation ever reads - on the adaptive
+                # route, one per frame out of every probe it took.
                 legs = (
-                    replay
+                    (lambda: replay)
                     if len(group) == 1
-                    else RadarPropagationLegs(inbound=replay.inbound.slot(slot), outbound=replay.outbound.slot(slot))
+                    else (
+                        lambda index=slot: RadarPropagationLegs(
+                            inbound=replay.inbound.slot(index), outbound=replay.outbound.slot(index)
+                        )
+                    )
                 )
                 composer, _, pattern_stage = frame.frozen.payload
                 if batched_paths is None:
-                    paths = composer.compose(legs.inbound, legs.outbound, response)
+                    # One slot, so this narrowing is the replay itself.
+                    direct = legs()
+                    paths = composer.compose(direct.inbound, direct.outbound, response)
                 else:
                     selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
                     paths = replace(
@@ -1923,8 +1962,8 @@ def _open_session(
                         paths,
                         tx_pos=binding.transmitters.positions_m,
                         rx_pos=binding.receivers.positions_m,
-                        tx_targets_m=legs.inbound.departure_target_m.index_select(0, paths.topology.inbound_row),
-                        rx_targets_m=legs.outbound.arrival_origin_m.index_select(0, paths.topology.outbound_row),
+                        tx_targets_m=direct.inbound.departure_target_m.index_select(0, paths.topology.inbound_row),
+                        rx_targets_m=direct.outbound.arrival_origin_m.index_select(0, paths.topology.outbound_row),
                     )
                 if motion_sampling == "adaptive":
                     identity = (
@@ -2055,7 +2094,7 @@ def _open_session(
         for offset in offsets:
             time_s = float(start + offset)
             epoch_frame, legs, composed, _ = evaluate_many([time_s])[0]
-            yield _Observation(time_s=time_s, epoch_frame=epoch_frame, legs=legs, composed=composed)
+            yield _Observation(time_s=time_s, epoch_frame=epoch_frame, legs=legs(), composed=composed)
 
     def traces():
         if sampled and motion_sampling == "adaptive":
@@ -2066,7 +2105,7 @@ def _open_session(
                 )
                 epoch_frame, legs, composed, _ = last
                 closing = _Observation(
-                    time_s=float(actual_times[-1]), epoch_frame=epoch_frame, legs=legs, composed=composed
+                    time_s=float(actual_times[-1]), epoch_frame=epoch_frame, legs=legs(), composed=composed
                 )
                 yield _FrameTrace(
                     time_s=float(start),
