@@ -162,11 +162,12 @@ class MockRadar:
         self.radar = raw if isinstance(raw, Radar) else Radar.from_dict(dict(raw), device="cpu")
 
         self.wavelength_m = self.radar.wavelength
-        antenna_spacing = self.wavelength_m / 2
-        self.tx_loc = torch.tensor(self.radar.tx, dtype=torch.float32) * antenna_spacing
-        self.rx_loc = torch.tensor(self.radar.rx, dtype=torch.float32) * antenna_spacing
-
         self.system_config = self.radar.system_config
+        # Through the array spec rather than by scaling ``radar.tx``: the array
+        # always stores half wavelengths, but ``radar.tx`` is in whatever
+        # ``antenna_unit`` says, so scaling it here would be silently wrong for
+        # a metre-authored radar handed in directly.
+        self.tx_loc, self.rx_loc = self.system_config.sensors.array.local_offsets_m(device="cpu")
         spec = self.radar.waveform_spec()
         array = self.system_config.sensors.array
         cube = torch.zeros(spec.num_chirps, array.sensor_pair_count, spec.num_samples, dtype=torch.complex64)
