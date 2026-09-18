@@ -17,14 +17,15 @@ Dynamic FMCW can select `motion_sampling="adaptive"` and an `AdaptiveMotionSpec`
 `max_interval_s`, `interpolation_nodes`, `max_evaluations`, and `batch_observations`.
 `interpolation_nodes` is the number of sampled instants one accepted interval interpolates
 through, so the default 2 is the linear rule and 5 is a quartic; each interval probes a grid of
-`2 * (nodes - 1) + 1` instants and tests the error at the ones between the nodes. A higher order
+`2 * (nodes - 1) + 1` instants and tests the error at the ones between the nodes, which at the
+default two nodes is a single midpoint test. Lowering `max_interval_s` refines the grid. A higher order
 buys a longer interval, which it cannot do where the probe-spacing bound already fixes the
 length, so raise it only where the phase test is what shortens an interval.
-`max_interval_s` is the probe-spacing floor and is enforced unconditionally, including for a
+`max_interval_s` is the maximum probe spacing and is enforced unconditionally, including for a
 family certified complete for all time. Every tolerance here is checked by sampling and therefore
 cannot see motion periodic at the probe grid's step; this bound is what sets that step. The
 initial partition is the coarsest one it allows. Native interpolation moves each
-endpoint coefficient to the query's carrier phase before blending. Quarter/midpoint probes
+endpoint coefficient to the query's carrier phase before blending. The grid's interior probes
 test delay, complex phase, amplitude, full leg identity, and validity; mismatches subdivide.
 The native interpolant supports VJP/JVP for a fixed accepted partition. Discovery and
 refinement decisions are discrete. Budget exhaustion raises instead of returning an unchecked cube.

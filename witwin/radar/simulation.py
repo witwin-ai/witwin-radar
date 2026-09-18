@@ -47,16 +47,19 @@ class AdaptiveMotionSpec:
     bound cannot be inferred from these path bounds. Exhausting the discovery
     budget raises.
 
-    ``max_interval_s`` is the PROBE-SPACING FLOOR and it always applies. Every
-    tolerance here is checked by sampling, so it bounds only what it samples:
-    motion periodic at the probe grid's spacing, or at a divisor of it, sits at
-    a zero of every probe and is invisible to all of these tests. This bound is
-    what sets that spacing, and it is therefore an accuracy control as much as
-    a topology one. It is NOT relaxed for a topologically certified family: the
-    certification says no path can be born, not that no path moves fast. Within
-    the bound the run starts from the coarsest partition it allows rather than
-    bisecting down to it. A caller who knows the motion's bandwidth should set
-    this from it; the grid is ``2 * (nodes - 1)`` steps across one interval.
+    ``max_interval_s`` is the MAXIMUM PROBE SPACING in seconds and it always
+    applies: no accepted interval spans more than this, so the probe grid is
+    never coarser than ``max_interval_s / (2 * (interpolation_nodes - 1))``.
+    LOWERING it refines the grid. Every tolerance here is checked by sampling,
+    so it bounds only what it samples: motion periodic at the grid's step, or
+    at a divisor of it, sits at a zero of every probe and is invisible to all
+    of these tests. This bound is what sets that step, and it is therefore an
+    accuracy control as much as a topology one. It is NOT relaxed for a
+    topologically certified family: the certification says no path can be born,
+    not that no path moves fast. Within the bound the run starts from the
+    coarsest partition it allows rather than bisecting down to it. Set it from
+    the motion's bandwidth; the default 2 ms resolves roughly 250 Hz at two
+    nodes.
 
     ``interpolation_nodes`` is how many sampled instants carry one accepted
     interval, and therefore the polynomial order of the delay it interpolates:
@@ -861,7 +864,7 @@ def _lagrange_weights(query_s, node_s):
 def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
     """Control topology probes on the host; interpolate and synthesize on CUDA.
 
-    Quarter/midpoint tests bound observed errors only. Arbitrarily brief path
+    The grid's interior tests bound observed errors only. Arbitrarily brief path
     births or adversarial oscillations between probes require the ADC reference.
     Host copies below are explicit adaptive decisions, not a differentiable
     physics implementation. AD follows the accepted, fixed partition.
@@ -894,7 +897,8 @@ def _adaptive_fmcw(times, evaluate_many, spec, options, carrier_hz, frontend):
                 cache[index] = record
                 pair_tables[index] = record[2].pair_offsets.tolist()
 
-    # The maximum interval is the probe-spacing FLOOR, and it is unconditional.
+    # The maximum interval is the MAXIMUM probe spacing, and it is
+    # unconditional. Lowering it refines the grid.
     # Every error test here is a sampled test: it can only see motion at the
     # instants it probes. A sinusoid whose period divides the grid spacing sits
     # at a zero of every node and every test point, so the controller measures
