@@ -53,7 +53,7 @@ from support import waveform_chains as wc  # noqa: E402
 from support.synthesis_batch import to_synthesis  # noqa: E402
 
 from witwin.radar.channel import ChannelPropagationAdapter  # noqa: E402
-from witwin.radar.frontend import FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec  # noqa: E402
+from witwin.radar.frontend import Agc, FrontendChain, FrontendSpec, Noise  # noqa: E402
 from witwin.radar.synthesis import OfdmSpec, synthesize_ofdm  # noqa: E402
 
 pytestmark = pytest.mark.gpu
@@ -99,14 +99,14 @@ def values(spike):
 
 def _noise(**overrides):
     fields = {
-        "noise_figure_db": 3.0,
-        "bandwidth_hz": 1.0e6,
-        "phase_noise_dbc_per_hz": -80.0,
-        "phase_offset_hz": 1.0e5,
-        "phase_sample_rate_hz": 1.0e6,
+        "figure": 3.0,
+        "bandwidth": 1.0e6,
+        "phase_density": -80.0,
+        "phase_offset": 1.0e5,
+        "phase_sample_rate": 1.0e6,
     }
     fields.update(overrides)
-    return NoiseSpec(**fields)
+    return Noise(**fields)
 
 
 def _frontend(*, quiet: bool = False, seed: int = 5) -> FrontendSpec:
@@ -121,21 +121,16 @@ def _frontend(*, quiet: bool = False, seed: int = 5) -> FrontendSpec:
     """
 
     return FrontendSpec(
-        port=PortSpec(PORT_OHM),
+        impedance=PORT_OHM,
         noise=(
-            _noise(
-                noise_figure_db=0.0,
-                antenna_temperature_k=0.0,
-                bandwidth_hz=0.0,
-                phase_noise_dbc_per_hz=None,
-                phase_offset_hz=None,
-            )
-            if quiet
-            else _noise()
+            # A zero bandwidth is refused now; a zero antenna temperature with a
+            # zero noise figure is the same statement in physical units, because
+            # it makes T_sys and therefore the thermal sigma exactly zero.
+            _noise(figure=0.0, antenna_temperature=0.0, phase_density=None, phase_offset=None) if quiet else _noise()
         ),
-        lna=LnaSpec(gain_db=LNA_GAIN_DB),
+        lna=LNA_GAIN_DB,
         agc=None,
-        seed=SeedSpec(seed),
+        seed=seed,
     )
 
 
@@ -246,15 +241,9 @@ def test_a_global_agc_makes_a_magnitude_loss_exactly_constant(spike, values):
     measured here.
     """
 
-    from witwin.radar.frontend import AgcSpec
-
     target_rms = 1.0e-3
     spec = FrontendSpec(
-        port=PortSpec(PORT_OHM),
-        noise=_noise(),
-        lna=LnaSpec(gain_db=LNA_GAIN_DB),
-        agc=AgcSpec(target_rms=target_rms, mode="global"),
-        seed=SeedSpec(5),
+        impedance=PORT_OHM, noise=_noise(), lna=LNA_GAIN_DB, agc=Agc(target_rms=target_rms, mode="global"), seed=5
     )
     gated, loss = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp", frontend=spec), values)
     ungated, _ = _site_gradient(lambda live: _frontend_loss(spike, live, ad_mode="vjp"), values)
@@ -296,19 +285,21 @@ def test_the_same_seed_replays_a_bitwise_identical_gradient(spike, values, kind)
 def test_the_physics_chain_itself_has_no_noise_to_reproduce(spike, values):
     """Noise is OFF by default, which is why the tests above have to ask for it.
 
-    ``RadarConfig`` carries no ``FrontendSpec`` unless a caller builds one, so
-    every other Phase-9 chain is deterministic by construction rather than by a
-    seed. Asserted directly so the default cannot drift.
+    A ``Radar`` built from the flat configuration carries no receive chain
+    unless a caller names one of its stages, so every other Phase-9 chain is
+    deterministic by construction rather than by a seed. Asserted directly so
+    the default cannot drift.
     """
 
     first = float(_bare_loss(spike, values))
     second = float(_bare_loss(spike, values))
     assert first == second
     assert drv.make_spec(num_chirps=2).__class__.__name__ == "FmcwSpec"
-    from witwin.radar import RadarConfig
+    from witwin.radar import Radar
 
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    assert getattr(config, "frontend", None) is None
+    radar = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
+    assert radar.noise is None
+    assert radar.frontend is None
 
 
 # --------------------------------------------------------------------------
@@ -475,21 +466,17 @@ def _pattern_stage(spike):
     element and row-to-site tables come from a real two-way join.
     """
 
-    from witwin.radar import Radar
-    from witwin.radar.sensors import AntennaPatternSpec, RoundTripPatternStage
+    from witwin.radar import Pattern, Radar
+    from witwin.radar.sensors import RoundTripPatternStage
 
-    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
+    radar = Radar.from_dict(
+        dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0), polarization=geo.POLARIZATION
+    )
     stage = RoundTripPatternStage.freeze(
         radar,
         spike.composer,
         site_ids=spike.site_ids,
-        pattern=AntennaPatternSpec(
-            kind="separable",
-            x_angles_deg=PATTERN_ANGLES_DEG,
-            x_values=(0.2, 1.0, 0.3),
-            y_angles_deg=PATTERN_ANGLES_DEG,
-            y_values=(0.4, 1.0, 0.5),
-        ),
+        pattern=Pattern.separable(PATTERN_ANGLES_DEG, (0.2, 1.0, 0.3), PATTERN_ANGLES_DEG, (0.4, 1.0, 0.5)),
     )
     return radar, stage
 

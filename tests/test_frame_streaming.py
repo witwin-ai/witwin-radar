@@ -4,48 +4,48 @@ from dataclasses import replace
 
 import pytest
 import torch
-from test_phase11_simulate_entry import _radar, _response, _static_scene
+from support import multi_endpoint_driver as drv
+from test_phase11_simulate_entry import _radar, _static_scene
 
-from witwin.radar.propagation import Kinematics
-from witwin.radar.simulation import ScatterSitePolicy
+from witwin.radar import Motion, PointTargets
 
 pytestmark = pytest.mark.gpu
 
 FRAMES = 6
 
+MOTIONS = [Motion.adc(), Motion.chirp(), Motion.adaptive()]
+MOTION_IDS = ["adc", "chirp", "adaptive"]
+
 
 def _session(radar, frames):
     origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
     velocity = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
-
-    class Motion:
-        def at(self, t):
-            return Kinematics(origin + velocity * t, velocity)
-
     return {
+        "targets": PointTargets(
+            positions=origin,
+            amplitude=drv.FIXTURE_AMPLITUDE,
+            phase=drv.FIXTURE_PHASE_RAD,
+            trajectory=lambda t: origin + velocity * t,
+        ),
         "times": tuple(index * 2.0e-3 for index in range(frames)),
-        "response": _response(radar),
-        "sites": ScatterSitePolicy.explicit(origin, trajectory=Motion()),
-        "components": frozenset({"los"}),
-        "max_depth": 0,
+        "los": True,
+        "reflections": 0,
     }
 
 
 def _small(radar):
-    radar.system_config = replace(
-        radar.system_config,
-        waveform=replace(radar.system_config.waveform, adc_samples=8, chirp_per_frame=4, output_domain="beat"),
-    )
-    return radar
+    """A new radar with a small cube; the record is frozen, so nothing is edited."""
+
+    return radar.replace(waveform=replace(radar.waveform, samples_per_chirp=8, chirps_per_frame=4, output="beat"))
 
 
-@pytest.mark.parametrize("sampling", ["adc", "chirp", "adaptive"])
-def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(sampling):
-    stacked = _small(_radar()).simulate(_static_scene(), **_session(_small(_radar()), FRAMES), motion_sampling=sampling)
+@pytest.mark.parametrize("motion", MOTIONS, ids=MOTION_IDS)
+def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(motion):
+    stacked = _small(_radar()).simulate(_static_scene(), **_session(_small(_radar()), FRAMES), motion=motion)
 
     radar = _small(_radar())
     kwargs = _session(radar, FRAMES)
-    streamed = list(radar.stream(_static_scene(), **kwargs, motion_sampling=sampling))
+    streamed = list(radar.stream(_static_scene(), **kwargs, motion=motion))
 
     assert len(streamed) == FRAMES
     for index, frame in enumerate(streamed):
@@ -69,22 +69,21 @@ def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(sampling):
 def _large(radar):
     """A cube big enough that the stacked sequence dominates allocation."""
 
-    radar.system_config = replace(
-        radar.system_config,
-        waveform=replace(radar.system_config.waveform, adc_samples=256, chirp_per_frame=128, output_domain="beat"),
-    )
-    return radar
+    return radar.replace(waveform=replace(radar.waveform, samples_per_chirp=256, chirps_per_frame=128, output="beat"))
 
 
 def _still_session(radar, frames):
     """No trajectory anywhere, so each frame costs one scene evaluation."""
 
     return {
+        "targets": PointTargets(
+            positions=torch.tensor([[2.0, 0.2, 0.0]], device=radar.device),
+            amplitude=drv.FIXTURE_AMPLITUDE,
+            phase=drv.FIXTURE_PHASE_RAD,
+        ),
         "times": tuple(index * 2.0e-3 for index in range(frames)),
-        "response": _response(radar),
-        "sites": ScatterSitePolicy.explicit(torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)),
-        "components": frozenset({"los"}),
-        "max_depth": 0,
+        "los": True,
+        "reflections": 0,
     }
 
 
@@ -97,12 +96,10 @@ def test_streaming_retains_one_frame_where_stacking_retains_the_sequence():
         radar = _large(_radar())
         kwargs = _still_session(radar, sequence)
         run(radar, kwargs)  # warm the native route and the allocator
-        radar._last_result = None
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
         resident = torch.cuda.memory_allocated()
         run(radar, kwargs)
-        radar._last_result = None
         torch.cuda.synchronize()
         return torch.cuda.max_memory_allocated() - resident
 
@@ -135,27 +132,25 @@ def test_streaming_holds_nothing_per_frame():
     def resident(frames):
         radar = _small(_radar())
         kwargs = _session(radar, frames)
-        for frame in radar.stream(_static_scene(), **kwargs, motion_sampling="adc"):
+        for frame in radar.stream(_static_scene(), **kwargs, motion=Motion.adc()):
             del frame
-        radar._last_result = None
         torch.cuda.synchronize()
         before = torch.cuda.memory_allocated()
-        for frame in radar.stream(_static_scene(), **kwargs, motion_sampling="adc"):
+        for frame in radar.stream(_static_scene(), **kwargs, motion=Motion.adc()):
             del frame
-        radar._last_result = None
         torch.cuda.synchronize()
         return torch.cuda.memory_allocated() - before
 
     assert resident(2) == resident(4 * FRAMES)
 
 
-@pytest.mark.parametrize("sampling", ["adc", "chirp", "adaptive"])
-def test_retained_state_describes_the_observation_that_closed_the_frame(sampling):
+@pytest.mark.parametrize("motion", MOTIONS, ids=MOTION_IDS)
+def test_retained_state_describes_the_observation_that_closed_the_frame(motion):
     """A sampled frame opens and closes at different world instants."""
 
     radar = _small(_radar())
     kwargs = _session(radar, 2)
-    result = radar.simulate(_static_scene(), **kwargs, motion_sampling=sampling)
+    result = radar.simulate(_static_scene(), **kwargs, motion=motion)
 
     # The site moves, so the snapshot of the frame's last observation is not the
     # snapshot of its first. Publishing the opening one would silently describe
@@ -171,11 +166,20 @@ def test_retained_state_describes_the_observation_that_closed_the_frame(sampling
 
 
 def test_streaming_reports_the_frame_it_just_yielded():
+    """Each frame reports itself, and the radar reports nothing.
+
+    The diagnostics live on the yielded result and nowhere else, so a consumer
+    reads the frame it is holding rather than a radar attribute that a later
+    frame would already have overwritten.
+    """
+
     radar = _small(_radar())
     kwargs = _session(radar, FRAMES)
     seen = []
-    for frame in radar.stream(_static_scene(), **kwargs, motion_sampling="adc"):
-        assert radar.last_result is frame
-        assert radar.last_snapshot is frame.last_snapshot
+    for frame in radar.stream(_static_scene(), **kwargs, motion=Motion.adc()):
+        assert frame.last_snapshot is not None
+        assert frame.last_snapshot.time_s == pytest.approx(frame.sample_times_s[0][-1], abs=1e-12)
         seen.append(frame.times_s[0])
     assert seen == list(kwargs["times"])
+    for name in ("last_result", "last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):
+        assert not hasattr(radar, name), name

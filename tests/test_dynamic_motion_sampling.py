@@ -4,25 +4,30 @@ import math
 
 import pytest
 import torch
-from test_phase11_simulate_entry import _radar, _response, _static_scene
+from support import multi_endpoint_driver as drv
+from test_phase11_simulate_entry import _radar, _static_scene
 
-from witwin.radar.propagation import Kinematics
-from witwin.radar.simulation import ScatterSitePolicy
+from witwin.radar import Motion, PointTargets
 
 pytestmark = pytest.mark.gpu
+
+
+def _targets(positions, *, trajectory=None):
+    """The fixture scatterer, authored as the dimensionless strength directly."""
+
+    return PointTargets(
+        positions=positions, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD, trajectory=trajectory
+    )
 
 
 class Orbit:
     def __init__(self, device, *, radius=0.12, frequency=40.0):
         self.device, self.radius, self.frequency = device, radius, frequency
 
-    def at(self, t):
+    def __call__(self, t):
         angle = 2 * math.pi * self.frequency * t
-        r, w = self.radius, 2 * math.pi * self.frequency
-        return Kinematics(
-            torch.tensor([[2 + r * math.cos(angle), r * math.sin(angle), 0]], device=self.device),
-            torch.tensor([[-r * w * math.sin(angle), r * w * math.cos(angle), 0]], device=self.device),
-        )
+        r = self.radius
+        return torch.tensor([[2 + r * math.cos(angle), r * math.sin(angle), 0]], device=self.device)
 
 
 def test_orbit_phase_and_tdm_match_independent_geometric_delay():
@@ -30,20 +35,19 @@ def test_orbit_phase_and_tdm_match_independent_geometric_delay():
     trajectory = Orbit(radar.device)
     result = radar.simulate(
         _static_scene(),
+        _targets(trajectory(0.0), trajectory=trajectory),
         times=(0.0,),
-        response=_response(radar),
-        sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        components=frozenset({"los"}),
-        max_depth=0,
-        motion_sampling="chirp",
+        los=True,
+        reflections=0,
+        motion=Motion.chirp(),
     )
-    spec = radar.system_config.waveform_spec()
+    spec = radar.waveform_spec()
     # Invert only the declared spectrum. Test the first ADC sample of each TX.
     beat = torch.fft.ifft(result.cube[0], dim=-1)
     for tx in range(spec.num_tx):
         for rx in range(spec.num_rx):
             times = [result.sample_times_s[0][c * spec.num_tx + tx] for c in range(spec.num_chirps)]
-            positions = torch.cat([trajectory.at(t).positions_m for t in times]).double()
+            positions = torch.cat([trajectory(t) for t in times]).double()
             delay = (
                 (positions - radar.tx_pos[tx].double()).norm(dim=-1)
                 + (positions - radar.rx_pos[rx].double()).norm(dim=-1)
@@ -59,22 +63,13 @@ def test_orbit_phase_and_tdm_match_independent_geometric_delay():
 def test_dynamic_default_discovers_endpoint_born_reflections():
     radar = _radar()
 
-    class Crossing:
-        def at(self, t):
-            return Kinematics(
-                torch.tensor([[2.0, 2.4 - 1800 * t, 0.0]], device=radar.device),
-                torch.tensor([[0.0, -1800.0, 0.0]], device=radar.device),
-            )
+    def crossing(t):
+        return torch.tensor([[2.0, 2.4 - 1800 * t, 0.0]], device=radar.device)
 
-    trajectory = Crossing()
-    args = {
-        "times": (0.0, 0.001),
-        "motion_sampling": "chirp",
-        "response": _response(radar),
-        "sites": ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-    }
-    complete = radar.simulate(_static_scene(), **args)
-    held = radar.simulate(_static_scene(), motion_event_period_frames=10, **args)
+    targets = _targets(crossing(0.0), trajectory=crossing)
+    times = (0.0, 0.001)
+    complete = radar.simulate(_static_scene(), targets, times=times, motion=Motion.chirp())
+    held = radar.simulate(_static_scene(), targets, times=times, motion=Motion.chirp(rediscover_every_frames=10))
     assert complete.path_set_complete and not held.path_set_complete
     assert complete.discovery_count > held.discovery_count == 1
     assert not torch.allclose(complete.cube, held.cube, atol=0, rtol=1e-3)
@@ -83,8 +78,9 @@ def test_dynamic_default_discovers_endpoint_born_reflections():
 @pytest.mark.parametrize("times", [(0.0, float("nan")), (1.0, 0.0), (0.0, 0.0)])
 def test_invalid_frame_times_are_refused(times):
     radar = _radar()
+    targets = _targets(torch.tensor([[2.0, 0.2, 0.0]], device=radar.device))
     with pytest.raises(ValueError, match="finite|increasing"):
-        radar.simulate(_static_scene(), times=times, response=_response(radar))
+        radar.simulate(_static_scene(), targets, times=times)
 
 
 def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
@@ -92,27 +88,20 @@ def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
 
     import torch.autograd.forward_ad as ad
 
-    radar = _radar()
     # A small complete ADC grid, including both transmitters.
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=2)
-    )
+    radar = _radar()
+    radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))
     base = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
 
     def solve(origin, mode):
-        class Linear:
-            def at(self, t):
-                velocity = torch.tensor([[0.5, 0.2, 0.0]], device=origin.device)
-                return Kinematics(origin + t * velocity, velocity)
-
+        velocity = torch.tensor([[0.5, 0.2, 0.0]], device=origin.device)
         return radar.simulate(
             _static_scene(),
+            _targets(origin, trajectory=lambda t: origin + t * velocity),
             times=(0.0,),
-            response=_response(radar),
-            sites=ScatterSitePolicy.explicit(origin, trajectory=Linear()),
-            components=frozenset({"los"}),
-            max_depth=0,
-            ad_mode=mode,
+            los=True,
+            reflections=0,
+            grad=mode,
         ).cube
 
     reference = solve(base, "none")
@@ -135,9 +124,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     from witwin.radar.simulation import SensorEndpointIds
 
     radar = _radar()
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=2)
-    )
+    radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))
     endpoints = [
         AntennaState(77110 + i, "tx" if i < 2 else "rx", p.cpu())
         for i, p in enumerate(torch.cat([radar.tx_pos, radar.rx_pos]))
@@ -145,17 +132,11 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     scene = Scene(structures=(), endpoints=endpoints)
     trajectories = {e.antenna_id: LinearTrajectory(origin=(0, 0, 0), velocity=(0.3, 0, 0)) for e in endpoints}
     dynamic = DynamicScene(scene, endpoint_trajectories=trajectories)
-    sites = ScatterSitePolicy.explicit(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
-    args = {
-        "times": (0.0,),
-        "response": _response(radar),
-        "sites": sites,
-        "components": frozenset({"los"}),
-        "max_depth": 0,
-    }
+    targets = _targets(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
+    args = {"times": (0.0,), "los": True, "reflections": 0}
     with pytest.raises(ValueError, match="sensor_endpoints"):
-        radar.simulate(dynamic, **args)
-    result = radar.simulate(dynamic, sensor_endpoints=SensorEndpointIds((77110, 77111), (77112, 77113)), **args)
+        radar.simulate(dynamic, targets, **args)
+    result = radar.simulate(dynamic, targets, endpoints=SensorEndpointIds((77110, 77111), (77112, 77113)), **args)
     last_time = result.sample_times_s[0][-1]
     expected_tx = radar.tx_pos + torch.tensor([0.3 * last_time, 0, 0], device=radar.device)
     torch.testing.assert_close(result.last_propagation.inbound.departure_origin_m, expected_tx, rtol=0, atol=1e-8)
@@ -168,15 +149,10 @@ def test_moving_wall_round_trip_phase_matches_independent_image_geometry():
     from support import multi_endpoint_world as world
 
     radar = _radar()
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, chirp_per_frame=1, adc_samples=1)
-    )
+    radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=1))
     scene = world.make_dynamic_scene(wall_velocity=(4.0, 0.0, 0.0))
     site = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
-    results = [
-        radar.simulate(scene, times=(t,), response=_response(radar), sites=ScatterSitePolicy.explicit(site))
-        for t in (0.0, 1e-4)
-    ]
+    results = [radar.simulate(scene, _targets(site), times=(t,)) for t in (0.0, 1e-4)]
     predicted = []
     for result in results:
         paths, legs = result.last_radar_paths, result.last_propagation

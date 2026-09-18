@@ -1,8 +1,8 @@
 """Every configuration scalar refuses a tensor, at construction, by name.
 
-The defect this closes is uniform across eight specs and about forty fields:
-each one is a host float, each one is read with ``float(...)`` or an arithmetic
-expression that ``float`` swallows, and each one used to accept a 0-dim
+The defect this closes is uniform across the configuration specs and about forty
+fields: each one is a host float, each one is read with ``float(...)`` or an
+arithmetic expression that ``float`` swallows, and each one used to accept a 0-dim
 ``requires_grad`` tensor, run the whole frame, and return ``grad = None``. A
 missing derivative that looks exactly like a successful optimisation step is
 worse than a crash, because nothing in the run reports it.
@@ -34,7 +34,7 @@ import math
 import pytest
 import torch
 
-from witwin.radar.frontend import AdcSpec, AgcSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec  # noqa: E402
+from witwin.radar.frontend import Adc, Agc, FrontendSpec, Noise  # noqa: E402
 from witwin.radar.policy import require_host_float, require_host_floats  # noqa: E402
 from witwin.radar.synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec  # noqa: E402
 
@@ -86,35 +86,33 @@ PULSED_BASE = {
 }
 
 NOISE_BASE = {
-    "noise_figure_db": 6.0,
-    "antenna_temperature_k": 290.0,
-    "bandwidth_hz": 5.0e6,
-    "phase_noise_dbc_per_hz": -90.0,
-    "phase_offset_hz": 1.0e6,
-    "phase_sample_rate_hz": 4.4e6,
+    "figure": 6.0,
+    "antenna_temperature": 290.0,
+    "bandwidth": 5.0e6,
+    "phase_density": -90.0,
+    "phase_offset": 1.0e6,
+    "phase_sample_rate": 4.4e6,
 }
+
+#: The port impedance, the LNA gain and the seed are no longer three records of
+#: their own: they are plain fields of the one receive-chain spec, so their
+#: refusal cases live on it and are named ``FrontendSpec.<field>`` in the
+#: message a caller reads.
+FRONTEND_BASE = {"impedance": 50.0, "lna": 20.0}
 
 #: ``(owner label, factory, base kwargs, refusing fields)``. The field lists are
 #: exhaustive per spec: every scalar the owner declares is here, so a new field
 #: added without a decision about its derivative shows up as a missing case.
 SPEC_CASES = (
-    ("PortSpec", PortSpec, {"reference_impedance_ohm": 50.0}, ("reference_impedance_ohm",)),
+    ("FrontendSpec", FrontendSpec, FRONTEND_BASE, ("impedance", "lna")),
     (
-        "NoiseSpec",
-        NoiseSpec,
+        "Noise",
+        Noise,
         NOISE_BASE,
-        (
-            "noise_figure_db",
-            "antenna_temperature_k",
-            "bandwidth_hz",
-            "phase_noise_dbc_per_hz",
-            "phase_offset_hz",
-            "phase_sample_rate_hz",
-        ),
+        ("figure", "antenna_temperature", "bandwidth", "phase_density", "phase_offset", "phase_sample_rate"),
     ),
-    ("LnaSpec", LnaSpec, {"gain_db": 20.0}, ("gain_db",)),
-    ("AgcSpec", AgcSpec, {"target_rms": 1.0}, ("target_rms", "min_gain_db", "max_gain_db")),
-    ("AdcSpec", AdcSpec, {"bits": 10, "full_scale": 1.0}, ("bits", "full_scale")),
+    ("Agc", Agc, {"target_rms": 1.0}, ("target_rms", "min_gain", "max_gain")),
+    ("Adc", Adc, {"bits": 10, "full_scale": 1.0}, ("bits", "full_scale")),
     (
         "FmcwSpec",
         FmcwSpec,
@@ -179,7 +177,7 @@ def _declared_value(factory, base, field) -> float:
     """The value the working spec actually holds for ``field``.
 
     Read off the CONSTRUCTED object rather than out of ``base``, because a
-    field with a default - ``AgcSpec.min_gain_db``, ``FmcwSpec.num_tx`` -
+    field with a default - ``Agc.min_gain``, ``FmcwSpec.num_tx`` -
     is legitimately absent from the base kwargs and must still be covered. A
     zero is replaced by one so that the substituted tensor is a plausible
     value and the refusal is the only reason the construction fails.
@@ -278,7 +276,7 @@ def test_no_partial_specification_survives_a_refusal():
 
     captured = None
     try:
-        captured = AgcSpec(target_rms=torch.tensor(1.0, requires_grad=True))
+        captured = Agc(target_rms=torch.tensor(1.0, requires_grad=True))
     except TypeError:
         pass
     assert captured is None
@@ -296,7 +294,7 @@ def test_a_forward_dual_is_refused_as_well():
         dual = torch.autograd.forward_ad.make_dual(torch.tensor(20.0), torch.tensor(1.0))
         assert not dual.requires_grad
         with pytest.raises(TypeError):
-            LnaSpec(gain_db=dual)
+            FrontendSpec(lna=dual)
 
 
 # --------------------------------------------------------------------------
@@ -357,16 +355,16 @@ def test_a_radar_cross_section_is_deliberately_on_the_other_side_of_this_rule():
     assert response.amplitude.grad_fn is not None
 
     with pytest.raises(TypeError):
-        LnaSpec(gain_db=torch.tensor(20.0, requires_grad=True))
+        FrontendSpec(lna=torch.tensor(20.0, requires_grad=True))
 
 
 def test_the_seed_is_refused_by_its_own_older_type_rule():
-    """``SeedSpec`` needed no new check and this says why, once.
+    """``seed`` needed no new check and this says why, once.
 
-    ``seed_base`` is an int with an ``isinstance`` guard that predates this
-    phase, so a tensor was already refused there. Recording it means the field
-    is accounted for rather than merely absent from the tables above.
+    It is an int with an ``isinstance`` guard that predates this phase, so a
+    tensor was already refused there. Recording it means the field is accounted
+    for rather than merely absent from the tables above.
     """
 
     with pytest.raises(TypeError):
-        SeedSpec(seed_base=torch.tensor(3))
+        FrontendSpec(seed=torch.tensor(3))

@@ -4,52 +4,42 @@ from dataclasses import replace
 
 import pytest
 import torch
-from test_phase11_simulate_entry import _radar, _response, _static_scene
+from support import multi_endpoint_driver as drv
+from test_phase11_simulate_entry import _radar, _static_scene
 
-from witwin.radar.frontend import AdcSpec, AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, SeedSpec
-from witwin.radar.propagation import Kinematics
-from witwin.radar.simulation import ScatterSitePolicy
+from witwin.radar import Adc, Agc, Motion, Noise, PointTargets
 
 pytestmark = pytest.mark.gpu
 
 
 @pytest.mark.parametrize("moving", [False, True])
-@pytest.mark.parametrize("sampling", ["adc", "adaptive"])
+@pytest.mark.parametrize("motion", [Motion.adc(), Motion.adaptive()], ids=["adc", "adaptive"])
 @pytest.mark.parametrize("hardware", ["adc", "agc", "thermal", "combined"])
-def test_physical_receiver_precedes_range_transform(moving, sampling, hardware):
-    radar = _radar()
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, adc_samples=16, chirp_per_frame=2)
+def test_physical_receiver_precedes_range_transform(moving, motion, hardware):
+    base = _radar()
+    origin = torch.tensor([[2.0, 0.2, 0.0]], device=base.device)
+    velocity = torch.tensor([[0.7, 0.0, 0.0]], device=base.device)
+    targets = PointTargets(
+        positions=origin,
+        amplitude=drv.FIXTURE_AMPLITUDE,
+        phase=drv.FIXTURE_PHASE_RAD,
+        trajectory=(lambda t: origin + t * velocity) if moving else None,
     )
-    hardware_spec = FrontendSpec(
-        adc=AdcSpec(bits=3, full_scale=1e-7) if hardware in ("adc", "combined") else None,
-        agc=AgcSpec(target_rms=3e-8) if hardware in ("agc", "combined") else None,
-        noise=NoiseSpec(bandwidth_hz=1e5) if hardware in ("thermal", "combined") else None,
-        lna=LnaSpec(gain_db=3.0),
-        seed=SeedSpec(93),
-    )
-    radar.frontend = FrontendChain(hardware_spec)
-    origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
-
-    class Linear:
-        def at(self, t):
-            v = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
-            return Kinematics(origin + t * v, v)
 
     outputs = {}
     for domain in ("beat", "spectrum"):
-        radar.system_config = replace(
-            radar.system_config, waveform=replace(radar.system_config.waveform, output_domain=domain)
+        # The receive chain is part of the radar, so the two output domains are
+        # two radars built from the same stages rather than one radar edited
+        # between calls.
+        radar = base.replace(
+            waveform=replace(base.waveform, samples_per_chirp=16, chirps_per_frame=2, output=domain),
+            adc=Adc(bits=3, full_scale=1e-7) if hardware in ("adc", "combined") else None,
+            agc=Agc(target_rms=3e-8) if hardware in ("agc", "combined") else None,
+            noise=Noise(bandwidth=1e5) if hardware in ("thermal", "combined") else None,
+            lna_gain=3.0,
+            seed=93,
         )
-        result = radar.simulate(
-            _static_scene(),
-            times=(0.0,),
-            response=_response(radar),
-            sites=ScatterSitePolicy.explicit(origin, trajectory=Linear() if moving else None),
-            components=frozenset({"los"}),
-            max_depth=0,
-            motion_sampling=sampling,
-        )
+        result = radar.simulate(_static_scene(), targets, times=(0.0,), los=True, reflections=0, motion=motion)
         assert result.output_domain == domain
         assert result.frame_synthesis().output_domain == domain
         outputs[domain] = result.cube

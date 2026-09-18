@@ -4,13 +4,11 @@ import math
 
 import pytest
 import torch
+from support import multi_endpoint_driver as drv
 from support import multi_endpoint_geometry as geo
-from test_phase11_simulate_entry import _response, _static_scene
+from test_phase11_simulate_entry import _static_scene
 
-from witwin.radar import Radar
-from witwin.radar.propagation import Kinematics
-from witwin.radar.sensors import ISOTROPIC_PATTERN
-from witwin.radar.simulation import ScatterSitePolicy
+from witwin.radar import PointTargets, Radar
 from witwin.radar.synthesis.assembly import FmcwSpec
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
@@ -63,28 +61,28 @@ def test_continuous_delay_primal_and_both_derivatives(domain, velocity):
 def test_scene_adc_sampling_matches_radial_motion_including_fast_time():
     config = dict(geo.FIXTURE_RADAR_CONFIG)
     config.update(chirp_per_frame=2, adc_samples=8)
-    from test_phase11_antenna_pattern_route import _pattern_config
+    # No pattern is declared: the element pattern now defaults to isotropic,
+    # which is the unit gain this oracle's closed-form phase assumes. The
+    # polarization is declared rather than pose-derived so the transverse axis
+    # is the fixture's own, which is what the closed form was measured against.
+    radar = Radar.from_dict(config, position=(0, 0, 0), look_at=(1, 0, 0), polarization=geo.POLARIZATION)
 
-    config["antenna_pattern"] = _pattern_config(ISOTROPIC_PATTERN)
-    radar = Radar(config, position=(0, 0, 0), target=(1, 0, 0))
+    def trajectory(t):
+        return torch.tensor([[2 + 2 * t, 0.6, 0.0]], device=radar.device)
 
-    class Linear:
-        def at(self, t):
-            return Kinematics(
-                torch.tensor([[2 + 2 * t, 0.6, 0.0]], device=radar.device),
-                torch.tensor([[2.0, 0.0, 0.0]], device=radar.device),
-            )
-
-    trajectory = Linear()
     result = radar.simulate(
         _static_scene(),
+        PointTargets(
+            positions=trajectory(0.0),
+            amplitude=drv.FIXTURE_AMPLITUDE,
+            phase=drv.FIXTURE_PHASE_RAD,
+            trajectory=trajectory,
+        ),
         times=(0.0,),
-        response=_response(radar),
-        sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        components=frozenset({"los"}),
-        max_depth=0,
+        los=True,
+        reflections=0,
     )
-    spec = radar.system_config.waveform_spec()
+    spec = radar.waveform_spec()
     assert result.motion_sampling == "adc"
     assert result.discovery_count == spec.num_chirps * spec.num_tx * spec.num_samples
     beat = torch.fft.ifft(result.cube[0], norm="forward", dim=-1)
@@ -95,7 +93,7 @@ def test_scene_adc_sampling_matches_radial_motion_including_fast_time():
                 for m in range(spec.num_samples):
                     local = spec.t_start_s + m * spec.sample_period_s
                     t = (chirp * spec.num_tx + tx) * spec.chirp_period_s + local
-                    point = trajectory.at(t).positions_m[0].double()
+                    point = trajectory(t)[0].double()
                     tau = (
                         (point - radar.tx_pos[tx].double()).norm() + (point - radar.rx_pos[rx].double()).norm()
                     ) / 299792458

@@ -10,14 +10,19 @@ from __future__ import annotations
 import pytest
 from support import phase4_geometry as geo
 
-from witwin.radar import RadarConfig
+from witwin.radar import Radar
 from witwin.radar.synthesis import FmcwSpec
+
+
+def _radar() -> Radar:
+    # Explicitly on the CPU: this file checks a unit conversion and must keep
+    # running where no GPU is installed.
+    return Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu")
 
 
 @pytest.fixture
 def spec() -> FmcwSpec:
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    return FmcwSpec.from_radar_config(config)
+    return _radar().waveform_spec()
 
 
 def test_units_are_converted_to_si(spec):
@@ -43,8 +48,8 @@ def test_carrier_placement_defaults_to_the_weight(spec):
     # A default of zero here would silently understate Doppler by up to 215x.
     assert spec.carrier_rate_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
 
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    explicit = FmcwSpec.from_radar_config(config, carrier_hz=config.fc)
+    radar = _radar()
+    explicit = radar.waveform_spec(offset=radar.carrier)
     assert explicit.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
     # The kernel owns the whole carrier here, so the rate term must NOT be
     # applied as well; that would double count it.

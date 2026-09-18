@@ -285,9 +285,9 @@ def test_the_synthesis_and_sensor_results_carry_no_tape(frame):
     _assert_clean("sensor_weight", captured[0])
 
     frontend = ab.boundary("frontend")
-    from witwin.radar.frontend import FrontendChain, FrontendSpec, LnaSpec, PortSpec, SeedSpec
+    from witwin.radar.frontend import FrontendChain, FrontendSpec
 
-    chain = FrontendChain(FrontendSpec(port=PortSpec(50.0), lna=LnaSpec(gain_db=10.0), seed=SeedSpec(5)))
+    chain = FrontendChain(FrontendSpec(impedance=50.0, lna=10.0, seed=5))
     output = chain.apply(frontend.leaf.detach().clone().requires_grad_(True))
     assert output.signal.requires_grad
     _assert_clean("frontend", output)
@@ -321,24 +321,22 @@ def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
 
-    from witwin.radar import Radar
-    from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.simulation import ScatterSitePolicy
+    from witwin.radar import PointTargets, Radar
 
     if radar is None:
-        radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
+        radar = Radar.from_dict(
+            dict(geo.FIXTURE_RADAR_CONFIG),
+            position=(0.0, 0.0, 0.0),
+            look_at=(1.0, 0.0, 0.0),
+            polarization=geo.POLARIZATION,
+        )
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
     sites = torch.tensor(
         (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device
     ).requires_grad_(ad_mode != "none")
-    result = radar.simulate(
-        scene,
-        times=(0.0,),
-        response=ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device),
-        sites=ScatterSitePolicy.explicit(sites),
-        ad_mode=ad_mode,
-    )
+    targets = PointTargets(positions=sites, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD)
+    result = radar.simulate(scene, targets, times=(0.0,), grad=ad_mode)
     return radar, result
 
 
@@ -346,11 +344,10 @@ def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
 def simulated():
     """One ``Radar.simulate`` run with a LIVE graph on its site positions.
 
-    The scene-driven entry is a NEW retention site: four ``last_*`` properties
-    on a long-lived ``Radar``, each holding a typed record from the last frame.
-    A result that never built a graph could not leak a tape it never had, so
-    this is taken under ``ad_mode='vjp'`` for the same reason the leg fixture
-    above is.
+    The scene-driven entry publishes four ``last_*`` members on the RESULT, each
+    holding a typed record from the frame that produced it. A result that never
+    built a graph could not leak a tape it never had, so this is taken under
+    ``ad_mode='vjp'`` for the same reason the leg fixture above is.
     """
 
     return _simulate_once()
@@ -364,21 +361,26 @@ def simulated():
 #: forbidden is the same thing forbidden everywhere else in this file: a FIELD
 #: holding the tape - a context, a Function, a ``saved_tensors`` tuple - which
 #: turns a data record into a handle on somebody else's memory. Holding a
-#: ``grad_fn`` is not that, and a caller who wants the graph released simply
-#: drops the result or runs another ``simulate``, which clears all four first.
+#: ``grad_fn`` is not that, and a caller who wants the graph released drops the
+#: result: the radar keeps no copy that would outlive it.
 DIAGNOSTIC_RETENTION_RULE = "aliased_and_live, never a tape field"
+
+#: The four per-frame diagnostics, and ``last_result``, which a ``Radar`` must
+#: not expose at all. A radar that retained any of them would be a second owner
+#: of the frame and would hold its tape alive for as long as the radar lived.
+RADAR_MUST_NOT_RETAIN = ("last_result", "last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths")
 
 
 @pytest.mark.gpu
 def test_the_simulate_diagnostics_carry_no_tape(simulated):
-    """All four ``last_*`` attributes, walked, with a live graph behind them."""
+    """All four ``last_*`` members, walked, with a live graph behind them."""
 
-    radar, result = simulated
+    _, result = simulated
     assert result.cube.requires_grad, "the fixture must be live"
     for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):
-        value = getattr(radar, name)
+        value = getattr(result, name)
         assert value is not None, name
-        _assert_clean(f"radar.{name}", value)
+        _assert_clean(f"result.{name}", value)
     _assert_clean("simulation_result", result)
 
 
@@ -388,30 +390,33 @@ def test_the_diagnostics_alias_the_frame_rather_than_a_detached_copy(simulated):
 
     If a later change decides to detach these, this test is where the decision
     has to be re-made, and the rule constant next to it is what has to change
-    with it.
+    with it. The result is the only owner: a radar that kept a copy would be a
+    second one, which is what the second half asserts.
     """
 
     radar, result = simulated
-    assert radar.last_radar_paths is result.last_radar_paths
-    assert radar.last_propagation is result.last_propagation
     assert result.last_radar_paths.complex_transfer_ref.requires_grad
     assert result.last_propagation.inbound.coefficient.requires_grad
+    for name in RADAR_MUST_NOT_RETAIN:
+        assert not hasattr(radar, name), name
 
 
 @pytest.mark.gpu
-def test_a_second_simulate_replaces_the_retained_frame():
-    """The bound on the retention: there is only ever one live frame here.
+def test_a_second_simulate_leaves_the_first_frame_untouched():
+    """The bound on the retention: one live frame per RESULT, none on the radar.
 
-    Its own radar, deliberately: this is the one test in the file that MUTATES
-    the diagnostic state, and sharing the module fixture with it would make the
-    other two depend on running first.
+    Its own radar, deliberately: this used to be the one test in the file that
+    mutated the radar's diagnostic state, and sharing the module fixture with it
+    would have made the other two depend on running first. There is no such
+    state to mutate now, so what it pins is the property that replaced it - a
+    second run publishes its own diagnostics and cannot reach into the first.
     """
 
     radar, live = _simulate_once()
     assert live.cube.requires_grad
     _, replacement = _simulate_once(radar, ad_mode="none")
-    assert radar.last_result is replacement
-    assert radar.last_radar_paths is not live.last_radar_paths
+    assert replacement.last_radar_paths is not live.last_radar_paths
+    assert live.last_radar_paths.complex_transfer_ref.requires_grad
     assert not replacement.cube.requires_grad
     _assert_clean("replacement", replacement)
 

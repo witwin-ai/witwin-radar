@@ -4,17 +4,27 @@ from dataclasses import replace
 
 import pytest
 import torch
+from support import multi_endpoint_driver as drv
 from support.reference_frontend import single_sideband_psd
-from test_phase11_simulate_entry import _radar, _response, _static_scene
+from test_phase11_simulate_entry import _radar, _static_scene
 
-from witwin.radar.frontend import FrontendChain, FrontendSpec, NoiseSpec, PortSpec
-from witwin.radar.simulation import ScatterSitePolicy
+from witwin.radar import Noise, PointTargets
+from witwin.radar.frontend import FrontendChain, FrontendSpec
 
 pytestmark = pytest.mark.gpu
 
 
 def noise():
-    return NoiseSpec(phase_noise_dbc_per_hz=-80.0, phase_offset_hz=1e5, phase_sample_rate_hz=5e6)
+    """Oscillator phase noise only, with the thermal stage held at exactly zero.
+
+    A zero bandwidth used to be how a caller said "no thermal noise"; it is now
+    refused, because it reads as a receiver that quotes a noise figure and adds
+    nothing. A zero antenna temperature with a zero noise figure is the same
+    statement made in physical units: ``T_sys`` is zero, so the thermal sigma is
+    exactly zero whatever bandwidth the waveform resolves.
+    """
+
+    return Noise(antenna_temperature=0.0, bandwidth=5e6, phase_density=-80.0, phase_offset=1e5, phase_sample_rate=5e6)
 
 
 def test_delay_variance_covariance_and_zero_delay_cancellation():
@@ -61,11 +71,11 @@ def test_homodyne_phase_noise_psd_has_delay_cancellation_transfer():
 
 
 def test_explicit_receiver_timestamps_include_idle_time():
-    chain = FrontendChain(FrontendSpec(port=PortSpec(1), noise=noise()))
+    chain = FrontendChain(FrontendSpec(impedance=1.0, noise=noise()))
     times = torch.tensor([0, 1e-6, 100e-6, 101e-6], device="cuda", dtype=torch.float64)
     signal = torch.ones(4, device="cuda", dtype=torch.complex64)
     output = chain.apply(signal, times_s=times)
-    expected = noise().phase_difference(times, times, seed_base=chain.spec.seed.seed_base)
+    expected = noise().phase_difference(times, times, seed_base=chain.spec.seed)
     torch.testing.assert_close(output.diagnostics.phase_rad, expected, rtol=0, atol=0)
 
 
@@ -76,23 +86,19 @@ def test_delays_refuse_nonexistent_brownian_time_derivative():
 
 
 def test_scene_path_noise_preserves_output_domain_and_frame_time():
-    radar = _radar()
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, adc_samples=4, chirp_per_frame=1)
+    base = _radar()
+    targets = PointTargets(
+        positions=torch.tensor([[2.0, 0.2, 0.0]], device=base.device),
+        amplitude=drv.FIXTURE_AMPLITUDE,
+        phase=drv.FIXTURE_PHASE_RAD,
     )
-    radar.frontend = FrontendChain(FrontendSpec(noise=noise()))
     outputs = {}
     for domain in ("beat", "spectrum"):
-        radar.system_config = replace(
-            radar.system_config, waveform=replace(radar.system_config.waveform, output_domain=domain)
+        # The receive chain is part of the radar now, so the two domains are two
+        # radars rather than one radar mutated between calls.
+        radar = base.replace(
+            waveform=replace(base.waveform, samples_per_chirp=4, chirps_per_frame=1, output=domain), noise=noise()
         )
-        outputs[domain] = radar.simulate(
-            _static_scene(),
-            times=(0.0, 0.1),
-            response=_response(radar),
-            sites=ScatterSitePolicy.explicit(torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)),
-            components=frozenset({"los"}),
-            max_depth=0,
-        ).cube
+        outputs[domain] = radar.simulate(_static_scene(), targets, times=(0.0, 0.1), los=True, reflections=0).cube
     torch.testing.assert_close(outputs["spectrum"], torch.fft.fft(outputs["beat"], dim=-1, norm="forward"))
     assert not torch.equal(outputs["beat"][0], outputs["beat"][1])
