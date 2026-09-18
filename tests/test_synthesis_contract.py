@@ -43,7 +43,9 @@ class _Spec:
 
 
 def _topology(rows: int) -> RadarPathTopology:
-    zeros = lambda: torch.zeros(rows, dtype=torch.int64)
+    def zeros() -> torch.Tensor:
+        return torch.zeros(rows, dtype=torch.int64)
+
     return RadarPathTopology(zeros(), zeros(), zeros(), zeros(), zeros())
 
 
