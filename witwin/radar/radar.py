@@ -479,9 +479,11 @@ class Radar:
     one, so a radar captured in a closure or held by a result cannot change
     underneath it, and a pose built from a tensor with a tape keeps that tape.
 
-    Four verbs use it. :meth:`trace` runs the world half of the pipeline and
-    returns the composed paths; :meth:`echo` runs the instrument half on those
-    paths; :meth:`simulate` and :meth:`stream` fuse the two.
+    Two verbs use it. :meth:`simulate` runs a session to completion and stacks
+    every frame; :meth:`stream` runs the identical session and yields one frame
+    at a time, so a sequence too long to hold as a stacked cube is still
+    producible. They share one frame generator, so the physics, the epoch loop
+    and the synthesis route have a single owner.
     """
 
     #: Reference frequency, Hz. The carrier the array spacing, the propagation
