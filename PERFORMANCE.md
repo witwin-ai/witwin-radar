@@ -15,8 +15,17 @@ result is work the device can do from what it already has. At this frame's 39321
 standalone, the two routes are 9.23 ms of numpy plus transfer against 0.64 ms of device work, for
 identical indices. Host-to-device traffic falls from about 15 MB per frame to about 5 MB, uploaded
 once instead of per batch. Every `repeat_interleave` declares its `output_size` from the host's own
-row totals, so nothing here synchronizes and `_adaptive_echo` still observes the device zero times,
-which `tests/test_import_boundary.py` enforces.
+row totals, so the expansion adds no synchronization of its own, and `_adaptive_echo` still observes
+the device zero times - which `tests/test_import_boundary.py` checks, by scanning for `cpu`, `numpy`,
+`tolist` and `item` by name.
+
+**It does still synchronize.** A pageable host-to-device copy is synchronous, so each `upload`
+is one synchronizing CUDA operation: six per frame after this change against five per BATCH before
+it, measured with `torch.cuda.set_sync_debug_mode` against positive and negative controls. That is
+a large reduction on a multi-batch frame and one MORE synchronization on a single-batch frame. An
+earlier revision of this section claimed "nothing here synchronizes" and that the import-boundary
+test enforced it; both were wrong. That test is an AST scan for four attribute names and cannot see
+an upload, an `int(tensor)`, a `torch.nonzero`, or a `repeat_interleave` missing its `output_size`.
 
 **A batched group no longer narrows its slots eagerly.** `RadarLegBatch.slot(...)` builds a
 revalidated single-slot batch, and the replay loop built two of them for every observation. A
@@ -36,6 +45,11 @@ three regimes:
 | Two scatterers, 3x4, 32 x 64 | 6144 | 27 | 20.3 ms | 10.2 ms | **10.1 ms** |
 
 Every cube is bit-identical to the pre-change cube under `torch.equal` at each step, on all three.
+That statement is about the CUBE. `Result.adaptive_diagnostics[...]["synthesis_batches"]` does move,
+because a row budget that no longer pays for the inactive transmitters' rows reaches further per
+batch: the walker frame reports 2 where it reported 5. Gradients are not bit-reproducible on either
+side of this change - the backward accumulates atomically and two runs of the same revision differ
+by about 1.8e-7 absolute - so the equality claimed here does not extend to them.
 
 `tools/validate_frame_streaming.py --frames 8 32 128`, same fixture and machine:
 

@@ -1571,11 +1571,22 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     # the host and then send it: measured at this frame's 393216 rows, 9.23 ms
     # of numpy and transfer against 0.64 ms of device work for identical
     # indices. What stays on the host is the batching bound above, which reads
-    # only row totals - this function may not observe the device at all, and
-    # ``tests/test_import_boundary.py`` holds it to that.
+    # only row totals - this function may not OBSERVE the device at all, which
+    # ``tests/test_import_boundary.py`` holds it to by name.
+    #
+    # It does still SYNCHRONIZE, once per upload below, because a pageable
+    # host-to-device copy is synchronous. That is six per frame rather than
+    # five per BATCH, which is the trade; a single-batch frame pays one more
+    # than it used to. Both ``repeat_interleave`` calls declare an
+    # ``output_size`` taken from the host's own row totals, so the expansion
+    # itself adds none.
     bounds, starts, basis = upload(table.bounds), upload(table.starts), upload(table.basis)
     nodes, owners, counts = upload(table.node_index), upload(node_rank[:, 0]), upload(row_counts)
-    clock = upload(table.clock) if frontend is not None else None
+    # Guarded on the phase noise rather than on the front end, because
+    # ``_apply_path_phase_rows`` returns its input untouched without it and
+    # the timestamp tensor would be uploaded and gathered for nothing.
+    phase_noise = frontend is not None and frontend.has_phase_noise
+    clock = upload(table.clock) if phase_noise else None
     receiver_rank = torch.arange(receivers, device=device)
 
     values = []
@@ -1608,7 +1619,7 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
             carrier_hz,
         )
         transfer = torch.where(validity[node_rows[0]], transfer, torch.zeros_like(transfer))
-        if frontend is not None:
+        if phase_noise:
             transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
         # float64 explicitly: an int64 tensor times a Python float promotes to
         # the DEFAULT dtype, which would silently synthesize the ADC instants
