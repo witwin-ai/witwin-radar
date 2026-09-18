@@ -320,22 +320,21 @@ def _simulation_driver():
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
 
-    from witwin.radar import Radar
-    from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.simulation import ScatterSitePolicy
+    from witwin.radar import PointTargets, Radar
 
-    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
+    radar = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0))
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
-    sites = ScatterSitePolicy.explicit(
-        torch.tensor((geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device)
+    targets = PointTargets(
+        positions=torch.tensor(
+            (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device
+        ),
+        amplitude=drv.FIXTURE_AMPLITUDE,
+        phase=drv.FIXTURE_PHASE_RAD,
     )
-    response = ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
 
     def simulate(frames: int):
-        return radar.simulate(
-            scene, times=tuple(index * 1.0e-3 for index in range(frames)), response=response, sites=sites
-        )
+        return radar.simulate(scene, targets, times=tuple(index * 1.0e-3 for index in range(frames)))
 
     return simulate
 

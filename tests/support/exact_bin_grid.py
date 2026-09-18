@@ -217,10 +217,12 @@ def pulsed_spec(num_pulses: int = PULSED_PULSES, *, pulse_kind: str | None = Non
 def array_spec():
     """The fixture's 2 TX x 2 RX front end, as a ``SensorArraySpec``."""
 
-    from witwin.radar import RadarConfig
-    from witwin.radar.sensors import SensorArraySpec
+    from witwin.radar import Radar
 
-    return SensorArraySpec.from_radar_config(RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)))
+    # The array spec describes element offsets in half wavelengths and holds no
+    # tensors, so building the radar on the CPU keeps this fixture usable in a
+    # CUDA-less collection pass without changing a single number it returns.
+    return Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu").system_config.sensors.array
 
 
 def make_spike():

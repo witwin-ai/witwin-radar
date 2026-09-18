@@ -54,6 +54,16 @@ def pytest_collection_modifyitems(config, items):
 # ---------------------------------------------------------------------------
 # Standard radar configurations
 # ---------------------------------------------------------------------------
+#
+# These are the flat FMCW file format ``Radar.from_dict`` reads, in the vendor
+# units it converts: MHz/us of slope, kSPS of sample rate, microseconds of
+# timing, dBm of power and half wavelengths of element offset.
+#
+# ``frame_per_second``, ``num_doppler_bins``, ``num_range_bins`` and
+# ``num_angle_bins`` used to sit here and are now REFUSED by the loader. They
+# described a processing grid nothing consumed: the bin counts come from the
+# waveform spec and the frame rate is the caller's own scheduling number, so a
+# test that needs one declares it as its own local constant.
 
 STANDARD_CONFIG = {
     "num_tx": 3,
@@ -66,16 +76,12 @@ STANDARD_CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 58,
     "chirp_per_frame": 128,
-    "frame_per_second": 10,
-    "num_doppler_bins": 128,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 12,
     "tx_loc": [[0, 0, 0], [2, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
 
-FAST_CONFIG = {**STANDARD_CONFIG, "chirp_per_frame": 32, "num_doppler_bins": 32}
+FAST_CONFIG = {**STANDARD_CONFIG, "chirp_per_frame": 32}
 
 MINIMAL_CONFIG = {
     "num_tx": 1,
@@ -88,10 +94,6 @@ MINIMAL_CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 58,
     "chirp_per_frame": 2,
-    "frame_per_second": 10,
-    "num_doppler_bins": 2,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 12,
     "tx_loc": [[0, 0, 0]],
     "rx_loc": [[0, 0, 0]],
@@ -105,9 +107,6 @@ PROCESSING_CONFIG = {
     "adc_start_time": 0,
     "adc_samples": 64,
     "chirp_per_frame": 16,
-    "num_doppler_bins": 16,
-    "num_range_bins": 64,
-    "num_angle_bins": 64,
     "tx_loc": [[0, 0, 0], [2, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
@@ -120,18 +119,18 @@ def make_processing_axes(config=None, *, doppler_bins: int | None = None):
 
     import torch
 
-    from witwin.radar import RadarConfig
+    from witwin.radar import Radar
     from witwin.radar.processing import ProcessingAxes
-    from witwin.radar.radar import RadarSystemConfig
     from witwin.radar.synthesis.assembly import SynthesisResult
 
     raw = PROCESSING_CONFIG if config is None else config
-    cfg = raw if isinstance(raw, RadarConfig) else RadarConfig.from_dict(dict(raw))
-    system = RadarSystemConfig.from_radar_config(cfg)
-    spec = replace(system.waveform_spec(), output_domain="beat")
+    # ``device="cpu"`` because this builds metadata out of an all-zero cube and
+    # must not need a CUDA device to describe an axis.
+    radar = raw if isinstance(raw, Radar) else Radar.from_dict(dict(raw), device="cpu")
+    spec = replace(radar.waveform_spec(), output_domain="beat")
     if doppler_bins is not None:
         spec = replace(spec, num_chirps=int(doppler_bins))
-    array = system.sensors.array
+    array = radar.system_config.sensors.array
     cube = torch.zeros((spec.num_chirps, array.sensor_pair_count, spec.num_samples), dtype=torch.complex64)
     result = SynthesisResult.from_fmcw(cube, spec)
     return ProcessingAxes.from_synthesis(result, spec, array)
@@ -143,102 +142,62 @@ def make_processing_axes(config=None, *, doppler_bins: int | None = None):
 
 
 class MockRadar:
-    """Lightweight CPU-only radar contract fixture."""
+    """A CPU radar and the processing axes its waveform describes.
+
+    It stood in for a ``Radar`` back when constructing one needed a backend.
+    A ``Radar`` is now a plain frozen record that builds on ``device="cpu"``,
+    so this holds the real thing and adds only what a formula test reads: the
+    axes record, and the element offsets in metres rather than in the half
+    wavelengths the array stores.
+    """
 
     def __init__(self, config=None):
         import torch
 
-        from witwin.radar import RadarConfig
-
-        self.c0 = 299792458
-        if config is None:
-            config = STANDARD_CONFIG
-        if isinstance(config, RadarConfig):
-            self.config = config
-        else:
-            self.config = RadarConfig.from_dict(dict(config))
-        cfg = self.config
-
-        from witwin.radar.radar import RadarSystemConfig
-
-        self.wavelength_m = self.c0 / cfg.fc
-        antenna_spacing = self.wavelength_m / 2
-        self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32) * antenna_spacing
-        self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32) * antenna_spacing
-
+        from witwin.radar import Radar
         from witwin.radar.processing import ProcessingAxes
         from witwin.radar.synthesis import SynthesisResult
 
-        self.system_config = RadarSystemConfig.from_radar_config(cfg)
-        spec = self.system_config.waveform_spec()
+        raw = STANDARD_CONFIG if config is None else config
+        self.radar = raw if isinstance(raw, Radar) else Radar.from_dict(dict(raw), device="cpu")
+
+        self.wavelength_m = self.radar.wavelength
+        antenna_spacing = self.wavelength_m / 2
+        self.tx_loc = torch.tensor(self.radar.tx, dtype=torch.float32) * antenna_spacing
+        self.rx_loc = torch.tensor(self.radar.rx, dtype=torch.float32) * antenna_spacing
+
+        self.system_config = self.radar.system_config
+        spec = self.radar.waveform_spec()
         array = self.system_config.sensors.array
         cube = torch.zeros(spec.num_chirps, array.sensor_pair_count, spec.num_samples, dtype=torch.complex64)
         result = SynthesisResult.from_fmcw(cube, spec)
         self.axes = ProcessingAxes.from_synthesis(result, spec, array)
-        self.gain = 1.0
-
-    # Convenience accessors used by configuration tests
-    @property
-    def num_tx(self) -> int:
-        return self.config.num_tx
-
-    @property
-    def num_rx(self) -> int:
-        return self.config.num_rx
-
-    @property
-    def chirp_per_frame(self) -> int:
-        return self.config.chirp_per_frame
-
-    @property
-    def adc_samples(self) -> int:
-        return self.config.adc_samples
-
-    @property
-    def num_angle_bins(self) -> int:
-        return self.config.num_angle_bins
-
-    @property
-    def idle_time(self) -> float:
-        return self.config.idle_time
-
-    @property
-    def ramp_end_time(self) -> float:
-        return self.config.ramp_end_time
-
-    @property
-    def num_doppler_bins(self) -> int:
-        return self.config.num_doppler_bins
-
-    @property
-    def num_range_bins(self) -> int:
-        return self.config.num_range_bins
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+#
+# The three config fixtures used to return a validated ``RadarConfig``. That
+# record is gone and the flat mapping IS the configuration, so they hand back a
+# copy of the mapping and validation happens where it now lives, in
+# ``Radar.from_dict``. A copy rather than the module constant so that a test
+# which edits what it is given cannot leak that edit into the next test.
 
 
 @pytest.fixture
 def standard_config():
-    from witwin.radar import RadarConfig
-
-    return RadarConfig.from_dict(STANDARD_CONFIG)
+    return dict(STANDARD_CONFIG)
 
 
 @pytest.fixture
 def fast_config():
-    from witwin.radar import RadarConfig
-
-    return RadarConfig.from_dict(FAST_CONFIG)
+    return dict(FAST_CONFIG)
 
 
 @pytest.fixture
 def minimal_config():
-    from witwin.radar import RadarConfig
-
-    return RadarConfig.from_dict(MINIMAL_CONFIG)
+    return dict(MINIMAL_CONFIG)
 
 
 @pytest.fixture
@@ -278,12 +237,13 @@ def mock_radar():
 #   so the test text did not have to change and the production pose transform is
 #   on the path rather than mirrored.
 #
-#   The old default pose looked along ``-z``, which on this route publishes an
-#   exactly ZERO transport: the default endpoint polarization is ``(0, 0, 1)``,
-#   a field is transverse, and a look direction parallel to the polarization has
-#   no transverse component to carry. Channel is right to publish zero and there
-#   is no tolerance that recovers it - the fix is a pose whose boresight is not
-#   the polarization axis.
+#   This pose was originally forced: the endpoint polarization was a fixed world
+#   vector, and a boresight parallel to it publishes an exactly ZERO transport,
+#   which no tolerance recovers. ``Radar.polarization`` now defaults to ``"up"``,
+#   which is derived from the pose and therefore transverse by construction, so
+#   that null is unreachable. The convention stays because every expected number
+#   in ``tests/validation`` was measured against it, and a suite-wide pose change
+#   is a physics change, not a migration.
 #
 # * Moving targets use authored trajectories through the public scene entry.
 #   These DSP tests explicitly select chirp-frozen motion to isolate slow-time
@@ -304,14 +264,14 @@ def make_scene_radar_or_skip(config, **pose):
     the other one - see the note above about the polarization null.
     """
 
-    from witwin.radar import Radar, RadarConfig
+    from witwin.radar import Radar
 
-    if not isinstance(config, RadarConfig):
-        config = RadarConfig.from_dict(dict(config))
-    options = {"position": (0.0, 0.0, 0.0), "target": SCENE_DRIVEN_LOOK_AT_M, "up": SCENE_DRIVEN_UP}
+    options = {"position": (0.0, 0.0, 0.0), "look_at": SCENE_DRIVEN_LOOK_AT_M, "up": SCENE_DRIVEN_UP}
     options.update(pose)
     try:
-        return Radar(config, **options)
+        if isinstance(config, Radar):
+            return config.replace(**options)
+        return Radar.from_dict(dict(config), **options)
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"radar runtime unavailable: {exc}")
 
@@ -321,7 +281,7 @@ def empty_world():
 
     A point-target accuracy test wants exactly the free-space round trip and
     nothing else, so it declares a world with nothing in it and asks for
-    ``components={"los"}`` at ``max_depth=0``. Putting a wall somewhere harmless
+    ``los=True`` at ``reflections=0``. Putting a wall somewhere harmless
     instead would make every accuracy number depend on the claim that it really
     was harmless.
     """
@@ -429,38 +389,35 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     Returns a :class:`PointTargetFrame`.
     """
 
-    import witwin.radar.propagation as kin
+    from witwin.radar import Motion, PointTargets
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes
-    from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.simulation import ScatterSitePolicy
 
     local_positions, local_velocities, moving = _target_tensors(radar, targets)
     world_positions = radar._world_from_local_points(local_positions)
-    response = ScalarRcsResponse.from_rcs(
-        sigma_m2, reference_frequency_hz=radar.system_config.propagation.reference_frequency_hz, device=radar.device
-    )
-
     world_velocity = radar._world_from_local_vectors(local_velocities)
 
-    class LinearSites:
-        def at(self, time_s):
-            return kin.Kinematics(world_positions + time_s * world_velocity, world_velocity)
+    def linear_trajectory(time_s):
+        """The same material points at ``time_s``, moving at a constant rate.
+
+        A plain callable returning POSITIONS: the site velocity is never
+        differenced into physics, so publishing one here would only invite a
+        second owner of the delay rate.
+        """
+
+        return world_positions + time_s * world_velocity
 
     result = radar.simulate(
         empty_world(),
+        PointTargets(positions=world_positions, rcs=sigma_m2, trajectory=linear_trajectory if moving else None),
         times=(0.0,),
-        response=response,
-        sites=ScatterSitePolicy.explicit(world_positions, trajectory=LinearSites() if moving else None),
-        components=frozenset({"los"}),
-        max_depth=0,
-        motion_sampling="chirp",
+        los=True,
+        reflections=0,
+        motion=Motion.chirp(),
     )
     cube = result.cube
     synthesis = result.frame_synthesis()
 
-    axes = ProcessingAxes.from_synthesis(
-        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
-    )
+    axes = ProcessingAxes.from_synthesis(synthesis, radar.waveform_spec(), radar.system_config.sensors.array)
     return PointTargetFrame(
         result=result,
         cube=cube[0] if cube.dim() == 5 else cube,
@@ -486,11 +443,9 @@ def _detached_synthesis(synthesis):
 
 def make_radar_or_skip(config):
     """Construct a Radar or skip when the local runtime/toolchain is missing."""
-    from witwin.radar import Radar, RadarConfig
+    from witwin.radar import Radar
 
-    if not isinstance(config, RadarConfig):
-        config = RadarConfig.from_dict(dict(config))
     try:
-        return Radar(config)
+        return config if isinstance(config, Radar) else Radar.from_dict(dict(config))
     except (FileNotFoundError, OSError, RuntimeError) as exc:
         pytest.skip(f"radar runtime unavailable: {exc}")

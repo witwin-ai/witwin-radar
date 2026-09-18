@@ -482,15 +482,15 @@ def test_fmcw_refuses_the_band_it_cannot_index():
     is no discrete grid to index and a band would be silently discarded.
     """
 
-    from witwin.radar.synthesis import FmcwSpec, synthesize_fmcw
+    from witwin.radar import Radar
+    from witwin.radar.synthesis import synthesize_fmcw
 
     spec = _spec()
     _, banded = _spikes(spec)
     composed, _, _ = banded.frame(response=driver.make_response(), include_delay_rate=False)
     batch = SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
-    from witwin.radar import RadarConfig
 
-    beat = FmcwSpec.from_radar_config(RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG)), carrier_hz=0.0)
+    beat = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu").waveform_spec(offset=0.0)
     with pytest.raises(ValueError, match="does not consume a wideband response"):
         synthesize_fmcw(batch, beat)
 

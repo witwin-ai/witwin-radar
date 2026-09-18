@@ -18,19 +18,28 @@ import torch
 from validate_doppler_motion import C0, make_radar
 from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
 
+from witwin.radar import Motion, PointTargets
 from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_doppler_map, range_profile
 from witwin.radar.propagation import Kinematics
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.simulation import ScatterSitePolicy
 
 
 class LinearPoint:
+    """One point on a straight line. ``positions`` is the simulator's view of it.
+
+    ``at`` additionally publishes the constant velocity, which only the image
+    oracle below reads; both are views of one closed form, so the oracle cannot
+    drift from the motion the simulator was handed.
+    """
+
     def __init__(self, device):
         self.origin = torch.tensor([[2.0, 0.35, 0.0]], device=device)
         self.velocity = torch.tensor([[0.8, 0.3, 0.0]], device=device)
 
+    def positions(self, t):
+        return self.origin + t * self.velocity
+
     def at(self, t):
-        return Kinematics(self.origin + t * self.velocity, self.velocity)
+        return Kinematics(self.positions(t), self.velocity)
 
 
 def room():
@@ -125,28 +134,25 @@ def oracle_rows(result, trajectory, spec):
 
 def run(args):
     radar = make_radar()
-    radar.system_config = replace(
-        radar.system_config,
+    # ``Radar`` is immutable, so a reshaped waveform makes a new radar. The
+    # timings are SI: the 442 us idle of the original fixture is 442e-6 s.
+    radar = radar.replace(
         waveform=replace(
-            radar.system_config.waveform,
-            adc_samples=args.samples,
-            chirp_per_frame=args.chirps,
-            idle_time=442,
-            output_domain="beat",
-        ),
+            radar.waveform, samples_per_chirp=args.samples, chirps_per_frame=args.chirps, idle=442e-6, output="beat"
+        )
     )
-    spec = radar.system_config.waveform_spec()
+    spec = radar.waveform_spec()
     trajectory, scene = LinearPoint(radar.device), room()
     results = []
     for t in (0.0, 0.5):
         start = time.perf_counter()
         result = radar.simulate(
             scene,
+            PointTargets(positions=trajectory.origin, amplitude=1.0, trajectory=trajectory.positions),
             times=(t,),
-            response=ScalarRcsResponse.from_values(1.0, 0.0, device=radar.device),
-            sites=ScatterSitePolicy.explicit(trajectory.origin, trajectory=trajectory),
-            components=frozenset({"los", "reflection"}),
-            max_depth=2,
+            los=True,
+            reflections=2,
+            motion=Motion.adc(),
         )
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start

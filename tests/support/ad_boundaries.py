@@ -177,7 +177,7 @@ def _two_way(device: str = "cuda") -> Boundary:
 def _sensor_weight(device: str = "cuda") -> Boundary:
     from witwin.radar.sensors import (
         ROW_KIND_VIA,
-        AntennaPatternSpec,
+        Pattern,
         SensorWeightGeometry,
         SensorWeightPlan,
         evaluate_sensor_weights,
@@ -198,7 +198,7 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
     )
     # A real half-wave dipole table rather than zeros: a zero pattern gives a
     # zero weight, and a higher-order test on a zero is a test of nothing.
-    plan = SensorWeightPlan.build(AntennaPatternSpec.half_wave_dipole(), device=device)
+    plan = SensorWeightPlan.build(Pattern.dipole(), device=device)
     tx_pos = torch.zeros((num_tx, 3), dtype=torch.float32, device=device)
     rx_pos = torch.zeros((num_rx, 3), dtype=torch.float32, device=device)
     # Boresight is -z: the pattern angles are ``atan2(v_x, -v_z)`` and
@@ -228,24 +228,18 @@ def _sensor_weight(device: str = "cuda") -> Boundary:
 
 
 def _frontend(device: str = "cuda") -> Boundary:
-    from witwin.radar.frontend import AgcSpec, FrontendChain, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec
+    from witwin.radar.frontend import Agc, FrontendChain, FrontendSpec, Noise
 
     # No ADC. The quantizer is on the far side of the wall and refuses a
     # derivative outright, so a higher-order question about the frontend has to
     # be asked of the stages that DO publish one.
     chain = FrontendChain(
         FrontendSpec(
-            port=PortSpec(50.0),
-            noise=NoiseSpec(
-                noise_figure_db=3.0,
-                bandwidth_hz=1e6,
-                phase_noise_dbc_per_hz=-80.0,
-                phase_offset_hz=1e5,
-                phase_sample_rate_hz=1e6,
-            ),
-            lna=LnaSpec(gain_db=10.0),
-            agc=AgcSpec(target_rms=1e-3, mode="global"),
-            seed=SeedSpec(5),
+            noise=Noise(figure=3.0, bandwidth=1e6, phase_density=-80.0, phase_offset=1e5, phase_sample_rate=1e6),
+            lna=10.0,
+            agc=Agc(target_rms=1e-3, mode="global"),
+            impedance=50.0,
+            seed=5,
         )
     )
     generator = torch.Generator(device="cpu").manual_seed(31)

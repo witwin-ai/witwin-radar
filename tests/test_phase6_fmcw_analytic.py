@@ -366,13 +366,13 @@ def test_the_unambiguous_speed_bound_is_owned_by_the_fmcw_spec():
     from support import multi_endpoint_geometry as multi
     from support import phase4_geometry as single
 
-    from witwin.radar import RadarConfig
+    from witwin.radar import Radar
 
     assert _spec().max_unambiguous_speed_mps == pytest.approx(16.222535606060607, rel=1e-12)
 
     for geometry in (single, multi):
-        config = RadarConfig.from_dict(dict(geometry.FIXTURE_RADAR_CONFIG))
-        spec = FmcwSpec.from_radar_config(config)
-        assert spec.num_tx == config.num_tx
-        assert spec.num_rx == config.num_rx
-        assert spec.slot_period_s == pytest.approx(spec.chirp_period_s * config.num_tx, rel=1e-12)
+        radar = Radar.from_dict(dict(geometry.FIXTURE_RADAR_CONFIG), device="cpu")
+        spec = radar.waveform_spec()
+        assert spec.num_tx == radar.num_tx
+        assert spec.num_rx == radar.num_rx
+        assert spec.slot_period_s == pytest.approx(spec.chirp_period_s * radar.num_tx, rel=1e-12)

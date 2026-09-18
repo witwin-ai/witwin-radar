@@ -299,7 +299,22 @@ def test_the_minimal_root_does_not_load_native_or_channel():
     result = _run(_ROOT_IMPORT_PROBE)
     assert result["channel"] == []
     assert result["build_loaded"] is False
-    assert result["exports"] == ["Radar", "RadarConfig"]
+    assert result["exports"] == [
+        "Adc",
+        "Agc",
+        "Aspect",
+        "Fmcw",
+        "Motion",
+        "Noise",
+        "Ofdm",
+        "Pattern",
+        "PointTargets",
+        "Pulsed",
+        "Radar",
+        "RadarSimulationResult",
+        "StructureTargets",
+        "processing",
+    ]
 
 
 def test_removed_names_receive_an_ordinary_attribute_error():

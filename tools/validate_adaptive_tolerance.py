@@ -17,21 +17,20 @@ import argparse
 import json
 import math
 import time
-from dataclasses import replace
 from pathlib import Path
 
 import torch
 from witwin.core import Scene
 
-from witwin.radar import Radar
+from witwin.radar import Motion, Pattern, PointTargets, Radar
 from witwin.radar.processing.range_doppler import fmcw_range_fft
 from witwin.radar.propagation import Kinematics
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.sensors import ISOTROPIC_PATTERN
-from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
 
 TOLERANCES = (0.002, 0.005, 0.02, 0.05, 0.2, 0.5)
 
+#: The IQ errors below are measured on the synthesized beat samples, so the
+#: waveform's output domain is named here rather than left at the default
+#: range spectrum.
 BASE = {
     "fc": 77e9,
     "slope": 60.012,
@@ -39,16 +38,8 @@ BASE = {
     "sample_rate": 4400,
     "idle_time": 7,
     "ramp_end_time": 58,
-    "frame_per_second": 10,
-    "num_angle_bins": 64,
     "power": 12,
-    "antenna_pattern": {
-        "kind": ISOTROPIC_PATTERN.kind,
-        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
-        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
-        "x_values": list(ISOTROPIC_PATTERN.x_values),
-        "y_values": list(ISOTROPIC_PATTERN.y_values),
-    },
+    "output_domain": "beat",
 }
 
 #: Each fixture is an array shape and a trajectory, sized so that the
@@ -70,11 +61,19 @@ FIXTURES = {
 }
 
 
-class Motion:
-    """Metres and m/s. ``rotor`` is the micro-Doppler stress case."""
+class Trajectory:
+    """Metres and m/s. ``rotor`` is the micro-Doppler stress case.
+
+    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` adds the
+    analytic velocity, which nothing here reads but which keeps the fixture
+    readable as one closed-form path.
+    """
 
     def __init__(self, kind):
         self.kind = kind
+
+    def positions(self, t):
+        return self.at(t).positions_m
 
     def at(self, t):
         if self.kind == "rotor":
@@ -94,25 +93,14 @@ class Motion:
 def build(name):
     fixture = FIXTURES[name]
     config = {**BASE, **fixture["array"], **fixture["waveform"]}
-    config.update(
-        num_range_bins=fixture["waveform"]["adc_samples"], num_doppler_bins=fixture["waveform"]["chirp_per_frame"]
+    # Isotropic elements and a ``+z`` polarization: every fixture moves in the
+    # ``z = 0`` plane, so neither weighting touches the error being calibrated.
+    radar = Radar.from_dict(
+        config, pattern=Pattern.isotropic(), polarization=(0, 0, 1), position=(0, 0, 0), look_at=(1, 0, 0)
     )
-    radar = Radar(config, position=(0, 0, 0), target=(1, 0, 0))
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, output_domain="beat", **fixture["waveform"])
-    )
-    trajectory = Motion(name)
-    return (
-        radar,
-        trajectory,
-        {
-            "times": (0.0,),
-            "response": ScalarRcsResponse.from_rcs(1.0, reference_frequency_hz=77e9, device="cuda"),
-            "sites": ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-            "components": frozenset({"los"}),
-            "max_depth": 0,
-        },
-    )
+    trajectory = Trajectory(name)
+    targets = PointTargets(positions=trajectory.positions(0), rcs=1.0, trajectory=trajectory.positions)
+    return radar, trajectory, {"targets": targets, "times": (0.0,), "los": True, "reflections": 0}
 
 
 def timed(call):
@@ -129,16 +117,14 @@ def relative(actual, reference):
 
 def run(name):
     radar, _, kwargs = build(name)
-    radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion_sampling="adaptive")  # warm
+    radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion=Motion.adaptive())  # warm
     scene = Scene(structures=(), endpoints=[])
-    reference, reference_s = timed(lambda: radar.simulate(scene, **kwargs, motion_sampling="adc"))
+    reference, reference_s = timed(lambda: radar.simulate(scene, **kwargs, motion=Motion.adc()))
     reference_rd = torch.fft.fftshift(torch.fft.fft(fmcw_range_fft(reference.cube), dim=-2), dim=-2)
     rows = []
     for tolerance in TOLERANCES:
-        spec = AdaptiveMotionSpec(phase_error_rad=tolerance, relative_amplitude_error=tolerance)
-        result, seconds = timed(
-            lambda spec=spec: radar.simulate(scene, **kwargs, motion_sampling="adaptive", adaptive_motion=spec)
-        )
+        motion = Motion.adaptive(phase_error=tolerance, relative_amplitude_error=tolerance)
+        result, seconds = timed(lambda motion=motion: radar.simulate(scene, **kwargs, motion=motion))
         stats = result.adaptive_diagnostics[0]
         power = torch.fft.fftshift(torch.fft.fft(fmcw_range_fft(result.cube), dim=-2), dim=-2)
         rows.append(

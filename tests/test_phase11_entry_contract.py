@@ -29,11 +29,35 @@ def test_solver_backend_selector_is_not_public_api():
     assert "backend" not in inspect.signature(wr.Radar).parameters
 
 
-def test_radar_rejects_backend_keyword(minimal_config):
-    from witwin.radar import Radar
+def test_radar_rejects_backend_keyword():
+    """The constructor takes SI fields, and a selector is not one of them.
 
+    Built field by field rather than from a shared fixture mapping: the claim
+    is about the keyword surface of ``Radar.__init__`` itself, so the test that
+    makes it should not depend on what a configuration loader happens to fill in.
+    """
+
+    from witwin.radar import Fmcw, Radar
+
+    waveform = Fmcw(
+        slope=60.012e12,
+        sample_rate=4.4e6,
+        samples_per_chirp=256,
+        chirps_per_frame=2,
+        adc_start=0.0,
+        idle=7e-6,
+        ramp_end=58e-6,
+    )
     with pytest.raises(TypeError, match="backend"):
-        Radar(minimal_config, backend="dirichlet", device="cpu")
+        Radar(
+            carrier=77e9,
+            waveform=waveform,
+            tx=[[0.0, 0.0, 0.0]],
+            rx=[[0.0, 0.0, 0.0]],
+            power=12.0,
+            device="cpu",
+            backend="dirichlet",
+        )
 
 
 def test_the_simulation_entry_has_no_backend_or_solver_keyword():

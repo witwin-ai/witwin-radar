@@ -22,74 +22,70 @@ from pathlib import Path
 import torch
 from witwin.core import Scene
 
+from witwin.radar import Motion, PointTargets
 from witwin.radar.propagation import Kinematics
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
 
 
 class Rotor:
     """80 Hz, 3 mm radius, 30 m: the micro-Doppler stress case, in metres."""
 
-    def at(self, t):
+    def positions(self, t):
         rate = 2 * math.pi * 80.0
         points = [[30.0 + 0.003 * math.cos(rate * t), 0.003 * math.sin(rate * t), 0.0]]
+        return torch.tensor(points, dtype=torch.float32, device="cuda")
+
+    def at(self, t):
+        rate = 2 * math.pi * 80.0
         speeds = [[-0.003 * rate * math.sin(rate * t), 0.003 * rate * math.cos(rate * t), 0.0]]
-        return Kinematics(
-            torch.tensor(points, dtype=torch.float32, device="cuda"),
-            torch.tensor(speeds, dtype=torch.float32, device="cuda"),
-        )
+        return Kinematics(self.positions(t), torch.tensor(speeds, dtype=torch.float32, device="cuda"))
 
 
 def _radar(waveform):
+    """The shared fixture with its waveform reshaped. ``Radar`` is immutable."""
+
     from validate_doppler_motion import make_radar
 
     radar = make_radar()
-    radar.system_config = replace(
-        radar.system_config, waveform=replace(radar.system_config.waveform, output_domain="beat", **waveform)
-    )
-    return radar
+    return radar.replace(waveform=replace(radar.waveform, output="beat", **waveform))
 
 
 def rotor(frames, tolerance):
+    # SI: 4 MHz of sample rate, a 15.625 GHz/s ramp, a 32 us ramp end.
     waveform = {
-        "adc_samples": 128,
-        "chirp_per_frame": 128,
-        "sample_rate": 4000.0,
-        "slope": 0.015625,
-        "adc_start_time": 0.0,
-        "ramp_end_time": 32.0,
-        "idle_time": 0.0,
+        "samples_per_chirp": 128,
+        "chirps_per_frame": 128,
+        "sample_rate": 4.0e6,
+        "slope": 0.015625e12,
+        "adc_start": 0.0,
+        "ramp_end": 32.0e-6,
+        "idle": 0.0,
     }
     radar = _radar(waveform)
-    spec = radar.system_config.waveform_spec()
+    spec = radar.waveform_spec()
     trajectory = Rotor()
     return radar.simulate(
         Scene(structures=(), endpoints=[]),
+        PointTargets(positions=trajectory.positions(0), rcs=1.0, trajectory=trajectory.positions),
         times=tuple(index * spec.num_chirps * spec.chirp_period_s for index in range(frames)),
-        response=ScalarRcsResponse.from_rcs(1.0, reference_frequency_hz=77e9, device="cuda"),
-        sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        components=frozenset({"los"}),
-        max_depth=0,
-        motion_sampling="adaptive",
-        adaptive_motion=AdaptiveMotionSpec(phase_error_rad=tolerance, max_evaluations=40000),
+        los=True,
+        reflections=0,
+        motion=Motion.adaptive(phase_error=tolerance, max_evaluations=40000),
     )
 
 
 def heavy(frames, tolerance):
     from validate_heavy_multipath import LinearPoint, room
 
-    radar = _radar({"adc_samples": 64, "chirp_per_frame": 32, "idle_time": 442})
-    spec = radar.system_config.waveform_spec()
+    radar = _radar({"samples_per_chirp": 64, "chirps_per_frame": 32, "idle": 442e-6})
+    spec = radar.waveform_spec()
     trajectory = LinearPoint(radar.device)
     return radar.simulate(
         room(),
+        PointTargets(positions=trajectory.positions(0), amplitude=1.0, trajectory=trajectory.positions),
         times=tuple(index * spec.num_chirps * spec.chirp_period_s for index in range(frames)),
-        response=ScalarRcsResponse.from_values(1.0, 0.0, device=radar.device),
-        sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        components=frozenset({"los", "reflection"}),
-        max_depth=2,
-        motion_sampling="adaptive",
-        adaptive_motion=AdaptiveMotionSpec(phase_error_rad=tolerance),
+        los=True,
+        reflections=2,
+        motion=Motion.adaptive(phase_error=tolerance),
     )
 
 

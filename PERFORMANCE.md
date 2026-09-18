@@ -13,7 +13,7 @@ For that reason, pre-consolidation latency, FFT-count, launch-count, and allocat
 Two changes to how the adaptive route chooses its partition, measured on RTX 5080 / Ryzen 7
 9800X3D in witwin2. The run starts from the coarsest partition the probe-spacing bound allows
 instead of bisecting down to it, and an accepted interval may interpolate through
-`interpolation_nodes` samples instead of two. Neither change touches the phase or amplitude
+`nodes` samples instead of two. Neither change touches the phase or amplitude
 tolerance, and neither relaxes the bound.
 
 An earlier revision of this work DID relax that bound for a topologically certified family, on the
@@ -36,7 +36,7 @@ Against the exhaustive per-ADC route in the same session, `tools/validate_adapti
 Accuracy is unchanged within 0.3e-4; the speedup comes from the initial partition, not from
 sampling the motion any more coarsely.
 
-`interpolation_nodes` defaults to 2, the linear rule. Raise it only where the phase test, not the
+`nodes` defaults to 2, the linear rule. Raise it only where the phase test, not the
 bound, is what shortens an interval. Measured per frame at 2/3/5 nodes: an 80 Hz rotor on a
 4.096 ms frame gives 38/21/25 probes and 36.0/22.2/21.7 ms, while a 24.96 ms MIMO frame gives
 27/53/105 probes and 95.5/166.7/173.5 ms for one unchanged 13-interval partition.
@@ -148,7 +148,7 @@ the limit; hundreds of milliseconds are not established for arbitrary heavy mult
 The retained MATLAB CPU rotor result was 250.7 ms and the optimized WiTwin rotor 608.7 ms, about
 2.43x slower. That comparison is superseded: both sides were re-executed on 2026-09-17 after the
 adaptive-control work and WiTwin measured 270.99 ms against MATLAB's 211.86 ms on the same
-fixture at the default order, or 174.28 ms with `interpolation_nodes=5`. See the rerun section
+fixture at the default order, or 174.28 ms with `nodes=5`. See the rerun section
 below. MATLAB was not rerun in THIS optimization pass, and
 different precision, devices and fractional-delay models remain as the comparison report states.
 
@@ -185,7 +185,7 @@ sampling parameters, alignment rule and repeat counts as the 2026-09-16 run.
 
 That report concluded the public dynamic scene entry was 21 to 53 times slower than MATLAB's
 analytic point-target entry. It is now faster on four of the six scenes and slower on the two
-rotor scenes, at the default `interpolation_nodes=2`:
+rotor scenes, at the default `nodes=2`:
 
 | Scene | WiTwin median | MATLAB median | MATLAB / WiTwin | WiTwin on 2026-09-16 |
 | --- | ---: | ---: | ---: | ---: |
@@ -197,7 +197,7 @@ rotor scenes, at the default `interpolation_nodes=2`:
 | rotor_os4 | 446.48 ms | 303.37 ms | 0.68x | accuracy-only |
 
 The rotor is the micro-Doppler case where the phase test, not the probe-spacing bound, shortens
-the intervals, which is what `interpolation_nodes` is for. With
+the intervals, which is what `nodes` is for. With
 `--interpolation-nodes 5` the same rotor scene measures 174.28 ms, 1.22x faster than MATLAB;
 `rotor_os4` stays slower at 537.14 ms because its 524288 observations per frame are dominated by
 ADC synthesis rather than by probes. The default stays at 2 because the other fixtures are

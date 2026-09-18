@@ -27,11 +27,13 @@ SPIKE_PHASE_RAD = 0.7
 
 
 def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
-    from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwSpec
+    from witwin.radar import Radar
 
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz, output_domain="beat")
+    # device="cpu" because a waveform spec holds no tensors: the fixture must
+    # stay buildable during a CUDA-less collection pass, and every number below
+    # is identical either way.
+    config = dict(geo.FIXTURE_RADAR_CONFIG, output_domain="beat")
+    spec = Radar.from_dict(config, device="cpu").waveform_spec(offset=carrier_hz)
     if num_chirps is not None:
         from dataclasses import replace
 

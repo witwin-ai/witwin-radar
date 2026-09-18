@@ -94,8 +94,12 @@ SECTION_ROWS = {
     "Two-way join and the wideband band (`witwin/radar/paths.py`)": 5,
     "Kinematics (`witwin/radar/propagation.py`)": 8,
     "SMPL authoring (`witwin/radar/smpl.py`)": 6,
-    # 12 until Phase 11 deleted DirichletSpectrumSpec with its route.
-    "The host-float rule (`witwin/radar/policy.py`)": 11,
+    # 12 until Phase 11 deleted DirichletSpectrumSpec with its route, and 11
+    # until the API redesign folded PortSpec, LnaSpec and SeedSpec into
+    # FrontendSpec as plain fields. Every scalar those three declared is still
+    # refused at the same boundary; they are two rows rather than four now
+    # because two of them share an owner.
+    "The host-float rule (`witwin/radar/policy.py`)": 10,
     # 10 leaves of the family itself, plus the three Phase-11 rows for the
     # PRODUCTION route that reaches it, `sensors.py`. The section
     # keeps the family's name because there is still one numerical owner.

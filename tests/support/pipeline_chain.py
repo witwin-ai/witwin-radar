@@ -38,8 +38,7 @@ PIPELINE_NUM_RX = 4
 def array_spec(num_tx: int = PIPELINE_NUM_TX, num_rx: int = PIPELINE_NUM_RX):
     """A ``SensorArraySpec`` for a nominal half-wavelength linear MIMO array."""
 
-    from witwin.radar import RadarConfig
-    from witwin.radar.sensors import SensorArraySpec
+    from witwin.radar import Radar
 
     from . import multi_endpoint_geometry as geo
 
@@ -48,7 +47,10 @@ def array_spec(num_tx: int = PIPELINE_NUM_TX, num_rx: int = PIPELINE_NUM_RX):
     config["num_rx"] = num_rx
     config["tx_loc"] = [[float(index), 0.0, 0.0] for index in range(num_tx)]
     config["rx_loc"] = [[float(index), 0.0, 0.0] for index in range(num_rx)]
-    return SensorArraySpec.from_radar_config(RadarConfig.from_dict(config))
+    # device="cpu" because the array spec holds no tensors: this stays buildable
+    # in a CUDA-less collection pass and every offset below is identical either
+    # way.
+    return Radar.from_dict(config, device="cpu").system_config.sensors.array
 
 
 def pipeline_inputs(*, num_chirps: int = 8):

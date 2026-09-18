@@ -12,8 +12,9 @@ The rest is what a numerical check cannot see, because a wrong answer in any of
 it still produces a plausible cube:
 
 * the entry returns a typed record, not a bare tensor;
-* the four diagnostics are typed, describe ONE frame, and are ``None`` before
-  the first call and after a failed one;
+* the four diagnostics are typed, describe ONE frame, and live on the RESULT -
+  the radar has no retention site for them, so neither a fresh radar nor one
+  whose last call raised can hand a caller a stale world;
 * the pair partition is this array's TX x RX grid in the composer's own
   sink-major rank;
 * a topology is discovered exactly ONCE per epoch, and the epoch cadence is the
@@ -37,16 +38,10 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
 import witwin.radar as wr  # noqa: E402
-from witwin.radar import Radar  # noqa: E402
+from witwin.radar import Motion, PointTargets, Radar, RadarSimulationResult, StructureTargets  # noqa: E402
 from witwin.radar.paths import RadarPathBatch  # noqa: E402
 from witwin.radar.propagation import RadarLegBatch, RadarPropagationLegs  # noqa: E402
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.sensors import ISOTROPIC_PATTERN  # noqa: E402
-from witwin.radar.simulation import (  # noqa: E402  # noqa: E402
-    RadarSimulationResult,
-    ScatterSitePolicy,
-    StableIdAllocator,
-)
+from witwin.radar.simulation import StableIdAllocator  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -60,26 +55,35 @@ SITE_POSITIONS_M = (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M)
 
 
 def _radar() -> Radar:
-    config = dict(geo.FIXTURE_RADAR_CONFIG)
-    config["antenna_pattern"] = {
-        "kind": ISOTROPIC_PATTERN.kind,
-        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
-        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
-        "x_values": list(ISOTROPIC_PATTERN.x_values),
-        "y_values": list(ISOTROPIC_PATTERN.y_values),
-    }
-    return Radar(config, position=(0.0, 0.0, 0.0), target=LOOK_AT_M)
+    """The fixture radar. Its pattern is the default isotropic one.
 
+    The stage is then a proven no-op, which is what every assertion below wants:
+    a dipole roll-off nobody asked for would scale each row by its own bearing.
 
-def _response(radar: Radar, *, requires_grad: bool = False) -> ScalarRcsResponse:
-    return ScalarRcsResponse.from_values(
-        drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device, requires_grad=requires_grad
+    ``polarization`` is declared rather than left to the pose-derived default
+    because this file is checked against ``multi_endpoint_driver``, whose
+    endpoints carry ``geo.POLARIZATION``. Channel projects the material field
+    onto it, so two different transverse axes give two different - both correct
+    - complex transfers, and the comparison below is bitwise. With this pose the
+    declared vector IS the frame's ``right`` axis, so it stays transverse to the
+    boresight and nothing radiates into a null.
+    """
+
+    return Radar.from_dict(
+        dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), look_at=LOOK_AT_M, polarization=geo.POLARIZATION
     )
 
 
-def _sites(radar: Radar, *, requires_grad: bool = False) -> ScatterSitePolicy:
+def _targets(radar: Radar, *, requires_grad: bool = False) -> PointTargets:
+    """The two fixture scatterers, authored as a dimensionless strength.
+
+    ``amplitude`` rather than ``rcs`` so the leaf a gradient test marks is the
+    strength itself: going through the cross-section law would put a square root
+    in the gradient that has nothing to do with what is being measured.
+    """
+
     positions = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device).requires_grad_(requires_grad)
-    return ScatterSitePolicy.explicit(positions)
+    return PointTargets(positions=positions, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD)
 
 
 def _static_scene():
@@ -89,9 +93,8 @@ def _static_scene():
 
 
 def _simulate(radar: Radar, scene, times, **options) -> RadarSimulationResult:
-    return radar.simulate(
-        scene, times=times, response=_response(radar), sites=_sites(radar), motion_sampling="chirp", **options
-    )
+    options.setdefault("motion", Motion.chirp())
+    return radar.simulate(scene, _targets(radar), times=times, **options)
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +108,8 @@ def test_simulate_runs_the_whole_pipeline_and_publishes_a_frame_cube():
     radar = _radar()
     result = _simulate(radar, _static_scene(), (0.0, 1.0e-3, 2.0e-3))
 
-    array = radar.system_config.sensors.array
-    waveform = radar.system_config.waveform
-    assert result.cube.shape == (3, array.num_tx, array.num_rx, waveform.chirp_per_frame, waveform.adc_samples)
+    waveform = radar.waveform
+    assert result.cube.shape == (3, radar.num_tx, radar.num_rx, waveform.chirps_per_frame, waveform.samples_per_chirp)
     assert result.cube.dtype == torch.complex64
     assert result.cube.device.type == radar.device.type
     assert result.axes == ("frame", "tx", "rx", "chirp", "range_bin")
@@ -170,15 +172,14 @@ def test_the_composed_rows_agree_with_the_reference_orchestration():
         receiver_count=int(radar.rx_pos.shape[0]),
         site_count=len(SITE_POSITIONS_M),
     )
-    _simulate(radar, _static_scene(), (0.0,))
-    produced = radar.last_radar_paths
+    produced = _simulate(radar, _static_scene(), (0.0,)).last_radar_paths
 
     spike = drv.MultiEndpointSpike(
         transmitters=tuple(zip(transmitter_ids, [tuple(row) for row in radar.tx_pos.tolist()], strict=True)),
         sites=tuple(zip(site_ids, SITE_POSITIONS_M, strict=True)),
         receivers=tuple(zip(receiver_ids, [tuple(row) for row in radar.rx_pos.tolist()], strict=True)),
     )
-    reference, _, _ = spike.frame(response=_response(radar))
+    reference, _, _ = spike.frame(response=drv.make_response(device=radar.device))
 
     assert produced.path_count == reference.path_count
     assert produced.sensor_pair_count == reference.sensor_pair_count
@@ -186,7 +187,7 @@ def test_the_composed_rows_agree_with_the_reference_orchestration():
         assert torch.equal(getattr(produced.topology, name), getattr(reference.topology, name)), name
     assert torch.equal(produced.total_delay_s, reference.total_delay_s)
 
-    expected = (radar.system_config.sensors.tx_power.transmit_power_watts / geo.TX_POWER_W) ** 0.5
+    expected = (radar.transmit_power_watts / geo.TX_POWER_W) ** 0.5
     ratio = produced.complex_transfer_ref.abs() / reference.complex_transfer_ref.abs()
     torch.testing.assert_close(ratio, torch.full_like(ratio, float(expected)), rtol=1e-5, atol=0.0)
 
@@ -196,12 +197,24 @@ def test_the_composed_rows_agree_with_the_reference_orchestration():
 # ---------------------------------------------------------------------------
 
 
-def test_the_diagnostics_are_none_before_the_first_simulate():
-    """The pinned answer. Raising would make "has it run" a try/except."""
+def test_the_radar_has_nowhere_to_keep_a_stale_world():
+    """The guarantee is structural now, not a ``None`` somebody has to clear.
+
+    The four diagnostics used to be published on the radar and answered ``None``
+    until the first call. A radar holds no run state at all any more, so the
+    property this pins is stronger and needs no lifecycle: there is no attribute
+    to read, before a call or after one, and a caller therefore cannot pick up a
+    world some earlier call simulated and believe it describes this radar.
+    """
 
     radar = _radar()
-    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
-        assert getattr(radar, name) is None, name
+    names = ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result")
+    for name in names:
+        assert not hasattr(radar, name), name
+
+    _simulate(radar, _static_scene(), (0.0,))
+    for name in names:
+        assert not hasattr(radar, name), name
 
 
 def test_the_four_diagnostics_are_typed_and_describe_the_last_frame():
@@ -211,26 +224,20 @@ def test_the_four_diagnostics_are_typed_and_describe_the_last_frame():
     from witwin.channel.scene import CompiledScene
     from witwin.core import SceneSnapshot
 
-    assert isinstance(radar.last_snapshot, SceneSnapshot)
-    assert isinstance(radar.last_compiled_scene, CompiledScene)
-    assert isinstance(radar.last_propagation, RadarPropagationLegs)
-    assert isinstance(radar.last_radar_paths, RadarPathBatch)
+    assert isinstance(result.last_snapshot, SceneSnapshot)
+    assert isinstance(result.last_compiled_scene, CompiledScene)
+    assert isinstance(result.last_propagation, RadarPropagationLegs)
+    assert isinstance(result.last_radar_paths, RadarPathBatch)
 
     # The LAST frame, named by its own time, not the first.
-    assert float(radar.last_snapshot.time_s) == 1.0e-3
-    assert radar.last_result is result
-    assert radar.last_snapshot is result.last_snapshot
-    assert radar.last_compiled_scene is result.last_compiled_scene
-    assert radar.last_propagation is result.last_propagation
-    assert radar.last_radar_paths is result.last_radar_paths
+    assert float(result.last_snapshot.time_s) == 1.0e-3
 
 
 def test_the_leg_pair_is_typed_rather_than_a_tuple_or_a_dict():
     """``RadarPropagationLegs`` is what makes the pairing checkable."""
 
     radar = _radar()
-    _simulate(radar, _static_scene(), (0.0,))
-    legs = radar.last_propagation
+    legs = _simulate(radar, _static_scene(), (0.0,)).last_propagation
     assert isinstance(legs.inbound, RadarLegBatch)
     assert isinstance(legs.outbound, RadarLegBatch)
     assert legs.slot_count == 1
@@ -241,16 +248,25 @@ def test_the_leg_pair_is_typed_rather_than_a_tuple_or_a_dict():
         RadarPropagationLegs(inbound=legs.inbound, outbound=object())
 
 
-def test_a_failed_simulate_leaves_no_stale_diagnostics():
-    """A stale world claiming to describe this radar is worse than nothing."""
+def test_a_failed_simulate_has_no_diagnostics_to_leave_behind():
+    """The failed call publishes nothing, because it returns nothing.
+
+    A call that raised part way through used to have to clear four attributes on
+    the radar, and forgetting one left a world the failed call never simulated
+    claiming to describe it. The diagnostics now belong to the result a
+    successful call returned, so a refusal has nothing to clear - and the
+    refusal itself still has to happen.
+    """
 
     radar = _radar()
-    _simulate(radar, _static_scene(), (0.0,))
-    assert radar.last_radar_paths is not None
-    with pytest.raises(ValueError):
-        radar.simulate(_static_scene(), times=(), response=_response(radar), sites=_sites(radar))
+    result = _simulate(radar, _static_scene(), (0.0,))
+    assert result.last_radar_paths is not None
+
+    with pytest.raises(ValueError, match="at least one frame instant"):
+        radar.simulate(_static_scene(), _targets(radar), times=())
+
     for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
-        assert getattr(radar, name) is None, name
+        assert not hasattr(radar, name), name
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +285,9 @@ def test_the_pair_partition_is_this_arrays_tx_by_rx_grid():
     """
 
     radar = _radar()
-    _simulate(radar, _static_scene(), (0.0,))
-    paths = radar.last_radar_paths
-    array = radar.system_config.sensors.array
+    paths = _simulate(radar, _static_scene(), (0.0,)).last_radar_paths
 
-    assert paths.sensor_pair_count == array.num_tx * array.num_rx
+    assert paths.sensor_pair_count == radar.num_tx * radar.num_rx
     ranks = paths.sensor_pair_index
     assert bool(torch.all(ranks[1:] >= ranks[:-1])), "pair ranks must not decrease"
     assert int(paths.pair_offsets[0]) == 0
@@ -286,17 +300,15 @@ def test_the_pair_partition_is_this_arrays_tx_by_rx_grid():
     for row, rank in enumerate(ranks.tolist()):
         tx_rank = sources.index(int(paths.topology.radar_source_id[row]))
         rx_rank = sinks.index(int(paths.topology.radar_sink_id[row]))
-        assert rank == rx_rank * array.num_tx + tx_rank
+        assert rank == rx_rank * radar.num_tx + tx_rank
 
 
 def test_the_composed_row_order_is_frame_invariant():
     """A frozen topology names its rows by identity, on every frame."""
 
     radar = _radar()
-    _simulate(radar, _static_scene(), (0.0,))
-    first = radar.last_radar_paths.topology
-    _simulate(radar, _static_scene(), (0.0, 3.0e-3))
-    second = radar.last_radar_paths.topology
+    first = _simulate(radar, _static_scene(), (0.0,)).last_radar_paths.topology
+    second = _simulate(radar, _static_scene(), (0.0, 3.0e-3)).last_radar_paths.topology
     for name in ("radar_source_id", "site_id", "radar_sink_id"):
         assert torch.equal(getattr(first, name), getattr(second, name)), name
 
@@ -376,7 +388,10 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
     radar = _radar()
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
     result = _simulate(
-        radar, dynamic, (0.0, 1.0e-3, 2.0e-3), world_motion="fixed_winner_replay", motion_event_period_frames=10
+        radar,
+        dynamic,
+        (0.0, 1.0e-3, 2.0e-3),
+        motion=Motion.chirp(world="fixed_winner_replay", rediscover_every_frames=10),
     )
 
     assert result.epochs == (0, 0, 0)
@@ -394,7 +409,7 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
 
 
 def test_the_published_cube_is_differentiable_through_the_site_positions():
-    """``ad_mode='vjp'`` reaches the leaf the site policy passed through.
+    """``grad='vjp'`` reaches the leaf the target record passed through.
 
     The site tensor is the SINK of the inbound leg and the SOURCE of the
     outbound one, and the binding hands the same object to both, so a gradient
@@ -405,11 +420,11 @@ def test_the_published_cube_is_differentiable_through_the_site_positions():
     """
 
     radar = _radar()
-    policy = _sites(radar, requires_grad=True)
-    result = radar.simulate(_static_scene(), times=(0.0,), response=_response(radar), sites=policy, ad_mode="vjp")
+    targets = _targets(radar, requires_grad=True)
+    result = radar.simulate(_static_scene(), targets, times=(0.0,), grad="vjp")
     assert result.cube.requires_grad
     result.cube.abs().square().sum().backward()
-    grad = policy.positions_m.grad
+    grad = targets.positions.grad
     assert grad is not None
     assert bool(torch.isfinite(grad).all())
     assert bool((grad != 0).any())
@@ -420,17 +435,18 @@ def test_parameter_jvp_does_not_change_the_primal_scene():
 
     radar = _radar()
     scene = _static_scene()
-    positions = _sites(radar).positions_m
-    response = _response(radar)
-    reference = radar.simulate(scene, times=(0.0,), response=response, sites=ScatterSitePolicy.explicit(positions))
+    positions = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device)
+
+    def targets_at(sites) -> PointTargets:
+        return PointTargets(positions=sites, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD)
+
+    reference = radar.simulate(scene, targets_at(positions), times=(0.0,))
     for scale in (0.0, 1.0, -3.0):
         direction = torch.zeros_like(positions)
         direction[:, 0] = scale
         with forward_ad.dual_level():
             dual = forward_ad.make_dual(positions, direction)
-            result = radar.simulate(
-                scene, times=(0.0,), response=response, sites=ScatterSitePolicy.explicit(dual), ad_mode="jvp"
-            )
+            result = radar.simulate(scene, targets_at(dual), times=(0.0,), grad="jvp")
             primal, tangent = forward_ad.unpack_dual(result.cube)
             torch.testing.assert_close(primal, reference.cube, rtol=0, atol=0)
             assert tangent is not None
@@ -438,17 +454,16 @@ def test_parameter_jvp_does_not_change_the_primal_scene():
             assert result.last_radar_paths.delay_rate is None
 
 
-def test_components_and_max_depth_override_one_solve_and_not_the_radar():
+def test_los_and_reflections_override_one_solve_and_not_the_radar():
     """A propagation request is a statement about ONE solve."""
 
     radar = _radar()
     full = _simulate(radar, _static_scene(), (0.0,))
-    full_rows = radar.last_radar_paths.path_count
-    assert full.cube.shape == full.cube.shape
+    full_rows = full.last_radar_paths.path_count
 
-    narrowed = _simulate(radar, _static_scene(), (0.0,), components=frozenset({"los"}), max_depth=0)
+    narrowed = _simulate(radar, _static_scene(), (0.0,), los=True, reflections=0)
     assert narrowed.cube.shape == full.cube.shape
-    assert radar.last_radar_paths.path_count < full_rows
+    assert narrowed.last_radar_paths.path_count < full_rows
     # The radar's stored configuration never moved.
     assert radar.system_config.propagation.components == frozenset({"los", "reflection"})
     assert radar.system_config.propagation.max_depth == 1
@@ -475,31 +490,26 @@ def test_slow_time_mode_is_not_a_public_simulation_choice():
 def test_an_empty_time_sequence_is_refused():
     radar = _radar()
     with pytest.raises(ValueError, match="at least one frame instant"):
-        radar.simulate(_static_scene(), times=(), response=_response(radar), sites=_sites(radar))
+        radar.simulate(_static_scene(), _targets(radar), times=())
 
 
-def test_a_site_declaration_that_is_not_a_policy_is_refused():
-    """Where the sites come from is a declaration, never a search."""
+def test_a_target_set_that_is_not_a_target_record_is_refused():
+    """Where the scatterers are is a declaration, never a search."""
 
     radar = _radar()
-    with pytest.raises(TypeError, match="must be a ScatterSitePolicy"):
-        radar.simulate(
-            _static_scene(),
-            times=(0.0,),
-            response=_response(radar),
-            sites=torch.tensor(SITE_POSITIONS_M, device=radar.device),
-        )
+    with pytest.raises(TypeError, match="targets must be PointTargets or StructureTargets"):
+        radar.simulate(_static_scene(), torch.tensor(SITE_POSITIONS_M, device=radar.device), times=(0.0,))
 
 
 def test_a_static_world_has_no_core_owned_site_anchor():
-    """The default site policy fails loudly rather than sampling a mesh.
+    """``StructureTargets`` fails loudly rather than sampling a mesh.
 
-    ``sites=None`` resolves to ``structure_anchor()``, and the fixture wall
-    carries no rigid motion, so this world publishes no Core-owned site
-    position for it. The message has to name the mesh-sampling deferral,
-    because that is the thing a caller will otherwise reach for.
+    A structure target puts one scatterer at the world anchor Core publishes for
+    each structure, and the fixture wall carries no rigid motion, so this world
+    publishes no such position for it. The message has to name the mesh-sampling
+    deferral, because that is the thing a caller will otherwise reach for.
     """
 
     radar = _radar()
     with pytest.raises(NotImplementedError, match="named Phase-11 deferral"):
-        radar.simulate(_static_scene(), times=(0.0,), response=_response(radar))
+        radar.simulate(_static_scene(), StructureTargets(rcs=1.0), times=(0.0,))

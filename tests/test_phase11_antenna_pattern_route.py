@@ -8,7 +8,7 @@ capability rather than migrating it.
 
 What this file pins:
 
-* **The no-op is BITWISE.** With :data:`ISOTROPIC_PATTERN` the kernel's whole
+* **The no-op is BITWISE.** With :meth:`Pattern.isotropic` the kernel's whole
   surviving factor is ``sqrt(1) * sqrt(1 * 1) == 1.0f``, so the published weight
   is the composed weight unchanged - not close to it. ``torch.equal`` is the
   assertion, because a tolerance here would hide exactly the drift the stage was
@@ -46,15 +46,9 @@ from support import multi_endpoint_driver as drv  # noqa: E402
 from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
-from witwin.radar import Radar  # noqa: E402
+from witwin.radar import Pattern, PointTargets, Radar  # noqa: E402
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology  # noqa: E402
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.sensors import (  # noqa: E402
-    ISOTROPIC_PATTERN,
-    AntennaPatternSpec,  # noqa: E402
-    RoundTripPatternStage,
-)
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
+from witwin.radar.sensors import RoundTripPatternStage  # noqa: E402
 from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch  # noqa: E402
 
 pytestmark = pytest.mark.gpu
@@ -66,13 +60,7 @@ SITE_POSITIONS_M = (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M)
 #: A pattern that varies in BOTH angles, with its knots at -90, 0 and +90 while
 #: every angle these fixtures query sits strictly inside one segment. That is
 #: what makes a central finite difference a legitimate oracle here.
-DIRECTIONAL_PATTERN = AntennaPatternSpec(
-    kind="separable",
-    x_angles_deg=(-90.0, 0.0, 90.0),
-    x_values=(0.2, 1.0, 0.3),
-    y_angles_deg=(-90.0, 0.0, 90.0),
-    y_values=(0.4, 1.0, 0.5),
-)
+DIRECTIONAL_PATTERN = Pattern.separable((-90.0, 0.0, 90.0), (0.2, 1.0, 0.3), (-90.0, 0.0, 90.0), (0.4, 1.0, 0.5))
 
 #: Off the ``z = 0`` plane on purpose: the multi-endpoint sites are coplanar
 #: with the array, which puts the elevation query exactly on the pattern's
@@ -80,33 +68,24 @@ DIRECTIONAL_PATTERN = AntennaPatternSpec(
 UNIT_SITE_POSITIONS_M = ((2.0, 0.6, 0.35), (1.7, -0.9, -0.5))
 
 
-def _pattern_config(pattern: AntennaPatternSpec) -> dict:
-    config = {
-        "kind": pattern.kind,
-        "x_angles_deg": list(pattern.x_angles_deg),
-        "y_angles_deg": list(pattern.y_angles_deg),
-    }
-    if pattern.kind == "separable":
-        config["x_values"] = list(pattern.x_values)
-        config["y_values"] = list(pattern.y_values)
-    else:
-        config["values"] = [list(row) for row in pattern.values]
-    return config
+def _radar(pattern: Pattern | None = None) -> Radar:
+    """The fixture radar, carrying ``pattern``. ``None`` takes the radar's own.
+
+    The radar's own is :meth:`Pattern.isotropic`, which is the proven no-op every
+    directional answer below is measured against.
+    """
+
+    return Radar.from_dict(
+        dict(geo.FIXTURE_RADAR_CONFIG),
+        position=(0.0, 0.0, 0.0),
+        look_at=LOOK_AT_M,
+        pattern=Pattern.isotropic() if pattern is None else pattern,
+    )
 
 
-def _radar(pattern: AntennaPatternSpec = ISOTROPIC_PATTERN) -> Radar:
-    config = dict(geo.FIXTURE_RADAR_CONFIG)
-    config["antenna_pattern"] = _pattern_config(pattern)
-    return Radar(config, position=(0.0, 0.0, 0.0), target=LOOK_AT_M)
-
-
-def _response(radar: Radar) -> ScalarRcsResponse:
-    return ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
-
-
-def _sites(radar: Radar, *, requires_grad: bool = False):
+def _targets(radar: Radar, *, requires_grad: bool = False) -> PointTargets:
     positions = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device).requires_grad_(requires_grad)
-    return ScatterSitePolicy.explicit(positions), positions
+    return PointTargets(positions=positions, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD)
 
 
 def _static_scene():
@@ -116,8 +95,7 @@ def _static_scene():
 
 
 def _simulate(radar: Radar, *, times=(0.0,), **options):
-    policy, _ = _sites(radar)
-    return radar.simulate(_static_scene(), times=times, response=_response(radar), sites=policy, **options)
+    return radar.simulate(_static_scene(), _targets(radar), times=times, **options)
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +104,12 @@ def _simulate(radar: Radar, *, times=(0.0,), **options):
 
 
 def test_the_stored_isotropic_pattern_is_applied_to_every_simulation():
-    result = _simulate(_radar(ISOTROPIC_PATTERN))
+    result = _simulate(_radar())
     assert result.last_radar_paths.weight_includes_antenna_pattern is True
 
 
-def test_the_stored_default_dipole_is_applied_to_every_simulation():
-    result = _simulate(_radar(AntennaPatternSpec.half_wave_dipole()))
+def test_a_stored_dipole_is_applied_to_every_simulation():
+    result = _simulate(_radar(Pattern.dipole()))
     assert result.last_radar_paths.weight_includes_antenna_pattern is True
 
 
@@ -140,14 +118,14 @@ def test_the_stored_default_dipole_is_applied_to_every_simulation():
 # ---------------------------------------------------------------------------
 
 
-def _pattern_gain_from_vectors(pattern: AntennaPatternSpec, vectors: torch.Tensor) -> torch.Tensor:
+def _pattern_gain_from_vectors(pattern: Pattern, vectors: torch.Tensor) -> torch.Tensor:
     forward = -vectors[..., 2]
     x_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 0], forward))
     y_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 1], forward))
     return pattern.evaluate_xy(x_angles_deg, y_angles_deg)
 
 
-def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, pattern) -> torch.Tensor:
+def _oracle_amplitude(radar: Radar, result, sites: torch.Tensor, pattern) -> torch.Tensor:
     """``sqrt(G_t * G_r)`` per composed row, from the Torch pattern evaluator.
 
     Independent of the kernel in the way that matters: it resolves the row's
@@ -157,7 +135,8 @@ def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, 
     bookkeeping was self-consistent.
     """
 
-    num_tx = radar.system_config.sensors.array.num_tx
+    paths = result.last_radar_paths
+    num_tx = radar.num_tx
     pair = paths.sensor_pair_index
     tx_index = torch.remainder(pair, num_tx)
     rx_index = torch.div(pair, num_tx, rounding_mode="floor")
@@ -172,7 +151,7 @@ def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, 
     tx = radar.tx_pos.index_select(0, tx_index)
     rx = radar.rx_pos.index_select(0, rx_index)
     # Independent image-source construction for the fixture plane x=4 m.
-    legs = radar.last_propagation
+    legs = result.last_propagation
     mirrored = site.clone()
     mirrored[:, 0] = 8.0 - site[:, 0]
     tx_target = torch.where((legs.inbound.depth[paths.topology.inbound_row] > 0)[:, None], mirrored, site)
@@ -183,14 +162,14 @@ def _oracle_amplitude(radar: Radar, paths: RadarPathBatch, sites: torch.Tensor, 
 
 
 def test_a_directional_pattern_scales_each_row_by_its_own_gain():
-    baseline_radar = _radar(ISOTROPIC_PATTERN)
-    plain_rows = _simulate(baseline_radar).last_radar_paths
+    plain_rows = _simulate(_radar()).last_radar_paths
 
     radar = _radar(DIRECTIONAL_PATTERN)
-    rows = _simulate(radar).last_radar_paths
+    result = _simulate(radar)
+    rows = result.last_radar_paths
 
     sites = torch.tensor(SITE_POSITIONS_M, dtype=torch.float32, device=radar.device)
-    expected = _oracle_amplitude(radar, rows, sites, DIRECTIONAL_PATTERN)
+    expected = _oracle_amplitude(radar, result, sites, DIRECTIONAL_PATTERN)
     assert float(expected.min()) > 0.0
     assert float(expected.max()) < 1.0
 
@@ -207,7 +186,7 @@ def test_the_two_sites_are_attenuated_differently():
     stage that fumbled its site table would produce.
     """
 
-    plain = _simulate(_radar(ISOTROPIC_PATTERN)).last_radar_paths
+    plain = _simulate(_radar()).last_radar_paths
     rows = _simulate(_radar(DIRECTIONAL_PATTERN)).last_radar_paths
 
     ratio = rows.complex_transfer_ref.abs() / plain.complex_transfer_ref.abs()
@@ -222,7 +201,7 @@ def test_the_two_sites_are_attenuated_differently():
 def test_the_cube_changes_when_a_pattern_is_applied():
     """The E2E statement: the gain reaches the published frame cube."""
 
-    plain = _simulate(_radar(ISOTROPIC_PATTERN))
+    plain = _simulate(_radar())
     patterned = _simulate(_radar(DIRECTIONAL_PATTERN))
 
     assert plain.cube.shape == patterned.cube.shape
@@ -249,7 +228,7 @@ def test_the_stage_publishes_its_provenance_and_synthesis_carries_it():
 
 
 def test_the_stored_pattern_provenance_reaches_synthesis():
-    radar = _radar(ISOTROPIC_PATTERN)
+    radar = _radar()
     rows = _simulate(radar).last_radar_paths
     batch = SynthesisPathBatch.from_radar_paths(rows, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     assert batch.weight_includes_antenna_pattern is True
@@ -271,8 +250,7 @@ def _unit_stage(radar: Radar, pattern) -> tuple[RoundTripPatternStage, RadarPath
     """
 
     device = radar.device
-    array = radar.system_config.sensors.array
-    pairs = array.num_tx * array.num_rx
+    pairs = radar.num_tx * radar.num_rx
     sites = len(UNIT_SITE_POSITIONS_M)
     rows = pairs * sites
     pair_index = torch.arange(pairs, device=device, dtype=torch.int64).repeat_interleave(sites)
@@ -399,7 +377,7 @@ def test_a_batch_from_another_topology_is_refused():
         )
 
 
-def test_a_pattern_that_is_not_a_spec_is_refused():
+def test_a_pattern_that_is_not_a_pattern_is_refused():
     radar = _radar()
     stage, _ = _unit_stage(radar, DIRECTIONAL_PATTERN)
     join = types.SimpleNamespace(
@@ -409,13 +387,13 @@ def test_a_pattern_that_is_not_a_spec_is_refused():
         path_count=stage.row_count,
         response_slot=stage.site_slot,
     )
-    with pytest.raises(TypeError, match="AntennaPatternSpec"):
+    with pytest.raises(TypeError, match="needs a witwin.radar.Pattern"):
         RoundTripPatternStage.freeze(radar, join, site_ids=(3_000_000, 3_000_001), pattern={"kind": "separable"})
 
 
 def test_the_isotropic_stage_is_the_identity_on_a_unit_batch():
     radar = _radar()
-    stage, batch = _unit_stage(radar, ISOTROPIC_PATTERN)
+    stage, batch = _unit_stage(radar, Pattern.isotropic())
     published = stage.apply(
         batch,
         tx_pos=radar.tx_pos,
@@ -513,10 +491,11 @@ def test_a_reverse_gradient_reaches_the_frame_cube_through_the_pattern():
     """
 
     radar = _radar(DIRECTIONAL_PATTERN)
-    policy, sites = _sites(radar, requires_grad=True)
-    result = radar.simulate(_static_scene(), times=(0.0,), response=_response(radar), sites=policy, ad_mode="vjp")
+    targets = _targets(radar, requires_grad=True)
+    result = radar.simulate(_static_scene(), targets, times=(0.0,), grad="vjp")
     result.cube.real.square().sum().backward()
 
-    assert sites.grad is not None
-    assert torch.isfinite(sites.grad).all()
-    assert float(sites.grad.abs().max()) > 0.0
+    grad = targets.positions.grad
+    assert grad is not None
+    assert torch.isfinite(grad).all()
+    assert float(grad.abs().max()) > 0.0

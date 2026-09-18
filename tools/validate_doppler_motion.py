@@ -15,12 +15,9 @@ from pathlib import Path
 import torch
 from witwin.core import Scene
 
-from witwin.radar import Radar
+from witwin.radar import Motion, Pattern, PointTargets, Radar
 from witwin.radar.processing import SlowTimeSignal, microdoppler_spectrogram
 from witwin.radar.propagation import Kinematics
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.sensors import ISOTROPIC_PATTERN
-from witwin.radar.simulation import ScatterSitePolicy
 from witwin.radar.synthesis.assembly import BEAT_PHASOR, FmcwSpec
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
@@ -28,8 +25,10 @@ C0 = 299792458.0
 
 
 def make_radar():
-    pattern = ISOTROPIC_PATTERN
-    return Radar(
+    # Isotropic elements and a world-frame ``+z`` polarization keep the oracles
+    # below exact: every fixture moves in the ``z = 0`` plane, so the field
+    # projection is one and the only amplitude law left is ``1 / R^2``.
+    return Radar.from_dict(
         {
             "num_tx": 1,
             "num_rx": 1,
@@ -41,29 +40,31 @@ def make_radar():
             "idle_time": 1942,
             "ramp_end_time": 58,
             "chirp_per_frame": 128,
-            "frame_per_second": 2,
-            "num_doppler_bins": 128,
-            "num_range_bins": 4,
-            "num_angle_bins": 64,
             "power": 12,
             "tx_loc": [[0, 0, 0]],
             "rx_loc": [[0, 0, 0]],
-            "antenna_pattern": {
-                "kind": pattern.kind,
-                "x_angles_deg": list(pattern.x_angles_deg),
-                "y_angles_deg": list(pattern.y_angles_deg),
-                "x_values": list(pattern.x_values),
-                "y_values": list(pattern.y_values),
-            },
         },
+        pattern=Pattern.isotropic(),
+        polarization=(0, 0, 1),
         position=(0, 0, 0),
-        target=(1, 0, 0),
+        look_at=(1, 0, 0),
     )
 
 
-class Motion:
+class Trajectory:
+    """Material-point motion for one fixture, in metres and m/s.
+
+    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` additionally
+    publishes the analytic velocity, which only the oracles below read. They are
+    two views of one closed-form path, so the oracle can never drift from the
+    motion the simulator was handed.
+    """
+
     def __init__(self, kind, device):
         self.kind, self.device = kind, device
+
+    def positions(self, t):
+        return self.at(t).positions_m
 
     def at(self, t):
         w = 2 * math.pi * 8
@@ -81,19 +82,18 @@ class Motion:
 
 def scene_experiment(kind):
     radar = make_radar()
-    trajectory = Motion(kind, radar.device)
+    trajectory = Trajectory(kind, radar.device)
+    targets = PointTargets(positions=trajectory.positions(0), amplitude=1.0, trajectory=trajectory.positions)
     start = time.perf_counter()
+    # Per-ADC sampling is named rather than left to ``Motion.auto()``: the
+    # oracle below evaluates the closed form at every observation instant, so
+    # the run it is compared against must be the exhaustive one.
     result = radar.simulate(
-        Scene(structures=(), endpoints=[]),
-        times=(0.0,),
-        response=ScalarRcsResponse.from_values(1.0, 0.0, device=radar.device),
-        sites=ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        components=frozenset({"los"}),
-        max_depth=0,
+        Scene(structures=(), endpoints=[]), targets, times=(0.0,), los=True, reflections=0, motion=Motion.adc()
     )
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
-    spec = radar.system_config.waveform_spec()
+    spec = radar.waveform_spec()
     beat = torch.fft.ifft(result.cube[0, 0, 0], dim=-1, norm="forward").to(torch.complex128)
     expected, theoretical = [], []
     # Independent free-space two-way oracle. All points lie in the polarization

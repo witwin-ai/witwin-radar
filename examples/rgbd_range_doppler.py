@@ -7,8 +7,8 @@ pixels are back-projected into radar scene coordinates (X lateral, Y height,
 Z negative range) and become the SCATTER SITES of one ``Radar.simulate`` call
 per output frame:
 
-    depth frame  ->  ScatterSitePolicy.explicit(points)
-                 ->  Radar.simulate(scene, times=(t,), ...)
+    depth frame  ->  PointTargets(positions=points, rcs=...)
+                 ->  Radar.simulate(scene, targets, times=(t,), ...)
                  ->  witwin.radar.processing.range_doppler
 
 The ``Scene`` carries no structures. A depth sample is a point scatterer, not
@@ -21,10 +21,11 @@ Site count is the cost driver: every site is a Channel endpoint in both legs, so
 ``--max-points`` bounds how many depth samples one frame contributes. The
 default of 4096 runs in a fraction of a second on a modern GPU.
 
-The radar looks along ``-z`` (the depth camera forward axis), so the endpoint
-polarization is declared along ``+y``. Channel projects the field onto that
-world-frame vector and the package default ``(0, 0, 1)`` is parallel to this
-boresight, which would publish exactly zero transport.
+The radar looks along ``-z`` (the depth camera forward axis) and says nothing
+about polarization. Channel projects the transmitted field onto a world-frame
+vector, and ``Radar.polarization`` defaults to ``"up"`` - the pose's own up
+axis, transverse to the boresight whichever way the radar points - so no vector
+has to be written down and none can be silently parallel to the boresight.
 
 INTRA-FRAME DOPPLER, stated because it changes what the second axis of these
 maps means. ``Radar.simulate`` composes the round trip ONCE per frame, so the
@@ -85,14 +86,16 @@ DEFAULT_RADAR_CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 65,
     "chirp_per_frame": 128,
-    "frame_per_second": 10,
-    "num_doppler_bins": 128,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 15,
     "tx_loc": [[0, 0, 0], [4, 0, 0], [2, 1, 0]],
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
 }
+
+#: How often this example starts a radar frame, Hz. It is the example's own
+#: scheduling choice and not a radar parameter: the simulator is told the
+#: instant of each frame and nothing inside it repeats on a cadence, so a frame
+#: rate stored on the radar would be a number no physics reads.
+OUTPUT_FRAME_RATE_HZ = 10.0
 
 #: The amplitude floor under the decibel conversion, so an exactly zero cell is
 #: finite rather than negative infinity.
@@ -389,9 +392,9 @@ def build_site_sampler(sequence: RGBDSequence, *, args: argparse.Namespace | Map
     ``sample_sites(t)`` publishes the world positions of every valid depth
     sample at time ``t``, linearly interpolated between the two neighbouring
     source frames, as one contiguous float32 ``(S, 3)`` tensor on ``device``.
-    That tensor is exactly what ``ScatterSitePolicy.explicit`` consumes, and it
-    is handed over untouched, so a caller that marks it as an autograd leaf
-    keeps the graph all the way into both propagation legs.
+    That tensor is exactly what ``PointTargets.positions`` consumes, and it is
+    handed over untouched, so a caller that marks it as an autograd leaf keeps
+    the graph all the way into both propagation legs.
     """
 
     depths_np = _prepare_depths(sequence.depths, args)
@@ -548,9 +551,6 @@ def save_rd_png(
 #: the radar's own registered antenna and nothing else.
 SCENE_ANTENNA_ID = 770301
 
-#: Transverse to the ``-z`` depth-camera boresight; see the module docstring.
-POLARIZATION = (0.0, 1.0, 0.0)
-
 
 def build_scene():
     """An empty Core world: every depth sample is a declared point scatterer."""
@@ -569,32 +569,29 @@ def build_scene():
     )
 
 
-def processing_axes(radar):
+def processing_axes(radar, result):
     """The metadata record every processing stage reads.
 
     ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
     simulation result publishes the assembled ``[frame, tx, rx, slow, fast]``
-    cube, so the last frame's composed rows are re-synthesized to obtain one.
-    The record carries shapes and conventions, which are properties of the
+    cube. ``frame_synthesis`` re-views one frame in that rank-3 layout without
+    resynthesizing anything, so the record describes the cube actually
+    processed. It carries shapes and conventions, which are properties of the
     waveform specification and are therefore the same for every frame.
     """
 
     from witwin.radar.processing import ProcessingAxes
-    from witwin.radar.synthesis import SlowTimeMode
 
-    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
+        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
     )
 
 
 def generate_range_doppler(args: argparse.Namespace) -> None:
     import torch
 
-    from witwin.radar import Radar, RadarConfig
+    from witwin.radar import PointTargets, Radar
     from witwin.radar.processing import ProcessingCube, range_doppler_map, range_profile
-    from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.simulation import ScatterSitePolicy
 
     input_path = pathlib.Path(args.input).expanduser().resolve()
     if not input_path.exists():
@@ -622,18 +619,17 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     sequence = load_rgbd_sequence(input_path, args)
     if args.mask is not None:
         sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
-    radar = Radar(RadarConfig.from_dict(config), device=device, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
+    radar = Radar.from_dict(config, device=device, position=(0.0, 0.0, 0.0), look_at=(0.0, 0.0, -1.0))
     sample_sites, total_time, source_frames, source_fps = build_site_sampler(sequence, args=args, device=radar.device)
     scene = build_scene()
-    response = ScalarRcsResponse.from_rcs(
-        float(args.site_rcs), reference_frequency_hz=radar.config.fc, device=radar.device
-    )
 
-    chirp_period = (radar.config.idle_time + radar.config.ramp_end_time) * 1e-6
-    radar_valid_time = chirp_period * radar.config.num_tx * max(0, radar.config.chirp_per_frame - 1)
+    # The waveform's timings are SI seconds, so the chirp period is read off it
+    # directly rather than scaled out of the microseconds the file format quotes.
+    chirp_period = radar.waveform.chirp_period
+    radar_valid_time = chirp_period * radar.num_tx * max(0, radar.waveform.chirps_per_frame - 1)
     start_time = args.start_frame / source_fps
     remaining_time = total_time - start_time
-    max_output_frames = max(0, int(math.floor((remaining_time - radar_valid_time) * radar.config.frame_per_second)) + 1)
+    max_output_frames = max(0, int(math.floor((remaining_time - radar_valid_time) * OUTPUT_FRAME_RATE_HZ)) + 1)
     if max_output_frames <= 0:
         raise ValueError(
             "Input sequence is too short for one radar frame. "
@@ -650,7 +646,7 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     ranges = None
     velocities = None
     for frame_idx in range(num_frames):
-        t0 = start_time + frame_idx / radar.config.frame_per_second
+        t0 = start_time + frame_idx / OUTPUT_FRAME_RATE_HZ
         positions = sample_sites(t0)
         if int(positions.shape[0]) == 0:
             raise ValueError(
@@ -662,21 +658,16 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
         # frame's depth samples, so each call re-declares the world; the epoch
         # loop compiles once per call and discovers one topology.
         result = radar.simulate(
-            scene,
-            times=(t0,),
-            response=response,
-            sites=ScatterSitePolicy.explicit(positions),
-            polarization=POLARIZATION,
-            components=frozenset({"los"}),
-            max_depth=0,
+            scene, PointTargets(positions=positions, rcs=float(args.site_rcs)), times=(t0,), los=True, reflections=0
         )
         if axes is None:
-            axes = processing_axes(radar)
+            axes = processing_axes(radar, result)
             half = axes.range_bin_count // 2
             ranges = axes.range_m[:half].detach().cpu().numpy()
             velocities = axes.velocity_mps.detach().cpu().numpy()
 
-        profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
+        # The cube is already a range spectrum, so no fast-time window applies.
+        profile = range_profile(ProcessingCube(result.cube[0], axes))
         if args.static_clutter_removal:
             # Static clutter removal is a SLOW-TIME mean subtraction. The range
             # stage owns the fast-time DC removal (``remove_dc=``); the

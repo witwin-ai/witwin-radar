@@ -49,9 +49,20 @@ class PathSample:
 
 
 def _radar(request_config=None):
+    """A radar carrying the half-wave dipole element pattern, explicitly.
+
+    ``Radar.pattern`` now defaults to isotropic, and an isotropic table is two
+    knots at plus and minus 180 degrees with unit gain: the kernel-versus-Torch
+    parity assertion would then hold on 1.0 everywhere and the knot-crossing
+    exclusion in the JVP test would have nothing left to exclude. The dipole is
+    the pattern every number in this file was measured against.
+    """
+
     from conftest import STANDARD_CONFIG, make_radar_or_skip
 
-    return make_radar_or_skip(request_config or STANDARD_CONFIG)
+    from witwin.radar import Pattern
+
+    return make_radar_or_skip(request_config or STANDARD_CONFIG).replace(pattern=Pattern.dipole())
 
 
 def _sample(radar, count: int, *, seed: int = 0):
@@ -93,8 +104,8 @@ def _rows(radar, sample, *, velocities=None):
 
     device = radar.device
     count = int(sample.points.shape[0])
-    num_tx = radar.config.num_tx
-    num_rx = radar.config.num_rx
+    num_tx = radar.num_tx
+    num_rx = radar.num_rx
     rows = num_tx * num_rx * count
     tx_index = torch.arange(num_tx, device=device).view(-1, 1, 1).expand(num_tx, num_rx, count).reshape(-1).contiguous()
     rx_index = torch.arange(num_rx, device=device).view(1, -1, 1).expand(num_tx, num_rx, count).reshape(-1).contiguous()
@@ -133,7 +144,7 @@ def _pattern_frame(radar) -> torch.Tensor:
 def _plan(radar):
     from witwin.radar.sensors import SensorWeightPlan
 
-    return SensorWeightPlan.build(radar.system_config.sensors.pattern, c0=C0, device=radar.device)
+    return SensorWeightPlan.build(radar.pattern, c0=C0, device=radar.device)
 
 
 def _evaluate(radar, sample, *, velocities=None, weight=None):
@@ -244,9 +255,9 @@ def _pattern_cell(radar, geometry, site_in, site_out) -> torch.Tensor:
     compared for "same segment" without re-deriving the interpolation.
     """
 
-    pattern = radar.system_config.sensors.pattern
-    x_axis = torch.tensor(pattern.x_angles_deg, dtype=torch.float32, device=radar.device)
-    y_axis = torch.tensor(pattern.y_angles_deg, dtype=torch.float32, device=radar.device)
+    pattern = radar.pattern
+    x_axis = torch.tensor(pattern.x_angles, dtype=torch.float32, device=radar.device)
+    y_axis = torch.tensor(pattern.y_angles, dtype=torch.float32, device=radar.device)
     cells = []
     for vectors in (site_in - radar.tx_pos[geometry.tx_index], site_out - radar.rx_pos[geometry.rx_index]):
         local = radar._local_from_world_vectors(vectors)
@@ -303,8 +314,8 @@ def test_the_jvp_matches_a_central_finite_difference():
     rows = int(intensity.shape[0])
     generator = torch.Generator(device="cpu").manual_seed(31)
     tangents = {
-        "tx": torch.randn(radar.config.num_tx, 3, generator=generator).to(radar.device),
-        "rx": torch.randn(radar.config.num_rx, 3, generator=generator).to(radar.device),
+        "tx": torch.randn(radar.num_tx, 3, generator=generator).to(radar.device),
+        "rx": torch.randn(radar.num_rx, 3, generator=generator).to(radar.device),
         "site_in": torch.randn(rows, 3, generator=generator).to(radar.device),
         "site_out": torch.randn(rows, 3, generator=generator).to(radar.device),
         "intensity": torch.randn(rows, generator=generator).to(radar.device),
@@ -415,8 +426,8 @@ def test_the_vjp_is_the_adjoint_of_the_jvp():
         return torch.randn(*shape, generator=generator).to(radar.device)
 
     tangents = {
-        "tx": _random(radar.config.num_tx, 3),
-        "rx": _random(radar.config.num_rx, 3),
+        "tx": _random(radar.num_tx, 3),
+        "rx": _random(radar.num_rx, 3),
         "site_in": _random(rows, 3),
         "site_out": _random(rows, 3),
         "intensity": _random(rows),

@@ -13,17 +13,17 @@ runs through the canonical processing owners.
 Three things changed with the route and are stated here because they change what
 the numbers mean, not merely how they are spelled:
 
-* **The world is a Core ``Scene``.** A target is a ``ScatterSitePolicy`` site,
-  the run asks for ``components={"los"}`` at ``max_depth=0``, and the scene is
-  empty, so what is measured is exactly the free-space round trip.
+* **The world is a Core ``Scene``.** A target is a ``PointTargets`` entry, the
+  run asks for ``los=True`` at ``reflections=0``, and the scene is empty, so
+  what is measured is exactly the free-space round trip.
 * **The radar looks along world +x.** See ``conftest`` for why: on the old
   ``-z`` boresight the endpoint polarization is parallel to the look direction
   and Channel correctly publishes an exactly zero transport.
-* **Intra-frame Doppler is opened by the caller.** ``Radar.simulate`` has no
-  velocity keyword, so ``conftest.simulate_point_targets`` dualises the site
-  tensor through ``propagation.two_way_duals``. A moving-target test
-  here is therefore also the statement that the kinematics seam composes with
-  the production entry.
+* **Motion is declared as a trajectory.** ``Radar.simulate`` has no velocity
+  keyword, so ``conftest.simulate_point_targets`` hands ``PointTargets`` a
+  ``trajectory(time) -> positions`` callable and selects ``Motion.chirp()``. A
+  moving-target test here is therefore also the statement that the kinematics
+  seam composes with the production entry.
 
 Coverage that did NOT survive the route, recorded rather than quietly dropped:
 ``sigproc``'s ``topk`` detector has no owner in ``witwin.radar.processing``, so
@@ -39,7 +39,10 @@ from conftest import FAST_CONFIG, STANDARD_CONFIG, make_scene_radar_or_skip, sim
 pytestmark = pytest.mark.gpu
 
 # Validation config: adc_start_time=0 for clean signal, enough chirps for Doppler
-_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32, "num_doppler_bins": 32}
+# ``num_doppler_bins`` used to be restated here beside ``chirp_per_frame``. The
+# loader refuses it now, and it was always the same number: a Doppler bin count
+# IS the chirp count, read back from ``radar.waveform.chirps_per_frame``.
+_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32}
 _VFULL = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 
@@ -221,8 +224,8 @@ class TestEnergyScale:
     """The published detection energy is in dB relative to the map amplitude.
 
     ``PointCloud.energy`` is ``20 log10(|map| + energy_floor)`` and
-    ``ScalarRcsResponse.from_rcs`` makes the transported amplitude proportional
-    to ``sqrt(sigma)``. A hundredfold cross section is therefore exactly 20 dB,
+    ``PointTargets(rcs=...)`` makes the transported amplitude proportional to
+    ``sqrt(sigma)``. A hundredfold cross section is therefore exactly 20 dB,
     and that factor is what distinguishes a dB scale from a bare ``log10`` one.
 
     The cross sections here are large ON PURPOSE. The stage's ``energy_floor``

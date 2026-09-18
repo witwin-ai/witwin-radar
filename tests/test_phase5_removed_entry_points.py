@@ -48,9 +48,9 @@ def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
     that "a scene-driven entry point that assembles those steps for a whole
     Scene is separate work and does not exist yet". It exists;
     ``tests/test_phase11_simulate_entry.py`` is what it does. What survives here
-    is the shape of the surface: ``simulate`` is a bound method taking a scene
-    and a declared frame sequence, and its four typed diagnostics answer
-    ``None`` on a radar that has not run.
+    is the shape of the surface: ``simulate`` is a bound method taking a scene,
+    a declared target set and a declared frame sequence, and the radar itself
+    keeps no run state for a caller to read a stale world out of.
     """
 
     import inspect
@@ -58,12 +58,18 @@ def test_simulate_is_the_scene_driven_entry_and_no_longer_a_refusal():
     assert callable(wr.Radar.simulate)
     parameters = inspect.signature(wr.Radar.simulate).parameters
     assert "scene" in parameters
-    for name in ("times", "response", "sites"):
+    # ``targets`` is positional because every default for it would be an
+    # unchosen statement about the world; everything after it is keyword only.
+    assert parameters["targets"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name in ("times", "los", "reflections", "motion", "grad", "endpoints"):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, name
 
-    radar = object.__new__(wr.Radar)
-    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths"):
-        assert getattr(radar, name) is None, name
+    # The four typed diagnostics live on the result the call returned. There is
+    # no retention site on the radar at all, which is a stronger statement than
+    # the ``None`` this used to assert: a stale world cannot be read off a
+    # radar that has nowhere to keep one.
+    for name in ("last_snapshot", "last_compiled_scene", "last_propagation", "last_radar_paths", "last_result"):
+        assert not hasattr(wr.Radar, name), name
 
 
 def test_simulate_group_is_gone_rather_than_permanently_refusing():
@@ -80,16 +86,11 @@ def test_simulate_group_is_gone_rather_than_permanently_refusing():
 
 
 def test_the_dirichlet_entry_points_are_absent_without_a_proxy():
-    for name in (
-        "mimo",
-        "mimo_from_trace",
-        "mimo_from_paths",
-        "path_cache_from_trace",
-        "chirp",
-        "frame",
-        "waveform",
-        "solver",
-    ):
+    # ``waveform`` left this list when the redesign made it a field of
+    # ``Radar``. Asserting its absence would no longer say anything about the
+    # removed Dirichlet method of the same name; it would pin the accident that
+    # a dataclass field without a default is not a class attribute.
+    for name in ("mimo", "mimo_from_trace", "mimo_from_paths", "path_cache_from_trace", "chirp", "frame", "solver"):
         assert not hasattr(wr.Radar, name), name
 
     for name in ("Solver", "TraceResult", "MimoPathCache", "SamplingMode", "MotionSampling"):

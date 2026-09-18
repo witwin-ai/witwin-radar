@@ -21,8 +21,6 @@ from scipy.signal import stft
 from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
 
 from witwin.radar.propagation import Kinematics, RadarEndpointSpec
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.sensors import TxPowerSpec
 from witwin.radar.synthesis.assembly import FmcwSpec
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
@@ -180,8 +178,13 @@ def performance_export(directory):
 
 
 class ExperimentMotion:
+    """``positions`` is the simulator's view; ``at`` adds the analytic velocity."""
+
     def __init__(self, kind):
         self.kind = kind
+
+    def positions(self, t):
+        return self.at(t).positions_m
 
     def at(self, t):
         w = 2 * math.pi * 80
@@ -203,7 +206,7 @@ class ExperimentMotion:
 
 def motion_export(directory, cases, accuracy_only=False, interpolation_nodes=2):
     from tools.validate_doppler_motion import make_radar
-    from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
+    from witwin.radar import Motion, PointTargets
 
     directory.mkdir(parents=True, exist_ok=True)
     for kind in cases:
@@ -213,22 +216,23 @@ def motion_export(directory, cases, accuracy_only=False, interpolation_nodes=2):
             base_kind = "acceleration"
         factor = 4 if kind.endswith("_os4") else 1
         radar = make_radar()
-        radar.system_config = replace(
-            radar.system_config,
+        # ``Radar`` is immutable, so the reshaped waveform and the 30 dBm (1 W)
+        # transmit power the oracles assume make a new radar. Timings are SI.
+        radar = radar.replace(
             waveform=replace(
-                radar.system_config.waveform,
-                adc_samples=512 if ground else 128 * factor,
-                chirp_per_frame=512 if ground else 128 if base_kind == "static" else 1024,
-                sample_rate=20000.0 if ground else 4000.0 * factor,
-                slope=0.390625 if ground else 0.015625,
-                adc_start_time=0.0,
-                ramp_end_time=25.6 if ground else 32.0,
-                idle_time=0.0,
-                output_domain="beat",
+                radar.waveform,
+                samples_per_chirp=512 if ground else 128 * factor,
+                chirps_per_frame=512 if ground else 128 if base_kind == "static" else 1024,
+                sample_rate=20.0e6 if ground else 4.0e6 * factor,
+                slope=0.390625e12 if ground else 0.015625e12,
+                adc_start=0.0,
+                ramp_end=25.6e-6 if ground else 32.0e-6,
+                idle=0.0,
+                output="beat",
             ),
-            sensors=replace(radar.system_config.sensors, tx_power=TxPowerSpec(30.0)),
+            power=30.0,
         )
-        spec = radar.system_config.waveform_spec()
+        spec = radar.waveform_spec()
         trajectory = ExperimentMotion(base_kind)
         scene = Scene(structures=(), endpoints=[])
         if ground:
@@ -252,15 +256,15 @@ def motion_export(directory, cases, accuracy_only=False, interpolation_nodes=2):
             )
             scene = Scene(structures=(wall,), endpoints=[])
         kwargs = {
-            "times": (0.0,),
-            "response": ScalarRcsResponse.from_rcs(1.0, reference_frequency_hz=77e9, device="cuda"),
-            "sites": ScatterSitePolicy.explicit(
-                trajectory.at(0).positions_m, trajectory=None if base_kind == "static" else trajectory
+            "targets": PointTargets(
+                positions=trajectory.positions(0),
+                rcs=1.0,
+                trajectory=None if base_kind == "static" else trajectory.positions,
             ),
-            "components": frozenset({"los", "reflection"}) if ground else frozenset({"los"}),
-            "max_depth": 1 if ground else 0,
-            "motion_sampling": "adaptive",
-            "adaptive_motion": AdaptiveMotionSpec(phase_error_rad=0.02, interpolation_nodes=interpolation_nodes),
+            "times": (0.0,),
+            "los": True,
+            "reflections": 1 if ground else 0,
+            "motion": Motion.adaptive(phase_error=0.02, nodes=interpolation_nodes),
         }
         print("starting scene", kind, flush=True)
         result, seconds = timed(

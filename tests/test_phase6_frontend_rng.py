@@ -23,27 +23,27 @@ BLOCK_ENV = "WITWIN_RADAR_FRONTEND_BLOCK"
 
 
 def _chain(noise, *, seed: int, lna=None):
-    from witwin.radar.frontend import FrontendChain, FrontendSpec, PortSpec, SeedSpec
+    """A chain at unit impedance, so the port stage scales nothing away.
 
-    return FrontendChain(FrontendSpec(port=PortSpec(1.0), noise=noise, lna=lna, seed=SeedSpec(seed_base=seed)))
+    ``lna`` is a voltage gain in dB and ``seed`` the one Philox base every stage
+    derives its own stream from.
+    """
+
+    from witwin.radar.frontend import FrontendChain, FrontendSpec
+
+    return FrontendChain(FrontendSpec(impedance=1.0, noise=noise, lna=lna, seed=seed))
 
 
 def _thermal_only():
-    from witwin.radar.frontend import NoiseSpec
+    from witwin.radar.frontend import Noise
 
-    return NoiseSpec(noise_figure_db=6.0, bandwidth_hz=5e6)
+    return Noise(figure=6.0, bandwidth=5e6)
 
 
 def _thermal_and_phase():
-    from witwin.radar.frontend import NoiseSpec
+    from witwin.radar.frontend import Noise
 
-    return NoiseSpec(
-        noise_figure_db=6.0,
-        bandwidth_hz=5e6,
-        phase_noise_dbc_per_hz=-85.0,
-        phase_offset_hz=1e5,
-        phase_sample_rate_hz=5e6,
-    )
+    return Noise(figure=6.0, bandwidth=5e6, phase_density=-85.0, phase_offset=1e5, phase_sample_rate=5e6)
 
 
 def _zeros(count: int = 1 << 16) -> torch.Tensor:
@@ -87,12 +87,11 @@ def test_toggling_phase_noise_leaves_the_thermal_realisation_bit_identical():
 def test_toggling_the_lna_leaves_the_thermal_realisation_a_pure_scaling():
     """The gain multiplies the same draws; it does not draw different ones."""
 
-    from witwin.radar.frontend import LnaSpec
-
     signal = _zeros()
     plain = _chain(_thermal_only(), seed=9).apply(signal).signal
-    amplified = _chain(_thermal_only(), seed=9, lna=LnaSpec(gain_db=12.0)).apply(signal).signal
-    assert torch.allclose(amplified, plain * LnaSpec(gain_db=12.0).voltage_gain, rtol=1e-6, atol=0.0)
+    amplified_chain = _chain(_thermal_only(), seed=9, lna=12.0)
+    amplified = amplified_chain.apply(signal).signal
+    assert torch.allclose(amplified, plain * amplified_chain.spec.lna_voltage_gain(), rtol=1e-6, atol=0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -165,13 +165,12 @@ def _solo_spec(*, num_chirps: int):
     Everything else is the fixture's own configuration.
     """
 
-    from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwSpec
+    from witwin.radar import Radar
 
     values = dict(geo.FIXTURE_RADAR_CONFIG)
     values.update(num_tx=1, num_rx=1, tx_loc=[[0, 0, 0]], rx_loc=[[0, 0, 0]])
-    spec = FmcwSpec.from_radar_config(RadarConfig.from_dict(values), output_domain="beat")
-    return replace(spec, num_chirps=num_chirps)
+    spec = Radar.from_dict(values, device="cpu").waveform_spec()
+    return replace(spec, num_chirps=num_chirps, output_domain="beat")
 
 
 @pytest.fixture(scope="module")

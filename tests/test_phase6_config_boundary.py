@@ -93,40 +93,43 @@ FORBIDDEN_VOCABULARY = (
 )
 
 
-def _populated_config():
-    """A configuration with every one of the five blocks non-trivial.
+def _populated_radar():
+    """A radar with every block of its derived configuration non-trivial.
 
     A boundary test on a minimal configuration proves nothing: the fields that
-    could leak are precisely the ones a minimal configuration leaves out.
+    could leak are precisely the ones a minimal configuration leaves out. The
+    receive chain is now flat fields on the radar rather than a nested mapping,
+    so every stage is named here and ``Radar`` assembles the internal
+    ``FrontendSpec`` from them.
+
+    The pattern is the dipole rather than the isotropic default for the same
+    reason: an all-ones table is exactly the sensor block a leak scan cannot
+    distinguish from an unset one.
+
+    ``device="cpu"`` because both tests below run on CPU.
     """
 
     from conftest import STANDARD_CONFIG
 
-    from witwin.radar.radar import RadarSystemConfig, validate_frontend_config, validate_radar_config
+    from witwin.radar import Adc, Agc, Noise, Pattern, Radar
 
-    # The flat record carried a `polarization` block until Phase 11, and this
-    # fixture set it because a boundary test on a minimal configuration proves
-    # nothing. That block is deleted; the sensor block is still populated
-    # through the antenna pattern and the transmit power, which is what the
-    # leak scan below reads.
-    flat = validate_radar_config(dict(STANDARD_CONFIG))
-    frontend = validate_frontend_config(
-        {
-            "port": {"reference_impedance_ohm": 50.0},
-            "noise": {
-                "noise_figure_db": 6.0,
-                "bandwidth_hz": 4.4e6,
-                "phase_noise_dbc_per_hz": -90.0,
-                "phase_offset_hz": 1e5,
-                "phase_sample_rate_hz": 4.4e6,
-            },
-            "lna": {"gain_db": 20.0},
-            "agc": {"target_rms": 0.5, "mode": "per_rx"},
-            "adc": {"bits": 12, "full_scale": 1.0},
-            "seed": 4,
-        }
+    return Radar.from_dict(
+        dict(STANDARD_CONFIG),
+        device="cpu",
+        pattern=Pattern.dipole(),
+        noise=Noise(figure=6.0, bandwidth=4.4e6, phase_density=-90.0, phase_offset=1e5, phase_sample_rate=4.4e6),
+        lna_gain=20.0,
+        agc=Agc(target_rms=0.5, mode="per_rx"),
+        adc=Adc(bits=12, full_scale=1.0),
+        impedance=50.0,
+        seed=4,
     )
-    return RadarSystemConfig.from_radar_config(flat, frontend=frontend)
+
+
+def _populated_config():
+    """The internal block record that radar carries."""
+
+    return _populated_radar().system_config
 
 
 def _endpoints(count: int, *, role: str):
@@ -325,23 +328,20 @@ def test_an_ofdm_band_still_produces_exactly_one_reference_frequency(monkeypatch
 
     pytest.importorskip("witwin.channel")
 
-    from dataclasses import replace
+    from witwin.radar import Ofdm
 
-    from witwin.radar.radar import OfdmWaveformConfig
-
-    base = _populated_config()
-    reference = base.propagation.reference_frequency_hz
+    base = _populated_radar()
+    reference = base.system_config.propagation.reference_frequency_hz
     for count in (1, 64, 512):
-        system_config = replace(
-            base,
-            waveform=OfdmWaveformConfig(
-                subcarrier_spacing_hz=120e3,
+        system_config = base.replace(
+            waveform=Ofdm(
+                subcarrier_spacing=120e3,
                 num_subcarriers=count,
-                cyclic_prefix_s=2e-6,
+                cyclic_prefix=2e-6,
                 num_symbols=16,
-                max_expected_delay_s=1e-6,
-            ),
-        )
+                max_expected_delay=1e-6,
+            )
+        ).system_config
         assert system_config.kind == "ofdm"
         spec = system_config.waveform_spec()
         assert spec.num_subcarriers == count
@@ -460,7 +460,7 @@ def _synthesis_batch(radar, *, rows: int = 3):
         total_delay_s=torch.full((rows,), 2e-8, dtype=torch.float32, device=device),
         delay_rate=torch.zeros(rows, dtype=torch.float32, device=device),
         complex_transfer_ref=torch.ones(rows, dtype=torch.complex64, device=device),
-        reference_frequency_hz=float(radar.config.fc),
+        reference_frequency_hz=float(radar.carrier),
         frequency_response=None,
         frequency_offsets_hz=None,
         topology=RadarPathTopology(
@@ -489,11 +489,9 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
     and conclude that the physics disagreed.
     """
 
-    from dataclasses import replace
-
     from conftest import MINIMAL_CONFIG, make_radar_or_skip
 
-    from witwin.radar.radar import OfdmWaveformConfig, PulsedWaveformConfig
+    from witwin.radar import Ofdm, Pulsed
     from witwin.radar.synthesis import SlowTimeMode
     from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR
 
@@ -506,39 +504,36 @@ def test_synthesize_dispatches_on_the_stored_waveform_kind():
     assert beat.axes == ("chirp", "sensor_pair", "range_bin")
     assert beat.output_domain == "spectrum"
     assert beat.phasor == BEAT_PHASOR
-    assert beat.cube.shape == (radar.config.chirp_per_frame, 1, radar.config.adc_samples)
+    assert beat.cube.shape == (radar.waveform.chirps_per_frame, 1, radar.waveform.samples_per_chirp)
 
-    radar.system_config = replace(
-        radar.system_config,
-        waveform=OfdmWaveformConfig(
-            subcarrier_spacing_hz=120e3,
-            num_subcarriers=16,
-            cyclic_prefix_s=2e-6,
-            num_symbols=4,
-            max_expected_delay_s=1e-6,
-        ),
+    # A ``Radar`` is immutable, so swapping the waveform is a NEW radar rather
+    # than an edit: the dispatch under test reads the kind the record was built
+    # with, which is the whole point of storing the discriminator.
+    ofdm_radar = radar.replace(
+        waveform=Ofdm(
+            subcarrier_spacing=120e3, num_subcarriers=16, cyclic_prefix=2e-6, num_symbols=4, max_expected_delay=1e-6
+        )
     )
-    cfr = radar._synthesize(batch, slow_time_mode=mode)
+    cfr = ofdm_radar._synthesize(batch, slow_time_mode=mode)
     assert cfr.kind == "ofdm"
     assert cfr.axes == ("symbol", "sensor_pair", "subcarrier")
     assert cfr.phasor == CHANNEL_PHASOR
     assert cfr.cube.shape == (4, 1, 16)
 
-    radar.system_config = replace(
-        radar.system_config,
-        waveform=PulsedWaveformConfig(
+    pulsed_radar = radar.replace(
+        waveform=Pulsed(
             pulse_kind="lfm",
-            pulse_width_s=1e-6,
-            bandwidth_hz=2e7,
-            pri_s=1e-4,
+            pulse_width=1e-6,
+            bandwidth=2e7,
+            pri=1e-4,
             num_pulses=4,
-            sample_rate_hz=5e7,
+            sample_rate=5e7,
             num_samples=256,
-            range_gate_start_s=0.0,
+            range_gate_start=0.0,
             max_expected_delay_rate=0.0,
-        ),
+        )
     )
-    train = radar._synthesize(batch, slow_time_mode=mode)
+    train = pulsed_radar._synthesize(batch, slow_time_mode=mode)
     assert train.kind == "pulsed"
     assert train.axes == ("pulse", "sensor_pair", "sample")
     assert train.phasor == CHANNEL_PHASOR
@@ -566,7 +561,11 @@ def test_an_unknown_waveform_kind_is_a_hard_error_and_never_a_fallback():
 
     radar = make_radar_or_skip(MINIMAL_CONFIG)
     batch = _synthesis_batch(radar)
-    radar.system_config = object.__new__(type(radar.system_config))
-    object.__setattr__(radar.system_config, "waveform", _Unowned())
+    # Written past the freeze on both records: neither a ``Radar`` nor its
+    # block record can be CONSTRUCTED holding an unowned kind, so this is the
+    # only way to execute the refusal rather than merely read it.
+    blank = object.__new__(type(radar.system_config))
+    object.__setattr__(blank, "waveform", _Unowned())
+    object.__setattr__(radar, "system_config", blank)
     with pytest.raises(ValueError, match="no synthesis owner"):
         radar._synthesize(batch, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)

@@ -171,27 +171,28 @@ def test_core_mesh_still_rewrites_authored_world_coordinates_by_default():
 # ---------------------------------------------------------------------------
 
 
-def test_components_and_max_depth_reach_the_propagation_block():
-    from witwin.radar import RadarConfig
-    from witwin.radar.radar import RadarSystemConfig
+def _cpu_radar(**overrides):
+    """The fixture radar on the host: these three tests touch no device tensor."""
 
-    flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    default = RadarSystemConfig.from_radar_config(flat)
-    assert default.propagation.components == frozenset({"los", "reflection"})
-    assert default.propagation.max_depth == 1
+    from witwin.radar import Radar
 
-    narrowed = RadarSystemConfig.from_radar_config(flat, components=frozenset({"los"}), max_depth=0)
+    return Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu", **overrides)
+
+
+def test_a_propagation_request_reaches_the_propagation_block():
+    stored = _cpu_radar().system_config
+    assert stored.propagation.components == frozenset({"los", "reflection"})
+    assert stored.propagation.max_depth == 1
+
+    narrowed = stored.with_propagation(components=frozenset({"los"}), max_depth=0)
     assert narrowed.propagation.components == frozenset({"los"})
     assert narrowed.propagation.max_depth == 0
-    assert narrowed.propagation.reference_frequency_hz == default.propagation.reference_frequency_hz
+    # Tied to the array spacing and to the compiled scene, so it is not a knob.
+    assert narrowed.propagation.reference_frequency_hz == stored.propagation.reference_frequency_hz
 
 
 def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
-    from witwin.radar import RadarConfig
-    from witwin.radar.radar import RadarSystemConfig
-
-    flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    stored = RadarSystemConfig.from_radar_config(flat)
+    stored = _cpu_radar().system_config
     overridden = stored.with_propagation(max_depth=2)
     assert overridden.propagation.max_depth == 2
     assert stored.propagation.max_depth == 1
@@ -199,22 +200,16 @@ def test_with_propagation_overrides_one_solve_without_mutating_the_radar():
 
 
 def test_the_waveform_block_is_selectable_rather_than_inferred():
-    from witwin.radar import RadarConfig
-    from witwin.radar.radar import WAVEFORM_FMCW, WAVEFORM_OFDM, OfdmWaveformConfig, RadarSystemConfig
+    from witwin.radar import Ofdm
+    from witwin.radar.radar import WAVEFORM_FMCW, WAVEFORM_OFDM
 
-    flat = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    assert RadarSystemConfig.from_radar_config(flat).kind == WAVEFORM_FMCW
+    assert _cpu_radar().system_config.kind == WAVEFORM_FMCW
 
-    ofdm = RadarSystemConfig.from_radar_config(
-        flat,
-        waveform=OfdmWaveformConfig(
-            subcarrier_spacing_hz=120e3,
-            num_subcarriers=64,
-            cyclic_prefix_s=1.0e-6,
-            num_symbols=8,
-            max_expected_delay_s=5.0e-7,
-        ),
-    )
+    ofdm = _cpu_radar(
+        waveform=Ofdm(
+            subcarrier_spacing=120e3, num_subcarriers=64, cyclic_prefix=1.0e-6, num_symbols=8, max_expected_delay=5.0e-7
+        )
+    ).system_config
     assert ofdm.kind == WAVEFORM_OFDM
     spec = ofdm.waveform_spec()
     assert spec.num_subcarriers == 64
@@ -233,7 +228,7 @@ pytest.importorskip("witwin.channel")
 def radar():
     from witwin.radar import Radar
 
-    return Radar(dict(geo.FIXTURE_RADAR_CONFIG))
+    return Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
 
 
 @pytest.mark.gpu
@@ -284,7 +279,7 @@ def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
     assert binding.receivers.powers_w is None
     assert binding.site_sinks.powers_w is None
 
-    expected_w = radar.system_config.sensors.tx_power.transmit_power_watts
+    expected_w = radar.transmit_power_watts
     torch.testing.assert_close(
         binding.transmitters.powers_w,
         torch.full((binding.transmitters.count,), float(expected_w), dtype=torch.float32, device=binding.device),

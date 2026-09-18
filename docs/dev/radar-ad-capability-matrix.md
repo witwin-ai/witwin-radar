@@ -474,7 +474,7 @@ above, never a silent one.
   `witwin.core.Mesh` vertex tensor. Plumbing a pose derivative across the
   boundary is a separate accepted design. Follow-up owner: Radar `geometry/smpl.py` plus `witwin.core` Mesh construction, as one accepted design covering the compile boundary.
 - **A material-only forward tangent.** The adapter's dead-tangent guard requires
-  a `delay_s` tangent under `ad_mode='jvp'`, because a dead tangent publishes
+  a `delay_s` tangent under `grad='jvp'`, because a dead tangent publishes
   `delay_rate = 0`, which is indistinguishable from a correct stationary answer.
   A permittivity moves the coefficient and not the delay. Loosening the guard to
   accept a coefficient-only tangent is a decision about what `delay_rate = None`

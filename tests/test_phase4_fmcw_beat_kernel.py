@@ -23,18 +23,20 @@ pytestmark = pytest.mark.gpu
 def _spec(**overrides) -> FmcwSpec:
     """Fixture spec.
 
-    ``carrier_hz`` goes through ``from_radar_config`` rather than ``replace``
+    ``carrier_hz`` goes through ``Radar.waveform_spec`` rather than ``replace``
     because the two carrier parameters are a pair: the factory derives
     ``carrier_rate_hz`` from the carrier placement, and replacing only
     ``carrier_hz`` on a production spec is the both-nonzero double count the
     contract refuses.
     """
 
-    from witwin.radar import RadarConfig
+    from witwin.radar import Radar
 
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
+    # ``device="cpu"``: only the SI waveform spec is read here, and building it
+    # must not depend on a CUDA device being present.
+    radar = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu")
     carrier_hz = overrides.pop("carrier_hz", 0.0)
-    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    spec = radar.waveform_spec(offset=carrier_hz)
     overrides.setdefault("output_domain", "beat")
     if overrides:
         from dataclasses import replace

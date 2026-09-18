@@ -131,8 +131,11 @@ def test_the_slot_period_is_the_chirp_period_times_the_transmitter_count():
 
     radar = _radar()
     frame = _frame(radar, 0.0)
-    chirp_period_s = (radar.config.idle_time + radar.config.ramp_end_time) * 1.0e-6
-    assert float(frame.axes.slow_time_period_s) == pytest.approx(chirp_period_s * radar.config.num_tx, rel=1e-9)
+    # Summed from the two raw waveform fields rather than read off
+    # ``Fmcw.chirp_period``, so this stays an independent expectation instead of
+    # restating the property the axes record was itself built from.
+    chirp_period_s = radar.waveform.idle + radar.waveform.ramp_end
+    assert float(frame.axes.slow_time_period_s) == pytest.approx(chirp_period_s * radar.num_tx, rel=1e-9)
 
 
 def test_a_still_target_writes_no_per_transmitter_phase():

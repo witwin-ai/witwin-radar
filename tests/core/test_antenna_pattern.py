@@ -14,6 +14,10 @@ factor ``sqrt(G_t * G_r)`` is exactly ``G``, and the ratio of an off-axis row to
 a boresight row is the POWER gain the tables tabulate. That is why the dipole
 and bilinear expectations below are the same as before the migration.
 
+What did change is the DEFAULT. ``Radar.pattern`` is now
+``Pattern.isotropic()``, so the two dipole cases name ``Pattern.dipole()``
+themselves and the default has a case of its own asserting unit gain.
+
 These are now GPU tests. The interpolation they exercise lives in a CUDA kernel;
 its Torch oracle is pinned separately, over random directions, by
 ``tests/test_phase6_sensor_weight.py``.
@@ -27,9 +31,9 @@ import types
 import pytest
 import torch
 
-from witwin.radar import Radar, RadarConfig
+from witwin.radar import Radar
 from witwin.radar.paths import RadarPathBatch, RadarPathTopology
-from witwin.radar.sensors import AntennaPatternSpec, RoundTripPatternStage
+from witwin.radar.sensors import Pattern, RoundTripPatternStage
 
 pytestmark = pytest.mark.gpu
 
@@ -49,21 +53,25 @@ def _base_config() -> dict:
         "idle_time": 7,
         "ramp_end_time": 58,
         "chirp_per_frame": 1,
-        "frame_per_second": 10,
-        "num_doppler_bins": 1,
-        "num_range_bins": 128,
-        "num_angle_bins": 16,
         "power": 12,
         "tx_loc": [[0, 0, 0]],
         "rx_loc": [[0, 0, 0]],
     }
 
 
-def _make_radar(*, antenna_pattern=None) -> Radar:
+def _make_radar(*, antenna_pattern=None, **overrides) -> Radar:
+    """A radar whose pattern comes from the file format or from a keyword.
+
+    Both routes exist in production: ``antenna_pattern`` is the flat mapping's
+    optional block, and ``pattern=`` is the SI keyword override. Keeping both
+    here is what lets the map cases below stay authored as file content while
+    the dipole cases name the record.
+    """
+
     config = _base_config()
     if antenna_pattern is not None:
         config["antenna_pattern"] = antenna_pattern
-    return Radar(RadarConfig.from_dict(config))
+    return Radar.from_dict(config, **overrides)
 
 
 def _target_position(x_deg: float, y_deg: float, radius: float = 2.0) -> torch.Tensor:
@@ -85,9 +93,7 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
     join = types.SimpleNamespace(
         sensor_pair_index=zeros, sensor_pair_count=1, site_count=1, path_count=1, response_slot=zeros
     )
-    stage = RoundTripPatternStage.freeze(
-        radar, join, site_ids=(_SITE_STABLE_ID,), pattern=AntennaPatternSpec.from_config(radar.config.antenna_pattern)
-    )
+    stage = RoundTripPatternStage.freeze(radar, join, site_ids=(_SITE_STABLE_ID,), pattern=radar.pattern)
     batch = RadarPathBatch(
         sensor_pair_count=1,
         path_count=1,
@@ -96,7 +102,7 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
         total_delay_s=torch.zeros(1, dtype=torch.float32, device=device),
         delay_rate=None,
         complex_transfer_ref=torch.ones(1, dtype=torch.complex64, device=device),
-        reference_frequency_hz=float(radar.config.fc),
+        reference_frequency_hz=float(radar.carrier),
         row_valid=None,
         topology=RadarPathTopology(
             radar_source_id=zeros,
@@ -152,11 +158,40 @@ def _bilinear_value(
     return (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v10 + (1.0 - tx) * ty * v01 + tx * ty * v11
 
 
-def test_missing_antenna_pattern_uses_default_dipole_runtime():
+def test_missing_antenna_pattern_is_isotropic_at_runtime():
+    """The default is unit gain everywhere, and 85 degrees is the proof.
+
+    This case used to pin the opposite: a radar that declared no pattern got a
+    half-wave dipole, and the edge gain was asserted to be BELOW 0.05. The
+    default is now ``Pattern.isotropic()`` - an unchosen dipole attenuates
+    every off-boresight return by a number nobody asked for - so the same
+    edge angle is asserted to be exactly unity instead.
+    """
+
     radar = _make_radar()
 
-    assert radar.config.antenna_pattern is None
-    assert radar.antenna_pattern_config["kind"] == "separable"
+    assert radar.pattern == Pattern.isotropic()
+
+    center_gain = radar._evaluate_antenna_pattern_xy(
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
+    )
+    edge_gain = radar._evaluate_antenna_pattern_xy(
+        torch.tensor([85.0], dtype=torch.float32, device=radar.device),
+        torch.tensor([0.0], dtype=torch.float32, device=radar.device),
+    )
+
+    unit = torch.tensor([1.0], dtype=torch.float32, device=radar.device)
+    assert torch.allclose(center_gain, unit, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(edge_gain, unit, atol=1e-6, rtol=1e-6)
+
+
+def test_a_declared_dipole_rolls_off_at_the_edge():
+    """The roll-off the default used to supply, now named by the caller."""
+
+    radar = _make_radar(pattern=Pattern.dipole())
+
+    assert radar.pattern.kind == "separable"
 
     center_gain = radar._evaluate_antenna_pattern_xy(
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
@@ -174,16 +209,16 @@ def test_missing_antenna_pattern_uses_default_dipole_runtime():
 
 
 @pytest.mark.parametrize("angle_deg", [0.0, 30.0, 60.0])
-def test_default_dipole_signal_matches_expected_gain(angle_deg: float):
-    """The configured default is a dipole, and the stage applies exactly it.
+def test_dipole_signal_matches_expected_gain(angle_deg: float):
+    """``Pattern.dipole()`` reaches the stage as exactly the cut it tabulates.
 
-    ``AntennaPatternSpec.from_config(None)`` is the half-wave dipole, which is
-    also what ``radar.antenna_pattern_config`` falls back to, so passing the
-    spec through the production stage measures the same cut the runtime
-    declares.
+    The radar names the dipole, the stage is frozen against ``radar.pattern``,
+    and the measured ratio is the closed-form power gain. Against the isotropic
+    default the stage is a proven no-op and every ratio would be one, which is
+    why this case names the pattern rather than relying on a default.
     """
 
-    radar = _make_radar()
+    radar = _make_radar(pattern=Pattern.dipole())
     center_peak = _signal_peak(radar, x_deg=0.0, y_deg=0.0)
     off_axis_peak = _signal_peak(radar, x_deg=angle_deg, y_deg=0.0)
     measured_ratio = (off_axis_peak / center_peak).item()

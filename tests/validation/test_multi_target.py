@@ -25,7 +25,10 @@ from conftest import (
 
 pytestmark = pytest.mark.gpu
 
-_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32, "num_doppler_bins": 32}
+# ``num_doppler_bins`` used to be restated here beside ``chirp_per_frame``. The
+# loader refuses it now, and it was always the same number: a Doppler bin count
+# IS the chirp count, read back from ``radar.waveform.chirps_per_frame``.
+_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32}
 _VFULL = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 

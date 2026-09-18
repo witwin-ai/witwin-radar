@@ -9,13 +9,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from validate_doppler_motion import Motion, make_radar
+from validate_doppler_motion import Trajectory, make_radar
 from validate_heavy_multipath import LinearPoint, room
 from witwin.core import Scene
 
+from witwin.radar import Motion, PointTargets
 from witwin.radar.processing.range_doppler import fmcw_range_fft
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
 
 
 def run(output, cases):
@@ -23,38 +22,28 @@ def run(output, cases):
     rows = json.loads((output / "results.json").read_text()) if (output / "results.json").exists() else {}
     for kind in cases:
         radar = make_radar()
-        radar.system_config = replace(
-            radar.system_config,
+        # ``Radar`` is immutable, so a reshaped waveform makes a new radar. The
+        # timings are SI: the fixture's 442 and 1942 us idles are seconds here.
+        radar = radar.replace(
             waveform=replace(
-                radar.system_config.waveform,
-                adc_samples=64 if kind == "heavy" else 16,
-                chirp_per_frame=32,
-                idle_time=442 if kind == "heavy" else 1942,
-                output_domain="beat",
-            ),
+                radar.waveform,
+                samples_per_chirp=64 if kind == "heavy" else 16,
+                chirps_per_frame=32,
+                idle=442e-6 if kind == "heavy" else 1942e-6,
+                output="beat",
+            )
         )
-        trajectory = LinearPoint(radar.device) if kind == "heavy" else Motion(kind, radar.device)
+        trajectory = LinearPoint(radar.device) if kind == "heavy" else Trajectory(kind, radar.device)
         scene = room() if kind == "heavy" else Scene(structures=(), endpoints=[])
-        response = ScalarRcsResponse.from_values(1.0, 0.0, device=radar.device)
-        kwargs = {
-            "times": (0.0,),
-            "response": response,
-            "sites": ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-            "components": frozenset({"los", "reflection"}) if kind == "heavy" else frozenset({"los"}),
-            "max_depth": 2 if kind == "heavy" else 0,
-        }
+        targets = PointTargets(positions=trajectory.positions(0), amplitude=1.0, trajectory=trajectory.positions)
+        kwargs = {"times": (0.0,), "los": True, "reflections": 2 if kind == "heavy" else 0}
         # Warm native loading and scene compilation outside both measurements.
-        radar.simulate(scene, **kwargs, motion_sampling="adaptive")
+        radar.simulate(scene, targets, **kwargs, motion=Motion.adaptive())
         measured = {}
-        for mode in ("adc", "adaptive"):
+        for mode, motion in (("adc", Motion.adc()), ("adaptive", Motion.adaptive())):
             torch.cuda.synchronize()
             start = time.perf_counter()
-            result = radar.simulate(
-                scene,
-                **kwargs,
-                motion_sampling=mode,
-                adaptive_motion=AdaptiveMotionSpec() if mode == "adaptive" else None,
-            )
+            result = radar.simulate(scene, targets, **kwargs, motion=motion)
             torch.cuda.synchronize()
             seconds = time.perf_counter() - start
             measured[mode] = (result, seconds)

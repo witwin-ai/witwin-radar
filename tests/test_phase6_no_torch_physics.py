@@ -125,10 +125,11 @@ def test_the_migrated_expressions_did_not_come_back_under_another_owner():
 #:
 #: Two kinds, and the difference matters:
 #:
-#: * FREEZE-TIME SETUP, permanent. ``_set_pose_fields`` and
-#:   ``_world_from_local_matrix`` orthonormalise a pose once per radar or once
-#:   per ``set_pose``. They are not a per-path hot path and work item 8 does
-#:   not name them.
+#: * FREEZE-TIME SETUP, permanent. ``_place_antennas`` and
+#:   ``_world_from_local_matrix`` orthonormalise a pose once per radar, and a
+#:   ``Radar`` is immutable, so a new pose is a new radar rather than a second
+#:   run of the same setup. They are not a per-path hot path and work item 8
+#:   does not name them.
 #: * WORK-ITEM-8 SURVIVORS, debt. There are NONE left. There were two, and
 #:   naming them here is what a closed debt looks like.
 #:   ``Radar.waveform`` was the Torch chirp ``exp(j 2 pi (fc t + S t^2 / 2))``,
@@ -144,7 +145,7 @@ def test_the_migrated_expressions_did_not_come_back_under_another_owner():
 #: Equality, not containment. A new Torch physics expression in the facade is a
 #: failure, and so is a stale entry for one that was finally deleted.
 RADAR_FACADE_TORCH_PHYSICS = {
-    ("_set_pose_fields", "torch.linalg.norm"),
+    ("_place_antennas", "torch.linalg.norm"),
     ("_world_from_local_matrix", "torch.linalg.norm"),
 }
 
@@ -266,8 +267,11 @@ def test_an_unknown_waveform_kind_raises_at_runtime():
 
     from witwin.radar.radar import Radar
 
+    # ``object.__setattr__`` because a ``Radar`` is frozen: the record cannot be
+    # built holding an unowned kind, so the only way to execute the refusal is
+    # to write the field past the freeze.
     radar = Radar.__new__(Radar)
-    radar.system_config = _UnknownSystemConfig()
+    object.__setattr__(radar, "system_config", _UnknownSystemConfig())
     with pytest.raises(ValueError, match="no synthesis owner"):
         radar._synthesize(object(), slow_time_mode=None)
 

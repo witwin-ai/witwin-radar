@@ -1,26 +1,34 @@
-"""Tests for Radar configuration validation and derived parameters."""
+"""Tests for Radar configuration validation and derived parameters.
+
+``RadarConfig`` is gone: the ``Radar`` record IS the configuration, and the flat
+FMCW file format is read by ``Radar.from_dict``. Every schema case below moved
+with it, so what used to be asserted about the intermediate record is now
+asserted about the loader's refusals and about the fields of ``Radar`` itself.
+"""
 
 from __future__ import annotations
+
+import dataclasses
 
 import numpy as np
 import pytest
 import torch
 from conftest import STANDARD_CONFIG, MockRadar
 
-from witwin.radar import RadarConfig
+from witwin.radar import Radar
 
 C0 = 299792458
 
 
 class TestRadarConfigSchema:
     def test_config_round_trip_from_dict(self):
-        config = RadarConfig.from_dict(STANDARD_CONFIG)
-        assert config.num_tx == STANDARD_CONFIG["num_tx"]
-        assert config.tx_loc[1] == tuple(STANDARD_CONFIG["tx_loc"][1])
-        assert config.rx_loc[0] == tuple(STANDARD_CONFIG["rx_loc"][0])
+        radar = Radar.from_dict(STANDARD_CONFIG, device="cpu")
+        assert radar.num_tx == STANDARD_CONFIG["num_tx"]
+        assert radar.tx[1] == tuple(STANDARD_CONFIG["tx_loc"][1])
+        assert radar.rx[0] == tuple(STANDARD_CONFIG["rx_loc"][0])
 
     def test_antenna_pattern_round_trip_from_dict(self):
-        radar_config = RadarConfig.from_dict(
+        radar = Radar.from_dict(
             {
                 **STANDARD_CONFIG,
                 "antenna_pattern": {
@@ -30,23 +38,30 @@ class TestRadarConfigSchema:
                     "y_angles_deg": [-30, 0, 30],
                     "y_values": [0.5, 1.0, 0.5],
                 },
-            }
+            },
+            device="cpu",
         )
 
-        assert radar_config.antenna_pattern is not None
-        assert radar_config.antenna_pattern["kind"] == "separable"
-        assert radar_config.antenna_pattern["x_values"][1] == pytest.approx(1.0)
-        assert radar_config.antenna_pattern["y_values"] == [0.5, 1.0, 0.5]
+        assert radar.pattern.kind == "separable"
+        assert radar.pattern.x_gain[1] == pytest.approx(1.0)
+        assert radar.pattern.y_gain == (0.5, 1.0, 0.5)
 
-    def test_the_flat_record_no_longer_carries_the_three_deleted_blocks(self):
-        """A dataclass field is the claim; asserting its absence is the check."""
+    def test_the_record_carries_the_receive_chain_as_flat_fields(self):
+        """A dataclass field is the claim; asserting its shape is the check.
 
-        import dataclasses
+        The old record was checked for the ABSENCE of three grouping blocks.
+        Two of them, ``noise_model`` and ``receiver_chain``, are still absent
+        and the stages they wrapped are one field each. The third,
+        ``polarization``, is now a real field of ``Radar`` - that is the decided
+        behaviour change, not a regression, and it is pinned here so the change
+        cannot happen again silently.
+        """
 
-        fields = {field.name for field in dataclasses.fields(RadarConfig)}
+        fields = {field.name for field in dataclasses.fields(Radar)}
         assert "noise_model" not in fields
         assert "receiver_chain" not in fields
-        assert "polarization" not in fields
+        assert {"noise", "lna_gain", "agc", "adc", "impedance", "seed"} <= fields
+        assert "polarization" in fields
         assert "frontend" in fields
 
     def test_an_unknown_key_is_refused_rather_than_dropped(self):
@@ -54,37 +69,53 @@ class TestRadarConfigSchema:
 
         broken = {**STANDARD_CONFIG, "receiver_chain": {"lna_gain_db": 30.0}}
         with pytest.raises(ValueError, match="unsupported keys: receiver_chain"):
-            RadarConfig.from_dict(broken)
+            Radar.from_dict(broken, device="cpu")
 
     def test_a_waveform_selector_cannot_be_silently_ignored(self):
         """`{"waveform": "ofdm"}` used to build an FMCW radar with no error.
 
         That is the worst shape the swallow had: the one key a caller reaches
         for to choose a waveform, dropped, with a full simulation returned in
-        the wrong waveform. A non-FMCW `Radar` is still unconstructible; this
-        pins that the refusal says so instead of the result implying otherwise.
+        the wrong waveform. The flat form is the FMCW file format; a non-FMCW
+        radar is a ``waveform=`` keyword override, and this pins that the
+        refusal says so instead of the result implying otherwise.
         """
 
         with pytest.raises(ValueError, match="unsupported keys: waveform"):
-            RadarConfig.from_dict({**STANDARD_CONFIG, "waveform": "ofdm"})
+            Radar.from_dict({**STANDARD_CONFIG, "waveform": "ofdm"}, device="cpu")
 
     def test_a_frontend_block_is_refused_instead_of_dropped(self):
-        """The receive chain is attached after validation, not authored here."""
+        """The receive chain is attached as keyword overrides, not authored here."""
 
         with pytest.raises(ValueError, match="unsupported keys: frontend"):
-            RadarConfig.from_dict({**STANDARD_CONFIG, "frontend": {"seed": 7}})
+            Radar.from_dict({**STANDARD_CONFIG, "frontend": {"seed": 7}}, device="cpu")
+
+    @pytest.mark.parametrize("key", ["frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins"])
+    def test_a_key_nothing_consumes_is_refused_by_name(self, key: str):
+        """These four were required by the old form and read by nobody.
+
+        They described a processing grid: the bin counts are derived from the
+        waveform spec and the frame rate is the caller's own scheduling number.
+        Accepting them made a caller believe a block was configured, so the
+        loader names them in its refusal rather than dropping them - a separate
+        message from the unsupported-key one, because "you configured nothing"
+        and "we do not know this key" are different mistakes.
+        """
+
+        with pytest.raises(ValueError, match=f"keys nothing consumes: {key}"):
+            Radar.from_dict({**STANDARD_CONFIG, key: 10}, device="cpu")
 
     def test_missing_required_key_raises(self):
         broken = dict(STANDARD_CONFIG)
         broken.pop("num_tx")
         with pytest.raises(ValueError, match="missing required keys"):
-            RadarConfig.from_dict(broken)
+            Radar.from_dict(broken, device="cpu")
 
     def test_antenna_count_mismatch_raises(self):
         broken = dict(STANDARD_CONFIG)
         broken["tx_loc"] = [[0, 0, 0]]
-        with pytest.raises(ValueError, match="must contain exactly 3 entries"):
-            RadarConfig.from_dict(broken)
+        with pytest.raises(ValueError, match="tx_loc holds 1 entries but num_tx is 3"):
+            Radar.from_dict(broken, device="cpu")
 
     def test_antenna_pattern_map_shape_mismatch_raises(self):
         broken = {
@@ -96,8 +127,8 @@ class TestRadarConfigSchema:
                 "values": [[0.1, 0.2, 0.1], [0.5, 1.0], [0.1, 0.2, 0.1]],
             },
         }
-        with pytest.raises(ValueError, match="must contain exactly 3 entries"):
-            RadarConfig.from_dict(broken)
+        with pytest.raises(ValueError, match="each gain row needs one entry per x sample"):
+            Radar.from_dict(broken, device="cpu")
 
 
 class TestParameterFormulas:
@@ -160,7 +191,7 @@ class TestParameterFormulas:
 class TestConfigVariations:
     @pytest.mark.parametrize("adc_samples", [128, 256, 512, 640])
     def test_range_resolution_scales_with_adc(self, adc_samples):
-        cfg = {**STANDARD_CONFIG, "adc_samples": adc_samples, "num_range_bins": adc_samples}
+        cfg = {**STANDARD_CONFIG, "adc_samples": adc_samples}
         mock = MockRadar(cfg)
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12
@@ -169,7 +200,7 @@ class TestConfigVariations:
 
     @pytest.mark.parametrize("chirps", [8, 32, 64, 128, 256])
     def test_doppler_resolution_scales_with_chirps(self, chirps):
-        cfg = {**STANDARD_CONFIG, "chirp_per_frame": chirps, "num_doppler_bins": chirps}
+        cfg = {**STANDARD_CONFIG, "chirp_per_frame": chirps}
         mock = MockRadar(cfg)
         lam = C0 / cfg["fc"]
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
@@ -188,72 +219,67 @@ class TestConfigVariations:
 
 
 def test_a_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_config):
-    from witwin.radar import Radar
-
-    radar = Radar(standard_config, device="cpu")
+    radar = Radar.from_dict(standard_config, device="cpu")
     assert radar.device == torch.device("cpu")
     assert radar.tx_pos.device.type == "cpu"
     assert not hasattr(radar, "axes")
 
 
 def test_radar_rejects_backend_keyword(standard_config):
-    from witwin.radar import Radar
-
     with pytest.raises(TypeError, match="backend"):
-        Radar(standard_config, backend="unknown")
+        Radar.from_dict(standard_config, backend="unknown", device="cpu")
 
 
 def test_radar_builds_runtime_antenna_pattern(standard_config):
-    from witwin.radar import Radar
-
-    radar = Radar(
-        RadarConfig.from_dict(
-            {
-                **STANDARD_CONFIG,
-                "antenna_pattern": {
-                    "x_angles_deg": [-60, 0, 60],
-                    "x_values": [0.25, 1.0, 0.25],
-                    "y_angles_deg": [-30, 0, 30],
-                    "y_values": [0.5, 1.0, 0.5],
-                },
-            }
-        ),
+    radar = Radar.from_dict(
+        {
+            **standard_config,
+            "antenna_pattern": {
+                "x_angles_deg": [-60, 0, 60],
+                "x_values": [0.25, 1.0, 0.25],
+                "y_angles_deg": [-30, 0, 30],
+                "y_values": [0.5, 1.0, 0.5],
+            },
+        },
         device="cpu",
     )
-    assert radar.antenna_pattern_kind == "separable"
+    assert radar.pattern.kind == "separable"
 
 
 @pytest.mark.gpu
 class TestRadarConstruction:
     def test_radar_creates_from_a_validated_config(self, standard_config):
-        from witwin.radar import Radar
-
         try:
-            radar = Radar(standard_config)
+            radar = Radar.from_dict(standard_config)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             pytest.skip(f"backend unavailable: {exc}")
-        assert radar.config.adc_samples == 256
-        assert radar.config.num_tx == 3
-        assert radar.config.num_rx == 4
+        assert radar.waveform.samples_per_chirp == 256
+        assert radar.num_tx == 3
+        assert radar.num_rx == 4
 
-    def test_radar_accepts_schema_object(self, standard_config):
-        from witwin.radar import Radar
+    def test_the_radar_record_is_the_configuration(self, standard_config):
+        """There is no separate config object to hand around any more.
 
-        radar = Radar(standard_config)
-        assert radar.config is standard_config
+        The old case checked that ``Radar`` stored the very ``RadarConfig`` it
+        was given rather than re-parsing it. The record and the radar are now
+        one frozen dataclass, so the equivalent claim is that reading the same
+        mapping twice yields equal radars and that neither can be edited in
+        place afterwards.
+        """
+
+        radar = Radar.from_dict(standard_config)
+        assert radar == Radar.from_dict(standard_config)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            radar.carrier = 24e9
 
     def test_radar_matches_formula(self, standard_config):
-        from witwin.radar import Radar
-
-        radar = Radar(standard_config)
+        radar = Radar.from_dict(standard_config)
         mock = MockRadar(standard_config)
-        spec = radar.system_config.waveform_spec()
+        spec = radar.waveform_spec()
         assert spec.max_unambiguous_speed_mps == pytest.approx(mock.axes.max_unambiguous_speed_mps, rel=1e-10)
 
     def test_radar_has_no_processing_axis_state(self, standard_config):
-        from witwin.radar import Radar
-
-        radar = Radar(standard_config)
+        radar = Radar.from_dict(standard_config)
         assert not hasattr(radar, "axes")
         assert not hasattr(radar, "ranges")
         assert not hasattr(radar, "velocities")
@@ -270,10 +296,8 @@ class TestRadarConstruction:
 
         import inspect
 
-        from witwin.radar import Radar
-
         try:
-            radar = Radar(standard_config)
+            radar = Radar.from_dict(standard_config)
         except (FileNotFoundError, OSError, RuntimeError) as exc:
             pytest.skip(f"backend unavailable: {exc}")
 

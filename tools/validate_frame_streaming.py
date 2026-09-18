@@ -17,11 +17,8 @@ from pathlib import Path
 import torch
 from witwin.core import Scene
 
-from witwin.radar import Radar
+from witwin.radar import Motion, Pattern, PointTargets, Radar
 from witwin.radar.propagation import Kinematics
-from witwin.radar.scattering import ScalarRcsResponse
-from witwin.radar.sensors import ISOTROPIC_PATTERN
-from witwin.radar.simulation import AdaptiveMotionSpec, ScatterSitePolicy
 
 CONFIG = {
     "num_tx": 3,
@@ -34,46 +31,38 @@ CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 58,
     "chirp_per_frame": 128,
-    "frame_per_second": 10,
-    "num_doppler_bins": 128,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 12,
     "tx_loc": [[0, 0, 0], [2, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
-    "antenna_pattern": {
-        "kind": ISOTROPIC_PATTERN.kind,
-        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
-        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
-        "x_values": list(ISOTROPIC_PATTERN.x_values),
-        "y_values": list(ISOTROPIC_PATTERN.y_values),
-    },
 }
 
 
 class Walker:
-    """A closing target with a 2 Hz lateral sway, in metres and m/s."""
+    """A closing target with a 2 Hz lateral sway, in metres and m/s.
+
+    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` adds the
+    analytic velocity, which keeps the fixture readable as one closed form.
+    """
+
+    def positions(self, t):
+        rate = 2 * math.pi * 2.0
+        points = [[6.0 + 1.2 * t, 0.2 * math.sin(rate * t), 0.0]]
+        return torch.tensor(points, dtype=torch.float32, device="cuda")
 
     def at(self, t):
         rate = 2 * math.pi * 2.0
-        points = [[6.0 + 1.2 * t, 0.2 * math.sin(rate * t), 0.0]]
         speeds = [[1.2, 0.2 * rate * math.cos(rate * t), 0.0]]
-        return Kinematics(
-            torch.tensor(points, dtype=torch.float32, device="cuda"),
-            torch.tensor(speeds, dtype=torch.float32, device="cuda"),
-        )
+        return Kinematics(self.positions(t), torch.tensor(speeds, dtype=torch.float32, device="cuda"))
 
 
 def session(radar, frames, fps):
     trajectory = Walker()
     return {
+        "targets": PointTargets(positions=trajectory.positions(0), rcs=1.0, trajectory=trajectory.positions),
         "times": tuple(index / fps for index in range(frames)),
-        "response": ScalarRcsResponse.from_rcs(1.0, reference_frequency_hz=77e9, device="cuda"),
-        "sites": ScatterSitePolicy.explicit(trajectory.at(0).positions_m, trajectory=trajectory),
-        "components": frozenset({"los"}),
-        "max_depth": 0,
-        "motion_sampling": "adaptive",
-        "adaptive_motion": AdaptiveMotionSpec(),
+        "los": True,
+        "reflections": 0,
+        "motion": Motion.adaptive(),
     }
 
 
@@ -89,11 +78,15 @@ def timed(call):
 
 
 def run(frames, fps, checksum):
-    radar = Radar(CONFIG, position=(0, 0, 0), target=(1, 0, 0))
+    # Isotropic elements and a ``+z`` polarization: the walker moves in the
+    # ``z = 0`` plane, so neither weighting varies over the sequence.
+    radar = Radar.from_dict(
+        CONFIG, pattern=Pattern.isotropic(), polarization=(0, 0, 1), position=(0, 0, 0), look_at=(1, 0, 0)
+    )
     scene = Scene(structures=(), endpoints=[])
     kwargs = session(radar, frames, fps)
     list(radar.stream(scene, **kwargs))  # warm native loading and the allocator
-    radar._last_result = None
+    Radar._last_result = None
 
     def consume():
         """Produce and release every frame, which is what a writer does."""
@@ -106,7 +99,7 @@ def run(frames, fps, checksum):
 
     produced, streamed_s, streamed_peak = timed(consume)
     assert produced == frames
-    radar._last_result = None
+    Radar._last_result = None
     torch.cuda.empty_cache()
     record = {
         "frames": frames,
@@ -137,7 +130,7 @@ def run(frames, fps, checksum):
             del frame
         record["mismatched_frames"] = mismatched
         assert mismatched == 0, record
-    radar._last_result = None
+    Radar._last_result = None
     torch.cuda.empty_cache()
     return record
 

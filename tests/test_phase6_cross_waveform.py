@@ -529,22 +529,20 @@ def test_the_frontend_agc_breaks_linearity_and_that_is_a_tested_fact(frame):
     stops being true.
     """
 
-    from witwin.radar.frontend import AgcSpec, FrontendChain, FrontendSpec, PortSpec
+    from witwin.radar import Agc
+    from witwin.radar.frontend import FrontendChain, FrontendSpec
 
     _, _, batch = frame
     cube = synthesize_fmcw(batch, fmcw_spec(2))
     scaled = cube * 2.0
 
-    without_agc = FrontendChain(FrontendSpec(port=PortSpec(reference_impedance_ohm=50.0)))
+    without_agc = FrontendChain(FrontendSpec(impedance=50.0))
     linear_once = without_agc.apply(cube).signal
     linear_twice = without_agc.apply(scaled).signal
     torch.testing.assert_close(linear_twice, 2.0 * linear_once, rtol=1e-6, atol=0.0)
 
     with_agc = FrontendChain(
-        FrontendSpec(
-            port=PortSpec(reference_impedance_ohm=50.0),
-            agc=AgcSpec(target_rms=1e-3, mode="global", min_gain_db=-60.0, max_gain_db=60.0),
-        )
+        FrontendSpec(impedance=50.0, agc=Agc(target_rms=1e-3, mode="global", min_gain=-60.0, max_gain=60.0))
     )
     agc_once = with_agc.apply(cube).signal
     agc_twice = with_agc.apply(scaled).signal

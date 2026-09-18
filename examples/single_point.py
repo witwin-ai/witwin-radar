@@ -21,16 +21,18 @@ predictable and a wrong pipeline still produces a plausible picture:
 
 Two conventions are worth reading before copying this file:
 
-* the radar looks along ``-z`` (the camera convention its pose uses) and the
-  endpoint polarization is therefore declared along ``+y``. Channel projects the
-  field onto that world-frame vector, so a polarization parallel to the
-  propagation direction radiates nothing and every transport comes back exactly
-  zero. The default ``(0, 0, 1)`` is transverse for a radar that looks along
-  ``x``; it is NOT transverse for one that looks along ``z``.
-* the receive chain is a ``FrontendSpec``. It is attached to the ``RadarConfig``
-  after validation because the flat mapping accepted by ``RadarConfig.from_dict``
-  does not carry a ``frontend`` block. Without it the cube is noiseless and CFAR
-  detects sidelobes rather than targets.
+* the radar looks along ``-z`` (the camera convention its pose uses) and says
+  nothing about polarization, because it does not have to. Channel projects the
+  transmitted field onto a world-frame vector, and a vector parallel to the
+  boresight radiates nothing; ``Radar.polarization`` therefore defaults to
+  ``"up"``, the pose's own up axis, which is transverse whichever way the radar
+  is pointed. A world vector is still accepted, and one parallel to the
+  boresight is refused rather than publishing a cube of exact zeros.
+* the receive chain is made of fields on the radar - here one ``Noise`` stage.
+  ``Radar.from_dict`` reads the flat FMCW mapping and takes every other field as
+  a keyword override, so the chain and the pose are attached in the same call.
+  Without the noise the cube is noiseless and CFAR detects sidelobes rather than
+  targets.
 
 Usage:
     python -m examples.single_point
@@ -39,7 +41,6 @@ Usage:
 
 from __future__ import annotations
 
-import dataclasses
 import math
 import pathlib
 import sys
@@ -53,8 +54,7 @@ if str(REPO_ROOT) not in sys.path:
 from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
 
-from witwin.radar import Radar, RadarConfig  # noqa: E402
-from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
+from witwin.radar import Noise, PointTargets, Radar, RadarSimulationResult  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
     ProcessingAxes,
@@ -64,9 +64,6 @@ from witwin.radar.processing import (  # noqa: E402
     range_doppler_map,
     range_profile,
 )
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
-from witwin.radar.synthesis import SlowTimeMode  # noqa: E402
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
@@ -81,10 +78,6 @@ CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 65,
     "chirp_per_frame": 128,
-    "frame_per_second": 10,
-    "num_doppler_bins": 128,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 15,
     "tx_loc": [[0, 0, 0], [4, 0, 0], [2, 1, 0]],
     "rx_loc": [[-6, 0, 0], [-5, 0, 0], [-4, 0, 0], [-3, 0, 0]],
@@ -96,7 +89,6 @@ TARGET_POSITION_M = (0.0, 0.0, -3.0)
 TARGET_RCS_M2 = 1.0
 WALL_PLANE_Z_M = -5.0
 WALL_HALF_EXTENT_M = 2.0
-POLARIZATION = (0.0, 1.0, 0.0)
 FRAME_TIMES_S = (0.0, 0.1, 0.2)
 
 
@@ -140,14 +132,12 @@ def build_scene() -> Scene:
 def build_radar() -> Radar:
     """The front end, with a thermal-noise receive chain attached."""
 
-    config = RadarConfig.from_dict(CONFIG)
-    config = dataclasses.replace(
-        config,
-        frontend=FrontendSpec(
-            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3), seed=SeedSpec(20260727)
-        ),
+    # The noise bandwidth is left unset: a thermal stage integrates over the
+    # waveform's own sampling bandwidth, and the radar fills that in from the
+    # ``sample_rate`` this mapping already declares.
+    return Radar.from_dict(
+        CONFIG, noise=Noise(figure=10.0), seed=20260727, position=(0.0, 0.0, 0.0), look_at=(0.0, 0.0, -1.0)
     )
-    return Radar(config, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
 
 
 def expected_transport(radar: Radar) -> float:
@@ -158,28 +148,26 @@ def expected_transport(radar: Radar) -> float:
     against itself proves nothing.
     """
 
-    wavelength_m = SPEED_OF_LIGHT_M_PER_S / radar.config.fc
-    transmit_power_w = radar.system_config.sensors.tx_power.transmit_power_watts
+    wavelength_m = SPEED_OF_LIGHT_M_PER_S / radar.carrier
+    transmit_power_w = radar.transmit_power_watts
     range_m = math.dist((0.0, 0.0, 0.0), TARGET_POSITION_M)
     spreading = wavelength_m / (4.0 * math.pi * range_m)
     strength = math.sqrt(4.0 * math.pi * TARGET_RCS_M2) / wavelength_m
     return math.sqrt(transmit_power_w) * spreading * strength * spreading
 
 
-def processing_axes(radar: Radar) -> ProcessingAxes:
+def processing_axes(radar: Radar, result: RadarSimulationResult) -> ProcessingAxes:
     """The metadata record every processing stage reads.
 
-    ``ProcessingAxes`` is built from a ``SynthesisResult``, and the simulation
-    result publishes the ASSEMBLED ``[frame, tx, rx, slow, fast]`` cube rather
-    than the rank-3 synthesis product. Re-synthesizing the last frame's composed
-    rows is the public route to one: the record carries shapes and conventions,
-    both of which are properties of the waveform specification and are therefore
-    the same for every frame.
+    ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
+    simulation result publishes the ASSEMBLED ``[frame, tx, rx, slow, fast]``
+    cube. ``frame_synthesis`` re-views one frame of that cube in the rank-3
+    layout without resynthesizing anything, so the record describes the very
+    cube processed below rather than a second run of the same physics.
     """
 
-    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
+        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
     )
 
 
@@ -192,28 +180,20 @@ def main() -> None:
 
     radar = build_radar()
     scene = build_scene()
-    sites = ScatterSitePolicy.explicit(torch.tensor([TARGET_POSITION_M], dtype=torch.float32, device=radar.device))
-    response = ScalarRcsResponse.from_rcs(TARGET_RCS_M2, reference_frequency_hz=radar.config.fc, device=radar.device)
+    targets = PointTargets(
+        positions=torch.tensor([TARGET_POSITION_M], dtype=torch.float32, device=radar.device), rcs=TARGET_RCS_M2
+    )
 
     print(f"Using device={radar.device}")
     print("Simulating the scene...")
-    result = radar.simulate(
-        scene,
-        times=FRAME_TIMES_S,
-        response=response,
-        sites=sites,
-        polarization=POLARIZATION,
-        components=frozenset({"los", "reflection"}),
-        max_depth=1,
-    )
+    result = radar.simulate(scene, targets, times=FRAME_TIMES_S, los=True, reflections=1)
 
-    array = radar.system_config.sensors.array
     assert result.cube.shape == (
         len(FRAME_TIMES_S),
-        array.num_tx,
-        array.num_rx,
-        radar.system_config.waveform.chirp_per_frame,
-        radar.system_config.waveform.adc_samples,
+        radar.num_tx,
+        radar.num_rx,
+        radar.waveform.chirps_per_frame,
+        radar.waveform.samples_per_chirp,
     ), f"Unexpected cube shape: {tuple(result.cube.shape)}"
     print(f"  Cube: {tuple(result.cube.shape)} {result.axes}  OK")
 
@@ -227,13 +207,13 @@ def main() -> None:
     # The four typed diagnostics, all describing the LAST frame.
     print(
         "  Diagnostics: "
-        f"{type(radar.last_snapshot).__name__}, "
-        f"{type(radar.last_compiled_scene).__name__}, "
-        f"{type(radar.last_propagation).__name__}, "
-        f"{type(radar.last_radar_paths).__name__}"
+        f"{type(result.last_snapshot).__name__}, "
+        f"{type(result.last_compiled_scene).__name__}, "
+        f"{type(result.last_propagation).__name__}, "
+        f"{type(result.last_radar_paths).__name__}"
     )
 
-    paths = radar.last_radar_paths
+    paths = result.last_radar_paths
     print(f"  Composed rows: {paths.path_count} over {paths.sensor_pair_count} pairs")
     measured = float(paths.complex_transfer_ref.abs().max())
     predicted = expected_transport(radar)
@@ -244,9 +224,13 @@ def main() -> None:
     )
     print(f"  |C_rt| = {measured:.6e} vs radar equation {predicted:.6e}  OK")
 
-    axes = processing_axes(radar)
+    axes = processing_axes(radar, result)
     geometry = ArrayGeometry.from_axes(axes)
-    profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
+    # No fast-time window here: this waveform's ``output`` is ``"spectrum"``, so
+    # the cube arrives already transformed and a window applied after the
+    # transform would weight bins rather than samples. The Doppler stage still
+    # takes one, because slow time has not been transformed yet.
+    profile = range_profile(ProcessingCube(result.cube[0], axes))
     rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(geometry.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     range_response = combined.abs().amax(dim=0)

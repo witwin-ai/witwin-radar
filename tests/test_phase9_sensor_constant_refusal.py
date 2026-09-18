@@ -261,14 +261,14 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
     host float, where refusing the type is both available and stronger.
     """
 
-    from witwin.radar.frontend import LnaSpec
+    from witwin.radar.frontend import FrontendSpec
 
     geometry = SensorWeightGeometry(**_geometry_fields())
     assert isinstance(geometry.pattern_frame, torch.Tensor)
     assert not geometry.pattern_frame.requires_grad
 
     with pytest.raises(TypeError):
-        LnaSpec(gain_db=torch.tensor(20.0))
+        FrontendSpec(lna=torch.tensor(20.0))
 
 
 # --------------------------------------------------------------------------
@@ -295,8 +295,8 @@ PRODUCTION_SITE_POSITIONS_M = ((2.0, 0.6, 0.35), (1.7, -0.9, -0.5))
 
 
 #: A pattern that actually varies, for the one test that needs a non-zero
-#: derivative. ``ISOTROPIC_PATTERN`` has gain exactly 1 in every direction, so a
-#: site-position gradient through it is exactly zero - correctly.
+#: derivative. ``Pattern.isotropic()`` has gain exactly 1 in every direction, so
+#: a site-position gradient through it is exactly zero - correctly.
 DIRECTIONAL_PATTERN_ANGLES_DEG = (-90.0, 0.0, 90.0)
 
 
@@ -317,13 +317,13 @@ def _production_stage(pattern=None):
     from support import multi_endpoint_driver as drv
     from support import multi_endpoint_geometry as geo
 
-    from witwin.radar import Radar
-    from witwin.radar.sensors import ISOTROPIC_PATTERN, RoundTripPatternStage
+    from witwin.radar import Pattern, Radar
+    from witwin.radar.sensors import RoundTripPatternStage
 
     spike = drv.MultiEndpointSpike()
-    radar = Radar(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
+    radar = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0))
     stage = RoundTripPatternStage.freeze(
-        radar, spike.composer, site_ids=spike.site_ids, pattern=ISOTROPIC_PATTERN if pattern is None else pattern
+        radar, spike.composer, site_ids=spike.site_ids, pattern=Pattern.isotropic() if pattern is None else pattern
     )
     composed, _, _ = spike.frame(response=drv.make_response())
     return radar, stage, composed
@@ -372,15 +372,11 @@ def test_a_marked_field_on_the_production_geometry_is_still_refused():
 def test_the_production_route_still_carries_the_position_gradient():
     """Over-refusing is the opposite mistake; the site position still works."""
 
-    from witwin.radar.sensors import AntennaPatternSpec
+    from witwin.radar import Pattern
 
     radar, stage, composed = _production_stage(
-        AntennaPatternSpec(
-            kind="separable",
-            x_angles_deg=DIRECTIONAL_PATTERN_ANGLES_DEG,
-            x_values=(0.2, 1.0, 0.3),
-            y_angles_deg=DIRECTIONAL_PATTERN_ANGLES_DEG,
-            y_values=(0.4, 1.0, 0.5),
+        Pattern.separable(
+            DIRECTIONAL_PATTERN_ANGLES_DEG, (0.2, 1.0, 0.3), DIRECTIONAL_PATTERN_ANGLES_DEG, (0.4, 1.0, 0.5)
         )
     )
     sites = torch.tensor(PRODUCTION_SITE_POSITIONS_M, dtype=torch.float32, device="cuda").requires_grad_(True)

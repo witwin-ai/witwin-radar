@@ -17,9 +17,9 @@ NOT span the signal, and a noiseless simulation of two coherent targets produces
 a covariance of rank two with every other eigenvalue exactly zero. There is no
 noise subspace to find, the eigendecomposition itself is ill conditioned, and
 the answer is undefined rather than merely inaccurate. The receive chain here is
-a real thermal-noise front end at a 10 dB noise figure. It is attached to the
-``RadarConfig`` after validation because the flat mapping accepted by
-``RadarConfig.from_dict`` does not carry a ``frontend`` block.
+a real thermal-noise front end at a 10 dB noise figure, declared as a ``Noise``
+field of the radar: ``Radar.from_dict`` reads the flat FMCW mapping and takes
+every other field as a keyword override, so the chain arrives in the same call.
 
 Note also that ``Radar.simulate`` composes the round trip ONCE per frame, so the
 eight chirps of one frame are identical snapshots and the covariance is
@@ -34,7 +34,6 @@ Usage:
 
 from __future__ import annotations
 
-import dataclasses
 import math
 import pathlib
 import sys
@@ -48,8 +47,7 @@ if str(REPO_ROOT) not in sys.path:
 from witwin.core import AntennaState, Scene  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
 
-from witwin.radar import Radar, RadarConfig  # noqa: E402
-from witwin.radar.frontend import FrontendSpec, NoiseSpec, SeedSpec  # noqa: E402
+from witwin.radar import Noise, PointTargets, Radar, RadarSimulationResult  # noqa: E402
 from witwin.radar.processing import (  # noqa: E402
     ArrayGeometry,
     ProcessingAxes,
@@ -57,9 +55,6 @@ from witwin.radar.processing import (  # noqa: E402
     music_image,
     range_profile,
 )
-from witwin.radar.scattering import ScalarRcsResponse  # noqa: E402
-from witwin.radar.simulation import ScatterSitePolicy  # noqa: E402
-from witwin.radar.synthesis import SlowTimeMode  # noqa: E402
 
 ARRAY_SIZE = 20
 FIELD_OF_VIEW_RAD = math.pi / 2
@@ -78,10 +73,6 @@ CONFIG = {
     "idle_time": 7,
     "ramp_end_time": 65,
     "chirp_per_frame": 8,
-    "frame_per_second": 10,
-    "num_doppler_bins": 8,
-    "num_range_bins": 256,
-    "num_angle_bins": 64,
     "power": 15,
     # The transmit row runs along the array's local x, the receive row along its
     # local y, so the virtual array is a planar 20 x 20 grid. MUSIC's first image
@@ -96,21 +87,18 @@ TARGET_RANGE_M = 3.0
 TARGET_OFFSET_M = 0.5
 TARGET_POSITIONS_M = ((-TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M), (TARGET_OFFSET_M, 0.0, -TARGET_RANGE_M))
 TARGET_RCS_M2 = 1.0
-#: Transverse to the ``-z`` boresight. Channel projects the field onto this
-#: world-frame vector; the package default ``(0, 0, 1)`` is parallel to this
-#: boresight and would publish exactly zero transport.
-POLARIZATION = (0.0, 1.0, 0.0)
 
 
 def build_radar() -> Radar:
-    config = RadarConfig.from_dict(CONFIG)
-    config = dataclasses.replace(
-        config,
-        frontend=FrontendSpec(
-            noise=NoiseSpec(noise_figure_db=10.0, bandwidth_hz=CONFIG["sample_rate"] * 1e3), seed=SeedSpec(20260727)
-        ),
+    # ``polarization`` is left at its default ``"up"``, which is the pose's own
+    # up axis and is therefore transverse to the ``-z`` boresight; a world
+    # vector parallel to the boresight would radiate nothing. The noise
+    # bandwidth is left unset for the same kind of reason: a thermal stage
+    # integrates over the waveform's sampling bandwidth, which this mapping's
+    # ``sample_rate`` already fixes.
+    return Radar.from_dict(
+        CONFIG, noise=Noise(figure=10.0), seed=20260727, position=(0.0, 0.0, 0.0), look_at=(0.0, 0.0, -1.0)
     )
-    return Radar(config, position=(0.0, 0.0, 0.0), target=(0.0, 0.0, -1.0))
 
 
 def build_scene() -> Scene:
@@ -122,19 +110,17 @@ def build_scene() -> Scene:
     )
 
 
-def processing_axes(radar: Radar) -> ProcessingAxes:
+def processing_axes(radar: Radar, result: RadarSimulationResult) -> ProcessingAxes:
     """The metadata record every processing stage reads.
 
     ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
     simulation result publishes the assembled ``[frame, tx, rx, slow, fast]``
-    cube, so the last frame's composed rows are re-synthesized to obtain one.
-    The record carries shapes and conventions, which are properties of the
-    waveform specification and are the same for every frame.
+    cube. ``frame_synthesis`` re-views one frame in that rank-3 layout without
+    resynthesizing anything, so the record describes the cube processed below.
     """
 
-    synthesis = radar._synthesize(radar.last_radar_paths, slow_time_mode=SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE)
     return ProcessingAxes.from_synthesis(
-        synthesis, radar.system_config.waveform_spec(), radar.system_config.sensors.array
+        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
     )
 
 
@@ -146,29 +132,23 @@ def main() -> None:
         )
 
     radar = build_radar()
-    sites = ScatterSitePolicy.explicit(torch.tensor(TARGET_POSITIONS_M, dtype=torch.float32, device=radar.device))
-    response = ScalarRcsResponse.from_rcs(TARGET_RCS_M2, reference_frequency_hz=radar.config.fc, device=radar.device)
+    targets = PointTargets(
+        positions=torch.tensor(TARGET_POSITIONS_M, dtype=torch.float32, device=radar.device), rcs=TARGET_RCS_M2
+    )
 
     print(f"Using device={radar.device}")
     print(f"Simulating two targets with a {ARRAY_SIZE}x{ARRAY_SIZE} MIMO array...")
-    result = radar.simulate(
-        build_scene(),
-        times=(0.0,),
-        response=response,
-        sites=sites,
-        polarization=POLARIZATION,
-        components=frozenset({"los"}),
-        max_depth=0,
-    )
+    result = radar.simulate(build_scene(), targets, times=(0.0,), los=True, reflections=0)
     assert result.cube.shape == (1, ARRAY_SIZE, ARRAY_SIZE, CONFIG["chirp_per_frame"], CONFIG["adc_samples"]), (
         f"Unexpected cube shape: {tuple(result.cube.shape)}"
     )
     print(f"  Cube: {tuple(result.cube.shape)} {result.axes}  OK")
-    print(f"  Composed rows: {radar.last_radar_paths.path_count}")
+    print(f"  Composed rows: {result.last_radar_paths.path_count}")
 
-    axes = processing_axes(radar)
+    axes = processing_axes(radar, result)
     geometry = ArrayGeometry.from_axes(axes)
-    profile = range_profile(ProcessingCube(result.cube[0], axes), window="hann")
+    # The cube is already a range spectrum, so no fast-time window applies here.
+    profile = range_profile(ProcessingCube(result.cube[0], axes))
 
     # The range gate is chosen here rather than inside the imager: reading a
     # peak off a spectrum is a modelling choice and ``music_image`` refuses to

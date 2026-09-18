@@ -73,11 +73,12 @@ def make_response(*, requires_grad: bool = False, device: str = "cuda"):
 
 
 def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0, output_domain: str = "beat"):
-    from witwin.radar import RadarConfig
-    from witwin.radar.synthesis import FmcwSpec
+    from witwin.radar import Radar
 
-    config = RadarConfig.from_dict(dict(geo.FIXTURE_RADAR_CONFIG))
-    spec = FmcwSpec.from_radar_config(config, carrier_hz=carrier_hz)
+    # device="cpu" because a waveform spec holds no tensors: the fixture must
+    # stay buildable during a CUDA-less collection pass, and every number below
+    # is identical either way.
+    spec = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu").waveform_spec(offset=carrier_hz)
     if num_chirps is not None:
         from dataclasses import replace
 

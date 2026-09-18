@@ -227,34 +227,33 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch, capsys)
     that rebuilt its row tables inside the frame loop would still launch once
     per frame, but one that re-applied the pattern per site or per pair would
     not, and a single frame cannot tell those apart from the total.
+
+    ``Radar.pattern`` now defaults to the isotropic table rather than to the
+    half-wave dipole, and the stage RUNS either way, so the pattern is named
+    here for the same reason it always was - a unit-gain table makes this a
+    launch count rather than a physics change - and not to enable anything.
     """
 
     from support import multi_endpoint_geometry as geo
     from support import multi_endpoint_world as world
 
-    from witwin.radar import Radar
-    from witwin.radar.scattering import ScalarRcsResponse
-    from witwin.radar.sensors import ISOTROPIC_PATTERN
-    from witwin.radar.simulation import ScatterSitePolicy
+    from witwin.radar import Pattern, PointTargets, Radar
 
-    config = dict(geo.FIXTURE_RADAR_CONFIG)
-    config["antenna_pattern"] = {
-        "kind": ISOTROPIC_PATTERN.kind,
-        "x_angles_deg": list(ISOTROPIC_PATTERN.x_angles_deg),
-        "y_angles_deg": list(ISOTROPIC_PATTERN.y_angles_deg),
-        "x_values": list(ISOTROPIC_PATTERN.x_values),
-        "y_values": list(ISOTROPIC_PATTERN.y_values),
-    }
-    radar = Radar(config, position=(0.0, 0.0, 0.0), target=(1.0, 0.0, 0.0))
+    radar = Radar.from_dict(
+        dict(geo.FIXTURE_RADAR_CONFIG), pattern=Pattern.isotropic(), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0)
+    )
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)
-    sites = ScatterSitePolicy.explicit(
-        torch.tensor((geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device)
+    targets = PointTargets(
+        positions=torch.tensor(
+            (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device
+        ),
+        amplitude=drv.FIXTURE_AMPLITUDE,
+        phase=drv.FIXTURE_PHASE_RAD,
     )
-    response = ScalarRcsResponse.from_values(drv.FIXTURE_AMPLITUDE, drv.FIXTURE_PHASE_RAD, device=radar.device)
 
     def simulate(times):
-        return radar.simulate(scene, times=times, response=response, sites=sites)
+        return radar.simulate(scene, targets, times=times)
 
     simulate((0.0,))  # resolve every lazy import and table before wrapping
 
@@ -281,31 +280,23 @@ def test_the_frontend_costs_at_most_three_launches_per_frame(monkeypatch, capsys
     a six-stage chain is three launches and not six.
     """
 
-    from witwin.radar.frontend import (
-        AdcSpec,
-        AgcSpec,
-        FrontendChain,
-        FrontendSpec,
-        LnaSpec,
-        NoiseSpec,
-        PortSpec,
-        SeedSpec,
-    )
+    from witwin.radar import Adc, Agc, Noise
+    from witwin.radar.frontend import FrontendChain, FrontendSpec
 
     spec = FrontendSpec(
-        port=PortSpec(reference_impedance_ohm=50.0),
-        noise=NoiseSpec(
-            noise_figure_db=6.0,
-            antenna_temperature_k=290.0,
-            bandwidth_hz=5.0e6,
-            phase_noise_dbc_per_hz=-90.0,
-            phase_offset_hz=1.0e5,
-            phase_sample_rate_hz=5.0e6,
+        impedance=50.0,
+        noise=Noise(
+            figure=6.0,
+            antenna_temperature=290.0,
+            bandwidth=5.0e6,
+            phase_density=-90.0,
+            phase_offset=1.0e5,
+            phase_sample_rate=5.0e6,
         ),
-        lna=LnaSpec(gain_db=20.0),
-        agc=AgcSpec(target_rms=0.2, mode="global", min_gain_db=-40.0, max_gain_db=40.0),
-        adc=AdcSpec(bits=10, full_scale=1.0),
-        seed=SeedSpec(seed_base=7),
+        lna=20.0,
+        agc=Agc(target_rms=0.2, mode="global", min_gain=-40.0, max_gain=40.0),
+        adc=Adc(bits=10, full_scale=1.0),
+        seed=7,
     )
     chain = FrontendChain(spec)
     signal = torch.randn(2, 2, 4, 32, dtype=torch.complex64, device="cuda")

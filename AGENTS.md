@@ -8,8 +8,9 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 
 ## Concept-axis layout
 
-- `witwin/radar/radar.py` — radar configuration, pose, waveform selection, and the `Radar` facade.
-- `witwin/radar/simulation.py` — scene-session orchestration and `RadarSimulationResult`.
+- `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat-configuration loader.
+- `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py` and the site binding in `simulation.py`; nothing here computes either.
+- `witwin/radar/simulation.py` — scene-session orchestration, the `Motion` sampling record, and `RadarSimulationResult`.
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
 - `witwin/radar/paths.py` — direct and two-way round-trip path contracts and composition.
@@ -44,8 +45,9 @@ FMCW output defaults to a normalized range spectrum. Stationary paths use native
 
 ## Public entry points
 
-- `Radar.simulate(...)` is the scene-driven production entry and returns a typed frame result.
-- `Radar.synthesize(...)` dispatches by the stored waveform kind and requires an explicit slow-time mode.
+- `Radar.simulate(scene, targets, times=...)` is the scene-driven production entry and returns a typed frame result. `Radar.stream(...)` runs the identical session and yields one frame at a time. Both take the target set as a required positional argument, the propagation request as `los`/`reflections`, the in-frame sampling as `motion`, and the differentiation mode as `grad`.
+- `Radar` is a flat immutable record. `Radar.from_dict` and `Radar.from_json` load the flat FMCW configuration format, and `Radar.replace(...)` and `Radar.to(device)` return a new radar; nothing edits one in place. A radar holds no run state, so the per-frame typed diagnostics are read from the result that published them.
+- Waveform synthesis has no public entry point. Dispatch on the stored waveform kind is a private method of `Radar`, and a caller reaches synthesized samples only through the result a verb returns.
 - Public processing functions and typed products are exported from `witwin.radar.processing`.
 - Channel integration is internal; callers do not import internal adapter objects through the Radar facade.
 
