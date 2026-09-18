@@ -2,7 +2,7 @@
 
 This is the smallest complete use of the Phase-11 entry point:
 
-    witwin.core.Scene  ->  Radar.simulate  ->  RadarSimulationResult
+    witwin.core.Scene  ->  Radar.simulate  ->  Result
                        ->  witwin.radar.processing
 
 The world is a concrete wall and a single scatter site 3 m in front of the
@@ -54,16 +54,7 @@ if str(REPO_ROOT) not in sys.path:
 from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
 
-from witwin.radar import Noise, PointTargets, Radar, RadarSimulationResult  # noqa: E402
-from witwin.radar.processing import (  # noqa: E402
-    ArrayGeometry,
-    ProcessingAxes,
-    ProcessingCube,
-    ca_cfar_fast,
-    point_cloud,
-    range_doppler_map,
-    range_profile,
-)
+from witwin.radar import Noise, PointTargets, Radar  # noqa: E402
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
@@ -156,21 +147,6 @@ def expected_transport(radar: Radar) -> float:
     return math.sqrt(transmit_power_w) * spreading * strength * spreading
 
 
-def processing_axes(radar: Radar, result: RadarSimulationResult) -> ProcessingAxes:
-    """The metadata record every processing stage reads.
-
-    ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
-    simulation result publishes the ASSEMBLED ``[frame, tx, rx, slow, fast]``
-    cube. ``frame_synthesis`` re-views one frame of that cube in the rank-3
-    layout without resynthesizing anything, so the record describes the very
-    cube processed below rather than a second run of the same physics.
-    """
-
-    return ProcessingAxes.from_synthesis(
-        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
-    )
-
-
 def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError(
@@ -195,7 +171,7 @@ def main() -> None:
         radar.waveform.chirps_per_frame,
         radar.waveform.samples_per_chirp,
     ), f"Unexpected cube shape: {tuple(result.cube.shape)}"
-    print(f"  Cube: {tuple(result.cube.shape)} {result.axes}  OK")
+    print(f"  Cube: {tuple(result.cube.shape)} {result.axis_names}  OK")
 
     # The world does not move, so the pipeline compiles the scene once and
     # discovers the path topology once for the whole run.
@@ -224,14 +200,18 @@ def main() -> None:
     )
     print(f"  |C_rt| = {measured:.6e} vs radar equation {predicted:.6e}  OK")
 
-    axes = processing_axes(radar, result)
-    geometry = ArrayGeometry.from_axes(axes)
+    # The result carries the metadata every processing stage reads, so a
+    # frame is a cube and its axes together. Assembling that pairing by hand
+    # was how a cube could end up described by a different array than the one
+    # it came from.
+    frame = result.frame(0)
+    axes = frame.axes
+    geometry = frame.array()
     # No fast-time window here: this waveform's ``output`` is ``"spectrum"``, so
     # the cube arrives already transformed and a window applied after the
     # transform would weight bins rather than samples. The Doppler stage still
     # takes one, because slow time has not been transformed yet.
-    profile = range_profile(ProcessingCube(result.cube[0], axes))
-    rd = range_doppler_map(profile, window="hann")
+    rd = frame.range_doppler(window="hann")
     combined = rd.data.reshape(geometry.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     range_response = combined.abs().amax(dim=0)
 
@@ -255,8 +235,7 @@ def main() -> None:
     )
     print(f"  Multipath peak near {multipath_range_m:.4f} m  OK")
 
-    detections = ca_cfar_fast(combined.abs(), guard_cells=(2, 4), training_cells=(4, 8), pfa=1e-4)
-    cloud = point_cloud(detections, rd, axes, geometry, route="phase_comparison", max_points=64)
+    cloud = frame.points(pfa=1e-4, guard_cells=(2, 4), training_cells=(4, 8), max_points=64)
     print(f"  Point cloud: {len(cloud)} points")
     print("PASSED")
 

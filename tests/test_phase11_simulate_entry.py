@@ -38,7 +38,7 @@ from support import multi_endpoint_geometry as geo  # noqa: E402
 from support import multi_endpoint_world as world  # noqa: E402
 
 import witwin.radar as wr  # noqa: E402
-from witwin.radar import Motion, PointTargets, Radar, RadarSimulationResult, StructureTargets  # noqa: E402
+from witwin.radar import Motion, PointTargets, Radar, Result, StructureTargets  # noqa: E402
 from witwin.radar.paths import RadarPathBatch  # noqa: E402
 from witwin.radar.propagation import RadarLegBatch, RadarPropagationLegs  # noqa: E402
 from witwin.radar.simulation import StableIdAllocator  # noqa: E402
@@ -92,7 +92,7 @@ def _static_scene():
     return scene
 
 
-def _simulate(radar: Radar, scene, times, **options) -> RadarSimulationResult:
+def _simulate(radar: Radar, scene, times, **options) -> Result:
     options.setdefault("motion", Motion.chirp())
     return radar.simulate(scene, _targets(radar), times=times, **options)
 
@@ -112,7 +112,7 @@ def test_simulate_runs_the_whole_pipeline_and_publishes_a_frame_cube():
     assert result.cube.shape == (3, radar.num_tx, radar.num_rx, waveform.chirps_per_frame, waveform.samples_per_chirp)
     assert result.cube.dtype == torch.complex64
     assert result.cube.device.type == radar.device.type
-    assert result.axes == ("frame", "tx", "rx", "chirp", "range_bin")
+    assert result.axis_names == ("frame", "tx", "rx", "chirp", "range_bin")
     assert result.kind == "fmcw"
     assert result.times_s == (0.0, 1.0e-3, 2.0e-3)
     assert result.frame_count == 3
@@ -128,7 +128,7 @@ def test_the_entry_returns_the_typed_record_rather_than_a_bare_tensor():
 
     radar = _radar()
     result = _simulate(radar, _static_scene(), (0.0,))
-    assert isinstance(result, RadarSimulationResult)
+    assert isinstance(result, Result)
     assert dataclasses.is_dataclass(result)
     with pytest.raises(AttributeError):
         result.cube = torch.zeros(1)

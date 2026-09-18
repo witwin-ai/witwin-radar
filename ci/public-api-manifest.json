@@ -35,6 +35,7 @@
       "Agc": "witwin.radar.frontend.Agc",
       "Aspect": "witwin.radar.targets.Aspect",
       "Fmcw": "witwin.radar.radar.Fmcw",
+      "Frame": "witwin.radar.simulation.Frame",
       "Motion": "witwin.radar.simulation.Motion",
       "Noise": "witwin.radar.frontend.Noise",
       "Ofdm": "witwin.radar.radar.Ofdm",
@@ -43,7 +44,7 @@
       "PointTargets": "witwin.radar.targets.PointTargets",
       "Pulsed": "witwin.radar.radar.Pulsed",
       "Radar": "witwin.radar.radar.Radar",
-      "RadarSimulationResult": "witwin.radar.simulation.RadarSimulationResult",
+      "Result": "witwin.radar.simulation.Result",
       "StructureTargets": "witwin.radar.targets.StructureTargets",
       "processing": "witwin.radar.processing"
     },
@@ -189,17 +190,23 @@
       "point",
       "field"
     ],
-    "witwin.radar.RadarSimulationResult": [
+    "witwin.radar.Paths": [
+      "frame",
+      "observation",
+      "row"
+    ],
+    "witwin.radar.Result": [
       "frame",
       "tx",
       "rx",
       "slow",
       "fast"
     ],
-    "witwin.radar.Paths": [
-      "frame",
-      "observation",
-      "row"
+    "witwin.radar.Frame": [
+      "tx",
+      "rx",
+      "slow",
+      "fast"
     ]
   }
 }

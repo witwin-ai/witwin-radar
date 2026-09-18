@@ -304,6 +304,7 @@ def test_the_minimal_root_does_not_load_native_or_channel():
         "Agc",
         "Aspect",
         "Fmcw",
+        "Frame",
         "Motion",
         "Noise",
         "Ofdm",
@@ -312,7 +313,7 @@ def test_the_minimal_root_does_not_load_native_or_channel():
         "PointTargets",
         "Pulsed",
         "Radar",
-        "RadarSimulationResult",
+        "Result",
         "StructureTargets",
         "processing",
     ]

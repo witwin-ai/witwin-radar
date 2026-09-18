@@ -709,7 +709,7 @@ SIMULATION_CUBE_LEADING_AXES = ("frame", "tx", "rx")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class RadarSimulationResult:
+class Result:
     """What one :meth:`witwin.radar.Radar.simulate` call produced.
 
     Data only. The driver builds it through :meth:`from_frames`, which is this
@@ -753,7 +753,14 @@ class RadarSimulationResult:
     cube: torch.Tensor
     times_s: tuple[float, ...]
     kind: str
-    axes: tuple[str, ...]
+    #: The cube's named axes, outermost first. ``axes`` is the metadata record
+    #: below, not this; the two were one name and two meanings for too long.
+    axis_names: tuple[str, ...]
+    #: Everything a processing stage reads: the SI range and velocity axes, the
+    #: phasor convention, the Doppler sign and the array layout. Built once,
+    #: here, from the waveform spec and the array that produced the cube, so no
+    #: caller assembles it from a re-viewed synthesis result.
+    axes: object
     phasor: str
     time_dependence: str
     reference_frequency_hz: float
@@ -773,10 +780,10 @@ class RadarSimulationResult:
     adaptive_diagnostics: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.cube.dim() != len(self.axes):
+        if self.cube.dim() != len(self.axis_names):
             raise ValueError(
-                f"a {self.kind} simulation cube has {len(self.axes)} axes "
-                f"{self.axes}, got shape {tuple(self.cube.shape)}"
+                f"a {self.kind} simulation cube has {len(self.axis_names)} axes "
+                f"{self.axis_names}, got shape {tuple(self.cube.shape)}"
             )
         frames = int(self.cube.shape[0])
         for name in ("times_s", "epochs", "rediscovery_reasons"):
@@ -792,6 +799,22 @@ class RadarSimulationResult:
     def frame_count(self) -> int:
         return int(self.cube.shape[0])
 
+    def frame(self, index: int = 0) -> Frame:
+        """One frame of this result, with the metadata a processing stage reads.
+
+        A view, not a copy: the cube is indexed, not cloned. The returned
+        record's methods are facades over :mod:`witwin.radar.processing` and
+        compute nothing themselves.
+        """
+
+        return Frame(
+            cube=self.cube[index],
+            axes=self.axes,
+            time_s=float(self.times_s[index]),
+            index=int(index),
+            synthesis=self.frame_synthesis(index),
+        )
+
     def frame_synthesis(self, frame_index: int = 0):
         """Expose a simulated frame and its recorded axes without resynthesis."""
         from .synthesis.assembly import SynthesisResult
@@ -802,7 +825,7 @@ class RadarSimulationResult:
         return SynthesisResult(
             cube=packed,
             kind=self.kind,
-            axes=(self.axes[-2], "sensor_pair", self.axes[-1]),
+            axes=(self.axis_names[-2], "sensor_pair", self.axis_names[-1]),
             phasor=self.phasor,
             time_dependence=self.time_dependence,
             reference_frequency_hz=self.reference_frequency_hz,
@@ -816,6 +839,7 @@ class RadarSimulationResult:
         *,
         times_s,
         synthesis,
+        axes,
         epochs,
         rediscovery_reasons,
         compile_count: int,
@@ -829,7 +853,7 @@ class RadarSimulationResult:
         motion_sampling_exhaustive: bool = True,
         motion_sampling: str = "static",
         adaptive_diagnostics=(),
-    ) -> RadarSimulationResult:
+    ) -> Result:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
         ``synthesis`` is the LAST frame's
@@ -845,7 +869,8 @@ class RadarSimulationResult:
             cube=stacked,
             times_s=tuple(float(value) for value in times_s),
             kind=synthesis.kind,
-            axes=(SIMULATION_CUBE_LEADING_AXES + (synthesis.axes[0], synthesis.axes[2])),
+            axis_names=(SIMULATION_CUBE_LEADING_AXES + (synthesis.axes[0], synthesis.axes[2])),
+            axes=axes,
             phasor=synthesis.phasor,
             time_dependence=synthesis.time_dependence,
             reference_frequency_hz=float(synthesis.reference_frequency_hz),
@@ -867,12 +892,109 @@ class RadarSimulationResult:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class Frame:
+    """One frame of a :class:`Result`, and the products it can become.
+
+    Every method here delegates to :mod:`witwin.radar.processing` and adds no
+    arithmetic of its own. What it adds is the pairing: a cube and the metadata
+    record that describes it, which a caller previously had to assemble from a
+    re-viewed synthesis result, the radar's waveform spec and the array, and
+    could therefore assemble against a different array than the one the cube
+    came from.
+    """
+
+    #: ``[tx, rx, slow, fast]``, a view into the result's stacked cube.
+    cube: torch.Tensor
+    #: The processing metadata, shared with the result this came from.
+    axes: object
+    #: This frame's instant, s.
+    time_s: float
+    #: Its position in the result.
+    index: int
+    #: The rank-3 synthesis view, for a stage that wants the waveform's own
+    #: ``(slow, sensor_pair, fast)`` layout.
+    synthesis: object
+
+    def processing_cube(self):
+        """The cube and its axes as the typed record every stage takes."""
+
+        from .processing import ProcessingCube
+
+        return ProcessingCube(data=self.cube, axes=self.axes)
+
+    def range_profile(self, *, window: str | None = None, remove_dc: bool = False):
+        """Range profile.
+
+        ``window`` defaults to rectangular, and that default is load-bearing
+        for FMCW: the spectrum output domain has already run the range
+        transform, so a fast-time taper here would be applied to the wrong
+        domain and the stage refuses it. Pass a taper only with
+        ``Fmcw(output="beat")``.
+        """
+
+        from .processing import range_profile
+
+        return range_profile(self.processing_cube(), window=window, remove_dc=remove_dc)
+
+    def range_doppler(self, *, window: str | None = "hann", range_window: str | None = None, remove_dc: bool = False):
+        """Range-Doppler map.
+
+        ``window`` tapers the slow axis, which is never pre-transformed, so
+        Hann is a safe default there. ``range_window`` goes to the range stage
+        and keeps its rectangular default for the reason above.
+        """
+
+        from .processing import range_doppler_map
+
+        return range_doppler_map(self.range_profile(window=range_window, remove_dc=remove_dc), window=window)
+
+    def array(self):
+        """The element geometry this frame's axes describe."""
+
+        from .processing import ArrayGeometry
+
+        return ArrayGeometry.from_axes(self.axes)
+
+    def points(
+        self,
+        *,
+        pfa: float = 1e-4,
+        guard_cells: tuple[int, int] = (2, 4),
+        training_cells: tuple[int, int] = (4, 8),
+        route: str = "phase_comparison",
+        fft_size: int = 64,
+        max_points: int | None = None,
+        window: str | None = "hann",
+    ):
+        """Range-Doppler, then CA-CFAR, then a point cloud, in one call.
+
+        The sensor pairs are combined incoherently before the detector, which
+        is what makes one threshold meaningful across the virtual array. A
+        caller who wants a different detector takes :meth:`range_doppler` and
+        runs one from :mod:`witwin.radar.processing` on it.
+
+        Named for the product rather than for the stage: the processing fence
+        forbids any of the detector, angle-estimator and beamformer names
+        outside that package, by name and without an allowance list, and a
+        facade is not a reason to blunt it.
+        """
+
+        from .processing import ca_cfar_fast, point_cloud
+
+        rd = self.range_doppler(window=window)
+        array = self.array()
+        combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
+        found = ca_cfar_fast(combined.abs(), guard_cells=guard_cells, training_cells=training_cells, pfa=pfa)
+        return point_cloud(found, rd, self.axes, array, route=route, fft_size=fft_size, max_points=max_points)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class _SceneFrame:
     """One produced frame and the session state as of that frame.
 
     The unit a scene session yields, so that stacking the sequence and
     streaming it read the same record. Everything a one-frame
-    :class:`RadarSimulationResult` needs is here; nothing that only makes sense
+    :class:`Result` needs is here; nothing that only makes sense
     for a whole run is. ``diagnostics`` is ``None`` for a route that does not
     adapt, which is what distinguishes "this route publishes no probe record"
     from "the probes found nothing".
@@ -896,9 +1018,14 @@ class _SceneFrame:
     composed: object
     diagnostics: dict | None
     motion_sampling: str
+    #: The declared waveform spec and the array, so that assembling the result
+    #: builds its processing metadata from the same two records the cube came
+    #: from rather than from whatever a caller has to hand.
+    output_spec: object = None
+    array: object = None
 
 
-def _assemble(frames: list[_SceneFrame]) -> RadarSimulationResult:
+def _assemble(frames: list[_SceneFrame]) -> Result:
     """Stack one or more session frames into the published result.
 
     The run-level completeness statements are conjunctions: one frame that
@@ -907,8 +1034,11 @@ def _assemble(frames: list[_SceneFrame]) -> RadarSimulationResult:
     """
 
     last = frames[-1]
-    return RadarSimulationResult.from_frames(
+    from .processing import ProcessingAxes
+
+    return Result.from_frames(
         [frame.cube for frame in frames],
+        axes=ProcessingAxes.from_synthesis(last.synthesis, last.output_spec, last.array),
         times_s=[frame.time_s for frame in frames],
         synthesis=last.synthesis,
         epochs=[frame.epoch for frame in frames],
@@ -2050,6 +2180,8 @@ def _echo_frame(session: _Session, trace: _FrameTrace) -> _SceneFrame:
         composed=composed,
         diagnostics=trace.stats,
         motion_sampling=session.kind,
+        output_spec=session.output_spec,
+        array=session.array,
     )
 
 
@@ -2249,7 +2381,7 @@ def trace_scene(*args, **kwargs) -> Paths:
     )
 
 
-def echo_paths(radar: object, paths: Paths) -> RadarSimulationResult:
+def echo_paths(radar: object, paths: Paths) -> Result:
     """Run the instrument half over traced rows and publish the frame cubes.
 
     ``radar`` supplies the receive chain and the output domain; the rows supply
@@ -2316,11 +2448,11 @@ def _require_same_instrument(radar: object, paths: Paths, session: _Session) -> 
         raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
 
 
-def simulate_scene(*args, **kwargs) -> RadarSimulationResult:
+def simulate_scene(*args, **kwargs) -> Result:
     """Run one scene session to completion and stack every frame.
 
     The whole sequence stays in device memory: the frame cubes accumulate and
-    :meth:`RadarSimulationResult.from_frames` stacks them, so peak allocation
+    :meth:`Result.from_frames` stacks them, so peak allocation
     scales with the frame count - measured near three times the published cube
     at 128 frames, because the list and the stack are both live. Use
     :func:`stream_scene` for a sequence long enough that this is the binding
@@ -2330,7 +2462,7 @@ def simulate_scene(*args, **kwargs) -> RadarSimulationResult:
     return _assemble(list(_scene_frames(*args, **kwargs)))
 
 
-def stream_scene(*args, **kwargs) -> Iterator[RadarSimulationResult]:
+def stream_scene(*args, **kwargs) -> Iterator[Result]:
     """Yield each frame of a scene session as its own one-frame result.
 
     Same physics, same session state and the same per-frame cubes as
@@ -2348,7 +2480,7 @@ def stream_scene(*args, **kwargs) -> Iterator[RadarSimulationResult]:
         yield _assemble([frame])
 
 
-#: ``Motion``, ``Paths`` and ``RadarSimulationResult`` are declared at the package
+#: ``Motion``, ``Paths`` and ``Result`` are declared at the package
 #: root instead: one public name per type, and the root is where the happy
 #: path lives. This module's own public contribution is the identity record
 #: a radar mounted on a moving structure needs.

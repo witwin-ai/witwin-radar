@@ -569,29 +569,11 @@ def build_scene():
     )
 
 
-def processing_axes(radar, result):
-    """The metadata record every processing stage reads.
-
-    ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
-    simulation result publishes the assembled ``[frame, tx, rx, slow, fast]``
-    cube. ``frame_synthesis`` re-views one frame in that rank-3 layout without
-    resynthesizing anything, so the record describes the cube actually
-    processed. It carries shapes and conventions, which are properties of the
-    waveform specification and are therefore the same for every frame.
-    """
-
-    from witwin.radar.processing import ProcessingAxes
-
-    return ProcessingAxes.from_synthesis(
-        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
-    )
-
-
 def generate_range_doppler(args: argparse.Namespace) -> None:
     import torch
 
     from witwin.radar import PointTargets, Radar
-    from witwin.radar.processing import ProcessingCube, range_doppler_map, range_profile
+    from witwin.radar.processing import range_doppler_map
 
     input_path = pathlib.Path(args.input).expanduser().resolve()
     if not input_path.exists():
@@ -661,13 +643,13 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             scene, PointTargets(positions=positions, rcs=float(args.site_rcs)), times=(t0,), los=True, reflections=0
         )
         if axes is None:
-            axes = processing_axes(radar, result)
+            axes = result.axes
             half = axes.range_bin_count // 2
             ranges = axes.range_m[:half].detach().cpu().numpy()
             velocities = axes.velocity_mps.detach().cpu().numpy()
 
         # The cube is already a range spectrum, so no fast-time window applies.
-        profile = range_profile(ProcessingCube(result.cube[0], axes))
+        profile = result.frame(0).range_profile()
         if args.static_clutter_removal:
             # Static clutter removal is a SLOW-TIME mean subtraction. The range
             # stage owns the fast-time DC removal (``remove_dc=``); the

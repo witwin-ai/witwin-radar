@@ -301,7 +301,7 @@ class PointTargetFrame:
     cannot be turned into metres, and rebuilding the record per stage is how two
     stages end up describing different arrays.
 
-    Metadata comes from ``RadarSimulationResult.frame_synthesis()`` and the
+    Metadata comes from ``Result.frame_synthesis()`` and the
     original waveform spec. No second synthesis can freeze a moving frame or
     replace its frontend output while constructing processing metadata.
     """

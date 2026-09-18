@@ -169,8 +169,12 @@ def test_simulate_is_echo_of_trace_bit_for_bit(route: str) -> None:
 
     assert torch.equal(fused.cube, split.cube)
     assert fused.cube.dtype == split.cube.dtype
-    for name in ("kind", "axes", "phasor", "time_dependence", "output_domain", "times_s", "motion_sampling"):
+    for name in ("kind", "axis_names", "phasor", "time_dependence", "output_domain", "times_s", "motion_sampling"):
         assert getattr(fused, name) == getattr(split, name), name
+    # The metadata record holds tensors, so it is compared by the scalars that
+    # decide what a bin means rather than by equality on the whole record.
+    for name in ("range_bin_m", "velocity_bin_mps", "doppler_sign", "reference_frequency_hz"):
+        assert getattr(fused.axes, name) == getattr(split.axes, name), name
     assert fused.path_set_complete == split.path_set_complete
     assert fused.motion_sampling_exhaustive == split.motion_sampling_exhaustive
     assert fused.epochs == split.epochs

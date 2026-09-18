@@ -2,7 +2,7 @@
 
 The full production chain, once per test:
 
-    Radar.simulate -> RadarSimulationResult.cube -> processing/
+    Radar.simulate -> Result.cube -> processing/
 
 These are the only end-to-end range, velocity and angle ACCURACY tests in the
 repository - everything else pins a contract, a launch count or a derivative -
@@ -87,7 +87,7 @@ class TestStaticTarget:
         """The processing metadata and the simulated cube are one product.
 
         ``ProcessingAxes`` is built from a re-synthesis of the same composed
-        rows, because ``RadarSimulationResult`` publishes the stacked cube and
+        rows, because ``Result`` publishes the stacked cube and
         not the rank-3 ``SynthesisResult`` the axes constructor reads. That
         workaround is only sound while the two agree BITWISE, so it is pinned
         here rather than assumed by every test above.

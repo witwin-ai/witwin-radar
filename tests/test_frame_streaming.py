@@ -54,7 +54,7 @@ def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(motion):
         assert frame.sample_times_s == (stacked.sample_times_s[index],)
         assert frame.epochs == (stacked.epochs[index],)
         assert frame.rediscovery_reasons == (stacked.rediscovery_reasons[index],)
-        assert frame.axes == stacked.axes
+        assert frame.axis_names == stacked.axis_names
         assert frame.output_domain == stacked.output_domain
         assert frame.motion_sampling == stacked.motion_sampling
         torch.testing.assert_close(frame.cube[0], stacked.cube[index], rtol=0, atol=0)

@@ -44,7 +44,7 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .simulation import Motion, Paths, RadarSimulationResult
+    from .simulation import Motion, Paths, Result
     from .synthesis import SynthesisResult
     from .targets import PointTargets, StructureTargets
 
@@ -857,7 +857,7 @@ class Radar:
         session = self._session(targets, times, los, reflections, motion, grad, endpoints)
         return trace_scene(self, scene, **session)
 
-    def echo(self, paths: Paths) -> RadarSimulationResult:
+    def echo(self, paths: Paths) -> Result:
         """Run this radar's instrument half over already-composed rows.
 
         Synthesizes the waveform at each traced observation, applies the
@@ -886,7 +886,7 @@ class Radar:
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
-    ) -> RadarSimulationResult:
+    ) -> Result:
         """Simulate this radar over a Core world and return the frame cubes.
 
         ``scene`` is a ``witwin.core.Scene`` or a
@@ -922,7 +922,7 @@ class Radar:
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
-    ) -> Iterator[RadarSimulationResult]:
+    ) -> Iterator[Result]:
         """Simulate the same session as :meth:`simulate`, one frame at a time.
 
         Yields a one-frame result per instant in ``times``, so a sequence long

@@ -1,6 +1,6 @@
 """MUSIC imaging of two point targets with a 20 x 20 UPA.
 
-    witwin.core.Scene  ->  Radar.simulate  ->  RadarSimulationResult
+    witwin.core.Scene  ->  Radar.simulate  ->  Result
                        ->  witwin.radar.processing.range_doppler
                        ->  witwin.radar.processing.music_image
 
@@ -47,14 +47,8 @@ if str(REPO_ROOT) not in sys.path:
 from witwin.core import AntennaState, Scene  # noqa: E402
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
 
-from witwin.radar import Noise, PointTargets, Radar, RadarSimulationResult  # noqa: E402
-from witwin.radar.processing import (  # noqa: E402
-    ArrayGeometry,
-    ProcessingAxes,
-    ProcessingCube,
-    music_image,
-    range_profile,
-)
+from witwin.radar import Noise, PointTargets, Radar  # noqa: E402
+from witwin.radar.processing import music_image  # noqa: E402
 
 ARRAY_SIZE = 20
 FIELD_OF_VIEW_RAD = math.pi / 2
@@ -110,20 +104,6 @@ def build_scene() -> Scene:
     )
 
 
-def processing_axes(radar: Radar, result: RadarSimulationResult) -> ProcessingAxes:
-    """The metadata record every processing stage reads.
-
-    ``ProcessingAxes`` is built from a rank-3 ``SynthesisResult`` while the
-    simulation result publishes the assembled ``[frame, tx, rx, slow, fast]``
-    cube. ``frame_synthesis`` re-views one frame in that rank-3 layout without
-    resynthesizing anything, so the record describes the cube processed below.
-    """
-
-    return ProcessingAxes.from_synthesis(
-        result.frame_synthesis(), radar.waveform_spec(), radar.system_config.sensors.array
-    )
-
-
 def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError(
@@ -142,13 +122,16 @@ def main() -> None:
     assert result.cube.shape == (1, ARRAY_SIZE, ARRAY_SIZE, CONFIG["chirp_per_frame"], CONFIG["adc_samples"]), (
         f"Unexpected cube shape: {tuple(result.cube.shape)}"
     )
-    print(f"  Cube: {tuple(result.cube.shape)} {result.axes}  OK")
+    print(f"  Cube: {tuple(result.cube.shape)} {result.axis_names}  OK")
     print(f"  Composed rows: {result.last_radar_paths.path_count}")
 
-    axes = processing_axes(radar, result)
-    geometry = ArrayGeometry.from_axes(axes)
+    # The result carries the metadata every processing stage reads, so a frame
+    # is a cube and its axes together; nothing here re-derives either.
+    frame = result.frame(0)
+    axes = frame.axes
+    geometry = frame.array()
     # The cube is already a range spectrum, so no fast-time window applies here.
-    profile = range_profile(ProcessingCube(result.cube[0], axes))
+    profile = frame.range_profile()
 
     # The range gate is chosen here rather than inside the imager: reading a
     # peak off a spectrum is a modelling choice and ``music_image`` refuses to

@@ -18,7 +18,7 @@ from . import processing
 from .frontend import Adc, Agc, Noise
 from .radar import Fmcw, Ofdm, Pulsed, Radar
 from .sensors import Pattern
-from .simulation import Motion, Paths, RadarSimulationResult
+from .simulation import Frame, Motion, Paths, Result
 from .targets import Aspect, PointTargets, StructureTargets
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "Agc",
     "Aspect",
     "Fmcw",
+    "Frame",
     "Motion",
     "Noise",
     "Ofdm",
@@ -34,7 +35,7 @@ __all__ = [
     "PointTargets",
     "Pulsed",
     "Radar",
-    "RadarSimulationResult",
+    "Result",
     "StructureTargets",
     "processing",
 ]

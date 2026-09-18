@@ -30,6 +30,12 @@
           "signature": "(slope: 'float', sample_rate: 'float', samples_per_chirp: 'int', chirps_per_frame: 'int', adc_start: 'float', idle: 'float', ramp_end: 'float', output: 'str' = 'spectrum') -> None"
         },
         {
+          "name": "Frame",
+          "kind": "class",
+          "target": "witwin.radar.simulation.Frame",
+          "signature": "(cube: 'torch.Tensor', axes: 'object', time_s: 'float', index: 'int', synthesis: 'object') -> None"
+        },
+        {
           "name": "Motion",
           "kind": "class",
           "target": "witwin.radar.simulation.Motion",
@@ -78,10 +84,10 @@
           "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
         },
         {
-          "name": "RadarSimulationResult",
+          "name": "Result",
           "kind": "class",
-          "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
+          "target": "witwin.radar.simulation.Result",
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'object', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
         },
         {
           "name": "StructureTargets",
@@ -472,7 +478,7 @@
         {
           "name": "echo",
           "kind": "function",
-          "signature": "(self, paths: 'Paths') -> 'RadarSimulationResult'"
+          "signature": "(self, paths: 'Paths') -> 'Result'"
         },
         {
           "name": "from_dict",
@@ -528,12 +534,12 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'RadarSimulationResult'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Result'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Iterator[RadarSimulationResult]'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Iterator[Result]'"
         },
         {
           "name": "to",
