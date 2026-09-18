@@ -79,13 +79,26 @@ result = radar.simulate(scene, targets, times=(0.0, 0.1, 0.2), los=True, reflect
 
 `Radar.from_dict` reads the flat FMCW configuration format examples and config files use, in its vendor units, and is the only place those units are read. Every other field is a keyword override in SI, so a receive chain and a pose attach in the same call. `Radar.from_json` loads the same mapping from a file. Keys nothing consumes are refused by name rather than stored.
 
-`Radar.simulate(...)` is the scene-driven entry point. It accepts a Core scene, a required `PointTargets` or `StructureTargets` record that says where the scatterers are and how strongly they scatter, the frame times, the propagation request as `los` and `reflections`, the in-frame resampling as `motion`, and the differentiation mode as `grad`. It returns `RadarSimulationResult`, whose cube is organized as `[frame, TX, RX, slow, fast]` and whose metadata states the waveform, the fast-axis domain and the last frame's typed diagnostics.
+The radar has four verbs, and they are two halves and their fusion:
 
-`Radar.stream(...)` runs the same session and yields each frame as its own one-frame `RadarSimulationResult`. Use it when the sequence is longer than the stacked cube can be held in device memory; the frames are bit-exact against `simulate` and peak allocation no longer scales with the frame count.
+- `radar.trace(scene, targets, times=...)` runs the world half — world sampling, Channel epochs, round-trip composition, scattering and antenna weighting — and returns a `Paths`;
+- `radar.echo(paths)` runs the instrument half — waveform synthesis, the receive chain, the output domain and the processing axes — and returns a `Result`;
+- `radar.simulate(...)` fuses the two and stacks every frame;
+- `radar.stream(...)` fuses them and yields one frame at a time, so a sequence too long to hold as a stacked cube is still producible.
+
+All four share one session loop and one synthesis route, so `radar.echo(radar.trace(...))` is bit-identical to `radar.simulate(...)`, asserted with `torch.equal` across every motion kind, both FMCW output domains, with and without a receive chain, and with oscillator phase noise.
+
+The split buys reuse and costs retention. One trace can be echoed by several receive chains, seeds or output domains without re-solving the world, and a radar the rows do not describe is refused by name — including a phase-noise receiver against paths traced without ADC instants. Against that, a `Paths` holds every evaluated observation's rows, roughly twenty bytes per live row summed over every evaluated observation of every frame, so an ADC-refreshed sequence is expensive. `simulate` never pays that: a frame's observations stay a generator it drains one at a time. An adaptive trace retains its accepted partition rather than its schedule, so its retained row count is the probes and not the observations.
+
+`Radar.simulate(...)` accepts a Core scene, a required `PointTargets` or `StructureTargets` record that says where the scatterers are and how strongly they scatter, the frame times, the propagation request as `los` and `reflections`, the in-frame resampling as `motion`, and the differentiation mode as `grad`. `Radar.trace(...)` takes the same arguments. `simulate` and `echo` both return `Result`, whose cube is organized as `[frame, TX, RX, slow, fast]`, whose `axis_names` names those axes, and whose `axes` is the `ProcessingAxes` record every processing stage reads, built once from the waveform spec and the array that produced the cube.
+
+`Radar.stream(...)` runs the same session and yields each frame as its own one-frame `Result`. Use it when the sequence is longer than the stacked cube can be held in device memory; the frames are bit-exact against `simulate` and peak allocation no longer scales with the frame count.
 
 A radar is never edited in place: `Radar.replace(...)` and `Radar.to(device)` return a new one, and a radar retains nothing from a run, so a result is the only thing that can say which frame a diagnostic describes.
 
-Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds.
+The root exports the whole happy path in sixteen names: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules.
+
+Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds. `result.frame(i)` returns the `Frame` that pairs one frame's cube with that metadata; its `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` are facades over that package and compute nothing themselves.
 
 See `docs/pipeline_guide.md` for the full contract and `examples/single_point.py` for a maintained end-to-end example.
 

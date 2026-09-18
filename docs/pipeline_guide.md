@@ -2,12 +2,40 @@
 
 This is the current scene-to-product route after the breaking concept-axis consolidation. There is one production orchestration path and no legacy fallback path.
 
+The pipeline has two halves and four verbs. `Radar.trace(scene, targets, times=...)` runs the world
+half - sampling the Core world at the waveform's observation instants, compiling or reusing the
+Channel epoch, discovering the topology, composing the round trips, applying the scatter response
+and the antenna weights - and returns a `Paths`. `Radar.echo(paths)` runs the instrument half -
+waveform synthesis, the receive chain, the output-domain transform and the processing axes - and
+returns a `Result`. `Radar.simulate(...)` fuses the two and stacks every frame; `Radar.stream(...)`
+fuses them and yields one frame at a time. All four share one session loop and one synthesis route,
+so the physics, the epoch loop and the synthesis route have a single owner and `echo(trace(...))`
+is bit-identical to `simulate(...)`: asserted with `torch.equal` across every motion kind, both
+FMCW output domains, with and without a receive chain, and with oscillator phase noise.
+
+The split buys one world solve per several instruments. The same `Paths` can be echoed by a
+different receive chain, a different seed or a different FMCW output domain without re-tracing.
+A radar the rows do not describe is refused by name instead: a different carrier, a sensor-pair
+partition the rows do not carry, a different waveform behind a sampled schedule, or a receiver with
+oscillator phase noise against paths traced without ADC instants, because that phase is placed at
+absolute ADC time and there is nowhere to place it otherwise.
+
+The split costs retention. A `Paths` holds every evaluated observation's composed rows, roughly
+twenty bytes per live row summed over every evaluated observation of every frame, so an
+ADC-refreshed sequence is expensive: that route evaluates one observation per ADC instant of every
+slot. `simulate` and `stream` never pay it, because a frame's observations stay a generator they
+drain one at a time and each observation is dropped once it has been synthesized. An adaptive trace
+retains its accepted partition rather than its schedule, so its retained row count is the probes
+and not the observations. How much that saves is a property of the motion and the tolerance, not a
+ratio to quote: `tests/test_trace_echo_split.py` pins only that the adaptive trace retains fewer
+rows than the exhaustive one and evaluates fewer instants than it schedules.
+Trace one frame at a time, or use `simulate`, when the sequence is long.
+
 `Radar.simulate(...)` runs a session to completion and stacks every frame, so peak device
 allocation scales with the sequence: measured at about three times the published cube for a
-128-frame run, because the per-frame list and `torch.stack` are both live. `Radar.stream(...)` runs the identical session
-and yields each frame as a one-frame `RadarSimulationResult`, which keeps peak allocation
-independent of the frame count. Both consume one frame generator, so the physics, the epoch
-loop and the synthesis route have a single owner. A streamed result aliases that frame's device
+128-frame run, because the per-frame list and `torch.stack` are both live. `Radar.stream(...)` runs
+the identical session and yields each frame as a one-frame `Result`, which keeps peak allocation
+independent of the frame count. A streamed result aliases that frame's device
 tensors through its four `last_*` members exactly as the stacked result does: holding every
 yielded frame costs more than stacking, not less. Those four members belong to the result and
 only to it; a radar retains nothing from a run, so the record that answers "which frame is this"
@@ -117,9 +145,11 @@ There is no default target set, and Radar derives no scatterer from geometry —
 7. apply the declared frontend;
 8. assemble the typed frame result.
 
+Steps 1 to 5 are the world half and are where `trace` stops; steps 6 to 8 are the instrument half and are what `echo` runs over the retained rows. `simulate` and `stream` run all eight per frame and drop each observation's rows as soon as they are synthesized, which is why their retention does not grow with the observation count.
+
 A radar holds no run state, so there is nothing for a call to clear and nothing a failed call can leave behind: a result exists only if the call that built it returned, and the four typed diagnostics are members of that result.
 
-The returned `RadarSimulationResult.cube` has axes `[frame, TX, RX, slow, fast]`. Its metadata also includes frame times, waveform kind, named axes, phasor/time convention, reference frequency, epoch information, and last-frame typed diagnostics.
+The returned `Result.cube` has axes `[frame, TX, RX, slow, fast]`, and `Result.axis_names` is the tuple that names them. Its metadata also includes frame times, waveform kind, phasor/time convention, reference frequency, epoch information, and last-frame typed diagnostics. `Result.axes` is a different member: it is the processing metadata record, and section 6 states what it carries.
 
 `motion` selects how often the world is resampled inside a frame and defaults to `Motion.auto()`, which resolves to per-ADC sampling when anything in the session moves — a structure trajectory or deformation, an endpoint trajectory, a target trajectory — or when the receiver carries oscillator phase noise, which needs ADC-time observations to place its delayed phase difference. Otherwise it resolves to one observation per frame. `Motion.static()` asks for that single observation explicitly and is refused by name for a world that moves within a frame, because it would publish no Doppler at all.
 
@@ -168,7 +198,20 @@ Both domains preserve the same TDM slow-time timing and compact sensor-pair orde
 
 ## 6. Processing without domain guessing
 
-Build processing metadata from the synthesis result and radar array configuration. Functions under `witwin.radar.processing` consume named axes:
+The processing seam is a record, not an assembly step. `Result.axes` is the `ProcessingAxes` every processing stage reads - the SI range and velocity axes, their bin sizes, the phasor convention, the Doppler sign, the wavelength and the array layout - and it is built once, by the echo, from the declared waveform spec and the array that produced the cube. `Result.frame(i)` returns the `Frame` that pairs one frame's cube with that record; the cube is indexed, not copied.
+
+The pairing is what the seam adds. A caller used to assemble it from a re-viewed synthesis result, the radar's waveform spec and the array, which meant it could be assembled against a different array than the cube came from, with nothing to say so.
+
+`Frame` computes nothing. `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` delegate to `witwin.radar.processing` and add no arithmetic of their own, so every DSP stage still has exactly one owner. Two of its defaults are contracts rather than conveniences:
+
+- `range_profile` defaults to a rectangular window. The FMCW spectrum output domain has already run the range transform, so a fast-time taper there would be applied to the wrong domain and the stage refuses it; pass a taper only when the radar declares the beat output domain.
+- `range_doppler` tapers the slow axis with Hann by default, because the slow axis is never pre-transformed. Its `range_window` keeps the rectangular default for the reason above.
+
+`points()` runs range-Doppler, combines the sensor pairs incoherently so that one threshold means the same thing across the virtual array, applies CA-CFAR and returns a point cloud. It is named for the product rather than for the stage because the detector, angle-estimator and beamformer names are fenced out of every module outside the processing package, by name and with no allowance list, and a facade is not a reason to blunt that fence.
+
+What `Frame` does not do is widen the surface. It offers one detection route, not a detector menu: a caller who wants a different detector takes `range_doppler()` and calls one from `witwin.radar.processing` on it. The typed products themselves - range profiles, Range-Doppler maps, detections, point clouds - gain no methods, because R-ADR-017 keeps that surface functional.
+
+Functions under `witwin.radar.processing` consume named axes:
 
 - range-profile construction performs no second range FFT for spectrum input;
 - beat input is transformed along its sample axis;

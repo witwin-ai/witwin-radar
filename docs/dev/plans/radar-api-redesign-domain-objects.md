@@ -1,17 +1,36 @@
 # Radar API redesign: domain objects, and the trace/echo split
 
-Status: Partly implemented (2026-09-17).
+Status: Implemented (2026-09-18).
 
-Commits 1, 4 and 5 of section 10 are done and on the branch: the flat `Radar`
-record, the target and motion records, the caller migration, the governance
-manifests and the living documents. Commits 2 and 3 - `Paths`, `trace`, `echo`,
-and renaming the result to `Result` with its `Frame` facades - are NOT done.
-Sections 4.9, 4.10 and 5 therefore describe an intended surface, not a shipped
-one, and section 5.4a records where the cut goes in today's code.
+All five commits of section 10 are on the branch. Commits 1, 4 and 5 shipped the
+flat `Radar` record, the target and motion records, the caller migration, the
+governance manifests and the living documents; commits 2 and 3 shipped `Paths`,
+`trace` and `echo`, the rename of the result to `Result`, and the `Frame`
+facades over the processing package.
 
-What shipped differs from this draft in three places, recorded in section 10a:
-no unit suffix on any redesigned name, a second way to declare target strength,
-and no `last_result` on the radar.
+Sections 4.9, 4.10 and 5 are the draft the work was done against, kept as
+written. Section 5.4a is no longer a plan: it records where the cut actually
+went and the three places the shipped `Paths`, `Result` and `Frame` differ from
+sections 4.9 and 4.10. Section 10a records the three places commit 1 differed
+from the draft.
+
+One difference is structural enough to state here rather than in a subsection:
+`Paths`, `Result` and `Frame` all live in `witwin/radar/simulation.py`, not in
+`paths.py` as section 8 proposed. The session loop the four verbs share is
+there, and a `Paths` carries that session with it so its rows can be echoed;
+splitting the record away from the loop that produces it would have put the two
+halves of one contract in two files.
+
+One item of commit 3 was not carried out and should not be: `frame_synthesis`
+was to be deleted, and it survives. It is the rank-3 `(slow, sensor_pair, fast)`
+view in the waveform's own layout, which is what a stage wanting the synthesis
+ordering rather than the processing one reads; `Frame` carries it as `synthesis`
+beside the processing cube. What the commit did delete is the reason a caller
+had to go through it, which was assembling `ProcessingAxes` by hand.
+
+The suite was run on the implementing machine, with CUDA and a Channel developer
+override: 1590 passed, 12 skipped, none failed, and all thirteen static gates
+pass. That is the record of one local run and not a statement about CI.
 
 ## 1. Summary
 
@@ -55,6 +74,9 @@ frame = result.frame(0)
 rd = frame.range_doppler(window="hann")                                  # delegates to processing.range_doppler_map
 cloud = frame.point_cloud(pfa=1e-4, route="phase_comparison", max_points=64)
 ```
+
+That block is the draft as written. The shipped detection facade is
+`frame.points(...)`, for the reason recorded in section 5.4a.
 
 Physics does not change, with the two decided exceptions in section 9. Processing
 math does not change. The Channel boundary does not change.
@@ -514,44 +536,75 @@ and for FMCW spectrum, FMCW beat, OFDM and pulsed. This replaces today's
 `simulate_scene`/`stream_scene` pair, which is the same pattern with one
 retention policy fewer.
 
-### 5.4a The split point in today's code, located
+### 5.4a Where the cut went
 
-Commit 2 is not implemented. This section records where the cut goes, read off
-the current `witwin/radar/simulation.py`, so the work starts from a located
-seam rather than a re-reading.
+This section located the seam before the work; it now records the cut. The seam
+held where it was predicted, in `_scene_frames` and in the adaptive route, with
+one structural difference and three surface ones.
 
-`_scene_frames` has three parts. The first, from the argument validation to the
-`SceneEpochLoop` construction, is session setup and belongs to `trace`. The
-second is the closure `evaluate_many(query_times)`, which for each instant
-resolves the epoch, replays the two legs, composes the round trip, applies the
-antenna pattern and returns `(epoch_frame, legs, composed, identity)`. That
-closure IS the observation generator both verbs share, and it already batches
-topology-identical probes, which is the property `trace` needs. The third part
-is the two loops at the end, and they are the synthesis half.
+`_open_session` is the session setup this section assigned to `trace`, and it
+returns two things rather than one. The first is a `_Session`: everything the
+instrument half needs that does not change between frames - the array, the epoch
+loop, the three waveform specs, the TDM offsets, the sampling flags and the
+callable that re-derives those specs for another radar. Nothing on it describes
+the world, which is exactly the property that lets one traced session be echoed
+against a different receive chain. The second is an iterator of `_FrameTrace`,
+one per frame, carrying that frame's schedule, its two completeness statements
+and its observations.
 
-The non-adaptive loop is the easy half: it calls `evaluate_many([t])`, then
-`radar._synthesize(composed, ...)` per observation, accumulates `slot_cubes`,
-gathers by `pair_samples`, and runs `finish_frame`. Everything from
-`radar._synthesize` onwards is `echo`.
+A `_FrameTrace`'s observations are an ITERATOR, drained exactly once. That is
+the whole retention difference between the two routes, and it is the cleanest
+part of the cut: `_scene_frames` drains it one observation at a time as it
+synthesizes, so a fused run never holds more than one, while `trace_scene`
+materialises it into a tuple and keeps it in the `Paths`. `_echo_frame` is the
+instrument half and is the only caller of synthesis, so both routes reach the
+kernels through one function rather than through two loops that have to be kept
+in agreement. `echo_paths` rebuilds only the instrument fields of the stored
+session for whatever radar it was handed (`_instrument_specs`), after
+`_require_same_instrument` has refused a radar the rows do not describe.
 
-The adaptive route needs one cut inside `_adaptive_fmcw`, and it is clean. That
-function refines a partition, then builds exactly the tables section 4.9
-describes: `delays`, `transfers`, `validity`, `starts`, `counts`, `node_index`,
-`basis` and `clock`. Everything above that construction is `trace`; the
-`while begin < len(times)` batching loop below it, which calls
-`interpolate_path_rows` and `_synthesize_fmcw_observations`, is `echo`. The
-non-adaptive kinds produce the same tables with `K = 1`, every observation
-evaluated, `node_index[i] = [i]` and `basis[i] = [1.0]` - a shape the existing
-final stage already handles, because an evaluated observation is written there
-as K copies of itself with the first weight one.
+The adaptive cut went where this section said it would. `_adaptive_trace` is the
+host-side refinement and publishes the accepted partition as an
+`_AdaptiveTable`: `delays`, `transfers`, `validity`, `starts`, `counts`,
+`node_index`, `basis` and `clock`, exactly the construction named above.
+`_adaptive_echo` is the batching loop below it and is where every kernel launch
+happens. An adaptive `_FrameTrace` yields a single observation, the one that
+closed the frame, because its rows live in that table rather than in one batch
+per instant; `Paths.rows` refuses any other observation index by name instead of
+answering with that one.
 
-So `Paths` holds what that construction produces plus the session bookkeeping
-`record()` already assembles, and `echo` is the batching loop plus
-`finish_frame` plus `RadarSimulationResult.from_frames`. `simulate` keeps
-consuming the generator frame by frame so its peak allocation does not change.
+The bit-exactness test was written first, as this section said it should be. It
+is `tests/test_trace_echo_split.py`, and it asserts `torch.equal` on every
+motion kind, in both FMCW output domains, with and without a receive chain, and
+with oscillator phase noise.
 
-The bit-exactness test of section 10 is what proves the cut did not move a
-number, and it is the first thing to write, not the last.
+Three places where the shipped records differ from sections 4.9 and 4.10:
+
+1. **`Paths` keeps each motion kind's own row layout.** Section 4.9 proposed one
+   table shape for every kind, the adaptive tables with `K = 1` and every
+   observation evaluated for the other three. That would have routed static,
+   chirp and ADC rows through the interpolation path in order to describe them
+   uniformly. The shipped record holds what each kind already produces instead:
+   one composed batch per evaluated observation for static, chirp and ADC, and
+   the `_AdaptiveTable` for adaptive. No route's numerics moved, which is what
+   makes the `torch.equal` assertion available at all, and a uniform description
+   is not worth a rewritten kernel path. `Paths.row_count` and
+   `Paths.observation_count` read both layouts.
+
+2. **The detection facade is `Frame.points`, not `Frame.point_cloud`.** The
+   processing fence forbids the detector, angle-estimator and beamformer names -
+   `ca_cfar`, `os_cfar`, `music_spectrum`, `point_cloud` and their siblings - in
+   every production module outside the processing package, by name and with no
+   allowance list. A facade is not a reason to blunt that fence, so the method is
+   named for the product it returns rather than for the stage that produces it.
+
+3. **The axis-name tuple is `Result.axis_names`, so `axes` can be the metadata
+   record.** Section 4.10 gave `axes` to `ProcessingAxes`, while the result it
+   replaced already used that name for the cube's axis-name tuple. Both are
+   needed and neither is derivable from the other: `axis_names` is what the
+   result checks the cube's rank against and what the synthesis view reads to
+   name the slow and fast axes, and `axes` is the record every processing stage
+   takes. They now have one name each.
 
 ### 5.5 Memory
 

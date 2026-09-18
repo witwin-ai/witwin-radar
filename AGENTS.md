@@ -10,7 +10,7 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 
 - `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat-configuration loader.
 - `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py` and the site binding in `simulation.py`; nothing here computes either.
-- `witwin/radar/simulation.py` — scene-session orchestration, the `Motion` sampling record, and `RadarSimulationResult`.
+- `witwin/radar/simulation.py` — scene-session orchestration, the `Motion` sampling record, the `Paths` the world half retains, and the `Result` and `Frame` records the instrument half publishes.
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
 - `witwin/radar/paths.py` — direct and two-way round-trip path contracts and composition.
@@ -45,10 +45,14 @@ FMCW output defaults to a normalized range spectrum. Stationary paths use native
 
 ## Public entry points
 
-- `Radar.simulate(scene, targets, times=...)` is the scene-driven production entry and returns a typed frame result. `Radar.stream(...)` runs the identical session and yields one frame at a time. Both take the target set as a required positional argument, the propagation request as `los`/`reflections`, the in-frame sampling as `motion`, and the differentiation mode as `grad`.
+There are four verbs, and they are two halves and their fusion.
+
+- `Radar.trace(scene, targets, times=...)` runs the world half — world sampling, Channel epochs, topology, round-trip composition, scattering and antenna weighting — and returns `Paths`. `Radar.echo(paths)` runs the instrument half — waveform synthesis, the receive chain, the output domain and the processing axes — and returns `Result`. `Radar.simulate(...)` fuses the two and stacks every frame; `Radar.stream(...)` fuses them and yields one frame at a time. The three world-facing verbs take the target set as a required positional argument, the propagation request as `los`/`reflections`, the in-frame sampling as `motion`, and the differentiation mode as `grad`.
+- All four share one session loop and one synthesis route, so `echo(trace(...))` is bit-identical to `simulate(...)`. `tests/test_trace_echo_split.py` asserts it with `torch.equal` on every motion kind, in both FMCW output domains, with and without a receive chain, and with oscillator phase noise. Do not add a second synthesis route for either half; a cut that moves a number in the last bit is a cut through an equation rather than through a seam.
+- `Radar.echo(...)` is the public entry to synthesis over traced rows, and it is the only one. No synthesis function is exported, dispatch on the stored waveform kind stays a private method of `Radar`, and a caller reaches synthesized samples only through the `Result` a verb returns. What `echo` lets vary is the receive chain, the seed and the FMCW output domain; anything the observation schedule was derived from — the carrier, the sensor-pair partition, the waveform behind a sampled schedule — is refused by name, as is a phase-noise receiver against paths traced without ADC instants.
+- `Paths` retains every evaluated observation's rows and says so in its docstring; the fused verbs retain one observation at a time. That asymmetry is the contract. Making `simulate` or `stream` materialise a frame's observations is a retention regression, not a refactor.
 - `Radar` is a flat immutable record. `Radar.from_dict` and `Radar.from_json` load the flat FMCW configuration format, and `Radar.replace(...)` and `Radar.to(device)` return a new radar; nothing edits one in place. A radar holds no run state, so the per-frame typed diagnostics are read from the result that published them.
-- Waveform synthesis has no public entry point. Dispatch on the stored waveform kind is a private method of `Radar`, and a caller reaches synthesized samples only through the result a verb returns.
-- Public processing functions and typed products are exported from `witwin.radar.processing`.
+- Processing is reached from a result, not assembled by a caller: `Result.axes` is the `ProcessingAxes` the echo builds once from the waveform spec and the array that produced the cube, `Result.axis_names` is the cube's axis-name tuple, and `Result.frame(i)` is the `Frame` that pairs one frame's cube with that metadata. `Frame`'s methods are facades that compute nothing. Public processing functions and typed products are exported from `witwin.radar.processing`.
 - Channel integration is internal; callers do not import internal adapter objects through the Radar facade.
 
 ## Tests and static gates
