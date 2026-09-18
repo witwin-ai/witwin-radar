@@ -15,7 +15,7 @@
   "fence_allowances": [],
   "radar_facade_torch_physics": [
     [
-      "_set_pose_fields",
+      "_place_antennas",
       "torch.linalg.norm"
     ],
     [
@@ -134,11 +134,11 @@
     },
     {
       "module": "witwin/radar/radar.py",
-      "function": "_set_pose_fields",
+      "function": "_place_antennas",
       "call": "torch.linalg.norm",
-      "occurrences": 3,
+      "occurrences": 8,
       "category": "freeze_time_pose",
-      "reason": "Orthonormalising the forward/right/up basis once per set_pose.",
+      "reason": "Validating the pose and orthonormalising the forward/right/up basis once per radar: three degeneracy checks, three normalisations, and two more for a polarization vector that must be non-zero and transverse to the boresight.",
       "adr": "R-ADR-007"
     },
     {

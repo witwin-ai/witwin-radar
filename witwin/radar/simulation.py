@@ -700,8 +700,10 @@ class RadarSimulationResult:
     downstream consumer - a range-Doppler map, a tracker, a loss - indexes, and
     the stack is a single differentiable op outside the frame loop.
 
-    The four ``last_*`` members are the LAST frame's typed state, and they are
-    what :attr:`witwin.radar.Radar.last_snapshot` and its three siblings read.
+    The four ``last_*`` members are the LAST frame's typed state, and this
+    record is their only home: a radar holds no run state, so there is no
+    second copy to disagree with these and no way for a call that raised part
+    way through to leave one behind describing a world it never simulated.
     They describe one frame, not the sequence: a compiled scene and a leg pair
     are per-epoch and per-frame objects, and stacking them would either
     misrepresent the epochs or retain every frame's device memory for the life

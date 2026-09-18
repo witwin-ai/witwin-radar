@@ -300,6 +300,17 @@ def test_g4_fires_on_torch_physics_in_a_previously_unscanned_package(mirror: Pat
     assert "not in the allowlist" in completed.stderr
 
 
+def _recorded_pose_norms() -> int:
+    """How many pose normalisations the allowlist records for the radar."""
+
+    document = json.loads((REPO_ROOT / "ci" / "torch-physics-allowlist.json").read_text(encoding="utf-8"))
+    return next(
+        entry["occurrences"]
+        for entry in document["entries"]
+        if entry.get("function") == "_place_antennas" and entry.get("call") == "torch.linalg.norm"
+    )
+
+
 def test_g4_fires_when_an_allowed_expression_gains_a_sibling(mirror: Path) -> None:
     """The reason the record carries an occurrence COUNT.
 
@@ -324,7 +335,9 @@ def test_g4_fires_when_an_allowed_expression_gains_a_sibling(mirror: Path) -> No
     )
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
-    assert "the allowlist records 3" in completed.stderr
+    # Read from the record rather than spelled here: this test pins that
+    # the gate NAMES the recorded count, not what that count happens to be.
+    assert f"the allowlist records {_recorded_pose_norms()}" in completed.stderr
 
 
 def test_g4_fires_when_the_allowlist_itself_is_edited(mirror: Path) -> None:
@@ -372,8 +385,8 @@ def test_g4_fires_when_a_pytest_constant_drifts_from_the_record(mirror: Path) ->
 
     target = mirror / "tests" / "test_phase6_no_torch_physics.py"
     source = target.read_text(encoding="utf-8")
-    assert '("_set_pose_fields", "torch.linalg.norm"),' in source
-    target.write_text(source.replace('("_set_pose_fields", "torch.linalg.norm"),', ""), encoding="utf-8")
+    assert '("_place_antennas", "torch.linalg.norm"),' in source
+    target.write_text(source.replace('("_place_antennas", "torch.linalg.norm"),', ""), encoding="utf-8")
     completed = _run("check_torch_physics_allowlist.py", mirror)
     assert completed.returncode == 1
     assert "RADAR_FACADE_TORCH_PHYSICS disagrees with the allowlist" in completed.stderr
