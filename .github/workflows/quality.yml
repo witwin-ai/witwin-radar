@@ -25,6 +25,13 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install package and development tools
+        # This runner has no CUDA toolkit, so there is no prebuilt for the build
+        # hook to package and it refuses by default. The opt-out is the right
+        # answer here rather than a workaround: an editable install of a CPU-only
+        # job never loads the native library, and the refusal exists to stop a
+        # RELEASE wheel from shipping without it.
+        env:
+          WITWIN_RADAR_ALLOW_PURE_WHEEL: "1"
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,channel]"
       - name: Verify required Channel runtime identity
         run: python ci/check_channel_identity.py
