@@ -2,6 +2,67 @@
 
 Status: local measurements recorded 2026-09-16 to 2026-09-18; release-platform benchmarks remain separate.
 
+## Retraction and corrected measurement (2026-09-18)
+
+An independent acceptance run could not reproduce the latency tables the two
+2026-09-18 sections below published, and it was right. **Those tables are retracted.**
+They were built from measurements taken tens of minutes apart, with test suites in
+between, and this machine's absolute latency drifts by up to 2x over that span: the
+same harness on the same commit measured the rotor fixture at 47.6 ms and, hours
+later, at 97.9 ms. A ratio taken across two such measurements is not a result.
+
+The corrected numbers below are measured round-robin - every revision, one fixture
+per process, three rounds, medians across rounds - so a drifting machine cannot be
+mistaken for a code change. The fixtures are now `tools/benchmark_adaptive_frame.py`
+rather than a description in a report, because "1x1, 128 x 128" is not reproducible.
+
+`7c93c8e` is the pre-change baseline, `f00bd8e` the per-observation bookkeeping work,
+`a2775db` the device-side row expansion and deferred leg narrowing.
+
+| Fixture | observations | probes | `7c93c8e` | `f00bd8e` | HEAD | first | second | total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| walker, bound-limited MIMO | 98304 | 27 | 118.2 ms | 61.5 ms | **38.7 ms** | 1.92x | 1.59x | **3.05x** |
+| rotor, phase-limited | 16384 | 155 | 121.0 ms | 115.0 ms | **98.9 ms** | 1.05x | 1.16x | **1.22x** |
+| pair, two scatterers | 6144 | 9 | 31.7 ms | 26.3 ms | **25.1 ms** | 1.21x | 1.05x | **1.26x** |
+
+What the retracted tables got wrong is the SIZE of the gain outside the
+observation-heavy regime, and they got it wrong in the flattering direction. The
+published 2.57x on the rotor is really **1.22x**, and the published 2.01x on the
+two-scatterer frame is really **1.26x**. The 16 ms the deferred narrowing saves
+there matches the 19.7 ms of `slot()` the profile attributed to it; it is the
+115 ms frame it sits in that the retracted baseline understated.
+
+The work is still worth what the observation-heavy regime says it is - a
+98304-observation frame went 118.2 to 38.7 ms - and every bit-identity, accuracy,
+memory, synchronization and call-count claim in the sections below was independently
+reproduced. Only the latency ratios moved.
+
+### A minute of data, measured rather than extrapolated
+
+The sections below extrapolate 128 frames to "about 12 s for one minute at 10 fps".
+That is wrong twice: it is not what a minute costs, and per-frame cost is not flat.
+Streamed, 600 frames at 10 fps:
+
+| Sequence | Wall time | ms/frame | Segment range | Probes | Peak |
+| --- | ---: | ---: | --- | --- | ---: |
+| Target pacing inside 3-8 m | **16.7 s** | 27.8 | 26.1 to 28.9 | 27 throughout | 79.4 MiB |
+| Target receding to 78 m | **29.5 s** | 49.2 | 24.9 to **224.1** | 27 to **615** | 99.1 MiB |
+
+The second row is a real limit, not a fixture artifact to wave away.
+**float32 position quantization interacts with the phase tolerance.** One float32
+step of a position at range R is `R * 2^-23` metres, which is
+`4*pi*R*2^-23/lambda` radians of two-way phase; at 77 GHz that reaches the default
+0.02 rad tolerance near 50 m. Past it no interval can be certified and the
+controller bisects toward exhaustion. Measured probe counts on one frame at 6, 20,
+40, 55, 70 and 78 m: 27, 27, 29, 31, 38, **162**.
+
+So peak allocation is flat in the FRAME count, as the sections below say, but not in
+the probe count: the receding run peaks at 99.1 MiB against the 76.4 MiB those
+sections present. A long sequence whose target stays in a room is flat in both.
+
+Reproduce: `python tools/benchmark_adaptive_frame.py --runs 5` and
+`python tools/benchmark_adaptive_frame.py --fixtures walker --sequence 600`.
+
 ## Device-side row expansion and deferred leg narrowing (2026-09-18)
 
 The two limits the host-cost section below left standing, measured on RTX 5080 / Ryzen 7 9800X3D
@@ -13,7 +74,9 @@ time per probe.
 and a compact per-observation column set; expanding those into one integer per row and sending the
 result is work the device can do from what it already has. At this frame's 393216 rows, measured
 standalone, the two routes are 9.23 ms of numpy plus transfer against 0.64 ms of device work, for
-identical indices. Host-to-device traffic falls from about 15 MB per frame to about 5 MB, uploaded
+identical indices. An independent run of the same comparison measured 15.2 ms for the host side
+and 0.571 ms for the device side, so 9.23 ms understates the host route and the real ratio is
+nearer 26x than 14x. Host-to-device traffic falls from about 15 MB per frame to about 5 MB, uploaded
 once instead of per batch. Every `repeat_interleave` declares its `output_size` from the host's own
 row totals, so the expansion adds no synchronization of its own, and `_adaptive_echo` still observes
 the device zero times - which `tests/test_import_boundary.py` checks, by scanning for `cpu`, `numpy`,
@@ -35,14 +98,10 @@ member, which on the adaptive route is published for exactly one observation per
 it behind a callable takes the count from 310 narrowings per frame to **2**, measured on the
 155-probe rotor.
 
-Per-frame latency, median of seven complete `Radar.simulate` calls, on three fixtures chosen for
-three regimes:
-
-| Fixture | observations | probes | before | device expansion | + deferred narrowing |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| MIMO walker, 3x4, 128 x 256 | 98304 | 27 | 50.3 ms | 23.7 ms | **21.6 ms** |
-| Rotor point, 1x1, 128 x 128 | 16384 | 155 | 124.2 ms | 68.3 ms | **48.3 ms** |
-| Two scatterers, 3x4, 32 x 64 | 6144 | 27 | 20.3 ms | 10.2 ms | **10.1 ms** |
+Per-frame latency: **retracted, see the correction above.** The table published here
+gave 50.3/124.2/20.3 ms before and 21.6/48.3/10.1 ms after, for 2.33x, 2.57x and 2.01x.
+Measured round-robin the same three fixtures are 61.5/115.0/26.3 and 38.7/98.9/25.1,
+for **1.59x, 1.16x and 1.05x**. The probe count in the third row was wrong too: 9, not 27.
 
 Every cube is bit-identical to the pre-change cube under `torch.equal` at each step, on all three.
 That statement is about the CUBE. `Result.adaptive_diagnostics[...]["synthesis_batches"]` does move,
@@ -60,8 +119,9 @@ by about 1.8e-7 absolute - so the equality claimed here does not extend to them.
 | 128 | 76.4 MiB | 1223.4 MiB | 16.01x | 19.6 | 20.1 | 0 |
 
 128 frames at 10 fps is 12.8 s of scene time produced in **2.51 s**, against 4.90 s before this
-section and 13.86 s before the host-cost work; 1 minute of that session's data is about **12 s** of
-wall time. Streamed peak allocation is still flat in the frame count, which is the property
+section and 13.86 s before the host-cost work. The "about 12 s for a minute" that stood here is
+retracted: a minute of a target pacing in a room measures 16.7 s, and a minute of THIS receding
+walker measures 29.5 s. See the correction above. Streamed peak allocation is still flat in the frame count, which is the property
 `stream` exists for, but it ROSE from 56.2 MiB to 76.4 MiB: the row maps are now device tensors and
 several of them are live at once inside a batch. The row budget still bounds them - it is the same
 knob against a larger constant - and the trade is 20 MiB of flat allocation for half the latency.
@@ -101,13 +161,14 @@ were synthesized and thrown away.
 
 Frame latency on that walker, median of seven complete `Radar.simulate` calls:
 
-| Stage | ms/frame | of the original |
-| --- | ---: | ---: |
-| Before | 104.9 | 1.00x |
-| Partition slices | 75.9 | 1.38x |
-| Array schedule | 72.4 | 1.45x |
-| Transmitter-restricted echo | 46.8 | 2.24x |
-| Array-valued published schedule | 41.0 | **2.56x** |
+**Retracted, see the correction above.** The staged table published here ran
+104.9 -> 75.9 -> 72.4 -> 46.8 -> 41.0 ms for a claimed 2.56x. Each stage was a
+working-tree state rather than a commit, so none of them can be re-measured; the
+end-to-end step this section is responsible for, `7c93c8e` to `f00bd8e`, measures
+**118.2 to 61.5 ms, 1.92x**, round-robin. The ordering conclusions the stages
+support - that the partition dict and the transmitter restriction were the two large
+items - rest on profile attribution, which is not latency and does not depend on the
+machine's clock.
 
 The maintained sequence measurement, `tools/validate_frame_streaming.py --frames 8 32 128`, on
 the same fixture and machine:
@@ -118,8 +179,9 @@ the same fixture and machine:
 | 32 | 56.2 MiB | 300.6 MiB | 5.35x | 40.1 | 40.5 | 0 |
 | 128 | 56.2 MiB | 1230.3 MiB | 21.91x | 38.3 | 39.4 | 0 |
 
-128 frames at 10 fps is 12.8 s of scene time produced in **4.90 s**, against 13.86 s before;
-1 minute of that session's data is about 23 s of wall time. Streamed peak allocation is flat and
+128 frames at 10 fps is 12.8 s of scene time produced in **4.90 s**, against 13.86 s before.
+The minute figure that stood here extrapolated those 128 frames and is retracted; see the
+correction above for a measured one. Streamed peak allocation is flat and
 fell from 67.4 MB, because the per-observation pair table is gone. This is one LOS walker
 fixture: it does not establish a per-frame cost for heavy multipath or moving meshes, whose limit
 remains topology discovery.
