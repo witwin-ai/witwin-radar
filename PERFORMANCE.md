@@ -4,7 +4,7 @@ Status: local measurements recorded 2026-09-16 to 2026-09-17; release-platform b
 
 ## What changed
 
-FMCW defaults to a normalized range spectrum. Stationary rows use native Dirichlet synthesis; linear moving rows include continuous fast-time phase, and refreshed dynamic scenes evaluate each ADC observation. The synthesized beat-signal route is explicit with `output_domain="beat"`. That changes the default pipeline's work: spectrum input must not pay a second range FFT, while beat input still does.
+FMCW defaults to a normalized range spectrum, which native Dirichlet synthesis evaluates in closed form for a delay that holds the whole chirp. A walking delay is synthesized in the beat domain, where the continuous fast-time phase is evaluated per sample, and refreshed dynamic scenes evaluate each ADC observation. The synthesized beat-signal route is explicit with `output_domain="beat"`. That changes the default pipeline's work: spectrum input must not pay a second range FFT, while beat input still does.
 
 For that reason, pre-consolidation latency, FFT-count, launch-count, and allocation tables are not presented as current evidence here. They measured the former default beat pipeline and deleted module layout. They remain available in repository history, but must not be copied into release notes for the spectrum-first implementation.
 
@@ -243,9 +243,16 @@ It is a correctness reference, not a real-time implementation. The cost scales
 with chirps * transmitters * ADC samples, and a moving mesh also incurs compile
 work. Explicit chirp sampling freezes fast-time geometry; longer rediscovery
 cadences may miss path births. Those tradeoffs are recorded in result metadata.
-The native finite-sum spectrum for nonzero linear delay rates costs O(N^2) per
-path rather than the stationary Dirichlet O(N). `tools/validate_doppler_motion.py`
-records actual scene timings together with independent IQ/STFT errors.
+A walking delay has no closed-form range spectrum, so the spectrum family takes
+no delay rate and refuses one by name. Evaluating that DFT term by term would
+cost N per bin, or O(N^2) per path per chirp, where the beat family synthesizes
+the same linear-delay model in N and the range transform finishes the axis in
+N log N. The closed form is still the reason the spectrum family exists: a delay
+that holds for the whole chirp collapses to a Dirichlet kernel, one evaluation
+per bin, with no samples materialised and no transform. Derivatives take the
+term-by-term sum in both families, so a spectrum backward costs N per bin where
+its forward costs one. `tools/validate_doppler_motion.py` records actual scene
+timings together with independent IQ/STFT errors.
 
 ## Maintained benchmark
 

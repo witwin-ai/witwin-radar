@@ -82,20 +82,32 @@ inline void check_index(
 }
 
 // One path batch: delay, delay rate and the complex weight, one value per path.
+// The rate-free overload is what a family whose delay does not walk calls; the
+// five-argument one adds the rate to it rather than repeating the list.
+inline void check_path_inputs(
+    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& weight_re,
+    const torch::stable::Tensor& weight_im,
+    int num_paths) {
+  check_cuda_float(tau_rt, "tau_rt");
+  check_cuda_float(weight_re, "weight_re");
+  check_cuda_float(weight_im, "weight_im");
+  STD_TORCH_CHECK(
+      tau_rt.numel() == num_paths && weight_re.numel() == num_paths &&
+          weight_im.numel() == num_paths,
+      "tau_rt, weight_re, and weight_im must each hold num_paths values.");
+}
+
 inline void check_path_inputs(
     const torch::stable::Tensor& tau_rt,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     int num_paths) {
-  check_cuda_float(tau_rt, "tau_rt");
+  check_path_inputs(tau_rt, weight_re, weight_im, num_paths);
   check_cuda_float(tau_rate, "tau_rate");
-  check_cuda_float(weight_re, "weight_re");
-  check_cuda_float(weight_im, "weight_im");
   STD_TORCH_CHECK(
-      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths &&
-          weight_re.numel() == num_paths && weight_im.numel() == num_paths,
-      "tau_rt, tau_rate, weight_re, and weight_im must each hold num_paths values.");
+      tau_rate.numel() == num_paths, "tau_rate must hold num_paths values.");
 }
 
 struct SegmentBounds {

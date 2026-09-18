@@ -1,9 +1,9 @@
 """One live differentiable call per registered autograd boundary, by name.
 
-Phase 9 asks the same question of every ``torch.autograd.Function`` in the
-package - does a second-order request fail loudly, before any partial
-second-order result, naming the owner - and that question needs a working
-FIRST-order call at each boundary to ask it through. The boundaries do not
+The same question is asked of every ``torch.autograd.Function`` in the package -
+does a second-order request fail loudly, before any partial second-order result,
+naming the owner - and that question needs a working FIRST-order call at each
+boundary to ask it through. The boundaries do not
 share a fixture: a two-way join needs frozen legs, a waveform needs rows and a
 spec, a sensor weight needs a geometry and a plan, and a frontend needs a noise
 realisation. Building all six inside the test that consumes them would have put
@@ -22,7 +22,8 @@ better while costing every consumer the time.
 
 The numerical settings are copied from the operator-level AD tests that own
 them rather than re-derived, and the two that matter are called out at their
-definitions: the pulse must be an LFM, and the carrier rate must be non-zero.
+definitions: the pulse must be an LFM, and the carrier must live in the weight
+rather than in the kernel.
 """
 
 from __future__ import annotations
@@ -64,9 +65,12 @@ def _fmcw(device: str = "cuda") -> Boundary:
     from witwin.radar.synthesis.assembly import FmcwSpec
     from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
-    # carrier_rate_hz is non-zero on purpose: it is what makes the delay-rate
-    # derivative differ from the delay derivative times the chirp time, and a
-    # spec with it zeroed would exercise a simpler backward than production's.
+    # carrier_rate_hz is non-zero on purpose: it declares that the weight owns
+    # the carrier at tau0, which is where production puts it, so this boundary
+    # differentiates the same phase decomposition the verbs do. No delay rate is
+    # passed: the range spectrum models a delay that holds the whole chirp, and
+    # the rate derivative is covered where it exists, in the beat family
+    # (tests/test_fmcw_continuous_motion.py).
     spec = FmcwSpec(
         num_samples=32,
         num_chirps=2,
@@ -81,7 +85,7 @@ def _fmcw(device: str = "cuda") -> Boundary:
     tau, rate, weight, offsets = _rows(device)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        return synthesize_fmcw_rows(leaf, rate, weight, offsets, spec).abs().square().sum()
+        return synthesize_fmcw_rows(leaf, None, weight, offsets, spec).abs().square().sum()
 
     return Boundary("fmcw", "synthesis.fmcw", tau, loss)
 

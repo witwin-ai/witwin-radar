@@ -1,6 +1,13 @@
-"""Continuous-delay dechirp and scene sampling against independent oracles."""
+"""Continuous-delay dechirp and scene sampling against independent oracles.
+
+A walking delay is always synthesized in the beat domain, because the range
+spectrum's closed form only exists for a delay that holds for the whole
+chirp. Its spectrum is the range transform of that beat, which is the route
+the production pipeline takes and the one `output_domain="spectrum"` refuses
+to shortcut."""
 
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -26,16 +33,24 @@ def _oracle(tau, rate, weight, spec):
     return beat if spec.output_domain == "beat" else torch.fft.fft(beat, norm="forward", dim=-1)
 
 
+def _walking(tau, rate, weight, offsets, spec, domain):
+    """Native beat rows, taken to the requested domain the way production does."""
+
+    beat = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)
+    return beat if domain == "beat" else torch.fft.fft(beat, dim=-1, norm="forward")
+
+
 @pytest.mark.parametrize("domain", ["beat", "spectrum"])
 @pytest.mark.parametrize("velocity", [0.0, 2.0, -20.0])
 def test_continuous_delay_primal_and_both_derivatives(domain, velocity):
-    spec = FmcwSpec(32, 3, 1 / 5e6, 60e-6, 6e13, 6e-6, 77e9, carrier_rate_hz=77e9, output_domain=domain)
+    spec = FmcwSpec(32, 3, 1 / 5e6, 60e-6, 6e13, 6e-6, 77e9, carrier_rate_hz=77e9, output_domain="beat")
+    oracle_spec = replace(spec, output_domain=domain)
     tau = torch.tensor([2 * 3.7 / 299792458], device="cuda", requires_grad=True)
     rate = torch.tensor([2 * velocity / 299792458], device="cuda", requires_grad=True)
     weight = torch.tensor([0.7 - 0.2j], device="cuda", requires_grad=True)
     offsets = torch.tensor([0, 1], device="cuda", dtype=torch.int64)
-    out = synthesize_fmcw_rows(tau, rate, weight, offsets, spec)[:, 0]
-    expected = _oracle(tau, rate, weight, spec)
+    out = _walking(tau, rate, weight, offsets, spec, domain)[:, 0]
+    expected = _oracle(tau, rate, weight, oracle_spec)
     torch.testing.assert_close(out.to(torch.complex128), expected, rtol=2e-5, atol=3e-6)
     loss_weight = torch.linspace(-0.5, 0.7, out.numel(), device="cuda").reshape(out.shape)
     loss = (out.real * loss_weight + 0.3 * out.imag).sum()
@@ -48,12 +63,12 @@ def test_continuous_delay_primal_and_both_derivatives(domain, velocity):
     with torch.autograd.forward_ad.dual_level():
         dual = torch.autograd.forward_ad.make_dual(rate.detach(), direction)
         measured = torch.autograd.forward_ad.unpack_dual(
-            synthesize_fmcw_rows(tau.detach(), dual, weight.detach(), offsets, spec)
+            _walking(tau.detach(), dual, weight.detach(), offsets, spec, domain)
         ).tangent[:, 0]
     dt = 1e-3
     finite_difference = (
-        _oracle(tau.detach(), rate.detach() + dt * direction, weight.detach(), spec)
-        - _oracle(tau.detach(), rate.detach() - dt * direction, weight.detach(), spec)
+        _oracle(tau.detach(), rate.detach() + dt * direction, weight.detach(), oracle_spec)
+        - _oracle(tau.detach(), rate.detach() - dt * direction, weight.detach(), oracle_spec)
     ) / (2 * dt)
     torch.testing.assert_close(measured.to(torch.complex128), finite_difference, atol=2e-4, rtol=3e-4)
 

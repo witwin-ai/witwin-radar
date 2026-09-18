@@ -1,4 +1,10 @@
-"""Direct FMCW Dirichlet spectrum is the default and equals FFT(beat)."""
+"""Direct FMCW Dirichlet spectrum is the default and equals FFT(beat).
+
+The equivalence is driven with a delay that does not walk, because that is
+the delay the closed form exists for. A walking delay reaches its spectrum
+through the beat family plus the range transform instead, which is the same
+N log N route this file's FFT stands in for, and the spectrum family refuses
+a rate by name rather than ignoring it."""
 
 from __future__ import annotations
 
@@ -41,9 +47,9 @@ def _inputs(*, requires_grad: bool = False):
     return tau, rate, weight, offsets, tx
 
 
-def _run(spec, values):
+def _run(spec, values, *, walking: bool = False):
     tau, rate, weight, offsets, tx = values
-    return synthesize_fmcw_rows(tau, rate, weight, offsets, spec, segment_tx_index=tx)
+    return synthesize_fmcw_rows(tau, rate if walking else None, weight, offsets, spec, segment_tx_index=tx)
 
 
 def test_spectrum_is_the_default_domain():
@@ -60,19 +66,36 @@ def test_direct_spectrum_equals_normalized_fft_of_explicit_beat():
 
 
 @pytest.mark.gpu
+def test_the_spectrum_refuses_a_walking_delay_and_names_the_cheaper_route():
+    """The refusal is the whole reason the rate left this family's signature.
+
+    Silently dropping the rate would return a stationary spectrum for a moving
+    target, which looks like a plausible cube. Silently summing term by term
+    would cost N per bin where the beat route costs N log N for the whole axis.
+    So the caller is told which route to take.
+    """
+
+    values = _inputs()
+    with pytest.raises(ValueError, match=r'output_domain="beat"'):
+        _run(_spec(), values, walking=True)
+
+
+@pytest.mark.gpu
 def test_spectrum_vjp_equals_fft_of_beat_vjp():
     torch.manual_seed(20260728)
     cotangent = torch.randn((3, 2, 32), device="cuda", dtype=torch.complex64)
     direct_values = _inputs(requires_grad=True)
     direct = _run(_spec(), direct_values)
     direct_loss = torch.real((direct.conj() * cotangent).sum())
-    direct_grads = torch.autograd.grad(direct_loss, direct_values[:3])
+    # The rate is not an input of the spectrum family, so only tau and the weight
+    # carry a cotangent here; the beat side is compared on the same two.
+    direct_grads = torch.autograd.grad(direct_loss, (direct_values[0], direct_values[2]))
 
     beat_values = _inputs(requires_grad=True)
     beat = _run(replace(_spec(), output_domain="beat"), beat_values)
     transformed = torch.fft.fft(beat, dim=-1, norm="forward")
     beat_loss = torch.real((transformed.conj() * cotangent).sum())
-    beat_grads = torch.autograd.grad(beat_loss, beat_values[:3])
+    beat_grads = torch.autograd.grad(beat_loss, (beat_values[0], beat_values[2]))
     for measured, expected in zip(direct_grads, beat_grads, strict=True):
         torch.testing.assert_close(measured, expected, rtol=8e-4, atol=8e-4)
 
@@ -82,14 +105,14 @@ def test_spectrum_jvp_equals_fft_of_beat_jvp():
     values = _inputs()
     tangents = (
         torch.tensor([0.4e-10, -0.3e-10, 0.2e-10], device="cuda"),
-        torch.tensor([0.7e-10, 0.2e-10, -0.5e-10], device="cuda"),
         torch.tensor([0.1 + 0.2j, -0.3 + 0.05j, 0.2 - 0.1j], dtype=torch.complex64, device="cuda"),
     )
 
     def tangent(spec):
         with forward_ad.dual_level():
-            duals = tuple(forward_ad.make_dual(primal, tan) for primal, tan in zip(values[:3], tangents, strict=True))
-            output = _run(spec, (*duals, *values[3:]))
+            tau = forward_ad.make_dual(values[0], tangents[0])
+            weight = forward_ad.make_dual(values[2], tangents[1])
+            output = _run(spec, (tau, values[1], weight, *values[3:]))
             return forward_ad.unpack_dual(output).tangent
 
     direct = tangent(_spec())

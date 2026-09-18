@@ -11,9 +11,11 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def("scatter_direction_backward(Tensor origin, Tensor target, Tensor cotangent, Tensor(a!) out) -> ()");
   m.def("scatter_direction_jvp(Tensor origin, Tensor target, Tensor tangent, Tensor(a!) out) -> ()");
   // Direct normalized Dirichlet range spectrum; same path and TDM contract as
-  // the beat family below.
+  // the beat family below. It takes no delay rate: a delay that walks has no
+  // closed form here, and the cheap route to its spectrum is the beat family
+  // plus the processing range transform.
   m.def(
-      "fmcw_spectrum_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_spectrum_forward(Tensor tau_rt, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
@@ -22,19 +24,19 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float slope_hz_per_s, float carrier_hz, float carrier_rate_hz, "
       "float t_start_s) -> ()");
   m.def(
-      "fmcw_spectrum_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_spectrum_backward(Tensor tau_rt, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
       "Tensor grad_out_re, "
-      "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
-      "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
+      "Tensor grad_out_im, Tensor(a!) grad_tau_rt, "
+      "Tensor(b!) grad_weight_re, Tensor(c!) grad_weight_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_bins, "
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
   m.def(
-      "fmcw_spectrum_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_spectrum_jvp(Tensor tau_rt, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor tan_tau_rt, "
-      "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
+      "Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_bins, "
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "

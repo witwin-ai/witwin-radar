@@ -27,7 +27,15 @@ import torch
 
 from ..cuda import native_ops as _ops
 from ..policy import first_order_only, refuse_derivative
-from .assembly import FmcwSpec, SynthesisPathBatch, pair_tx_index, require_compatible, segment_of_each_row
+from .assembly import (
+    FMCW_OUTPUT_BEAT,
+    FMCW_OUTPUT_SPECTRUM,
+    FmcwSpec,
+    SynthesisPathBatch,
+    pair_tx_index,
+    require_compatible,
+    segment_of_each_row,
+)
 
 
 def _forward_op(domain: str):
@@ -75,9 +83,11 @@ class _FmcwSynthesis(torch.autograd.Function):
             (spec.num_chirps, num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         out_im = torch.empty_like(out_re)
+        spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
+        delay = () if spectrum else (tau_rate,)
         _forward_op(spec.output_domain)(
             tau_rt,
-            tau_rate,
+            *delay,
             weight_re,
             weight_im,
             offsets,
@@ -111,13 +121,17 @@ class _FmcwSynthesis(torch.autograd.Function):
     def backward(ctx, grad_out_re, grad_out_im):
         (tau_rt, tau_rate, weight_re, weight_im, segment, tx_index) = ctx.saved_tensors
         spec = ctx.spec
+        spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
         grad_tau_rt = torch.empty_like(tau_rt)
-        grad_tau_rate = torch.empty_like(tau_rate)
+        # The spectrum family models no delay walk, so there is no rate to carry
+        # a cotangent: its slot in the returned tuple is None rather than zeros,
+        # which is what tells autograd the input was not used at all.
+        grad_tau_rate = None if spectrum else torch.empty_like(tau_rate)
         grad_weight_re = torch.empty_like(weight_re)
         grad_weight_im = torch.empty_like(weight_im)
         _backward_op(spec.output_domain)(
             tau_rt,
-            tau_rate,
+            *(() if spectrum else (tau_rate,)),
             weight_re,
             weight_im,
             segment,
@@ -125,7 +139,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             grad_out_re.contiguous(),
             grad_out_im.contiguous(),
             grad_tau_rt,
-            grad_tau_rate,
+            *(() if spectrum else (grad_tau_rate,)),
             grad_weight_re,
             grad_weight_im,
             int(tau_rt.shape[0]),
@@ -157,15 +171,16 @@ class _FmcwSynthesis(torch.autograd.Function):
             (spec.num_chirps, ctx.num_segments, spec.num_samples), dtype=torch.float32, device=tau_rt.device
         )
         tan_out_im = torch.empty_like(tan_out_re)
+        spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
         _jvp_op(spec.output_domain)(
             tau_rt,
-            tau_rate,
+            *(() if spectrum else (tau_rate,)),
             weight_re,
             weight_im,
             offsets,
             tx_index,
             tan_tau_rt,
-            tan_tau_rate,
+            *(() if spectrum else (tan_tau_rate,)),
             tan_weight_re,
             tan_weight_im,
             tan_out_re,
@@ -277,6 +292,14 @@ def synthesize_fmcw_rows(
     if delay_rate is None:
         rate = torch.zeros_like(total_delay_s)
     else:
+        if spec.output_domain == FMCW_OUTPUT_SPECTRUM:
+            raise ValueError(
+                "the range spectrum models no delay walk: its closed form exists "
+                "because one delay holds for the whole chirp. Synthesize a walking "
+                f'delay with output_domain="{FMCW_OUTPUT_BEAT}" and take the range '
+                "transform in processing, which evaluates the same linear-delay "
+                "model for N log N instead of N per bin"
+            )
         if delay_rate.shape != total_delay_s.shape:
             raise ValueError("delay_rate and total_delay_s must have the same shape")
         rate = delay_rate

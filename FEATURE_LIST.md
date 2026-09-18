@@ -39,7 +39,7 @@ Scene-driven FMCW phase noise uses one continuous-time Wiener oscillator shared 
 ## Waveform synthesis
 
 - FMCW, OFDM, and pulsed synthesis have separate owners under `witwin/radar/synthesis/` and share typed path/result assembly.
-- FMCW outputs a normalized range spectrum by default: native Dirichlet evaluation for stationary rows, native quadratic-phase summation for linearly moving rows, and the processing-owned range transform for ADC-refreshed scenes.
+- FMCW outputs a normalized range spectrum by default: native Dirichlet evaluation, in closed form, for a delay that holds the whole chirp. A walking delay is synthesized in the beat domain and reaches its spectrum through the processing-owned range transform, as do ADC-refreshed scenes; the spectrum family takes no delay rate and refuses one by name.
 - The linear-delay native model includes ADC start time and fast-time motion, with matching analytic VJP/JVP.
 - `FmcwSpec.output_domain="spectrum"` is the default; `output_domain="beat"` explicitly selects synthesized time-domain beat samples.
 - The FMCW spectrum and beat paths each expose native forward, analytical backward, and JVP operators through the one Radar native runtime.

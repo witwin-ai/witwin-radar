@@ -1,9 +1,9 @@
 // Complex FMCW range-spectrum synthesis; the phase equation is owned by fmcw_phase.cuh.
 //
-// SI units: tau0 is round-trip delay [s], rate=d(tau)/dt [s/s], slope [Hz/s],
-// carrier and carrier_rate [Hz], u=t_start+m*sample_period [s]. The TDM slot
-// starts at (chirp*num_tx+tx_index)*chirp_period [s]. The linear-delay model
-// evaluates tau=tau0+rate*(slot+u), including motion during the ADC window.
+// SI units: tau0 is round-trip delay [s], slope [Hz/s], carrier and carrier_rate
+// [Hz], u=t_start+m*sample_period [s]. The TDM slot starts at
+// (chirp*num_tx+tx_index)*chirp_period [s]. tau0 holds for the whole chirp: this
+// family models no delay walk, so tau=tau0 at every sample.
 //
 // The beat is tx*conj(rx), with exp(+j*2*pi*cycles). Channel weights are
 // conjugated once by the Python facade. When the weight owns the carrier at
@@ -11,10 +11,19 @@
 // carrier=fc and carrier_rate=0. Round-trip delay is never doubled here.
 // Channel owns spreading; Radar owns scattering and sensor weighting.
 //
-// Spectrum is the 1/N DFT: stationary rows use Dirichlet, moving rows finite sums.
-// The model holds weights and delay rate fixed. Curved trajectories, moving
-// reflectors, amplitude changes and topology events require refreshed scene
-// observations; Radar.simulate defaults to per-ADC sampling for dynamic FMCW.
+// Spectrum is the 1/N DFT of a delay that does NOT walk, so the fast-time phase
+// is linear in the sample index and the sum collapses to a Dirichlet kernel: one
+// evaluation per bin instead of N. A walking delay has no such closed form, and
+// evaluating its DFT term by term costs N per bin. The cheap route to that
+// spectrum is the beat family, which synthesizes the same linear-delay model in
+// N, followed by the processing range transform in N log N, so this family takes
+// no delay rate at all and the facade refuses one by name.
+// Derivatives still take the term-by-term sum: nothing differentiates the
+// Dirichlet form in closed form here, so a spectrum backward costs N per bin
+// where its forward costs one. The backward budget measures that asymmetry.
+// Curved trajectories, moving reflectors, amplitude changes and topology events
+// require refreshed scene observations; Radar.simulate defaults to per-ADC
+// sampling for dynamic FMCW.
 // Phase uses double accumulation and cycle wrapping before sincosf.
 // Independent oracle: tests/test_fmcw_continuous_motion.py (primal/JVP/VJP).
 
@@ -42,7 +51,6 @@ struct Complex {
 struct SpectrumResponse {
   Complex value;
   Complex d_tau_rt;
-  Complex d_tau_rate;
 };
 
 __device__ __forceinline__ Complex cmul(const Complex a, const Complex b) {
@@ -73,7 +81,6 @@ __device__ __forceinline__ Complex dirichlet(const float x, const float n) {
 
 __device__ __forceinline__ SpectrumResponse spectrum_response(
     const double tau,
-    const double rate,
     const double t_slot,
     const int bin,
     const int num_bins,
@@ -82,24 +89,22 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
     const double carrier_hz,
     const double carrier_rate_hz,
     const double t_start, const bool derivatives) {
-  if (rate != 0.0 || derivatives) {
-    double re=0., im=0., tr=0., ti=0., rr=0., ri=0.;
+  if (derivatives) {
+    double re=0., im=0., tr=0., ti=0.;
     for (int m=0; m<num_bins; ++m) {
-      const auto term = fmcw_phase_terms(tau, rate, t_slot, t_start+m*sample_period_s, slope, carrier_hz, carrier_rate_hz);
+      const auto term = fmcw_phase_terms(tau, 0.0, t_slot, t_start+m*sample_period_s, slope, carrier_hz, carrier_rate_hz);
       const auto z = cexp_cycles(term.cycles-static_cast<double>(bin)*m/num_bins);
       re+=z.re; im+=z.im;
       tr-=term.d_tau*z.im; ti+=term.d_tau*z.re;
-      rr-=term.d_rate*z.im; ri+=term.d_rate*z.re;
     }
     const double n=num_bins;
     return {{static_cast<float>(re/n),static_cast<float>(im/n)},
-            {static_cast<float>(tr/n),static_cast<float>(ti/n)},
-            {static_cast<float>(rr/n),static_cast<float>(ri/n)}};
+            {static_cast<float>(tr/n),static_cast<float>(ti/n)}};
   }
-  // Stationary closed form: one delay for the whole chirp makes the fast-time
-  // phase linear in m, so the 1/N DFT is a Dirichlet kernel times the phase at
-  // m = 0 (the phase owner evaluated with rate 0 at u = t_start). Reached only
-  // with derivatives == false, so the derivative slots are never read.
+  // Closed form: one delay for the whole chirp makes the fast-time phase linear
+  // in m, so the 1/N DFT is a Dirichlet kernel times the phase at m = 0 (the
+  // phase owner evaluated with rate 0 at u = t_start). Reached only with
+  // derivatives == false, so the derivative slot is never read.
   const double base_cycles =
       fmcw_phase_terms(tau, 0.0, t_slot, t_start, slope, carrier_hz, carrier_rate_hz).cycles;
   const Complex phase = cexp_cycles(base_cycles);
@@ -112,11 +117,10 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
   Complex value = cmul(d, phase);
   value.re *= inv_n;
   value.im *= inv_n;
-  return {value, {0.0f, 0.0f}, {0.0f, 0.0f}};
+  return {value, {0.0f, 0.0f}};
 }
 __global__ void fmcw_spectrum_forward_kernel(
     const float* __restrict__ tau_rt,
-    const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
@@ -147,9 +151,8 @@ __global__ void fmcw_spectrum_forward_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
-    const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
-        tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+        tau, t_slot, bin, num_bins, sample_period_s, slope,
         carrier_hz, carrier_rate_hz, t_start, false);
     const float wr = weight_re[k];
     const float wi = weight_im[k];
@@ -163,13 +166,11 @@ __global__ void fmcw_spectrum_forward_kernel(
 }
 __global__ void fmcw_spectrum_jvp_kernel(
     const float* __restrict__ tau_rt,
-    const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
     const int32_t* __restrict__ segment_tx_index,
     const float* __restrict__ tan_tau_rt,
-    const float* __restrict__ tan_tau_rate,
     const float* __restrict__ tan_weight_re,
     const float* __restrict__ tan_weight_im,
     float* __restrict__ tan_out_re,
@@ -198,19 +199,15 @@ __global__ void fmcw_spectrum_jvp_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
-    const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
-        tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+        tau, t_slot, bin, num_bins, sample_period_s, slope,
         carrier_hz, carrier_rate_hz, t_start, true);
     const float wr = weight_re[k];
     const float wi = weight_im[k];
     const float twr = tan_weight_re[k];
     const float twi = tan_weight_im[k];
     const float tr = tan_tau_rt[k];
-    const float tv = tan_tau_rate[k];
-    const Complex dq = {
-        tr * response.d_tau_rt.re + tv * response.d_tau_rate.re,
-        tr * response.d_tau_rt.im + tv * response.d_tau_rate.im};
+    const Complex dq = {tr * response.d_tau_rt.re, tr * response.d_tau_rt.im};
     acc_re += twr * response.value.re - twi * response.value.im;
     acc_im += twr * response.value.im + twi * response.value.re;
     acc_re += wr * dq.re - wi * dq.im;
@@ -226,7 +223,6 @@ __global__ void fmcw_spectrum_jvp_kernel(
 // atomics and the summation order is fixed by the loop nest.
 __global__ void fmcw_spectrum_backward_kernel(
     const float* __restrict__ tau_rt,
-    const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_segment,
@@ -234,7 +230,6 @@ __global__ void fmcw_spectrum_backward_kernel(
     const float* __restrict__ grad_out_re,
     const float* __restrict__ grad_out_im,
     float* __restrict__ grad_tau_rt,
-    float* __restrict__ grad_tau_rate,
     float* __restrict__ grad_weight_re,
     float* __restrict__ grad_weight_im,
     const int num_paths,
@@ -256,13 +251,11 @@ __global__ void fmcw_spectrum_backward_kernel(
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;
   const double base_tau = static_cast<double>(tau_rt[k]);
-  const double rate = static_cast<double>(tau_rate[k]);
   const float wr = weight_re[k];
   const float wi = weight_im[k];
   const int tx = clamped_tx_index(
       segment_tx_index, static_cast<int>(segment), num_tx);
   double d_tau = 0.0;
-  double d_rate = 0.0;
   double d_wr = 0.0;
   double d_wi = 0.0;
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
@@ -272,7 +265,7 @@ __global__ void fmcw_spectrum_backward_kernel(
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_bins;
     for (int bin = 0; bin < num_bins; ++bin) {
       const SpectrumResponse response = spectrum_response(
-          tau, rate, t_slot, bin, num_bins, sample_period_s, slope,
+          tau, t_slot, bin, num_bins, sample_period_s, slope,
           carrier_hz, carrier_rate_hz, t_start, true);
       const float gr = grad_out_re[row + bin];
       const float gi = grad_out_im[row + bin];
@@ -283,17 +276,11 @@ __global__ void fmcw_spectrum_backward_kernel(
       const Complex dz_tau = {
           wr * response.d_tau_rt.re - wi * response.d_tau_rt.im,
           wr * response.d_tau_rt.im + wi * response.d_tau_rt.re};
-      const Complex dz_rate = {
-          wr * response.d_tau_rate.re - wi * response.d_tau_rate.im,
-          wr * response.d_tau_rate.im + wi * response.d_tau_rate.re};
       d_tau += static_cast<double>(gr) * dz_tau.re +
           static_cast<double>(gi) * dz_tau.im;
-      d_rate += static_cast<double>(gr) * dz_rate.re +
-          static_cast<double>(gi) * dz_rate.im;
     }
   }
   grad_tau_rt[k] = static_cast<float>(d_tau);
-  grad_tau_rate[k] = static_cast<float>(d_rate);
   grad_weight_re[k] = static_cast<float>(d_wr);
   grad_weight_im[k] = static_cast<float>(d_wi);
 }
@@ -301,7 +288,6 @@ __global__ void fmcw_spectrum_backward_kernel(
 
 void fmcw_spectrum_forward_cuda(
     const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
@@ -327,7 +313,7 @@ void fmcw_spectrum_forward_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
   STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
+  check_path_inputs(tau_rt, weight_re, weight_im, paths);
   check_cuda_long(path_offsets, "path_offsets");
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
@@ -344,7 +330,6 @@ void fmcw_spectrum_forward_cuda(
       0,
       current_cuda_stream(out_re)>>>(
       tau_rt.const_data_ptr<float>(),
-      tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
@@ -366,13 +351,11 @@ void fmcw_spectrum_forward_cuda(
 
 void fmcw_spectrum_jvp_cuda(
     const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
     const torch::stable::Tensor& segment_tx_index,
     const torch::stable::Tensor& tan_tau_rt,
-    const torch::stable::Tensor& tan_tau_rate,
     const torch::stable::Tensor& tan_weight_re,
     const torch::stable::Tensor& tan_weight_im,
     torch::stable::Tensor& tan_out_re,
@@ -396,9 +379,8 @@ void fmcw_spectrum_jvp_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
   STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
-  check_path_inputs(
-      tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, paths);
+  check_path_inputs(tau_rt, weight_re, weight_im, paths);
+  check_path_inputs(tan_tau_rt, tan_weight_re, tan_weight_im, paths);
   check_cuda_long(path_offsets, "path_offsets");
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
@@ -423,13 +405,11 @@ void fmcw_spectrum_jvp_cuda(
       0,
       current_cuda_stream(tan_out_re)>>>(
       tau_rt.const_data_ptr<float>(),
-      tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
       segment_tx_index.const_data_ptr<int32_t>(),
       tan_tau_rt.const_data_ptr<float>(),
-      tan_tau_rate.const_data_ptr<float>(),
       tan_weight_re.const_data_ptr<float>(),
       tan_weight_im.const_data_ptr<float>(),
       tan_out_re.mutable_data_ptr<float>(),
@@ -449,7 +429,6 @@ void fmcw_spectrum_jvp_cuda(
 
 void fmcw_spectrum_backward_cuda(
     const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_segment,
@@ -457,7 +436,6 @@ void fmcw_spectrum_backward_cuda(
     const torch::stable::Tensor& grad_out_re,
     const torch::stable::Tensor& grad_out_im,
     torch::stable::Tensor& grad_tau_rt,
-    torch::stable::Tensor& grad_tau_rate,
     torch::stable::Tensor& grad_weight_re,
     torch::stable::Tensor& grad_weight_im,
     int64_t num_paths,
@@ -479,7 +457,7 @@ void fmcw_spectrum_backward_cuda(
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
   STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
-  check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
+  check_path_inputs(tau_rt, weight_re, weight_im, paths);
   check_cuda_long(path_segment, "path_segment");
   STD_TORCH_CHECK(
       path_segment.numel() == static_cast<int64_t>(paths),
@@ -494,8 +472,7 @@ void fmcw_spectrum_backward_cuda(
       "bins",
       "grad_out_re",
       "grad_out_im");
-  check_path_inputs(
-      grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, paths);
+  check_path_inputs(grad_tau_rt, grad_weight_re, grad_weight_im, paths);
 
   if (paths == 0) {
     return;
@@ -510,7 +487,6 @@ void fmcw_spectrum_backward_cuda(
       0,
       current_cuda_stream(grad_tau_rt)>>>(
       tau_rt.const_data_ptr<float>(),
-      tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_segment.const_data_ptr<int64_t>(),
@@ -518,7 +494,6 @@ void fmcw_spectrum_backward_cuda(
       grad_out_re.const_data_ptr<float>(),
       grad_out_im.const_data_ptr<float>(),
       grad_tau_rt.mutable_data_ptr<float>(),
-      grad_tau_rate.mutable_data_ptr<float>(),
       grad_weight_re.mutable_data_ptr<float>(),
       grad_weight_im.mutable_data_ptr<float>(),
       paths,

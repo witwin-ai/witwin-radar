@@ -41,7 +41,7 @@ python ci/check_duplicate_code.py
 
 ## FMCW output contract
 
-FMCW output defaults to a normalized range spectrum. Stationary paths use native CUDA Dirichlet evaluation; linearly moving paths use native continuous-delay phase summation; ADC-refreshed scenes use native sample synthesis and the processing-owned range transform. `FmcwSpec.output_domain` and the flat configuration field `output_domain` default to `"spectrum"`. Use `output_domain="beat"` only when a caller explicitly needs the synthesized time-domain beat signal. Processing must use the `SynthesisResult.axes` metadata instead of inferring the domain from tensor shape.
+FMCW output defaults to a normalized range spectrum. The spectrum family evaluates the 1/N DFT in closed form, as a Dirichlet kernel, which exists only because one delay holds for the whole chirp; it therefore takes no delay rate and refuses one by name. A walking delay is synthesized by the beat family, which evaluates the same linear-delay model in N per chirp, and its spectrum is the processing-owned range transform in N log N. ADC-refreshed scenes synthesize samples natively and take that same range transform; this is what the verbs default to for a dynamic scene, because a constant delay rate does not capture trajectory curvature, moving reflectors, amplitude change, or path births. `FmcwSpec.output_domain` and the flat configuration field `output_domain` default to `"spectrum"`. Use `output_domain="beat"` only when a caller explicitly needs the synthesized time-domain beat signal. Processing must use the `SynthesisResult.axes` metadata instead of inferring the domain from tensor shape.
 
 ## Public entry points
 
