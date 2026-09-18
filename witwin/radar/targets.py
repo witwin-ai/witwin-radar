@@ -78,7 +78,15 @@ class PointTargets:
     #: Radar cross section, m^2. One value for every target: a per-target
     #: vector needs an :class:`Aspect`, because the scalar response broadcasts
     #: one strength across every composed row.
-    rcs: Any
+    rcs: Any = None
+    #: The dimensionless target strength, ``sqrt(4 pi sigma) / lambda``, for a
+    #: caller who has it rather than a cross section. Exactly one of this and
+    #: ``rcs`` is given: they are the same quantity on two sides of the law
+    #: that converts them, and accepting both would leave which one wins
+    #: undefined. A test oracle or an optimiser that treats the strength itself
+    #: as the leaf wants this one, because going through the cross section
+    #: would put the square root in its gradient.
+    amplitude: Any = None
     #: Scattering phase, rad.
     phase: float = 0.0
     #: ``trajectory(time)`` returns this same ordered set of material points at
@@ -91,13 +99,15 @@ class PointTargets:
     aspect: Aspect | None = None
 
     def __post_init__(self) -> None:
+        _require_one_strength("PointTargets", rcs=self.rcs, amplitude=self.amplitude)
         if self.trajectory is not None and not callable(self.trajectory):
             raise TypeError("PointTargets.trajectory must be callable as trajectory(time) -> (S, 3) positions")
         if self.aspect is not None and not isinstance(self.aspect, Aspect):
             raise TypeError(f"PointTargets.aspect must be an Aspect, got {type(self.aspect).__name__}")
-        if isinstance(self.rcs, torch.Tensor) and self.rcs.dim() > 0 and self.aspect is None:
+        strength = self.rcs if self.rcs is not None else self.amplitude
+        if isinstance(strength, torch.Tensor) and strength.dim() > 0 and self.aspect is None:
             raise ValueError(
-                "a per-target rcs vector needs an Aspect: the isotropic response carries ONE strength and "
+                "a per-target strength vector needs an Aspect: the isotropic response carries ONE value and "
                 "broadcasts it across every composed row, so a vector here would silently take its first entry"
             )
 
@@ -119,7 +129,10 @@ class StructureTargets:
     """
 
     #: Radar cross section, m^2, shared by every selected structure.
-    rcs: Any
+    rcs: Any = None
+    #: The dimensionless strength instead of a cross section; exactly one of
+    #: the two, for the reason :class:`PointTargets` gives.
+    amplitude: Any = None
     #: Which structures to place a scatterer on. ``None`` takes every structure
     #: the snapshot carries. Selection and ordering are by ascending structure
     #: ID rather than by the scene's tuple order, so the array order is a
@@ -129,6 +142,20 @@ class StructureTargets:
     phase: float = 0.0
     #: Stable world IDs, one per selected structure. ``None`` allocates them.
     ids: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        _require_one_strength("StructureTargets", rcs=self.rcs, amplitude=self.amplitude)
+
+
+def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
+    """Exactly one of the two ways to say how strongly a target scatters."""
+
+    if (rcs is None) == (amplitude is None):
+        raise ValueError(
+            f"{owner} needs exactly one of rcs and amplitude. They are the same quantity on two sides of "
+            "amplitude = sqrt(4 pi rcs) / wavelength, so giving both leaves it undefined which one the "
+            "response is built from, and giving neither says nothing about how strongly the target scatters."
+        )
 
 
 class _PositionTrajectory:
@@ -190,14 +217,25 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
 
     aspect = getattr(targets, "aspect", None)
     if aspect is None:
-        response = ScalarRcsResponse.from_rcs(
-            targets.rcs,
-            reference_frequency_hz=float(radar.carrier),
-            phase_rad=float(targets.phase),
-            device=radar.device,
-        )
+        if targets.rcs is not None:
+            response = ScalarRcsResponse.from_rcs(
+                targets.rcs,
+                reference_frequency_hz=float(radar.carrier),
+                phase_rad=float(targets.phase),
+                device=radar.device,
+            )
+        elif isinstance(targets.amplitude, torch.Tensor):
+            # Built directly rather than through ``from_values``, which floats
+            # its argument and would silently drop the tape of a strength the
+            # caller marked as a leaf.
+            response = ScalarRcsResponse(
+                amplitude=targets.amplitude.to(device=radar.device),
+                phase_rad=torch.tensor(float(targets.phase), dtype=torch.float32, device=radar.device),
+            )
+        else:
+            response = ScalarRcsResponse.from_values(targets.amplitude, float(targets.phase), device=radar.device)
     else:
-        amplitude = rcs_amplitude(targets.rcs, radar.wavelength)
+        amplitude = targets.amplitude if targets.rcs is None else rcs_amplitude(targets.rcs, radar.wavelength)
         count = targets.count
         if not isinstance(amplitude, torch.Tensor):
             amplitude = torch.full((count,), float(amplitude), dtype=torch.float32, device=radar.device)

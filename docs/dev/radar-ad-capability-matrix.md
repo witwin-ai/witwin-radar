@@ -128,14 +128,19 @@ caller was displaced.
 Each spec's row covers every scalar it declares; the per-field cases are the
 parametrized ids inside the cited test.
 
+The port impedance, the LNA gain and the seed no longer have records of their
+own: each was one number, so each is a field of `FrontendSpec` and of the radar
+that builds it. The refusal is unchanged - a marked tensor in any of them is
+still refused at the same host-declaration boundary - and the rows below name
+their new owner.
+
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| frontend/PortSpec | reference_impedance_ohm | both | REF | host-declaration | witwin/radar/frontend.py::PortSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| frontend/NoiseSpec | noise_figure_db, antenna_temperature_k, bandwidth_hz, phase_noise_dbc_per_hz, phase_offset_hz, phase_sample_rate_hz | both | REF | host-declaration | witwin/radar/frontend.py::NoiseSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| frontend/LnaSpec | gain_db | both | REF | host-declaration | witwin/radar/frontend.py::LnaSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| frontend/AgcSpec | target_rms, min_gain_db, max_gain_db | both | REF | host-declaration | witwin/radar/frontend.py::AgcSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| frontend/AdcSpec | bits, full_scale | both | REF | host-declaration | witwin/radar/frontend.py::AdcSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
-| frontend/SeedSpec | seed_base | both | REF | host-declaration | witwin/radar/frontend.py::SeedSpec | tests/test_phase9_host_float_refusal.py::test_the_seed_is_refused_by_its_own_older_type_rule | refusal |
+| frontend/FrontendSpec | impedance, lna | both | REF | host-declaration | witwin/radar/frontend.py::FrontendSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/Noise | figure, antenna_temperature, bandwidth, phase_density, phase_offset, phase_sample_rate | both | REF | host-declaration | witwin/radar/frontend.py::Noise | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/Agc | target_rms, min_gain, max_gain | both | REF | host-declaration | witwin/radar/frontend.py::Agc | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/Adc | bits, full_scale | both | REF | host-declaration | witwin/radar/frontend.py::Adc | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/FrontendSpec | seed | both | REF | host-declaration | witwin/radar/frontend.py::FrontendSpec | tests/test_phase9_host_float_refusal.py::test_the_seed_is_refused_by_its_own_older_type_rule | refusal |
 | synthesis/FmcwSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/assembly.py::FmcwSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | synthesis/OfdmCfrSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/assembly.py::OfdmSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | synthesis/PulsedEchoSpec | every waveform scalar | both | REF | host-declaration | witwin/radar/synthesis/assembly.py::PulsedSpec | tests/test_phase9_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
@@ -230,7 +235,7 @@ modes, against a fourth-order difference of the whole production chain.
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
 | frontend/adc | the signal | both | REF | host-declaration | witwin/radar/frontend.py::FrontendChain._quantize | tests/test_phase6_frontend_chain.py::test_the_quantizer_refuses_a_differentiable_input | refusal |
-| frontend/oscillator-time | timestamps and path delays | both | REF | host-declaration | witwin/radar/frontend.py::NoiseSpec.phase_difference | tests/test_correlated_phase_noise.py::test_delays_refuse_nonexistent_brownian_time_derivative | refusal |
+| frontend/oscillator-time | timestamps and path delays | both | REF | host-declaration | witwin/radar/frontend.py::Noise.phase_difference | tests/test_correlated_phase_noise.py::test_delays_refuse_nonexistent_brownian_time_derivative | refusal |
 
 ### Adaptive path interpolation (`witwin/radar/paths.py`)
 
@@ -489,7 +494,7 @@ above, never a silent one.
   grid change is not the derivative of a fixed function. Deciding which subset
   is safely continuous, and what a sampling-grid derivative means, is a
   modelling decision with its own ADR rather than a slot to open quietly. Follow-up owner: Radar `synthesis/`, as a new R-ADR deciding which spec scalars are continuous and what a sampling-grid derivative means.
-- **A pathwise derivative through the noise realisation.** Every `NoiseSpec`
+- **A pathwise derivative through the noise realisation.** Every `Noise`
   scalar parameterises a counter-based Philox draw. A reparameterised noise
   model, where the realisation is a smooth function of a fixed standard normal,
   is the shape that would make these leaves meaningful, and it is a separate

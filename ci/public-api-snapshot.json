@@ -6,16 +6,87 @@
       "module": "witwin.radar",
       "exports": [
         {
+          "name": "Adc",
+          "kind": "class",
+          "target": "witwin.radar.frontend.Adc",
+          "signature": "(bits: 'int', full_scale: 'float') -> None"
+        },
+        {
+          "name": "Agc",
+          "kind": "class",
+          "target": "witwin.radar.frontend.Agc",
+          "signature": "(target_rms: 'float', mode: 'str' = 'per_rx', min_gain: 'float' = -60.0, max_gain: 'float' = 60.0) -> None"
+        },
+        {
+          "name": "Aspect",
+          "kind": "class",
+          "target": "witwin.radar.targets.Aspect",
+          "signature": "(axis: 'Any', exponent: 'float', coherent_interval: 'float', phase_rate: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "Fmcw",
+          "kind": "class",
+          "target": "witwin.radar.radar.Fmcw",
+          "signature": "(slope: 'float', sample_rate: 'float', samples_per_chirp: 'int', chirps_per_frame: 'int', adc_start: 'float', idle: 'float', ramp_end: 'float', output: 'str' = 'spectrum') -> None"
+        },
+        {
+          "name": "Motion",
+          "kind": "class",
+          "target": "witwin.radar.simulation.Motion",
+          "signature": "(kind: 'str' = 'auto', phase_error: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval: 'float' = 0.002, nodes: 'int' = 2, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256, rediscover_every_frames: 'int | None' = None, world: 'str' = 'frozen_world') -> None"
+        },
+        {
+          "name": "Noise",
+          "kind": "class",
+          "target": "witwin.radar.frontend.Noise",
+          "signature": "(figure: 'float' = 0.0, antenna_temperature: 'float' = 290.0, bandwidth: 'float | None' = None, phase_density: 'float | None' = None, phase_offset: 'float | None' = None, phase_sample_rate: 'float | None' = None) -> None"
+        },
+        {
+          "name": "Ofdm",
+          "kind": "class",
+          "target": "witwin.radar.radar.Ofdm",
+          "signature": "(subcarrier_spacing: 'float', num_subcarriers: 'int', cyclic_prefix: 'float', num_symbols: 'int', max_expected_delay: 'float', subcarrier_origin: 'str' = 'f_ref_at_n0') -> None"
+        },
+        {
+          "name": "Pattern",
+          "kind": "class",
+          "target": "witwin.radar.sensors.Pattern",
+          "signature": "(kind: 'str', x_angles: 'tuple[float, ...]', y_angles: 'tuple[float, ...]', x_gain: 'tuple[float, ...] | None' = None, y_gain: 'tuple[float, ...] | None' = None, gain: 'tuple[tuple[float, ...], ...] | None' = None) -> None"
+        },
+        {
+          "name": "PointTargets",
+          "kind": "class",
+          "target": "witwin.radar.targets.PointTargets",
+          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'float' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None) -> None"
+        },
+        {
+          "name": "Pulsed",
+          "kind": "class",
+          "target": "witwin.radar.radar.Pulsed",
+          "signature": "(pulse_kind: 'str', pulse_width: 'float', bandwidth: 'float', pri: 'float', num_pulses: 'int', sample_rate: 'float', num_samples: 'int', range_gate_start: 'float', max_expected_delay_rate: 'float' = 0.0, pulse_normalization: 'str' = 'unit_energy') -> None"
+        },
+        {
           "name": "Radar",
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
-          "signature": "(config: 'RadarConfig | Mapping[str, Any]', device: 'str | torch.device' = 'cuda', *, position=(0.0, 0.0, 0.0), target=None, up=(0.0, 1.0, 0.0), fov: 'float' = 60.0, name: 'str | None' = None)"
+          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
         },
         {
-          "name": "RadarConfig",
+          "name": "RadarSimulationResult",
           "kind": "class",
-          "target": "witwin.radar.radar.RadarConfig",
-          "signature": "(num_tx: 'int', num_rx: 'int', fc: 'float', slope: 'float', adc_samples: 'int', adc_start_time: 'float', sample_rate: 'float', idle_time: 'float', ramp_end_time: 'float', chirp_per_frame: 'int', frame_per_second: 'float', num_doppler_bins: 'int', num_range_bins: 'int', num_angle_bins: 'int', power: 'float', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', antenna_pattern: 'dict[str, Any] | None' = None, frontend: 'FrontendSpec | None' = None) -> None"
+          "target": "witwin.radar.simulation.RadarSimulationResult",
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
+        },
+        {
+          "name": "StructureTargets",
+          "kind": "class",
+          "target": "witwin.radar.targets.StructureTargets",
+          "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'float' = 0.0, ids: 'tuple[int, ...] | None' = None) -> None"
+        },
+        {
+          "name": "processing",
+          "kind": "value",
+          "target": "<module> processing"
         }
       ]
     },
@@ -50,53 +121,6 @@
           "kind": "function",
           "target": "witwin.radar.deployment.runtime_diagnostics",
           "signature": "() -> 'dict[str, Any]'"
-        }
-      ]
-    },
-    {
-      "module": "witwin.radar.frontend",
-      "exports": [
-        {
-          "name": "AdcSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.AdcSpec",
-          "signature": "(bits: 'int', full_scale: 'float') -> None"
-        },
-        {
-          "name": "AgcSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.AgcSpec",
-          "signature": "(target_rms: 'float', mode: 'str' = 'per_rx', min_gain_db: 'float' = -60.0, max_gain_db: 'float' = 60.0) -> None"
-        },
-        {
-          "name": "FrontendSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.FrontendSpec",
-          "signature": "(port: 'PortSpec' = PortSpec(reference_impedance_ohm=50.0), noise: 'NoiseSpec | None' = None, lna: 'LnaSpec | None' = None, agc: 'AgcSpec | None' = None, adc: 'AdcSpec | None' = None, seed: 'SeedSpec' = SeedSpec(seed_base=0)) -> None"
-        },
-        {
-          "name": "LnaSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.LnaSpec",
-          "signature": "(gain_db: 'float' = 0.0) -> None"
-        },
-        {
-          "name": "NoiseSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.NoiseSpec",
-          "signature": "(noise_figure_db: 'float' = 0.0, antenna_temperature_k: 'float' = 290.0, bandwidth_hz: 'float' = 0.0, phase_noise_dbc_per_hz: 'float | None' = None, phase_offset_hz: 'float' = 0.0, phase_sample_rate_hz: 'float' = 0.0) -> None"
-        },
-        {
-          "name": "PortSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.PortSpec",
-          "signature": "(reference_impedance_ohm: 'float' = 50.0) -> None"
-        },
-        {
-          "name": "SeedSpec",
-          "kind": "class",
-          "target": "witwin.radar.frontend.SeedSpec",
-          "signature": "(seed_base: 'int' = 0) -> None"
         }
       ]
     },
@@ -326,65 +350,13 @@
       ]
     },
     {
-      "module": "witwin.radar.sensors",
-      "exports": [
-        {
-          "name": "AntennaPatternSpec",
-          "kind": "class",
-          "target": "witwin.radar.sensors.AntennaPatternSpec",
-          "signature": "(kind: 'str', x_angles_deg: 'tuple[float, ...]', y_angles_deg: 'tuple[float, ...]', x_values: 'tuple[float, ...] | None' = None, y_values: 'tuple[float, ...] | None' = None, values: 'tuple[tuple[float, ...], ...] | None' = None) -> None"
-        },
-        {
-          "name": "ISOTROPIC_PATTERN",
-          "kind": "value",
-          "target": "<AntennaPatternSpec> ISOTROPIC_PATTERN"
-        },
-        {
-          "name": "SensorArraySpec",
-          "kind": "class",
-          "target": "witwin.radar.sensors.SensorArraySpec",
-          "signature": "(num_tx: 'int', num_rx: 'int', tx_loc: 'tuple[tuple[float, float, float], ...]', rx_loc: 'tuple[tuple[float, float, float], ...]', reference_frequency_hz: 'float') -> None"
-        },
-        {
-          "name": "TxPowerSpec",
-          "kind": "class",
-          "target": "witwin.radar.sensors.TxPowerSpec",
-          "signature": "(power_dbm: 'float') -> None"
-        }
-      ]
-    },
-    {
       "module": "witwin.radar.simulation",
       "exports": [
-        {
-          "name": "AdaptiveMotionSpec",
-          "kind": "class",
-          "target": "witwin.radar.simulation.AdaptiveMotionSpec",
-          "signature": "(phase_error_rad: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval_s: 'float' = 0.002, interpolation_nodes: 'int' = 2, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256) -> None"
-        },
-        {
-          "name": "RadarSimulationResult",
-          "kind": "class",
-          "target": "witwin.radar.simulation.RadarSimulationResult",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axes: 'tuple[str, ...]', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'beat', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
-        },
-        {
-          "name": "ScatterSitePolicy",
-          "kind": "class",
-          "target": "witwin.radar.simulation.ScatterSitePolicy",
-          "signature": "(source: 'str', positions_m: 'object | None' = None, structure_ids: 'tuple[int, ...] | None' = None, stable_ids: 'tuple[int, ...] | None' = None, power_w: 'float' = 1.0, trajectory: 'object | None' = None) -> None"
-        },
         {
           "name": "SensorEndpointIds",
           "kind": "class",
           "target": "witwin.radar.simulation.SensorEndpointIds",
           "signature": "(transmitters: 'tuple[int, ...]', receivers: 'tuple[int, ...]') -> None"
-        },
-        {
-          "name": "StableIdAllocator",
-          "kind": "class",
-          "target": "witwin.radar.simulation.StableIdAllocator",
-          "signature": "(transmitter_base: 'int' = 1000000, receiver_base: 'int' = 2000000, site_base: 'int' = 3000000) -> None"
         }
       ]
     },
@@ -476,44 +448,105 @@
       "class": "witwin.radar.Radar",
       "members": [
         {
-          "name": "last_compiled_scene",
-          "kind": "property",
-          "doc_first_line": "The Channel ``CompiledScene`` that frame's legs were replayed on."
+          "name": "adc",
+          "kind": "value"
         },
         {
-          "name": "last_propagation",
-          "kind": "property",
-          "doc_first_line": "That frame's two legs, as a typed"
+          "name": "agc",
+          "kind": "value"
         },
         {
-          "name": "last_radar_paths",
-          "kind": "property",
-          "doc_first_line": "That frame's composed"
+          "name": "antenna_unit",
+          "kind": "value"
         },
         {
-          "name": "last_result",
-          "kind": "property",
-          "doc_first_line": "The whole of the last :meth:`simulate` call, or ``None``."
+          "name": "device",
+          "kind": "value"
         },
         {
-          "name": "last_snapshot",
-          "kind": "property",
-          "doc_first_line": "The Core ``SceneSnapshot`` the last simulated frame ran against."
+          "name": "from_dict",
+          "kind": "value"
         },
         {
-          "name": "set_pose",
+          "name": "from_json",
+          "kind": "value"
+        },
+        {
+          "name": "impedance",
+          "kind": "value"
+        },
+        {
+          "name": "lna_gain",
+          "kind": "value"
+        },
+        {
+          "name": "look_at",
+          "kind": "value"
+        },
+        {
+          "name": "noise",
+          "kind": "value"
+        },
+        {
+          "name": "num_rx",
+          "kind": "property",
+          "doc_first_line": "Receive element count, which is just how many ``rx`` names."
+        },
+        {
+          "name": "num_tx",
+          "kind": "property",
+          "doc_first_line": "Transmit element count, which is just how many ``tx`` names."
+        },
+        {
+          "name": "polarization",
+          "kind": "value"
+        },
+        {
+          "name": "position",
+          "kind": "value"
+        },
+        {
+          "name": "replace",
           "kind": "function",
-          "signature": "(self, *, position=None, target=None, up=None, fov=None) -> 'Radar'"
+          "signature": "(self, **fields: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "seed",
+          "kind": "value"
         },
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc', adaptive_motion=None) -> 'RadarSimulationResult'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'RadarSimulationResult'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, *, times, response, sites=None, components=None, max_depth=None, ad_mode: 'str' = 'none', world_motion: 'str' = 'frozen_world', motion_event_period_frames: 'int | None' = None, ids=None, polarization=None, sensor_endpoints=None, motion_sampling: 'str' = 'adc', adaptive_motion=None) -> 'Iterator[RadarSimulationResult]'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Iterator[RadarSimulationResult]'"
+        },
+        {
+          "name": "to",
+          "kind": "function",
+          "signature": "(self, device: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "transmit_power_watts",
+          "kind": "property",
+          "doc_first_line": "``power`` in watts, which is what a source endpoint's field takes."
+        },
+        {
+          "name": "up",
+          "kind": "value"
+        },
+        {
+          "name": "waveform_spec",
+          "kind": "function",
+          "signature": "(self, *, offset: 'float' = 0.0)"
+        },
+        {
+          "name": "wavelength",
+          "kind": "property",
+          "doc_first_line": "``c0 / carrier``, m."
         }
       ]
     }

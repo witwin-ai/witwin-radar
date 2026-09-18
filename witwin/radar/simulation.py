@@ -1801,4 +1801,8 @@ def stream_scene(*args, **kwargs) -> Iterator[RadarSimulationResult]:
         yield _assemble([frame])
 
 
-__all__ = ["Motion", "RadarSimulationResult", "SensorEndpointIds"]
+#: ``Motion`` and ``RadarSimulationResult`` are declared at the package
+#: root instead: one public name per type, and the root is where the happy
+#: path lives. This module's own public contribution is the identity record
+#: a radar mounted on a moving structure needs.
+__all__ = ["SensorEndpointIds"]

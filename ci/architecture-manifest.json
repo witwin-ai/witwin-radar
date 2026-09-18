@@ -28,7 +28,8 @@
     "witwin.radar.synthesis.assembly",
     "witwin.radar.synthesis.fmcw",
     "witwin.radar.synthesis.ofdm",
-    "witwin.radar.synthesis.pulsed"
+    "witwin.radar.synthesis.pulsed",
+    "witwin.radar.targets"
   ],
   "hot_path_modules": [
     "witwin.radar.policy",
@@ -70,16 +71,15 @@
     "angle_processing": "witwin.radar.processing.angle",
     "detection_processing": "witwin.radar.processing.detection",
     "tracking_processing": "witwin.radar.processing.tracking",
-    "native_runtime": "witwin.radar.cuda.runtime"
+    "native_runtime": "witwin.radar.cuda.runtime",
+    "target_declaration": "witwin.radar.targets"
   },
   "public_facades": [
     "witwin.radar",
     "witwin.radar.capabilities",
     "witwin.radar.deployment",
-    "witwin.radar.frontend",
     "witwin.radar.processing",
     "witwin.radar.scattering",
-    "witwin.radar.sensors",
     "witwin.radar.simulation",
     "witwin.radar.smpl",
     "witwin.radar.synthesis"
@@ -88,8 +88,11 @@
     "witwin.radar.channel",
     "witwin.radar.cuda",
     "witwin.radar.cuda.runtime",
+    "witwin.radar.frontend",
     "witwin.radar.paths",
     "witwin.radar.policy",
-    "witwin.radar.propagation"
+    "witwin.radar.propagation",
+    "witwin.radar.sensors",
+    "witwin.radar.targets"
   ]
 }

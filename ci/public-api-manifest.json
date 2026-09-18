@@ -2,20 +2,47 @@
   "schema_version": 2,
   "root_class_members": {
     "witwin.radar.Radar": [
-      "last_compiled_scene",
-      "last_propagation",
-      "last_radar_paths",
-      "last_result",
-      "last_snapshot",
-      "set_pose",
+      "adc",
+      "agc",
+      "antenna_unit",
+      "device",
+      "from_dict",
+      "from_json",
+      "impedance",
+      "lna_gain",
+      "look_at",
+      "noise",
+      "num_rx",
+      "num_tx",
+      "polarization",
+      "position",
+      "replace",
+      "seed",
       "simulate",
-      "stream"
+      "stream",
+      "to",
+      "transmit_power_watts",
+      "up",
+      "waveform_spec",
+      "wavelength"
     ]
   },
   "modules": {
     "witwin.radar": {
+      "Adc": "witwin.radar.frontend.Adc",
+      "Agc": "witwin.radar.frontend.Agc",
+      "Aspect": "witwin.radar.targets.Aspect",
+      "Fmcw": "witwin.radar.radar.Fmcw",
+      "Motion": "witwin.radar.simulation.Motion",
+      "Noise": "witwin.radar.frontend.Noise",
+      "Ofdm": "witwin.radar.radar.Ofdm",
+      "Pattern": "witwin.radar.sensors.Pattern",
+      "PointTargets": "witwin.radar.targets.PointTargets",
+      "Pulsed": "witwin.radar.radar.Pulsed",
       "Radar": "witwin.radar.radar.Radar",
-      "RadarConfig": "witwin.radar.radar.RadarConfig"
+      "RadarSimulationResult": "witwin.radar.simulation.RadarSimulationResult",
+      "StructureTargets": "witwin.radar.targets.StructureTargets",
+      "processing": "witwin.radar.processing"
     },
     "witwin.radar.capabilities": {
       "capabilities": "witwin.radar.capabilities.capabilities"
@@ -24,15 +51,6 @@
       "build_info": "witwin.radar.deployment.build_info",
       "require_supported_runtime": "witwin.radar.deployment.require_supported_runtime",
       "runtime_diagnostics": "witwin.radar.deployment.runtime_diagnostics"
-    },
-    "witwin.radar.frontend": {
-      "AdcSpec": "witwin.radar.frontend.AdcSpec",
-      "AgcSpec": "witwin.radar.frontend.AgcSpec",
-      "FrontendSpec": "witwin.radar.frontend.FrontendSpec",
-      "LnaSpec": "witwin.radar.frontend.LnaSpec",
-      "NoiseSpec": "witwin.radar.frontend.NoiseSpec",
-      "PortSpec": "witwin.radar.frontend.PortSpec",
-      "SeedSpec": "witwin.radar.frontend.SeedSpec"
     },
     "witwin.radar.processing": {
       "ArrayGeometry": "witwin.radar.processing.angle.ArrayGeometry",
@@ -74,18 +92,8 @@
       "ScalarRcsResponse": "witwin.radar.scattering.ScalarRcsResponse",
       "ScatterResponse": "witwin.radar.scattering.ScatterResponse"
     },
-    "witwin.radar.sensors": {
-      "AntennaPatternSpec": "witwin.radar.sensors.AntennaPatternSpec",
-      "ISOTROPIC_PATTERN": "witwin.radar.sensors.ISOTROPIC_PATTERN",
-      "SensorArraySpec": "witwin.radar.sensors.SensorArraySpec",
-      "TxPowerSpec": "witwin.radar.sensors.TxPowerSpec"
-    },
     "witwin.radar.simulation": {
-      "RadarSimulationResult": "witwin.radar.simulation.RadarSimulationResult",
-      "ScatterSitePolicy": "witwin.radar.simulation.ScatterSitePolicy",
-      "StableIdAllocator": "witwin.radar.simulation.StableIdAllocator",
-      "SensorEndpointIds": "witwin.radar.simulation.SensorEndpointIds",
-      "AdaptiveMotionSpec": "witwin.radar.simulation.AdaptiveMotionSpec"
+      "SensorEndpointIds": "witwin.radar.simulation.SensorEndpointIds"
     },
     "witwin.radar.smpl": {
       "SMPLBody": "witwin.radar.smpl.SMPLBody",
@@ -118,10 +126,6 @@
       "primary_caller": "tests/test_phase10_diagnostics.py",
       "reason": "runtime and native identity reporting"
     },
-    "witwin.radar.frontend": {
-      "primary_caller": "examples/single_point.py",
-      "reason": "receiver-chain configuration"
-    },
     "witwin.radar.processing": {
       "primary_caller": "examples/single_point.py",
       "reason": "typed signal products and processing algorithms"
@@ -130,13 +134,9 @@
       "primary_caller": "examples/single_point.py",
       "reason": "declared target scatter response"
     },
-    "witwin.radar.sensors": {
-      "primary_caller": "tests/test_phase11_antenna_pattern_route.py",
-      "reason": "array, power and pattern contracts"
-    },
     "witwin.radar.simulation": {
       "primary_caller": "examples/single_point.py",
-      "reason": "scene-session inputs and typed simulation result"
+      "reason": "phase-centre identity for a radar on a moving structure"
     },
     "witwin.radar.smpl": {
       "primary_caller": "tests/test_phase7_moving_structures.py",
@@ -148,17 +148,10 @@
     }
   },
   "value_exports": [
-    "witwin.radar.processing.POINT_CLOUD_COLUMNS",
-    "witwin.radar.sensors.ISOTROPIC_PATTERN"
+    "witwin.radar.processing",
+    "witwin.radar.processing.POINT_CLOUD_COLUMNS"
   ],
   "result_contracts": {
-    "witwin.radar.simulation.RadarSimulationResult": [
-      "frame",
-      "tx",
-      "rx",
-      "slow",
-      "fast"
-    ],
     "witwin.radar.synthesis.SynthesisResult": [
       "slow",
       "pair",
@@ -192,6 +185,13 @@
     "witwin.radar.processing.PointCloud": [
       "point",
       "field"
+    ],
+    "witwin.radar.RadarSimulationResult": [
+      "frame",
+      "tx",
+      "rx",
+      "slow",
+      "fast"
     ]
   }
 }

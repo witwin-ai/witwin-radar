@@ -479,7 +479,7 @@
       "python_owner": "witwin/radar/sensors.py",
       "contract_test": "tests/test_phase6_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors.RoundTripPatternStage.apply",
-      "caller_note": "The scene-driven production route freezes the Radar sensor configuration's AntennaPatternSpec once per topology epoch and applies RoundTripPatternStage between the two-way join and synthesis. The stage calls evaluate_sensor_weights, this symbol's python_owner; there is no per-call pattern override."
+      "caller_note": "The scene-driven production route freezes the radar's Pattern once per topology epoch and applies RoundTripPatternStage between the two-way join and synthesis. The stage calls evaluate_sensor_weights, this symbol's python_owner; there is no per-call pattern override."
     },
     {
       "symbol": "sensor_weight_backward",
@@ -705,7 +705,7 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
       "contract_test": "tests/test_correlated_phase_noise.py",
-      "end_to_end_caller": "witwin.radar.frontend.NoiseSpec.phase_difference"
+      "end_to_end_caller": "witwin.radar.frontend.Noise.phase_difference"
     },
     {
       "symbol": "path_interpolate_forward",

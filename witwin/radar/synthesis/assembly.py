@@ -216,40 +216,6 @@ class FmcwSpec:
             raise ValueError(f"output_domain must be one of {FMCW_OUTPUT_DOMAINS}, got {self.output_domain!r}")
         require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
 
-    @classmethod
-    def from_radar_config(
-        cls, config, *, carrier_hz: float = 0.0, output_domain: str = FMCW_OUTPUT_SPECTRUM
-    ) -> "FmcwSpec":
-        """Convert a :class:`witwin.radar.RadarConfig` into SI units.
-
-        The config carries engineering units: ``sample_rate`` in kSPS,
-        ``idle_time`` / ``ramp_end_time`` / ``adc_start_time`` in microseconds,
-        and ``slope`` in MHz per microsecond, which is 1e12 Hz per second.
-
-        ``carrier_rate_hz`` is derived, not passed: it is ``config.fc`` on the
-        production path (``carrier_hz = 0``, weight owns the carrier) and zero
-        when the caller puts the carrier in the kernel. Deriving it here is what
-        makes the default configuration Doppler-correct; a caller that overrides
-        ``carrier_hz`` through ``dataclasses.replace`` will hit the both-nonzero
-        error rather than silently losing the rate term.
-        """
-
-        carrier = float(carrier_hz)
-        return cls(
-            num_samples=int(config.adc_samples),
-            num_chirps=int(config.chirp_per_frame),
-            sample_period_s=1.0 / (float(config.sample_rate) * 1e3),
-            chirp_period_s=(float(config.idle_time) + float(config.ramp_end_time)) * 1e-6,
-            slope_hz_per_s=float(config.slope) * 1e12,
-            t_start_s=float(config.adc_start_time) * 1e-6,
-            reference_frequency_hz=float(config.fc),
-            carrier_hz=carrier,
-            carrier_rate_hz=0.0 if carrier != 0.0 else float(config.fc),
-            num_tx=int(config.num_tx),
-            num_rx=int(config.num_rx),
-            output_domain=output_domain,
-        )
-
     @property
     def sample_rate_hz(self) -> float:
         return 1.0 / self.sample_period_s

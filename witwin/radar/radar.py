@@ -214,6 +214,7 @@ class Ofdm:
         return self.bandwidth
 
     def to_spec(self, *, carrier: float, offset: float = 0.0) -> OfdmSpec:
+        carrier_hz = float(offset)
         return OfdmSpec(
             subcarrier_spacing_hz=float(self.subcarrier_spacing),
             num_subcarriers=int(self.num_subcarriers),
@@ -221,7 +222,12 @@ class Ofdm:
             num_symbols=int(self.num_symbols),
             max_expected_delay_s=float(self.max_expected_delay),
             reference_frequency_hz=float(carrier),
-            carrier_hz=float(offset),
+            carrier_hz=carrier_hz,
+            # Derived, never passed: the weight owns the carrier on the
+            # production path, so the rate is the reference frequency there and
+            # zero when the caller puts the carrier in the kernel instead.
+            # Dropping it understates Doppler by the whole carrier term.
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
             subcarrier_origin=self.subcarrier_origin,
         )
 
@@ -262,18 +268,20 @@ class Pulsed:
         _non_negative("Pulsed.max_expected_delay_rate", self.max_expected_delay_rate)
 
     def to_spec(self, *, carrier: float, offset: float = 0.0) -> PulsedSpec:
+        carrier_hz = float(offset)
         return PulsedSpec(
             pulse_kind=str(self.pulse_kind),
             pulse_width_s=float(self.pulse_width),
             bandwidth_hz=float(self.bandwidth),
             pri_s=float(self.pri),
             num_pulses=int(self.num_pulses),
-            sample_rate_hz=float(self.sample_rate),
+            sample_period_s=1.0 / float(self.sample_rate),
             num_samples=int(self.num_samples),
             range_gate_start_s=float(self.range_gate_start),
             max_expected_delay_rate=float(self.max_expected_delay_rate),
             reference_frequency_hz=float(carrier),
-            carrier_hz=float(offset),
+            carrier_hz=carrier_hz,
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
             pulse_normalization=self.pulse_normalization,
         )
 
@@ -520,10 +528,11 @@ class Radar:
     rx_pos: torch.Tensor = field(init=False, repr=False, compare=False)
     polarization_vector: tuple[float, float, float] = field(init=False, repr=False, compare=False)
 
-    #: The one diagnostic retention site, a CLASS attribute so that a radar
-    #: built by ``object.__new__`` for a refusal test answers ``None`` rather
-    #: than raising ``AttributeError`` from a half-initialized object.
-    _last_result: ClassVar[Any] = None
+    # A radar holds no run state. The four typed per-frame diagnostics live on
+    # the result that produced them, which is the record that can honestly say
+    # which frame they describe; a copy here would be a second owner, and a
+    # call that raised part way through would leave it describing a world the
+    # failed call never simulated.
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
@@ -667,10 +676,14 @@ class Radar:
 
     @property
     def num_tx(self) -> int:
+        """Transmit element count, which is just how many ``tx`` names."""
+
         return len(self.tx)
 
     @property
     def num_rx(self) -> int:
+        """Receive element count, which is just how many ``rx`` names."""
+
         return len(self.rx)
 
     @property
@@ -840,9 +853,8 @@ class Radar:
 
         from .simulation import simulate_scene
 
-        result = simulate_scene(self, scene, **self._session(targets, times, los, reflections, motion, grad, endpoints))
-        type(self)._last_result = result
-        return result
+        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        return simulate_scene(self, scene, **session)
 
     def stream(
         self,
@@ -870,9 +882,7 @@ class Radar:
         from .simulation import stream_scene
 
         session = self._session(targets, times, los, reflections, motion, grad, endpoints)
-        for frame in stream_scene(self, scene, **session):
-            type(self)._last_result = frame
-            yield frame
+        yield from stream_scene(self, scene, **session)
 
     def _session(self, targets, times, los, reflections, motion, grad, endpoints) -> dict[str, Any]:
         """Turn the public call arguments into what the frame loop takes."""
@@ -906,18 +916,6 @@ class Radar:
             "sensor_endpoints": endpoints,
             "motion": resolved,
         }
-
-    # -- the last result, for a caller that did not keep it ----------------
-
-    @property
-    def last_result(self) -> RadarSimulationResult | None:
-        """The whole of the last :meth:`simulate` call, or ``None``.
-
-        The typed per-frame diagnostics live on the result itself; this is the
-        one retention site and there is no second copy on the radar.
-        """
-
-        return type(self)._last_result
 
 
 def _resolve_device(device: Any) -> torch.device:

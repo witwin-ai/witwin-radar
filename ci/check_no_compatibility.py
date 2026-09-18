@@ -31,7 +31,6 @@ RETIRED_ROOT_NAMES = {
     "Prism",
     "Pyramid",
     "RadarPropagationLegs",
-    "RadarSimulationResult",
     "RadarWorldBinding",
     "SMPLBody",
     "ScatterSitePolicy",
