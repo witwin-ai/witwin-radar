@@ -1,11 +1,39 @@
-"""Public Radar system API.
+"""Public Radar API.
 
-The package root owns only the configured radar system and its configuration.
-Scene binding, simulation results, propagation records, processing products,
-deployment reporting, geometry and waveform APIs are imported from their
-concept-owner modules.
+The whole happy path is here, in the order a caller meets it: build a
+:class:`Radar` out of its waveform, its antennas and its receive chain; say
+what it is looking at with :class:`PointTargets` or :class:`StructureTargets`;
+choose how often the world is resampled with :class:`Motion`; then call one of
+the radar's four verbs. Products go to :mod:`witwin.radar.processing`.
+
+Advanced records stay in their owner modules and are imported from there:
+``SensorEndpointIds`` and ``StableIdAllocator`` in
+:mod:`witwin.radar.simulation`, ``RadarPathBatch`` in
+:mod:`witwin.radar.paths`, the synthesis specs in
+:mod:`witwin.radar.synthesis`, the scatter responses in
+:mod:`witwin.radar.scattering`.
 """
 
-from .radar import Radar, RadarConfig
+from . import processing
+from .frontend import Adc, Agc, Noise
+from .radar import Fmcw, Ofdm, Pulsed, Radar
+from .sensors import Pattern
+from .simulation import Motion, RadarSimulationResult
+from .targets import Aspect, PointTargets, StructureTargets
 
-__all__ = ["Radar", "RadarConfig"]
+__all__ = [
+    "Adc",
+    "Agc",
+    "Aspect",
+    "Fmcw",
+    "Motion",
+    "Noise",
+    "Ofdm",
+    "Pattern",
+    "PointTargets",
+    "Pulsed",
+    "Radar",
+    "RadarSimulationResult",
+    "StructureTargets",
+    "processing",
+]

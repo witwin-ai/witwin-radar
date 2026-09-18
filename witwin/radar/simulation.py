@@ -95,6 +95,108 @@ class AdaptiveMotionSpec:
             raise ValueError("interpolation_nodes must be at least 2; one node cannot interpolate")
 
 
+MOTION_KINDS = ("auto", "static", "chirp", "adc", "adaptive")
+
+
+@dataclass(frozen=True, slots=True)
+class Motion:
+    """How often the world is resampled inside one frame.
+
+    Build one with :meth:`auto`, :meth:`static`, :meth:`chirp`, :meth:`adc` or
+    :meth:`adaptive`. The four knobs this replaces had to agree with each other
+    - an adaptive tolerance without adaptive sampling was a refusal, and a
+    discovery cadence with it was another - so the combinations that used to
+    raise are now unwritable.
+
+    The tolerance fields belong to :meth:`adaptive` and are ignored by every
+    other kind. They are fields of this one record rather than a second object
+    because a sampling choice and the error budget that justifies it are one
+    statement.
+    """
+
+    kind: str = "auto"
+    #: Adaptive: the largest tested round-trip phase error an accepted interval
+    #: may carry, rad.
+    phase_error: float = 0.02
+    #: Adaptive: the largest tested relative amplitude error, dimensionless.
+    relative_amplitude_error: float = 0.02
+    #: Adaptive: the maximum probe spacing, s. Enforced unconditionally,
+    #: including for a family certified complete for all time. Every tolerance
+    #: here is checked by sampling and therefore cannot see motion periodic at
+    #: the probe grid's step; this bound is what sets that step.
+    max_interval: float = 0.002
+    #: Adaptive: how many sampled instants one accepted interval interpolates
+    #: through. Two is the linear rule and five is a quartic.
+    nodes: int = 2
+    #: Adaptive: the discovery budget. Exhausting it raises rather than
+    #: returning an unchecked cube.
+    max_evaluations: int = 8192
+    #: Adaptive: observations per batched replay.
+    batch_observations: int = 256
+    #: Topology rediscovery cadence in frames. ``None`` rediscovers at every
+    #: observation, which is the only cadence that cannot miss a path birth.
+    rediscover_every_frames: int | None = None
+    #: Channel's replay vocabulary for compiled geometry.
+    world: str = "frozen_world"
+
+    def __post_init__(self) -> None:
+        if self.kind not in MOTION_KINDS:
+            raise ValueError(f"Motion.kind must be one of {list(MOTION_KINDS)}, got {self.kind!r}")
+
+    @classmethod
+    def auto(cls, **options) -> Motion:
+        """Resample at every ADC instant when anything moves, else once a frame.
+
+        "Anything moves" is a property of the session, not of this record:
+        structure trajectories or deformations, endpoint trajectories, a target
+        trajectory, or a receiver with oscillator phase noise, which needs
+        ADC-time observations to place its delayed phase difference.
+        """
+
+        return cls(kind="auto", **options)
+
+    @classmethod
+    def static(cls, **options) -> Motion:
+        """One observation per frame. Refused for a world that moves."""
+
+        return cls(kind="static", **options)
+
+    @classmethod
+    def chirp(cls, **options) -> Motion:
+        """Stop and hop: geometry frozen within each chirp, symbol or pulse."""
+
+        return cls(kind="chirp", **options)
+
+    @classmethod
+    def adc(cls, **options) -> Motion:
+        """Resample at every ADC instant. The exhaustive reference."""
+
+        return cls(kind="adc", **options)
+
+    @classmethod
+    def adaptive(cls, **options) -> Motion:
+        """Interpolate between error-controlled probes. FMCW only.
+
+        Faster than :meth:`adc` by 3 to 64 times on the measured scenes, and it
+        certifies nothing between its probes: an arbitrarily brief path birth
+        or oscillation is invisible to a sampled test. The run publishes
+        ``path_set_complete`` and ``motion_sampling_exhaustive`` separately so
+        that limit is readable rather than implied.
+        """
+
+        return cls(kind="adaptive", **options)
+
+    def _adaptive_spec(self) -> AdaptiveMotionSpec:
+        return AdaptiveMotionSpec(
+            phase_error_rad=float(self.phase_error),
+            relative_amplitude_error=float(self.relative_amplitude_error),
+            max_interval_s=float(self.max_interval),
+            interpolation_nodes=int(self.nodes),
+            max_evaluations=int(self.max_evaluations),
+            batch_observations=int(self.batch_observations),
+        )
+
+
 #: A scatter site is excited at exactly one watt.
 #:
 #: The site is a re-radiator, not a second transmitter: the whole target
@@ -564,7 +666,7 @@ def bind_radar_world(
         )
 
     polarization_vector = _polarization_tensor(polarization, device=device)
-    transmit_power_w = float(radar.system_config.sensors.tx_power.transmit_power_watts)
+    transmit_power_w = float(radar.transmit_power_watts)
     return RadarWorldBinding(
         transmitters=_endpoint_spec(
             transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
@@ -1169,14 +1271,11 @@ def _scene_frames(
     components: frozenset[str] | None = None,
     max_depth: int | None = None,
     ad_mode: str = "none",
-    world_motion: str = "frozen_world",
-    motion_event_period_frames: int | None = None,
     ids: object = None,
     polarization: object = None,
     antenna_pattern: object = None,
     sensor_endpoints: SensorEndpointIds | None = None,
-    motion_sampling: str = "adc",
-    adaptive_motion: AdaptiveMotionSpec | None = None,
+    motion: Motion | None = None,
 ) -> Iterator[_SceneFrame]:
     """Run ``radar`` over ``scene`` at ``times``, yielding one frame at a time.
 
@@ -1238,13 +1337,12 @@ def _scene_frames(
     from .sensors import RoundTripPatternStage
     from .synthesis.assembly import assemble_frame_cube
 
-    if motion_sampling not in ("adc", "chirp", "adaptive"):
-        raise ValueError("motion_sampling must be adc, chirp, or adaptive")
-    if adaptive_motion is not None and motion_sampling != "adaptive":
-        raise ValueError("adaptive_motion requires motion_sampling='adaptive'")
-    adaptive = AdaptiveMotionSpec() if adaptive_motion is None else adaptive_motion
-    if not isinstance(adaptive, AdaptiveMotionSpec):
-        raise TypeError("adaptive_motion must be AdaptiveMotionSpec")
+    requested = Motion.auto() if motion is None else motion
+    if not isinstance(requested, Motion):
+        raise TypeError(f"motion must be a Motion, got {type(requested).__name__}")
+    adaptive = requested._adaptive_spec()
+    world_motion = requested.world
+    motion_event_period_frames = requested.rediscover_every_frames
     instants = _times(times)
     policy = ScatterSitePolicy.structure_anchor() if sites is None else sites
     if not isinstance(policy, ScatterSitePolicy):
@@ -1323,9 +1421,32 @@ def _scene_frames(
     if path_phase_noise:
         if not isinstance(full_spec, FmcwSpec):
             raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
-        if motion_sampling not in ("adc", "adaptive"):
+        # Checked against the REQUEST, because the kind is not resolved yet:
+        # this branch is one of the things that decides it.
+        if requested.kind not in ("auto", "adc", "adaptive"):
             raise ValueError("common-oscillator phase noise requires ADC-time observations")
         sampled = True
+    # ``auto`` resolves HERE rather than at the top, because whether anything
+    # moves is a property of the session and oscillator phase noise has just
+    # made a still world a sampled one. ``static`` is refused rather than
+    # silently upgraded: it asks for one observation a frame, and a world that
+    # moves inside a frame would publish no Doppler at all.
+    if requested.kind == "auto":
+        motion_sampling = "adc" if sampled else "static"
+    else:
+        motion_sampling = requested.kind
+    if motion_sampling == "static" and sampled:
+        raise ValueError(
+            "Motion.static() asks for one observation per frame, but this session moves within a frame; "
+            "use Motion.adc() for the exhaustive reference, Motion.chirp() for stop-and-hop, or "
+            "Motion.adaptive() for error-controlled interpolation"
+        )
+    if motion_sampling == "static":
+        # Nothing moves, so every sampling kind evaluates the same single
+        # observation per frame; ``adc`` is the name the rest of this function
+        # already spells that with.
+        motion_sampling = "adc"
+
     output_spec = full_spec
     # Receiver nonlinearity and oscillator noise act on ADC-time samples.
     # Preserve the direct-spectrum fast path only for an ideal receiver.
@@ -1680,4 +1801,4 @@ def stream_scene(*args, **kwargs) -> Iterator[RadarSimulationResult]:
         yield _assemble([frame])
 
 
-__all__ = ["AdaptiveMotionSpec", "RadarSimulationResult", "ScatterSitePolicy", "SensorEndpointIds", "StableIdAllocator"]
+__all__ = ["Motion", "RadarSimulationResult", "SensorEndpointIds"]

@@ -20,7 +20,7 @@ from .cuda import native_ops as _ops
 from .paths import RadarPathBatch
 from .policy import first_order_only
 
-__all__ = ["AntennaPatternSpec", "ISOTROPIC_PATTERN", "SensorArraySpec", "TxPowerSpec"]
+__all__ = ["Pattern"]
 
 DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
 
@@ -197,20 +197,17 @@ class SensorArraySpec:
         rx = _float_tensor(self.rx_loc, device=target, name="rx_loc", shape=(self.num_rx, 3))
         return (tx * spacing).contiguous(), (rx * spacing).contiguous()
 
-    @classmethod
-    def from_radar_config(cls, config) -> SensorArraySpec:
-        return cls(
-            num_tx=int(config.num_tx),
-            num_rx=int(config.num_rx),
-            tx_loc=tuple(tuple(float(v) for v in row) for row in config.tx_loc),
-            rx_loc=tuple(tuple(float(v) for v in row) for row in config.rx_loc),
-            reference_frequency_hz=float(config.fc),
-        )
-
 
 @dataclass(frozen=True, slots=True)
-class AntennaPatternSpec:
+class Pattern:
     """A tabulated POWER gain versus the two off-boresight angles.
+
+    Build one with :meth:`isotropic`, :meth:`dipole`, :meth:`separable` or
+    :meth:`table` rather than by naming the fields; the four of them are the
+    whole public surface and the fields are the storage they share.
+
+    Angles are in degrees and gains are normalised linear POWER gain, at most
+    one.
 
     The table is a CONSTANT. The direction into it is differentiable, and the
     interpolation is piecewise linear, so the gain has an exact
@@ -228,69 +225,103 @@ class AntennaPatternSpec:
     """
 
     kind: str
-    x_angles_deg: tuple[float, ...]
-    y_angles_deg: tuple[float, ...]
-    x_values: tuple[float, ...] | None = None
-    y_values: tuple[float, ...] | None = None
-    values: tuple[tuple[float, ...], ...] | None = None
+    #: Off-boresight angles of the x axis, degrees, strictly increasing.
+    x_angles: tuple[float, ...]
+    #: Off-boresight angles of the y axis, degrees, strictly increasing.
+    y_angles: tuple[float, ...]
+    #: Separable kind: one normalised power gain per x angle.
+    x_gain: tuple[float, ...] | None = None
+    #: Separable kind: one normalised power gain per y angle.
+    y_gain: tuple[float, ...] | None = None
+    #: Table kind: ``gain[y][x]``, normalised power gain.
+    gain: tuple[tuple[float, ...], ...] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in PATTERN_KINDS:
             raise ValueError(f"kind must be one of {list(PATTERN_KINDS)}, got {self.kind!r}")
-        if len(self.x_angles_deg) < 2 or len(self.y_angles_deg) < 2:
+        if len(self.x_angles) < 2 or len(self.y_angles) < 2:
             raise ValueError("both pattern axes need at least two samples")
+        for name, axis in (("x_angles", self.x_angles), ("y_angles", self.y_angles)):
+            if any(later <= earlier for earlier, later in zip(axis, axis[1:], strict=False)):
+                raise ValueError(f"{name} must be strictly increasing")
         if self.kind == PATTERN_KIND_SEPARABLE:
-            if self.x_values is None or self.y_values is None:
-                raise ValueError("a separable pattern needs x_values and y_values")
-            if len(self.x_values) != len(self.x_angles_deg):
-                raise ValueError("x_values must hold one value per x axis sample")
-            if len(self.y_values) != len(self.y_angles_deg):
-                raise ValueError("y_values must hold one value per y axis sample")
+            if self.x_gain is None or self.y_gain is None:
+                raise ValueError("a separable pattern needs x_gain and y_gain")
+            if len(self.x_gain) != len(self.x_angles):
+                raise ValueError("x_gain must hold one value per x axis sample")
+            if len(self.y_gain) != len(self.y_angles):
+                raise ValueError("y_gain must hold one value per y axis sample")
+            rows: tuple[tuple[float, ...], ...] = (self.x_gain, self.y_gain)
         else:
-            if self.values is None:
-                raise ValueError("a map pattern needs values")
-            if len(self.values) != len(self.y_angles_deg):
-                raise ValueError("values must hold one row per y axis sample")
-            for row in self.values:
-                if len(row) != len(self.x_angles_deg):
-                    raise ValueError("each values row needs one entry per x sample")
+            if self.gain is None:
+                raise ValueError("a table pattern needs gain")
+            if len(self.gain) != len(self.y_angles):
+                raise ValueError("gain must hold one row per y axis sample")
+            for row in self.gain:
+                if len(row) != len(self.x_angles):
+                    raise ValueError("each gain row needs one entry per x sample")
+            rows = self.gain
+        for row in rows:
+            if any(value < 0.0 for value in row):
+                raise ValueError("a power gain must be non-negative")
 
     @property
     def kind_code(self) -> int:
         return PATTERN_KIND_CODE[self.kind]
 
     @classmethod
-    def half_wave_dipole(cls) -> AntennaPatternSpec:
-        """The default: a half-wave dipole cut in both planes."""
+    def isotropic(cls) -> Pattern:
+        """Unit power gain in every direction: the stage as a proven no-op.
+
+        Both axes span the whole range ``atan2`` can produce, so no direction
+        falls outside the support and takes the zero-outside branch, and both
+        values are ``1.0`` at each knot, so the interpolation returns exactly
+        ``1.0``. This is the default for a radar that declares no pattern: an
+        unchosen dipole attenuates every off-boresight return by a number
+        nobody asked for.
+        """
 
         return cls(
             kind=PATTERN_KIND_SEPARABLE,
-            x_angles_deg=tuple(DEFAULT_DIPOLE_ANGLES_DEG),
-            y_angles_deg=tuple(DEFAULT_DIPOLE_ANGLES_DEG),
-            x_values=tuple(DEFAULT_DIPOLE_VALUES),
-            y_values=tuple(DEFAULT_DIPOLE_VALUES),
+            x_angles=(-180.0, 180.0),
+            y_angles=(-180.0, 180.0),
+            x_gain=(1.0, 1.0),
+            y_gain=(1.0, 1.0),
         )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | None) -> AntennaPatternSpec:
-        """Adopt a validated antenna-pattern mapping, or the dipole default."""
+    def dipole(cls) -> Pattern:
+        """A half-wave dipole cut in both planes, over -90..90 degrees."""
 
-        if config is None:
-            return cls.half_wave_dipole()
-        kind = str(config["kind"])
-        if kind == PATTERN_KIND_SEPARABLE:
-            return cls(
-                kind=kind,
-                x_angles_deg=tuple(float(v) for v in config["x_angles_deg"]),
-                y_angles_deg=tuple(float(v) for v in config["y_angles_deg"]),
-                x_values=tuple(float(v) for v in config["x_values"]),
-                y_values=tuple(float(v) for v in config["y_values"]),
-            )
         return cls(
-            kind=kind,
-            x_angles_deg=tuple(float(v) for v in config["x_angles_deg"]),
-            y_angles_deg=tuple(float(v) for v in config["y_angles_deg"]),
-            values=tuple(tuple(float(v) for v in row) for row in config["values"]),
+            kind=PATTERN_KIND_SEPARABLE,
+            x_angles=tuple(DEFAULT_DIPOLE_ANGLES_DEG),
+            y_angles=tuple(DEFAULT_DIPOLE_ANGLES_DEG),
+            x_gain=tuple(DEFAULT_DIPOLE_VALUES),
+            y_gain=tuple(DEFAULT_DIPOLE_VALUES),
+        )
+
+    @classmethod
+    def separable(cls, x_angles, x_gain, y_angles, y_gain) -> Pattern:
+        """A pattern whose two-dimensional gain is the product of two cuts."""
+
+        return cls(
+            kind=PATTERN_KIND_SEPARABLE,
+            x_angles=tuple(float(v) for v in x_angles),
+            y_angles=tuple(float(v) for v in y_angles),
+            x_gain=tuple(float(v) for v in x_gain),
+            y_gain=tuple(float(v) for v in y_gain),
+        )
+
+    @classmethod
+    def table(cls, x_angles, y_angles, gain) -> Pattern:
+        """A pattern tabulated on the full ``(y, x)`` grid."""
+
+        return cls(
+            kind=PATTERN_KIND_MAP,
+            x_angles=tuple(float(v) for v in x_angles),
+            y_angles=tuple(float(v) for v in y_angles),
+            gain=tuple(tuple(float(v) for v in row) for row in gain),
         )
 
     def tables(
@@ -305,70 +336,48 @@ class AntennaPatternSpec:
         """
 
         target = torch.device(device)
-        num_x = len(self.x_angles_deg)
-        num_y = len(self.y_angles_deg)
-        x_axis = _float_tensor(self.x_angles_deg, device=target, name="x_angles_deg", shape=(num_x,))
-        y_axis = _float_tensor(self.y_angles_deg, device=target, name="y_angles_deg", shape=(num_y,))
+        num_x = len(self.x_angles)
+        num_y = len(self.y_angles)
+        x_axis = _float_tensor(self.x_angles, device=target, name="x_angles", shape=(num_x,))
+        y_axis = _float_tensor(self.y_angles, device=target, name="y_angles", shape=(num_y,))
         placeholder = torch.zeros(1, dtype=torch.float32, device=target)
         if self.kind == PATTERN_KIND_SEPARABLE:
-            x_values = _float_tensor(self.x_values, device=target, name="x_values", shape=(num_x,))
-            y_values = _float_tensor(self.y_values, device=target, name="y_values", shape=(num_y,))
-            return x_axis, y_axis, x_values, y_values, placeholder
-        values = _float_tensor(self.values, device=target, name="values", shape=(num_y, num_x)).reshape(-1)
-        return x_axis, y_axis, placeholder, placeholder, values.contiguous()
+            x_gain = _float_tensor(self.x_gain, device=target, name="x_gain", shape=(num_x,))
+            y_gain = _float_tensor(self.y_gain, device=target, name="y_gain", shape=(num_y,))
+            return x_axis, y_axis, x_gain, y_gain, placeholder
+        gain = _float_tensor(self.gain, device=target, name="gain", shape=(num_y, num_x)).reshape(-1)
+        return x_axis, y_axis, placeholder, placeholder, gain.contiguous()
 
     def evaluate_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
         """Torch evaluation, for freeze-time work and as the kernel's oracle."""
 
-        x_axis, y_axis, x_values, y_values, values = self.tables(device=x_angles_deg.device)
+        x_axis, y_axis, x_gain, y_gain, gain = self.tables(device=x_angles_deg.device)
         return evaluate_antenna_pattern_xy(
             self.kind,
             x_axis,
             y_axis,
-            x_values,
-            y_values,
-            None
-            if self.kind == PATTERN_KIND_SEPARABLE
-            else values.reshape(len(self.y_angles_deg), len(self.x_angles_deg)),
+            x_gain,
+            y_gain,
+            None if self.kind == PATTERN_KIND_SEPARABLE else gain.reshape(len(self.y_angles), len(self.x_angles)),
             x_angles_deg,
             y_angles_deg,
         )
 
 
-@dataclass(frozen=True, slots=True)
-class TxPowerSpec:
-    """Transmit power in dBm, and the ONE place it becomes watts.
+def watts_from_dbm(power_dbm: float) -> float:
+    """``1e-3 * 10^(dBm/10)``: the ONE place transmit power becomes watts.
 
-    ``transmit_power_watts`` is what fills a source endpoint's ``powers_w`` and
-    it reaches physics through that field and no other. There is deliberately no
-    ``voltage_gain`` here: the old ``radar.gain = sqrt(P R)`` multiplied a weight
-    that already carried ``sqrt(P)``, which counts the power twice and leaves the
+    The result fills a source endpoint's ``powers_w`` and reaches physics
+    through that field and no other. There is deliberately no transmit voltage
+    gain anywhere: the old ``radar.gain = sqrt(P R)`` multiplied a weight that
+    already carried ``sqrt(P)``, which counts the power twice and leaves the
     result in sqrt(W ohm) while the weight is in sqrt(W).
     """
 
-    power_dbm: float
-
-    @property
-    def transmit_power_watts(self) -> float:
-        """``1e-3 * 10^(dBm/10)``."""
-
-        return 1e-3 * (10.0 ** (float(self.power_dbm) / 10.0))
-
-    @classmethod
-    def from_radar_config(cls, config) -> TxPowerSpec:
-        return cls(power_dbm=float(config.power))
+    return 1e-3 * (10.0 ** (float(power_dbm) / 10.0))
 
 
-__all__ = [
-    "PATTERN_KINDS",
-    "PATTERN_KIND_CODE",
-    "PATTERN_KIND_MAP",
-    "PATTERN_KIND_SEPARABLE",
-    "SPEED_OF_LIGHT_M_PER_S",
-    "AntennaPatternSpec",
-    "SensorArraySpec",
-    "TxPowerSpec",
-]
+__all__ = ["PATTERN_KINDS", "PATTERN_KIND_CODE", "PATTERN_KIND_MAP", "PATTERN_KIND_SEPARABLE", "Pattern"]
 
 
 #: A row that interacts at a site, and a row that goes straight from a
@@ -514,7 +523,7 @@ class SensorWeightPlan:
 
     @classmethod
     def build(
-        cls, pattern: AntennaPatternSpec, *, c0: float = SPEED_OF_LIGHT_M_PER_S, device: torch.device | str = "cuda"
+        cls, pattern: Pattern, *, c0: float = SPEED_OF_LIGHT_M_PER_S, device: torch.device | str = "cuda"
     ) -> SensorWeightPlan:
         return cls(pattern_kind=pattern.kind_code, tables=pattern.tables(device=device), c0=float(c0))
 
@@ -801,42 +810,14 @@ def evaluate_sensor_weights(
     return SensorWeightResult.from_components(out_re, out_im, total_delay_s, delay_rate, pattern_gain)
 
 
-__all__ = [
-    "ROW_KIND_DIRECT",
-    "ROW_KIND_VIA",
-    "SensorWeightGeometry",
-    "SensorWeightPlan",
-    "SensorWeightResult",
-    "evaluate_sensor_weights",
-]
+__all__ = ["Pattern"]
 
 
-#: The pattern that changes nothing, published as data so the no-op claim is a
-#: value a test can pass rather than a sentence.
-#:
-#: Both axes span the whole range ``atan2`` can produce, so no direction ever
-#: falls outside the support and takes the zero-outside branch, and both values
-#: are ``1.0`` at each knot, so the interpolation returns exactly ``1.0``. It is
-#: an ISOTROPIC pattern in the only sense this family has: unit power gain in
-#: every direction.
-ISOTROPIC_PATTERN = AntennaPatternSpec(
-    kind=PATTERN_KIND_SEPARABLE,
-    x_angles_deg=(-180.0, 180.0),
-    y_angles_deg=(-180.0, 180.0),
-    x_values=(1.0, 1.0),
-    y_values=(1.0, 1.0),
-)
-
-
-def _pattern_plan(
-    pattern: AntennaPatternSpec, *, reference_frequency_hz: float, device: torch.device
-) -> SensorWeightPlan:
-    if not isinstance(pattern, AntennaPatternSpec):
+def _pattern_plan(pattern: Pattern, *, reference_frequency_hz: float, device: torch.device) -> SensorWeightPlan:
+    if not isinstance(pattern, Pattern):
         raise TypeError(
-            "antenna_pattern must be a witwin.radar.sensors.AntennaPatternSpec, "
-            f"got {type(pattern).__name__}; pass "
-            "radar.system_config.sensors for the configured one, or "
-            "witwin.radar.sensors.ISOTROPIC_PATTERN for none"
+            f"a sensor weight needs a witwin.radar.Pattern, got {type(pattern).__name__}; "
+            "the radar's own is radar.pattern, and Pattern.isotropic() is the no-op"
         )
     return SensorWeightPlan.build(pattern, c0=SPEED_OF_LIGHT_M_PER_S, device=device)
 
@@ -898,7 +879,7 @@ class RoundTripPatternStage:
     plan: SensorWeightPlan
 
     @classmethod
-    def freeze(cls, radar, composer, *, site_ids, pattern: AntennaPatternSpec) -> RoundTripPatternStage:
+    def freeze(cls, radar, composer, *, site_ids, pattern: Pattern) -> RoundTripPatternStage:
         """Build the constant tables for one frozen :class:`TwoWayComposer`.
 
         ``site_ids`` is the binding's host tuple, in the order its site position
@@ -1107,4 +1088,4 @@ class RoundTripPatternStage:
         return torch.stack(columns, dim=1)
 
 
-__all__ = ["AntennaPatternSpec", "ISOTROPIC_PATTERN", "SensorArraySpec", "TxPowerSpec"]
+__all__ = ["Pattern"]

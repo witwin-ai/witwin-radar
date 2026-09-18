@@ -1,10 +1,25 @@
-"""The radar facade: configuration, pose, antenna state and the frame entry.
+"""The radar: its parameters, its pose, and the entry points that use them.
 
-``Radar.simulate`` is the production entry point and it delegates to
-:mod:`witwin.radar.simulation`. This module owns no propagation and no
-synthesis physics; what it holds is the configuration record, the pose
-transforms every consumer shares, the antenna-pattern state, and the four typed
-diagnostics of the last completed frame.
+One flat immutable record. The fields are what a datasheet or a configuration
+file lists, in SI units, one field each. A sub-record appears only where a
+field has variants (:class:`Fmcw` / :class:`Ofdm` / :class:`Pulsed`,
+:class:`~witwin.radar.sensors.Pattern`) or where several numbers are coupled
+(:class:`~witwin.radar.frontend.Noise`, ``Agc``, ``Adc``). Everything else -
+the antenna layout, the receive chain's one-number stages, the pose - is a
+field here, because a wrapper whose only job is grouping makes the caller
+write two constructors to say one thing.
+
+No field name carries a unit suffix; every field's unit is on its docstring
+row. That rule covers this surface only. :mod:`witwin.radar.processing` is
+frozen by R-ADR-017 and keeps ``range_m`` and its siblings, and the internal
+records (``FmcwSpec.sample_period_s``, ``RadarPathBatch.total_delay_s``) keep
+theirs, because those are the equation-owning modules where R-ADR-021 requires
+the unit to be in the identifier.
+
+This module owns no propagation and no synthesis physics. It holds the
+parameter record, the pose transforms every consumer shares, and the
+derivation of the internal block specs those consumers are handed.
+``Radar.simulate`` delegates to :mod:`witwin.radar.simulation`.
 """
 
 from __future__ import annotations
@@ -12,21 +27,14 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
-from .frontend import FrontendSpec
-from .sensors import (
-    DEFAULT_DIPOLE_ANGLES_DEG,
-    DEFAULT_DIPOLE_VALUES,
-    AntennaPatternSpec,
-    SensorArraySpec,
-    TxPowerSpec,
-    evaluate_antenna_pattern_xy,
-)
+from .frontend import Adc, Agc, FrontendSpec, Noise
+from .sensors import Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_ENERGY,
     SUBCARRIER_ORIGIN_F_REF_AT_N0,
@@ -36,148 +44,268 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .simulation import RadarSimulationResult
+    from .simulation import Motion, RadarSimulationResult
     from .synthesis import SynthesisResult
+    from .targets import PointTargets, StructureTargets
 
 WAVEFORM_FMCW = "fmcw"
 WAVEFORM_OFDM = "ofdm"
 WAVEFORM_PULSED = "pulsed"
 WAVEFORM_KINDS = (WAVEFORM_FMCW, WAVEFORM_OFDM, WAVEFORM_PULSED)
 
+SPEED_OF_LIGHT_M_PER_S = 299792458.0
+
+#: What ``antenna_unit`` may say. Half-wavelength offsets are the convention
+#: every TI-style configuration uses and the one the array keeps internally:
+#: the same description then means the same beam pattern at a different
+#: carrier, because an array is defined by its electrical size.
+ANTENNA_UNITS = ("m", "half_wavelength")
+
+#: What ``polarization`` may name instead of a world vector. Both are derived
+#: from the pose, so they are transverse to the boresight by construction - the
+#: property a hand-written vector silently loses, producing a cube of exact
+#: zeros with nothing raised.
+POLARIZATION_ALIASES = ("up", "right")
+
+
+# ---------------------------------------------------------------------------
+# Waveforms
+# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
-class FmcwWaveformConfig:
-    """One FMCW ramp and its ADC window, in the configuration's own units.
+class Fmcw:
+    """One FMCW ramp and its ADC window, in SI units.
 
-    Exactly the fields ``FmcwSpec.from_radar_config`` reads today:
-    ``sample_rate`` in kSPS, ``adc_start_time`` / ``idle_time`` /
-    ``ramp_end_time`` in microseconds, and ``slope`` in MHz per microsecond,
-    which is 1e12 Hz per second.
+    The vendor units a millimetre-wave datasheet quotes - MHz/us of slope, kSPS
+    of sample rate, microseconds of timing - are read by :meth:`from_ti`, which
+    is the one conversion site in the package. Everything downstream of this
+    record is SI.
     """
 
     kind: ClassVar[str] = WAVEFORM_FMCW
 
+    #: Ramp slope, Hz/s. A 60.012 MHz/us ramp is ``60.012e12``.
     slope: float
-    adc_samples: int
-    adc_start_time: float
+    #: ADC sample rate, Hz.
     sample_rate: float
-    idle_time: float
-    ramp_end_time: float
-    chirp_per_frame: int
-    output_domain: str = "spectrum"
+    #: ADC samples taken per chirp.
+    samples_per_chirp: int
+    #: Chirps per frame, per transmitter.
+    chirps_per_frame: int
+    #: Delay from the chirp start to the first ADC sample, s.
+    adc_start: float
+    #: Idle time between ramps, s.
+    idle: float
+    #: Ramp end time, s. The chirp period is ``idle + ramp_end``.
+    ramp_end: float
+    #: ``"spectrum"`` for the normalized range spectrum, ``"beat"`` for the
+    #: synthesized time-domain beat samples. Spectrum is the default and the
+    #: beat route is an opt-in output domain, never a fallback.
+    output: str = "spectrum"
 
-    def to_spec(
-        self, *, reference_frequency_hz: float, num_tx: int = 1, num_rx: int = 1, carrier_hz: float = 0.0
-    ) -> FmcwSpec:
-        carrier = float(carrier_hz)
+    def __post_init__(self) -> None:
+        _positive("Fmcw.sample_rate", self.sample_rate)
+        _positive("Fmcw.ramp_end", self.ramp_end)
+        _positive_int("Fmcw.samples_per_chirp", self.samples_per_chirp)
+        _positive_int("Fmcw.chirps_per_frame", self.chirps_per_frame)
+        _finite("Fmcw.slope", self.slope)
+        _finite("Fmcw.adc_start", self.adc_start)
+        _non_negative("Fmcw.idle", self.idle)
+        if self.output not in ("spectrum", "beat"):
+            raise ValueError(f"Fmcw.output must be 'spectrum' or 'beat', got {self.output!r}")
+
+    @property
+    def chirp_period(self) -> float:
+        """``idle + ramp_end``, s."""
+
+        return float(self.idle) + float(self.ramp_end)
+
+    @property
+    def bandwidth(self) -> float:
+        """The sampling bandwidth a thermal-noise stage integrates over, Hz."""
+
+        return float(self.sample_rate)
+
+    @classmethod
+    def from_ti(
+        cls,
+        *,
+        slope_mhz_per_us: float,
+        sample_rate_ksps: float,
+        samples_per_chirp: int,
+        chirps_per_frame: int,
+        adc_start_us: float,
+        idle_us: float,
+        ramp_end_us: float,
+        output: str = "spectrum",
+    ) -> Fmcw:
+        """Build from the units a TI-style configuration file quotes.
+
+        The parameter names carry their vendor units here, and only here,
+        because that is the whole job of this constructor: a caller reading a
+        datasheet needs to see which column each number came from.
+        """
+
+        return cls(
+            slope=float(slope_mhz_per_us) * 1e12,
+            sample_rate=float(sample_rate_ksps) * 1e3,
+            samples_per_chirp=int(samples_per_chirp),
+            chirps_per_frame=int(chirps_per_frame),
+            adc_start=float(adc_start_us) * 1e-6,
+            idle=float(idle_us) * 1e-6,
+            ramp_end=float(ramp_end_us) * 1e-6,
+            output=str(output),
+        )
+
+    def to_spec(self, *, carrier: float, num_tx: int = 1, num_rx: int = 1, offset: float = 0.0) -> FmcwSpec:
+        """The SI synthesis spec. ``offset`` is a wideband band offset, Hz."""
+
+        carrier_hz = float(offset)
         return FmcwSpec(
-            num_samples=int(self.adc_samples),
-            num_chirps=int(self.chirp_per_frame),
-            sample_period_s=1.0 / (float(self.sample_rate) * 1e3),
-            chirp_period_s=(float(self.idle_time) + float(self.ramp_end_time)) * 1e-6,
-            slope_hz_per_s=float(self.slope) * 1e12,
-            t_start_s=float(self.adc_start_time) * 1e-6,
-            reference_frequency_hz=float(reference_frequency_hz),
-            carrier_hz=carrier,
-            carrier_rate_hz=0.0 if carrier != 0.0 else float(reference_frequency_hz),
+            num_samples=int(self.samples_per_chirp),
+            num_chirps=int(self.chirps_per_frame),
+            sample_period_s=1.0 / float(self.sample_rate),
+            chirp_period_s=self.chirp_period,
+            slope_hz_per_s=float(self.slope),
+            t_start_s=float(self.adc_start),
+            reference_frequency_hz=float(carrier),
+            carrier_hz=carrier_hz,
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
             num_tx=int(num_tx),
             num_rx=int(num_rx),
-            output_domain=self.output_domain,
+            output_domain=self.output,
         )
 
 
 @dataclass(frozen=True, slots=True)
-class OfdmWaveformConfig:
-    """One OFDM subcarrier grid and symbol timing, in SI units.
-
-    ``max_expected_delay_s`` is a CONFIGURED bound - the range window the radar
-    is set up for - and never a measured maximum, which would be a per-frame
-    device-to-host transfer. The cyclic-prefix refusal is written against it.
-    """
+class Ofdm:
+    """One OFDM symbol grid, in SI units."""
 
     kind: ClassVar[str] = WAVEFORM_OFDM
 
-    subcarrier_spacing_hz: float
+    #: Subcarrier spacing, Hz.
+    subcarrier_spacing: float
     num_subcarriers: int
-    cyclic_prefix_s: float
+    #: Cyclic prefix duration, s.
+    cyclic_prefix: float
     num_symbols: int
-    max_expected_delay_s: float
+    #: The longest round-trip delay the cyclic prefix must cover, s.
+    max_expected_delay: float
     subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
 
-    def to_spec(self, *, reference_frequency_hz: float, carrier_hz: float = 0.0) -> OfdmSpec:
-        carrier = float(carrier_hz)
+    def __post_init__(self) -> None:
+        _positive("Ofdm.subcarrier_spacing", self.subcarrier_spacing)
+        _positive("Ofdm.cyclic_prefix", self.cyclic_prefix)
+        _positive_int("Ofdm.num_subcarriers", self.num_subcarriers)
+        _positive_int("Ofdm.num_symbols", self.num_symbols)
+        _non_negative("Ofdm.max_expected_delay", self.max_expected_delay)
+
+    @property
+    def bandwidth(self) -> float:
+        """The occupied band a thermal-noise stage integrates over, Hz."""
+
+        return float(self.subcarrier_spacing) * int(self.num_subcarriers)
+
+    @property
+    def sample_rate(self) -> float:
+        """The symbol grid's sample rate, Hz."""
+
+        return self.bandwidth
+
+    def to_spec(self, *, carrier: float, offset: float = 0.0) -> OfdmSpec:
         return OfdmSpec(
+            subcarrier_spacing_hz=float(self.subcarrier_spacing),
             num_subcarriers=int(self.num_subcarriers),
+            cyclic_prefix_s=float(self.cyclic_prefix),
             num_symbols=int(self.num_symbols),
-            subcarrier_spacing_hz=float(self.subcarrier_spacing_hz),
-            cyclic_prefix_s=float(self.cyclic_prefix_s),
-            reference_frequency_hz=float(reference_frequency_hz),
-            max_expected_delay_s=float(self.max_expected_delay_s),
-            carrier_hz=carrier,
-            carrier_rate_hz=0.0 if carrier != 0.0 else float(reference_frequency_hz),
+            max_expected_delay_s=float(self.max_expected_delay),
+            reference_frequency_hz=float(carrier),
+            carrier_hz=float(offset),
             subcarrier_origin=self.subcarrier_origin,
         )
 
 
 @dataclass(frozen=True, slots=True)
-class PulsedWaveformConfig:
-    """One pulse train's shape, gate, and repetition interval, in SI units.
-
-    ``max_expected_delay_rate`` is a CONFIGURED bound on ``|d(tau_rt)/dt|`` - the
-    velocity window the radar is set up for - and never a measured maximum. It
-    is what the range-migration refusal is written against.
-    """
+class Pulsed:
+    """One pulse train and its range gate, in SI units."""
 
     kind: ClassVar[str] = WAVEFORM_PULSED
 
+    #: ``"rect"`` or ``"lfm"``.
     pulse_kind: str
-    pulse_width_s: float
-    bandwidth_hz: float
-    pri_s: float
+    #: Pulse width, s.
+    pulse_width: float
+    #: Chirp bandwidth of an LFM pulse, Hz.
+    bandwidth: float
+    #: Pulse repetition interval, s.
+    pri: float
     num_pulses: int
-    sample_rate_hz: float
+    #: Receive sample rate, Hz.
+    sample_rate: float
     num_samples: int
-    range_gate_start_s: float
+    #: Delay from the pulse start to the first range gate sample, s.
+    range_gate_start: float
+    #: The largest ``d(tau)/dt`` the matched filter must tolerate,
+    #: dimensionless.
     max_expected_delay_rate: float = 0.0
     pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
 
-    def to_spec(self, *, reference_frequency_hz: float, carrier_hz: float = 0.0) -> PulsedSpec:
-        carrier = float(carrier_hz)
+    def __post_init__(self) -> None:
+        _positive("Pulsed.pulse_width", self.pulse_width)
+        _positive("Pulsed.bandwidth", self.bandwidth)
+        _positive("Pulsed.pri", self.pri)
+        _positive("Pulsed.sample_rate", self.sample_rate)
+        _positive_int("Pulsed.num_pulses", self.num_pulses)
+        _positive_int("Pulsed.num_samples", self.num_samples)
+        _non_negative("Pulsed.range_gate_start", self.range_gate_start)
+        _non_negative("Pulsed.max_expected_delay_rate", self.max_expected_delay_rate)
+
+    def to_spec(self, *, carrier: float, offset: float = 0.0) -> PulsedSpec:
         return PulsedSpec(
+            pulse_kind=str(self.pulse_kind),
+            pulse_width_s=float(self.pulse_width),
+            bandwidth_hz=float(self.bandwidth),
+            pri_s=float(self.pri),
             num_pulses=int(self.num_pulses),
+            sample_rate_hz=float(self.sample_rate),
             num_samples=int(self.num_samples),
-            sample_period_s=1.0 / float(self.sample_rate_hz),
-            pri_s=float(self.pri_s),
-            range_gate_start_s=float(self.range_gate_start_s),
-            pulse_kind=self.pulse_kind,
-            pulse_width_s=float(self.pulse_width_s),
-            bandwidth_hz=float(self.bandwidth_hz),
-            reference_frequency_hz=float(reference_frequency_hz),
+            range_gate_start_s=float(self.range_gate_start),
             max_expected_delay_rate=float(self.max_expected_delay_rate),
-            carrier_hz=carrier,
-            carrier_rate_hz=0.0 if carrier != 0.0 else float(reference_frequency_hz),
+            reference_frequency_hz=float(carrier),
+            carrier_hz=float(offset),
             pulse_normalization=self.pulse_normalization,
         )
 
 
-WaveformConfig = FmcwWaveformConfig | OfdmWaveformConfig | PulsedWaveformConfig
+Waveform = Fmcw | Ofdm | Pulsed
+
+
+# ---------------------------------------------------------------------------
+# Internal block specs
+#
+# These are what a consumer is HANDED: the propagation adapter sees the
+# propagation block and nothing else, the sensor stage sees the array. They are
+# derived from the radar rather than authored, which is why they keep their
+# unit-suffixed field names and are absent from the public surface.
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class SensorConfig:
-    """The array, its antenna pattern, and transmit power."""
+    """The array, its antenna pattern, and its transmit power."""
 
     array: SensorArraySpec
-    pattern: AntennaPatternSpec
-    tx_power: TxPowerSpec
+    pattern: Pattern
+    power_dbm: float
 
 
 @dataclass(frozen=True, slots=True)
 class PropagationConfig:
     """The ONLY block a propagation adapter is ever handed.
 
-    Folding a waveform field in here is what work item 6 exists to prevent, and
-    the boundary test asserts the request keyword set by EQUALITY rather than by
+    Folding a waveform field in here is what the boundary test exists to
+    prevent, and it asserts the request keyword set by EQUALITY rather than by
     containment, because a containment check passes when a field is added.
     """
 
@@ -193,28 +321,17 @@ class PropagationConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class ProcessingConfig:
-    """Frame rate and the three bin counts the signal processor indexes by."""
-
-    frame_per_second: float
-    num_doppler_bins: int
-    num_range_bins: int
-    num_angle_bins: int
-
-
-@dataclass(frozen=True, slots=True)
 class RadarSystemConfig:
-    """The five blocks, with the waveform discriminator stored rather than read.
+    """The four blocks, with the waveform discriminator stored rather than read.
 
     ``waveform.kind`` is the dispatch key. It is a class attribute of the
-    waveform block, so a block cannot be built with the wrong one and a caller
+    waveform record, so a block cannot be built with the wrong one and a caller
     cannot infer a different one by looking for a ``slope``.
     """
 
-    waveform: WaveformConfig
+    waveform: Waveform
     sensors: SensorConfig
     propagation: PropagationConfig
-    processing: ProcessingConfig
     frontend: FrontendSpec | None = None
 
     def __post_init__(self) -> None:
@@ -223,9 +340,7 @@ class RadarSystemConfig:
         if self.sensors.array.reference_frequency_hz != self.propagation.reference_frequency_hz:
             raise ValueError(
                 "the array's reference frequency and the propagation reference "
-                "frequency are the same physical quantity and must agree; the "
-                "array element spacing is defined in half-wavelengths at that "
-                "frequency"
+                "frequency are the same physical quantity and must agree"
             )
 
     @property
@@ -243,104 +358,37 @@ class RadarSystemConfig:
         array = self.sensors.array
         reference = self.propagation.reference_frequency_hz
         if self.waveform.kind == WAVEFORM_FMCW:
-            return self.waveform.to_spec(
-                reference_frequency_hz=reference, num_tx=array.num_tx, num_rx=array.num_rx, carrier_hz=carrier_hz
-            )
+            return self.waveform.to_spec(carrier=reference, num_tx=array.num_tx, num_rx=array.num_rx, offset=carrier_hz)
         if self.waveform.kind in (WAVEFORM_OFDM, WAVEFORM_PULSED):
-            return self.waveform.to_spec(reference_frequency_hz=reference, carrier_hz=carrier_hz)
+            return self.waveform.to_spec(carrier=reference, offset=carrier_hz)
         raise ValueError(
             f"no synthesis owner for waveform kind {self.waveform.kind!r}; a "
-            "waveform without an owner has no physics and this dispatch has no "
-            "fallback"
+            "waveform without an owner has no physics and this dispatch has no fallback"
         )
 
-    def with_propagation(
-        self, *, components: frozenset[str] | None = None, max_depth: int | None = None
-    ) -> RadarSystemConfig:
+    def with_propagation(self, *, components=None, max_depth: int | None = None) -> RadarSystemConfig:
         """A copy whose propagation block carries these two knobs.
 
-        The scene-driven entry's ``components=`` / ``max_depth=`` keywords land
-        here. It returns a new configuration rather than mutating this one
-        because a per-solve override that edited the radar's stored
-        configuration would silently change every LATER solve as well, and a
-        propagation request is a statement about one solve.
+        A per-solve request returns a new configuration rather than mutating
+        this one, because an override that edited the radar's stored
+        configuration would silently change every LATER solve as well.
 
         ``reference_frequency_hz`` is deliberately not overridable: it is tied
-        to the array's element spacing by ``__post_init__`` and to the compiled
-        scene by Channel, so changing it here would produce a configuration that
-        is refused later rather than one that means something else.
+        to the array's element spacing and to the compiled scene by Channel, so
+        changing it here would produce a configuration that is refused later
+        rather than one that means something else.
         """
 
         if components is None and max_depth is None:
             return self
         current = self.propagation
-        replacement = PropagationConfig(
-            reference_frequency_hz=current.reference_frequency_hz,
-            components=(current.components if components is None else frozenset(components)),
-            max_depth=(current.max_depth if max_depth is None else int(max_depth)),
-        )
-        return replace(self, propagation=replacement)
-
-    @classmethod
-    def from_radar_config(
-        cls,
-        config,
-        *,
-        frontend: FrontendSpec | None = None,
-        waveform: WaveformConfig | None = None,
-        components: frozenset[str] | None = None,
-        max_depth: int | None = None,
-    ):
-        """Split a flat ``RadarConfig`` into the five blocks.
-
-        The flat form remains the file format and the public constructor; this
-        is the structural view of it. Blocks are the thing an adapter, a
-        synthesis owner, or a signal processor is handed, so that each one sees
-        only what it owns.
-
-        ``waveform`` selects the waveform block. ``None`` builds the FMCW block
-        out of the flat fields, which is what this classmethod has always done
-        and is bit-for-bit unchanged; anything else is used verbatim, which is
-        how an OFDM or pulsed radar is configured without hand-assembling all
-        five blocks. The flat fields the FMCW block would have read are simply
-        not consulted in that case, because an OFDM symbol has no ramp slope.
-
-        ``components`` and ``max_depth`` fill the propagation block. Their
-        defaults are :class:`PropagationConfig`'s own, so omitting both is
-        exactly the previous behaviour.
-        """
-
-        return cls(
-            waveform=(
-                FmcwWaveformConfig(
-                    slope=float(config.slope),
-                    adc_samples=int(config.adc_samples),
-                    adc_start_time=float(config.adc_start_time),
-                    sample_rate=float(config.sample_rate),
-                    idle_time=float(config.idle_time),
-                    ramp_end_time=float(config.ramp_end_time),
-                    chirp_per_frame=int(config.chirp_per_frame),
-                )
-                if waveform is None
-                else waveform
-            ),
-            sensors=SensorConfig(
-                array=SensorArraySpec.from_radar_config(config),
-                pattern=AntennaPatternSpec.from_config(config.antenna_pattern),
-                tx_power=TxPowerSpec.from_radar_config(config),
-            ),
+        return replace(
+            self,
             propagation=PropagationConfig(
-                reference_frequency_hz=float(config.fc),
-                **({} if components is None else {"components": frozenset(components)}),
-                **({} if max_depth is None else {"max_depth": int(max_depth)}),
+                reference_frequency_hz=current.reference_frequency_hz,
+                components=(current.components if components is None else frozenset(components)),
+                max_depth=(current.max_depth if max_depth is None else int(max_depth)),
             ),
-            processing=ProcessingConfig(
-                frame_per_second=float(config.frame_per_second),
-                num_doppler_bins=int(config.num_doppler_bins),
-                num_range_bins=int(config.num_range_bins),
-                num_angle_bins=int(config.num_angle_bins),
-            ),
-            frontend=frontend,
         )
 
 
@@ -349,542 +397,39 @@ class RadarSystemConfig:
 # ---------------------------------------------------------------------------
 
 
-def _finite_float(name: str, value: Any, prefix: str) -> float:
+def _finite(name: str, value: Any) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"{prefix} '{name}' must be a finite float.") from exc
+        raise ValueError(f"{name} must be a finite float, got {value!r}") from exc
     if not math.isfinite(parsed):
-        raise ValueError(f"{prefix} '{name}' must be a finite float.")
+        raise ValueError(f"{name} must be a finite float, got {value!r}")
     return parsed
 
 
-def _non_negative_float(name: str, value: Any, prefix: str) -> float:
-    parsed = _finite_float(name, value, prefix)
+def _non_negative(name: str, value: Any) -> float:
+    parsed = _finite(name, value)
     if parsed < 0.0:
-        raise ValueError(f"{prefix} '{name}' must be non-negative.")
+        raise ValueError(f"{name} must be non-negative, got {parsed}")
     return parsed
 
 
-def _positive_float(name: str, value: Any, prefix: str) -> float:
-    parsed = _finite_float(name, value, prefix)
+def _positive(name: str, value: Any) -> float:
+    parsed = _finite(name, value)
     if parsed <= 0.0:
-        raise ValueError(f"{prefix} '{name}' must be positive.")
+        raise ValueError(f"{name} must be positive, got {parsed}")
     return parsed
 
 
-def _positive_int(name: str, value: Any, prefix: str) -> int:
+def _positive_int(name: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{prefix} '{name}' must be a positive int.")
+        raise ValueError(f"{name} must be a positive int, got {value!r}")
     return value
-
-
-def _optional_seed(value: Any, name: str, prefix: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{prefix} '{name}' must be a non-negative int.")
-    return value
-
-
-def _require_keys(config: dict[str, Any], keys: Iterable[str], label: str) -> None:
-    missing = [key for key in keys if key not in config]
-    if missing:
-        raise ValueError(f"{label} is missing required keys: {', '.join(missing)}")
-
-
-def _parse_vector3(
-    name: str, value: Any, *, prefix: str, aliases: dict[str, tuple[float, float, float]] | None = None
-) -> tuple[float, float, float]:
-    if isinstance(value, str):
-        if aliases is None or value.lower() not in aliases:
-            raise ValueError(
-                f"{prefix} '{name}' must be a 3-element vector" + (" or an alias string." if aliases else ".")
-            )
-        return aliases[value.lower()]
-    if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise ValueError(f"{prefix} '{name}' must be a 3-element vector.")
-    vector = tuple(_finite_float(f"{name}[{i}]", component, prefix) for i, component in enumerate(value))
-    norm_sq = sum(c * c for c in vector)
-    if norm_sq <= 1e-24:
-        raise ValueError(f"{prefix} '{name}' must be non-zero.")
-    return vector
-
-
-# ---------------------------------------------------------------------------
-# Antenna pattern
-# ---------------------------------------------------------------------------
-
-_ANTENNA_PREFIX = "Antenna pattern field"
-
-
-def _validate_axis(name: str, value: Any) -> tuple[float, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be a sequence of angles in degrees.")
-    if len(value) < 2:
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must contain at least 2 samples.")
-    axis = tuple(_finite_float(f"{name}[{i}]", angle, _ANTENNA_PREFIX) for i, angle in enumerate(value))
-    for i in range(1, len(axis)):
-        if axis[i] <= axis[i - 1]:
-            raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be strictly increasing.")
-    return axis
-
-
-def _validate_values_1d(name: str, value: Any, expected_count: int) -> tuple[float, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be a sequence of gain values.")
-    if len(value) != expected_count:
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}.")
-    gains = []
-    for i, item in enumerate(value):
-        gain = _finite_float(f"{name}[{i}]", item, _ANTENNA_PREFIX)
-        if gain < 0.0:
-            raise ValueError(f"{_ANTENNA_PREFIX} '{name}[{i}]' must be non-negative.")
-        gains.append(gain)
-    return tuple(gains)
-
-
-def _validate_values_2d(name: str, value: Any, expected_rows: int, expected_cols: int) -> tuple[tuple[float, ...], ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must be a 2D sequence of gain values.")
-    if len(value) != expected_rows:
-        raise ValueError(f"{_ANTENNA_PREFIX} '{name}' must contain exactly {expected_rows} rows; got {len(value)}.")
-    rows = []
-    for row_index, row in enumerate(value):
-        if not isinstance(row, (list, tuple)):
-            raise ValueError(f"{_ANTENNA_PREFIX} '{name}[{row_index}]' must be a sequence of gain values.")
-        if len(row) != expected_cols:
-            raise ValueError(
-                f"{_ANTENNA_PREFIX} '{name}[{row_index}]' must contain exactly {expected_cols} entries; got {len(row)}."
-            )
-        parsed_row = []
-        for col_index, item in enumerate(row):
-            gain = _finite_float(f"{name}[{row_index}][{col_index}]", item, _ANTENNA_PREFIX)
-            if gain < 0.0:
-                raise ValueError(f"{_ANTENNA_PREFIX} '{name}[{row_index}][{col_index}]' must be non-negative.")
-            parsed_row.append(gain)
-        rows.append(tuple(parsed_row))
-    return tuple(rows)
-
-
-def _detect_antenna_kind(data: dict[str, Any]) -> str:
-    raw_kind = data.get("kind")
-    if raw_kind is None:
-        if "values" in data:
-            return "map"
-        if "x_values" in data or "y_values" in data:
-            return "separable"
-        raise ValueError("Antenna pattern config must define 'kind' or provide fields for a known pattern type.")
-    kind = str(raw_kind)
-    if kind not in {"separable", "map"}:
-        raise ValueError("Antenna pattern field 'kind' must be 'separable' or 'map'.")
-    return kind
-
-
-def validate_antenna_pattern_config(config: dict[str, Any]) -> dict[str, Any]:
-    kind = _detect_antenna_kind(config)
-    x_angles_deg = _validate_axis("x_angles_deg", config.get("x_angles_deg"))
-    y_angles_deg = _validate_axis("y_angles_deg", config.get("y_angles_deg"))
-
-    if kind == "separable":
-        x_values = _validate_values_1d("x_values", config.get("x_values"), len(x_angles_deg))
-        y_values = _validate_values_1d("y_values", config.get("y_values"), len(y_angles_deg))
-        return {
-            "kind": kind,
-            "x_angles_deg": list(x_angles_deg),
-            "y_angles_deg": list(y_angles_deg),
-            "x_values": list(x_values),
-            "y_values": list(y_values),
-        }
-
-    values = _validate_values_2d("values", config.get("values"), len(y_angles_deg), len(x_angles_deg))
-    return {
-        "kind": kind,
-        "x_angles_deg": list(x_angles_deg),
-        "y_angles_deg": list(y_angles_deg),
-        "values": [list(row) for row in values],
-    }
-
-
-def default_dipole_antenna_pattern() -> dict[str, Any]:
-    return {
-        "kind": "separable",
-        "x_angles_deg": list(DEFAULT_DIPOLE_ANGLES_DEG),
-        "y_angles_deg": list(DEFAULT_DIPOLE_ANGLES_DEG),
-        "x_values": list(DEFAULT_DIPOLE_VALUES),
-        "y_values": list(DEFAULT_DIPOLE_VALUES),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Polarization
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Radar config
-# ---------------------------------------------------------------------------
-
-_RADAR_PREFIX = "Radar config field"
-
-_RADAR_REQUIRED_KEYS = (
-    "num_tx",
-    "num_rx",
-    "fc",
-    "slope",
-    "adc_samples",
-    "adc_start_time",
-    "sample_rate",
-    "idle_time",
-    "ramp_end_time",
-    "chirp_per_frame",
-    "frame_per_second",
-    "num_doppler_bins",
-    "num_range_bins",
-    "num_angle_bins",
-    "power",
-    "tx_loc",
-    "rx_loc",
-)
-
-
-_RADAR_OPTIONAL_KEYS = ("antenna_pattern",)
-
-#: What the flat mapping can express. A key outside this set is refused rather
-#: than dropped: the flat form is the file format, so an unknown key is a
-#: caller who believes a block is configured. ``"waveform"`` and ``"frontend"``
-#: are the two that cost real time - a caller who writes
-#: ``{"waveform": "ofdm"}`` used to get an FMCW radar with nothing raised, and
-#: ``{"frontend": {...}}`` used to get a radar with no receive chain. Neither
-#: block is authorable here today (see the migration note); refusing says so.
-_RADAR_KNOWN_KEYS = frozenset(_RADAR_REQUIRED_KEYS + _RADAR_OPTIONAL_KEYS)
-
-
-def _reject_unknown_radar_keys(config: dict[str, Any]) -> None:
-    unknown = sorted(set(config) - _RADAR_KNOWN_KEYS)
-    if unknown:
-        raise ValueError(
-            f"Radar config has unsupported keys: {', '.join(unknown)}. The flat "
-            f"mapping accepts only {', '.join(sorted(_RADAR_KNOWN_KEYS))}; a "
-            "waveform other than FMCW and a frontend chain are not authorable "
-            "in it, so attach them to the RadarConfig after validation."
-        )
-
-
-def _validate_antenna_locations(name: str, value: Any, expected_count: int) -> tuple[tuple[float, float, float], ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{_RADAR_PREFIX} '{name}' must be a sequence of 3D coordinates.")
-    if len(value) != expected_count:
-        raise ValueError(f"{_RADAR_PREFIX} '{name}' must contain exactly {expected_count} entries; got {len(value)}.")
-    coords: list[tuple[float, float, float]] = []
-    for index, coord in enumerate(value):
-        if not isinstance(coord, (list, tuple)) or len(coord) != 3:
-            raise ValueError(f"{_RADAR_PREFIX} '{name}[{index}]' must be a 3-element coordinate.")
-        coords.append(
-            (
-                _finite_float(f"{name}[{index}][0]", coord[0], _RADAR_PREFIX),
-                _finite_float(f"{name}[{index}][1]", coord[1], _RADAR_PREFIX),
-                _finite_float(f"{name}[{index}][2]", coord[2], _RADAR_PREFIX),
-            )
-        )
-    return tuple(coords)
-
-
-def validate_radar_config(config: dict[str, Any]) -> RadarConfig:
-    _require_keys(config, _RADAR_REQUIRED_KEYS, "Radar config")
-    _reject_unknown_radar_keys(config)
-
-    num_tx = _positive_int("num_tx", config["num_tx"], _RADAR_PREFIX)
-    num_rx = _positive_int("num_rx", config["num_rx"], _RADAR_PREFIX)
-
-    antenna_pattern = (
-        validate_antenna_pattern_config(config["antenna_pattern"])
-        if config.get("antenna_pattern") is not None
-        else None
-    )
-    return RadarConfig(
-        num_tx=num_tx,
-        num_rx=num_rx,
-        fc=_finite_float("fc", config["fc"], _RADAR_PREFIX),
-        slope=_finite_float("slope", config["slope"], _RADAR_PREFIX),
-        adc_samples=_positive_int("adc_samples", config["adc_samples"], _RADAR_PREFIX),
-        adc_start_time=_finite_float("adc_start_time", config["adc_start_time"], _RADAR_PREFIX),
-        sample_rate=_finite_float("sample_rate", config["sample_rate"], _RADAR_PREFIX),
-        idle_time=_finite_float("idle_time", config["idle_time"], _RADAR_PREFIX),
-        ramp_end_time=_finite_float("ramp_end_time", config["ramp_end_time"], _RADAR_PREFIX),
-        chirp_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"], _RADAR_PREFIX),
-        frame_per_second=_finite_float("frame_per_second", config["frame_per_second"], _RADAR_PREFIX),
-        num_doppler_bins=_positive_int("num_doppler_bins", config["num_doppler_bins"], _RADAR_PREFIX),
-        num_range_bins=_positive_int("num_range_bins", config["num_range_bins"], _RADAR_PREFIX),
-        num_angle_bins=_positive_int("num_angle_bins", config["num_angle_bins"], _RADAR_PREFIX),
-        power=_finite_float("power", config["power"], _RADAR_PREFIX),
-        tx_loc=_validate_antenna_locations("tx_loc", config["tx_loc"], num_tx),
-        rx_loc=_validate_antenna_locations("rx_loc", config["rx_loc"], num_rx),
-        antenna_pattern=antenna_pattern,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Block configuration (work item 6)
-#
-# One validator per block, one ``_REQUIRED`` tuple per block. The flat
-# ``validate_radar_config`` above stays the file format; these build the
-# structural view of it, and they exist separately because a block is exactly
-# the unit a consumer is handed. ``PropagationConfig`` is the only block a
-# propagation adapter ever receives, which is what makes a waveform field
-# reaching a propagation request impossible to write rather than merely
-# discouraged.
-# ---------------------------------------------------------------------------
-
-_WAVEFORM_PREFIX = "Waveform config field"
-_SENSOR_PREFIX = "Sensor config field"
-_FRONTEND_PREFIX = "Frontend config field"
-_PROPAGATION_PREFIX = "Propagation config field"
-_PROCESSING_PREFIX = "Processing config field"
-
-_FMCW_REQUIRED = (
-    "slope",
-    "adc_samples",
-    "adc_start_time",
-    "sample_rate",
-    "idle_time",
-    "ramp_end_time",
-    "chirp_per_frame",
-)
-_OFDM_REQUIRED = ("subcarrier_spacing_hz", "num_subcarriers", "cyclic_prefix_s", "num_symbols", "max_expected_delay_s")
-_PULSED_REQUIRED = (
-    "pulse_kind",
-    "pulse_width_s",
-    "bandwidth_hz",
-    "pri_s",
-    "num_pulses",
-    "sample_rate_hz",
-    "num_samples",
-    "range_gate_start_s",
-)
-_PROPAGATION_REQUIRED = ("reference_frequency_hz",)
-_PROCESSING_REQUIRED = ("frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins")
-_SENSOR_REQUIRED = ("num_tx", "num_rx", "fc", "tx_loc", "rx_loc", "power")
-
-
-def validate_waveform_config(config: dict[str, Any]):
-    """Build one waveform block from a mapping with a STORED ``kind``.
-
-    The kind is read, never inferred. Inferring "this is FMCW" from the
-    presence of a ``slope`` is exactly the habit that lets waveform vocabulary
-    leak into places with no business knowing the waveform, so an absent or
-    unknown ``kind`` is an error rather than a guess.
-    """
-
-    kind = config.get("kind")
-    if kind not in WAVEFORM_KINDS:
-        raise ValueError(
-            f"{_WAVEFORM_PREFIX} 'kind' must be one of {list(WAVEFORM_KINDS)}; "
-            f"got {kind!r}. The waveform discriminator is stored, never inferred "
-            "from the presence of a slope or a subcarrier spacing."
-        )
-    if kind == WAVEFORM_FMCW:
-        _require_keys(config, _FMCW_REQUIRED, "FMCW waveform config")
-        return FmcwWaveformConfig(
-            slope=_finite_float("slope", config["slope"], _WAVEFORM_PREFIX),
-            adc_samples=_positive_int("adc_samples", config["adc_samples"], _WAVEFORM_PREFIX),
-            adc_start_time=_finite_float("adc_start_time", config["adc_start_time"], _WAVEFORM_PREFIX),
-            sample_rate=_positive_float("sample_rate", config["sample_rate"], _WAVEFORM_PREFIX),
-            idle_time=_non_negative_float("idle_time", config["idle_time"], _WAVEFORM_PREFIX),
-            ramp_end_time=_positive_float("ramp_end_time", config["ramp_end_time"], _WAVEFORM_PREFIX),
-            chirp_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"], _WAVEFORM_PREFIX),
-            output_domain=str(config.get("output_domain", "spectrum")),
-        )
-    if kind == WAVEFORM_OFDM:
-        _require_keys(config, _OFDM_REQUIRED, "OFDM waveform config")
-        return OfdmWaveformConfig(
-            subcarrier_spacing_hz=_positive_float(
-                "subcarrier_spacing_hz", config["subcarrier_spacing_hz"], _WAVEFORM_PREFIX
-            ),
-            num_subcarriers=_positive_int("num_subcarriers", config["num_subcarriers"], _WAVEFORM_PREFIX),
-            cyclic_prefix_s=_positive_float("cyclic_prefix_s", config["cyclic_prefix_s"], _WAVEFORM_PREFIX),
-            num_symbols=_positive_int("num_symbols", config["num_symbols"], _WAVEFORM_PREFIX),
-            max_expected_delay_s=_non_negative_float(
-                "max_expected_delay_s", config["max_expected_delay_s"], _WAVEFORM_PREFIX
-            ),
-        )
-    _require_keys(config, _PULSED_REQUIRED, "Pulsed waveform config")
-    return PulsedWaveformConfig(
-        pulse_kind=str(config["pulse_kind"]),
-        pulse_width_s=_positive_float("pulse_width_s", config["pulse_width_s"], _WAVEFORM_PREFIX),
-        bandwidth_hz=_positive_float("bandwidth_hz", config["bandwidth_hz"], _WAVEFORM_PREFIX),
-        pri_s=_positive_float("pri_s", config["pri_s"], _WAVEFORM_PREFIX),
-        num_pulses=_positive_int("num_pulses", config["num_pulses"], _WAVEFORM_PREFIX),
-        sample_rate_hz=_positive_float("sample_rate_hz", config["sample_rate_hz"], _WAVEFORM_PREFIX),
-        num_samples=_positive_int("num_samples", config["num_samples"], _WAVEFORM_PREFIX),
-        range_gate_start_s=_non_negative_float("range_gate_start_s", config["range_gate_start_s"], _WAVEFORM_PREFIX),
-        max_expected_delay_rate=_non_negative_float(
-            "max_expected_delay_rate", config.get("max_expected_delay_rate", 0.0), _WAVEFORM_PREFIX
-        ),
-    )
-
-
-def validate_sensor_config(config: dict[str, Any]):
-    """Build the sensor block: array, pattern, and transmit power.
-
-    ``power`` is in dBm and becomes ``powers_w`` on a source endpoint. There is
-    deliberately no transmit-gain output here: a Channel coefficient already
-    carries ``sqrt(P_tx)``, so a second one would count the power twice and mix
-    sqrt(W) with sqrt(W ohm).
-    """
-    from .sensors import AntennaPatternSpec, SensorArraySpec, TxPowerSpec
-
-    _require_keys(config, _SENSOR_REQUIRED, "Sensor config")
-    num_tx = _positive_int("num_tx", config["num_tx"], _SENSOR_PREFIX)
-    num_rx = _positive_int("num_rx", config["num_rx"], _SENSOR_PREFIX)
-    pattern = (
-        validate_antenna_pattern_config(config["antenna_pattern"])
-        if config.get("antenna_pattern") is not None
-        else None
-    )
-    return SensorConfig(
-        array=SensorArraySpec(
-            num_tx=num_tx,
-            num_rx=num_rx,
-            tx_loc=tuple(_validate_antenna_locations("tx_loc", config["tx_loc"], num_tx)),
-            rx_loc=tuple(_validate_antenna_locations("rx_loc", config["rx_loc"], num_rx)),
-            reference_frequency_hz=_positive_float("fc", config["fc"], _SENSOR_PREFIX),
-        ),
-        pattern=AntennaPatternSpec.from_config(pattern),
-        tx_power=TxPowerSpec(power_dbm=_finite_float("power", config["power"], _SENSOR_PREFIX)),
-    )
-
-
-def validate_propagation_config(config: dict[str, Any]):
-    """Build the propagation block, which is the ONLY block an adapter sees."""
-
-    _require_keys(config, _PROPAGATION_REQUIRED, "Propagation config")
-    components = config.get("components", ("los", "reflection"))
-    if isinstance(components, str):
-        raise ValueError(
-            f"{_PROPAGATION_PREFIX} 'components' must be a collection of component names, not a single string"
-        )
-    return PropagationConfig(
-        reference_frequency_hz=_positive_float(
-            "reference_frequency_hz", config["reference_frequency_hz"], _PROPAGATION_PREFIX
-        ),
-        components=frozenset(str(name) for name in components),
-        max_depth=_positive_int("max_depth", config.get("max_depth", 1), _PROPAGATION_PREFIX),
-    )
-
-
-def validate_processing_config(config: dict[str, Any]):
-    """Build the processing block: frame rate and the three bin counts."""
-
-    _require_keys(config, _PROCESSING_REQUIRED, "Processing config")
-    return ProcessingConfig(
-        frame_per_second=_positive_float("frame_per_second", config["frame_per_second"], _PROCESSING_PREFIX),
-        num_doppler_bins=_positive_int("num_doppler_bins", config["num_doppler_bins"], _PROCESSING_PREFIX),
-        num_range_bins=_positive_int("num_range_bins", config["num_range_bins"], _PROCESSING_PREFIX),
-        num_angle_bins=_positive_int("num_angle_bins", config["num_angle_bins"], _PROCESSING_PREFIX),
-    )
-
-
-def validate_frontend_config(config: dict[str, Any]):
-    """Build the receive chain from a mapping. One chain, one ADC, one seed.
-
-    There is deliberately no way to say what order the stages run in. The order
-    is a property of the runtime, and the two runtimes this replaces left it to
-    whichever caller happened to compose them, which is a difference of
-    ``g_lna^2`` in output noise power.
-
-    ``bandwidth_hz`` is required whenever thermal noise is configured and is
-    never inferred from a waveform. It is the ADC sample rate for FMCW, the
-    matched-filter bandwidth for pulsed, and the subcarrier spacing (or the
-    whole occupied band) for OFDM, and inferring it in three places is how those
-    three quietly disagree.
-    """
-
-    from .frontend import AdcSpec, AgcSpec, FrontendSpec, LnaSpec, NoiseSpec, PortSpec, SeedSpec
-
-    allowed = {"port", "noise", "lna", "agc", "adc", "seed"}
-    unknown = sorted(set(config) - allowed)
-    if unknown:
-        raise TypeError(f"Unsupported frontend config keys: {', '.join(unknown)}")
-
-    port_config = config.get("port") or {}
-    port = PortSpec(
-        reference_impedance_ohm=_positive_float(
-            "port.reference_impedance_ohm", port_config.get("reference_impedance_ohm", 50.0), _FRONTEND_PREFIX
-        )
-    )
-
-    noise = None
-    if config.get("noise") is not None:
-        raw = config["noise"]
-        thermal = raw.get("noise_figure_db") is not None or raw.get("bandwidth_hz") is not None
-        if thermal and raw.get("bandwidth_hz") is None:
-            raise ValueError(
-                f"{_FRONTEND_PREFIX} 'noise.bandwidth_hz' is required when thermal "
-                "noise is configured; it is a per-waveform quantity and inferring "
-                "it is a pure SNR scale error"
-            )
-        noise = NoiseSpec(
-            noise_figure_db=_non_negative_float(
-                "noise.noise_figure_db", raw.get("noise_figure_db", 0.0), _FRONTEND_PREFIX
-            ),
-            antenna_temperature_k=_non_negative_float(
-                "noise.antenna_temperature_k", raw.get("antenna_temperature_k", 290.0), _FRONTEND_PREFIX
-            ),
-            bandwidth_hz=_non_negative_float("noise.bandwidth_hz", raw.get("bandwidth_hz", 0.0), _FRONTEND_PREFIX),
-            phase_noise_dbc_per_hz=(
-                None
-                if raw.get("phase_noise_dbc_per_hz") is None
-                else _finite_float("noise.phase_noise_dbc_per_hz", raw["phase_noise_dbc_per_hz"], _FRONTEND_PREFIX)
-            ),
-            phase_offset_hz=_non_negative_float(
-                "noise.phase_offset_hz", raw.get("phase_offset_hz", 0.0), _FRONTEND_PREFIX
-            ),
-            phase_sample_rate_hz=_non_negative_float(
-                "noise.phase_sample_rate_hz", raw.get("phase_sample_rate_hz", 0.0), _FRONTEND_PREFIX
-            ),
-        )
-
-    lna = None
-    if config.get("lna") is not None:
-        lna = LnaSpec(gain_db=_finite_float("lna.gain_db", config["lna"].get("gain_db", 0.0), _FRONTEND_PREFIX))
-
-    agc = None
-    if config.get("agc") is not None:
-        raw = config["agc"]
-        agc = AgcSpec(
-            target_rms=_positive_float("agc.target_rms", raw.get("target_rms"), _FRONTEND_PREFIX),
-            mode=str(raw.get("mode", "per_rx")).lower(),
-            min_gain_db=_finite_float("agc.min_gain_db", raw.get("min_gain_db", -60.0), _FRONTEND_PREFIX),
-            max_gain_db=_finite_float("agc.max_gain_db", raw.get("max_gain_db", 60.0), _FRONTEND_PREFIX),
-        )
-
-    adc = None
-    if config.get("adc") is not None:
-        raw = config["adc"]
-        adc = AdcSpec(
-            bits=_positive_int("adc.bits", raw.get("bits"), _FRONTEND_PREFIX),
-            full_scale=_positive_float("adc.full_scale", raw.get("full_scale", 1.0), _FRONTEND_PREFIX),
-        )
-
-    seed = SeedSpec(seed_base=_optional_seed(config.get("seed"), "seed", _FRONTEND_PREFIX) or 0)
-    return FrontendSpec(port=port, noise=noise, lna=lna, agc=agc, adc=adc, seed=seed)
-
-
-def validate_radar_system_config(config: dict[str, Any]):
-    """Build all five blocks from a block-shaped mapping."""
-
-    _require_keys(config, ("waveform", "sensors", "propagation", "processing"), "Radar system config")
-    return RadarSystemConfig(
-        waveform=validate_waveform_config(config["waveform"]),
-        sensors=validate_sensor_config(config["sensors"]),
-        propagation=validate_propagation_config(config["propagation"]),
-        processing=validate_processing_config(config["processing"]),
-        frontend=(validate_frontend_config(config["frontend"]) if config.get("frontend") is not None else None),
-    )
 
 
 def vec3_tensor(value, *, name: str) -> torch.Tensor:
     """Coerce to a CPU float32 tensor of shape (3,)."""
+
     if isinstance(value, torch.Tensor):
         tensor = value.detach().to(device="cpu", dtype=torch.float32).reshape(-1)
     else:
@@ -894,216 +439,305 @@ def vec3_tensor(value, *, name: str) -> torch.Tensor:
     return tensor
 
 
+def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
+    if isinstance(value, torch.Tensor):
+        rows = value.detach().to(device="cpu", dtype=torch.float32).tolist()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        rows = list(value)
+    else:
+        raise TypeError(f"{name} must be a sequence of 3-element positions, got {type(value).__name__}")
+    if not rows:
+        raise ValueError(f"{name} must name at least one element")
+    out: list[tuple[float, float, float]] = []
+    for index, row in enumerate(rows):
+        if isinstance(row, torch.Tensor):
+            row = row.detach().to(device="cpu", dtype=torch.float32).tolist()
+        if not isinstance(row, Sequence) or len(row) != 3:
+            raise ValueError(f"{name}[{index}] must be a 3-element position")
+        out.append(tuple(_finite(f"{name}[{index}][{axis}]", row[axis]) for axis in range(3)))
+    return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# Radar
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
-class RadarConfig:
-    num_tx: int
-    num_rx: int
-    fc: float
-    slope: float
-    adc_samples: int
-    adc_start_time: float
-    sample_rate: float
-    idle_time: float
-    ramp_end_time: float
-    chirp_per_frame: int
-    frame_per_second: float
-    num_doppler_bins: int
-    num_range_bins: int
-    num_angle_bins: int
-    power: float
-    tx_loc: tuple[tuple[float, float, float], ...]
-    rx_loc: tuple[tuple[float, float, float], ...]
-    antenna_pattern: dict[str, Any] | None = None
-    #: The receive chain: ONE ordered chain with ONE ADC and ONE seed base. It
-    #: replaced a ``noise_model`` / ``receiver_chain`` pair whose composite
-    #: order was the caller's to choose, and since Phase 11 it is the only one
-    #: - the pair is deleted, so there is no configuration in which two chains
-    #: can disagree about where the LNA sits. It is ``None`` by default: noise
-    #: is optional and OFF unless a caller asks for it, and every physics test
-    #: runs without it.
-    frontend: FrontendSpec | None = None
-
-    @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> RadarConfig:
-        return validate_radar_config(config)
-
-    @classmethod
-    def from_json(cls, path: str | os.PathLike[str]) -> RadarConfig:
-        with open(path, encoding="utf-8") as handle:
-            return cls.from_dict(json.load(handle))
-
-
-def _target_from_position(position: torch.Tensor) -> torch.Tensor:
-    return position + torch.tensor((0.0, 0.0, -1.0), dtype=torch.float32)
-
-
-# `quantize_complex_signal`, `db_to_voltage_gain`, `ReceiverChainRuntime`,
-# `NoiseModelRuntime` and `PolarizationRuntime` stood here until Phase 11. The
-# first four were the legacy receive chain that `frontend/FrontendChain`
-# replaced, and `apply_signal_models` chose between the two owners at runtime -
-# a shadow mode, which acceptance criterion 6 forbids. `PolarizationRuntime`
-# went with them: its only consumer outside this file was
-# `sensors/legacy_paths.py`, on the deleted Dirichlet route.
-
-
 class Radar:
-    #: The one diagnostic retention site, as a CLASS attribute so that the four
-    #: ``last_*`` properties answer ``None`` on an instance that has never run -
-    #: including one built by ``object.__new__`` for a refusal test - instead of
-    #: raising ``AttributeError`` from a half-initialized object.
-    _last_result = None
+    """One radar: its waveform, its array, its receive chain and its pose.
 
-    def __init__(
-        self,
-        config: RadarConfig | Mapping[str, Any],
-        device: str | torch.device = "cuda",
-        *,
-        position=(0.0, 0.0, 0.0),
-        target=None,
-        up=(0.0, 1.0, 0.0),
-        fov: float = 60.0,
-        name: str | None = None,
-    ):
+    Immutable. :meth:`replace` returns a new radar rather than editing this
+    one, so a radar captured in a closure or held by a result cannot change
+    underneath it, and a pose built from a tensor with a tape keeps that tape.
+
+    Four verbs use it. :meth:`trace` runs the world half of the pipeline and
+    returns the composed paths; :meth:`echo` runs the instrument half on those
+    paths; :meth:`simulate` and :meth:`stream` fuse the two.
+    """
+
+    #: Reference frequency, Hz. The carrier the array spacing, the propagation
+    #: solve and the synthesis all refer to; they are one physical quantity.
+    carrier: float
+    waveform: Waveform
+    #: Transmit element positions, in ``antenna_unit``.
+    tx: tuple[tuple[float, float, float], ...]
+    #: Receive element positions, in ``antenna_unit``.
+    rx: tuple[tuple[float, float, float], ...]
+    #: Transmit power, dBm.
+    power: float
+    antenna_unit: str = "m"
+    #: The element pattern. Isotropic by default: an unchosen dipole attenuates
+    #: every off-boresight return by a number nobody asked for.
+    pattern: Pattern = field(default_factory=Pattern.isotropic)
+    #: Thermal and oscillator noise. ``None`` is an ideal receiver.
+    noise: Noise | None = None
+    #: Low-noise amplifier voltage gain, dB. ``None`` is no LNA stage.
+    lna_gain: float | None = None
+    agc: Agc | None = None
+    #: ``None`` is no quantisation.
+    adc: Adc | None = None
+    #: Receive port reference impedance, ohm.
+    impedance: float = 50.0
+    #: The Philox base seed every receiver stage derives its own stream from.
+    seed: int = 0
+    #: Radar origin in world coordinates, m. May be a tensor with a tape.
+    position: Any = (0.0, 0.0, 0.0)
+    #: The point the boresight looks at, world coordinates, m.
+    look_at: Any = (0.0, 0.0, -1.0)
+    #: World-space up vector, used to complete the frame.
+    up: Any = (0.0, 1.0, 0.0)
+    #: ``"up"``, ``"right"`` or a world vector. The two aliases are derived
+    #: from the pose and are therefore transverse to the boresight; a vector
+    #: parallel to the boresight radiates nothing and is refused.
+    polarization: Any = "up"
+    device: Any = "cuda"
+
+    # -- derived, built once in __post_init__ ------------------------------
+    system_config: RadarSystemConfig = field(init=False, repr=False, compare=False)
+    frontend: Any = field(init=False, repr=False, compare=False)
+    tx_pos: torch.Tensor = field(init=False, repr=False, compare=False)
+    rx_pos: torch.Tensor = field(init=False, repr=False, compare=False)
+    polarization_vector: tuple[float, float, float] = field(init=False, repr=False, compare=False)
+
+    #: The one diagnostic retention site, a CLASS attribute so that a radar
+    #: built by ``object.__new__`` for a refusal test answers ``None`` rather
+    #: than raising ``AttributeError`` from a half-initialized object.
+    _last_result: ClassVar[Any] = None
+
+    def __post_init__(self) -> None:
+        set_ = object.__setattr__
+        _positive("Radar.carrier", self.carrier)
+        _finite("Radar.power", self.power)
+        _positive("Radar.impedance", self.impedance)
+        if self.antenna_unit not in ANTENNA_UNITS:
+            raise ValueError(f"Radar.antenna_unit must be one of {list(ANTENNA_UNITS)}, got {self.antenna_unit!r}")
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool) or self.seed < 0:
+            raise ValueError(f"Radar.seed must be a non-negative int, got {self.seed!r}")
+        if not isinstance(self.pattern, Pattern):
+            raise TypeError(f"Radar.pattern must be a Pattern, got {type(self.pattern).__name__}")
+        if self.waveform.kind not in WAVEFORM_KINDS:
+            raise ValueError(f"Radar.waveform must be Fmcw, Ofdm or Pulsed, got {type(self.waveform).__name__}")
+
+        set_(self, "device", _resolve_device(self.device))
+        set_(self, "tx", _elements(self.tx, name="Radar.tx"))
+        set_(self, "rx", _elements(self.rx, name="Radar.rx"))
+
+        # The array keeps half-wavelength offsets, so a metre-authored layout is
+        # divided by the half wavelength exactly here and nowhere else.
+        half_wavelength = SPEED_OF_LIGHT_M_PER_S / float(self.carrier) / 2.0
+        scale = 1.0 if self.antenna_unit == "half_wavelength" else 1.0 / half_wavelength
+        array = SensorArraySpec(
+            num_tx=len(self.tx),
+            num_rx=len(self.rx),
+            tx_loc=tuple(tuple(v * scale for v in row) for row in self.tx),
+            rx_loc=tuple(tuple(v * scale for v in row) for row in self.rx),
+            reference_frequency_hz=float(self.carrier),
+        )
+
+        set_(
+            self,
+            "system_config",
+            RadarSystemConfig(
+                waveform=self.waveform,
+                sensors=SensorConfig(array=array, pattern=self.pattern, power_dbm=float(self.power)),
+                propagation=PropagationConfig(reference_frequency_hz=float(self.carrier)),
+                frontend=self._build_frontend_spec(),
+            ),
+        )
+        self._place_antennas()
+        set_(self, "frontend", self._build_frontend_chain())
+
+    # -- construction helpers ---------------------------------------------
+
+    def _build_frontend_spec(self) -> FrontendSpec | None:
+        """The internal receive-chain record, or ``None`` for an ideal receiver.
+
+        A chain exists when any stage is configured. ``Noise`` arrives with its
+        two waveform-dependent numbers possibly unset and leaves resolved, so
+        nothing downstream of here ever has to infer a bandwidth - inferring it
+        in three places is how those three quietly disagree.
         """
-        Args:
-            config: ``RadarConfig`` or a raw mapping accepted by ``RadarConfig.from_dict``.
-            device: CUDA compute device
-            position: radar origin in world coordinates
-            target: look-at target in world coordinates. Defaults to one meter along -Z from position.
-            up: world-space up vector
-            fov: perspective field of view in degrees
-            name: optional identifier for this radar
-        """
-        self.c0 = 299792458
-        self.device: torch.device = self._resolve_device(device=torch.device(device))
-        self.name = None if name is None else str(name)
-        self._set_pose_fields(position=position, target=target, up=up, fov=fov)
 
-        self.config: RadarConfig = config if isinstance(config, RadarConfig) else RadarConfig.from_dict(config)
-        cfg = self.config
+        if self.noise is None and self.lna_gain is None and self.agc is None and self.adc is None:
+            return None
+        if self.noise is not None and not isinstance(self.noise, Noise):
+            raise TypeError(f"Radar.noise must be a Noise, got {type(self.noise).__name__}")
+        if self.agc is not None and not isinstance(self.agc, Agc):
+            raise TypeError(f"Radar.agc must be an Agc, got {type(self.agc).__name__}")
+        if self.adc is not None and not isinstance(self.adc, Adc):
+            raise TypeError(f"Radar.adc must be an Adc, got {type(self.adc).__name__}")
+        noise = self.noise
+        if noise is not None:
+            noise = noise.resolved(bandwidth=self.waveform.bandwidth, sample_rate=self.waveform.sample_rate)
+        return FrontendSpec(
+            noise=noise,
+            lna=None if self.lna_gain is None else float(self.lna_gain),
+            agc=self.agc,
+            adc=self.adc,
+            impedance=float(self.impedance),
+            seed=int(self.seed),
+        )
 
-        self._init_system_config(cfg)
-        self._init_antenna_locations(cfg)
-        self._init_runtime_models(cfg)
-
-    def _init_system_config(self, cfg: RadarConfig) -> None:
-        """The five-block structural view of the flat configuration.
-
-        The flat form stays the file format and the public constructor; this is
-        what an adapter, a synthesis owner, or a signal processor is handed, so
-        each one sees only the block it owns. ``waveform.kind`` is a STORED
-        discriminator: nothing downstream infers "this is FMCW" by finding a
-        ``slope``.
-        """
-
-        self.system_config = RadarSystemConfig.from_radar_config(cfg, frontend=cfg.frontend)
-
-    def _init_antenna_locations(self, cfg: RadarConfig) -> None:
-        self._lambda = self.c0 / cfg.fc
-        antenna_spacing = self.c0 / cfg.fc / 2
-        self.tx_loc = torch.tensor(cfg.tx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
-        self.rx_loc = torch.tensor(cfg.rx_loc, dtype=torch.float32, device=self.device) * antenna_spacing
-        self._refresh_pose_dependent_state()
-
-    def _init_runtime_models(self, cfg: RadarConfig) -> None:
-        self.antenna_pattern_config = cfg.antenna_pattern or default_dipole_antenna_pattern()
-        self._build_antenna_pattern_runtime(self.antenna_pattern_config)
-        self.frontend = self._make_frontend(cfg)
-
-    @staticmethod
-    def _make_frontend(cfg: RadarConfig):
-        if cfg.frontend is None:
+    def _build_frontend_chain(self):
+        if self.system_config.frontend is None:
             return None
         from .frontend import FrontendChain
 
-        return FrontendChain(cfg.frontend)
+        return FrontendChain(self.system_config.frontend)
 
-    @staticmethod
-    def _resolve_device(*, device: torch.device) -> torch.device:
-        if device.type == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError(
-                "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
-                "Install a CUDA-enabled PyTorch build and use device='cuda'."
-            )
-        return device
+    def _place_antennas(self) -> None:
+        """Validate the pose and put the elements in the world.
 
-    def _set_pose_fields(self, *, position, target, up, fov) -> None:
-        position_t = vec3_tensor(position, name="Radar.position")
-        target_t = _target_from_position(position_t) if target is None else vec3_tensor(target, name="Radar.target")
-        up_t = vec3_tensor(up, name="Radar.up")
-        forward = target_t - position_t
+        The refusals are all here rather than at first use: a pose whose up is
+        collinear with the boresight has no frame, and a polarization parallel
+        to the boresight radiates nothing and would otherwise publish a cube of
+        exact zeros with nothing raised.
+        """
+
+        set_ = object.__setattr__
+        position = vec3_tensor(self.position, name="Radar.position")
+        look_at = vec3_tensor(self.look_at, name="Radar.look_at")
+        up = vec3_tensor(self.up, name="Radar.up")
+        forward = look_at - position
         if torch.linalg.norm(forward) <= 1e-12:
-            raise ValueError("Radar.target must differ from Radar.position.")
-        if torch.linalg.norm(up_t) <= 1e-12:
+            raise ValueError("Radar.look_at must differ from Radar.position.")
+        if torch.linalg.norm(up) <= 1e-12:
             raise ValueError("Radar.up must be non-zero.")
-        if torch.linalg.norm(torch.cross(forward, up_t, dim=0)) <= 1e-12:
+        if torch.linalg.norm(torch.cross(forward, up, dim=0)) <= 1e-12:
             raise ValueError("Radar.up must not be collinear with the viewing direction.")
-        self.position = position_t
-        self.target = target_t
-        self.up = up_t
-        self.fov = float(fov)
 
-    def _refresh_pose_dependent_state(self) -> None:
-        self.tx_pos = self._world_from_local_points(self.tx_loc).contiguous()
-        self.rx_pos = self._world_from_local_points(self.rx_loc).contiguous()
-        self.origin = self.position
-
-    def _build_antenna_pattern_runtime(self, config: dict[str, Any]) -> None:
-        self.antenna_pattern_kind = config["kind"]
-        self.antenna_pattern_x_angles_deg = torch.tensor(
-            config["x_angles_deg"], dtype=torch.float32, device=self.device
-        )
-        self.antenna_pattern_y_angles_deg = torch.tensor(
-            config["y_angles_deg"], dtype=torch.float32, device=self.device
-        )
-        self.antenna_pattern_x_values = None
-        self.antenna_pattern_y_values = None
-        self.antenna_pattern_values = None
-        if config["kind"] == "separable":
-            self.antenna_pattern_x_values = torch.tensor(config["x_values"], dtype=torch.float32, device=self.device)
-            self.antenna_pattern_y_values = torch.tensor(config["y_values"], dtype=torch.float32, device=self.device)
-        else:
-            self.antenna_pattern_values = torch.tensor(config["values"], dtype=torch.float32, device=self.device)
-
-    def _evaluate_antenna_pattern_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
-        return evaluate_antenna_pattern_xy(
-            self.antenna_pattern_kind,
-            self.antenna_pattern_x_angles_deg,
-            self.antenna_pattern_y_angles_deg,
-            self.antenna_pattern_x_values,
-            self.antenna_pattern_y_values,
-            self.antenna_pattern_values,
-            x_angles_deg,
-            y_angles_deg,
-        )
-
-    def set_pose(self, *, position=None, target=None, up=None, fov=None) -> Radar:
-        """Mutate radar pose and refresh pose-dependent antenna state."""
-        new_position = self.position if position is None else vec3_tensor(position, name="Radar.position")
-        if target is None:
-            target_t = self.target if position is None else new_position + (self.target - self.position)
-        else:
-            target_t = vec3_tensor(target, name="Radar.target")
-        up_t = self.up if up is None else vec3_tensor(up, name="Radar.up")
-        fov_value = self.fov if fov is None else float(fov)
-        self._set_pose_fields(position=new_position, target=target_t, up=up_t, fov=fov_value)
-        self._refresh_pose_dependent_state()
-        return self
-
-    def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
-        position = self.position.to(device=device, dtype=dtype)
-        target = self.target.to(device=device, dtype=dtype)
-        up = self.up.to(device=device, dtype=dtype)
-
-        forward = target - position
         forward = forward / torch.linalg.norm(forward)
         right = torch.cross(forward, up, dim=0)
         right = right / torch.linalg.norm(right)
         true_up = torch.cross(right, forward, dim=0)
         true_up = true_up / torch.linalg.norm(true_up)
-        back = -forward
-        world_from_local = torch.stack((right, true_up, back), dim=1)
-        return position, world_from_local
+
+        if self.polarization == "up":
+            vector = true_up
+        elif self.polarization == "right":
+            vector = right
+        elif isinstance(self.polarization, str):
+            raise ValueError(
+                f"Radar.polarization must be one of {list(POLARIZATION_ALIASES)} or a world vector, "
+                f"got {self.polarization!r}"
+            )
+        else:
+            vector = vec3_tensor(self.polarization, name="Radar.polarization")
+            norm = torch.linalg.norm(vector)
+            if norm <= 1e-12:
+                raise ValueError("Radar.polarization must be non-zero.")
+            vector = vector / norm
+            if float(torch.linalg.norm(torch.cross(vector, forward, dim=0))) <= 1e-6:
+                raise ValueError(
+                    "Radar.polarization is parallel to the boresight, so the field radiates nothing and every "
+                    "transport would come back exactly zero. Use 'up' or 'right' for a vector that is transverse "
+                    "by construction."
+                )
+        set_(self, "polarization_vector", tuple(float(v) for v in vector))
+
+        array = self.system_config.sensors.array
+        tx_local, rx_local = array.local_offsets_m(device=self.device)
+        world_from_local = torch.stack((right, true_up, -forward), dim=1).to(device=self.device)
+        origin = position.to(device=self.device)
+        set_(self, "tx_pos", (tx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
+        set_(self, "rx_pos", (rx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
+
+    # -- derived reads -----------------------------------------------------
+
+    @property
+    def num_tx(self) -> int:
+        return len(self.tx)
+
+    @property
+    def num_rx(self) -> int:
+        return len(self.rx)
+
+    @property
+    def wavelength(self) -> float:
+        """``c0 / carrier``, m."""
+
+        return SPEED_OF_LIGHT_M_PER_S / float(self.carrier)
+
+    @property
+    def transmit_power_watts(self) -> float:
+        """``power`` in watts, which is what a source endpoint's field takes."""
+
+        return watts_from_dbm(self.power)
+
+    def waveform_spec(self, *, offset: float = 0.0):
+        """The SI synthesis spec this radar's waveform and array describe."""
+
+        return self.system_config.waveform_spec(carrier_hz=offset)
+
+    # -- rebuilding --------------------------------------------------------
+
+    def replace(self, **fields: Any) -> Radar:
+        """A new radar with these fields changed. Nothing here is mutated."""
+
+        unknown = sorted(set(fields) - {f.name for f in self.__dataclass_fields__.values() if f.init})
+        if unknown:
+            raise TypeError(f"Radar.replace got unknown fields: {', '.join(unknown)}")
+        return replace(self, **fields)
+
+    def to(self, device: Any) -> Radar:
+        """A new radar on another device."""
+
+        return self.replace(device=device)
+
+    # -- loaders -----------------------------------------------------------
+
+    @classmethod
+    def from_dict(cls, config: Mapping[str, Any], **overrides: Any) -> Radar:
+        """Build from the flat FMCW configuration file format.
+
+        This is the only place vendor units are read: ``slope`` in MHz/us,
+        ``sample_rate`` in kSPS, the three timings in microseconds, ``power`` in
+        dBm, and ``tx_loc``/``rx_loc`` in half wavelengths. Keyword overrides
+        are applied afterwards and use the SI field names, so a caller attaches
+        a receive chain or a pose without editing the mapping.
+        """
+
+        return _radar_from_flat_config(config, overrides)
+
+    @classmethod
+    def from_json(cls, path: str | os.PathLike[str], **overrides: Any) -> Radar:
+        with open(path, encoding="utf-8") as handle:
+            return cls.from_dict(json.load(handle), **overrides)
+
+    # -- pose transforms, shared by every consumer -------------------------
+
+    def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        position = vec3_tensor(self.position, name="Radar.position").to(device=device, dtype=dtype)
+        look_at = vec3_tensor(self.look_at, name="Radar.look_at").to(device=device, dtype=dtype)
+        up = vec3_tensor(self.up, name="Radar.up").to(device=device, dtype=dtype)
+        forward = look_at - position
+        forward = forward / torch.linalg.norm(forward)
+        right = torch.cross(forward, up, dim=0)
+        right = right / torch.linalg.norm(right)
+        true_up = torch.cross(right, forward, dim=0)
+        true_up = true_up / torch.linalg.norm(true_up)
+        return position, torch.stack((right, true_up, -forward), dim=1)
 
     def _world_from_local_points(self, points: torch.Tensor) -> torch.Tensor:
         position, world_from_local = self._world_from_local_matrix(device=points.device, dtype=points.dtype)
@@ -1121,17 +755,13 @@ class Radar:
         _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
         return vectors @ world_from_local
 
-    def _apply_signal_models(self, signal: torch.Tensor, *, phase_in_signal=False) -> torch.Tensor:
-        """Run the receive chain, if one is configured.
+    def _evaluate_antenna_pattern_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
+        return self.pattern.evaluate_xy(x_angles_deg, y_angles_deg)
 
-                This used to CHOOSE between two owners: the frontend block, or the
-                legacy `
-        oise_model`` / ``receiver_chain`` pair, with a constructor
-                refusal for the configuration that named both. A refusal is not the
-                same as having one owner, and a runtime choice between two chains is
-                the shadow mode acceptance criterion 6 forbids. The pair is deleted, so
-                the only question left is whether a chain exists.
-        """
+    # -- instrument half ---------------------------------------------------
+
+    def _apply_signal_models(self, signal: torch.Tensor, *, phase_in_signal: bool = False) -> torch.Tensor:
+        """Run the receive chain, if one is configured."""
 
         if self.frontend is None:
             return signal
@@ -1146,14 +776,12 @@ class Radar:
         without an owner has no physics and returning a plausible cube would be
         worse than failing.
 
-        ``paths`` may be a composed :class:`~witwin.radar.paths.RadarPathBatch`
-        or an already-wrapped
-        :class:`~witwin.radar.synthesis.SynthesisPathBatch`. ``slow_time_mode``
-        has no default for the reason it has none anywhere else: only the caller
-        knows whether it froze the weight for the frame or refreshes it per
-        slot, and defaulting it makes the Phase-7 collision a silent wrong
-        answer instead of a refusal.
+        ``slow_time_mode`` has no default for the reason it has none anywhere
+        else: only the caller knows whether it froze the weight for the frame or
+        refreshes it per slot, and defaulting it makes the collision a silent
+        wrong answer instead of a refusal.
         """
+
         from .synthesis import SynthesisPathBatch, SynthesisResult, synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 
         owners = {
@@ -1177,173 +805,223 @@ class Radar:
         spec = self.system_config.waveform_spec() if spec is None else spec
         return build_result(synthesize(batch, spec), spec)
 
+    # -- entry points ------------------------------------------------------
+
     def simulate(
         self,
         scene,
+        targets: PointTargets | StructureTargets,
         *,
         times,
-        response,
-        sites=None,
-        components=None,
-        max_depth=None,
-        ad_mode: str = "none",
-        world_motion: str = "frozen_world",
-        motion_event_period_frames: int | None = None,
-        ids=None,
-        polarization=None,
-        sensor_endpoints=None,
-        motion_sampling: str = "adc",
-        adaptive_motion=None,
+        los: bool = True,
+        reflections: int = 1,
+        motion: Motion | None = None,
+        grad: str = "none",
+        endpoints=None,
     ) -> RadarSimulationResult:
         """Simulate this radar over a Core world and return the frame cubes.
 
-        The scene-driven entry point. ``scene`` is a ``witwin.core.Scene`` or a
+        ``scene`` is a ``witwin.core.Scene`` or a
         ``witwin.core.dynamics.DynamicScene``; ``times`` is the sequence of
-        frame instants in seconds; ``response`` is the scatter response the
-        two-way join multiplies the round trip by, and it is required because
-        every default for it would be an unchosen statement about how strongly
-        the target scatters.
+        frame instants in seconds; ``targets`` names where the scatterers are
+        and how strongly they scatter, and it is required because every default
+        for it would be an unchosen statement about the world.
+
+        ``los`` and ``reflections`` are the propagation request for THIS call
+        and do not edit the radar. ``motion`` selects how often the world is
+        resampled inside a frame and defaults to
+        :meth:`~witwin.radar.simulation.Motion.auto`. ``grad`` is ``"none"``,
+        ``"vjp"`` or ``"jvp"``.
 
         The whole assembly lives in :mod:`witwin.radar.simulation` and its
-        docstring is the contract; read it before changing anything here. This
-        method exists so that the pipeline is reachable under the name a caller
-        looks for, and it delegates rather than reimplementing so there is one
-        owner of the frame loop.
-
-        Calling this publishes the four typed diagnostics
-        (:attr:`last_snapshot`, :attr:`last_compiled_scene`,
-        :attr:`last_propagation`, :attr:`last_radar_paths`). They are cleared
-        FIRST, so a call that raises part way through leaves no stale world
-        behind claiming to describe this radar.
-
-        Antenna pattern weighting is owned by the stored sensor configuration and
-        is applied by the native ``sensor_weight`` family for every solve.
-
+        docstring is the contract; this method delegates rather than
+        reimplementing so there is one owner of the frame loop.
         """
 
         from .simulation import simulate_scene
 
-        self._last_result = None
-        result = simulate_scene(
-            self,
-            scene,
-            times=times,
-            response=response,
-            sites=sites,
-            components=components,
-            max_depth=max_depth,
-            ad_mode=ad_mode,
-            world_motion=world_motion,
-            motion_event_period_frames=motion_event_period_frames,
-            ids=ids,
-            polarization=polarization,
-            antenna_pattern=self.system_config.sensors.pattern,
-            sensor_endpoints=sensor_endpoints,
-            motion_sampling=motion_sampling,
-            adaptive_motion=adaptive_motion,
-        )
-        self._last_result = result
+        result = simulate_scene(self, scene, **self._session(targets, times, los, reflections, motion, grad, endpoints))
+        type(self)._last_result = result
         return result
 
     def stream(
         self,
         scene,
+        targets: PointTargets | StructureTargets,
         *,
         times,
-        response,
-        sites=None,
-        components=None,
-        max_depth=None,
-        ad_mode: str = "none",
-        world_motion: str = "frozen_world",
-        motion_event_period_frames: int | None = None,
-        ids=None,
-        polarization=None,
-        sensor_endpoints=None,
-        motion_sampling: str = "adc",
-        adaptive_motion=None,
+        los: bool = True,
+        reflections: int = 1,
+        motion: Motion | None = None,
+        grad: str = "none",
+        endpoints=None,
     ) -> Iterator[RadarSimulationResult]:
         """Simulate the same session as :meth:`simulate`, one frame at a time.
 
-        Yields a one-frame :class:`RadarSimulationResult` per instant in
-        ``times``, so a sequence long enough to exhaust device memory as a
-        single stacked cube can still be produced and consumed. The physics,
-        the session state and the per-frame cubes are the same; only the
-        retention differs, and a caller that keeps every yielded result has
-        spent more memory than :meth:`simulate` would have, not less.
-
-        The four typed diagnostics track the frame just yielded, which is what
-        makes them readable from inside the consuming loop; if a later frame
-        raises, they stay on the last frame that was successfully yielded
-        rather than clearing, because that frame is the one the caller has.
-        Arguments are validated when iteration starts rather than when this
-        returns, because this is a generator.
+        Yields a one-frame result per instant in ``times``, so a sequence long
+        enough to exhaust device memory as a single stacked cube can still be
+        produced and consumed. The physics, the session state and the per-frame
+        cubes are the same; only the retention differs, and a caller that keeps
+        every yielded result has spent more memory than :meth:`simulate` would
+        have, not less. Arguments are validated when iteration starts rather
+        than when this returns, because this is a generator.
         """
 
         from .simulation import stream_scene
 
-        self._last_result = None
-        for frame in stream_scene(
-            self,
-            scene,
-            times=times,
-            response=response,
-            sites=sites,
-            components=components,
-            max_depth=max_depth,
-            ad_mode=ad_mode,
-            world_motion=world_motion,
-            motion_event_period_frames=motion_event_period_frames,
-            ids=ids,
-            polarization=polarization,
-            antenna_pattern=self.system_config.sensors.pattern,
-            sensor_endpoints=sensor_endpoints,
-            motion_sampling=motion_sampling,
-            adaptive_motion=adaptive_motion,
-        ):
-            self._last_result = frame
+        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        for frame in stream_scene(self, scene, **session):
+            type(self)._last_result = frame
             yield frame
 
-    # -- the four typed diagnostics (Phase 11 work item 2) ------------------
-    #
-    # One retention site, four reads of it. The alternative - four independent
-    # attributes - can be left describing four different frames by any code
-    # path that sets three of them, and "which frame is this" is exactly the
-    # question a diagnostic exists to answer. ``None`` before the first
-    # ``simulate`` is the pinned answer: a caller may poll these, and raising
-    # would make "has this radar run yet" a try/except.
+    def _session(self, targets, times, los, reflections, motion, grad, endpoints) -> dict[str, Any]:
+        """Turn the public call arguments into what the frame loop takes."""
+
+        from .simulation import Motion
+        from .targets import as_session_targets
+
+        if not isinstance(reflections, int) or isinstance(reflections, bool) or reflections < 0:
+            raise ValueError(f"reflections must be a non-negative int, got {reflections!r}")
+        if not los and reflections == 0:
+            raise ValueError(
+                "a solve with neither the line of sight nor any reflection asks for no propagation at all; "
+                "set los=True, reflections>0, or both"
+            )
+        components = set()
+        if los:
+            components.add("los")
+        if reflections > 0:
+            components.add("reflection")
+        sites, response = as_session_targets(targets, radar=self)
+        resolved = Motion.auto() if motion is None else motion
+        return {
+            "times": times,
+            "response": response,
+            "sites": sites,
+            "components": frozenset(components),
+            "max_depth": int(reflections),
+            "ad_mode": grad,
+            "polarization": self.polarization_vector,
+            "antenna_pattern": self.system_config.sensors.pattern,
+            "sensor_endpoints": endpoints,
+            "motion": resolved,
+        }
+
+    # -- the last result, for a caller that did not keep it ----------------
 
     @property
     def last_result(self) -> RadarSimulationResult | None:
-        """The whole of the last :meth:`simulate` call, or ``None``."""
+        """The whole of the last :meth:`simulate` call, or ``None``.
 
-        return self._last_result
+        The typed per-frame diagnostics live on the result itself; this is the
+        one retention site and there is no second copy on the radar.
+        """
 
-    @property
-    def last_snapshot(self):
-        """The Core ``SceneSnapshot`` the last simulated frame ran against."""
-
-        return None if self._last_result is None else self._last_result.last_snapshot
-
-    @property
-    def last_compiled_scene(self):
-        """The Channel ``CompiledScene`` that frame's legs were replayed on."""
-
-        return None if self._last_result is None else self._last_result.last_compiled_scene
-
-    @property
-    def last_propagation(self):
-        """That frame's two legs, as a typed
-        :class:`~witwin.radar.propagation.RadarPropagationLegs`."""
-
-        return None if self._last_result is None else self._last_result.last_propagation
-
-    @property
-    def last_radar_paths(self):
-        """That frame's composed
-        :class:`~witwin.radar.paths.RadarPathBatch`."""
-
-        return None if self._last_result is None else self._last_result.last_radar_paths
+        return type(self)._last_result
 
 
-__all__ = ["Radar", "RadarConfig"]
+def _resolve_device(device: Any) -> torch.device:
+    resolved = device if isinstance(device, torch.device) else torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
+            "Install a CUDA-enabled PyTorch build and use device='cuda'."
+        )
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# The flat configuration file format
+# ---------------------------------------------------------------------------
+
+_FLAT_REQUIRED = (
+    "num_tx",
+    "num_rx",
+    "fc",
+    "slope",
+    "adc_samples",
+    "adc_start_time",
+    "sample_rate",
+    "idle_time",
+    "ramp_end_time",
+    "chirp_per_frame",
+    "power",
+    "tx_loc",
+    "rx_loc",
+)
+
+_FLAT_OPTIONAL = ("antenna_pattern", "output_domain")
+
+#: Keys the flat form used to require and nothing ever read. They described a
+#: processing grid the simulator does not use and the processing layer derives
+#: from the waveform spec, so carrying them made a caller believe a block was
+#: configured. They are named in the refusal rather than dropped.
+_FLAT_UNCONSUMED = ("frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins")
+
+
+def _radar_from_flat_config(config: Mapping[str, Any], overrides: Mapping[str, Any]) -> Radar:
+    missing = [key for key in _FLAT_REQUIRED if key not in config]
+    if missing:
+        raise ValueError(f"Radar config is missing required keys: {', '.join(missing)}")
+    unconsumed = sorted(set(config) & set(_FLAT_UNCONSUMED))
+    if unconsumed:
+        raise ValueError(
+            f"Radar config has keys nothing consumes: {', '.join(unconsumed)}. They described a processing grid; "
+            "the range, Doppler and angle bin counts come from the waveform spec, and the frame rate is the "
+            "caller's own scheduling number. Drop them."
+        )
+    unknown = sorted(set(config) - set(_FLAT_REQUIRED) - set(_FLAT_OPTIONAL))
+    if unknown:
+        raise ValueError(
+            f"Radar config has unsupported keys: {', '.join(unknown)}. The flat mapping is the FMCW file format "
+            f"and accepts only {', '.join(sorted(set(_FLAT_REQUIRED) | set(_FLAT_OPTIONAL)))}; a receive chain, a "
+            "pose and a non-FMCW waveform are keyword overrides on Radar.from_dict."
+        )
+
+    num_tx = _positive_int("num_tx", config["num_tx"])
+    num_rx = _positive_int("num_rx", config["num_rx"])
+    tx = _elements(config["tx_loc"], name="tx_loc")
+    rx = _elements(config["rx_loc"], name="rx_loc")
+    if len(tx) != num_tx:
+        raise ValueError(f"tx_loc holds {len(tx)} entries but num_tx is {num_tx}")
+    if len(rx) != num_rx:
+        raise ValueError(f"rx_loc holds {len(rx)} entries but num_rx is {num_rx}")
+
+    waveform = Fmcw.from_ti(
+        slope_mhz_per_us=_finite("slope", config["slope"]),
+        sample_rate_ksps=_positive("sample_rate", config["sample_rate"]),
+        samples_per_chirp=_positive_int("adc_samples", config["adc_samples"]),
+        chirps_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"]),
+        adc_start_us=_finite("adc_start_time", config["adc_start_time"]),
+        idle_us=_non_negative("idle_time", config["idle_time"]),
+        ramp_end_us=_positive("ramp_end_time", config["ramp_end_time"]),
+        output=str(config.get("output_domain", "spectrum")),
+    )
+    fields: dict[str, Any] = {
+        "carrier": _positive("fc", config["fc"]),
+        "waveform": waveform,
+        "tx": tx,
+        "rx": rx,
+        "antenna_unit": "half_wavelength",
+        "power": _finite("power", config["power"]),
+    }
+    if config.get("antenna_pattern") is not None:
+        fields["pattern"] = _pattern_from_mapping(config["antenna_pattern"])
+    fields.update(overrides)
+    return Radar(**fields)
+
+
+def _pattern_from_mapping(config: Mapping[str, Any]) -> Pattern:
+    """Read the ``antenna_pattern`` block of the flat file format."""
+
+    kind = config.get("kind")
+    if kind is None:
+        kind = "map" if "values" in config else "separable"
+    if kind == "separable":
+        return Pattern.separable(config["x_angles_deg"], config["x_values"], config["y_angles_deg"], config["y_values"])
+    if kind == "map":
+        return Pattern.table(config["x_angles_deg"], config["y_angles_deg"], config["values"])
+    raise ValueError(f"antenna_pattern kind must be 'separable' or 'map', got {kind!r}")
+
+
+__all__ = ["Fmcw", "Ofdm", "Pulsed", "Radar"]

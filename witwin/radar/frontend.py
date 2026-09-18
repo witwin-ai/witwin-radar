@@ -16,7 +16,7 @@ import torch
 from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative, require_host_floats
 
-__all__ = ["AdcSpec", "AgcSpec", "FrontendSpec", "LnaSpec", "NoiseSpec", "PortSpec", "SeedSpec"]
+__all__ = ["Adc", "Agc", "Noise"]
 
 #: Boltzmann's constant, exact in SI since 2019.
 BOLTZMANN_J_PER_K = 1.380649e-23
@@ -94,37 +94,14 @@ _ADC_REASON = (
 
 
 @dataclass(frozen=True, slots=True)
-class PortSpec:
-    """The sqrt(W) to volt conversion, applied exactly once at stage 0.
-
-    A synthesis cube is in sqrt(W) at the receive antenna port and everything
-    downstream of the LNA is in volts. ``v = sqrt(W) * sqrt(R)`` is that
-    conversion, and it happens here and nowhere else. The old code did it inside
-    a transmit gain, where it was multiplied onto a weight that already carried
-    transmit power - two errors that hid each other.
-    """
-
-    reference_impedance_ohm: float = 50.0
-
-    def __post_init__(self) -> None:
-        require_host_floats("PortSpec", _PORT_REASON, reference_impedance_ohm=self.reference_impedance_ohm)
-        if not self.reference_impedance_ohm > 0.0:
-            raise ValueError("reference_impedance_ohm must be positive")
-
-    @property
-    def volts_per_sqrt_watt(self) -> float:
-        return math.sqrt(self.reference_impedance_ohm)
-
-
-@dataclass(frozen=True, slots=True)
-class NoiseSpec:
+class Noise:
     """Thermal and oscillator noise, in physical units rather than raw sigmas.
 
     The scene-driven FMCW route evaluates one common oscillator at receive
     and delayed transmit times for each path before coherent summation. Idle
     gaps and frame gaps use their actual SI timestamps. Standalone ``apply``
     can model a free-running oscillator on an explicit grid, or on the uniform
-    grid declared by ``phase_sample_rate_hz``. These are different observables
+    grid declared by ``phase_sample_rate``. These are different observables
     of the same continuous-time Wiener realization, not independent generators.
 
     The model is a free-running oscillator, whose single-sideband phase-noise
@@ -134,47 +111,75 @@ class NoiseSpec:
     needs a shaped-PSD generator, which is a different model.
     """
 
-    noise_figure_db: float = 0.0
-    antenna_temperature_k: float = REFERENCE_TEMPERATURE_K
-    bandwidth_hz: float = 0.0
-    phase_noise_dbc_per_hz: float | None = None
-    phase_offset_hz: float = 0.0
-    phase_sample_rate_hz: float = 0.0
+    #: Receiver noise figure, dB.
+    figure: float = 0.0
+    #: Antenna noise temperature, K.
+    antenna_temperature: float = REFERENCE_TEMPERATURE_K
+    #: Thermal noise bandwidth, Hz. ``None`` means the waveform's own sampling
+    #: bandwidth, which :class:`~witwin.radar.radar.Radar` resolves once when it
+    #: builds the chain. It is NOT inferred anywhere downstream: by the time a
+    #: chain exists this is a number. Zero is refused, because a zero bandwidth
+    #: is a silently noiseless receiver.
+    bandwidth: float | None = None
+    #: Single-sideband oscillator phase-noise density at ``phase_offset``,
+    #: dBc/Hz. ``None`` means no oscillator noise.
+    phase_density: float | None = None
+    #: The offset ``phase_density`` was measured at, Hz.
+    phase_offset: float | None = None
+    #: Wiener step rate, Hz. ``None`` means the waveform's sample rate.
+    phase_sample_rate: float | None = None
 
     def __post_init__(self) -> None:
         require_host_floats(
-            "NoiseSpec",
+            "Noise",
             _NOISE_REASON,
-            noise_figure_db=self.noise_figure_db,
-            antenna_temperature_k=self.antenna_temperature_k,
-            bandwidth_hz=self.bandwidth_hz,
-            phase_noise_dbc_per_hz=self.phase_noise_dbc_per_hz,
-            phase_offset_hz=self.phase_offset_hz,
-            phase_sample_rate_hz=self.phase_sample_rate_hz,
+            figure=self.figure,
+            antenna_temperature=self.antenna_temperature,
+            bandwidth=self.bandwidth,
+            phase_density=self.phase_density,
+            phase_offset=self.phase_offset,
+            phase_sample_rate=self.phase_sample_rate,
         )
-        if self.antenna_temperature_k < 0.0:
-            raise ValueError("antenna_temperature_k must be non-negative")
-        if self.bandwidth_hz < 0.0:
-            raise ValueError("bandwidth_hz must be non-negative")
-        if self.phase_noise_dbc_per_hz is not None:
-            if not self.phase_offset_hz > 0.0:
-                raise ValueError(
-                    "phase_offset_hz must be positive when phase_noise_dbc_per_hz "
-                    "is given; L(f_off) says nothing without the offset it was "
-                    "measured at"
-                )
-            if not self.phase_sample_rate_hz > 0.0:
-                raise ValueError(
-                    "phase_sample_rate_hz must be positive when "
-                    "phase_noise_dbc_per_hz is given; a Wiener step is a rate, "
-                    "and the rate is what turns dBc/Hz into a per-step variance"
-                )
+        if self.antenna_temperature < 0.0:
+            raise ValueError("antenna_temperature must be non-negative")
+        if self.bandwidth is not None and not self.bandwidth > 0.0:
+            raise ValueError(
+                "bandwidth must be positive, or None to take the waveform's "
+                "sampling bandwidth; zero is a receiver that adds no thermal "
+                "noise while claiming a noise figure"
+            )
+        if self.phase_sample_rate is not None and not self.phase_sample_rate > 0.0:
+            raise ValueError("phase_sample_rate must be positive, or None to take the waveform's sample rate")
+        if self.phase_density is not None and self.phase_offset is None:
+            raise ValueError(
+                "phase_offset is required when phase_density is given; "
+                "L(f_off) says nothing without the offset it was measured at"
+            )
+        if self.phase_offset is not None and not self.phase_offset > 0.0:
+            raise ValueError("phase_offset must be positive")
+
+    def resolved(self, *, bandwidth: float, sample_rate: float) -> Noise:
+        """This record with its two waveform-dependent defaults filled in.
+
+        ``bandwidth`` and ``sample_rate`` are the waveform's, supplied by the
+        radar. An explicitly configured value always wins: the point of the
+        ``None`` default is that the common case needs no number, not that the
+        waveform overrules a caller who gave one.
+        """
+
+        if self.bandwidth is not None and self.phase_sample_rate is not None:
+            return self
+        return replace(
+            self,
+            bandwidth=self.bandwidth if self.bandwidth is not None else float(bandwidth),
+            phase_sample_rate=(self.phase_sample_rate if self.phase_sample_rate is not None else float(sample_rate)),
+        )
 
     @property
     def noise_factor(self) -> float:
         """``F = 10^(NF_dB/10)``, linear."""
 
-        return 10.0 ** (float(self.noise_figure_db) / 10.0)
+        return 10.0 ** (float(self.figure) / 10.0)
 
     @property
     def system_noise_temperature_k(self) -> float:
@@ -184,15 +189,17 @@ class NoiseSpec:
         every noise-figure datasheet quotes.
         """
 
-        return self.antenna_temperature_k + REFERENCE_TEMPERATURE_K * (self.noise_factor - 1.0)
+        return self.antenna_temperature + REFERENCE_TEMPERATURE_K * (self.noise_factor - 1.0)
 
     @property
     def noise_power_watts(self) -> float:
         """``k T_sys B``, the total noise power in the stated bandwidth."""
 
-        return BOLTZMANN_J_PER_K * self.system_noise_temperature_k * float(self.bandwidth_hz)
+        if self.bandwidth is None:
+            raise ValueError("bandwidth is unresolved; Radar fills it from the waveform before building a chain")
+        return BOLTZMANN_J_PER_K * self.system_noise_temperature_k * float(self.bandwidth)
 
-    def thermal_sigma_volts(self, port: PortSpec) -> float:
+    def thermal_sigma_volts(self, impedance: float) -> float:
         """``sqrt(k T_sys B R / 2)``: the per-COMPONENT standard deviation.
 
         The noise is circularly symmetric complex Gaussian with total variance
@@ -202,7 +209,7 @@ class NoiseSpec:
         element and this is what it multiplies them by.
         """
 
-        return math.sqrt(0.5 * self.noise_power_watts * port.reference_impedance_ohm)
+        return math.sqrt(0.5 * self.noise_power_watts * float(impedance))
 
     @property
     def phase_innovation_sigma_rad(self) -> float:
@@ -213,10 +220,10 @@ class NoiseSpec:
         thermal realisation is unaffected either way.
         """
 
-        if self.phase_noise_dbc_per_hz is None:
+        if self.phase_density is None:
             return 0.0
-        level = 10.0 ** (float(self.phase_noise_dbc_per_hz) / 10.0)
-        variance = level * 4.0 * math.pi**2 * float(self.phase_offset_hz) ** 2 / float(self.phase_sample_rate_hz)
+        level = 10.0 ** (float(self.phase_density) / 10.0)
+        variance = level * 4.0 * math.pi**2 * float(self.phase_offset) ** 2 / float(self.phase_sample_rate)
         return math.sqrt(variance)
 
     def single_sideband_dbc_per_hz(self, offset_hz: float) -> float:
@@ -230,7 +237,7 @@ class NoiseSpec:
         sigma = self.phase_innovation_sigma_rad
         if sigma <= 0.0 or offset_hz <= 0.0:
             raise ValueError("single_sideband_dbc_per_hz needs a configured phase noise and a positive offset")
-        level = sigma**2 * float(self.phase_sample_rate_hz) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
+        level = sigma**2 * float(self.phase_sample_rate) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
         return 10.0 * math.log10(level)
 
     def phase_difference(self, times_s, delays_s, *, seed_base: int, sign: float = 1.0):
@@ -264,34 +271,13 @@ class NoiseSpec:
             "oscillator times/delays must be finite and delays nonnegative",
         )
         phase = torch.empty(times.shape, device=times.device, dtype=torch.float32)
-        diffusion = self.phase_innovation_sigma_rad**2 * self.phase_sample_rate_hz
+        diffusion = self.phase_innovation_sigma_rad**2 * self.phase_sample_rate
         _ops().oscillator_phase_forward(times, delays, phase, diffusion, sign, seed_base, frontend_block_size())
         return phase
 
 
 @dataclass(frozen=True, slots=True)
-class LnaSpec:
-    """A voltage gain in dB. Applied AFTER thermal noise, always.
-
-    The gain is the one frontend scalar whose derivative would be perfectly
-    well defined - it is a smooth multiplicative factor on the whole signal -
-    and it is refused anyway, because the native operator has no slot for it.
-    Refusing it is the honest state; ``float()``-ing a marked tensor and
-    returning ``grad = None`` is not.
-    """
-
-    gain_db: float = 0.0
-
-    def __post_init__(self) -> None:
-        require_host_floats("LnaSpec", _LNA_REASON, gain_db=self.gain_db)
-
-    @property
-    def voltage_gain(self) -> float:
-        return 10.0 ** (float(self.gain_db) / 20.0)
-
-
-@dataclass(frozen=True, slots=True)
-class AgcSpec:
+class Agc:
     """Automatic gain control, and the reason physics tests turn it off.
 
     The gain depends on the signal's own RMS, so the frontend is NOT linear in
@@ -301,37 +287,36 @@ class AgcSpec:
     device-to-host transfer.
     """
 
+    #: Target output RMS, volts.
     target_rms: float
     mode: str = AGC_MODE_PER_RX
-    min_gain_db: float = -60.0
-    max_gain_db: float = 60.0
+    #: Gain limits, dB. The linear factors the kernel takes are the two
+    #: ``*_voltage_gain`` properties.
+    min_gain: float = -60.0
+    max_gain: float = 60.0
 
     def __post_init__(self) -> None:
         require_host_floats(
-            "AgcSpec",
-            _AGC_REASON,
-            target_rms=self.target_rms,
-            min_gain_db=self.min_gain_db,
-            max_gain_db=self.max_gain_db,
+            "Agc", _AGC_REASON, target_rms=self.target_rms, min_gain=self.min_gain, max_gain=self.max_gain
         )
         if not self.target_rms > 0.0:
             raise ValueError("target_rms must be positive")
         if self.mode not in AGC_MODES:
             raise ValueError(f"mode must be one of {list(AGC_MODES)}, got {self.mode!r}")
-        if self.min_gain_db > self.max_gain_db:
-            raise ValueError("min_gain_db must not exceed max_gain_db")
+        if self.min_gain > self.max_gain:
+            raise ValueError("min_gain must not exceed max_gain")
 
     @property
-    def min_gain(self) -> float:
-        return 10.0 ** (float(self.min_gain_db) / 20.0)
+    def min_voltage_gain(self) -> float:
+        return 10.0 ** (float(self.min_gain) / 20.0)
 
     @property
-    def max_gain(self) -> float:
-        return 10.0 ** (float(self.max_gain_db) / 20.0)
+    def max_voltage_gain(self) -> float:
+        return 10.0 ** (float(self.max_gain) / 20.0)
 
 
 @dataclass(frozen=True, slots=True)
-class AdcSpec:
+class Adc:
     """Uniform mid-tread quantisation, and the ONLY quantiser in the chain.
 
     ``round`` is not differentiable and this family has no backward and no jvp
@@ -344,7 +329,7 @@ class AdcSpec:
     full_scale: float
 
     def __post_init__(self) -> None:
-        require_host_floats("AdcSpec", _ADC_REASON, bits=self.bits, full_scale=self.full_scale)
+        require_host_floats("Adc", _ADC_REASON, bits=self.bits, full_scale=self.full_scale)
         if self.bits < 1 or self.bits > 30:
             raise ValueError("bits must lie in [1, 30]")
         if not self.full_scale > 0.0:
@@ -370,39 +355,56 @@ class AdcSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class SeedSpec:
-    """One base seed; every stage derives its own stream from it.
-
-    Never one generator threaded through the chain. A shared generator consumes
-    draws as it goes, so enabling phase noise SHIFTS the thermal realisation and
-    a differential measurement ends up comparing two different noise
-    realisations while believing it isolated one stage.
-    """
-
-    seed_base: int = 0
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.seed_base, int) or isinstance(self.seed_base, bool):
-            raise TypeError("seed_base must be an int")
-        if self.seed_base < 0:
-            raise ValueError("seed_base must be non-negative")
-
-
-@dataclass(frozen=True, slots=True)
 class FrontendSpec:
     """The whole receive chain. Every stage optional; the ORDER is not.
+
+    Internal: :class:`~witwin.radar.radar.Radar` builds one of these from its
+    own flat fields and hands it to :class:`FrontendChain`. It is not a public
+    constructor, which is why the three one-number stages are fields here
+    rather than records a caller would have to assemble.
 
     Enabling a stage is a non-``None`` field. The sequence they run in is fixed
     by the runtime and is not expressible here, which is the difference between
     this and the two runtimes it replaces.
+
+    ``seed`` is ONE base seed and every stage derives its own stream from it,
+    never one generator threaded through the chain. A shared generator consumes
+    draws as it goes, so enabling phase noise would SHIFT the thermal
+    realisation and a differential measurement would compare two different
+    realisations while believing it isolated one stage.
+
+    ``impedance`` is the sqrt(W) to volt conversion applied exactly once, at
+    stage 0: a synthesis cube is in sqrt(W) at the receive antenna port and
+    everything downstream of the LNA is in volts, so ``v = sqrt(W) sqrt(R)``.
+    The old code did it inside a transmit gain, where it multiplied a weight
+    that already carried transmit power - two errors that hid each other.
+
+    ``lna`` is a voltage gain in dB. It is the one frontend scalar whose
+    derivative would be perfectly well defined, and it is refused anyway,
+    because the native operator has no slot for it.
     """
 
-    port: PortSpec = PortSpec()
-    noise: NoiseSpec | None = None
-    lna: LnaSpec | None = None
-    agc: AgcSpec | None = None
-    adc: AdcSpec | None = None
-    seed: SeedSpec = SeedSpec()
+    noise: Noise | None = None
+    lna: float | None = None
+    agc: Agc | None = None
+    adc: Adc | None = None
+    impedance: float = 50.0
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        require_host_floats("FrontendSpec", _PORT_REASON, impedance=self.impedance)
+        if not self.impedance > 0.0:
+            raise ValueError("impedance must be positive")
+        if self.lna is not None:
+            require_host_floats("FrontendSpec", _LNA_REASON, lna=self.lna)
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise TypeError("seed must be an int")
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
+
+    @property
+    def volts_per_sqrt_watt(self) -> float:
+        return math.sqrt(float(self.impedance))
 
     @property
     def applies_noise_stage(self) -> bool:
@@ -413,7 +415,7 @@ class FrontendSpec:
     def thermal_sigma_volts(self) -> float:
         if self.noise is None:
             return 0.0
-        return self.noise.thermal_sigma_volts(self.port)
+        return self.noise.thermal_sigma_volts(self.impedance)
 
     def phase_sigma_rad(self) -> float:
         if self.noise is None:
@@ -421,7 +423,7 @@ class FrontendSpec:
         return self.noise.phase_innovation_sigma_rad
 
     def lna_voltage_gain(self) -> float:
-        return 1.0 if self.lna is None else self.lna.voltage_gain
+        return 1.0 if self.lna is None else 10.0 ** (float(self.lna) / 20.0)
 
 
 __all__ = [
@@ -433,13 +435,9 @@ __all__ = [
     "REFERENCE_TEMPERATURE_K",
     "STAGE_PHASE_NOISE",
     "STAGE_THERMAL_NOISE",
-    "AdcSpec",
-    "AgcSpec",
-    "FrontendSpec",
-    "LnaSpec",
-    "NoiseSpec",
-    "PortSpec",
-    "SeedSpec",
+    "Adc",
+    "Agc",
+    "Noise",
 ]
 
 
@@ -748,8 +746,8 @@ class FrontendChain:
     def _apply_path_phase_rows(self, delays, weight, times):
         if not self.has_phase_noise or not len(delays):
             return weight
-        phase = self.spec.noise.phase_difference(times, delays, seed_base=self.spec.seed.seed_base, sign=-1.0)
-        plan = _NoisePlan(1, len(delays), phase, 0.0, 1.0, self.spec.seed.seed_base, frontend_block_size())
+        phase = self.spec.noise.phase_difference(times, delays, seed_base=self.spec.seed, sign=-1.0)
+        plan = _NoisePlan(1, len(delays), phase, 0.0, 1.0, self.spec.seed, frontend_block_size())
         real, imaginary, _ = _FrontendNoise.apply(weight.real.contiguous(), weight.imag.contiguous(), plan)
         return torch.complex(real, imaginary)
 
@@ -775,7 +773,7 @@ class FrontendChain:
         if spec.phase_sigma_rad() > 0 and not phase_in_signal:
             if times_s is None:
                 times_s = torch.arange(num_phase, device=signal.device, dtype=torch.float64)
-                times_s = times_s / spec.noise.phase_sample_rate_hz
+                times_s = times_s / spec.noise.phase_sample_rate
             if times_s.numel() != num_phase:
                 raise ValueError("phase timestamps must cover the complete receive timeline")
             phase = spec.noise.phase_difference(times_s, times_s - times_s[0], seed_base=seed_base)
@@ -789,7 +787,7 @@ class FrontendChain:
             block_size=frontend_block_size(),
         )
 
-    def _agc_plan(self, signal: torch.Tensor, agc: AgcSpec) -> _AgcPlan:
+    def _agc_plan(self, signal: torch.Tensor, agc: Agc) -> _AgcPlan:
         if agc.mode == AGC_MODE_PER_RX and signal.ndim == 4:
             dim0 = int(signal.shape[0])
             groups = int(signal.shape[1])
@@ -803,8 +801,8 @@ class FrontendChain:
             num_groups=groups,
             dim2=inner,
             target_rms=float(agc.target_rms),
-            min_gain=agc.min_gain,
-            max_gain=agc.max_gain,
+            min_gain=agc.min_voltage_gain,
+            max_gain=agc.max_voltage_gain,
             block_size=frontend_block_size(),
         )
 
@@ -822,11 +820,11 @@ class FrontendChain:
                 "here would hide a dtype mistake upstream"
             )
         spec = self.spec
-        seed = spec.seed.seed_base if seed_base is None else int(seed_base)
+        seed = spec.seed if seed_base is None else int(seed_base)
 
         shape = signal.shape
         # Stage 0: the sqrt(W) to volt conversion, applied exactly once.
-        working = signal * spec.port.volts_per_sqrt_watt
+        working = signal * spec.volts_per_sqrt_watt
         phase_rad = None
         agc_gain = None
         agc_rms = None
@@ -855,7 +853,7 @@ class FrontendChain:
             stages=self.enabled_stages,
         )
 
-    def _quantize(self, signal: torch.Tensor, adc: AdcSpec) -> tuple[torch.Tensor, torch.Tensor]:
+    def _quantize(self, signal: torch.Tensor, adc: Adc) -> tuple[torch.Tensor, torch.Tensor]:
         """The ONLY call site of the quantizer, in the whole package."""
 
         _require_no_derivative(signal, "ADC")
@@ -893,4 +891,4 @@ def _phase_run_length(signal: torch.Tensor) -> int:
     return int(signal.numel())
 
 
-__all__ = ["AdcSpec", "AgcSpec", "FrontendSpec", "LnaSpec", "NoiseSpec", "PortSpec", "SeedSpec"]
+__all__ = ["Adc", "Agc", "Noise"]
