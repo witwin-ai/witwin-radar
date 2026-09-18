@@ -2,23 +2,21 @@
 
 This concept-axis module owns the complete sensor response chain: typed array
 and power contracts, freeze-time pattern interpolation, the native per-row
-weight operator, and the round-trip pattern stage. The former submodule paths
-are intentionally not retained.
+weight operator, and the round-trip pattern stage.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
-import torch.autograd.forward_ad as forward_ad
 
 from .cuda import native_ops as _ops
 from .paths import RadarPathBatch
-from .policy import first_order_only
+from .policy import SPEED_OF_LIGHT_M_PER_S, first_order_only, refuse_derivative
 
 DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
 
@@ -37,82 +35,9 @@ def half_wave_dipole_power_cut(angle_deg: float) -> float:
 DEFAULT_DIPOLE_VALUES = tuple(half_wave_dipole_power_cut(angle) for angle in DEFAULT_DIPOLE_ANGLES_DEG)
 
 
-def interp1d_zero_outside(axis: torch.Tensor, values: torch.Tensor, query: torch.Tensor) -> torch.Tensor:
-    if query.numel() == 0:
-        return torch.empty_like(query, dtype=values.dtype)
-
-    flat_query = query.reshape(-1)
-    index_upper = torch.bucketize(flat_query.detach(), axis)
-    index_left = torch.clamp(index_upper - 1, 0, axis.numel() - 1)
-    index_right = torch.clamp(index_upper, 0, axis.numel() - 1)
-
-    x0 = axis[index_left]
-    x1 = axis[index_right]
-    y0 = values[index_left]
-    y1 = values[index_right]
-    denom = torch.clamp(x1 - x0, min=1e-12)
-    weight = torch.where(index_left == index_right, torch.zeros_like(flat_query), (flat_query - x0) / denom)
-    interpolated = y0 + weight * (y1 - y0)
-    inside = (flat_query >= axis[0]) & (flat_query <= axis[-1])
-    return torch.where(inside, interpolated, torch.zeros_like(interpolated)).reshape(query.shape)
-
-
-def interp2d_zero_outside(
-    x_axis: torch.Tensor, y_axis: torch.Tensor, values: torch.Tensor, x_query: torch.Tensor, y_query: torch.Tensor
-) -> torch.Tensor:
-    flat_x = x_query.reshape(-1)
-    flat_y = y_query.reshape(-1)
-
-    x_upper = torch.bucketize(flat_x.detach(), x_axis)
-    y_upper = torch.bucketize(flat_y.detach(), y_axis)
-    x_left = torch.clamp(x_upper - 1, 0, x_axis.numel() - 1)
-    x_right = torch.clamp(x_upper, 0, x_axis.numel() - 1)
-    y_low = torch.clamp(y_upper - 1, 0, y_axis.numel() - 1)
-    y_high = torch.clamp(y_upper, 0, y_axis.numel() - 1)
-
-    x0 = x_axis[x_left]
-    x1 = x_axis[x_right]
-    y0 = y_axis[y_low]
-    y1 = y_axis[y_high]
-    tx = torch.where(x_left == x_right, torch.zeros_like(flat_x), (flat_x - x0) / torch.clamp(x1 - x0, min=1e-12))
-    ty = torch.where(y_low == y_high, torch.zeros_like(flat_y), (flat_y - y0) / torch.clamp(y1 - y0, min=1e-12))
-
-    v00 = values[y_low, x_left]
-    v10 = values[y_low, x_right]
-    v01 = values[y_high, x_left]
-    v11 = values[y_high, x_right]
-
-    interpolated = (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v10 + (1.0 - tx) * ty * v01 + tx * ty * v11
-    inside = (flat_x >= x_axis[0]) & (flat_x <= x_axis[-1]) & (flat_y >= y_axis[0]) & (flat_y <= y_axis[-1])
-    return torch.where(inside, interpolated, torch.zeros_like(interpolated)).reshape(x_query.shape)
-
-
-def evaluate_antenna_pattern_xy(
-    pattern_kind: str,
-    x_axis: torch.Tensor,
-    y_axis: torch.Tensor,
-    x_values: torch.Tensor | None,
-    y_values: torch.Tensor | None,
-    values_2d: torch.Tensor | None,
-    x_angles_deg: torch.Tensor,
-    y_angles_deg: torch.Tensor,
-) -> torch.Tensor:
-    if pattern_kind == "separable":
-        return interp1d_zero_outside(x_axis, x_values, x_angles_deg) * interp1d_zero_outside(
-            y_axis, y_values, y_angles_deg
-        )
-    return interp2d_zero_outside(x_axis, y_axis, values_2d, x_angles_deg, y_angles_deg)
-
-
-#: Exact SI definition, in metres per second. Quoted rather than imported from
-#: the synthesis contracts because a sensor package that depended on a waveform
-#: package to know the speed of light would be an edge in the wrong direction.
-SPEED_OF_LIGHT_M_PER_S = 299792458.0
-
-#: The two supported pattern kinds, named exactly as ``validation.py`` already
-#: normalises them. ``separable`` is a product of two one-dimensional cuts;
-#: ``map`` is a bilinear two-dimensional table. The kernel's integer selector
-#: mirrors this order.
+#: The two supported pattern kinds. ``separable`` is a product of two
+#: one-dimensional cuts; ``map`` is a bilinear two-dimensional table. The
+#: kernel's integer selector mirrors this order.
 PATTERN_KIND_SEPARABLE = "separable"
 PATTERN_KIND_MAP = "map"
 PATTERN_KINDS = (PATTERN_KIND_SEPARABLE, PATTERN_KIND_MAP)
@@ -211,8 +136,7 @@ class Pattern:
     interpolation is piecewise linear, so the gain has an exact
     almost-everywhere derivative that the native kernel carries. A knot and the
     two support edges are genuine non-differentiabilities and the kernel returns
-    the almost-everywhere value there, which is what the Torch expression it
-    replaces already did.
+    the almost-everywhere value there.
 
     The angles are the same two the pattern helpers use: with a direction
     expressed in the radar's LOCAL frame, ``x = atan2(v_x, -v_z)`` and
@@ -346,82 +270,43 @@ class Pattern:
         gain = _float_tensor(self.gain, device=target, name="gain", shape=(num_y, num_x)).reshape(-1)
         return x_axis, y_axis, placeholder, placeholder, gain.contiguous()
 
-    def evaluate_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
-        """Torch evaluation, for freeze-time work and as the kernel's oracle."""
-
-        x_axis, y_axis, x_gain, y_gain, gain = self.tables(device=x_angles_deg.device)
-        return evaluate_antenna_pattern_xy(
-            self.kind,
-            x_axis,
-            y_axis,
-            x_gain,
-            y_gain,
-            None if self.kind == PATTERN_KIND_SEPARABLE else gain.reshape(len(self.y_angles), len(self.x_angles)),
-            x_angles_deg,
-            y_angles_deg,
-        )
-
 
 def watts_from_dbm(power_dbm: float) -> float:
     """``1e-3 * 10^(dBm/10)``: the ONE place transmit power becomes watts.
 
     The result fills a source endpoint's ``powers_w`` and reaches physics
     through that field and no other. There is deliberately no transmit voltage
-    gain anywhere: the old ``radar.gain = sqrt(P R)`` multiplied a weight that
-    already carried ``sqrt(P)``, which counts the power twice and leaves the
-    result in sqrt(W ohm) while the weight is in sqrt(W).
+    gain anywhere: a ``sqrt(P R)`` gain on a weight that already carries
+    ``sqrt(P)`` counts the power twice and leaves the result in sqrt(W ohm)
+    while the weight is in sqrt(W).
     """
 
     return 1e-3 * (10.0 ** (float(power_dbm) / 10.0))
 
 
-#: A row that interacts at a site, and a row that goes straight from a
-#: transmitter to a receiver. The direct row's length is ``|rx - tx|`` with no
-#: site term at all, rather than a via-row with a degenerate site, because a
-#: zero-length second leg has no direction and therefore no antenna angle.
+#: A row that interacts at a site, which is every row the two-way join
+#: publishes. The kernel's selector also knows a direct transmitter-to-receiver
+#: row (code 1), whose length is ``|rx - tx|`` with no site term and therefore
+#: no antenna angle; no production route builds one.
 ROW_KIND_VIA = 0
-ROW_KIND_DIRECT = 1
 
-
-def _require_frozen_constant(owner: str, name: str, value: torch.Tensor) -> None:
-    """Refuse a derivative on an input slot that has no gradient to return.
-
-    Thirteen of the tensors this owner consumes are FROZEN descriptions of the
-    array and of the frame's row set: how fast each antenna and site is
-    moving, which way each facet faces, how each antenna is polarized, the
-    local frame the pattern is tabulated in, the fixed leg length, and the
-    pattern tables themselves. Only ``tx_pos``, ``rx_pos``, ``site_in``,
-    ``site_out``, ``intensity`` and the complex weight are differentiable
-    inputs of the native operator; the rest are either not inputs of the
-    autograd ``Function`` at all or sit in slots whose ``backward`` returns
-    ``None`` by construction.
-
-    Before Phase 9 a caller who marked one of them got exactly that ``None``
-    back, after a full frame had been computed, with nothing anywhere saying
-    the slot was not differentiable. That is the failure mode the whole
-    capability matrix exists to remove, so this refuses at CONSTRUCTION -
-    before ``validate``, before any launch, before a result object exists.
-
-    ``pattern_gain`` is the counter-example and stays as it is: it is a
-    published OUTPUT that is correctly ``mark_non_differentiable``, which is a
-    declaration rather than a silence.
-    """
-
-    tangent = forward_ad.unpack_dual(value).tangent
-    if value.requires_grad or tangent is not None:
-        raise RuntimeError(
-            f"{owner}.{name} carries "
-            + ("requires_grad" if value.requires_grad else "a forward tangent")
-            + ", and it is a frozen geometric constant of the array rather "
-            "than a differentiable input. The native sensor-weight operator "
-            "has no gradient or tangent slot for it, so this request would "
-            "run the whole frame and return None. The differentiable inputs "
-            "here are tx_pos, rx_pos, site_in, site_out, intensity and the "
-            "complex weight. A VELOCITY additionally has no leaf semantics at "
-            "all under ADR-038: it is a forward-AD tangent direction that "
-            "witwin.radar.propagation puts in the tangent slot of "
-            "a position, so d(loss)/d(velocity) does not exist in either mode."
-        )
+#: Why the frozen tensors of the sensor-weight family refuse a derivative. They
+#: are constants of the array and of the frame's row set - velocities, the
+#: fixed leg length, the pattern frame and the pattern tables - and the native
+#: operator has no gradient or tangent slot for any of them, so a marked one
+#: would run the whole frame and return ``None``. Refused at CONSTRUCTION,
+#: before ``validate`` and before any launch. ``pattern_gain`` is the
+#: counter-example: a published OUTPUT that is ``mark_non_differentiable``,
+#: which is a declaration rather than a silence.
+_FROZEN_REASON = (
+    "it is a frozen geometric constant of the array rather than a differentiable "
+    "input, and the native sensor-weight operator has no gradient or tangent slot "
+    "for it. The differentiable inputs here are tx_pos, rx_pos, site_in, site_out, "
+    "intensity and the complex weight. A VELOCITY additionally has no leaf "
+    "semantics under ADR-038: it is a forward-AD tangent direction that "
+    "witwin.radar.propagation puts in the tangent slot of a position, so "
+    "d(loss)/d(velocity) does not exist in either mode."
+)
 
 
 def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int, ...]):
@@ -443,18 +328,13 @@ def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int,
 class SensorWeightGeometry:
     """The constant part of one frame's row set.
 
-    Every field here is a CONSTANT with respect to the derivative except the
-    four position tensors, which are passed separately to the autograd entry so
-    that they can carry a tangent or a gradient. Velocities and the pattern frame are constants by design: Phase 7
-    owns dynamics, and a velocity that carried a gradient would be a different
-    contract.
-
-    Since Phase 9 that sentence is ENFORCED rather than merely written down.
-    ``__post_init__`` refuses a float tensor here that carries
-    ``requires_grad`` or a forward tangent, naming the field, before
-    :meth:`validate` and before any launch. The index tensors are deliberately
-    not checked: they are ``int64`` / ``int32`` and cannot carry a derivative
-    for autograd to lose.
+    Every field here is a CONSTANT with respect to the derivative; the four
+    position tensors are passed separately to the autograd entry so that they
+    can carry a tangent or a gradient. ``__post_init__`` refuses a float tensor
+    here that carries ``requires_grad`` or a forward tangent, naming the field,
+    before :meth:`validate` and before any launch. The index tensors are
+    deliberately not checked: they are ``int64`` / ``int32`` and cannot carry a
+    derivative for autograd to lose.
     """
 
     num_tx: int
@@ -474,10 +354,8 @@ class SensorWeightGeometry:
     FROZEN_FIELDS = ("tx_velocity", "rx_velocity", "site_velocity", "fixed_length_m", "pattern_frame")
 
     def __post_init__(self) -> None:
-        for name in SensorWeightGeometry.FROZEN_FIELDS:
-            value = getattr(self, name)
-            if isinstance(value, torch.Tensor):
-                _require_frozen_constant("SensorWeightGeometry", name, value)
+        frozen = {name: getattr(self, name) for name in SensorWeightGeometry.FROZEN_FIELDS}
+        refuse_derivative("witwin.radar.sensors.SensorWeightGeometry", _FROZEN_REASON, **frozen)
 
     @property
     def path_count(self) -> int:
@@ -512,9 +390,8 @@ class SensorWeightPlan:
     c0: float
 
     def __post_init__(self) -> None:
-        for index, table in enumerate(self.tables):
-            if isinstance(table, torch.Tensor):
-                _require_frozen_constant("SensorWeightPlan", f"tables[{index}]", table)
+        tables = {f"tables[{index}]": table for index, table in enumerate(self.tables)}
+        refuse_derivative("witwin.radar.sensors.SensorWeightPlan", _FROZEN_REASON, **tables)
 
     @classmethod
     def build(
@@ -805,35 +682,13 @@ def evaluate_sensor_weights(
     return SensorWeightResult.from_components(out_re, out_im, total_delay_s, delay_rate, pattern_gain)
 
 
-def _pattern_plan(pattern: Pattern, *, reference_frequency_hz: float, device: torch.device) -> SensorWeightPlan:
+def _pattern_plan(pattern: Pattern, *, device: torch.device) -> SensorWeightPlan:
     if not isinstance(pattern, Pattern):
         raise TypeError(
             f"a sensor weight needs a witwin.radar.Pattern, got {type(pattern).__name__}; "
             "the radar's own is radar.pattern, and Pattern.isotropic() is the no-op"
         )
     return SensorWeightPlan.build(pattern, c0=SPEED_OF_LIGHT_M_PER_S, device=device)
-
-
-def _site_rank_to_array_index(site_ids: tuple[int, ...], *, device: torch.device) -> torch.Tensor:
-    """Map a composer response slot back to a row of the site position tensor.
-
-    ``TwoWayComposer.freeze`` sorts the declared site IDs, so its
-    ``response_slot`` is a rank in ASCENDING ID order while
-    ``RadarWorldBinding.site_positions_m`` is in the order the binding published.
-    The two coincide for the default allocator and diverge the moment a caller
-    declares its own stable IDs, which is exactly the case where getting it
-    wrong would look like a physics bug: every row would take its pattern angle
-    from another target.
-
-    Built on the host from the binding's own host tuple, once per epoch, so no
-    device tensor is read back to get it.
-    """
-
-    listed = [int(value) for value in site_ids]
-    if len(set(listed)) != len(listed):
-        raise ValueError(f"site_ids must not repeat a stable ID, got {listed}")
-    order = sorted(range(len(listed)), key=lambda index: listed[index])
-    return torch.tensor(order, dtype=torch.int64, device=device)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -860,7 +715,6 @@ class RoundTripPatternStage:
     site_count: int
     tx_index: torch.Tensor
     rx_index: torch.Tensor
-    site_slot: torch.Tensor
     row_kind: torch.Tensor
     zero_rows: torch.Tensor
     zero_vectors: torch.Tensor
@@ -874,10 +728,10 @@ class RoundTripPatternStage:
     def freeze(cls, radar, composer, *, site_ids, pattern: Pattern) -> RoundTripPatternStage:
         """Build the constant tables for one frozen :class:`TwoWayComposer`.
 
-        ``site_ids`` is the binding's host tuple, in the order its site position
-                tensor is laid out. Passing it rather than reading the composer's
-                ``topology.site_id`` back to the host is deliberate: the host tuple is
-                already there, and the device column is not.
+        ``site_ids`` is the binding's host tuple of stable site IDs. It is
+        checked against the composer's site count here rather than read back
+        from the device column ``topology.site_id``: the host tuple is already
+        there, and the device column is not.
         """
 
         array = radar.system_config.sensors.array
@@ -892,11 +746,9 @@ class RoundTripPatternStage:
                 "transmitter and a receiver up by pair rank and the two must be "
                 "the same front end"
             )
-        site_rank_to_index = _site_rank_to_array_index(tuple(site_ids), device=device)
-        if int(site_rank_to_index.shape[0]) != composer.site_count:
+        if len(site_ids) != composer.site_count:
             raise ValueError(
-                f"the binding declares {int(site_rank_to_index.shape[0])} sites "
-                f"but this join was frozen against {composer.site_count}"
+                f"the binding declares {len(site_ids)} sites but this join was frozen against {composer.site_count}"
             )
         rows = int(composer.path_count)
         # PAIR_RANK_LAYOUT is sink major - pair = rx_rank * num_tx + tx_rank -
@@ -913,21 +765,19 @@ class RoundTripPatternStage:
             site_count=int(composer.site_count),
             tx_index=tx_index,
             rx_index=rx_index,
-            site_slot=site_rank_to_index.index_select(0, composer.response_slot).contiguous(),
             row_kind=torch.full((rows,), ROW_KIND_VIA, dtype=torch.int32, device=device),
             zero_rows=zero_rows,
             zero_vectors=torch.zeros(rows, 3, dtype=torch.float32, device=device),
             unit_intensity=torch.ones(rows, dtype=torch.float32, device=device),
             tx_velocity=torch.zeros(num_tx, 3, dtype=torch.float32, device=device),
             rx_velocity=torch.zeros(num_rx, 3, dtype=torch.float32, device=device),
-            # ``local_from_world_vectors`` is ``v @ world_from_local``, so the
-            # pattern-frame components are dot products with that matrix's COLUMNS. The
-            # kernel takes those columns as its rows; the transpose IS the frame
-            # change, and it is the canonical world-to-pattern-frame transform.
+            # A local direction is ``v @ world_from_local``, so the pattern-frame
+            # components are dot products with that matrix's COLUMNS. The kernel
+            # takes those columns as its rows; the transpose IS the frame change.
             pattern_frame=radar._world_from_local_matrix(device=device, dtype=torch.float32)[1]
             .transpose(0, 1)
             .contiguous(),
-            plan=_pattern_plan(pattern, reference_frequency_hz=array.reference_frequency_hz, device=device),
+            plan=_pattern_plan(pattern, device=device),
         )
 
     def _geometry(self) -> SensorWeightGeometry:
@@ -946,7 +796,6 @@ class RoundTripPatternStage:
 
     def _for_slots(self, count: int) -> RoundTripPatternStage:
         """Replicate routing for slot-major endpoints, sharing antenna tables."""
-        from dataclasses import replace
 
         slot = torch.arange(count, device=self.tx_index.device, dtype=torch.int64)[:, None]
         return replace(
@@ -956,7 +805,6 @@ class RoundTripPatternStage:
             row_count=self.row_count * count,
             tx_index=(self.tx_index[None, :] + slot * self.num_tx).reshape(-1),
             rx_index=(self.rx_index[None, :] + slot * self.num_rx).reshape(-1),
-            site_slot=self.site_slot.repeat(count),
             row_kind=self.row_kind.repeat(count),
             zero_rows=self.zero_rows.repeat(count),
             zero_vectors=self.zero_vectors.repeat(count, 1),
@@ -988,16 +836,6 @@ class RoundTripPatternStage:
 
         if not isinstance(paths, RadarPathBatch):
             raise TypeError(f"the antenna-pattern stage consumes a RadarPathBatch, got {type(paths).__name__}")
-        if paths.join_mode != "multipath":
-            raise NotImplementedError(
-                f"the antenna-pattern stage is frozen against a two-way join and "
-                f"these rows declare join_mode {paths.join_mode!r}. A direct row "
-                "has no scatter site, so its transmit and receive directions are "
-                "the other endpoint rather than a site, and applying this stage's "
-                "site-based row kind to it would look up the pattern along a "
-                "direction the row does not have. A direct-leakage pattern is a "
-                "separate capability with its own row kind"
-            )
         if paths.weight_includes_antenna_pattern:
             raise ValueError(
                 "these rows already record weight_includes_antenna_pattern; "
@@ -1033,51 +871,8 @@ class RoundTripPatternStage:
             reference_frequency_hz=paths.reference_frequency_hz,
             row_valid=paths.row_valid,
             topology=paths.topology,
-            join_mode=paths.join_mode,
-            frequency_response=self._apply_band(paths, geometry, tx_pos, rx_pos, tx_targets_m, rx_targets_m),
-            frequency_offsets_hz=paths.frequency_offsets_hz,
             weight_includes_antenna_pattern=True,
         )
-
-    def _apply_band(
-        self,
-        paths: RadarPathBatch,
-        geometry: SensorWeightGeometry,
-        tx_pos: torch.Tensor,
-        rx_pos: torch.Tensor,
-        site_in: torch.Tensor,
-        site_out: torch.Tensor,
-    ) -> torch.Tensor | None:
-        """The same real gain, applied to every column of a composed band.
-
-        The frequency axis is a PYTHON LOOP over the existing ``[K]`` primitive
-        rather than a strided ``[K, F]`` kernel, which is the boundary
-        ``TwoWayComposer._compose_band`` already draws for the same reason:
-        widening a native family means widening its primal, its jvp and its vjp
-        together, and that needs a measured reason first.
-
-        The pattern is applied to the band at all - rather than only to the
-        reference column - because this family's gain has no frequency axis. A
-        band whose reference column carried the pattern and whose columns did not
-        would be two different antennas in one batch.
-        """
-
-        if paths.frequency_response is None:
-            return None
-        columns = [
-            evaluate_sensor_weights(
-                tx_pos=tx_pos,
-                rx_pos=rx_pos,
-                site_in=site_in,
-                site_out=site_out,
-                intensity=self.unit_intensity,
-                weight=paths.frequency_response[:, index],
-                geometry=geometry,
-                plan=self.plan,
-            ).weight
-            for index in range(int(paths.frequency_response.shape[1]))
-        ]
-        return torch.stack(columns, dim=1)
 
 
 __all__ = ["Pattern"]

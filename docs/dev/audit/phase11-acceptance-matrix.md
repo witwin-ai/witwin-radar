@@ -208,7 +208,7 @@ $ python ci/check_orphan_modules.py
 ci/check_orphan_modules.py: OK - 71 production modules, all reachable from 4
 declared entry points.
 
-$ python -m pytest tests/test_phase5_removed_entry_points.py -q  # inside the suite
+$ python -m pytest tests/test_public_api_snapshot.py -q  # inside the suite
 [part of 782 passed]
 ```
 

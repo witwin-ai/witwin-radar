@@ -2,7 +2,7 @@
 
 TEST-ONLY. CLAUDE.md permits a CPU/Torch reference implementation only under
 ``tests/``; a production module that imported this would be introducing a Torch
-numerical backend, and ``tests/test_phase4_import_boundary.py`` rejects it.
+numerical backend, and ``tests/test_import_boundary.py`` rejects it.
 
 The frontend's three operators are simple enough that a value-for-value oracle
 would be a second copy of a one-line expression. What is NOT trivial, and what
@@ -70,6 +70,26 @@ def wiener_innovation_sigma_rad(*, level_dbc_per_hz: float, offset_hz: float, sa
     return math.sqrt(level * 4.0 * math.pi**2 * float(offset_hz) ** 2 / float(sample_rate_hz))
 
 
+def single_sideband_dbc_per_hz(*, innovation_sigma_rad: float, sample_rate_hz: float, offset_hz: float) -> float:
+    """The free-running model's own ``L(f) = sigma_w^2 fs / (4 pi^2 f^2)``, in dBc/Hz."""
+
+    level = float(innovation_sigma_rad) ** 2 * float(sample_rate_hz) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
+    return 10.0 * math.log10(level)
+
+
+def quantization_variance(*, bits: int, full_scale: float) -> float:
+    """``step^2 / 12`` PER COMPONENT, for a busy non-overloaded signal."""
+
+    step = (2.0 * float(full_scale)) / (2 ** int(bits) - 1)
+    return step**2 / 12.0
+
+
+def full_scale_sine_sqnr_db(bits: int) -> float:
+    """``6.02 b + 1.76`` dB, the textbook full-scale sine figure."""
+
+    return 6.02 * int(bits) + 1.76
+
+
 def single_sideband_psd(
     phase_rad: torch.Tensor, *, sample_rate_hz: float, segment: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -113,4 +133,13 @@ def agc_gain(signal: torch.Tensor, *, target_rms: float, min_gain: float, max_ga
     return min(max(gain, float(min_gain)), float(max_gain)), measured
 
 
-__all__ = ["agc_gain", "quantize", "single_sideband_psd", "thermal_sigma_volts", "wiener_innovation_sigma_rad"]
+__all__ = [
+    "agc_gain",
+    "full_scale_sine_sqnr_db",
+    "quantization_variance",
+    "quantize",
+    "single_sideband_dbc_per_hz",
+    "single_sideband_psd",
+    "thermal_sigma_volts",
+    "wiener_innovation_sigma_rad",
+]

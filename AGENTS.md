@@ -13,7 +13,7 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 - `witwin/radar/simulation.py` — scene-session orchestration, the `Motion` sampling record, the `Paths` the world half retains, and the `Result` and `Frame` records the instrument half publishes.
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
-- `witwin/radar/paths.py` — direct and two-way round-trip path contracts and composition.
+- `witwin/radar/paths.py` — two-way round-trip path contracts and composition.
 - `witwin/radar/scattering.py` — scalar and aspect-dependent scattering responses.
 - `witwin/radar/sensors.py` — array geometry, transmit power, antenna patterns, and round-trip weighting.
 - `witwin/radar/frontend.py` — receiver chain, noise, ADC, AGC, and deterministic seed contracts.
@@ -23,7 +23,7 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 - `witwin/radar/processing/` — typed processing axes/products split by signal, range-Doppler, angle, detection, and tracking concepts.
 - `witwin/radar/cuda/` — the single native runtime boundary and native kernel sources.
 
-The executable architecture contract is `ci/architecture-manifest.json`; the public surface is `ci/public-api-manifest.json` plus `ci/public-api-snapshot.json`.
+The executable architecture contract is `ci/architecture-manifest.json`; the public surface is `ci/public-api-manifest.json` plus `ci/public-api-snapshot.json`. Regenerate the snapshot with `python ci/write_public_api_snapshot.py` when a public signature changes deliberately.
 
 ## Code style and duplication
 
@@ -72,7 +72,6 @@ Important static checks include:
 python ci/check_architecture.py
 python ci/check_duplicate_code.py
 python ci/check_documentation_surface.py
-python ci/check_governance_inventory.py
 python ci/check_no_compatibility.py
 python ci/check_public_api_manifest.py
 python ci/check_release_claims.py

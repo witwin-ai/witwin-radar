@@ -1,35 +1,34 @@
-"""Count vendor DSP launches and host observations while it is active.
+"""Count kernel launches and host observations while it is active.
 
-This is ``tests/test_phase6_launch_budget.py``'s ``Ledger`` with ONE thing
-changed: the patched namespace is ``torch.fft`` instead of the native operator
-table. The ``HOST_OBSERVERS`` set is the same four tensor methods plus
-``torch.cuda.synchronize``, so a processing budget and a synthesis budget are
-counted by the same mechanism and can be added together.
+One counter for every launch and host budget in the tree. ``table`` is the
+namespace whose ``operators`` get wrapped: ``torch.fft`` for a processing
+budget, the native operator table from ``runtime.build_extension()`` for a
+synthesis budget, and an empty ``operators`` tuple when only host traffic is
+being measured. The host side is always the same four tensor methods plus
+``torch.cuda.synchronize`` and the two shape-dependent calls, so a processing
+budget and a synthesis budget count the same things and can be added together.
 
-**The honest caveat, restated rather than dropped.** A synchronization inside a
-native kernel is invisible from Python. ``torch.fft.fft`` can synchronize inside
-cuFFT plan creation and nothing here will see it. This ledger counts DISPATCHES
-and HOST-VISIBLE observations; it does not measure time and must never be used
-to infer any. Wall time is measured with CUDA events, in
-``tools/benchmark_processing.py``.
+**The honest caveat.** A synchronization inside a native kernel is invisible
+from Python. ``torch.fft.fft`` can synchronize inside cuFFT plan creation and
+nothing here will see it. This ledger counts DISPATCHES and HOST-VISIBLE
+observations; it does not measure time and must never be used to infer any.
+Wall time is measured with CUDA events, in ``tools/benchmark_processing.py``.
 
 Two entry shapes, because two callers need it:
 
 * ``DspLedger(monkeypatch, ...)`` inside a test, where pytest restores;
-* ``with DspLedger() as ledger:`` inside the benchmark tool, which has no
-  ``monkeypatch`` fixture and restores the originals itself.
+* ``with DspLedger(...) as ledger:`` where there is no ``monkeypatch`` fixture
+  and the ledger restores the originals itself.
 
-Both count identically. The self-restoring form exists so the tool and the
-budget test report the same integers rather than two counters that can drift.
+Both count identically, so a tool and a budget test report the same integers.
 """
 
 from __future__ import annotations
 
 import torch
 
-#: The same four tensor methods the Phase-6 ledger watches. Each moves a device
-#: value to the host, which is a synchronization whether or not it is written as
-#: one.
+#: Each of these moves a device value to the host, which is a synchronization
+#: whether or not it is written as one.
 HOST_OBSERVERS = ("item", "cpu", "tolist", "numpy")
 
 #: Every ``torch.fft`` entry the processing facade is allowed to call. The
@@ -50,13 +49,30 @@ DSP_OPERATORS = ("fft", "ifft", "fft2", "fftshift", "ifftshift", "fftfreq")
 #: hidden inside a pipeline total.
 IMPLICIT_SYNCHRONIZERS = ("argwhere", "nonzero")
 
+#: The host counters, in the order ``DspLedger.host`` publishes them.
+HOST_COUNTERS = (*HOST_OBSERVERS, "synchronize", *IMPLICIT_SYNCHRONIZERS)
+
+#: Bytes ``_TwoWayJoin.setup_context`` saves per context, as the ledger
+#: document ``docs/dev/ad-tape-and-budget-ledger.md`` quotes it. The test that
+#: reads the document asserts its cell equals this string and evaluates the
+#: law through :func:`two_way_join_tape_bytes`, so the document cannot drift
+#: from what is measured.
+TWO_WAY_JOIN_TAPE_FORMULA = "8*R_in + 8*R_out + 8*S + 28*K"
+
+
+def two_way_join_tape_bytes(*, R_in: int, R_out: int, S: int, K: int) -> int:
+    """:data:`TWO_WAY_JOIN_TAPE_FORMULA` at one fixture point."""
+
+    return 8 * R_in + 8 * R_out + 8 * S + 28 * K
+
 
 class DspLedger:
-    """Count ``torch.fft`` dispatches and host observations while active."""
+    """Count ``operators`` dispatches on ``table`` and host observations while active."""
 
-    def __init__(self, monkeypatch=None, operators=DSP_OPERATORS) -> None:
+    def __init__(self, monkeypatch=None, operators=DSP_OPERATORS, table=torch.fft) -> None:
         self.launches = dict.fromkeys(operators, 0)
-        self.host = dict.fromkeys((*HOST_OBSERVERS, "synchronize", *IMPLICIT_SYNCHRONIZERS), 0)
+        self.host = dict.fromkeys(HOST_COUNTERS, 0)
+        self._table = table
         self._monkeypatch = monkeypatch
         self._restore: list[tuple[object, str, object]] = []
         if monkeypatch is not None:
@@ -73,13 +89,13 @@ class DspLedger:
 
     def _install(self) -> None:
         for name in self.launches:
-            original = getattr(torch.fft, name)
+            original = getattr(self._table, name)
 
             def counting(*args, _name=name, _original=original, **kwargs):
                 self.launches[_name] += 1
                 return _original(*args, **kwargs)
 
-            self._set(torch.fft, name, counting)
+            self._set(self._table, name, counting)
         for name in HOST_OBSERVERS:
             original_method = getattr(torch.Tensor, name)
 
@@ -121,7 +137,7 @@ class DspLedger:
 
     @property
     def transform_count(self) -> int:
-        """Total ``torch.fft`` dispatches, across every entry."""
+        """Total dispatches, across every wrapped operator."""
 
         return sum(self.launches.values())
 
@@ -137,4 +153,12 @@ class DspLedger:
         return {name: value for name, value in (*self.launches.items(), *self.host.items()) if value}
 
 
-__all__ = ["DSP_OPERATORS", "HOST_OBSERVERS", "IMPLICIT_SYNCHRONIZERS", "DspLedger"]
+__all__ = [
+    "DSP_OPERATORS",
+    "HOST_COUNTERS",
+    "HOST_OBSERVERS",
+    "IMPLICIT_SYNCHRONIZERS",
+    "TWO_WAY_JOIN_TAPE_FORMULA",
+    "DspLedger",
+    "two_way_join_tape_bytes",
+]

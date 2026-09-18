@@ -1,16 +1,25 @@
-"""Build identity for the packaged radar native library.
+"""Identity, selection and loading of the packaged radar native library.
+
+R-ADR-019 is the contract this file implements. In one sentence: the packaged
+prebuilt is the only normal load source, every failure is loud and names the
+full build identity, and ``torch.utils.cpp_extension`` is reachable only when
+the build script explicitly asks for it.
 
 The radar native library is a Torch *dispatcher* library
 (``is_python_module=False``), not a Python extension module, so it cannot hand
 back a ``build_info()`` Python symbol the way ``witwin.channel._channel`` does
-without growing a new native ABI symbol. R-ADR-019 records the decision: the
-identity travels in two sidecar files written next to the binary, and the
-record names the binary's own SHA-256 so a swapped binary is detected by the
-bytes rather than by a self-report that the swap would have regenerated.
+without growing a new native ABI symbol. The identity therefore travels in two
+sidecar files written next to the binary, and the record names the binary's
+own SHA-256 so a swapped binary is detected by the bytes rather than by a
+self-report that the swap would have regenerated. Validation touches neither
+``torch.ops`` nor CUDA, so an artifact is checked before anything loads it,
+on a machine with no GPU if need be.
 
-Nothing here touches ``torch.ops`` or requires CUDA. The module is importable
-on a machine with no GPU, which is what lets the loader validate an artifact
-before it hands it to ``torch.ops.load_library``.
+The build-script-only clause is not tidiness. The just-in-time route calls
+``_ensure_windows_build_tools_on_path()``, which copies the whole ``vcvars64``
+environment over ``os.environ`` including ``PATH``; a library built after that
+mutation fails ``DllMain`` with an access violation in the same process, and
+the unbounded ``PATH`` growth surfaces much later as unrelated CUDA failures.
 """
 
 from __future__ import annotations
@@ -29,17 +38,13 @@ from pathlib import Path
 
 import torch
 
-#: Bumped whenever the sidecar schema or the loader contract changes shape.
-#: A packaged artifact whose record carries a different value is rejected; it is
-#: never silently upgraded, and it never triggers a rebuild.
+#: Bumped whenever the sidecar schema, the loader contract, or the registered
+#: operator set changes shape. A packaged artifact whose record carries a
+#: different value is rejected; it is never silently upgraded, and it never
+#: triggers a rebuild.
 #:
-#: 2 - Phase 11 deleted the nine ``dirichlet_spectrum`` operators together with
-#:     their translation unit. The registered operator set went from 34 symbols
-#:     and changed the sensor-weight schema, both observable by a consumer.
-#:     fails. That is an ABI change even though the sidecar schema is unchanged.
-#:
-#: 8 - the ``path_interpolate`` family generalized from a fixed two-node input
-#:     of seven columns to K nodes of four columns each. The symbol names are
+#: 8 - the ``path_interpolate`` family takes K nodes of four columns each
+#:     instead of a fixed two-node input of seven columns. The symbol names are
 #:     unchanged and the shapes are not, so an older caller reaches a library
 #:     that accepts its tensor rank and rejects its width.
 RADAR_ABI_VERSION = 8
@@ -165,8 +170,6 @@ def platform_tag() -> str:
 def cxx_abi() -> str:
     if os.name == "nt":
         return "msvc"
-    import torch
-
     return "cxx11" if torch._C._GLIBCXX_USE_CXX11_ABI else "pre-cxx11"
 
 
@@ -177,8 +180,6 @@ def runtime_identity() -> dict[str, str]:
     another Torch is simply not usable here, and quietly compiling a
     replacement is the silent path this contract exists to remove.
     """
-
-    import torch
 
     return {
         "torch_version": str(torch.__version__).split("+", maxsplit=1)[0],
@@ -446,23 +447,6 @@ def write_sidecars(binary_path: Path, info: Mapping[str, object]) -> tuple[Path,
     return info_path, fingerprint_path
 
 
-"""Select, validate and load the radar native library.
-
-R-ADR-019 is the contract this file implements. In one sentence: the packaged
-prebuilt is the only normal load source, every failure is loud and names the
-full build identity, and ``torch.utils.cpp_extension`` is reachable only when
-the build script explicitly asks for it.
-
-That last clause is not tidiness. The just-in-time route calls
-``_ensure_windows_build_tools_on_path()``, which copies the whole ``vcvars64``
-environment over ``os.environ`` including ``PATH``; a library built after that
-mutation fails ``DllMain`` with an access violation in the same process, and the
-unbounded ``PATH`` growth surfaces much later as unrelated CUDA failures. While
-the JIT route was the silent fallback for a missing or stale prebuilt, an
-ordinary ``import witwin.radar.paths`` could reach it.
-"""
-
-
 EXTENSION_NAME = "_radar_native"
 
 #: The Stable ABI target compiled into every translation unit. Recorded in the
@@ -558,10 +542,6 @@ def _load_vcvars64_environment() -> bool:
             updates[key] = value
         for key, value in updates.items():
             os.environ[key] = value
-        path_value = updates.get("PATH", updates.get("Path"))
-        if path_value is not None:
-            os.environ["PATH"] = path_value
-            os.environ["Path"] = path_value
         return True
     return False
 
@@ -586,7 +566,7 @@ def _ensure_windows_build_tools_on_path() -> None:
     if shutil.which("cl") is None:
         return
 
-    current_path = os.environ.get("PATH") or os.environ.get("Path") or ""
+    current_path = os.environ.get("PATH", "")
     prefixes: list[str] = []
     vc_tools = os.environ.get("VCToolsInstallDir")
     if vc_tools:
@@ -598,9 +578,7 @@ def _ensure_windows_build_tools_on_path() -> None:
         )
     if not prefixes:
         return
-    merged_path = os.pathsep.join([*prefixes, current_path])
-    os.environ["PATH"] = merged_path
-    os.environ["Path"] = merged_path
+    os.environ["PATH"] = os.pathsep.join([*prefixes, current_path])
 
 
 def _ensure_cuda_home_from_nvcc() -> None:
@@ -650,20 +628,12 @@ def extension_sources() -> list[Path]:
 
 def _cuda_gencode_flags() -> list[str]:
     """Translate the release architecture list directly into nvcc flags."""
-    value = os.environ.get("WITWIN_CUDA_GENCODE_ARCHES")
-    if not value:
-        return []
+
     flags: list[str] = []
-    for entry in value.split(";"):
-        entry = entry.strip()
-        if not entry:
-            continue
-        include_ptx = entry.endswith("+PTX")
-        number = entry.removesuffix("+PTX").replace(".", "")
-        if not number.isdigit():
-            raise ValueError(f"Invalid CUDA architecture {entry!r} in WITWIN_CUDA_GENCODE_ARCHES.")
+    for entry in normalize_cuda_architectures(os.environ.get("WITWIN_CUDA_GENCODE_ARCHES", "")):
+        number = entry.removesuffix("+PTX")
         flags.append(f"-gencode=arch=compute_{number},code=sm_{number}")
-        if include_ptx:
+        if entry.endswith("+PTX"):
             flags.append(f"-gencode=arch=compute_{number},code=compute_{number}")
     return flags
 
@@ -678,15 +648,12 @@ def _conda_torch_ldflags() -> list[str]:
 
 
 class _StableOpsModule:
-    """Attribute-compatible view of the dispatcher operators."""
+    """The loaded dispatcher library: its operators by attribute, plus its validated identity."""
 
     def __init__(self, library_path: Path, *, origin: str, info: dict[str, object] | None = None) -> None:
         self.__file__ = str(library_path)
         self._origin = origin
         self._info = dict(info) if info is not None else None
-
-    def is_available(self) -> bool:
-        return bool(torch.cuda.is_available())
 
     def build_info(self) -> dict[str, object]:
         """The validated identity record plus where the library came from.
@@ -708,13 +675,11 @@ class _StableOpsModule:
         return getattr(torch.ops._radar_native, name)
 
 
-# Every operator family the library is required to register. A stale binary
+# One operator per family the library is required to register. A stale binary
 # that predates a family loads fine and then fails deep inside a kernel call,
-# so the presence check names one operator per family and fails at load.
-#
-# `forward_chunked` stood first until Phase 11 deleted the `dirichlet_spectrum`
-# family with its route. Leaving it here would have made every load reject the
-# correct binary, which is the same defect in the other direction.
+# so the presence check fails at load instead. The packaged and developer
+# routes check the full symbol list their record carries; this sample is what
+# the JIT route checks, since it has no record.
 _REQUIRED_OPERATORS = (
     "fmcw_beat_forward",
     "fmcw_spectrum_forward",
@@ -744,8 +709,8 @@ def _require_operators(
     the JIT route turns that into a failure deep inside a kernel call.
 
     A validated artifact records the full symbol list it registers, so the
-    packaged and developer routes check all of them. The seven-family sample
-    above is the fallback for the JIT route, which has no record to consult.
+    packaged and developer routes check all of them. ``_REQUIRED_OPERATORS``
+    is what the JIT route checks, since it has no record to consult.
     """
 
     required = tuple(symbols) if symbols is not None else _REQUIRED_OPERATORS

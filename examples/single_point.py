@@ -55,8 +55,7 @@ from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  
 from witwin.core.identity import reserve_antenna_id  # noqa: E402
 
 from witwin.radar import Noise, PointTargets, Radar  # noqa: E402
-
-SPEED_OF_LIGHT_M_PER_S = 299792458.0
+from witwin.radar.policy import SPEED_OF_LIGHT_M_PER_S  # noqa: E402
 
 CONFIG = {
     "num_tx": 3,

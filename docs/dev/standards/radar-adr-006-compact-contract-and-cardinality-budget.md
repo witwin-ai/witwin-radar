@@ -114,22 +114,22 @@ exist.
 
 ## Acceptance evidence (Phase 5)
 
-- `tests/test_phase5_budget.py::test_a_multipath_frame_costs_exactly_two_host_observations`
-- `tests/test_phase5_budget.py::test_multipath_costs_no_more_per_frame_than_line_of_sight`
-- `tests/test_phase5_budget.py::test_the_native_join_adds_no_host_observation_of_its_own`
-- `tests/test_phase5_budget.py::test_freezing_a_multipath_leg_costs_four_copies_and_four_synchronizations`
-- `tests/test_phase4_two_way.py::test_compose_performs_no_host_observation_at_all`
-- `tests/test_phase4_two_way.py::test_freeze_host_reads_are_counted`
+- `tests/test_join_host_budget.py::test_a_multipath_frame_costs_exactly_two_host_observations`
+- `tests/test_join_host_budget.py::test_multipath_costs_no_more_per_frame_than_line_of_sight`
+- `tests/test_join_host_budget.py::test_the_native_join_adds_no_host_observation_of_its_own`
+- `tests/test_join_host_budget.py::test_freezing_a_multipath_leg_costs_four_copies_and_four_synchronizations`
+- `tests/test_two_way_composer.py::test_compose_performs_no_host_observation_at_all`
+- `tests/test_two_way_composer.py::test_freeze_host_reads_are_counted`
 
 ## Acceptance evidence (Phase 4)
 
-- `tests/test_phase4_adapter.py::test_per_frame_budget_is_one_validation_copy_per_leg`
-- `tests/test_phase4_adapter.py::test_freeze_is_never_called_per_frame` (a
+- `tests/test_channel_adapter.py::test_per_frame_budget_is_one_validation_copy_per_leg`
+- `tests/test_channel_adapter.py::test_freeze_is_never_called_per_frame` (a
   counting monkeypatch: two preparations total across five frames)
-- `tests/test_phase4_spike_e2e.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
-- `tests/test_phase4_import_boundary.py::test_no_hot_path_host_observation_in_the_new_modules`
-- `tests/test_phase4_spike_e2e.py::test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients`
-- `tests/test_phase4_adapter.py::test_jvp_publishes_delay_rate_and_refuses_to_invent_one`
+- `tests/test_single_site_end_to_end.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
+- `tests/test_import_boundary.py::test_no_hot_path_host_observation_in_the_new_modules`
+- `tests/test_single_site_end_to_end.py::test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients`
+- `tests/test_channel_adapter.py::test_jvp_publishes_delay_rate_and_refuses_to_invent_one`
 
 ## Amendment (Phase 7): a frame of slow-time slots costs one frame
 
@@ -179,11 +179,11 @@ unchanged and still measured at zero.
 
 ## Acceptance evidence (Phase 7)
 
-- `tests/test_phase5_budget.py::test_the_per_frame_host_budget_is_flat_in_slot_count`
-- `tests/test_phase6_launch_budget.py::test_the_launch_count_is_flat_in_slot_count`
-- `tests/test_phase7_slot_batching.py::test_batched_slots_equal_a_per_slot_loop`
-- `tests/test_phase7_slot_batching.py::test_pair_count_grows_linearly_not_quadratically`
-- `tests/test_phase7_slot_batching.py::test_the_batched_replay_is_exactly_one_consumer_call_per_leg`
+- `tests/test_join_host_budget.py::test_the_per_frame_host_budget_is_flat_in_slot_count`
+- `tests/test_synthesis_launch_budget.py::test_the_launch_count_is_flat_in_slot_count`
+- `tests/test_slot_batching.py::test_batched_slots_equal_a_per_slot_loop`
+- `tests/test_slot_batching.py::test_pair_count_grows_linearly_not_quadratically`
+- `tests/test_slot_batching.py::test_the_batched_replay_is_exactly_one_consumer_call_per_leg`
 
 ## Amendment (Phase 10): the record is machine-readable
 
@@ -208,8 +208,8 @@ them on every row:
   stage is an operator.
 
 The two budget tests are unchanged and remain the measurement;
-`tests/test_phase6_launch_budget.py` counts launches in a running frame and
-`tests/test_phase9_backward_budget.py` counts them in a backward pass. The
+`tests/test_synthesis_launch_budget.py` counts launches in a running frame and
+`tests/test_backward_budget.py` counts them in a backward pass. The
 manifest is the DECLARATION, the tests are the MEASUREMENT, and neither
 replaces the other. This amendment adds no number and relaxes none: every
 declared value is the value the existing tests already measure.
@@ -231,6 +231,6 @@ one owner per domain rather than one device flag.
 
 - `ci/check_native_bindings.py` (every column present on all 34 operators; the
   manifest symbol set equals the packaged sidecar's `operator_symbols`)
-- `tests/test_phase10_binding_registry.py` (the gate fires on a mutated copy)
-- `tests/test_phase6_launch_budget.py`, `tests/test_phase9_backward_budget.py`
+- `tests/test_native_binding_registry.py` (the gate fires on a mutated copy)
+- `tests/test_synthesis_launch_budget.py`, `tests/test_backward_budget.py`
   (unchanged, still the measurement)

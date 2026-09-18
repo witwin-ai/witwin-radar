@@ -28,14 +28,12 @@
 
 #include <cuda_runtime.h>
 #include "fmcw_phase.cuh"
+#include "fmcw_tdm.cuh"
 
 #include <cstdint>
 #include <cmath>
-#include <limits>
 
 namespace {
-
-constexpr double kTwoPiD = 6.283185307179586476925286766559;
 
 struct BeatPhase {
   float sin_phi;
@@ -44,32 +42,6 @@ struct BeatPhase {
   double dphi_dtau_rt;
   double dphi_dtau_rate;
 };
-
-// The TDM slot time of one (chirp, sensor pair) cell. Slots run in a single
-// sequence across the frame: slot `c * num_tx + tx` starts `slot * T_chirp`
-// into it, so two sensor pairs driven by different transmitters within the same
-// chirp index are a whole chirp period apart in slow time.
-__device__ __forceinline__ double slot_time(
-    const int chirp,
-    const int tx_index,
-    const int num_tx,
-    const double chirp_period_s) {
-  const int64_t slot = static_cast<int64_t>(chirp) * num_tx + tx_index;
-  return static_cast<double>(slot) * chirp_period_s;
-}
-
-// A memory-safety backstop on the per-segment transmitter table, matching the
-// one on `path_offsets`: the host wrapper checks the table's shape but never
-// reads its VALUES, because doing so per frame would be the D2H the
-// fixed-topology capability exists to avoid.
-__device__ __forceinline__ int clamped_tx_index(
-    const int32_t* __restrict__ segment_tx_index,
-    const int segment,
-    const int num_tx) {
-  int tx = static_cast<int>(segment_tx_index[segment]);
-  tx = tx < 0 ? 0 : tx;
-  return tx >= num_tx ? num_tx - 1 : tx;
-}
 
 // Phase of one path at one (chirp, sample) grid point. The cycle count is a
 // large number  -  hundreds of cycles for a metre-scale target  -  so it is
@@ -111,17 +83,7 @@ __global__ void fmcw_beat_forward_kernel(
     return;
   }
 
-  // A memory-safety backstop, not a validation policy. The host wrapper checks
-  // the table's shape but never reads its VALUES -- doing so per frame would be
-  // the D2H the fixed-topology capability exists to avoid. Clamping keeps a
-  // malformed table from walking off the path arrays; it does NOT make the
-  // result meaningful. The production route cannot reach here with a bad table:
-  // TwoWayComposer.freeze validates the partition on the host at freeze time,
-  // where the table is still a Python list and checking it is free.
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const double t_slot = slot_time(
       chirp,
@@ -132,7 +94,7 @@ __global__ void fmcw_beat_forward_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = beat_phase(
@@ -180,10 +142,7 @@ __global__ void fmcw_beat_jvp_kernel(
     return;
   }
 
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const double t_slot = slot_time(
       chirp,
@@ -194,7 +153,7 @@ __global__ void fmcw_beat_jvp_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = beat_phase(
@@ -253,7 +212,8 @@ __global__ void fmcw_beat_backward_kernel(
   }
 
   // Same backstop. On the production route path_segment is DERIVED from the
-  // same offsets table by _segment_of_each_path, so it cannot disagree with it.
+  // same offsets table by assembly.segment_of_each_row, so it cannot disagree
+  // with it.
   int64_t segment = path_segment[k];
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;
@@ -302,101 +262,6 @@ __global__ void fmcw_beat_backward_kernel(
   grad_weight_im[k] = static_cast<float>(d_w_im);
 }
 
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
-}
-
-void check_path_inputs(
-    const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
-    const torch::stable::Tensor& weight_re,
-    const torch::stable::Tensor& weight_im,
-    int num_paths) {
-  check_cuda_float(tau_rt, "tau_rt");
-  check_cuda_float(tau_rate, "tau_rate");
-  check_cuda_float(weight_re, "weight_re");
-  check_cuda_float(weight_im, "weight_im");
-  STD_TORCH_CHECK(
-      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths &&
-          weight_re.numel() == num_paths && weight_im.numel() == num_paths,
-      "tau_rt, tau_rate, weight_re, and weight_im must each hold num_paths values.");
-}
-
-void check_output(
-    const torch::stable::Tensor& out_re,
-    const torch::stable::Tensor& out_im,
-    int num_chirps,
-    int num_segments,
-    int num_samples,
-    const char* name_re,
-    const char* name_im) {
-  check_cuda_float(out_re, name_re);
-  check_cuda_float(out_im, name_im);
-  STD_TORCH_CHECK(
-      out_re.sizes().equals(out_im.sizes()),
-      "beat output components must have the same shape.");
-  STD_TORCH_CHECK(
-      out_re.dim() == 3,
-      "beat output must have shape (chirps, segments, samples).");
-  STD_TORCH_CHECK(
-      out_re.size(0) == num_chirps && out_re.size(1) == num_segments &&
-          out_re.size(2) == num_samples,
-      "beat output shape disagrees with the declared grid.");
-}
-
-dim3 sample_grid(int num_samples, int num_segments, int num_chirps, int block) {
-  return dim3((num_samples + block - 1) / block, num_segments, num_chirps);
-}
-
-void check_tdm(
-    const torch::stable::Tensor& segment_tx_index,
-    int num_segments,
-    int num_tx) {
-  STD_TORCH_CHECK(num_tx > 0, "num_tx must be positive.");
-  check_cuda_int(segment_tx_index, "segment_tx_index");
-  STD_TORCH_CHECK(
-      segment_tx_index.numel() == static_cast<int64_t>(num_segments),
-      "segment_tx_index must hold one transmitter index per sensor-pair segment.");
-}
-
 }  // namespace
 
 void fmcw_beat_forward_cuda(
@@ -433,7 +298,7 @@ void fmcw_beat_forward_cuda(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
       "path_offsets must hold num_segments + 1 values.");
   check_tdm(segment_tx_index, segments, transmitters);
-  check_output(out_re, out_im, chirps, segments, samples, "out_re", "out_im");
+  check_output(out_re, out_im, chirps, segments, samples, "samples", "out_re", "out_im");
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       out_re.get_device_index());
@@ -510,6 +375,7 @@ void fmcw_beat_jvp_cuda(
       chirps,
       segments,
       samples,
+      "samples",
       "tan_out_re",
       "tan_out_im");
 
@@ -590,6 +456,7 @@ void fmcw_beat_backward_cuda(
       chirps,
       segments,
       samples,
+      "samples",
       "grad_out_re",
       "grad_out_im");
   check_path_inputs(

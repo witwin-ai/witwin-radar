@@ -1,10 +1,7 @@
 // Receiver frontend: phase noise, thermal noise, LNA, AGC, and the ADC.
 //
-// This is the Phase-6 native owner of the receive chain that
-// `NoiseModelRuntime` and `ReceiverChainRuntime` split between them in Torch
-// today. Like every other Phase-6 family it registers in the single
-// `_radar_native` library Radar ships (R-ADR-004; the Phase-10 rename made the
-// physical stem match this logical name).
+// Native owner of the receive chain. Registers in the single `_radar_native`
+// library Radar ships (R-ADR-004).
 //
 // THE ORDER IS FIXED HERE AND NOWHERE ELSE. The Python runtime applies these
 // operators in one sequence with no exceptions:
@@ -46,8 +43,11 @@
 //
 //   thermal: ONE Philox call per element, in linear index order; words 0 and 1
 //            become the Box-Muller pair, real component FIRST then imaginary.
-//   phase:   ONE Philox call per slow-time sample, in linear index order; word 0
-//            becomes the innovation and words 1 to 3 are discarded.
+//   phase:   per integer-second oscillator block, keyed by seed XOR a block
+//            hash, 41 Philox calls at stage 0: counter 0 draws the block
+//            endpoint, then one call per dyadic level (40) at the visited node
+//            index. Each call keeps the FIRST Box-Muller component and drops
+//            the second, and no draw depends on which queries were made.
 //
 // Oscillator phase is evaluated on actual timestamps by oscillator_phase_forward.
 // Its Brownian bridge is keyed by absolute dyadic time intervals, so the same
@@ -81,8 +81,8 @@
 // reduction, then one elementwise apply.
 //
 // THE QUANTIZER HAS NO BACKWARD AND NO JVP, ON PURPOSE. `round` is not
-// differentiable, and a straight-through surrogate is a modelling decision that
-// Phase 9 owns rather than a detail this file may choose. Its Python owner
+// differentiable, and a straight-through surrogate is a modelling decision
+// rather than a detail this file may choose. Its Python owner
 // raises on a grad-enabled or forward-dual input instead of silently detaching,
 // which is the difference between an unsupported operation and a wrong
 // gradient. This is the one deliberate exception to the three-per-family rule.
@@ -108,9 +108,9 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
 
@@ -486,45 +486,12 @@ __global__ void frontend_quantize_kernel(
   }
 }
 
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
 int checked_block(int64_t value) {
   const int block = checked_int(value, "block_size");
   STD_TORCH_CHECK(
       block >= 32 && block <= 1024 && (block & (block - 1)) == 0,
       "block_size must be a power of two between 32 and 1024.");
   return block;
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
 }
 
 void check_pair(
@@ -539,6 +506,80 @@ void check_pair(
       re.numel() == num_elements && im.numel() == num_elements,
       name_re,
       " and its imaginary partner must hold one value per signal element.");
+}
+
+void launch_agc_linear(
+    const torch::stable::Tensor& x_re,
+    const torch::stable::Tensor& x_im,
+    const torch::stable::Tensor& gain,
+    const torch::stable::Tensor& rms,
+    const torch::stable::Tensor& a_re,
+    const torch::stable::Tensor& a_im,
+    torch::stable::Tensor& out_re,
+    torch::stable::Tensor& out_im,
+    torch::stable::Tensor& inner_buffer,
+    int outer,
+    int groups,
+    int inner,
+    double target_rms,
+    double min_gain,
+    double max_gain,
+    int block) {
+  const int64_t elements =
+      static_cast<int64_t>(outer) * groups * static_cast<int64_t>(inner);
+  check_pair(x_re, x_im, elements, "x_re", "x_im");
+  check_pair(a_re, a_im, elements, "a_re", "a_im");
+  check_pair(out_re, out_im, elements, "out_re", "out_im");
+  check_cuda_float(gain, "gain");
+  check_cuda_float(rms, "rms");
+  check_cuda_float(inner_buffer, "inner");
+  STD_TORCH_CHECK(
+      gain.numel() == static_cast<int64_t>(groups) &&
+          rms.numel() == static_cast<int64_t>(groups) &&
+          inner_buffer.numel() == static_cast<int64_t>(groups),
+      "gain, rms, and inner must hold one value per AGC group.");
+
+  const torch::stable::accelerator::DeviceGuard device_guard(
+      out_re.get_device_index());
+  const cudaStream_t stream = current_cuda_stream(out_re);
+  constexpr int reduce_block = 256;
+  frontend_agc_inner_kernel<<<
+      dim3(groups, 1, 1),
+      dim3(reduce_block, 1, 1),
+      reduce_block * sizeof(double),
+      stream>>>(
+      x_re.const_data_ptr<float>(),
+      x_im.const_data_ptr<float>(),
+      a_re.const_data_ptr<float>(),
+      a_im.const_data_ptr<float>(),
+      inner_buffer.mutable_data_ptr<float>(),
+      outer,
+      groups,
+      inner);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+
+  frontend_agc_linear_kernel<<<
+      dim3(static_cast<unsigned int>((elements + block - 1) / block), 1, 1),
+      dim3(block, 1, 1),
+      0,
+      stream>>>(
+      x_re.const_data_ptr<float>(),
+      x_im.const_data_ptr<float>(),
+      gain.const_data_ptr<float>(),
+      rms.const_data_ptr<float>(),
+      inner_buffer.const_data_ptr<float>(),
+      a_re.const_data_ptr<float>(),
+      a_im.const_data_ptr<float>(),
+      out_re.mutable_data_ptr<float>(),
+      out_im.mutable_data_ptr<float>(),
+      elements,
+      outer,
+      groups,
+      inner,
+      static_cast<float>(target_rms),
+      static_cast<float>(min_gain),
+      static_cast<float>(max_gain));
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 }  // namespace
@@ -767,84 +808,6 @@ void frontend_agc_forward_cuda(
       inner);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
-
-namespace {
-
-void launch_agc_linear(
-    const torch::stable::Tensor& x_re,
-    const torch::stable::Tensor& x_im,
-    const torch::stable::Tensor& gain,
-    const torch::stable::Tensor& rms,
-    const torch::stable::Tensor& a_re,
-    const torch::stable::Tensor& a_im,
-    torch::stable::Tensor& out_re,
-    torch::stable::Tensor& out_im,
-    torch::stable::Tensor& inner_buffer,
-    int outer,
-    int groups,
-    int inner,
-    double target_rms,
-    double min_gain,
-    double max_gain,
-    int block) {
-  const int64_t elements =
-      static_cast<int64_t>(outer) * groups * static_cast<int64_t>(inner);
-  check_pair(x_re, x_im, elements, "x_re", "x_im");
-  check_pair(a_re, a_im, elements, "a_re", "a_im");
-  check_pair(out_re, out_im, elements, "out_re", "out_im");
-  check_cuda_float(gain, "gain");
-  check_cuda_float(rms, "rms");
-  check_cuda_float(inner_buffer, "inner");
-  STD_TORCH_CHECK(
-      gain.numel() == static_cast<int64_t>(groups) &&
-          rms.numel() == static_cast<int64_t>(groups) &&
-          inner_buffer.numel() == static_cast<int64_t>(groups),
-      "gain, rms, and inner must hold one value per AGC group.");
-
-  const torch::stable::accelerator::DeviceGuard device_guard(
-      out_re.get_device_index());
-  const cudaStream_t stream = current_cuda_stream(out_re);
-  constexpr int reduce_block = 256;
-  frontend_agc_inner_kernel<<<
-      dim3(groups, 1, 1),
-      dim3(reduce_block, 1, 1),
-      reduce_block * sizeof(double),
-      stream>>>(
-      x_re.const_data_ptr<float>(),
-      x_im.const_data_ptr<float>(),
-      a_re.const_data_ptr<float>(),
-      a_im.const_data_ptr<float>(),
-      inner_buffer.mutable_data_ptr<float>(),
-      outer,
-      groups,
-      inner);
-  STD_CUDA_KERNEL_LAUNCH_CHECK();
-
-  frontend_agc_linear_kernel<<<
-      dim3(static_cast<unsigned int>((elements + block - 1) / block), 1, 1),
-      dim3(block, 1, 1),
-      0,
-      stream>>>(
-      x_re.const_data_ptr<float>(),
-      x_im.const_data_ptr<float>(),
-      gain.const_data_ptr<float>(),
-      rms.const_data_ptr<float>(),
-      inner_buffer.const_data_ptr<float>(),
-      a_re.const_data_ptr<float>(),
-      a_im.const_data_ptr<float>(),
-      out_re.mutable_data_ptr<float>(),
-      out_im.mutable_data_ptr<float>(),
-      elements,
-      outer,
-      groups,
-      inner,
-      static_cast<float>(target_rms),
-      static_cast<float>(min_gain),
-      static_cast<float>(max_gain));
-  STD_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
-}  // namespace
 
 void frontend_agc_backward_cuda(
     const torch::stable::Tensor& x_re,

@@ -19,10 +19,9 @@ coexistence and import isolation run locally for the cells this machine can
 build; the Linux and `manylinux_2_28` cells are configured, reviewed, and
 recorded here rather than executed.
 
-So: **Phase 11 proceeds without waiting on any entry below.** None of them
-blocks it. What each one does is name the evidence that a later real CI run
-must produce before a release claim is made, so that "we never ran it" cannot
-later be mistaken for "it passed".
+**No entry below blocks development.** What each one does is name the
+evidence that a later real CI run must produce before a release claim is made,
+so that "we never ran it" cannot later be mistaken for "it passed".
 
 The one thing this register must never become is a place to move an inconvenient requirement. D6/P3 was a real policy contradiction when recorded; it is now resolved by the executable exact-runtime-identity policy described below. The remaining rows are still deferred evidence, not passing claims.
 

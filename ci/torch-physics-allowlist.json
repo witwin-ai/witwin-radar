@@ -99,14 +99,14 @@
       "module": "witwin/radar/processing/signal.py",
       "function": "window_values",
       "call": "torch.cos",
-      "occurrences": 5,
+      "occurrences": 4,
       "category": "dsp_window",
-      "reason": "Hann, Hamming and Blackman coefficients over the sample index. Five occurrences because Blackman needs two harmonics and each family names the axis once; the count is frozen so a sixth cannot appear unnoticed.",
+      "reason": "Hann, Hamming and Blackman coefficients over the sample index. Four occurrences because Blackman needs two harmonics and each family names the axis once; the count is frozen so a fifth cannot appear unnoticed.",
       "adr": "R-ADR-017"
     },
     {
       "module": "witwin/radar/processing/signal.py",
-      "function": "pulse_replica",
+      "function": "pulse_samples",
       "call": "torch.cos",
       "occurrences": 1,
       "category": "dsp_replica",
@@ -115,7 +115,7 @@
     },
     {
       "module": "witwin/radar/processing/signal.py",
-      "function": "pulse_replica",
+      "function": "pulse_samples",
       "call": "torch.sin",
       "occurrences": 1,
       "category": "dsp_replica",
@@ -126,9 +126,9 @@
       "module": "witwin/radar/radar.py",
       "function": "_place_antennas",
       "call": "torch.linalg.norm",
-      "occurrences": 8,
+      "occurrences": 5,
       "category": "freeze_time_pose",
-      "reason": "Validating the pose and orthonormalising the forward/right/up basis once per radar: three degeneracy checks, three normalisations, and two more for a polarization vector that must be non-zero and transverse to the boresight.",
+      "reason": "Validating the pose once per radar: three degeneracy checks on forward, up and their cross product, and two for a polarization vector that must be non-zero and transverse to the boresight. The basis itself is orthonormalised by _world_from_local_matrix.",
       "adr": "R-ADR-007"
     },
     {
@@ -146,7 +146,7 @@
       "call": "torch.exp",
       "occurrences": 1,
       "category": "result_assembly",
-      "reason": "ScalarRcsResponse's per-target complex assembly: one complex number per target, broadcast across its rows. R-ADR-007 places it inside the Torch allowlist by name, and its aspect-dependent successor is native (scatter_response_aspect). Already frozen by equality in tests/test_phase6_no_torch_physics.py::PHASE9_RCS_TORCH_CALLS.",
+      "reason": "ScalarRcsResponse's per-target complex assembly: one complex number per target, broadcast across its rows. R-ADR-007 places it inside the Torch allowlist by name, and its aspect-dependent successor is native (scatter_response_aspect).",
       "adr": "R-ADR-007"
     }
   ]

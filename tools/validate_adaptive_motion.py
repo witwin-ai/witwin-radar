@@ -9,10 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from validate_doppler_motion import Trajectory, make_radar
-from validate_heavy_multipath import LinearPoint, room
 from witwin.core import Scene
 
+from tools.validate_doppler_motion import Trajectory, make_radar
+from tools.validate_heavy_multipath import LinearPoint, room
 from witwin.radar import Motion, PointTargets
 from witwin.radar.processing.range_doppler import fmcw_range_fft
 

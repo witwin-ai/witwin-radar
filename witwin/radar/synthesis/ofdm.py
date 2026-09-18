@@ -257,30 +257,16 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     prefix - are refused before any kernel launch rather than producing a
     plausible cube that is wrong by a factor nobody notices.
 
-    When the batch carries a ``frequency_response`` the cube is WIDEBAND: each
-    subcarrier consumes its own column, evaluated by Channel at that
-    subcarrier's frequency, instead of the reference coefficient. The choice is
-    made by the batch, not by an argument here, because a band that arrived and
-    was not consumed is exactly the silent narrowband answer rule R8 exists to
-    prevent.
-
     A dead row contributes exactly zero. That is enforced on the WEIGHT, with
     ``torch.where``, so the row is inert in the primal and carries no gradient
     to anything it was built from. Zeroing the output afterwards would leave a
-    live gradient path back through a row that does not exist. The mask is
-    ``[K]`` and broadcasts over the band: whether a row exists is geometry, not
-    frequency.
+    live gradient path back through a row that does not exist.
     """
 
     require_ofdm_compatible(batch, spec)
-    if batch.frequency_response is None:
-        transfer = batch.complex_transfer_ref
-        mask = batch.row_valid
-    else:
-        transfer = batch.frequency_response
-        mask = None if batch.row_valid is None else batch.row_valid.unsqueeze(1)
-    if mask is not None:
-        transfer = torch.where(mask, transfer, torch.zeros_like(transfer))
+    transfer = batch.complex_transfer_ref
+    if batch.row_valid is not None:
+        transfer = torch.where(batch.row_valid, transfer, torch.zeros_like(transfer))
     return synthesize_cfr_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
 
 

@@ -16,20 +16,14 @@ import numpy as np
 import pytest
 import torch
 from conftest import (
-    FAST_CONFIG,
-    STANDARD_CONFIG,
+    VALIDATION_FAST_CONFIG,
+    VALIDATION_FULL_CONFIG,
     make_processing_axes,
-    make_scene_radar_or_skip,
+    scene_radar,
     simulate_point_targets,
 )
 
 pytestmark = pytest.mark.gpu
-
-# ``num_doppler_bins`` used to be restated here beside ``chirp_per_frame``. The
-# loader refuses it now, and it was always the same number: a Doppler bin count
-# IS the chirp count, read back from ``radar.waveform.chirps_per_frame``.
-_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32}
-_VFULL = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 
 def _local(distance, *, x=0.0, y=0.0):
@@ -46,7 +40,7 @@ class TestTwoTargetsDifferentRanges:
     """Two targets at different ranges should both be detected."""
 
     def test_both_detected(self):
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         d1, d2 = 2.0, 5.0
         frame = simulate_point_targets(radar, [_local(d1), _local(d2)])
         cloud = frame.point_cloud(positive_velocity_only=False)
@@ -57,7 +51,7 @@ class TestTwoTargetsDifferentRanges:
         assert np.any(np.abs(ranges - d2) < tol), (d2, ranges)
 
     def test_rd_map_shows_two_range_peaks(self):
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         d1, d2 = 2.0, 4.5
         frame = simulate_point_targets(radar, [_local(d1), _local(d2)])
 
@@ -78,7 +72,7 @@ class TestTwoTargetsDifferentRanges:
         same cross section on this route.
         """
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         d1, d2 = 2.0, 5.0
         frame = simulate_point_targets(radar, [_local(d1), _local(d2)])
 
@@ -109,7 +103,7 @@ class TestTwoTargetsDifferentVelocities:
         bins are the two declared closing speeds, one positive and one negative.
         """
 
-        radar = make_scene_radar_or_skip(_VFULL)
+        radar = scene_radar(VALIDATION_FULL_CONFIG)
         distance = 3.0
         v1, v2 = 1.0, -1.5  # closing and receding
         frame = simulate_point_targets(
@@ -137,11 +131,11 @@ class TestRangeResolutionLimit:
     """Two targets closer than the range resolution merge into one."""
 
     def test_unresolvable_targets_merge(self):
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         centre = 3.0
-        resolution = make_processing_axes(_VFAST).range_bin_m
-        delta = frame_delta = resolution * 0.3
-        frame = simulate_point_targets(radar, [_local(centre - delta), _local(centre + frame_delta)])
+        resolution = make_processing_axes(VALIDATION_FAST_CONFIG).range_bin_m
+        delta = resolution * 0.3
+        frame = simulate_point_targets(radar, [_local(centre - delta), _local(centre + delta)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
         ranges = cloud.range_m.cpu().numpy()
@@ -155,9 +149,9 @@ class TestRangeResolutionLimit:
     def test_resolvable_targets_separate(self):
         """Two targets 5 bins apart leave a valley between their peaks."""
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         d1 = 3.0
-        resolution = make_processing_axes(_VFAST).range_bin_m
+        resolution = make_processing_axes(VALIDATION_FAST_CONFIG).range_bin_m
         frame = simulate_point_targets(radar, [_local(d1), _local(d1 + resolution * 5)])
         profile = _range_profile(frame)
         axis = frame.axes.range_m.cpu().numpy()
@@ -173,17 +167,16 @@ class TestRangeResolutionLimit:
 class TestPointCloudOutputFormat:
     """The published point cloud is a typed record, not a bare column matrix.
 
-    ``sigproc.process_pc`` returned an ``(N, 6)`` numpy array whose column
-    meanings lived in a comment. ``processing.point_cloud`` publishes a
-    ``PointCloud`` with four named tensors and ``POINT_CLOUD_COLUMNS`` as the
-    single statement of the flat order, so the format test is about the record
-    and the adapter's column order at once.
+    ``processing.point_cloud`` publishes a ``PointCloud`` with four named
+    tensors and ``POINT_CLOUD_COLUMNS`` as the single statement of the flat
+    order, so the format test is about the record and the flat column order at
+    once.
     """
 
     def test_the_record_and_its_column_order_agree(self):
         from witwin.radar.processing import POINT_CLOUD_COLUMNS
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(2.0), _local(4.0)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
@@ -200,9 +193,7 @@ class TestPointCloudOutputFormat:
     def test_a_world_with_no_target_is_refused_rather_than_answered(self):
         """The empty scene is a REFUSAL on this route, and that is the answer.
 
-        ``sigproc``'s pipeline answered an empty interpolator with an empty
-        ``(0, 6)`` array, because a solver that traces nothing produces nothing.
-        A two-way join is not that: it is frozen against a declared set of
+        A two-way join is frozen against a declared set of
         scatter sites, and a round trip with no site is not a round trip with
         zero rows - it is a topology that cannot be frozen. The refusal is
         pinned so the deletion of the old behaviour is a recorded change of
@@ -211,7 +202,7 @@ class TestPointCloudOutputFormat:
 
         from witwin.radar.simulation import ScatterSitePolicy
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         with pytest.raises(ValueError, match="site_count must be a positive int"):
             simulate_point_targets(radar, [])
 

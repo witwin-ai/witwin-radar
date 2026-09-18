@@ -28,13 +28,11 @@
 
 #include <cuda_runtime.h>
 #include "fmcw_phase.cuh"
+#include "fmcw_tdm.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
-
-constexpr double kTwoPiD = 6.283185307179586476925286766559;
 
 struct Complex {
   float re;
@@ -67,45 +65,10 @@ __device__ __forceinline__ float dirichlet_scale(const float x, const float n) {
   return sinf((n + 0.5f) * x) / sh;
 }
 
-__device__ __forceinline__ float dirichlet_scale_grad(const float x, const float n) {
-  const float sh = sinf(0.5f * x);
-  if (fabsf(sh) < 1.0e-7f) {
-    return 0.0f;
-  }
-  const float ch = cosf(0.5f * x);
-  const float sn = sinf((n + 0.5f) * x);
-  const float cn = cosf((n + 0.5f) * x);
-  return ((n + 0.5f) * cn * sh - 0.5f * sn * ch) / (sh * sh);
-}
-
 __device__ __forceinline__ Complex dirichlet(const float x, const float n) {
   const float scale = dirichlet_scale(x, n);
   const Complex phase = cexp_cycles(-static_cast<double>(n) * x / kTwoPiD);
   return {scale * phase.re, scale * phase.im};
-}
-
-__device__ __forceinline__ Complex dirichlet_grad(const float x, const float n) {
-  const float scale = dirichlet_scale(x, n);
-  const Complex phase = cexp_cycles(-static_cast<double>(n) * x / kTwoPiD);
-  return cmul({dirichlet_scale_grad(x, n), -n * scale}, phase);
-}
-
-__device__ __forceinline__ double slot_time(
-    const int chirp,
-    const int tx_index,
-    const int num_tx,
-    const double chirp_period_s) {
-  const int64_t slot = static_cast<int64_t>(chirp) * num_tx + tx_index;
-  return static_cast<double>(slot) * chirp_period_s;
-}
-
-__device__ __forceinline__ int clamped_tx_index(
-    const int32_t* __restrict__ segment_tx_index,
-    const int segment,
-    const int num_tx) {
-  int tx = static_cast<int>(segment_tx_index[segment]);
-  tx = tx < 0 ? 0 : tx;
-  return tx >= num_tx ? num_tx - 1 : tx;
 }
 
 __device__ __forceinline__ SpectrumResponse spectrum_response(
@@ -133,9 +96,12 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
             {static_cast<float>(tr/n),static_cast<float>(ti/n)},
             {static_cast<float>(rr/n),static_cast<float>(ri/n)}};
   }
-  const double drift = 0.0;
-  const double base_cycles = carrier_hz * tau + carrier_rate_hz * drift +
-      slope * tau * (t_start - 0.5 * tau);
+  // Stationary closed form: one delay for the whole chirp makes the fast-time
+  // phase linear in m, so the 1/N DFT is a Dirichlet kernel times the phase at
+  // m = 0 (the phase owner evaluated with rate 0 at u = t_start). Reached only
+  // with derivatives == false, so the derivative slots are never read.
+  const double base_cycles =
+      fmcw_phase_terms(tau, 0.0, t_slot, t_start, slope, carrier_hz, carrier_rate_hz).cycles;
   const Complex phase = cexp_cycles(base_cycles);
   const double k0 = slope * tau * sample_period_s * num_bins;
   const float x = static_cast<float>(
@@ -143,28 +109,10 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
   const float n = 0.5f * static_cast<float>(num_bins - 1);
   const float inv_n = 1.0f / static_cast<float>(num_bins);
   const Complex d = dirichlet(x, n);
-  const Complex dg = dirichlet_grad(x, n);
   Complex value = cmul(d, phase);
   value.re *= inv_n;
   value.im *= inv_n;
-
-  const double dx_dtau = -kTwoPiD * slope * sample_period_s;
-  const double dphi_dtau = kTwoPiD *
-      (carrier_hz + slope * t_start - slope * tau);
-  Complex shape_grad = cmul(dg, phase);
-  shape_grad.re *= static_cast<float>(dx_dtau * inv_n);
-  shape_grad.im *= static_cast<float>(dx_dtau * inv_n);
-  const Complex d_tau = {
-      shape_grad.re - static_cast<float>(dphi_dtau) * value.im,
-      shape_grad.im + static_cast<float>(dphi_dtau) * value.re};
-  const double dphi_rate = t_slot * (dphi_dtau + kTwoPiD * carrier_rate_hz);
-  Complex rate_shape = cmul(dg, phase);
-  rate_shape.re *= static_cast<float>(dx_dtau * t_slot * inv_n);
-  rate_shape.im *= static_cast<float>(dx_dtau * t_slot * inv_n);
-  const Complex d_rate = {
-      rate_shape.re - static_cast<float>(dphi_rate) * value.im,
-      rate_shape.im + static_cast<float>(dphi_rate) * value.re};
-  return {value, d_tau, d_rate};
+  return {value, {0.0f, 0.0f}, {0.0f, 0.0f}};
 }
 __global__ void fmcw_spectrum_forward_kernel(
     const float* __restrict__ tau_rt,
@@ -191,14 +139,13 @@ __global__ void fmcw_spectrum_forward_kernel(
   if (bin >= num_bins || segment >= num_segments) {
     return;
   }
-  int64_t start = max(static_cast<int64_t>(0), path_offsets[segment]);
-  int64_t end = min(static_cast<int64_t>(num_paths), path_offsets[segment + 1]);
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
   const double t_slot = slot_time(
       chirp, clamped_tx_index(segment_tx_index, segment, num_tx),
       num_tx, chirp_period_s);
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
@@ -243,16 +190,13 @@ __global__ void fmcw_spectrum_jvp_kernel(
   if (bin >= num_bins || segment >= num_segments) {
     return;
   }
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
   const double t_slot = slot_time(
       chirp, clamped_tx_index(segment_tx_index, segment, num_tx),
       num_tx, chirp_period_s);
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
     const SpectrumResponse response = spectrum_response(
@@ -353,101 +297,6 @@ __global__ void fmcw_spectrum_backward_kernel(
   grad_weight_re[k] = static_cast<float>(d_wr);
   grad_weight_im[k] = static_cast<float>(d_wi);
 }
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
-}
-
-void check_path_inputs(
-    const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
-    const torch::stable::Tensor& weight_re,
-    const torch::stable::Tensor& weight_im,
-    int num_paths) {
-  check_cuda_float(tau_rt, "tau_rt");
-  check_cuda_float(tau_rate, "tau_rate");
-  check_cuda_float(weight_re, "weight_re");
-  check_cuda_float(weight_im, "weight_im");
-  STD_TORCH_CHECK(
-      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths &&
-          weight_re.numel() == num_paths && weight_im.numel() == num_paths,
-      "tau_rt, tau_rate, weight_re, and weight_im must each hold num_paths values.");
-}
-
-void check_output(
-    const torch::stable::Tensor& out_re,
-    const torch::stable::Tensor& out_im,
-    int num_chirps,
-    int num_segments,
-    int num_samples,
-    const char* name_re,
-    const char* name_im) {
-  check_cuda_float(out_re, name_re);
-  check_cuda_float(out_im, name_im);
-  STD_TORCH_CHECK(
-      out_re.sizes().equals(out_im.sizes()),
-      "spectrum output components must have the same shape.");
-  STD_TORCH_CHECK(
-      out_re.dim() == 3,
-      "spectrum output must have shape (chirps, segments, samples).");
-  STD_TORCH_CHECK(
-      out_re.size(0) == num_chirps && out_re.size(1) == num_segments &&
-          out_re.size(2) == num_samples,
-      "spectrum output shape disagrees with the declared grid.");
-}
-
-dim3 sample_grid(int num_samples, int num_segments, int num_chirps, int block) {
-  return dim3((num_samples + block - 1) / block, num_segments, num_chirps);
-}
-
-void check_tdm(
-    const torch::stable::Tensor& segment_tx_index,
-    int num_segments,
-    int num_tx) {
-  STD_TORCH_CHECK(num_tx > 0, "num_tx must be positive.");
-  check_cuda_int(segment_tx_index, "segment_tx_index");
-  STD_TORCH_CHECK(
-      segment_tx_index.numel() == static_cast<int64_t>(num_segments),
-      "segment_tx_index must hold one transmitter index per sensor-pair segment.");
-}
-
 }  // namespace
 
 void fmcw_spectrum_forward_cuda(
@@ -463,7 +312,7 @@ void fmcw_spectrum_forward_cuda(
     int64_t num_segments,
     int64_t num_tx,
     int64_t num_chirps,
-    int64_t num_samples,
+    int64_t num_bins,
     double sample_period_s,
     double chirp_period_s,
     double slope_hz_per_s,
@@ -474,23 +323,23 @@ void fmcw_spectrum_forward_cuda(
   const int segments = checked_int(num_segments, "num_segments");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
-  const int samples = checked_int(num_samples, "num_samples");
+  const int bins = checked_int(num_bins, "num_bins");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
-  STD_TORCH_CHECK(samples > 0, "num_samples must be positive.");
+  STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
   check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
   check_cuda_long(path_offsets, "path_offsets");
   STD_TORCH_CHECK(
       path_offsets.numel() == static_cast<int64_t>(segments) + 1,
       "path_offsets must hold num_segments + 1 values.");
   check_tdm(segment_tx_index, segments, transmitters);
-  check_output(out_re, out_im, chirps, segments, samples, "out_re", "out_im");
+  check_output(out_re, out_im, chirps, segments, bins, "bins", "out_re", "out_im");
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       out_re.get_device_index());
   constexpr int block_size = 256;
   fmcw_spectrum_forward_kernel<<<
-      sample_grid(samples, segments, chirps, block_size),
+      sample_grid(bins, segments, chirps, block_size),
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(out_re)>>>(
@@ -505,7 +354,7 @@ void fmcw_spectrum_forward_cuda(
       paths,
       segments,
       transmitters,
-      samples,
+      bins,
       sample_period_s,
       chirp_period_s,
       slope_hz_per_s,
@@ -532,7 +381,7 @@ void fmcw_spectrum_jvp_cuda(
     int64_t num_segments,
     int64_t num_tx,
     int64_t num_chirps,
-    int64_t num_samples,
+    int64_t num_bins,
     double sample_period_s,
     double chirp_period_s,
     double slope_hz_per_s,
@@ -543,10 +392,10 @@ void fmcw_spectrum_jvp_cuda(
   const int segments = checked_int(num_segments, "num_segments");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
-  const int samples = checked_int(num_samples, "num_samples");
+  const int bins = checked_int(num_bins, "num_bins");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
-  STD_TORCH_CHECK(samples > 0, "num_samples must be positive.");
+  STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
   check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
   check_path_inputs(
       tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, paths);
@@ -560,7 +409,8 @@ void fmcw_spectrum_jvp_cuda(
       tan_out_im,
       chirps,
       segments,
-      samples,
+      bins,
+      "bins",
       "tan_out_re",
       "tan_out_im");
 
@@ -568,7 +418,7 @@ void fmcw_spectrum_jvp_cuda(
       tan_out_re.get_device_index());
   constexpr int block_size = 256;
   fmcw_spectrum_jvp_kernel<<<
-      sample_grid(samples, segments, chirps, block_size),
+      sample_grid(bins, segments, chirps, block_size),
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(tan_out_re)>>>(
@@ -587,7 +437,7 @@ void fmcw_spectrum_jvp_cuda(
       paths,
       segments,
       transmitters,
-      samples,
+      bins,
       sample_period_s,
       chirp_period_s,
       slope_hz_per_s,
@@ -614,7 +464,7 @@ void fmcw_spectrum_backward_cuda(
     int64_t num_segments,
     int64_t num_tx,
     int64_t num_chirps,
-    int64_t num_samples,
+    int64_t num_bins,
     double sample_period_s,
     double chirp_period_s,
     double slope_hz_per_s,
@@ -625,10 +475,10 @@ void fmcw_spectrum_backward_cuda(
   const int segments = checked_int(num_segments, "num_segments");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int chirps = checked_int(num_chirps, "num_chirps");
-  const int samples = checked_int(num_samples, "num_samples");
+  const int bins = checked_int(num_bins, "num_bins");
   STD_TORCH_CHECK(segments > 0, "num_segments must be positive.");
   STD_TORCH_CHECK(chirps > 0, "num_chirps must be positive.");
-  STD_TORCH_CHECK(samples > 0, "num_samples must be positive.");
+  STD_TORCH_CHECK(bins > 0, "num_bins must be positive.");
   check_path_inputs(tau_rt, tau_rate, weight_re, weight_im, paths);
   check_cuda_long(path_segment, "path_segment");
   STD_TORCH_CHECK(
@@ -640,7 +490,8 @@ void fmcw_spectrum_backward_cuda(
       grad_out_im,
       chirps,
       segments,
-      samples,
+      bins,
+      "bins",
       "grad_out_re",
       "grad_out_im");
   check_path_inputs(
@@ -674,7 +525,7 @@ void fmcw_spectrum_backward_cuda(
       segments,
       transmitters,
       chirps,
-      samples,
+      bins,
       sample_period_s,
       chirp_period_s,
       slope_hz_per_s,

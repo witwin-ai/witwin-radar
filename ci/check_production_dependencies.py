@@ -1,7 +1,7 @@
 """G1: the radar production tree names no ray-tracing runtime, by any route.
 
-Phase 10 work item 7 forbids `drjit`, `rayd.drjit` and `@dr.wrap` from
-production. Four separate scans, because an import statement is only the
+R-ADR-004 forbids `drjit`, `rayd.drjit` and `@dr.wrap` from production.
+Four separate scans, because an import statement is only the
 easiest of the four ways to reach one:
 
 * **imports** (AST). `import drjit`, `from rayd.drjit import x`,
@@ -24,12 +24,12 @@ easiest of the four ways to reach one:
   METADATA as much as of the code, so it is checked here rather than only in a
   packaging test.
 
-`tests/test_phase4_import_boundary.py` already probes a live process for
+`tests/test_import_boundary.py` already probes a live process for
 `drjit` in `sys.modules`. That catches an import that RUNS. This catches one
 that is merely present, in a module the probe's import never reaches, and it
 does so without importing anything.
 
-Run it directly, or through `tests/test_phase10_static_gates.py`, which also
+Run it directly, or through `tests/test_static_gates.py`, which also
 proves it FIRES by writing a violation into a temporary copy of the tree.
 """
 
@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import tomllib
+from _ast_scan import dotted, imported_modules, production_modules
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,38 +74,8 @@ class Violation:
         return f"{self.module}:{self.line}: {self.kind}: {self.detail}"
 
 
-def _dotted(node: ast.AST) -> str:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-    return ".".join(reversed(parts))
-
-
 def _is_forbidden_module(module: str) -> bool:
     return any(module == forbidden or module.startswith(f"{forbidden}.") for forbidden in FORBIDDEN_MODULES)
-
-
-def _imported_modules(node: ast.Import | ast.ImportFrom) -> list[str]:
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    if node.level:
-        return []
-    base = node.module or ""
-    if not base:
-        return []
-    if _is_forbidden_module(base):
-        return [base]
-    return [f"{base}.{alias.name}" for alias in node.names]
-
-
-def production_modules(root: Path) -> list[Path]:
-    """Every Python file that ships inside the `witwin` package."""
-
-    package = root / "witwin"
-    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def scan_module(path: Path, root: Path) -> tuple[list[Violation], dict[str, int]]:
@@ -118,7 +89,7 @@ def scan_module(path: Path, root: Path) -> tuple[list[Violation], dict[str, int]
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for module in _imported_modules(node):
+            for module in imported_modules(node, _is_forbidden_module):
                 if _is_forbidden_module(module):
                     violations.append(Violation(relative, node.lineno, "import", module))
             continue
@@ -126,7 +97,7 @@ def scan_module(path: Path, root: Path) -> tuple[list[Violation], dict[str, int]
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for decorator in node.decorator_list:
                 target = decorator.func if isinstance(decorator, ast.Call) else decorator
-                name = _dotted(target)
+                name = dotted(target)
                 if any(name == suffix or name.endswith(f".{suffix}") for suffix in FORBIDDEN_DECORATOR_SUFFIXES):
                     violations.append(Violation(relative, node.lineno, "decorator", f"@{name}"))
             continue
@@ -187,10 +158,8 @@ def check_declared_dependencies(root: Path) -> list[str]:
     so as its own build-time source link, never as a Radar runtime
     requirement.
 
-    Before this check the property had exactly one guard in the default test
-    set, `tests/test_phase10_wheel_packaging.py`; the phase-5 metadata scan
-    knows only the `drjit` and `rayd-drjit` spellings and is blind to a bare
-    `rayd`. A frozen property belongs in a gate that runs in `quick`.
+    A frozen property belongs in a gate that runs in `quick`, not only in a
+    packaging test.
     """
 
     failures = []

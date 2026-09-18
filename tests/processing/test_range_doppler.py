@@ -1,8 +1,8 @@
 """The slow-time transform, and the one place a Doppler sign is reconciled.
 
-One closing target, driven through the production forward-AD seam so that
-``delay_rate`` is what the propagation consumer produced and not a number this
-fixture invented. The three waveform grids were solved so that their coherent
+One closing target carrying the fixture's closed-form ``delay_rate`` on its
+composed row, which is how the frozen-weight synthesis kernels take a rate. The
+three waveform grids were solved so that their coherent
 processing intervals MATCH, which is why all three land on the same signed bin
 with the same velocity resolution and why the comparison below is an equality
 rather than a tolerance.
@@ -23,8 +23,10 @@ from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
 
 from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_doppler_map, range_profile
-from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 from witwin.radar.synthesis.assembly import SynthesisResult
+from witwin.radar.synthesis.fmcw import synthesize_fmcw
+from witwin.radar.synthesis.ofdm import synthesize_ofdm
+from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
 pytestmark = pytest.mark.gpu
 
@@ -67,23 +69,13 @@ def _peak(rd, segment):
     return flat // magnitude.shape[1], flat % magnitude.shape[1]
 
 
-def test_the_frozen_row_carries_the_delay_rate_the_geometry_was_solved_for(closing):
-    """The seam, before the transform: 3.744 m/s of closing, to 1e-7 relative."""
-
-    batch, row, _ = closing
-    assert batch.delay_rate is not None
-    measured = float(batch.delay_rate[row])
-    assert measured == pytest.approx(grid.DELAY_RATE, rel=1e-6), measured
-    assert measured < 0.0, "a closing target shortens the round trip"
-
-
 # ---------------------------------------------------------------------------
-# 4 and 5 - the exact Doppler bin, in all three waveforms
+# And 5 - the exact Doppler bin, in all three waveforms
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("name,spec_of,synthesize,maker", WAVEFORMS)
-def test_the_closing_target_lands_on_the_solved_doppler_bin(closing, name, spec_of, synthesize, maker, capsys):
+def test_the_closing_target_lands_on_the_solved_doppler_bin(closing, name, spec_of, synthesize, maker):
     """Bin ``centre + 2`` in every waveform, and the same signed velocity.
 
     The bin is POSITIVE for a closing target in all three, which is the
@@ -100,13 +92,10 @@ def test_the_closing_target_lands_on_the_solved_doppler_bin(closing, name, spec_
 
     velocity = float(axes.velocity_mps[doppler])
     assert velocity > 0.0, name
-    assert velocity == pytest.approx(grid.CLOSING_SPEED_MPS, rel=1e-9), name
-    with capsys.disabled():
-        print(
-            f"\n{name}: doppler bin {doppler} of {axes.doppler_bin_count} "
-            f"(centre {centre}), v = {velocity:.9f} m/s, "
-            f"bin = {axes.velocity_bin_mps:.9f} m/s, range bin {range_bin}"
-        )
+    assert velocity == pytest.approx(grid.CLOSING_SPEED_MPS, rel=1e-9), (
+        f"{name}: doppler bin {doppler} of {axes.doppler_bin_count} (centre {centre}), "
+        f"v = {velocity:.9f} m/s, bin = {axes.velocity_bin_mps:.9f} m/s, range bin {range_bin}"
+    )
 
 
 def test_all_three_waveforms_share_one_velocity_resolution_by_construction(closing):
@@ -127,7 +116,7 @@ def test_all_three_waveforms_share_one_velocity_resolution_by_construction(closi
 
 
 # ---------------------------------------------------------------------------
-# 7 - the sign, isolated
+# The sign, isolated
 # ---------------------------------------------------------------------------
 
 
@@ -139,8 +128,7 @@ def test_a_receding_target_lands_on_the_mirrored_negative_bin(spike):
     physical reversal has to move all three the same way.
     """
 
-    receding = tuple(-value for value in grid.SITE_VELOCITY_M_PER_S)
-    composed = grid.moving_frame(spike, receding)
+    composed = grid.moving_frame(spike, -grid.DELAY_RATE)
     row = grid.target_row(spike, composed)
     batch = grid.isolate(drv.to_synthesis(composed), row)
     segment = int(composed.sensor_pair_index[row])

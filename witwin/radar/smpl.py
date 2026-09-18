@@ -1,4 +1,12 @@
-"""Differentiable SMPL geometry with optional smplpytorch dependency."""
+"""Differentiable SMPL geometry over smplpytorch.
+
+The SMPL model files are chumpy pickles and chumpy is not a dependency, so
+:func:`_load_model` unpickles them with plain NumPy arrays standing in for the
+chumpy objects and is installed as smplpytorch's model loader at first use.
+smplpytorch and OpenCV form the ``smpl`` optional extra and are imported at
+first use as well, so a missing one raises ``ImportError`` naming it from the
+call that needed it rather than from ``import witwin.radar``.
+"""
 
 from __future__ import annotations
 
@@ -8,16 +16,24 @@ from typing import Any
 
 import numpy as np
 import torch
-from witwin.core import GeometryBase
+import torch.autograd.forward_ad as forward_ad
+from witwin.core import GeometryBase, Mesh
+from witwin.core.dynamics import DeformationState
+
+from .policy import _carries_derivative, resolve_device
 
 
 class _Arr(np.ndarray):
+    """A NumPy array with chumpy's ``.r`` accessor, which ``SMPL_Layer`` reads."""
+
     @property
     def r(self):
         return np.asarray(self)
 
 
 class _ChRecon:
+    """Stands in for any pickled chumpy object and keeps its first array payload."""
+
     def __init__(self, *args, **kwargs):
         self._data = np.array([])
         for value in args:
@@ -53,7 +69,9 @@ class _Unpickler(pickle.Unpickler):
         return super().find_class(module, name)
 
 
-def _ready_arguments_numpy(fname_or_dict):
+def _load_model(fname_or_dict):
+    """smplpytorch's ``ready_arguments`` without chumpy: the same keys, plain arrays."""
+
     import cv2
 
     if not isinstance(fname_or_dict, dict):
@@ -105,48 +123,12 @@ def _ready_arguments_numpy(fname_or_dict):
     return data
 
 
-def _setup_smpl_compat():
-    try:
-        import chumpy  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-
-    try:
-        import smplpytorch.native.webuser.serialization as serialization
-    except ImportError:
-        return
-
-    serialization.ready_arguments = _ready_arguments_numpy
-
-
-try:
-    _setup_smpl_compat()
-    from smplpytorch.pytorch.smpl_layer import SMPL_Layer
-
-    _SMPL_AVAILABLE = True
-except ImportError:
-    _SMPL_AVAILABLE = False
-
-
 _SMPL_LAYER_CACHE: dict[tuple[str, str, str], Any] = {}
 _SMPL_FACES_CACHE: dict[tuple[str, str, str], np.ndarray] = {}
 
 
-def _resolve_scene_device(device: str | None) -> str:
-    requested = "cuda" if device is None else device
-    resolved = torch.device(requested)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(
-            "SMPLBody defaults to CUDA, but torch.cuda.is_available() is False. "
-            "Pass device='cpu' only for scene construction or non-rendering workflows."
-        )
-    return str(resolved)
-
-
 def _default_smpl_model_root() -> str:
-    return str(Path(__file__).resolve().parents[4] / "radar" / "models" / "smpl_models")
+    return str(Path(__file__).resolve().parents[2] / "models" / "smpl_models")
 
 
 def _to_vertex_tensor(value, *, device: str) -> torch.Tensor:
@@ -156,12 +138,15 @@ def _to_vertex_tensor(value, *, device: str) -> torch.Tensor:
 
 
 def _get_smpl_layer(*, gender: str, model_root: str, device: str):
-    if not _SMPL_AVAILABLE:
-        raise ImportError("smplpytorch is required to instantiate or evaluate SMPLBody.")
+    from smplpytorch.pytorch import smpl_layer
+
+    # SMPL_Layer.__init__ resolves ``ready_arguments`` through its module
+    # globals, so the chumpy-free loader is installed there, before any layer.
+    smpl_layer.ready_arguments = _load_model
     key = (str(gender), str(model_root), str(device))
     layer = _SMPL_LAYER_CACHE.get(key)
     if layer is None:
-        layer = SMPL_Layer(center_idx=0, gender=gender, model_root=model_root).to(device)
+        layer = smpl_layer.SMPL_Layer(center_idx=0, gender=gender, model_root=model_root).to(device)
         _SMPL_LAYER_CACHE[key] = layer
     return layer
 
@@ -182,11 +167,12 @@ def _axis_angle_matrices(rvecs: torch.Tensor) -> torch.Tensor:
     return eye + sin * skew + (1.0 - cos) * (skew @ skew)
 
 
-def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor):
-    """Vectorized SMPL LBS equivalent to smplpytorch's forward (batch 1).
+def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor) -> torch.Tensor:
+    """Vectorized SMPL linear blend skinning: ``(V, 3)`` vertices centred on joint 0.
 
-    smplpytorch's Python implementation costs ~21 ms per call; this batched
-    version is ~2 ms and numerically matches it (verified by diag_fast_lbs).
+    The same skinning ``SMPL_Layer.forward`` runs in Python at ~21 ms per
+    call; this batched version is ~2 ms. ``tests/test_smpl_pose_refusal.py``
+    pins the two against each other.
     """
     device = pose.device
     v_template = layer.th_v_template[0]
@@ -215,40 +201,18 @@ def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor):
     skin_rot = torch.einsum("vj,jab->vab", layer.th_weights, global_transforms[:, :3, :3])
     skin_t = layer.th_weights @ corrected_t
     vertices = torch.einsum("vab,vb->va", skin_rot, v_posed) + skin_t
-
-    center = posed_joints[0]
-    return (vertices - center).unsqueeze(0), (posed_joints - center).unsqueeze(0)
+    return vertices - posed_joints[0]
 
 
-def _carries_derivative(value) -> str | None:
-    """``"requires_grad"``, ``"a forward tangent"``, or ``None``."""
-
-    if not isinstance(value, torch.Tensor):
-        return None
-    import torch.autograd.forward_ad as forward_ad
-
-    if value.requires_grad:
-        return "requires_grad"
-    if forward_ad.unpack_dual(value).tangent is not None:
-        return "a forward tangent"
-    return None
-
-
-def _refuse_deformation_derivative(name: str, value, carrier: str) -> None:
+def _refuse_deformation_derivative(name: str, carrier: str) -> None:
     """Refuse a pose or shape derivative at the Core/Channel deformation bridge.
 
     ``SmplPoseDeformation`` publishes two things into the Core world model: a
     rest ``Mesh`` and a per-frame ``DeformationState``. Both cross the
-    Core/Channel COMPILE boundary. Until Phase 9 the rest mesh silently
-    ``detach()``ed its vertices, so a caller could mark the pose, watch the
-    whole chain run, and read ``pose.grad is None`` back - a severed derivative
-    with no failure, which is the defect class this phase removes.
-
-    Whether a graph-bearing vertex tensor survives ``Mesh`` construction and a
-    Channel compile is a separate, unverified question, and a half-working pose
-    gradient would be worse than none. So this refuses, and the deferral is
-    named: plumbing a pose derivative into the compiled scene is a design that
-    has to be accepted on the Core/Channel side first, not a detach to delete.
+    Core/Channel COMPILE boundary, and a pose derivative is not plumbed across
+    it. Detaching here would let a caller mark the pose, watch the whole chain
+    run, and read ``pose.grad is None`` back with nothing having failed, so the
+    bridge refuses instead and names the route that does carry a derivative.
 
     ``SMPLBody`` itself publishes differentiable authored vertices. This refusal
     applies only at the fixed-topology Core deformation bridge, where pose and
@@ -315,29 +279,22 @@ class SMPLBody(GeometryBase):
 
     def _evaluate(self, *, device: str):
         layer = _get_smpl_layer(gender=self.gender, model_root=self.model_root, device=device)
-        pose_tensor = self.pose.to(device=device, dtype=torch.float32).view(1, -1)
-        shape_tensor = self.shape.to(device=device, dtype=torch.float32).view(1, -1)
-        vertices, joints = _fast_smpl_forward(layer, pose_tensor.reshape(-1), shape_tensor.reshape(-1))
-        vertices = self._transform_mesh_verts(vertices[0])
-        joints = self._transform_mesh_verts(joints[0])
+        pose = self.pose.to(device=device, dtype=torch.float32)
+        shape = self.shape.to(device=device, dtype=torch.float32)
+        vertices = self._transform_mesh_verts(_fast_smpl_forward(layer, pose, shape))
         cache_key = (self.gender, self.model_root, device)
         faces = _SMPL_FACES_CACHE.get(cache_key)
         if faces is None:
             faces = np.ascontiguousarray(layer.th_faces.detach().cpu().numpy().astype(np.int32))
             _SMPL_FACES_CACHE[cache_key] = faces
-        return vertices.contiguous(), faces, joints.contiguous()
+        return vertices.contiguous(), faces
 
     def to_mesh(self, segments=16, *, device=None):
         del segments
-        resolved_device = _resolve_scene_device(device or self.position.device)
-        vertices, faces, _ = self._evaluate(device=resolved_device)
+        resolved_device = str(resolve_device(device or self.position.device, owner="SMPLBody"))
+        vertices, faces = self._evaluate(device=resolved_device)
         face_tensor = torch.as_tensor(faces, device=vertices.device, dtype=torch.int64)
         return vertices, face_tensor
-
-    def joints(self, *, device=None) -> torch.Tensor:
-        resolved_device = _resolve_scene_device(device or self.position.device)
-        _, _, joints = self._evaluate(device=resolved_device)
-        return joints
 
 
 class SmplPoseDeformation:
@@ -356,9 +313,8 @@ class SmplPoseDeformation:
     as the tangent, so it is the exact derivative of the SAME linear blend
     skinning the primal uses. It is deliberately NOT a difference of two posed
     meshes: a finite difference would carry a truncation error that grows with
-    the step, and Core has no velocity descriptor on ``DeformationState``
-    (recorded as Phase-7 gap C2), which is why an analytic route has to exist
-    here at all.
+    the step, and Core has no velocity descriptor on ``DeformationState``,
+    which is why an analytic route has to exist here at all.
 
     The body must be authored at the identity transform if the rest ``Mesh``
     is, because a deformation replaces the mesh's LOCAL vertices and the mesh's
@@ -376,7 +332,7 @@ class SmplPoseDeformation:
         for name, value in (("body.pose", body.pose), ("body.shape", body.shape)):
             carrier = _carries_derivative(value)
             if carrier is not None:
-                _refuse_deformation_derivative(name, value, carrier)
+                _refuse_deformation_derivative(name, carrier)
         # pose_rate is a forward-AD tangent DIRECTION and never a leaf, the same
         # ADR-038 statement kinematics makes about a velocity: it is consumed by
         # make_dual inside velocity_at, so d(loss)/d(pose_rate) does not exist.
@@ -389,7 +345,7 @@ class SmplPoseDeformation:
                 "primal, so d(loss)/d(pose_rate) is structurally unavailable in "
                 "both AD modes and no gradient would ever come back."
             )
-        self._device = _resolve_scene_device(device or body.position.device)
+        self._device = str(resolve_device(device or body.position.device, owner="SmplPoseDeformation"))
         self._body = body
         rate = _to_vertex_tensor(pose_rate, device=self._device).reshape(-1)
         pose = body.pose.to(device=self._device, dtype=torch.float32).reshape(-1)
@@ -411,9 +367,6 @@ class SmplPoseDeformation:
         elapsed = float(time_s) - self.reference_time_s
         return self._pose + self._pose_rate * elapsed
 
-    def body_at(self, time_s: float) -> SMPLBody:
-        return self._body.updated(pose=self.pose_at(time_s), device=self._device)
-
     def _vertices(self, pose: torch.Tensor) -> torch.Tensor:
         """The posing function, as one differentiable expression of the pose.
 
@@ -432,14 +385,10 @@ class SmplPoseDeformation:
     def at(self, time_s: float):
         """The ``witwin.core`` deformation descriptor at ``time_s``."""
 
-        from witwin.core.dynamics import DeformationState
-
         return DeformationState(vertices=self.vertices_at(time_s))
 
     def velocity_at(self, time_s: float) -> torch.Tensor:
         """``d(vertices)/dt``, one row per SMPL vertex, in authored order."""
-
-        import torch.autograd.forward_ad as forward_ad
 
         with forward_ad.dual_level():
             pose = forward_ad.make_dual(self.pose_at(time_s), self._pose_rate)
@@ -462,22 +411,17 @@ class SmplPoseDeformation:
         recentring to the DEFORMED vertices with a different bounding box, so a
         limb that moved would drag the whole body with it.
 
-        The vertices used to be ``detach()``ed here. That detach was the whole
-        of the pose-gradient defect: it made the severance invisible. It is now
-        a refusal. The body's pose and shape were already checked at
-        construction, so what this catches is a derivative that arrived through
-        the body's TRANSFORM - a ``requires_grad`` ``position`` or ``rotation``
-        reaching ``_transform_mesh_verts`` - which the constructor cannot see.
+        A derivative on the vertices is refused here, never detached. The
+        body's pose and shape were already checked at construction, so what
+        this catches is a derivative that arrived through the body's TRANSFORM
+        - a ``requires_grad`` ``position`` or ``rotation`` reaching
+        ``_transform_mesh_verts`` - which the constructor cannot see.
         """
-
-        from witwin.core import Mesh
 
         vertices, faces = self._body.updated(pose=self._pose, device=self._device).to_mesh(device=self._device)
         carrier = _carries_derivative(vertices)
         if carrier is not None:
-            _refuse_deformation_derivative(
-                "the posed body's vertices (through its position or rotation)", vertices, carrier
-            )
+            _refuse_deformation_derivative("the posed body's vertices (through its position or rotation)", carrier)
         return Mesh(
             vertices=vertices,
             faces=faces.detach().to(dtype=torch.int64),

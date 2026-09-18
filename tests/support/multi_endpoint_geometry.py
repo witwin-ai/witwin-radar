@@ -7,11 +7,10 @@ canonical order. Every multi-pair guarantee in the join was therefore pinned
 only against fabricated legs. This module is the geometry that closes that gap
 with REAL Channel rows.
 
-It is deliberately NOT an extension of ``phase4_geometry``. The Phase-4 wall
-spans ``y in [-3, 3]``, which is wide enough that every specular point in this
-endpoint set lands on it; the design knob here is the narrower half-width
-``WALL_HALF_Y_M = 1.2``, and sharing constants with a fixture whose numbers must
-not move would couple the two.
+The single-site fixture in ``single_site_geometry`` binds the closed forms below to
+its own endpoints and to a wall spanning ``y in [-3, 3]``, wide enough that
+every specular point lands on it; the design knob here is the narrower
+half-width ``WALL_HALF_Y_M = 1.2``.
 
 The whole fixture is one design argument, stated once so the tests can assert
 it rather than restate it:
@@ -116,26 +115,6 @@ SITE_P_MOVED_POSITION_M: Point = (2.0, 2.0, 0.0)
 # both signs and no two rows share one.
 SITE_P_VELOCITY_M_PER_S: Point = (0.0, 12.0, 0.0)
 SITE_Q_VELOCITY_M_PER_S: Point = (0.0, -5.0, 0.0)
-
-#: Site P closing on ``TX_A`` along ``-x`` at 12 m/s: a RADIAL velocity.
-#:
-#: The two velocities above are purely transverse to ``TX_A -> P``, and a
-#: transverse fixture cannot distinguish a correct near-zero rate from a DEAD
-#: forward-AD tangent, which also publishes zero. Every ADR-038 fixture in the
-#: dynamics phase therefore carries a radial component, and this is it. The
-#: implied radial closing speed is well inside the fixture front end's
-#: ``max_unambiguous_speed_mps``, so the same number is usable by the aliasing
-#: tests as the IN-LIMIT case.
-SITE_P_RADIAL_VELOCITY_M_PER_S: Point = (-12.0, 0.0, 0.0)
-
-#: A moving front end: ``TX_A`` and ``RX_A`` crossing in opposite directions.
-#:
-#: Chosen antisymmetric so that the moving-endpoint case has a clean Galilean
-#: partner - a static front end with the SITE carrying the negated relative
-#: velocity reproduces the same round-trip rate, which is the strongest
-#: available check that the seam dualised the tensors it claims to.
-TX_A_VELOCITY_M_PER_S: Point = (0.0, 3.0, 0.0)
-RX_A_VELOCITY_M_PER_S: Point = (0.0, -3.0, 0.0)
 
 #: A rotating rigid body: two sites on one rotor, symmetric about the TX/RX axis.
 #:
@@ -529,35 +508,7 @@ def leg_delay_rate_s_per_s(moving: Point, fixed: Point, component: str, velocity
     return projection / length / C0_M_PER_S
 
 
-def _leg_delay_rate_s_per_s(site: Point, other: Point, component: str, velocity: Point) -> float:
-    """The moving-SITE spelling of :func:`leg_delay_rate_s_per_s`."""
-
-    return leg_delay_rate_s_per_s(site, other, component, velocity)
-
-
 ALL_ENDPOINTS: tuple[tuple[int, Point], ...] = (*TRANSMITTERS, *SITES, *RECEIVERS)
-
-
-def leg_delay_rates_s_per_s(
-    rows: list[LegRow], velocities: dict[int, Point], endpoints: tuple[tuple[int, Point], ...] = ALL_ENDPOINTS
-) -> list[float]:
-    """``d(delay)/dt`` of each LEG row, in the same order as ``rows``.
-
-    One leg, both ends free to move. Stated separately from the composed rate
-    because the round trip being the SUM of two legs is a claim about the join
-    and would be untestable against an oracle that could only produce the sum.
-    """
-
-    positions = dict(endpoints)
-    rates: list[float] = []
-    for row in rows:
-        source = positions[row.source_id]
-        sink = positions[row.sink_id]
-        rates.append(
-            leg_delay_rate_s_per_s(sink, source, row.component, velocities.get(row.sink_id, STATIONARY))
-            + leg_delay_rate_s_per_s(source, sink, row.component, velocities.get(row.source_id, STATIONARY))
-        )
-    return rates
 
 
 def combined_delay_rate_s_per_s(
@@ -680,13 +631,7 @@ def rotor_site_velocities(
     centre: Point = ROTOR_CENTRE_M,
     angular_velocity: Point = ROTOR_ANGULAR_VELOCITY,
 ) -> dict[int, Point]:
-    """``v = omega x (p - c)`` per site, in float64, as an oracle.
-
-    Written out rather than delegated to
-    ``witwin.radar.propagation.rigid_site_velocities`` on purpose:
-    the rotation test compares the production seam against this, so sharing the
-    cross product would make the comparison vacuous.
-    """
+    """``v = omega x (p - c)`` per site, in float64, as an oracle."""
 
     velocities: dict[int, Point] = {}
     for stable_id, position in sites:
@@ -726,8 +671,8 @@ def combined_delay_gradient_s_per_m(
         for axis in range(3):
             direction = tuple(1.0 if index == axis else 0.0 for index in range(3))
             gradient[row.site_id][axis] += weight * (
-                _leg_delay_rate_s_per_s(site, positions[row.source_id], row.inbound.component, direction)
-                + _leg_delay_rate_s_per_s(site, positions[row.sink_id], row.outbound.component, direction)
+                leg_delay_rate_s_per_s(site, positions[row.source_id], row.inbound.component, direction)
+                + leg_delay_rate_s_per_s(site, positions[row.sink_id], row.outbound.component, direction)
             )
     return {stable_id: tuple(value) for stable_id, value in gradient.items()}
 
@@ -765,7 +710,6 @@ __all__ = [
     "REFLECTION_MATERIAL_SLOT",
     "RX_A_POSITION_M",
     "RX_A_STABLE_ID",
-    "RX_A_VELOCITY_M_PER_S",
     "RX_B_POSITION_M",
     "RX_B_STABLE_ID",
     "STATIONARY",
@@ -773,7 +717,6 @@ __all__ = [
     "SITES_REVERSED",
     "SITE_P_MOVED_POSITION_M",
     "SITE_P_POSITION_M",
-    "SITE_P_RADIAL_VELOCITY_M_PER_S",
     "SITE_P_STABLE_ID",
     "SITE_P_VELOCITY_M_PER_S",
     "SITE_Q_POSITION_M",
@@ -782,7 +725,6 @@ __all__ = [
     "TRANSMITTERS",
     "TX_A_POSITION_M",
     "TX_A_STABLE_ID",
-    "TX_A_VELOCITY_M_PER_S",
     "TX_B_POSITION_M",
     "TX_B_STABLE_ID",
     "TX_B_UNOCCLUDED_POSITION_M",
@@ -804,7 +746,6 @@ __all__ = [
     "face_containing",
     "image_position_m",
     "leg_delay_rate_s_per_s",
-    "leg_delay_rates_s_per_s",
     "leg_rows",
     "line_of_sight_is_blocked",
     "pair_offsets",

@@ -1,9 +1,8 @@
 """Freeze the Radar/Channel native boundary as a machine-checked fact.
 
-Phase-10 acceptance criterion A5 claims that there is no shared RF/geometry
-binary, no third Python binding, no second RayD registry and no cross-extension
-private call. That claim was true when it was written by reading CMake and
-``build.py``. Reading is not evidence that survives a refactor, so this gate
+R-ADR-004 claims that there is no shared RF/geometry binary, no third Python
+binding, no second RayD registry and no cross-extension private call. Reading
+CMake and ``runtime.py`` is not evidence that survives a refactor, so this gate
 reads the SHIPPED BINARIES instead: a PE import table on Windows, the ELF
 ``DT_NEEDED`` list on Linux.
 
@@ -254,8 +253,8 @@ def names_binary(path: Path, token: str) -> bool:
 def discover_radar_binary() -> Path:
     """The one native member under the packaged prebuilt directory.
 
-    Discovered by suffix rather than by stem so the Phase-10 physical rename
-    does not need this gate edited in the same commit.
+    Discovered by suffix rather than by stem, so renaming the extension does
+    not need this gate edited in the same commit.
     """
 
     if not PREBUILT_DIR.is_dir():

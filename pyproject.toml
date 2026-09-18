@@ -57,11 +57,17 @@ dev = [
 # contract is versioned and Radar reads it; a new minor Channel is a contract
 # review, not an automatic upgrade.
 #
-# Deliberately no forbidden-runtime token appears in this file: the Phase-5
-# gate `tests/test_phase5_removed_entry_points.py` scans the whole pyproject
-# text, comments included, and that scan is worth more than a comment is.
+# Deliberately no forbidden-runtime token appears in this file:
+# `tests/test_public_api_snapshot.py` scans the whole pyproject text,
+# comments included, and that scan is worth more than a comment is.
 channel = [
     "witwin-channel>=0.5.0,<0.6",
+]
+# `witwin.radar.smpl` imports both at first use; the SMPL model files are
+# chumpy pickles that the module unpickles itself, so chumpy is not needed.
+smpl = [
+    "smplpytorch",
+    "opencv-python",
 ]
 
 [tool.hatch.build.targets.wheel]

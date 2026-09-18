@@ -6,7 +6,7 @@ import pytest
 import torch
 from support import multi_endpoint_driver as drv
 from support import multi_endpoint_geometry as geo
-from test_phase11_simulate_entry import _static_scene
+from support.simulate_fixture import static_scene
 
 from witwin.radar import PointTargets, Radar
 from witwin.radar.synthesis.assembly import FmcwSpec
@@ -71,7 +71,7 @@ def test_scene_adc_sampling_matches_radial_motion_including_fast_time():
         return torch.tensor([[2 + 2 * t, 0.6, 0.0]], device=radar.device)
 
     result = radar.simulate(
-        _static_scene(),
+        static_scene(),
         PointTargets(
             positions=trajectory(0.0),
             amplitude=drv.FIXTURE_AMPLITUDE,

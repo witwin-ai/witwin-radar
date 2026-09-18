@@ -2,7 +2,7 @@
 
 TEST-ONLY. CLAUDE.md permits a CPU/Torch reference implementation only under
 ``tests/``; a production module that imported this would be introducing a Torch
-numerical backend, and ``tests/test_phase4_import_boundary.py`` rejects it.
+numerical backend, and ``tests/test_import_boundary.py`` rejects it.
 
 Why an oracle and not finite differences alone: the production train is float32
 and the pulse's own phase is a large number - ``pi B T_p`` reaches a hundred

@@ -1,12 +1,9 @@
 name: Build and publish witwin-radar
 
 # Trigger boundary, from GITHUB_ACTIONS_PREBUILD_MATRIX.md "CI execution
-# policy": native wheel work is OPT-IN. This workflow used to run on every push
-# to main/master/codex/** and on every pull request, which meant a paid
-# full-matrix CUDA build - ten SASS images on two platforms - per commit,
-# against the policy line that reserves it for a published release, an explicit
-# dispatch, or the exact `run-ci` label. Channel already complied; Radar did
-# not, and nothing recorded it as an accepted exception.
+# policy": native wheel work is OPT-IN. A full-matrix CUDA build - ten SASS
+# images on two platforms - runs only for a published release, an explicit
+# dispatch, or the exact `run-ci` label, never per push or per pull request.
 on:
   release:
     types: [published]
@@ -184,7 +181,7 @@ jobs:
           exit 1
 
   build_cuda_wheels:
-    name: Build stable CUDA wheel / ${{ matrix.os }} / ${{ needs.policy.outputs.scope }}
+    name: Build CUDA wheel / ${{ matrix.os }} / ${{ needs.policy.outputs.scope }}
     needs: policy
     runs-on: ${{ matrix.os }}
     strategy:
@@ -218,7 +215,7 @@ jobs:
         with:
           cuda: "12.8.1"
           method: local
-          log-file-suffix: "${{ runner.os }}-stable-abi"
+          log-file-suffix: "${{ runner.os }}-exact-identity"
 
       - name: Set up MSVC
         if: runner.os == 'Windows'
@@ -266,7 +263,7 @@ jobs:
           # torch.utils.cpp_extension.load - it is what sets
           # WITWIN_RADAR_NATIVE_BUILD=1. Nothing else in this workflow, and
           # nothing in a user process, can reach the JIT.
-          WITWIN_RADAR_NATIVE_BUILD_DIR: ${{ runner.temp }}/_radar_native/stable_abi_v1
+          WITWIN_RADAR_NATIVE_BUILD_DIR: ${{ runner.temp }}/_radar_native/exact_identity_v1
         run: |
           python "$PACKAGE_DIR"/scripts/build_radar_cuda_prebuilt.py --verbose "$BUILD_TYPE_FLAG"
 
@@ -339,14 +336,10 @@ jobs:
         run: |
           python -m build --wheel "$PACKAGE_DIR"
 
-      # The old version of this step set
-      # WITWIN_RADAR_DIRICHLET_CUDA_BUILD_DIR to a nonexistent directory and
-      # concluded "no JIT happened" from the absence of a crash. Under R-ADR-019
-      # the JIT is unreachable by construction - it needs
-      # WITWIN_RADAR_NATIVE_BUILD=1, which only the build script sets - so that
-      # trick proves nothing and reads as if it did. These are positive
-      # assertions instead: the extension reports where it came from, and the
-      # module that would have compiled it was never even imported.
+      # Under R-ADR-019 the JIT is unreachable by construction - it needs
+      # WITWIN_RADAR_NATIVE_BUILD=1, which only the build script sets. The
+      # assertions below are positive: the extension reports where it came
+      # from, and the module that would have compiled it was never imported.
       - name: Smoke install prebuilt wheel
         shell: bash
         env:
@@ -431,8 +424,8 @@ jobs:
           path: ${{ needs.policy.outputs.package_dir }}/dist/*.whl
           if-no-files-found: error
 
-  test_torch_compatibility:
-    name: Exact native identity / ${{ matrix.os }} / py${{ matrix.compatibility.python_version }} / torch${{ matrix.compatibility.torch_version }}
+  test_exact_identity:
+    name: Exact native identity / ${{ matrix.os }} / py${{ matrix.identity.python_version }} / torch${{ matrix.identity.torch_version }}
     if: needs.policy.outputs.scope == 'full'
     needs:
       - policy
@@ -442,7 +435,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
-        compatibility:
+        identity:
           - {python_version: "3.10", torch_version: "2.10.0", cuda_index: "cu128"}
           - {python_version: "3.11", torch_version: "2.10.0", cuda_index: "cu128"}
           - {python_version: "3.12", torch_version: "2.10.0", cuda_index: "cu128"}
@@ -453,15 +446,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.compatibility.python_version }}
+          python-version: ${{ matrix.identity.python_version }}
 
-      - name: Download stable wheel
+      - name: Download wheel
         uses: actions/download-artifact@v4
         with:
           name: wheel-${{ matrix.os }}
           path: dist
 
-      - name: Install compatibility environment
+      - name: Install the exact runtime identity
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -469,8 +462,8 @@ jobs:
           # installed --no-deps, so numpy has to arrive explicitly or
           # `import witwin.core` fails for a reason unrelated to this matrix.
           python -m pip install numpy
-          python -m pip install --no-cache-dir "torch==${{ matrix.compatibility.torch_version }}" \
-            --index-url "https://download.pytorch.org/whl/${{ matrix.compatibility.cuda_index }}"
+          python -m pip install --no-cache-dir "torch==${{ matrix.identity.torch_version }}" \
+            --index-url "https://download.pytorch.org/whl/${{ matrix.identity.cuda_index }}"
           python -m pip install --no-deps "witwin>=0.4.0,<0.5"
           python -m pip install --no-deps dist/*.whl
 
@@ -480,7 +473,7 @@ jobs:
       - name: Load packaged binary with exact runtime identity
         shell: bash
         env:
-          EXPECTED_TORCH: ${{ matrix.compatibility.torch_version }}
+          EXPECTED_TORCH: ${{ matrix.identity.torch_version }}
         run: |
           python -I - <<'PY'
           import os
@@ -633,7 +626,7 @@ jobs:
     needs:
       - policy
       - build_cuda_wheels
-      - test_torch_compatibility
+      - test_exact_identity
       - consumer_channel_extra
       - build_sdist
     runs-on: ubuntu-latest

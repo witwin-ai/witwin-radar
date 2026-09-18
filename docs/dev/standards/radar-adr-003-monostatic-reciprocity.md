@@ -44,7 +44,7 @@ half-wavelength offset is not monostatic.
 
 ## Acceptance evidence
 
-`tests/test_phase4_spike_e2e.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
+`tests/test_single_site_end_to_end.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
 observes both legs' diagnostics, which exist only because both were evaluated.
-`tests/test_phase4_adapter.py::test_freeze_is_never_called_per_frame` reevaluates
+`tests/test_channel_adapter.py::test_freeze_is_never_called_per_frame` reevaluates
 both legs across five frames.

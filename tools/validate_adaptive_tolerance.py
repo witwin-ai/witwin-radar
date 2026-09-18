@@ -64,9 +64,7 @@ FIXTURES = {
 class Trajectory:
     """Metres and m/s. ``rotor`` is the micro-Doppler stress case.
 
-    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` adds the
-    analytic velocity, which nothing here reads but which keeps the fixture
-    readable as one closed-form path.
+    ``positions`` is what ``PointTargets.trajectory`` takes.
     """
 
     def __init__(self, kind):
@@ -79,15 +77,10 @@ class Trajectory:
         if self.kind == "rotor":
             rate = 2 * math.pi * 80.0
             points = [[30.0 + 0.003 * math.cos(rate * t), 0.003 * math.sin(rate * t), 0.0]]
-            speeds = [[-0.003 * rate * math.sin(rate * t), 0.003 * rate * math.cos(rate * t), 0.0]]
         else:
             rate = 2 * math.pi * 2.0
             points = [[6.0 + 1.2 * t, 0.2 * math.sin(rate * t), 0.0]]
-            speeds = [[1.2, 0.2 * rate * math.cos(rate * t), 0.0]]
-        return Kinematics(
-            torch.tensor(points, dtype=torch.float32, device="cuda"),
-            torch.tensor(speeds, dtype=torch.float32, device="cuda"),
-        )
+        return Kinematics(torch.tensor(points, dtype=torch.float32, device="cuda"))
 
 
 def build(name):

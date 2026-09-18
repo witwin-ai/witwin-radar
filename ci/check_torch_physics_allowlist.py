@@ -1,16 +1,9 @@
 """G4: the Torch-physics allowlist covers the whole tree and cannot grow quietly.
 
-`tests/test_phase6_no_torch_physics.py` scanned ONE package - `solvers/`, which
-Phase 11 has since deleted - for the seven Torch calls that evaluate geometry or
-a phase. Four of eleven production packages were nominally in scope and only one
-was actually scanned, so `processing/`, `sensors/`, `geometry/`, `utils/`,
-`timeline.py` and the rest were outside it. That is the failure mode this gate exists for and it is worth
-naming precisely: **narrowing the scan is a silent way to grow the allowlist**.
-Nothing had to be added to a list; a hit simply had to land in a directory
-nobody was looking at.
-
-So the scope here is the whole `witwin/` tree with an EMPTY exclusion list, and
-the exclusion list is itself frozen. Every match that scope
+A scan of one package is a silent way to grow the allowlist: a hit only has to
+land in a directory nobody is looking at. So the scope here is the whole
+`witwin/` tree with an EMPTY exclusion list, and the exclusion list is itself
+frozen. Every match that scope
 produces is recorded in `ci/torch-physics-allowlist.json` with a category, a
 reason and the ADR that permits it, keyed by
 `(module, function, call, occurrences)`. Equality in both directions: an
@@ -23,8 +16,8 @@ precisely how a windowing helper becomes a phase evaluator.
 Three lists that live in pytest are re-frozen here from the JSON, so that
 editing the test constant without editing the record - or the reverse - fails:
 `FORBIDDEN_TORCH_CALLS` and `RADAR_FACADE_TORCH_PHYSICS` from
-`tests/test_phase6_no_torch_physics.py`, and `FENCE_ALLOWANCES` from
-`tests/processing/test_cutover.py`.
+`tests/test_no_torch_physics.py`, and `FENCE_ALLOWANCES` from
+`tests/processing/test_processing_owners.py`.
 
 Finally `FROZEN_BASELINE_DIGEST` below covers the whole allowlist document, in
 the style of `channel/ci/check_import_graph.py`. It lives in this source file
@@ -46,13 +39,15 @@ import json
 import sys
 from pathlib import Path
 
+from _ast_scan import dotted
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: sha256 over the canonical JSON of the WHOLE allowlist document. It is held
 #: here rather than inside the JSON on purpose: a digest a document carries is
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
-FROZEN_BASELINE_DIGEST = "4eff9e51607b8e5cb67cf62d94689b812814d7657cd033d1a28da9a6c1a0b739"
+FROZEN_BASELINE_DIGEST = "fb8cc60480bd22ec17b26cf0a66458ea625683a0a9a179869ff68145c5801a49"
 
 SCHEMA_VERSION = 1
 
@@ -71,16 +66,6 @@ TOP_LEVEL_KEYS = frozenset(
 )
 
 ENTRY_KEYS = frozenset({"module", "function", "call", "occurrences", "category", "reason", "adr"})
-
-
-def _dotted(node: ast.AST) -> str:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-    return ".".join(reversed(parts))
 
 
 def _enclosing_functions(tree: ast.Module) -> dict[int, str]:
@@ -120,7 +105,7 @@ def scan(
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            name = _dotted(node.func)
+            name = dotted(node.func)
             if not name.startswith("torch."):
                 continue
             if name[len("torch.") :] not in forbidden:
@@ -186,14 +171,14 @@ def _check_pytest_constants(root: Path, document: dict) -> list[str]:
                 return ast.literal_eval(node.value)
         raise KeyError(f"{path}: {name} not found")
 
-    physics = root / "tests" / "test_phase6_no_torch_physics.py"
-    cutover = root / "tests" / "processing" / "test_cutover.py"
+    physics = root / "tests" / "test_no_torch_physics.py"
+    cutover = root / "tests" / "processing" / "test_processing_owners.py"
 
     forbidden = tuple(literals(physics, "FORBIDDEN_TORCH_CALLS"))
     recorded = tuple(document["forbidden_torch_calls"])
     if forbidden != recorded:
         failures.append(
-            "tests/test_phase6_no_torch_physics.py FORBIDDEN_TORCH_CALLS is "
+            "tests/test_no_torch_physics.py FORBIDDEN_TORCH_CALLS is "
             f"{list(forbidden)}; the allowlist records {list(recorded)}"
         )
 
@@ -206,7 +191,7 @@ def _check_pytest_constants(root: Path, document: dict) -> list[str]:
     recorded_fence = set(document["fence_allowances"])
     if fence != recorded_fence:
         failures.append(
-            "tests/processing/test_cutover.py FENCE_ALLOWANCES disagrees with "
+            "tests/processing/test_processing_owners.py FENCE_ALLOWANCES disagrees with "
             f"the allowlist: {sorted(fence ^ recorded_fence)}"
         )
     return failures

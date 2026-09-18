@@ -39,7 +39,7 @@ a native-handle feature.
 
 ## Acceptance evidence
 
-`tests/test_phase4_import_boundary.py::test_static_closure_of_the_new_modules_names_nothing_forbidden`
+`tests/test_import_boundary.py::test_static_closure_of_the_new_modules_names_nothing_forbidden`
 asserts the adapter names only `witwin.channel.propagation[.consumer]`, so no
 scene-internal type is reachable. The adapter's `compiled_scene` parameter is
 typed `object` and is only ever passed through.
@@ -73,6 +73,6 @@ of a discovery inside what looks like a rebind.
 
 ## Acceptance evidence (Phase 7)
 
-- `tests/test_phase7_rediscovery_cadence.py::test_refreeze_is_required_after_a_structure_moves`
-- `tests/test_phase7_rediscovery_cadence.py::test_a_retired_handle_is_refused_even_when_no_version_moved`
-- `tests/test_phase7_rediscovery_cadence.py::test_rediscovery_required_costs_no_host_observation`
+- `tests/test_rediscovery_cadence.py::test_refreeze_is_required_after_a_structure_moves`
+- `tests/test_rediscovery_cadence.py::test_a_retired_handle_is_refused_even_when_no_version_moved`
+- `tests/test_rediscovery_cadence.py::test_rediscovery_required_costs_no_host_observation`

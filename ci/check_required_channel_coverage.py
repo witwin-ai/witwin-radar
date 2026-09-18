@@ -8,6 +8,13 @@ import re
 import sys
 from pathlib import Path
 
+from _workflow_text import run_text
+
+#: The workflow step that checks the Channel identity. Its source counts as
+#: command text: the env vars it reads and the build_info() call it makes are
+#: what the workflow consumes by invoking it.
+CHANNEL_IDENTITY_SCRIPT = "ci/check_channel_identity.py"
+
 #: The extra name is built into the pattern rather than hard-coded in it, so
 #: `channel_extra` in the policy is read by the check it names instead of
 #: restating a string the regex already froze.
@@ -21,38 +28,6 @@ def _install_pattern(extra: str) -> re.Pattern[str]:
         rf"\.\[(?=[^\]]*\b{quoted}\b)[^\]]+\]|witwin-{quoted})",
         re.IGNORECASE,
     )
-
-
-RUN = re.compile(r"^(?P<spaces>\s*)(?:-\s+)?run:\s*(?P<body>.*)$")
-
-
-def _run_text(text: str) -> str:
-    lines = text.splitlines()
-    commands: list[str] = []
-    index = 0
-    while index < len(lines):
-        match = RUN.match(lines[index])
-        if match is None:
-            index += 1
-            continue
-        body = match.group("body").strip()
-        base_indent = len(match.group("spaces"))
-        if body not in {"|", "|-", "|+", ">", ">-", ">+"}:
-            if body and not body.startswith("#"):
-                commands.append(body)
-            index += 1
-            continue
-        index += 1
-        while index < len(lines):
-            line = lines[index]
-            stripped = line.lstrip()
-            indent = len(line) - len(stripped)
-            if stripped and indent <= base_indent:
-                break
-            if stripped and not stripped.startswith("#"):
-                commands.append(stripped)
-            index += 1
-    return "\n".join(commands)
 
 
 def _active_yaml(text: str) -> str:
@@ -99,7 +74,9 @@ def audit(repo: Path) -> list[str]:
             errors.append(f"required workflow missing: {relative}")
             continue
         text = path.read_text(encoding="utf-8")
-        commands = _run_text(text)
+        commands = run_text(text)
+        if CHANNEL_IDENTITY_SCRIPT in commands:
+            commands += "\n" + (repo / CHANNEL_IDENTITY_SCRIPT).read_text(encoding="utf-8")
         active_yaml = _active_yaml(text)
         if not install.search(commands):
             errors.append(f"{relative} does not install the Channel dependency")

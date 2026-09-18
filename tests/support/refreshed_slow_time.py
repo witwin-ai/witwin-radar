@@ -1,8 +1,7 @@
 """The refreshed-weight slow-time cube, built from the batched producer.
 
-``SlowTimeMode.REFRESHED_WEIGHT_NO_RATE`` has been named since Phase 6 and has
-never had a producer. This module is that producer, and it is deliberately
-test-side: the production inner loop stays
+``SlowTimeMode.REFRESHED_WEIGHT_NO_RATE`` has no production producer. This
+module is its producer, and it is deliberately test-side: the production inner loop stays
 ``FROZEN_WEIGHT_WITH_CARRIER_RATE``, which does a whole frame in one kernel
 launch from one composed batch, and the refreshed mode exists here as an
 INDEPENDENT ORACLE for it. Two models of the same physics that agree is
@@ -92,7 +91,8 @@ def refreshed_cube(frames, spec, *, num_chirps: int):
     factor this oracle is willing to pay to be independent.
     """
 
-    from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch, synthesize_fmcw
+    from witwin.radar.synthesis import SlowTimeMode, SynthesisPathBatch
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
     if spec.carrier_hz != 0.0:
         raise ValueError(

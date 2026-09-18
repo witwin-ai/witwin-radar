@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(name: str):
+    # The gates import their shared helpers as siblings, the way `python ci/x.py` finds them.
+    if str(ROOT / "ci") not in sys.path:
+        sys.path.insert(0, str(ROOT / "ci"))
     path = ROOT / "ci" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)

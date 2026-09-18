@@ -98,7 +98,7 @@ workaround this boundary exists to prevent.
 
 ## Acceptance evidence
 
-`tests/test_phase4_import_boundary.py`:
+`tests/test_import_boundary.py`:
 
 - `test_no_channel_solver_or_internal_module_is_ever_loaded` (subprocess probe)
 - `test_radar_adds_nothing_to_the_consumer_facade_closure`

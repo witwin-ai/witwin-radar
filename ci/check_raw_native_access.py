@@ -1,10 +1,8 @@
 """G3: exactly one module reaches the dispatcher, and the callers are frozen.
 
-Phase 10 work item 7 forbids raw native access. Radar has no
-`runtime.symbols`-style indirection the way Channel does; every kernel facade
-imports
-ative_ops as _ops` from the lazy CUDA boundary and reaches symbols
-through the validated table it returns. That is fine only while the imported callable is
+R-ADR-019 forbids raw native access. Every kernel facade imports the lazy
+`native_ops` bridge from `witwin.radar.cuda` and reaches symbols through the
+validated table it returns. That is fine only while the imported callable is
 the loader that validates identity first. The failure this gate exists to stop
 is a new module writing `torch.ops._radar_native.<x>` directly, which loads
 nothing, validates nothing, and works - right up to the first stale binary.
@@ -37,14 +35,13 @@ import ast
 import sys
 from pathlib import Path
 
+from _ast_scan import dotted, production_modules
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The single module allowed to name the dispatcher or the JIT compiler in
 #: code. Frozen by equality against the measured set.
 DISPATCHER_OWNERS = frozenset({"witwin/radar/cuda/runtime.py"})
-
-#: The loader's sibling, which must never gain dispatcher access: it runs
-#: before the library is loaded and must import without CUDA.
 
 #: Every module that takes a handle from the loader, and why. Frozen by
 #: equality. Seven kernel facades bind the lazy `native_ops` bridge as `_ops`;
@@ -64,28 +61,13 @@ EXPECTED_LOADER_CONSUMERS = {
 }
 
 
-def _dotted(node: ast.AST) -> str:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-    return ".".join(reversed(parts))
-
-
-def production_modules(root: Path) -> list[Path]:
-    package = root / "witwin"
-    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
-
-
 def _dispatcher_references(tree: ast.Module) -> list[tuple[int, str]]:
     """`(line, expression)` for every dispatcher or JIT-compiler reference."""
 
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            name = _dotted(node)
+            name = dotted(node)
             if name.startswith("torch.ops") or name.startswith("torch.utils.cpp_extension"):
                 found.append((node.lineno, name))
             continue
@@ -111,10 +93,10 @@ def _dispatcher_references(tree: ast.Module) -> list[tuple[int, str]]:
 def _calls_build_extension(tree: ast.Module) -> bool:
     """True when the module asks the loader for a handle.
 
-    The dot boundary matters: `build.py`'s own private `_build_extension` and
-    `_jit_build_extension` are the loader implementing itself, not a consumer
-    taking a handle, and a suffix match without the boundary would report the
-    owner as its own tenth consumer.
+    The dot boundary matters: `runtime.py`'s own private `_build_extension`
+    is the loader implementing itself, not a consumer taking a handle, and a
+    suffix match without the boundary would report the owner as its own
+    consumer.
     """
 
     imported_names: set[str] = set()
@@ -128,7 +110,7 @@ def _calls_build_extension(tree: ast.Module) -> bool:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = _dotted(node.func)
+        name = dotted(node.func)
         if name in imported_names or name == "build_extension" or name.endswith(".build_extension"):
             return True
     return False

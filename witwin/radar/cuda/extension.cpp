@@ -10,28 +10,8 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def("scatter_direction_forward(Tensor origin, Tensor target, Tensor(a!) out) -> ()");
   m.def("scatter_direction_backward(Tensor origin, Tensor target, Tensor cotangent, Tensor(a!) out) -> ()");
   m.def("scatter_direction_jvp(Tensor origin, Tensor target, Tensor tangent, Tensor(a!) out) -> ()");
-  // Phase-4 FMCW beat synthesis over a chirp's fast-time axis. The carrier has
-  // two homes and exactly one of the two parameters names it:
-  //
-  //   carrier_hz = fc, carrier_rate_hz = 0   the kernel owns the whole carrier
-  //     phase. This is the absolute-carrier form, which the deleted Dirichlet
-  //     family also used; a weight carrying no reference phase still needs it.
-  //   carrier_hz = 0, carrier_rate_hz = fc   is the production path for a
-  //     Channel-sourced weight, which already carries exp(j 2 pi fc tau_rt) at
-  //     the frozen per-frame delay. carrier_rate_hz supplies the intra-frame
-  //     Doppler term fc * (tau - tau_rt) that the frozen weight cannot express.
-  //
-  // Setting both to fc double counts the carrier, and the Python contract
-  // refuses it. Both supported settings are exact; neither is a fallback.
-  // See R-ADR-004.
-  //
-  // `segment_tx_index` (int32, one entry per sensor-pair segment) and `num_tx`
-  // carry TDM-MIMO slow time: the slow-time coordinate of a (chirp, segment)
-  // cell is its TDM slot, (chirp * num_tx + segment_tx_index[segment]) *
-  // chirp_period_s, not the chirp index. They are kernel ARGUMENTS rather than
-  // a second pass, so TDM costs no extra launch. `num_tx = 1` with a zero table
-  // reduces the slot to the chirp index exactly.
-  // Direct normalized Dirichlet range spectrum; same path and TDM contract.
+  // Direct normalized Dirichlet range spectrum; same path and TDM contract as
+  // the beat family below.
   m.def(
       "fmcw_spectrum_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
@@ -60,6 +40,27 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
 
+  // FMCW beat synthesis over a chirp's fast-time axis. The carrier has two
+  // homes and exactly one of the two parameters names it:
+  //
+  //   carrier_hz = fc, carrier_rate_hz = 0   the kernel owns the whole carrier
+  //     phase. This is the absolute-carrier form; a weight carrying no
+  //     reference phase needs it.
+  //   carrier_hz = 0, carrier_rate_hz = fc   is the production path for a
+  //     Channel-sourced weight, which already carries exp(j 2 pi fc tau_rt) at
+  //     the frozen per-frame delay. carrier_rate_hz supplies the intra-frame
+  //     Doppler term fc * (tau - tau_rt) that the frozen weight cannot express.
+  //
+  // Setting both to fc double counts the carrier, and the Python contract
+  // refuses it. Both supported settings are exact; neither is a fallback.
+  // See R-ADR-004.
+  //
+  // `segment_tx_index` (int32, one entry per sensor-pair segment) and `num_tx`
+  // carry TDM-MIMO slow time: the slow-time coordinate of a (chirp, segment)
+  // cell is its TDM slot, (chirp * num_tx + segment_tx_index[segment]) *
+  // chirp_period_s, not the chirp index. They are kernel ARGUMENTS rather than
+  // a second pass, so TDM costs no extra launch. `num_tx = 1` with a zero table
+  // reduces the slot to the chirp index exactly.
   m.def(
       "fmcw_beat_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
@@ -88,7 +89,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
 
-  // Phase-6 OFDM channel frequency response over the (symbol, subcarrier)
+  // OFDM channel frequency response over the (symbol, subcarrier)
   // grid. The cube is published in the CHANNEL phasor convention exp(-j k d),
   // NOT conjugated: OFDM demodulation is per-subcarrier equalisation H = Y / X,
   // which removes the transmitted symbol but not the carrier convention. With
@@ -137,7 +138,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "int weight_columns, float subcarrier_spacing_hz, float symbol_period_s, "
       "float carrier_hz, float carrier_rate_hz) -> ()");
 
-  // Phase-6 pulsed echo train over the (pulse, fast-time sample) grid. What
+  // Pulsed echo train over the (pulse, fast-time sample) grid. What
   // this family emits is the matched-filter INPUT: the received complex
   // baseband pulse train. The matched filter itself is a correlation and lives
   // in DSP glue, because synthesis owns the received waveform and processing
@@ -228,7 +229,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor tan_weight_re, Tensor tan_weight_im, Tensor(a!) tan_out_re, "
       "Tensor(b!) tan_out_im, Tensor(c!) tan_tau_rt, Tensor(d!) tan_tau_rate, "
       "int num_paths, int num_tx, int num_rx, int pattern_kind, float c0) -> ()");
-  // Phase-6 receiver frontend. Three families, ONE fixed order, and the order
+  // Receiver frontend. Three families, ONE fixed order, and the order
   // lives in the Python runtime rather than in a caller:
   //
   //   port -> phase -> thermal -> lna -> agc -> adc
@@ -258,8 +259,8 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // in the group count, with no copy and no permute.
   //
   // `frontend_quantize_forward` has NO backward and NO jvp, on purpose: `round`
-  // is not differentiable and a straight-through surrogate is a Phase-9
-  // modelling decision. Its Python owner raises on a grad-enabled or
+  // is not differentiable and a straight-through surrogate is a modelling
+  // decision this file does not make. Its Python owner raises on a grad-enabled or
   // forward-dual input rather than silently detaching. This is the one
   // deliberate exception to R-ADR-004's three-per-family rule. See R-ADR-004.
   m.def("oscillator_phase_forward(Tensor times, Tensor delays, Tensor(a!) phase, float diffusion, float sign, int seed_base, int block_size) -> ()");
@@ -298,9 +299,9 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor(b!) out_im, Tensor(c!) clipped_count, int num_elements, int bits, "
       "float full_scale, int block_size) -> ()");
 
-  // Phase-5 two-way join: inbound leg x outbound leg -> radar round trip.
+  // Two-way join: inbound leg x outbound leg -> radar round trip.
   //
-  //   tau_rt  = tau_in + tau_out,  rate_rt = rate_in + rate_out
+  //   tau_rt  = tau_in + tau_out
   //   C_rt    = (C_out * S) * C_in
   //
   // Complex values cross as separate real and imaginary tensors, matching the
@@ -316,12 +317,11 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // one gradient slot and needs no atomics; the summation order is therefore a
   // property of the frozen join rather than of the schedule. See R-ADR-004.
   m.def(
-      "two_way_join_forward(Tensor tau_in, Tensor tau_out, Tensor rate_in, "
-      "Tensor rate_out, Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
-      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
-      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor(a!) tau_rt, "
-      "Tensor(b!) rate_rt, Tensor(c!) c_rt_re, Tensor(d!) c_rt_im, "
-      "int num_rows) -> ()");
+      "two_way_join_forward(Tensor tau_in, Tensor tau_out, Tensor c_in_re, "
+      "Tensor c_in_im, Tensor c_out_re, Tensor c_out_im, Tensor s_re, "
+      "Tensor s_im, Tensor row_valid, Tensor idx_in, Tensor idx_out, "
+      "Tensor idx_s, Tensor(a!) tau_rt, Tensor(b!) c_rt_re, "
+      "Tensor(c!) c_rt_im, int num_rows) -> ()");
   m.def(
       "two_way_join_backward(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
       "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
@@ -339,12 +339,11 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor tan_tau_in, "
       "Tensor tan_tau_out, Tensor tan_c_in_re, Tensor tan_c_in_im, "
       "Tensor tan_c_out_re, Tensor tan_c_out_im, Tensor tan_s_re, "
-      "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_rate_rt, "
-      "Tensor(c!) tan_c_rt_re, Tensor(d!) tan_c_rt_im, int num_rows) -> ()");
+      "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_c_rt_re, "
+      "Tensor(c!) tan_c_rt_im, int num_rows) -> ()");
 
   // Aspect-dependent scatter response, evaluated per COMPOSED row from the
-  // direction basis the two legs publish. This is what makes item 6b/6c of the
-  // Phase-7 plan expressible at all: TwoWayComposer.compose refuses to
+  // direction basis the two legs publish. TwoWayComposer.compose refuses to
   // evaluate a geometry-dependent response in Torch, and this family is the
   // route THROUGH that refusal rather than around it.
   //

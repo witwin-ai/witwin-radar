@@ -38,6 +38,7 @@ import zipfile
 from pathlib import Path
 
 import tomllib
+from _ast_scan import imported_modules, production_modules
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,24 +57,6 @@ def _is_test_module(module: str) -> bool:
     return any(module == root or module.startswith(f"{root}.") for root in TEST_ROOTS)
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom) -> list[str]:
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    if node.level:
-        return []
-    base = node.module or ""
-    if not base:
-        return []
-    if _is_test_module(base):
-        return [base]
-    return [f"{base}.{alias.name}" for alias in node.names]
-
-
-def production_modules(root: Path) -> list[Path]:
-    package = root / "witwin"
-    return sorted(path for path in package.rglob("*.py") if "__pycache__" not in path.parts)
-
-
 def check_imports(root: Path) -> list[str]:
     failures: list[str] = []
     for path in production_modules(root):
@@ -82,7 +65,7 @@ def check_imports(root: Path) -> list[str]:
         tree = ast.parse(source, filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                for module in _imported_modules(node):
+                for module in imported_modules(node, _is_test_module):
                     if _is_test_module(module):
                         failures.append(
                             f"{relative}:{node.lineno}: production imports "

@@ -21,8 +21,8 @@ import torch
 from conftest import PROCESSING_CONFIG, make_processing_axes
 from support import exact_bin_grid as grid
 
+from witwin.radar.policy import SPEED_OF_LIGHT_M_PER_S
 from witwin.radar.processing import ArrayGeometry, fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
-from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
 #: Read from the same constant the axes record is built on. A hand-typed
 #: wavelength that is a part in 1e5 off puts a part in 1e5 into every phase this

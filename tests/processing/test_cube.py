@@ -18,8 +18,8 @@ from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
 
 from witwin.radar.processing import ProcessingAxes, ProcessingCube
-from witwin.radar.synthesis import synthesize_fmcw
 from witwin.radar.synthesis.assembly import SynthesisResult, assemble_frame_cube
+from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
 pytestmark = pytest.mark.gpu
 

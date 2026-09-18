@@ -1,14 +1,12 @@
 """Typed receiver frontend and its fixed physical signal chain.
 
 The module owns frontend configuration, deterministic stage seeding, native
-phase/thermal/LNA and AGC operators, and final ADC quantization. Former
-``frontend.*`` submodule paths are intentionally not retained.
+phase/thermal/LNA and AGC operators, and final ADC quantization.
 """
 
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, replace
 
 import torch
@@ -29,13 +27,15 @@ REFERENCE_TEMPERATURE_K = 290.0
 STAGE_PHASE_NOISE = 0
 STAGE_THERMAL_NOISE = 1
 
-#: The fixed stage order, published as data so a reader never has to infer it
-#: from the order of ``if`` statements. The runtime asserts it against itself.
-FRONTEND_STAGE_ORDER = ("port", "phase", "thermal", "lna", "agc", "adc")
-
 AGC_MODE_GLOBAL = "global"
 AGC_MODE_PER_RX = "per_rx"
 AGC_MODES = (AGC_MODE_GLOBAL, AGC_MODE_PER_RX)
+
+#: Launch width of the elementwise passes, threads per block. The Philox
+#: realisation does not depend on it - a test builds a chain at another width
+#: and asserts bit equality - and the Wiener scan is not affected by it at all,
+#: because its accumulation order is part of the realisation.
+DEFAULT_BLOCK_SIZE = 256
 
 
 #: Why the port impedance has no derivative. It converts sqrt(W) to volts and
@@ -66,8 +66,8 @@ _NOISE_REASON = (
 _LNA_REASON = (
     "gain_db is device configuration rather than scene state. The native "
     "frontend operator carries no tangent or gradient slot for it and no "
-    "consumer asks for one; adding the slot is a named Phase-9 deferral "
-    "recorded in docs/dev/radar-ad-capability-matrix.md."
+    "consumer asks for one; the deferral is recorded in "
+    "docs/dev/radar-ad-capability-matrix.md."
 )
 
 #: Why the AGC setpoint has no derivative. It is a control target, and the
@@ -224,21 +224,9 @@ class Noise:
         variance = level * 4.0 * math.pi**2 * float(self.phase_offset) ** 2 / float(self.phase_sample_rate)
         return math.sqrt(variance)
 
-    def single_sideband_dbc_per_hz(self, offset_hz: float) -> float:
-        """The model's own ``L(f)``, in dBc/Hz, at an arbitrary offset.
-
-        ``L(f) = sigma_w^2 fs / (4 pi^2 f^2)``. Published so a test can assert
-        the ``-20 dB/decade`` asymptote against the generator rather than
-        against a second copy of the formula.
-        """
-
-        sigma = self.phase_innovation_sigma_rad
-        if sigma <= 0.0 or offset_hz <= 0.0:
-            raise ValueError("single_sideband_dbc_per_hz needs a configured phase noise and a positive offset")
-        level = sigma**2 * float(self.phase_sample_rate) / (4.0 * math.pi**2 * float(offset_hz) ** 2)
-        return 10.0 * math.log10(level)
-
-    def phase_difference(self, times_s, delays_s, *, seed_base: int, sign: float = 1.0):
+    def phase_difference(
+        self, times_s, delays_s, *, seed_base: int, sign: float = 1.0, block_size: int = DEFAULT_BLOCK_SIZE
+    ):
         """Common-oscillator ``phi(t)-phi(t-tau)`` in radians, on actual SI time.
 
         A white-frequency-noise oscillator has diffusion q=4*pi^2*f0^2*L(f0)
@@ -270,7 +258,9 @@ class Noise:
         )
         phase = torch.empty(times.shape, device=times.device, dtype=torch.float32)
         diffusion = self.phase_innovation_sigma_rad**2 * self.phase_sample_rate
-        _ops().oscillator_phase_forward(times, delays, phase, diffusion, sign, seed_base, frontend_block_size())
+        _ops().oscillator_phase_forward(
+            times, delays, phase, diffusion, sign, seed_base, _checked_block_size(block_size)
+        )
         return phase
 
 
@@ -318,8 +308,8 @@ class Adc:
     """Uniform mid-tread quantisation, and the ONLY quantiser in the chain.
 
     ``round`` is not differentiable and this family has no backward and no jvp
-    on purpose. A straight-through surrogate is a Phase-9 modelling decision,
-    not a detail a frontend may choose, so the owner raises on a grad-enabled or
+    on purpose. A straight-through surrogate is a modelling decision, not a
+    detail a frontend may choose, so the owner raises on a grad-enabled or
     forward-dual input rather than silently detaching.
     """
 
@@ -339,18 +329,6 @@ class Adc:
 
         return 2.0 * float(self.full_scale) / (2 ** int(self.bits) - 1)
 
-    @property
-    def quantization_variance(self) -> float:
-        """``step^2 / 12`` PER COMPONENT, for a busy non-overloaded signal."""
-
-        return self.step**2 / 12.0
-
-    @property
-    def full_scale_sine_sqnr_db(self) -> float:
-        """``6.02 b + 1.76`` dB, the textbook full-scale sine figure."""
-
-        return 6.02 * int(self.bits) + 1.76
-
 
 @dataclass(frozen=True, slots=True)
 class FrontendSpec:
@@ -362,8 +340,7 @@ class FrontendSpec:
     rather than records a caller would have to assemble.
 
     Enabling a stage is a non-``None`` field. The sequence they run in is fixed
-    by the runtime and is not expressible here, which is the difference between
-    this and the two runtimes it replaces.
+    by the runtime and is not expressible here.
 
     ``seed`` is ONE base seed and every stage derives its own stream from it,
     never one generator threaded through the chain. A shared generator consumes
@@ -374,8 +351,6 @@ class FrontendSpec:
     ``impedance`` is the sqrt(W) to volt conversion applied exactly once, at
     stage 0: a synthesis cube is in sqrt(W) at the receive antenna port and
     everything downstream of the LNA is in volts, so ``v = sqrt(W) sqrt(R)``.
-    The old code did it inside a transmit gain, where it multiplied a weight
-    that already carried transmit power - two errors that hid each other.
 
     ``lna`` is a voltage gain in dB. It is the one frontend scalar whose
     derivative would be perfectly well defined, and it is refused anyway,
@@ -424,21 +399,12 @@ class FrontendSpec:
         return 1.0 if self.lna is None else 10.0 ** (float(self.lna) / 20.0)
 
 
-#: Launch width for the elementwise passes. An environment override exists so a
-#: test can prove that the Philox realisation does not depend on it; production
-#: never sets it. The Wiener scan is deliberately NOT affected, because its
-#: accumulation order is part of the realisation.
-_BLOCK_SIZE_ENV = "WITWIN_RADAR_FRONTEND_BLOCK"
-_DEFAULT_BLOCK_SIZE = 256
+def _checked_block_size(block_size: int) -> int:
+    """A launch width the elementwise kernels accept: a power of two in [32, 1024]."""
 
-
-def frontend_block_size() -> int:
-    raw = os.environ.get(_BLOCK_SIZE_ENV)
-    if raw is None:
-        return _DEFAULT_BLOCK_SIZE
-    block = int(raw)
+    block = int(block_size)
     if block < 32 or block > 1024 or (block & (block - 1)) != 0:
-        raise ValueError(f"{_BLOCK_SIZE_ENV} must be a power of two between 32 and 1024, got {block}")
+        raise ValueError(f"block_size must be a power of two between 32 and 1024, got {block}")
     return block
 
 
@@ -448,16 +414,15 @@ def _require_no_derivative(signal: torch.Tensor, stage: str) -> None:
     Silently detaching would return a number with no gradient where the caller
     asked for one, which is the failure a fail-loud contract exists to prevent.
 
-    The check itself is :func:`witwin.radar.policy.refuse_derivative`,
-    the ONE owner of the non-differentiability wall. This wording was the model
-    that owner was generalised from, so what stays here is the ADC's own reason
-    - why ``round`` has no derivative - rather than a second copy of the rule.
+    The check itself is :func:`witwin.radar.policy.refuse_derivative`, the
+    ONE owner of the non-differentiability wall; what stays here is the ADC's
+    own reason - why ``round`` has no derivative.
     """
 
     refuse_derivative(
         f"the frontend {stage} stage",
         "`round` has a zero derivative almost everywhere and an undefined one "
-        "at every code boundary, and a Phase-9 straight-through surrogate is a "
+        "at every code boundary, and a straight-through surrogate is a "
         "modelling decision rather than something the frontend may choose: "
         "detach the signal before the ADC, or run without one.",
         signal=signal,
@@ -681,10 +646,6 @@ class FrontendDiagnostics:
     agc_rms: torch.Tensor | None
     clipped_components: torch.Tensor | None
 
-    @classmethod
-    def empty(cls) -> FrontendDiagnostics:
-        return cls(phase_rad=None, agc_gain=None, agc_rms=None, clipped_components=None)
-
 
 @dataclass(frozen=True, slots=True)
 class FrontendOutput:
@@ -692,21 +653,24 @@ class FrontendOutput:
 
     signal: torch.Tensor
     diagnostics: FrontendDiagnostics
-    stages: tuple[str, ...]
 
 
 class FrontendChain:
     """The single receive-chain runtime.
 
-    ``apply`` runs :data:`FRONTEND_STAGE_ORDER` and nothing else. There is no
-    argument that reorders it, no second quantiser, and no way to run the gain
-    before the noise it references.
+    ``apply`` runs port, phase, thermal, LNA, AGC and ADC, in that order and
+    nothing else. There is no argument that reorders it, no second quantiser,
+    and no way to run the gain before the noise it references.
+
+    ``block_size`` is the launch width of the elementwise kernels, threads per
+    block. It is a scheduling choice and never a numerical one.
     """
 
-    def __init__(self, spec: FrontendSpec) -> None:
+    def __init__(self, spec: FrontendSpec, *, block_size: int = DEFAULT_BLOCK_SIZE) -> None:
         if not isinstance(spec, FrontendSpec):
             raise TypeError(f"FrontendChain needs a FrontendSpec, got {type(spec).__name__}")
         self.spec = spec
+        self.block_size = _checked_block_size(block_size)
 
     @property
     def has_phase_noise(self) -> bool:
@@ -721,33 +685,25 @@ class FrontendChain:
         if not self.has_phase_noise or paths.path_count == 0:
             return paths
         times = torch.full_like(paths.total_delay_s, float(time_s), dtype=torch.float64)
-        return replace(
-            paths,
-            complex_transfer_ref=self._apply_path_phase_rows(paths.total_delay_s, paths.complex_transfer_ref, times),
-        )
+        weight = self._apply_path_phase_rows(paths.total_delay_s, paths.complex_transfer_ref, times)
+        return replace(paths, complex_transfer_ref=weight)
 
     def _apply_path_phase_rows(self, delays, weight, times):
+        """The row form the ADC-refreshed route calls directly.
+
+        The guard is repeated here rather than left to the caller because this is
+        a second entry point, not a helper: ``simulation`` reaches it per
+        observation. The batch entry keeps its own guard so a chain without phase
+        noise allocates no timestamp tensor per frame.
+        """
         if not self.has_phase_noise or not len(delays):
             return weight
-        phase = self.spec.noise.phase_difference(times, delays, seed_base=self.spec.seed, sign=-1.0)
-        plan = _NoisePlan(1, len(delays), phase, 0.0, 1.0, self.spec.seed, frontend_block_size())
+        phase = self.spec.noise.phase_difference(
+            times, delays, seed_base=self.spec.seed, sign=-1.0, block_size=self.block_size
+        )
+        plan = _NoisePlan(1, len(delays), phase, 0.0, 1.0, self.spec.seed, self.block_size)
         real, imaginary, _ = _FrontendNoise.apply(weight.real.contiguous(), weight.imag.contiguous(), plan)
         return torch.complex(real, imaginary)
-
-    @property
-    def enabled_stages(self) -> tuple[str, ...]:
-        """Which stages will run, in the fixed order, for reporting."""
-
-        spec = self.spec
-        active = {
-            "port": True,
-            "phase": spec.phase_sigma_rad() > 0.0,
-            "thermal": spec.thermal_sigma_volts() > 0.0,
-            "lna": spec.lna is not None,
-            "agc": spec.agc is not None,
-            "adc": spec.adc is not None,
-        }
-        return tuple(name for name in FRONTEND_STAGE_ORDER if active[name])
 
     def _noise_plan(self, signal: torch.Tensor, *, seed_base: int, times_s=None, phase_in_signal=False) -> _NoisePlan:
         spec = self.spec
@@ -759,7 +715,9 @@ class FrontendChain:
                 times_s = times_s / spec.noise.phase_sample_rate
             if times_s.numel() != num_phase:
                 raise ValueError("phase timestamps must cover the complete receive timeline")
-            phase = spec.noise.phase_difference(times_s, times_s - times_s[0], seed_base=seed_base)
+            phase = spec.noise.phase_difference(
+                times_s, times_s - times_s[0], seed_base=seed_base, block_size=self.block_size
+            )
         return _NoisePlan(
             num_outer=signal.numel() // num_phase,
             num_phase=num_phase,
@@ -767,7 +725,7 @@ class FrontendChain:
             thermal_sigma=spec.thermal_sigma_volts(),
             lna_gain=spec.lna_voltage_gain(),
             seed_base=int(seed_base),
-            block_size=frontend_block_size(),
+            block_size=self.block_size,
         )
 
     def _agc_plan(self, signal: torch.Tensor, agc: Agc) -> _AgcPlan:
@@ -786,7 +744,7 @@ class FrontendChain:
             target_rms=float(agc.target_rms),
             min_gain=agc.min_voltage_gain,
             max_gain=agc.max_voltage_gain,
-            block_size=frontend_block_size(),
+            block_size=self.block_size,
         )
 
     def apply(
@@ -833,7 +791,6 @@ class FrontendChain:
             diagnostics=FrontendDiagnostics(
                 phase_rad=phase_rad, agc_gain=agc_gain, agc_rms=agc_rms, clipped_components=clipped
             ),
-            stages=self.enabled_stages,
         )
 
     def _quantize(self, signal: torch.Tensor, adc: Adc) -> tuple[torch.Tensor, torch.Tensor]:
@@ -853,7 +810,7 @@ class FrontendChain:
             int(flat.numel()),
             int(adc.bits),
             float(adc.full_scale),
-            frontend_block_size(),
+            self.block_size,
         )
         return torch.complex(out_re, out_im).reshape(signal.shape), clipped
 
@@ -863,7 +820,7 @@ def _phase_run_length(signal: torch.Tensor) -> int:
 
     A rank-4 ``(TX, RX, chirp, sample)`` cube shares one oscillator across the
     virtual array, so the phase walks over ``chirp * sample`` and is broadcast
-    over the array - which is exactly what the expression this replaces did.
+    over the array.
     Anything else is treated as a single run over the whole tensor, which is the
     honest reading of a signal whose slow-time axis this runtime was not told
     about.

@@ -1,4 +1,4 @@
-"""End-to-end orchestration for the Phase-4 vertical AD spike.
+"""End-to-end orchestration for the single-site AD spike.
 
 compile -> discover -> freeze -> per-frame reevaluate -> compose -> synthesize
 -> scalar loss, with one differentiable scatter site that is the sink of the
@@ -8,50 +8,35 @@ accumulates from both legs.
 
 This lives under ``tests/`` because it is orchestration for a spike, not a
 production owner. Every numerical primitive it calls is a production module.
+The response, the waveform spec and the loss are the multi-endpoint driver's
+and the reference chain's, bound to this fixture's front end.
 """
 
 from __future__ import annotations
 
 import torch
 
-from . import phase4_geometry as geo
-from . import phase4_world as world
+from . import multi_endpoint_driver
+from . import single_site_geometry as geo
+from . import single_site_world as world
+from .multi_endpoint_driver import FIXTURE_AMPLITUDE as SPIKE_AMPLITUDE
+from .multi_endpoint_driver import FIXTURE_PHASE_RAD as SPIKE_PHASE_RAD
+from .multi_endpoint_driver import make_response
+from .reference_chain import radar_loss as _radar_loss
 from .synthesis_batch import to_synthesis
-
-# A target response strong enough that the synthesized IQ and the reference IQ
-# are the same order of magnitude. The absolute scale is arbitrary; keeping the
-# two comparable is what makes the loss, and therefore its finite difference,
-# well conditioned.
-SPIKE_AMPLITUDE = 1.0e5
-SPIKE_PHASE_RAD = 0.7
 
 
 def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0):
-    from witwin.radar import Radar
-
-    # device="cpu" because a waveform spec holds no tensors: the fixture must
-    # stay buildable during a CUDA-less collection pass, and every number below
-    # is identical either way.
-    config = dict(geo.FIXTURE_RADAR_CONFIG, output_domain="beat")
-    spec = Radar.from_dict(config, device="cpu").waveform_spec(offset=carrier_hz)
-    if num_chirps is not None:
-        from dataclasses import replace
-
-        spec = replace(spec, num_chirps=num_chirps)
-    return spec
-
-
-def make_response(*, requires_grad: bool = False, device: str = "cuda"):
-    from witwin.radar.scattering import ScalarRcsResponse
-
-    return ScalarRcsResponse.from_values(SPIKE_AMPLITUDE, SPIKE_PHASE_RAD, device=device, requires_grad=requires_grad)
+    return multi_endpoint_driver.make_spec(
+        config=geo.FIXTURE_RADAR_CONFIG, num_chirps=num_chirps, carrier_hz=carrier_hz
+    )
 
 
 class Phase4Spike:
     """One compiled scene, two frozen legs, one frozen two-way join.
 
-    ``components`` and ``max_depth`` default to the Phase-4 line-of-sight
-    values so every Phase-4 expectation keeps its numbers. Passing
+    ``components`` and ``max_depth`` default to the line-of-sight values so
+    every single-site expectation keeps its numbers. Passing
     ``frozenset({"los", "reflection"}), max_depth=1`` turns the SAME fixture
     into the multipath case: no adapter change and no new fixture geometry are
     needed, because the consumer already accepts both components for fixed
@@ -101,41 +86,32 @@ class Phase4Spike:
     def _sink(self, position, stable_id):
         return world.endpoint_spec(position, stable_id, device=self.device)
 
-    def paths(
-        self,
-        tx: torch.Tensor,
-        site: torch.Tensor,
-        rx: torch.Tensor,
-        response,
-        *,
-        ad_mode: str = "none",
-        include_delay_rate: bool = True,
-    ):
+    def paths(self, tx: torch.Tensor, site: torch.Tensor, rx: torch.Tensor, response, *, ad_mode: str = "none"):
         """One frame: two reevaluations and one composition."""
 
-        inbound = self.adapter.reevaluate(
-            self.inbound, self._source(tx, geo.TX_STABLE_ID), self._sink(site, geo.SITE_STABLE_ID), ad_mode=ad_mode
+        inbound = self.adapter.reevaluate_slots(
+            self.inbound,
+            self._source(tx, geo.TX_STABLE_ID),
+            self._sink(site, geo.SITE_STABLE_ID),
+            slot_count=1,
+            ad_mode=ad_mode,
         )
-        outbound = self.adapter.reevaluate(
-            self.outbound, self._source(site, geo.SITE_STABLE_ID), self._sink(rx, geo.RX_STABLE_ID), ad_mode=ad_mode
+        outbound = self.adapter.reevaluate_slots(
+            self.outbound,
+            self._source(site, geo.SITE_STABLE_ID),
+            self._sink(rx, geo.RX_STABLE_ID),
+            slot_count=1,
+            ad_mode=ad_mode,
         )
-        composed = self.composer.compose(inbound, outbound, response, include_delay_rate=include_delay_rate)
+        composed = self.composer.compose(inbound, outbound, response)
         return composed, inbound, outbound
 
     def synthesize(
-        self,
-        tx: torch.Tensor,
-        site: torch.Tensor,
-        rx: torch.Tensor,
-        response,
-        spec,
-        *,
-        ad_mode: str = "none",
-        include_delay_rate: bool = True,
+        self, tx: torch.Tensor, site: torch.Tensor, rx: torch.Tensor, response, spec, *, ad_mode: str = "none"
     ) -> torch.Tensor:
         from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-        composed, _, _ = self.paths(tx, site, rx, response, ad_mode=ad_mode, include_delay_rate=include_delay_rate)
+        composed, _, _ = self.paths(tx, site, rx, response, ad_mode=ad_mode)
         return synthesize_fmcw(to_synthesis(composed), spec)
 
     def loss(
@@ -148,70 +124,15 @@ class Phase4Spike:
         reference_iq: torch.Tensor,
         *,
         ad_mode: str = "vjp",
-        include_delay_rate: bool = True,
     ) -> torch.Tensor:
-        iq = self.synthesize(tx, site, rx, response, spec, ad_mode=ad_mode, include_delay_rate=include_delay_rate)
+        iq = self.synthesize(tx, site, rx, response, spec, ad_mode=ad_mode)
         return radar_loss(iq, reference_iq)
 
 
-class DirectSpike:
-    """One compiled scene, one frozen TX->RX leg, one frozen direct composer.
-
-    The direct path is the leakage/through path a real front end sees, and it
-    is evaluated on exactly the same frozen-topology contract as a round-trip
-    leg. It is NOT a Radar-owned native direct evaluator; that is separate
-    future work and nothing here short-cuts it.
-    """
-
-    def __init__(
-        self,
-        *,
-        device: str = "cuda",
-        components: frozenset[str] = frozenset({"los"}),
-        max_depth: int = 0,
-        compiled=None,
-    ) -> None:
-        from witwin.radar.channel import ChannelPropagationAdapter
-        from witwin.radar.paths import DirectComposer
-
-        self.device = device
-        self.compiled = world.compile_fixture_scene() if compiled is None else compiled
-        self.adapter = ChannelPropagationAdapter(
-            self.compiled, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ, components=components, max_depth=max_depth
-        )
-        self.leg = self.adapter.freeze(
-            world.endpoint_spec(geo.TX_POSITION_M, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=device),
-            world.endpoint_spec(geo.RX_POSITION_M, geo.RX_STABLE_ID, device=device),
-        )
-        self.composer = DirectComposer.freeze(
-            self.leg,
-            radar_source_ids=[geo.TX_STABLE_ID],
-            radar_sink_ids=[geo.RX_STABLE_ID],
-            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
-        )
-
-    def paths(self, tx: torch.Tensor, rx: torch.Tensor, *, ad_mode: str = "none"):
-        leg = self.adapter.reevaluate(
-            self.leg,
-            world.endpoint_spec(tx, geo.TX_STABLE_ID, power_w=geo.TX_POWER_W, device=self.device),
-            world.endpoint_spec(rx, geo.RX_STABLE_ID, device=self.device),
-            ad_mode=ad_mode,
-        )
-        return self.composer.compose(leg), leg
-
-
 def radar_loss(iq: torch.Tensor, reference_iq: torch.Tensor) -> torch.Tensor:
-    """Phase-sensitive squared-error loss, accumulated in float64.
+    """``reference_chain.radar_loss`` with the CPU reference moved to ``iq``'s device."""
 
-    Not ``|iq|^2``: with a single composed row that is phase blind, and a test
-    built on it would pass with the Channel-to-beat conjugation inverted. Not
-    ``.abs()``: that puts a kink exactly where a finite difference wants
-    smoothness.
-    """
-
-    reference = reference_iq.to(device=iq.device, dtype=torch.complex128)
-    delta = iq.to(torch.complex128) - reference
-    return (delta.real**2 + delta.imag**2).sum()
+    return _radar_loss(iq, reference_iq.to(device=iq.device))
 
 
 def make_reference_iq(spec, *, seed: int = 20260724, scale: float = 2.0e-3):
@@ -246,7 +167,6 @@ def oracle_positions() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
 
 __all__ = [
-    "DirectSpike",
     "Phase4Spike",
     "SPIKE_AMPLITUDE",
     "SPIKE_PHASE_RAD",

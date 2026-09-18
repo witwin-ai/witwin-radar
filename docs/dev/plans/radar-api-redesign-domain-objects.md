@@ -455,7 +455,7 @@ math:
 | `processing_cube()` | `ProcessingCube(cube, axes)` |
 | `range_profile(*, window="hann", remove_dc=False)` | `range_profile` |
 | `range_doppler(*, window="hann")` | `range_profile` then `range_doppler_map` |
-| `point_cloud(*, pfa, guard_cells, training_cells, route, max_points, ...)` | `range_doppler`, `combine_incoherent`, `ca_cfar_fast`, `point_cloud`; every keyword forwards by name |
+| `point_cloud(*, pfa, guard_cells, training_cells, route, max_points, ...)` | `range_doppler`, `combine_incoherent`, `ca_cfar`, `point_cloud`; every keyword forwards by name |
 
 The processing products (`RangeProfile`, `RangeDopplerMap`, `Detections`,
 `PointCloud`) do not gain methods; R-ADR-017 keeps that surface functional.
@@ -633,7 +633,7 @@ positions, element positions, mesh vertices, material parameters, RCS and
 phase); `echo` extends it; a loss on `Result.cube` reaches the leaves
 through both stages. `grad="jvp"`: forward duals pass through the same way.
 `Paths.detach()` is the inspection-only copy. The no-tape-retention rule that
-`tests/test_phase9_tape_non_leak.py` enforces on the four `last_*` members
+`tests/test_tape_containment.py` enforces on the four `last_*` members
 applies to `Paths.last`.
 
 ## 6. The flat configuration as a loader
@@ -863,26 +863,24 @@ tests/test_dynamic_motion_sampling.py
 tests/test_fmcw_continuous_motion.py
 tests/test_frame_streaming.py
 tests/test_frontend_output_domain.py
-tests/test_phase10_diagnostics.py
-tests/test_phase10_static_gates.py
-tests/test_phase11_antenna_pattern_route.py
-tests/test_phase11_entry_contract.py
-tests/test_phase11_scene_binding.py
-tests/test_phase11_simulate_entry.py
-tests/test_phase4_beat_spec.py
-tests/test_phase4_fmcw_beat_kernel.py
-tests/test_phase5_removed_entry_points.py
-tests/test_phase6_config_boundary.py
-tests/test_phase6_fmcw_analytic.py
-tests/test_phase6_launch_budget.py
-tests/test_phase6_no_torch_physics.py
-tests/test_phase7_acceptance.py
-tests/test_phase8_frozen_dsp_surface.py
-tests/test_phase8_pipeline_budget.py
+tests/test_native_diagnostics.py
+tests/test_static_gates.py
+tests/test_antenna_pattern_route.py
+tests/test_scene_binding.py
+tests/test_simulate_entry.py
+tests/test_fmcw_beat_spec.py
+tests/test_fmcw_beat_kernel.py
+tests/test_config_vocabulary_boundary.py
+tests/test_fmcw_analytic.py
+tests/test_synthesis_launch_budget.py
+tests/test_no_torch_physics.py
+tests/test_moving_scene_acceptance.py
+tests/test_processing_surface_freeze.py
+tests/test_pipeline_budget.py
 tests/test_phase8_wideband_ofdm.py
-tests/test_phase9_chain_coverage.py
-tests/test_phase9_sensor_constant_refusal.py
-tests/test_phase9_tape_non_leak.py
+tests/test_ad_chain_coverage.py
+tests/test_sensor_constant_refusal.py
+tests/test_tape_containment.py
 tests/test_public_api_snapshot.py
 ```
 

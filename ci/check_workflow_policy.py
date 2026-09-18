@@ -81,13 +81,6 @@ SELF_HOSTED_ALLOWLIST = {
 }
 
 
-class PolicyFailure(list):
-    """A list of failure strings, so every violation is reported at once."""
-
-    def add(self, message: str) -> None:
-        self.append(message)
-
-
 def load_workflow(path: Path) -> dict:
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
@@ -146,41 +139,41 @@ def _step_text(document: dict) -> str:
     return "\n".join(parts)
 
 
-def check_triggers(document: dict, failures: PolicyFailure) -> None:
+def check_triggers(document: dict, failures: list[str]) -> None:
     triggers = workflow_triggers(document)
     if not triggers:
-        failures.add("the workflow declares no triggers at all")
+        failures.append("the workflow declares no triggers at all")
         return
     forbidden = sorted(set(triggers) & FORBIDDEN_TRIGGERS)
     if forbidden:
-        failures.add(
+        failures.append(
             f"forbidden trigger(s) {forbidden}: the policy makes native wheel "
             "work opt-in through a published release, an explicit "
             "workflow_dispatch, or the run-ci label"
         )
     unknown = sorted(set(triggers) - ALLOWED_TRIGGERS - FORBIDDEN_TRIGGERS)
     if unknown:
-        failures.add(f"unrecognised trigger(s) {unknown}")
+        failures.append(f"unrecognised trigger(s) {unknown}")
     if "release" not in triggers:
-        failures.add("no `release` trigger: a published release must build wheels")
+        failures.append("no `release` trigger: a published release must build wheels")
     else:
         types = (triggers.get("release") or {}).get("types")
         if types != ["published"]:
-            failures.add(f"release trigger types must be ['published'], found {types!r}")
+            failures.append(f"release trigger types must be ['published'], found {types!r}")
     if "workflow_dispatch" not in triggers:
-        failures.add("no `workflow_dispatch` trigger: a manual full build must exist")
+        failures.append("no `workflow_dispatch` trigger: a manual full build must exist")
     else:
         inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
         if "scope" not in inputs:
-            failures.add("workflow_dispatch must take a `scope` input")
+            failures.append("workflow_dispatch must take a `scope` input")
         else:
             options = inputs["scope"].get("options") or []
             if "full" not in options:
-                failures.add(f"workflow_dispatch scope must offer 'full', found {options!r}")
+                failures.append(f"workflow_dispatch scope must offer 'full', found {options!r}")
     if "pull_request" in triggers:
         types = (triggers.get("pull_request") or {}).get("types")
         if types != ["labeled"]:
-            failures.add(
+            failures.append(
                 "the pull_request trigger must be types: [labeled] so an "
                 f"ordinary push to a PR starts nothing; found {types!r}"
             )
@@ -188,7 +181,7 @@ def check_triggers(document: dict, failures: PolicyFailure) -> None:
         for job_id in entry_jobs:
             condition = str((document["jobs"][job_id]).get("if", ""))
             if OPT_IN_LABEL not in condition:
-                failures.add(
+                failures.append(
                     f"job {job_id!r} has no `needs` and no {OPT_IN_LABEL!r} guard, "
                     "so a label event would start it unconditionally"
                 )
@@ -214,13 +207,13 @@ POLICY_ENV = {
 }
 
 
-def check_architectures(document: dict, failures: PolicyFailure) -> None:
+def check_architectures(document: dict, failures: list[str]) -> None:
     env = document.get("env") or {}
     text = _step_text(document)
     for key, expected in POLICY_ENV.items():
         found = env.get(key)
         if found is None:
-            failures.add(f"the workflow declares no `{key}` architecture profile")
+            failures.append(f"the workflow declares no `{key}` architecture profile")
             continue
         if str(found) != expected:
             detail = ""
@@ -229,18 +222,20 @@ def check_architectures(document: dict, failures: PolicyFailure) -> None:
                 missing = [f"sm_{arch}" for arch in reference if _dotted(arch) not in str(found)]
                 if missing:
                     detail = f"; missing {missing}"
-            failures.add(f"`{key}` is {found!r}, the policy value is {expected!r}{detail}")
+            failures.append(f"`{key}` is {found!r}, the policy value is {expected!r}{detail}")
         if key not in text and f"env.{key}" not in text:
-            failures.add(f"`{key}` is declared but never used, so the profile it names does not reach any build step")
+            failures.append(
+                f"`{key}` is declared but never used, so the profile it names does not reach any build step"
+            )
     if f"{_dotted(FULL_EXPECTED_PTX)}+PTX" not in str(env.get("FULL_GENCODE_ARCHES", "")):
-        failures.add(
+        failures.append(
             f"the release profile requests no compute_{FULL_EXPECTED_PTX} PTX "
             "target; a release wheel without PTX cannot run on a future "
             "architecture"
         )
 
 
-def check_verifier_and_manylinux(document: dict, failures: PolicyFailure) -> None:
+def check_verifier_and_manylinux(document: dict, failures: list[str]) -> None:
     windows_verified = False
     linux_verified = False
     manylinux = False
@@ -260,47 +255,47 @@ def check_verifier_and_manylinux(document: dict, failures: PolicyFailure) -> Non
         if image.startswith(MANYLINUX_IMAGE):
             manylinux = True
     if not windows_verified:
-        failures.add("no architecture verifier runs against the Windows artifact")
+        failures.append("no architecture verifier runs against the Windows artifact")
     if not linux_verified:
-        failures.add("no architecture verifier runs against the Linux artifact")
+        failures.append("no architecture verifier runs against the Linux artifact")
     if not manylinux:
-        failures.add(
+        failures.append(
             f"the Linux wheel is not built in a {MANYLINUX_IMAGE} image; relabeling an Ubuntu binary is not compliant"
         )
 
 
-def check_wheel_shape(document: dict, failures: PolicyFailure) -> None:
+def check_wheel_shape(document: dict, failures: list[str]) -> None:
     text = _step_text(document)
     if "len(native) == 1" not in text:
-        failures.add(
+        failures.append(
             "no step asserts the wheel carries exactly one native member; a "
             "second binary or a native-free wheel would publish unnoticed"
         )
     if 'origin"] == "packaged"' not in text and "origin'] == 'packaged'" not in text:
-        failures.add(
+        failures.append(
             "no step asserts the installed extension loaded from the packaged "
             "prebuilt (build_info()['origin'] == 'packaged')"
         )
     if "torch.utils.cpp_extension" not in text:
-        failures.add(
+        failures.append(
             "no step asserts torch.utils.cpp_extension stayed unimported, so a silent JIT would not be detected"
         )
     for sidecar in (".build-info.json", ".build-fingerprint"):
         if sidecar not in text:
-            failures.add(f"no step asserts the installed package ships {sidecar}")
+            failures.append(f"no step asserts the installed package ships {sidecar}")
     smoke_steps = [step for _, name, step in _steps(document) if name == "Smoke install prebuilt wheel"]
     if len(smoke_steps) != 1:
-        failures.add(f"expected exactly one `Smoke install prebuilt wheel` step, found {len(smoke_steps)}")
+        failures.append(f"expected exactly one `Smoke install prebuilt wheel` step, found {len(smoke_steps)}")
     elif "python -I - <<'PY'" not in str(smoke_steps[0].get("run", "")):
-        failures.add(
+        failures.append(
             "the wheel smoke does not run Python in isolated mode; the repository checkout can shadow the installed wheel"
         )
 
 
-def check_exact_runtime_matrix(document: dict, failures: PolicyFailure) -> None:
+def check_exact_runtime_matrix(document: dict, failures: list[str]) -> None:
     for job_id, job in (document.get("jobs") or {}).items():
         matrix = (job.get("strategy") or {}).get("matrix") or {}
-        cells = matrix.get("compatibility")
+        cells = matrix.get("identity")
         if not cells:
             continue
         found = tuple(
@@ -308,42 +303,42 @@ def check_exact_runtime_matrix(document: dict, failures: PolicyFailure) -> None:
             for cell in cells
         )
         if found != EXACT_RUNTIME_CELLS:
-            failures.add(f"job {job_id!r} does not carry the exact native-identity cells in order: found {found!r}")
+            failures.append(f"job {job_id!r} does not carry the exact native-identity cells in order: found {found!r}")
         operating_systems = tuple(matrix.get("os") or ())
         if tuple(sorted(operating_systems)) != tuple(sorted(REQUIRED_OS)):
-            failures.add(
-                f"job {job_id!r} must run the compatibility grid on {REQUIRED_OS}, found {operating_systems!r}"
+            failures.append(
+                f"job {job_id!r} must run the exact-identity grid on {REQUIRED_OS}, found {operating_systems!r}"
             )
         return
-    failures.add("no exact native-identity job with a `compatibility` matrix")
+    failures.append("no exact native-identity job with an `identity` matrix")
 
 
-def check_publish_gating(document: dict, failures: PolicyFailure) -> None:
+def check_publish_gating(document: dict, failures: list[str]) -> None:
     jobs = document.get("jobs") or {}
     publish = jobs.get("publish")
     if publish is None:
-        failures.add("no `publish` job")
+        failures.append("no `publish` job")
         return
     condition = str(publish.get("if", ""))
     if "github.event_name == 'release'" not in condition:
-        failures.add(
+        failures.append(
             "the publish job is not restricted to `release: published`; a "
             f"manual dispatch must validate without publishing (if: {condition!r})"
         )
     needs = set(publish.get("needs") or ())
-    for required in ("build_cuda_wheels", "test_torch_compatibility"):
+    for required in ("build_cuda_wheels", "test_exact_identity"):
         if required not in needs:
-            failures.add(f"the publish job does not depend on {required!r}")
+            failures.append(f"the publish job does not depend on {required!r}")
     artifact_steps = [
         step for step in publish.get("steps") or () if step.get("name") == "Validate the artifact set before publishing"
     ]
     if len(artifact_steps) != 1:
-        failures.add(f"expected exactly one publish artifact validation step, found {len(artifact_steps)}")
+        failures.append(f"expected exactly one publish artifact validation step, found {len(artifact_steps)}")
         return
     artifact_validation = str(artifact_steps[0].get("run", ""))
     required_fragments = ('split(".")', '"manylinux_2_28_x86_64" in tags', 'tags == {"win_amd64"}')
     if not all(fragment in artifact_validation for fragment in required_fragments):
-        failures.add(
+        failures.append(
             "publish artifact validation must parse compressed wheel platform tags and require one Windows and one manylinux_2_28 wheel"
         )
 
@@ -357,9 +352,9 @@ DEFERRAL_COLUMNS = 6
 REQUIRED_DEFERRALS = ("D1", "D2", "D3", "D4", "D5")
 
 
-def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
+def check_deferral_register(path: Path, failures: list[str]) -> None:
     if not path.is_file():
-        failures.add(f"the deferral register {path.name} does not exist")
+        failures.append(f"the deferral register {path.name} does not exist")
         return
     text = path.read_text(encoding="utf-8")
     rows = {}
@@ -374,10 +369,10 @@ def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
     for identifier in REQUIRED_DEFERRALS:
         cells = rows.get(identifier)
         if cells is None:
-            failures.add(f"{path.name} has no row for deferral {identifier}")
+            failures.append(f"{path.name} has no row for deferral {identifier}")
             continue
         if len(cells) != DEFERRAL_COLUMNS:
-            failures.add(
+            failures.append(
                 f"{path.name} row {identifier} has {len(cells)} columns, the "
                 f"register schema is {DEFERRAL_COLUMNS} "
                 "(id, deferral, why, executed by, evidence, owner)"
@@ -385,31 +380,27 @@ def check_deferral_register(path: Path, failures: PolicyFailure) -> None:
             continue
         empty = [index for index, cell in enumerate(cells) if not cell or cell in {"-", "TBD"}]
         if empty:
-            failures.add(
+            failures.append(
                 f"{path.name} row {identifier} leaves column(s) {empty} unfilled; "
                 "a deferral without an owner and an executing command is a gap"
             )
-    if "Phase 11 proceeds without waiting" not in text:
-        failures.add(
-            f"{path.name} must state that these are deferrals rather than gaps and that Phase 11 does not wait on them"
-        )
 
 
-def check_runners(directory: Path, failures: PolicyFailure) -> None:
+def check_runners(directory: Path, failures: list[str]) -> None:
     for path in sorted(directory.glob("*.yml")):
         text = path.read_text(encoding="utf-8")
         if "self-hosted" not in text:
             continue
         reason = SELF_HOSTED_ALLOWLIST.get(path.name)
         if reason is None:
-            failures.add(
+            failures.append(
                 f"{path.name} uses a self-hosted runner and is not in the frozen "
                 "allowlist; GitHub-hosted runners are mandatory"
             )
 
 
-def check_workflow(path: Path, *, workflow_dir: Path | None = None, deferrals: Path | None = None) -> PolicyFailure:
-    failures = PolicyFailure()
+def check_workflow(path: Path, *, workflow_dir: Path | None = None, deferrals: Path | None = None) -> list[str]:
+    failures: list[str] = []
     document = load_workflow(path)
     check_triggers(document, failures)
     check_architectures(document, failures)

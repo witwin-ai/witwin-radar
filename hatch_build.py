@@ -6,7 +6,6 @@ from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-
 #: The one native artifact. Matched by exact name plus a known suffix rather
 #: than by ``_radar_native.*``, which also matches the two identity sidecars
 #: and would let a binary-free directory look populated.
@@ -22,12 +21,11 @@ ALLOW_PURE_WHEEL_ENV = "WITWIN_RADAR_ALLOW_PURE_WHEEL"
 class CustomBuildHook(BuildHookInterface):
     """Tag the wheel for this platform, and refuse to build a native-free one.
 
-    Before Phase 10 this hook returned silently when no prebuilt existed, and
-    hatchling then emitted a perfectly valid-looking ``py3-none-any`` wheel with
-    no native member in it. A release run whose prebuilt step failed without
-    stopping the job would publish that wheel, and every install of it would
-    fail at first import rather than at build time. The failure now happens
-    where the artifact is made.
+    A silent return here would let hatchling emit a valid-looking
+    ``py3-none-any`` wheel with no native member in it. A release run whose
+    prebuilt step failed without stopping the job would publish that wheel, and
+    every install of it would fail at first import rather than at build time.
+    The failure happens where the artifact is made.
     """
 
     def initialize(self, version: str, build_data: dict) -> None:
@@ -35,11 +33,7 @@ class CustomBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
         prebuilt_dir = Path(self.root) / "witwin" / "radar" / "cuda" / "prebuilt"
-        binaries = sorted(
-            path
-            for suffix in (".pyd", ".so")
-            for path in prebuilt_dir.glob(f"{EXTENSION_NAME}{suffix}")
-        )
+        binaries = sorted(path for suffix in (".pyd", ".so") for path in prebuilt_dir.glob(f"{EXTENSION_NAME}{suffix}"))
         if not binaries:
             if os.environ.get(ALLOW_PURE_WHEEL_ENV) == "1":
                 return

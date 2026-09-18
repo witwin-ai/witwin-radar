@@ -29,7 +29,7 @@ def frozen_leg(rows, *, device: str = "cuda"):
     which is what a test that varies only the component wants - and is exactly
     why such a test cannot say which of the four identity-key columns the join
     reads: ``component`` alone always disambiguates. The long form exists so
-    ``test_phase6_identity_key_columns.py`` can build two rows of one endpoint
+    ``test_identity_key_columns.py`` can build two rows of one endpoint
     pair that differ in a single tie-break column.
     """
 
@@ -62,7 +62,6 @@ def leg_batch(
     delay: torch.Tensor,
     coefficient: torch.Tensor,
     *,
-    rate: torch.Tensor | None = None,
     row_valid: torch.Tensor | None = None,
     direction: torch.Tensor | None = None,
 ):
@@ -72,10 +71,9 @@ def leg_batch(
     topology, at freeze time, not from the per-frame batch. Filling them with
     anything meaningful here would suggest otherwise.
 
-    ``direction`` is the row's propagation direction and defaults to absent,
-    which is what a fabricated leg genuinely has: no geometry stands behind it.
-    An aspect-dependent response refuses such a leg by name, which is the point
-    - so a test that wants one passes it explicitly.
+    ``direction`` is the row's propagation direction. A fabricated leg has no
+    geometry behind it, so it defaults to zeros; a test that drives an
+    aspect-dependent response passes real unit vectors.
     """
 
     from witwin.radar.propagation import RadarLegBatch
@@ -102,15 +100,14 @@ def leg_batch(
         interaction_type=zeros(torch.int32, (rows, 1)),
         delay_s=delay,
         coefficient=coefficient,
-        delay_rate=rate,
+        field_direction=zeros(torch.float32, (rows, 3)) if direction is None else direction,
         row_valid=row_valid,
         diagnostics=None,
-        field_direction=direction,
     )
 
 
 def payload(rows: int, *, seed: int, device: str = "cuda", scale: float = 1.0):
-    """Deterministic pseudo-random delays, rates and complex coefficients.
+    """Deterministic pseudo-random delays and complex coefficients.
 
     Delays are nanosecond scale and coefficients are order one, matching what
     the real chain produces closely enough that a tolerance chosen here means
@@ -123,11 +120,10 @@ def payload(rows: int, *, seed: int, device: str = "cuda", scale: float = 1.0):
         return torch.rand(count, generator=generator, dtype=torch.float64)
 
     delay = (1.0e-8 + 2.0e-8 * sample(rows)).to(device=device)
-    rate = (1.0e-9 * (sample(rows) - 0.5)).to(device=device)
     real = scale * (sample(rows) - 0.5)
     imag = scale * (sample(rows) - 0.5)
     coefficient = torch.complex(real, imag).to(device=device)
-    return delay, rate, coefficient
+    return delay, coefficient
 
 
 __all__ = ["frozen_leg", "leg_batch", "leg_rows", "payload"]

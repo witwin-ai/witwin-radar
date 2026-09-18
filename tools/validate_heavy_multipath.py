@@ -15,9 +15,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from validate_doppler_motion import C0, make_radar
 from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
 
+from tools.validate_doppler_motion import C0, make_radar
 from witwin.radar import Motion, PointTargets
 from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_doppler_map, range_profile
 from witwin.radar.propagation import Kinematics
@@ -26,9 +26,9 @@ from witwin.radar.propagation import Kinematics
 class LinearPoint:
     """One point on a straight line. ``positions`` is the simulator's view of it.
 
-    ``at`` additionally publishes the constant velocity, which only the image
-    oracle below reads; both are views of one closed form, so the oracle cannot
-    drift from the motion the simulator was handed.
+    ``velocity`` is the constant rate, which only the image oracle below reads;
+    both are views of one closed form, so the oracle cannot drift from the
+    motion the simulator was handed.
     """
 
     def __init__(self, device):
@@ -39,7 +39,7 @@ class LinearPoint:
         return self.origin + t * self.velocity
 
     def at(self, t):
-        return Kinematics(self.positions(t), self.velocity)
+        return Kinematics(self.positions(t))
 
 
 def room():

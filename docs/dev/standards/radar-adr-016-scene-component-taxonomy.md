@@ -54,7 +54,7 @@ rather than about identity.
 The index is built ONCE per topology epoch from the frozen topology and the
 frozen legs. It performs the same sanctioned freeze-time host read that
 `paths/_identity.py` already performs, after the consumer has synchronized, and
-`test_phase4_import_boundary.py` records the allowance by name. Per frame it
+`test_import_boundary.py` records the allowance by name. Per frame it
 reads nothing: `mask` is a device comparison and `count` returns a host int
 decided at build time.
 

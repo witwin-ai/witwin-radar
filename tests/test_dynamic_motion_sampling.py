@@ -4,20 +4,11 @@ import math
 
 import pytest
 import torch
-from support import multi_endpoint_driver as drv
-from test_phase11_simulate_entry import _radar, _static_scene
+from support.simulate_fixture import fixture_radar, point_targets, static_scene
 
-from witwin.radar import Motion, PointTargets
+from witwin.radar import Motion
 
 pytestmark = pytest.mark.gpu
-
-
-def _targets(positions, *, trajectory=None):
-    """The fixture scatterer, authored as the dimensionless strength directly."""
-
-    return PointTargets(
-        positions=positions, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD, trajectory=trajectory
-    )
 
 
 class Orbit:
@@ -31,11 +22,11 @@ class Orbit:
 
 
 def test_orbit_phase_and_tdm_match_independent_geometric_delay():
-    radar = _radar()
+    radar = fixture_radar()
     trajectory = Orbit(radar.device)
     result = radar.simulate(
-        _static_scene(),
-        _targets(trajectory(0.0), trajectory=trajectory),
+        static_scene(),
+        point_targets(trajectory(0.0), trajectory=trajectory),
         times=(0.0,),
         los=True,
         reflections=0,
@@ -61,15 +52,15 @@ def test_orbit_phase_and_tdm_match_independent_geometric_delay():
 
 
 def test_dynamic_default_discovers_endpoint_born_reflections():
-    radar = _radar()
+    radar = fixture_radar()
 
     def crossing(t):
         return torch.tensor([[2.0, 2.4 - 1800 * t, 0.0]], device=radar.device)
 
-    targets = _targets(crossing(0.0), trajectory=crossing)
+    targets = point_targets(crossing(0.0), trajectory=crossing)
     times = (0.0, 0.001)
-    complete = radar.simulate(_static_scene(), targets, times=times, motion=Motion.chirp())
-    held = radar.simulate(_static_scene(), targets, times=times, motion=Motion.chirp(rediscover_every_frames=10))
+    complete = radar.simulate(static_scene(), targets, times=times, motion=Motion.chirp())
+    held = radar.simulate(static_scene(), targets, times=times, motion=Motion.chirp(rediscover_every_frames=10))
     assert complete.path_set_complete and not held.path_set_complete
     assert complete.discovery_count > held.discovery_count == 1
     assert not torch.allclose(complete.cube, held.cube, atol=0, rtol=1e-3)
@@ -77,10 +68,10 @@ def test_dynamic_default_discovers_endpoint_born_reflections():
 
 @pytest.mark.parametrize("times", [(0.0, float("nan")), (1.0, 0.0), (0.0, 0.0)])
 def test_invalid_frame_times_are_refused(times):
-    radar = _radar()
-    targets = _targets(torch.tensor([[2.0, 0.2, 0.0]], device=radar.device))
+    radar = fixture_radar()
+    targets = point_targets(torch.tensor([[2.0, 0.2, 0.0]], device=radar.device))
     with pytest.raises(ValueError, match="finite|increasing"):
-        radar.simulate(_static_scene(), targets, times=times)
+        radar.simulate(static_scene(), targets, times=times)
 
 
 def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
@@ -89,15 +80,15 @@ def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
     import torch.autograd.forward_ad as ad
 
     # A small complete ADC grid, including both transmitters.
-    radar = _radar()
+    radar = fixture_radar()
     radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))
     base = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
 
     def solve(origin, mode):
         velocity = torch.tensor([[0.5, 0.2, 0.0]], device=origin.device)
         return radar.simulate(
-            _static_scene(),
-            _targets(origin, trajectory=lambda t: origin + t * velocity),
+            static_scene(),
+            point_targets(origin, trajectory=lambda t: origin + t * velocity),
             times=(0.0,),
             los=True,
             reflections=0,
@@ -123,7 +114,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
 
     from witwin.radar.simulation import SensorEndpointIds
 
-    radar = _radar()
+    radar = fixture_radar()
     radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))
     endpoints = [
         AntennaState(77110 + i, "tx" if i < 2 else "rx", p.cpu())
@@ -132,7 +123,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     scene = Scene(structures=(), endpoints=endpoints)
     trajectories = {e.antenna_id: LinearTrajectory(origin=(0, 0, 0), velocity=(0.3, 0, 0)) for e in endpoints}
     dynamic = DynamicScene(scene, endpoint_trajectories=trajectories)
-    targets = _targets(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
+    targets = point_targets(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
     args = {"times": (0.0,), "los": True, "reflections": 0}
     with pytest.raises(ValueError, match="sensor_endpoints"):
         radar.simulate(dynamic, targets, **args)
@@ -148,11 +139,11 @@ def test_moving_wall_round_trip_phase_matches_independent_image_geometry():
 
     from support import multi_endpoint_world as world
 
-    radar = _radar()
+    radar = fixture_radar()
     radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=1))
     scene = world.make_dynamic_scene(wall_velocity=(4.0, 0.0, 0.0))
     site = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
-    results = [radar.simulate(scene, _targets(site), times=(t,)) for t in (0.0, 1e-4)]
+    results = [radar.simulate(scene, point_targets(site), times=(t,)) for t in (0.0, 1e-4)]
     predicted = []
     for result in results:
         paths, legs = result.last_radar_paths, result.last_propagation

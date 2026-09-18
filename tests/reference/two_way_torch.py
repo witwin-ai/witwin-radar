@@ -32,8 +32,6 @@ def join_reference(
     *,
     tau_in: torch.Tensor,
     tau_out: torch.Tensor,
-    rate_in: torch.Tensor,
-    rate_out: torch.Tensor,
     c_in: torch.Tensor,
     c_out: torch.Tensor,
     response: torch.Tensor,
@@ -41,8 +39,8 @@ def join_reference(
     idx_out: torch.Tensor,
     idx_s: torch.Tensor,
     row_valid: torch.Tensor | None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compose ``(tau_rt, rate_rt, C_rt)`` from two legs and a per-site response.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compose ``(tau_rt, C_rt)`` from two legs and a per-site response.
 
     ``response`` is indexed per SITE, not per composed row: it is a target
     property, and broadcasting it per row would hide the fact that its gradient
@@ -50,14 +48,12 @@ def join_reference(
     """
 
     total_delay = tau_in.index_select(0, idx_in) + tau_out.index_select(0, idx_out)
-    total_rate = rate_in.index_select(0, idx_in) + rate_out.index_select(0, idx_out)
     transfer = (c_out.index_select(0, idx_out) * response.index_select(0, idx_s)) * c_in.index_select(0, idx_in)
 
     if row_valid is not None:
         total_delay = torch.where(row_valid, total_delay, torch.zeros_like(total_delay))
-        total_rate = torch.where(row_valid, total_rate, torch.zeros_like(total_rate))
         transfer = torch.where(row_valid, transfer, torch.zeros_like(transfer))
-    return total_delay, total_rate, transfer
+    return total_delay, transfer
 
 
 class PerSiteResponse:

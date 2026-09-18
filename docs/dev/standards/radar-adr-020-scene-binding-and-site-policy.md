@@ -13,7 +13,7 @@ existed only inside `tests/support/multi_endpoint_world.py`:
 1. **The compile crossing.** `compile_fixture_scene` (`:127-134`) and
    `compile_snapshot` (`:210-223`) were the only callers of
    `witwin.channel.scene.compile` anywhere. No Radar production module could
-   call it: `tests/test_phase4_import_boundary.py:390`
+   call it: `tests/test_import_boundary.py:390`
    (`test_only_the_adapter_crosses_the_channel_boundary`) pins
    `ChannelPropagationAdapter` as the sole Radar module allowed to name
    `witwin.channel`, and `propagation/epochs.py:336-345` takes `compile_scene`
@@ -53,7 +53,7 @@ Three shape decisions follow from that placement:
   scene an adapter is *constructed with*, so there is no adapter in existence
   when it is called. A `staticmethod` would suggest a per-adapter binding that
   does not exist, and the adapter's `__init__` parameter set is asserted by
-  equality (`tests/test_phase6_config_boundary.py:300-330`) precisely so that
+  equality (`tests/test_config_vocabulary_boundary.py:300-330`) precisely so that
   this kind of surface growth is reviewed rather than tolerated.
 * The `witwin.channel.scene` import is **function-local.** Importing
   `witwin.radar.propagation.channel_consumer` therefore still loads nothing
@@ -65,7 +65,7 @@ Three shape decisions follow from that placement:
   and the production driver simply passes this function in.
 
 The static-closure allowlist `ALLOWED_CHANNEL_IMPORTS` in
-`tests/test_phase4_import_boundary.py` gains `witwin.channel.scene` and
+`tests/test_import_boundary.py` gains `witwin.channel.scene` and
 `witwin.channel.scene.compile`. That list is asserted by equality on purpose, so
 a new name has to be added deliberately; this is that deliberate addition, and
 it is the *only* change to that file's assertions.
@@ -87,7 +87,7 @@ implicit recompile: Channel's CLAUDE.md forbids it, and a silent second compile
 would hide a caller that is confused about which radar it is simulating.
 
 `ChannelPropagationAdapter.__init__` is intentionally left alone.
-`tests/test_phase4_adapter.py:295-325` constructs a deliberately mismatched
+`tests/test_channel_adapter.py:295-325` constructs a deliberately mismatched
 adapter and pins that the refusal arrives at `reevaluate`; moving the check into
 the constructor would break that pin for no gain, since the constructor is not
 the only way to acquire a compiled scene.
@@ -217,7 +217,7 @@ a `radar.py` change and belongs to the stage that owns that file.
   enumerated engine, no internal contracts, no raw extension - is unchanged and
   still asserted.
 * `witwin/radar/simulation.py`, which owns the binding, is in the scanned module set of
-  `tests/test_phase4_import_boundary.py`, so it is held to the same
+  `tests/test_import_boundary.py`, so it is held to the same
   no-host-observation and no-Dr.Jit rules as the rest of the per-frame path.
 * Radar has a reproducible endpoint identity scheme for the first time. Two runs
   of one script agree on every `source_id` and `sink_id`, which is what makes a
@@ -231,7 +231,7 @@ a `radar.py` change and belongs to the stage that owns that file.
 * R-ADR-005 - the adapter holds a `CompiledScene` as an opaque token.
 * R-ADR-009 - `witwin.core.Mesh` defaults `recenter=True` and rewrites authored
   world coordinates. Every mesh a binding consumes must be built with
-  `recenter=False`; `tests/test_phase11_scene_binding.py` pins that the default
+  `recenter=False`; `tests/test_scene_binding.py` pins that the default
   still bites, measured on `world_vertices` (a compiler consumes those;
   `Mesh.vertices` returns the authored tensor unchanged whatever `recenter`
   says).

@@ -41,7 +41,7 @@ frequencies and nothing else: not a subcarrier count, not a spacing, not an FFT
 size, not a bandwidth. The waveform-to-Hz mapping is
 `OfdmCfrSpec.frequency_offsets_hz`, on the synthesis side, which is the side of
 the boundary that knows what a subcarrier is. The propagation request-keyword
-equality assertion in `tests/test_phase6_config_boundary.py` was updated
+equality assertion in `tests/test_config_vocabulary_boundary.py` was updated
 deliberately to admit it, with that reasoning written into the test.
 
 Structural validation of the grid stays in Channel, which owns the launch grid

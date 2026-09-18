@@ -87,7 +87,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.simulation.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'object', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]' = (), path_set_complete: 'bool' = True, motion_sampling_exhaustive: 'bool' = True, motion_sampling: 'str' = 'static', output_domain: 'str' = 'spectrum', adaptive_diagnostics: 'tuple[dict, ...]' = ()) -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'object', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'object', last_radar_paths: 'object', sample_times_s: 'tuple[tuple[float, ...], ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict, ...]') -> None"
         },
         {
           "name": "StructureTargets",
@@ -99,17 +99,6 @@
           "name": "processing",
           "kind": "value",
           "target": "<module> processing"
-        }
-      ]
-    },
-    {
-      "module": "witwin.radar.capabilities",
-      "exports": [
-        {
-          "name": "capabilities",
-          "kind": "function",
-          "target": "witwin.radar.capabilities.capabilities",
-          "signature": "() -> 'dict[str, Any]'"
         }
       ]
     },
@@ -149,7 +138,7 @@
           "name": "BeamCube",
           "kind": "class",
           "target": "witwin.radar.processing.angle.BeamCube",
-          "signature": "(data: torch.Tensor, axes: object, directions: torch.Tensor) -> None"
+          "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, directions: torch.Tensor) -> None"
         },
         {
           "name": "DetectionFrame",
@@ -184,19 +173,19 @@
           "name": "ProcessingCube",
           "kind": "class",
           "target": "witwin.radar.processing.signal.ProcessingCube",
-          "signature": "(data: torch.Tensor, axes: object) -> None"
+          "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes) -> None"
         },
         {
           "name": "RangeDopplerMap",
           "kind": "class",
           "target": "witwin.radar.processing.range_doppler.RangeDopplerMap",
-          "signature": "(data: torch.Tensor, axes: object, window: str, window_coherent_gain: float) -> None"
+          "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, window: str, window_coherent_gain: float) -> None"
         },
         {
           "name": "RangeProfile",
           "kind": "class",
           "target": "witwin.radar.processing.range_doppler.RangeProfile",
-          "signature": "(data: torch.Tensor, axes: object, window: str, window_coherent_gain: float) -> None"
+          "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, window: str, window_coherent_gain: float) -> None"
         },
         {
           "name": "SlowTimeSignal",
@@ -229,10 +218,10 @@
           "signature": "(profile: torch.Tensor, *, guard_cells: int = 2, training_cells: int = 8, pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
-          "name": "ca_cfar_fast",
+          "name": "combine_coherent",
           "kind": "function",
-          "target": "witwin.radar.processing.detection.ca_cfar_fast",
-          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
+          "target": "witwin.radar.processing.detection.combine_coherent",
+          "signature": "(cube: torch.Tensor) -> torch.Tensor"
         },
         {
           "name": "combine_incoherent",
@@ -262,7 +251,7 @@
           "name": "matched_filter",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.matched_filter",
-          "signature": "(signal: torch.Tensor, spec, *, oversample: int = 1, dtype: torch.dtype | None = None) -> torch.Tensor"
+          "signature": "(signal: torch.Tensor, spec, *, oversample: int = 1) -> torch.Tensor"
         },
         {
           "name": "microdoppler_spectrogram",
@@ -274,7 +263,7 @@
           "name": "music_image",
           "kind": "function",
           "target": "witwin.radar.processing.angle.music_image",
-          "signature": "(profile, array: witwin.radar.processing.angle.ArrayGeometry, *, elevation_rad: torch.Tensor, azimuth_rad: torch.Tensor, range_bins: torch.Tensor | None = None, num_signals: int = 7, spatial_smooth: int = 3, num_snapshots: int = 8) -> torch.Tensor"
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, array: witwin.radar.processing.angle.ArrayGeometry, *, elevation_rad: torch.Tensor, azimuth_rad: torch.Tensor, range_bins: torch.Tensor, num_signals: int = 7, spatial_smooth: int = 3, num_snapshots: int = 8) -> torch.Tensor"
         },
         {
           "name": "music_spectrum",
@@ -310,13 +299,13 @@
           "name": "point_cloud",
           "kind": "function",
           "target": "witwin.radar.processing.detection.point_cloud",
-          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, axes, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06) -> witwin.radar.processing.detection.PointCloud"
+          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06) -> witwin.radar.processing.detection.PointCloud"
         },
         {
           "name": "pulse_samples",
           "kind": "function",
-          "target": "witwin.radar.processing.range_doppler.pulse_samples",
-          "signature": "(spec, device: torch.device | str = 'cpu') -> torch.Tensor"
+          "target": "witwin.radar.processing.signal.pulse_samples",
+          "signature": "(spec: witwin.radar.synthesis.assembly.PulsedSpec, device: torch.device | str = 'cpu') -> torch.Tensor"
         },
         {
           "name": "range_doppler_map",
@@ -334,7 +323,7 @@
           "name": "tdm_compensate",
           "kind": "function",
           "target": "witwin.radar.processing.angle.tdm_compensate",
-          "signature": "(aoa_input: torch.Tensor, velocities: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, axes) -> torch.Tensor"
+          "signature": "(aoa_input: torch.Tensor, velocities: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, axes: witwin.radar.processing.signal.ProcessingAxes) -> torch.Tensor"
         }
       ]
     },
@@ -420,7 +409,7 @@
           "name": "SynthesisPathBatch",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
-          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, frequency_response: torch.Tensor | None, frequency_offsets_hz: torch.Tensor | None, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, join_mode: Literal['direct', 'multipath'], weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False) -> None"
+          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False) -> None"
         },
         {
           "name": "SynthesisResult",
@@ -433,24 +422,6 @@
           "kind": "function",
           "target": "witwin.radar.synthesis.assembly.select_component",
           "signature": "(batch: witwin.radar.synthesis.assembly.SynthesisPathBatch, index: witwin.radar.paths.RadarComponentIndex, name: str) -> witwin.radar.synthesis.assembly.SynthesisPathBatch"
-        },
-        {
-          "name": "synthesize_fmcw",
-          "kind": "function",
-          "target": "witwin.radar.synthesis.fmcw.synthesize_fmcw",
-          "signature": "(batch: 'SynthesisPathBatch', spec: 'FmcwSpec') -> 'torch.Tensor'"
-        },
-        {
-          "name": "synthesize_ofdm",
-          "kind": "function",
-          "target": "witwin.radar.synthesis.ofdm.synthesize_ofdm",
-          "signature": "(batch: 'SynthesisPathBatch', spec: 'OfdmSpec') -> 'torch.Tensor'"
-        },
-        {
-          "name": "synthesize_pulsed",
-          "kind": "function",
-          "target": "witwin.radar.synthesis.pulsed.synthesize_pulsed",
-          "signature": "(batch: 'SynthesisPathBatch', spec: 'PulsedSpec') -> 'torch.Tensor'"
         }
       ]
     }

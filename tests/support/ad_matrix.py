@@ -20,7 +20,7 @@ both legs and the join once. A scene leaf has to be inside the compile, so a
 scenario built with live scene leaves is necessarily a different Python object
 from one built without; what makes it the SAME topology is that the composed
 identity keys, the row order and the primal are identical, and
-``test_phase9_combined_ad_matrix.py`` asserts exactly that rather than assuming
+``test_combined_ad_matrix.py`` asserts exactly that rather than assuming
 it.
 
 **Why the loss has two terms.** ``sum |cube|^2`` alone is invariant under the
@@ -144,7 +144,6 @@ def frame(values: dict, *, ad_mode: str = "none"):
         transmitters=values["transmitters"],
         receivers=values["receivers"],
         ad_mode=ad_mode,
-        include_delay_rate=False,
     )
     return composed, spike
 
@@ -166,7 +165,6 @@ def replay(spike, values: dict, *, ad_mode: str = "none"):
         transmitters=values["transmitters"],
         receivers=values["receivers"],
         ad_mode=ad_mode,
-        include_delay_rate=False,
     )
     return composed
 

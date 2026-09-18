@@ -1,10 +1,6 @@
 """Build the multi-endpoint fixture world with witwin.core and compile it.
 
-This is a sibling of ``phase4_world`` rather than an extension of it. The
-Phase-4 ``endpoint_spec`` builds exactly ONE row (``positions.reshape(1, 3)``,
-a single stable ID) and every Phase-4/5 expectation depends on that; batching it
-would have meant changing a fixture whose numbers are frozen. The batched
-builder lives here instead.
+``single_site_world`` binds these builders to the single-site wall.
 """
 
 from __future__ import annotations
@@ -14,8 +10,11 @@ import torch
 from . import multi_endpoint_geometry as geo
 
 
-def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None, sigma_e=None):
+def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None, sigma_e=None, roughness=None):
     """One narrow concrete wall plus one registered antenna endpoint.
+
+    ``roughness`` is a ``SurfaceRoughness`` for the wall's front face, or
+    ``None`` for the smooth wall every closed form describes.
 
     ``vertices``, ``eps_r`` and ``sigma_e`` accept a LIVE tensor and are passed
     through untouched, so a caller can mark any of them as an AD leaf and have
@@ -56,6 +55,7 @@ def make_scene(*, transmitter_positions=None, vertices=None, eps_r=None, sigma_e
             name="concrete",
             eps_r=geo.WALL_EPS_R if eps_r is None else eps_r,
             sigma_e=geo.WALL_SIGMA_E if sigma_e is None else sigma_e,
+            roughness_front=roughness,
         ),
         structure_id=1,
         material_id=1,

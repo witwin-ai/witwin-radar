@@ -35,15 +35,13 @@ class Rotor:
         return torch.tensor(points, dtype=torch.float32, device="cuda")
 
     def at(self, t):
-        rate = 2 * math.pi * 80.0
-        speeds = [[-0.003 * rate * math.sin(rate * t), 0.003 * rate * math.cos(rate * t), 0.0]]
-        return Kinematics(self.positions(t), torch.tensor(speeds, dtype=torch.float32, device="cuda"))
+        return Kinematics(self.positions(t))
 
 
 def _radar(waveform):
     """The shared fixture with its waveform reshaped. ``Radar`` is immutable."""
 
-    from validate_doppler_motion import make_radar
+    from tools.validate_doppler_motion import make_radar
 
     radar = make_radar()
     return radar.replace(waveform=replace(radar.waveform, output="beat", **waveform))

@@ -7,32 +7,20 @@ import argparse
 import ast
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
-
-def _module(repo: Path, path: Path) -> str:
-    parts = list(path.relative_to(repo).with_suffix("").parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
-
-
-def _resolve(package: str, level: int, module: str | None) -> str:
-    parts = package.split(".")
-    if level > 1:
-        parts = parts[: -(level - 1)]
-    base = ".".join(parts)
-    return base if not module else f"{base}.{module}"
+from _ast_scan import import_candidates, module_name
 
 
 def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool]:
+    """Internal modules `path` imports, and whether it reaches `witwin.channel`."""
+
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     package = name if path.name == "__init__.py" else name.rpartition(".")[0]
     internal: set[str] = set()
     imports_channel = False
-
-    def note(candidate: str) -> None:
-        nonlocal imports_channel
+    for candidate in import_candidates(tree, package):
         if candidate == "witwin.channel" or candidate.startswith("witwin.channel."):
             imports_channel = True
         cursor = candidate
@@ -41,28 +29,6 @@ def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool]:
                 internal.add(cursor)
                 break
             cursor = cursor.rpartition(".")[0]
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                note(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            target = _resolve(package, node.level, node.module) if node.level else (node.module or "")
-            note(target)
-            for alias in node.names:
-                note(f"{target}.{alias.name}")
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "importlib"
-            and node.func.attr == "import_module"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ):
-            value = node.args[0].value
-            note(_resolve(package, 1, value[1:]) if value.startswith(".") else value)
     return internal, imports_channel
 
 
@@ -132,11 +98,31 @@ def _audit_surface_split(repo: Path, manifest: dict, target: set[str]) -> list[s
     return errors
 
 
+def _audit_public_owners(repo: Path, target: set[str]) -> list[str]:
+    """Every public export must resolve to a symbol owned by a target module.
+
+    `ci/check_public_api_manifest.py` already rejects one target exposed under
+    two names; this is the other direction, an exposure whose owner is not in
+    the module inventory at all.
+    """
+
+    public_manifest = repo / "ci" / "public-api-manifest.json"
+    if not public_manifest.is_file():
+        return []
+    errors: list[str] = []
+    for module, exports in json.loads(public_manifest.read_text(encoding="utf-8"))["modules"].items():
+        for name, canonical in exports.items():
+            owner = canonical.rpartition(".")[0]
+            if owner not in target:
+                errors.append(f"public exposure {module}.{name} names non-target owner module {owner}")
+    return errors
+
+
 def audit(repo: Path) -> list[str]:
     manifest = json.loads((repo / "ci" / "architecture-manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
         return ["architecture manifest schema_version must be 1"]
-    paths = {_module(repo, path): path for path in sorted((repo / "witwin" / "radar").rglob("*.py"))}
+    paths = {module_name(repo, path): path for path in sorted((repo / "witwin" / "radar").rglob("*.py"))}
     known = set(paths)
     target = set(manifest["target_modules"])
     errors = [
@@ -144,7 +130,7 @@ def audit(repo: Path) -> list[str]:
         *(f"unexpected production module: {name}" for name in sorted(known - target)),
     ]
     owners = manifest.get("concept_owners", {})
-    duplicate_owners = [name for name, count in __import__("collections").Counter(owners.values()).items() if count > 1]
+    duplicate_owners = [name for name, count in Counter(owners.values()).items() if count > 1]
     errors.extend(
         f"one module owns multiple declared concepts without an explicit merge: {name}"
         for name in sorted(duplicate_owners)
@@ -153,6 +139,7 @@ def audit(repo: Path) -> list[str]:
         if owner not in target:
             errors.append(f"concept {concept!r} names non-target owner {owner!r}")
     errors.extend(_audit_surface_split(repo, manifest, target))
+    errors.extend(_audit_public_owners(repo, target))
 
     graph: dict[str, set[str]] = {}
     channel_importers = []

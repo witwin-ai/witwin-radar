@@ -1,18 +1,13 @@
-"""The radar pose transforms, and what they mean on the scene-driven route.
+"""The radar pose frame, and what it means on the scene-driven route.
 
-``Radar._world_from_local_*`` survives Phase 11 unchanged; what changed is how a
-test can OBSERVE that a pose is load bearing. The two observational tests here
-used to reach the legacy trace sample
-(``solvers.common.normalize_interpolated_sample``) and the float64 path oracle
-under ``tests/reference``, both of which the Dirichlet route takes with it. They
-now go through ``Radar.simulate``, which is where a pose actually reaches the
-world: ``simulation.bind_radar_world`` publishes ``radar.tx_pos`` and
-``radar.rx_pos`` - the pose-transformed world positions - as the Channel
-endpoints.
+``Radar._world_from_local_matrix`` is the one pose frame; ``support.pose``
+applies it to test geometry. The two observational tests go through
+``Radar.simulate``, which is where a pose actually reaches the world:
+``simulation.bind_radar_world`` publishes ``radar.tx_pos`` and ``radar.rx_pos``
+- the pose-transformed world positions - as the Channel endpoints.
 
-``set_pose`` is gone with the mutable radar. ``Radar.replace`` is its
-replacement and returns a NEW radar, so the pure-algebra case below also pins
-that the original is left alone.
+``Radar.replace`` returns a NEW radar, so the pure-algebra case below also
+pins that the original is left alone.
 
 The three pure-algebra tests stay CPU-only. The two observational ones are
 ``--gpu``, because the thing being observed is a simulated frame.
@@ -23,6 +18,7 @@ from __future__ import annotations
 import pytest
 import torch
 from conftest import empty_world, simulate_point_targets
+from support.pose import local_from_world_vectors, world_from_local_points
 
 from core import half_wave_dipole_power, local_target_position
 from witwin.radar import Pattern, PointTargets, Radar
@@ -55,7 +51,7 @@ def _composed_weight(radar: Radar, local_point: torch.Tensor) -> float:
     transform from a statement about an antenna pattern.
     """
 
-    world = radar._world_from_local_points(local_point.reshape(1, 3).to(radar.device))
+    world = world_from_local_points(radar, local_point.reshape(1, 3).to(radar.device))
     result = radar.simulate(
         empty_world(), PointTargets(positions=world, rcs=1.0), times=(0.0,), los=True, reflections=0
     )
@@ -75,14 +71,14 @@ def test_radar_transforms_local_points_and_vectors():
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -2.0]], dtype=torch.float32
     )
 
-    world_points = radar._world_from_local_points(local_points)
+    world_points = world_from_local_points(radar, local_points)
     expected_points = torch.tensor(
         [[1.0, 2.0, 3.0], [1.0, 2.0, 4.0], [1.0, 3.0, 3.0], [3.0, 2.0, 3.0]], dtype=torch.float32
     )
     assert torch.allclose(world_points, expected_points)
 
     world_forward = torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float32)
-    local_forward = radar._local_from_world_vectors(world_forward)
+    local_forward = local_from_world_vectors(radar, world_forward)
     assert torch.allclose(local_forward, torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32), atol=1e-6, rtol=1e-6)
 
 

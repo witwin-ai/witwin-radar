@@ -1,10 +1,8 @@
 """The frame-to-frame detection contract. An interface, not a tracker.
 
-Nothing in this repository had any notion of a detection that persists across
-frames: there is no track, no association, no Kalman filter, and Phase 8 does
-not add one. What it adds is the CONTRACT a tracker plugs into, because that is
-the thing the simulator owes an external tracker and the thing a tracker cannot
-supply for itself.
+There is no track, no association and no Kalman filter here. This is the
+CONTRACT a tracker plugs into, because that is the thing the simulator owes an
+external tracker and the thing a tracker cannot supply for itself.
 
 Three pieces:
 
@@ -20,27 +18,19 @@ Three pieces:
   not a recommendation.
 
 **This whole module is explicitly NON-DIFFERENTIABLE, and it enforces it.**
-Phase-9 item 4 already names CFAR, peak selection and tracking as the
-non-differentiable stages. A detection is the output of a threshold comparison
-and an ``argwhere``; a gradient through an association decision is a gradient
-through a discrete choice that does not have one. A derivative-carrying tensor
-is REFUSED at the boundary rather than silently detached: a silent detach is how
-a caller ends up with a zero gradient and a plausible number, which is worse
-than an error.
+A detection is the output of a threshold comparison and an ``argwhere``; a
+gradient through an association decision is a gradient through a discrete
+choice that does not have one. A derivative-carrying tensor is REFUSED at the
+boundary rather than silently detached: a silent detach is how a caller ends up
+with a zero gradient and a plausible number, which is worse than an error.
 
-Two Phase-9 corrections to that enforcement, both of which mattered:
-
-* it checked ``requires_grad`` only, so a FORWARD DUAL walked straight through
-  with a live tangent. It now goes through
-  :func:`witwin.radar.policy.refuse_derivative`, which checks both modes,
-  so this module and the wall speak with one voice and one wording;
-* it fired LATE. A :class:`DetectionFrame` is built from a
-  :class:`~witwin.radar.processing.detection.PointCloud` that already exists,
-  so by the time this refusal ran the frame had been computed in full. The
-  point-cloud stage now refuses at ITS entry, which makes this check
-  unreachable in the normal flow. It is kept anyway: an unreachable guard on
-  the second door is the right shape for a wall, and a caller who hands this
-  class a hand-built tensor still meets it.
+The refusal goes through :func:`witwin.radar.policy.refuse_derivative`, which
+checks both reverse-mode ``requires_grad`` and a forward dual's tangent, so this
+module and the wall speak with one voice and one wording. In the normal flow the
+point-cloud stage has already refused at ITS entry, so the check on
+:class:`DetectionFrame` is unreachable; it is kept because an unreachable guard
+on the second door is the right shape for a wall, and a caller who hands this
+class a hand-built tensor still meets it.
 """
 
 from __future__ import annotations
@@ -207,17 +197,17 @@ class TrackHandoff:
             raise ValueError(
                 f"the associator returned {int(continued.shape[0])} assignments for {len(frame)} detections"
             )
-        assignment = torch.full((len(frame),), -1, dtype=torch.int64, device=continued.device)
-        previous_ids = (
-            self.assignments[-1] if self.assignments else torch.zeros((0,), dtype=torch.int64, device=continued.device)
-        )
-        for index in range(len(frame)):
-            source = int(continued[index])
-            if source >= 0 and source < int(previous_ids.shape[0]):
-                assignment[index] = previous_ids[source]
+        # One host read per frame: the assignment is a per-detection decision
+        # on the host, so the source list crosses once and the ids go back once.
+        previous_ids = self.assignments[-1].tolist() if self.assignments else []
+        ids = []
+        for source in continued.tolist():
+            if 0 <= source < len(previous_ids):
+                ids.append(previous_ids[source])
             else:
-                assignment[index] = self._next_track_id
+                ids.append(self._next_track_id)
                 self._next_track_id += 1
+        assignment = torch.tensor(ids, dtype=torch.int64, device=continued.device)
         self.frames.append(frame)
         self.assignments.append(assignment)
         return assignment

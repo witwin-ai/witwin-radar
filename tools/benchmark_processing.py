@@ -1,7 +1,7 @@
 """Benchmark the Radar processing chain, stage by stage and end to end.
 
-This is the measurement behind Phase-8 work item 7, which decided that the
-repository ships NO native DSP. That decision stands and this tool is what keeps
+This is the measurement behind the decision that the repository ships NO
+native DSP (R-ADR-021). That decision stands and this tool is what keeps
 justifying it with numbers rather than with a preference. It is run and recorded
 regardless of the expected answer.
 
@@ -277,14 +277,14 @@ def group_transforms(size, args) -> list[dict]:
 
 
 def group_cfar(size, args) -> list[dict]:
-    from witwin.radar.processing import ca_cfar, ca_cfar_1d, ca_cfar_fast, os_cfar
+    from witwin.radar.processing import ca_cfar, ca_cfar_1d, os_cfar
 
     rows = []
     doppler = max(size["chirps"], 8)
     ranges = size["samples"]
     for batch_shape, label in (((), "single"), ((size["pairs"],), "batched")):
         magnitude = torch.rand((*batch_shape, doppler, ranges), device="cuda", dtype=torch.float32)
-        for name, fn in (("ca_cfar", ca_cfar), ("ca_cfar_fast", ca_cfar_fast), ("os_cfar", os_cfar)):
+        for name, fn in (("ca_cfar", ca_cfar), ("os_cfar", os_cfar)):
 
             def call(_fn=fn, _m=magnitude):
                 return _fn(_m)
@@ -350,19 +350,6 @@ def group_aoa(size, args) -> list[dict]:
     velocities = torch.rand(detections, device="cuda", dtype=torch.float32)
 
     add("tdm_compensate.vectorized", lambda: tdm_compensate(virtual12, velocities, narrow["array"], narrow["axes"]))
-
-    # The deleted form, reconstructed here and nowhere else: a Python loop over
-    # transmitters with an in-place multiply on a clone.
-    def legacy_tdm():
-        array = narrow["array"]
-        out = virtual12.clone()
-        chirp_period = float(narrow["axes"].slow_time_period_s) / array.num_tx
-        for index in range(1, array.num_tx):
-            phase = array.phase_sign * 4 * math.pi * velocities * index * chirp_period / array.wavelength_m
-            out[index * array.num_rx : (index + 1) * array.num_rx] *= torch.exp(1j * phase)
-        return out
-
-    add("tdm_compensate.python_loop", legacy_tdm, note="the deleted form")
     add("phase_comparison_aoa", lambda: phase_comparison_aoa(virtual12, narrow["array"], fft_size=64))
     add("fft2_aoa", lambda: fft2_aoa(virtual24, wide["array"], fft_size=64))
 
@@ -377,22 +364,11 @@ def group_aoa(size, args) -> list[dict]:
         ),
     )
 
-    # The two halves of MUSIC, separated: the eigen-decomposition against the
-    # smoothing construction the list comprehension used to build.
+    # The two halves of MUSIC, separated: the smoothing construction and the
+    # eigen-decomposition.
     smoothing = 3
     unfolded = angle_data.unfold(1, rows_m - smoothing, 1).unfold(2, cols_n - smoothing, 1)
     add("music.smoothing_unfold", lambda: unfolded.contiguous())
-
-    def legacy_smoothing():
-        return torch.stack(
-            [
-                angle_data[:, i : i + rows_m - smoothing, j : j + cols_n - smoothing, :]
-                for i in range(smoothing + 1)
-                for j in range(smoothing + 1)
-            ]
-        )
-
-    add("music.smoothing_stack", legacy_smoothing, note="the deleted form")
     elements = (rows_m - smoothing) * (cols_n - smoothing)
     covariance = _complex_noise((bins, elements, elements), seed=37)
     hermitian = covariance + covariance.transpose(-1, -2).conj()
@@ -460,7 +436,7 @@ def group_pipeline(args) -> list[dict]:
     batch, spec, spec_array = _pipeline_fixture()
 
     rows = []
-    for detector in ("ca_cfar_fast", "ca_cfar", "os_cfar"):
+    for detector in ("ca_cfar", "os_cfar"):
 
         def call(_d=detector):
             return run_pipeline(batch, spec, spec_array, detector=_d)

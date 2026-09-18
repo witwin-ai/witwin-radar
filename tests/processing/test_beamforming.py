@@ -12,8 +12,8 @@ import math
 import pytest
 import torch
 
+from witwin.radar.policy import SPEED_OF_LIGHT_M_PER_S
 from witwin.radar.processing import ArrayGeometry, conventional_steering, mvdr_weights
-from witwin.radar.synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 
 TX = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 1.0))
 RX = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0))

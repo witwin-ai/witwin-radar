@@ -1,34 +1,29 @@
 """Radar round-trip path composition.
 
-Two composers, one result contract. :class:`TwoWayComposer` joins an inbound
-and an outbound leg through a scatter site; :class:`DirectComposer` publishes a
-single source-to-sink leg with no site at all. The mode is chosen explicitly by
-the caller and recorded on the batch, so nothing downstream has to infer it and
-there is no path by which one silently becomes the other.
+:class:`TwoWayComposer` joins an inbound and an outbound leg through a scatter
+site and publishes the :class:`RadarPathBatch` contract.
 
-:class:`RadarComponentIndex` is a third thing and it is a SIDECAR: it names
+:class:`RadarComponentIndex` is a second thing and it is a SIDECAR: it names
 what each composed row is - target echo, environment clutter, direct leakage,
 multi-interaction - without adding a column to :class:`RadarPathTopology`.
 Every component export therefore shares the same topology OBJECT, which is what
 makes "processing does not change propagation row identity" a checkable
 statement rather than a claim.
 
-The module exports the contracts and the composers. It does not import
-the Channel adapter; the composers duck-type the frozen leg handles they are
-given, so this package never crosses the Channel boundary either.
+The module exports the contracts and the composer. It does not import the
+Channel adapter; the composer duck-types the frozen leg handles it is given, so
+this package never crosses the Channel boundary either.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal
 
 import torch
-import torch.autograd.forward_ad as forward_ad
 
 from .cuda import native_ops as _ops
-from .policy import first_order_only
-from .propagation import RadarLegBatch, require_wideband_pair
+from .policy import first_order_only, refuse_derivative
+from .propagation import RadarLegBatch, require_tensor
 
 LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
 
@@ -79,7 +74,6 @@ def interpolate_path_rows(delays, transfers, weights, carrier_hz):
     decision and are not differentiated. Delays [s] and complex transfers
     retain native first-order derivatives.
     """
-    from .policy import refuse_derivative
 
     refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
     if len(delays) != len(transfers) or len(delays) < 2:
@@ -233,21 +227,6 @@ def csr(owner_of_row: list[int], owner_count: int) -> tuple[list[int], list[int]
     return offsets, rows
 
 
-JoinMode = Literal["direct", "multipath"]
-
-JOIN_MODES: frozenset[str] = frozenset({"direct", "multipath"})
-
-
-def _require_tensor(name: str, value: object, *, dtype: torch.dtype, shape: tuple[int, ...]) -> torch.Tensor:
-    if not isinstance(value, torch.Tensor):
-        raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
-    if value.dtype != dtype:
-        raise TypeError(f"{name} must use {dtype}, got {value.dtype}")
-    if tuple(value.shape) != shape:
-        raise ValueError(f"{name} must have shape {shape}, got {tuple(value.shape)}")
-    return value
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class RadarPathTopology:
     """The identity of each composed round-trip row.
@@ -256,12 +235,6 @@ class RadarPathTopology:
     identity and is stable across a frozen sequence. ``inbound_row`` and
     ``outbound_row`` record which frozen leg rows were joined, so a composed
     result can always be traced back to the two legs that produced it.
-
-    A DIRECT row - radar source straight to radar sink, with no scatter site -
-    uses ``site_id = -1`` and ``outbound_row = -1``. Those are sentinels, not
-    missing data: a direct path has exactly one leg, and giving it a fabricated
-    second one would make it indistinguishable from a round trip through a
-    target with unit response.
 
     Identity is what the join uses. Joining by array position instead would be
     silently wrong the moment a leg publishes its rows in a different order,
@@ -278,7 +251,7 @@ class RadarPathTopology:
     def __post_init__(self) -> None:
         rows = (int(self.radar_source_id.shape[0]),)
         for name in ("radar_source_id", "site_id", "radar_sink_id", "inbound_row", "outbound_row"):
-            _require_tensor(name, getattr(self, name), dtype=torch.int64, shape=rows)
+            require_tensor(name, getattr(self, name), dtype=torch.int64, shape=rows)
 
     @property
     def row_count(self) -> int:
@@ -295,54 +268,25 @@ class RadarPathBatch:
     conjugates the received phasor, and that conversion has exactly one call
     site, in the synthesis facade.
 
-    ``delay_rate`` is ``d(total_delay_s)/dt`` and is primal-valued: it arrives
-    as an unpacked forward tangent, so consuming it here deliberately severs
-    the second-order ``d(delay_rate)/dx`` term.
-
-    RETARDATION, stated so an absurd-velocity test cannot be misread as a bug.
-    ``delay_rate`` is ``rate_in + rate_out`` with BOTH legs evaluated at the
-    same world instant ``t``. The exact two-way rate evaluates the outbound leg
-    at ``t + tau_in``, where the target has moved on, and carries a
-    ``(1 - v_r/c)`` factor from the same retardation. The relative error of the
-    same-instant form is therefore ``O(v/c)``: about ``4e-8`` at 12 m/s, which
-    is five orders of magnitude below the float32 delay quantisation these rows
-    are published at. It is an approximation, it is named here rather than left
-    implicit, and it is not corrected because the correction is smaller than the
-    representation. A test driven at a relativistic velocity measures this
-    approximation; it has not found a defect.
+    ``delay_rate`` is ``d(total_delay_s)/dt`` in s/s, primal-valued, and
+    ``None`` on every batch the composer publishes: the delay rate of a moving
+    world comes from re-evaluating the propagation at each observation instant,
+    not from a rate carried on the row. The member exists because the
+    frozen-weight synthesis kernels take a rate input, and a caller that models
+    slow time with one supplies it.
 
     ``row_valid`` is the sole authority on whether a row means anything. A
     dead row is a complete answer contributing exactly zero, never an error,
     and validity is never inferred from a zero payload.
 
-    ``frequency_response`` and ``frequency_offsets_hz`` are the composed band,
-    present or absent together and validated by the same host-only rule the leg
-    batch and the synthesis batch use. The response is ``[path_count, F]``
-    complex64 and column ``j`` is the round trip composed ENTIRELY at
-    ``reference_frequency_hz + frequency_offsets_hz[j]``: both legs' transport
-    at that frequency, multiplied by the scatter response.
-
-    What the band does NOT contain, stated so it is not assumed: the scatter
-    response is evaluated once and reused across the band. A wideband TARGET
-    response - an RCS that varies across the band - is a separate capability
-    with its own owner, and its absence here means a composed column is
-    ``H_in(f_j) * S(f_ref) * H_out(f_j)``. The propagation and material band
-    shape is exact; the target's is frozen.
-
-    ``join_mode`` records which composer produced these rows. It is stored
-    rather than inferred so that "which paths am I looking at" is a checkable
-    property of the result and never a guess from its shape. Both modes publish
-    THIS contract, so a consumer downstream of it - synthesis, in particular -
-    needs no branch; the choice is made once, by the caller, upstream.
-
     ``weight_includes_antenna_pattern`` is the fourth provenance boolean of the
-    pipeline and the only one a composer does not already know. A composed
+    pipeline and the only one the composer does not already know. A composed
     weight is Channel-sourced, so it always carries the reference-frequency
     phase, the free-space spreading and the transmit power; it carries the
     ARRAY's transmit and receive pattern gain only after
-    :meth:`witwin.radar.sensors.RoundTripPatternStage.apply` has run. Both
-    composers publish ``False`` because neither applies a pattern, and that
-    stage is the one producer that publishes ``True``. It exists to be READ: the
+    :meth:`witwin.radar.sensors.RoundTripPatternStage.apply` has run. The
+    composer publishes ``False`` because it applies no pattern, and that stage
+    is the one producer that publishes ``True``. It exists to be READ: the
     stage refuses a batch that already carries it, because applying an antenna
     pattern twice squares its gain and no magnitude plot shows the difference.
     """
@@ -357,44 +301,30 @@ class RadarPathBatch:
     reference_frequency_hz: float
     row_valid: torch.Tensor | None
     topology: RadarPathTopology
-    join_mode: JoinMode
-    frequency_response: torch.Tensor | None = None
-    frequency_offsets_hz: torch.Tensor | None = None
     weight_includes_antenna_pattern: bool = False
 
     def __post_init__(self) -> None:
         if type(self.weight_includes_antenna_pattern) is not bool:
             raise TypeError("weight_includes_antenna_pattern must be a bool")
-        if self.join_mode not in JOIN_MODES:
-            raise ValueError(f"join_mode must be one of {sorted(JOIN_MODES)}, got {self.join_mode!r}")
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
             raise ValueError("sensor_pair_count must be a positive int")
         if type(self.path_count) is not int or self.path_count < 0:
             raise ValueError("path_count must be a non-negative int")
         rows = (self.path_count,)
-        _require_tensor("sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows)
-        _require_tensor("pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.sensor_pair_count + 1,))
-        _require_tensor("total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows)
-        _require_tensor("complex_transfer_ref", self.complex_transfer_ref, dtype=torch.complex64, shape=rows)
+        require_tensor("sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows)
+        require_tensor("pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.sensor_pair_count + 1,))
+        require_tensor("total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows)
+        require_tensor("complex_transfer_ref", self.complex_transfer_ref, dtype=torch.complex64, shape=rows)
         if self.delay_rate is not None:
-            _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows)
+            require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows)
         if self.row_valid is not None:
-            _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
+            require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
         if self.topology.row_count != self.path_count:
             raise ValueError("topology must have exactly path_count rows")
-        require_wideband_pair(self.frequency_response, self.frequency_offsets_hz, self.path_count)
 
     @property
     def device(self) -> torch.device:
         return self.total_delay_s.device
-
-    @property
-    def band_count(self) -> int:
-        """How many frequency columns this batch carries, ``0`` when narrowband."""
-
-        if self.frequency_offsets_hz is None:
-            return 0
-        return int(self.frequency_offsets_hz.shape[0])
 
 
 def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_count):
@@ -429,35 +359,6 @@ def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_cou
         previous = rank
 
 
-def _primal_rate(delay_rate: torch.Tensor | None, rows: int, device: torch.device, name: str) -> torch.Tensor:
-    """The leg's delay rate as a strictly primal kernel input.
-
-    ``delay_rate`` is ``d(delay_s)/dt`` unpacked from a forward-only dual and
-    published as a PRIMAL value, which deliberately severs the second-order
-    ``d(delay_rate)/dx`` term the contract does not claim. The join therefore
-    returns ``None`` for its gradient and a zero tangent for the composed rate.
-
-    "Returns None" and "silently dropped a gradient" look identical from the
-    outside, so a rate that arrives carrying a tape is REFUSED here rather than
-    quietly zeroed.
-    """
-
-    if delay_rate is None:
-        return torch.zeros(rows, dtype=torch.float32, device=device)
-    if delay_rate.requires_grad:
-        raise ValueError(
-            f"{name} delay_rate carries requires_grad; it is a primal Doppler "
-            "rate by contract and the join would return None for its gradient"
-        )
-    if forward_ad.unpack_dual(delay_rate).tangent is not None:
-        raise ValueError(
-            f"{name} delay_rate carries a forward tangent; it is a primal "
-            "Doppler rate by contract and the join publishes a zero tangent "
-            "for the composed rate"
-        )
-    return delay_rate.contiguous()
-
-
 class _TwoWayJoin(torch.autograd.Function):
     """Autograd bridge for the three native join operators.
 
@@ -479,8 +380,6 @@ class _TwoWayJoin(torch.autograd.Function):
     def forward(
         tau_in,
         tau_out,
-        rate_in,
-        rate_out,
         c_in_re,
         c_in_im,
         c_out_re,
@@ -495,16 +394,12 @@ class _TwoWayJoin(torch.autograd.Function):
         response_family,
     ):
         rows = int(idx_in.shape[0])
-        empty = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
-        tau_rt = empty
-        rate_rt = torch.empty_like(empty)
-        c_rt_re = torch.empty_like(empty)
-        c_rt_im = torch.empty_like(empty)
+        tau_rt = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
+        c_rt_re = torch.empty_like(tau_rt)
+        c_rt_im = torch.empty_like(tau_rt)
         _ops().two_way_join_forward(
             tau_in,
             tau_out,
-            rate_in,
-            rate_out,
             c_in_re,
             c_in_im,
             c_out_re,
@@ -516,20 +411,17 @@ class _TwoWayJoin(torch.autograd.Function):
             idx_out,
             idx_s,
             tau_rt,
-            rate_rt,
             c_rt_re,
             c_rt_im,
             rows,
         )
-        return tau_rt, rate_rt, c_rt_re, c_rt_im
+        return tau_rt, c_rt_re, c_rt_im
 
     @staticmethod
     def setup_context(ctx, inputs, output):
         (
             _tau_in,
             _tau_out,
-            _rate_in,
-            _rate_out,
             c_in_re,
             c_in_im,
             c_out_re,
@@ -556,14 +448,10 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_tau_rt, grad_rate_rt, grad_c_rt_re, grad_c_rt_im):
+    def backward(ctx, grad_tau_rt, grad_c_rt_re, grad_c_rt_im):
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         join = ctx.join
         response_offsets, response_rows, response_slots = ctx.response_family
-        # grad_rate_rt is discarded, and that is exact rather than lossy:
-        # rate_rt depends only on the two rate inputs, both of which are primal
-        # by contract, so every row of its Jacobian against a differentiable
-        # input is structurally zero.
         grad_tau_in = torch.empty_like(c_in_re)
         grad_c_in_re = torch.empty_like(c_in_re)
         grad_c_in_im = torch.empty_like(c_in_re)
@@ -608,8 +496,6 @@ class _TwoWayJoin(torch.autograd.Function):
         return (
             grad_tau_in,
             grad_tau_out,
-            None,
-            None,
             grad_c_in_re,
             grad_c_in_im,
             grad_c_out_re,
@@ -629,8 +515,6 @@ class _TwoWayJoin(torch.autograd.Function):
         ctx,
         tan_tau_in,
         tan_tau_out,
-        tan_rate_in,
-        tan_rate_out,
         tan_c_in_re,
         tan_c_in_im,
         tan_c_out_re,
@@ -645,12 +529,6 @@ class _TwoWayJoin(torch.autograd.Function):
         tan_response_family,
     ):
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
-        # tan_rate_in / tan_rate_out are ignored, and the refusal that makes
-        # that honest lives in _primal_rate, at the facade. Autograd hands this
-        # callback a zero-filled tangent for an input that carries none, so a
-        # check HERE could not tell "no tangent" from "a genuine zero" and
-        # would only be a comment with a raise attached. The facade refuses a
-        # rate input that is a dual at all, which is checkable.
 
         def inbound(tangent):
             return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
@@ -663,7 +541,6 @@ class _TwoWayJoin(torch.autograd.Function):
 
         rows = int(idx_in.shape[0])
         tan_tau_rt = torch.empty(rows, dtype=torch.float32, device=c_in_re.device)
-        tan_rate_rt = torch.empty_like(tan_tau_rt)
         tan_c_rt_re = torch.empty_like(tan_tau_rt)
         tan_c_rt_im = torch.empty_like(tan_tau_rt)
         _ops().two_way_join_jvp(
@@ -686,12 +563,11 @@ class _TwoWayJoin(torch.autograd.Function):
             site(tan_s_re),
             site(tan_s_im),
             tan_tau_rt,
-            tan_rate_rt,
             tan_c_rt_re,
             tan_c_rt_im,
             rows,
         )
-        return tan_tau_rt, tan_rate_rt, tan_c_rt_re, tan_c_rt_im
+        return tan_tau_rt, tan_c_rt_re, tan_c_rt_im
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -866,27 +742,8 @@ class TwoWayComposer:
     def path_count(self) -> int:
         return int(self.inbound_row.shape[0])
 
-    def compose(
-        self, inbound: RadarLegBatch, outbound: RadarLegBatch, response, *, include_delay_rate: bool = True
-    ) -> RadarPathBatch:
+    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
-
-        ``include_delay_rate`` exists because a forward-AD dual carries exactly
-        one meaning at a time. When the dual direction is a site VELOCITY, the
-        unpacked delay tangent is a Doppler rate and belongs in the result. When
-        the dual direction is a position PERTURBATION, the same tangent is a
-        directional derivative and reusing it as a rate would silently mix two
-        meanings. The caller states which it has.
-
-        The composed rate is ``rate_in + rate_out`` and BOTH legs are evaluated
-        at the same world instant. The exact two-way rate evaluates the outbound
-        leg at ``t + tau_in`` and carries a ``(1 - v_r/c)`` factor; the
-        same-instant form is wrong by ``O(v/c)``, about ``4e-8`` at 12 m/s and
-        far below the float32 delay quantisation. Stated here because it is the
-        one approximation in this composition that a velocity, rather than a
-        geometry, can make visible: driving the join at a relativistic velocity
-        measures it and has not found a defect. ``RadarPathBatch.delay_rate``
-        carries the same statement for the row that leaves here.
 
         A dead row's payload is exactly zero, not a partial composition. The
         row is a complete answer that this round trip does not exist at these
@@ -899,18 +756,15 @@ class TwoWayComposer:
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
-        band = self._band(inbound, outbound)
         response_re, response_im, response_index, response_family = self._response(
             response, inbound, outbound, flags, device
         )
 
         # Torch-owned, autograd-aware accessors: the real pairs cross the
         # boundary, never the complex tensors.
-        tau_rt, rate_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
+        tau_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
             inbound.delay_s.contiguous(),
             outbound.delay_s.contiguous(),
-            _primal_rate(inbound.delay_rate, inbound.leg_count, device, "inbound"),
-            _primal_rate(outbound.delay_rate, outbound.leg_count, device, "outbound"),
             inbound.coefficient.real.contiguous(),
             inbound.coefficient.imag.contiguous(),
             outbound.coefficient.real.contiguous(),
@@ -925,25 +779,17 @@ class TwoWayComposer:
             response_family,
         )
 
-        frequency_response = self._compose_band(
-            band, inbound, outbound, response_re, response_im, response_index, response_family, flags
-        )
-
-        publish_rate = include_delay_rate and inbound.delay_rate is not None and outbound.delay_rate is not None
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
             path_count=rows,
             sensor_pair_index=self.sensor_pair_index,
             pair_offsets=self.pair_offsets,
             total_delay_s=tau_rt,
-            delay_rate=rate_rt if publish_rate else None,
+            delay_rate=None,
             complex_transfer_ref=torch.complex(transfer_re, transfer_im),
             reference_frequency_hz=self.reference_frequency_hz,
             row_valid=row_valid,
             topology=self.topology,
-            join_mode="multipath",
-            frequency_response=frequency_response,
-            frequency_offsets_hz=(None if band is None else inbound.frequency_offsets_hz),
         )
 
     def _for_slots(self, count: int) -> TwoWayComposer:
@@ -960,7 +806,7 @@ class TwoWayComposer:
         def shifted(table, stride):
             return (table[None, :] + slot * stride).reshape(-1)
 
-        def csr(offsets):
+        def slot_csr(offsets):
             return torch.cat((shifted(offsets[:-1], rows), offsets[-1:] * count))
 
         inbound = shifted(self.inbound_row, self.inbound_row_count)
@@ -979,13 +825,13 @@ class TwoWayComposer:
                 outbound,
             ),
             sensor_pair_index=shifted(self.sensor_pair_index, self.sensor_pair_count),
-            pair_offsets=csr(self.pair_offsets),
+            pair_offsets=slot_csr(self.pair_offsets),
             sensor_pair_count=self.sensor_pair_count * count,
             inbound_row_count=self.inbound_row_count * count,
             outbound_row_count=self.outbound_row_count * count,
-            by_inbound_offsets=csr(self.by_inbound_offsets),
+            by_inbound_offsets=slot_csr(self.by_inbound_offsets),
             by_inbound_rows=shifted(self.by_inbound_rows, rows),
-            by_outbound_offsets=csr(self.by_outbound_offsets),
+            by_outbound_offsets=slot_csr(self.by_outbound_offsets),
             by_outbound_rows=shifted(self.by_outbound_rows, rows),
             by_response_offsets=self.by_response_offsets * count,
             by_response_rows=torch.argsort(responses, stable=True),
@@ -993,86 +839,6 @@ class TwoWayComposer:
             by_row_offsets=torch.arange(count * rows + 1, device=device, dtype=torch.int64),
             by_row_rows=torch.arange(count * rows, device=device, dtype=torch.int64),
         )
-
-    def _band(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> int | None:
-        """The two legs' agreed band width, or ``None`` when neither has one.
-
-        Both legs or neither. A round trip composed from one banded leg and one
-        narrowband leg would have to broadcast the narrowband leg's single
-        coefficient across the band, which is the narrowband approximation
-        reintroduced silently on exactly one half of the round trip - the
-        failure mode this whole capability exists to remove.
-        """
-
-        counts = (inbound.band_count, outbound.band_count)
-        if counts == (0, 0):
-            return None
-        if 0 in counts:
-            raise ValueError(
-                f"the inbound leg carries {counts[0]} frequency columns and the "
-                f"outbound leg carries {counts[1]}; a round trip is composed at "
-                "one frequency at a time, so both legs must be evaluated over "
-                "the same band or neither"
-            )
-        if counts[0] != counts[1]:
-            raise ValueError(
-                f"the two legs carry {counts[0]} and {counts[1]} frequency "
-                "columns; they must be evaluated over the same band"
-            )
-        if not torch.equal(inbound.frequency_offsets_hz, outbound.frequency_offsets_hz):
-            raise ValueError(
-                "the two legs were evaluated over different frequency grids; a "
-                "composed column multiplies one leg's response at f by the "
-                "other's at the SAME f, so the grids must agree"
-            )
-        return counts[0]
-
-    def _compose_band(self, band, inbound, outbound, response_re, response_im, response_index, response_family, flags):
-        """Compose ``H_in(f_j) * S * H_out(f_j)`` for every column of the band.
-
-        The frequency axis is a PYTHON LOOP over the existing ``[K]`` join
-        primitive, not a strided ``[K, F]`` kernel. That is a deliberate Phase-8
-        boundary: widening ``two_way_join.cu`` means widening its primal, its
-        JVP and its VJP together, and it needs a measured reason first. The loop
-        costs one launch per column and reproduces the reference column exactly,
-        so the measurement can be made against something that already works.
-
-        ``tau_rt`` and ``rate_rt`` are recomputed by every column and discarded:
-        they are functions of the two delays alone and are identical across the
-        band. That redundancy is the price of not widening the kernel, and it is
-        recorded rather than hidden.
-
-        The scatter response is evaluated ONCE, above the loop, and the same
-        real pair is handed to every column. A response that varied across the
-        band would be a wideband TARGET model, which is a separate capability;
-        reusing one value here is the honest statement that the target's
-        response is frozen at the reference frequency while propagation is not.
-        """
-
-        if band is None:
-            return None
-        columns = []
-        for index in range(band):
-            _tau, _rate, column_re, column_im = _TwoWayJoin.apply(
-                inbound.delay_s.contiguous(),
-                outbound.delay_s.contiguous(),
-                _primal_rate(inbound.delay_rate, inbound.leg_count, flags.device, "inbound"),
-                _primal_rate(outbound.delay_rate, outbound.leg_count, flags.device, "outbound"),
-                inbound.frequency_response[:, index].real.contiguous(),
-                inbound.frequency_response[:, index].imag.contiguous(),
-                outbound.frequency_response[:, index].real.contiguous(),
-                outbound.frequency_response[:, index].imag.contiguous(),
-                response_re,
-                response_im,
-                flags,
-                self.inbound_row,
-                self.outbound_row,
-                response_index,
-                self,
-                response_family,
-            )
-            columns.append(torch.complex(column_re, column_im))
-        return torch.stack(columns, dim=1)
 
     def _require_frame(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> None:
         """Refuse a frame that is not the one this join was frozen against.
@@ -1176,130 +942,6 @@ class TwoWayComposer:
 
 
 NO_SITE = -1
-NO_OUTBOUND_ROW = -1
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class DirectComposer:
-    """A frozen source-to-sink leg, published in canonical composed order."""
-
-    row_index: torch.Tensor
-    topology: RadarPathTopology
-    sensor_pair_index: torch.Tensor
-    pair_offsets: torch.Tensor
-    sensor_pair_count: int
-    reference_frequency_hz: float
-
-    @classmethod
-    def freeze(cls, leg, *, radar_source_ids, radar_sink_ids, reference_frequency_hz: float) -> DirectComposer:
-        """Order one frozen leg's rows the way a composed batch is ordered.
-
-        Same canonical key as the two-way join - sensor pair, then row identity
-        - so a direct batch and a multipath batch of the same scene agree on
-        what row order means.
-        """
-
-        device = leg.source_id.device
-        sources = stable_ids(radar_source_ids, "radar_source_ids")
-        sinks = stable_ids(radar_sink_ids, "radar_sink_ids")
-        source, sink, keys = leg_identity(leg, "direct")
-        group_rows(source, sink, keys, "direct")
-        pair_rank = sink_major_rank(sources, sinks)
-
-        stray_sources = sorted(set(source) - set(sources))
-        if stray_sources:
-            raise ValueError(
-                f"leg rows carry radar source IDs {stray_sources} that are not in radar_source_ids {sources}"
-            )
-        stray_sinks = sorted(set(sink) - set(sinks))
-        if stray_sinks:
-            raise ValueError(f"leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}")
-
-        rows: list[tuple[int, int, int, int, LegKey]] = [
-            (pair_rank(source[row], sink[row]), source[row], sink[row], row, keys[row]) for row in range(len(source))
-        ]
-        rows.sort(key=lambda row: (row[0], row[4]))
-
-        def column(index: int) -> torch.Tensor:
-            return torch.tensor([row[index] for row in rows], dtype=torch.int64, device=device)
-
-        def constant(value: int) -> torch.Tensor:
-            return torch.full((len(rows),), value, dtype=torch.int64, device=device)
-
-        pair_count = len(sources) * len(sinks)
-        sensor_pair_index = column(0)
-        # Same freeze-time layout gate as the two-way join. A direct batch feeds
-        # the same synthesis cube assembly, so it depends on the same sink-major
-        # pair rank and has to be held to it in the same place.
-        validate_pair_ordering(sensor_pair_index, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
-        offsets = pair_offsets([row[0] for row in rows], pair_count)
-        return cls(
-            row_index=column(3),
-            topology=RadarPathTopology(
-                radar_source_id=column(1),
-                site_id=constant(NO_SITE),
-                radar_sink_id=column(2),
-                inbound_row=column(3),
-                outbound_row=constant(NO_OUTBOUND_ROW),
-            ),
-            sensor_pair_index=sensor_pair_index,
-            pair_offsets=torch.tensor(offsets, dtype=torch.int64, device=device),
-            sensor_pair_count=pair_count,
-            reference_frequency_hz=float(reference_frequency_hz),
-        )
-
-    @property
-    def path_count(self) -> int:
-        return int(self.row_index.shape[0])
-
-    def compose(self, leg: RadarLegBatch, *, include_delay_rate: bool = True) -> RadarPathBatch:
-        """Publish one frame's direct rows. A gather, not a computation.
-
-        Nothing is added, multiplied, or conjugated here: the leg's transport
-        already IS the direct path's transfer at the reference frequency. There
-        is therefore no kernel, and no arithmetic for one to own - only the
-        reordering that puts the rows in canonical composed order.
-
-        Dead rows need no masking for the same reason. The consumer publishes
-        exact zeros for a row that stopped existing, and a gather preserves
-        them; the two-way join masks only because it MULTIPLIES a dead row's
-        payload into a product that would otherwise be a plausible number.
-        """
-
-        # freeze() orders every frozen row exactly once, so path_count IS the
-        # frozen leg's row count. A batch of a different length is a different
-        # topology: a longer one gathers in-range but wrong rows and publishes a
-        # plausible frame, a shorter one trips a device-side assert several
-        # launches later. Both are refused here, on host ints already in hand.
-        if leg.leg_count != self.path_count:
-            raise ValueError(
-                f"the leg carries {leg.leg_count} rows but this composer was "
-                f"frozen against {self.path_count}; the frame does not belong "
-                "to this frozen topology"
-            )
-        rows = self.row_index
-        row_valid = None if leg.row_valid is None else leg.row_valid.index_select(0, rows)
-        # A band reorders exactly like the reference column: `index_select` on
-        # dim 0 keeps the frequency axis intact, so a direct wideband batch
-        # needs no arithmetic here either.
-        frequency_response = None if leg.frequency_response is None else leg.frequency_response.index_select(0, rows)
-        delay_rate = leg.delay_rate.index_select(0, rows) if include_delay_rate and leg.delay_rate is not None else None
-        return RadarPathBatch(
-            sensor_pair_count=self.sensor_pair_count,
-            path_count=self.path_count,
-            sensor_pair_index=self.sensor_pair_index,
-            pair_offsets=self.pair_offsets,
-            total_delay_s=leg.delay_s.index_select(0, rows),
-            delay_rate=delay_rate,
-            complex_transfer_ref=leg.coefficient.index_select(0, rows),
-            reference_frequency_hz=self.reference_frequency_hz,
-            row_valid=row_valid,
-            topology=self.topology,
-            join_mode="direct",
-            frequency_response=frequency_response,
-            frequency_offsets_hz=(None if frequency_response is None else leg.frequency_offsets_hz),
-        )
-
 
 TARGET = "target"
 
@@ -1356,9 +998,9 @@ class ComponentDeclaration:
     ``multi_interaction_depth`` is the deepest leg still treated as a simple
     return. The default ``1`` keeps single-bounce reflections in the clutter or
     target classes and sends anything deeper to
-    :data:`MULTI_INTERACTION`; it is the Phase-5 ``hybrid`` distinction
-    (target echo / environment clutter / multi-interaction echo) expressed as a
-    declaration over ONE topology rather than as a third join mode.
+    :data:`MULTI_INTERACTION`. The three-way distinction (target echo /
+    environment clutter / multi-interaction echo) is a declaration over ONE
+    topology, not a join mode.
 
     A site declared both target and clutter is refused here rather than
     resolved: the two exports would overlap and the coherent recombination law
@@ -1479,36 +1121,19 @@ class RadarComponentIndex:
         the Channel adapter.
         """
 
-        return cls._build(composer.topology, inbound, outbound, declaration)
-
-    @classmethod
-    def from_direct(cls, composer, leg, declaration: ComponentDeclaration) -> RadarComponentIndex:
-        """Classify a direct composer's rows. There is no second leg."""
-
-        return cls._build(composer.topology, leg, None, declaration)
-
-    @classmethod
-    def _build(
-        cls, topology: RadarPathTopology, inbound, outbound, declaration: ComponentDeclaration
-    ) -> RadarComponentIndex:
         if not isinstance(declaration, ComponentDeclaration):
             raise TypeError(f"declaration must be a ComponentDeclaration, got {type(declaration).__name__}")
+        topology = composer.topology
         site = [int(value) for value in topology.site_id.tolist()]
         inbound_row = [int(value) for value in topology.inbound_row.tolist()]
         outbound_row = [int(value) for value in topology.outbound_row.tolist()]
         in_depth, in_materials = _leg_facts(inbound, "inbound")
-        if outbound is None:
-            out_depth, out_materials = [], []
-        else:
-            out_depth, out_materials = _leg_facts(outbound, "outbound")
+        out_depth, out_materials = _leg_facts(outbound, "outbound")
 
         classes: list[int] = []
         for row, site_id in enumerate(site):
-            depth = in_depth[inbound_row[row]]
-            materials = in_materials[inbound_row[row]]
-            if outbound is not None and outbound_row[row] >= 0:
-                depth = max(depth, out_depth[outbound_row[row]])
-                materials = materials | out_materials[outbound_row[row]]
+            depth = max(in_depth[inbound_row[row]], out_depth[outbound_row[row]])
+            materials = in_materials[inbound_row[row]] | out_materials[outbound_row[row]]
             matched = declaration.classify(site_id=site_id, depth=depth, material_slots=materials)
             if len(matched) != 1:
                 raise ValueError(
@@ -1535,12 +1160,9 @@ __all__ = [
     "COMPONENT_NAMES",
     "DIRECT_LEAKAGE",
     "ENVIRONMENT_CLUTTER",
-    "JOIN_MODES",
     "MULTI_INTERACTION",
     "TARGET",
     "ComponentDeclaration",
-    "DirectComposer",
-    "JoinMode",
     "RadarComponentIndex",
     "RadarPathBatch",
     "RadarPathTopology",

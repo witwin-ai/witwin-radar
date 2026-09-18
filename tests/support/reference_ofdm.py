@@ -2,7 +2,7 @@
 
 TEST-ONLY. CLAUDE.md permits a CPU/Torch reference implementation only under
 ``tests/``; a production module that imported this would be introducing a Torch
-numerical backend, and ``tests/test_phase4_import_boundary.py`` rejects it.
+numerical backend, and ``tests/test_import_boundary.py`` rejects it.
 
 Why an oracle and not finite differences alone: the production cube is float32
 and the OFDM subcarrier phase is a small increment sitting on top of a large

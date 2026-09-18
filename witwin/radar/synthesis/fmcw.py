@@ -11,11 +11,10 @@ forward, backward and jvp operators, all owned by this module.
 
 Two structural contracts, each with a test:
 
-* The facade ALWAYS routes through ``Function.apply``. It must never replicate
-  the eager shortcut in the deleted ``solvers/solver_dirichlet.py``, which checked
-  ``requires_grad`` and bypasses autograd when it is false. An ADR-038
-  forward-only dual has ``requires_grad == False``, so that shortcut silently
-  swallows its tangent and returns a plain tensor.
+* The facade ALWAYS routes through ``Function.apply``. An eager shortcut that
+  checks ``requires_grad`` and bypasses autograd when it is false is forbidden:
+  an ADR-038 forward-only dual has ``requires_grad == False``, so that shortcut
+  silently swallows its tangent and returns a plain tensor.
 * No complex tensor crosses the autograd boundary. The public entry splits a
   complex weight into real and imaginary parts with Torch's own autograd-aware
   accessors and recombines the output the same way, which makes the
@@ -27,7 +26,7 @@ from __future__ import annotations
 import torch
 
 from ..cuda import native_ops as _ops
-from ..policy import first_order_only
+from ..policy import first_order_only, refuse_derivative
 from .assembly import FmcwSpec, SynthesisPathBatch, pair_tx_index, require_compatible, segment_of_each_row
 
 
@@ -219,14 +218,13 @@ class _FmcwObservations(torch.autograd.Function):
         return result
 
 
-def _synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec):
+def synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec):
     """One complex beat value per CSR segment, using refreshed path rows.
 
     Delay [s] and conjugated Channel weight are differentiable. Chirp-local
     ADC times [s] are fixed schedule metadata. There is no delay-rate term:
     each row already describes its observation instant.
     """
-    from ..policy import refuse_derivative
 
     refuse_derivative("FMCW observation schedule", "ADC times are fixed metadata", adc_time=adc_time)
     if delay.shape != weight.shape or delay.shape != adc_time.shape:
@@ -321,7 +319,7 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
 
     Returns ``complex64[num_chirps, sensor_pair_count, num_samples]``, one
     rank-3 cube in the BEAT convention. ``assembly.assemble_frame_cube`` turns
-    it into the rank-4 ``(TX, RX, chirp, sample)`` layout ``sigproc`` consumes.
+    it into the rank-4 ``(TX, RX, chirp, sample)`` layout processing consumes.
 
     :func:`~witwin.radar.synthesis.assembly.require_compatible` runs FIRST, so
     a weight and a spec that would count the carrier, the spreading, or the
@@ -350,4 +348,10 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
     )
 
 
-__all__ = ["FmcwSpec", "channel_phasor_to_beat_weight", "synthesize_fmcw_rows", "synthesize_fmcw"]
+__all__ = [
+    "FmcwSpec",
+    "channel_phasor_to_beat_weight",
+    "synthesize_fmcw_observations",
+    "synthesize_fmcw_rows",
+    "synthesize_fmcw",
+]

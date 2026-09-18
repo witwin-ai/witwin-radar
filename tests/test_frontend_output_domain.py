@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 import torch
 from support import multi_endpoint_driver as drv
-from test_phase11_simulate_entry import _radar, _static_scene
+from support.simulate_fixture import fixture_radar, static_scene
 
 from witwin.radar import Adc, Agc, Motion, Noise, PointTargets
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.gpu
 @pytest.mark.parametrize("motion", [Motion.adc(), Motion.adaptive()], ids=["adc", "adaptive"])
 @pytest.mark.parametrize("hardware", ["adc", "agc", "thermal", "combined"])
 def test_physical_receiver_precedes_range_transform(moving, motion, hardware):
-    base = _radar()
+    base = fixture_radar()
     origin = torch.tensor([[2.0, 0.2, 0.0]], device=base.device)
     velocity = torch.tensor([[0.7, 0.0, 0.0]], device=base.device)
     targets = PointTargets(
@@ -39,7 +39,7 @@ def test_physical_receiver_precedes_range_transform(moving, motion, hardware):
             lna_gain=3.0,
             seed=93,
         )
-        result = radar.simulate(_static_scene(), targets, times=(0.0,), los=True, reflections=0, motion=motion)
+        result = radar.simulate(static_scene(), targets, times=(0.0,), los=True, reflections=0, motion=motion)
         assert result.output_domain == domain
         assert result.frame_synthesis().output_domain == domain
         outputs[domain] = result.cube

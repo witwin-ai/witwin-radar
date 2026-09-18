@@ -895,7 +895,6 @@ as release completion.
 | `ci/public-api-snapshot.json` | Replace the old snapshot with the ratified minimal target inventory, new definition targets and derived hashes; incompatible removals and signature/default changes are expected |
 | `ci/architecture-manifest.json` | Canonical production modules, concepts, owners, allowed dependency edges, public facades and the sole Channel importer |
 | `ci/check_architecture.py` | Read the architecture manifest and reject undeclared modules/edges, cycles, duplicate Channel importers and path-local exception lists |
-| `ci/check_single_definition.py` | Reject duplicate public definition targets, alias owners and concept contracts defined in more than one production module |
 | `ci/check_no_compatibility.py` | Reject deprecated aliases, `_REMOVED`/compatibility `__getattr__`, legacy adapters, old-path re-exports, signature-preserving wrappers and compatibility fallbacks |
 | `ci/check_documentation_surface.py` | Resolve living-document paths, symbols and executable snippets against the new public inventory; reject unmarked historical claims |
 | `ci/native-binding-manifest.json` | `python_owner`, `owner_module`, source paths and source digest; numerical owner/AD/launch fields unchanged |
@@ -904,9 +903,9 @@ as release completion.
 | `ci/check_raw_native_access.py` | New `cuda/runtime.py` dispatcher owner and consumers |
 | `ci/check_production_dependencies.py` | Production module inventory/path strings |
 | `ci/check_test_oracle_isolation.py` | Production inventory and path references |
-| `tests/test_phase4_import_boundary.py` | Remove its hand-maintained `SPIKE_MODULES`; test the canonical architecture manifest and sole Channel importer |
-| `tests/test_phase4_binding_manifest.py` | Native Python owners |
-| `tests/test_phase9_tape_non_leak.py` | Autograd owner paths and saved-tensor scan |
+| `tests/test_import_boundary.py` | Remove its hand-maintained `SPIKE_MODULES`; test the canonical architecture manifest and sole Channel importer |
+| `tests/test_native_binding_manifest.py` | Native Python owners |
+| `tests/test_tape_containment.py` | Autograd owner paths and saved-tensor scan |
 | `tests/support/ad_boundaries.py` | Boundary imports after concept collapse |
 | `docs/dev/audit/radar-governance-debt-and-drift-inventory.md` | Close every P6 row with live evidence; zero unresolved or deferred rows at completion |
 | `docs/dev/radar-ad-capability-matrix.md` | Owner paths and line references |

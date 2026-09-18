@@ -69,10 +69,8 @@ def _class_members(cls: type) -> list[dict[str, object]]:
             continue
         entry: dict[str, object] = {"name": name, "kind": _kind(member)}
         if isinstance(member, property):
-            # A public property with no docstring used to fail here as an
-            # IndexError on an empty split, which names neither the class nor
-            # the member. The requirement is real - the snapshot pins the first
-            # line - so it is stated instead of relaxed.
+            # The snapshot pins a property's first docstring line, so a missing
+            # docstring is named here rather than failing as an IndexError.
             lines = (member.__doc__ or "").strip().splitlines()
             assert lines, f"public property {cls.__name__}.{name} has no docstring to pin"
             entry["doc_first_line"] = lines[0]
@@ -163,6 +161,14 @@ def test_the_radar_holds_no_run_state() -> None:
         assert not hasattr(witwin.radar.Radar, name), f"Radar still exposes {name}"
 
 
-if __name__ == "__main__":
-    SNAPSHOT.write_text(json.dumps(build_snapshot(), indent=2) + "\n", encoding="utf-8")
-    print(f"regenerated {SNAPSHOT}")
+def test_the_distribution_depends_on_no_removed_toolchain() -> None:
+    """``drjit`` and ``slangtorch`` were the removed backends' toolchains.
+
+    ``ci/check_production_dependencies.py`` forbids importing them; this is the
+    one place that forbids DECLARING them. The whole file text is scanned,
+    comments included, so no dependency group or comment can name either.
+    """
+
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for token in ("drjit", "slangtorch"):
+        assert token not in text, token

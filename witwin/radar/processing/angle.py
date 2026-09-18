@@ -1,18 +1,15 @@
-"""The array, and the two weight families every angular stage is built on.
+"""The array, the two weight families, the angle estimators and the beam cube.
 
-Three things live here: the geometry record, conventional (phase-shift,
-delay-and-sum) weights, and the minimum-variance weights. Everything angular in
-this package - the beam cube, the FFT angle estimators, MUSIC, the point cloud -
-reads :class:`ArrayGeometry` and nothing else, so there is exactly one statement
-of where an element is and exactly one statement of which way its phase runs.
+Everything angular in this package - the beam cube, the FFT angle estimators,
+MUSIC, the point cloud - reads :class:`ArrayGeometry` and nothing else, so
+there is exactly one statement of where an element is and exactly one
+statement of which way its phase runs.
 
-**No half-wavelength spacing is hard coded anywhere.** ``MUSICImager`` used a
-literal ``spacing = 0.5`` that no configuration could change, so a quarter-wave
-array reported the wrong angle with no symptom other than being wrong.
+**No half-wavelength spacing is hard coded anywhere.**
 :attr:`ArrayGeometry.element_spacing_m` is what one unit of the declared
 ``tx_loc`` / ``rx_loc`` grid is worth in metres, and
 :attr:`ArrayGeometry.spacing_wavelengths` is the same number divided by the
-wavelength. Both are data.
+wavelength. Both are data, so a quarter-wave array reports the right angle.
 
 **The pair rank is TX MAJOR here, and that is not the composed rank.** The
 composed pair rank published by the path layer is SINK major,
@@ -40,6 +37,17 @@ so a per-frame :func:`conventional_steering` costs no host-to-device copy of the
 element table. Rebuilding the geometry inside every call was measured at
 152 microseconds - the most expensive call in the whole processing chain - for a
 quantity that does not change between frames.
+
+**This module sits on BOTH sides of the non-differentiability wall, and the
+split is by function rather than by file.** :func:`tdm_compensate` is one
+multiply, :func:`upa_steering` is a manifold, :func:`music_spectrum` is a
+smooth pseudo-spectrum of the covariance and :func:`beam_cube` is a weighted
+sum; all stay differentiable. :func:`phase_comparison_aoa` and
+:func:`fft2_aoa` read an ``argmax`` BIN and publish a direction cosine derived
+from that index, so both refuse a derivative at their entry.
+:func:`music_image` selects range bins the CALLER supplies - it refuses to
+auto-detect a peak - and then calls :func:`music_spectrum`, so there is no
+peak pick in it to guard.
 """
 
 import math
@@ -48,8 +56,8 @@ from dataclasses import dataclass
 import torch
 
 from ..policy import refuse_derivative
-from .range_doppler import RangeDopplerMap
-from .signal import _require_complex, real_dtype_of
+from .range_doppler import RangeDopplerMap, RangeProfile
+from .signal import ProcessingAxes, _require_complex, real_dtype_of
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -63,7 +71,7 @@ class BeamCube:
     """
 
     data: torch.Tensor
-    axes: object
+    axes: ProcessingAxes
     directions: torch.Tensor
 
     def __post_init__(self) -> None:
@@ -142,8 +150,7 @@ class ArrayGeometry:
         """One unit of the declared element grid, in wavelengths.
 
         Exactly ``0.5`` for the conventional half-wavelength array, and read
-        rather than assumed everywhere. This is the number ``MUSICImager`` had
-        hard coded.
+        rather than assumed everywhere.
         """
 
         return self.element_spacing_m / self.wavelength_m
@@ -167,7 +174,7 @@ class ArrayGeometry:
         return torch.remainder(rank, self.num_rx)
 
     @classmethod
-    def from_axes(cls, axes) -> "ArrayGeometry":
+    def from_axes(cls, axes: ProcessingAxes) -> "ArrayGeometry":
         """Build it from the one metadata record every processing stage reads.
 
         The half-wavelength offsets and the spacing come off the record, which
@@ -326,57 +333,6 @@ def mvdr_weights(covariance: torch.Tensor, steering: torch.Tensor, *, diagonal_l
     return weights.reshape(*weights.shape[:-2], pairs, *beam_shape)
 
 
-"""Angle of arrival: TDM compensation, two FFT routes, and MUSIC.
-
-Every entry here takes an
-:class:`~witwin.radar.processing.angle.ArrayGeometry` and a
-:class:`~witwin.radar.processing.signal.ProcessingAxes` instead of a legacy
-``Radar``, so an estimator can be driven from a synthetic array with no radar
-object in sight, and so no estimator can reach a raw ``radar.config`` field.
-
-Three defects of the ``sigproc`` originals are fixed here rather than carried:
-
-* ``_compensate_tdm_phase`` was a Python ``for tx_i in range(1, num_tx)`` loop
-  with an in-place ``*=`` on a clone: ``num_tx - 1`` kernel launches for what is
-  one broadcast multiply, and a velocity sign that was only correct for the
-  unreconciled FMCW Doppler axis it happened to be fed.
-  :func:`tdm_compensate` is one multiply and reads the canonical
-  closing-positive velocity, with the phasor reconciliation carried by
-  ``array.phase_sign``.
-* ``MUSICImager`` built its steering vectors at a literal ``spacing = 0.5``. A
-  quarter-wave array reported the wrong angle with no symptom other than being
-  wrong. :func:`music_spectrum` reads ``array.spacing_wavelengths``.
-* ``MUSICImager.music_spectrum`` built its forward-backward smoothing with an
-  ``(L + 1) ** 2``-way ``torch.stack`` over a list comprehension - a Python loop
-  over sixteen slices at the default smoothing factor. It is one
-  :meth:`torch.Tensor.unfold` pair here, and the ``numpy`` angle grids are gone.
-
-The virtual-antenna ordering is TX MAJOR, ``va = tx * num_rx + rx``, matching
-the ``[TX, RX, ...]`` cube ``assemble_frame_cube`` publishes and the element
-table :class:`ArrayGeometry` builds. Every slice below is expressed through
-``array.transmitter_index`` rather than by arithmetic on a raw rank.
-
-**This module sits on BOTH sides of the non-differentiability wall, and the
-split is by function rather than by file.**
-
-* :func:`tdm_compensate` is one multiply, :func:`upa_steering` is a manifold,
-  and :func:`music_spectrum` is a smooth pseudo-spectrum of the covariance.
-  All three stay differentiable, and the MUSIC one is measured rather than
-  asserted: its gradient agrees with a central difference on the fixture its
-  test pins.
-* :func:`phase_comparison_aoa` and :func:`fft2_aoa` read an ``argmax`` BIN and
-  publish a direction cosine derived from that index. The index is discrete,
-  the cosine is a quantized function of it with a zero derivative inside every
-  bin, and the phase read at the peak keeps the tape. Both refuse a derivative
-  at their entry.
-
-:func:`music_image` is on the differentiable side, and that is a statement
-about this code rather than about MUSIC in general: it selects range bins the
-CALLER supplies - it refuses to auto-detect a peak, deliberately, and says so -
-and then calls :func:`music_spectrum`. There is no peak pick in it to guard.
-"""
-
-
 #: Why the two FFT routes have no derivative. Written once and quoted by both.
 _PEAK_BIN_REASON = (
     "the direction cosine is read off an argmax BIN INDEX, which is discrete: "
@@ -384,11 +340,6 @@ _PEAK_BIN_REASON = (
     "inside every bin and an undefined one at each bin edge, and the phase "
     "sampled at the peak carries a tape describing a peak that is held fixed."
 )
-
-
-#: The direction-cosine rows :func:`phase_comparison_aoa` and :func:`fft2_aoa`
-#: return, in order. Published as data so a consumer indexes by meaning.
-DIRECTION_COSINE_ROWS = ("x", "y", "z")
 
 
 def _require_array(array) -> ArrayGeometry:
@@ -413,12 +364,9 @@ def _require_virtual(virtual_ant: torch.Tensor, array: ArrayGeometry) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# TDM compensation
-# ---------------------------------------------------------------------------
-
-
-def tdm_compensate(aoa_input: torch.Tensor, velocities: torch.Tensor, array: ArrayGeometry, axes) -> torch.Tensor:
+def tdm_compensate(
+    aoa_input: torch.Tensor, velocities: torch.Tensor, array: ArrayGeometry, axes: ProcessingAxes
+) -> torch.Tensor:
     """Remove the TDM slot phase a moving target writes across transmitters.
 
     ``aoa_input`` is ``[P, N]`` complex in the TX-major virtual-antenna order,
@@ -468,11 +416,6 @@ def tdm_compensate(aoa_input: torch.Tensor, velocities: torch.Tensor, array: Arr
     )
     compensation = torch.exp(1j * phase)
     return (aoa_input * compensation).to(aoa_input.dtype)
-
-
-# ---------------------------------------------------------------------------
-# The two FFT routes
-# ---------------------------------------------------------------------------
 
 
 def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor, array: ArrayGeometry) -> torch.Tensor:
@@ -575,11 +518,9 @@ def phase_comparison_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft
     el_tx_dx = float(tx_offsets[2][0] - tx_offsets[0][0])
     phase_adjust = torch.exp(1j * torch.tensor(el_tx_dx, dtype=real_dtype, device=device) * wx)
     # The ELEVATION aperture leads the azimuth one by the array's own z offset,
-    # so the ratio is taken that way round. The deleted original took its
-    # reciprocal and therefore published an elevation cosine that pointed the
-    # opposite way to the array's z axis - which is why every legacy elevation
-    # assertion in the tree was written on an absolute value. The adapter
-    # negates this row back, once and by name.
+    # so the ratio is taken that way round: elevation times conj(azimuth). The
+    # reciprocal publishes an elevation cosine that points the opposite way to
+    # the array's z axis.
     wz = torch.angle(peak_elevation * torch.conj(peak_azimuth) * torch.conj(phase_adjust))
     return _finish_direction_cosines(x_vector, wz / torch.pi, array)
 
@@ -633,11 +574,6 @@ def fft2_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int =
 #: because a dispatch on ``num_tx`` is how a change of front end silently
 #: changes the estimator.
 AOA_ROUTES = {"phase_comparison": phase_comparison_aoa, "fft2": fft2_aoa}
-
-
-# ---------------------------------------------------------------------------
-# MUSIC
-# ---------------------------------------------------------------------------
 
 
 def upa_steering(
@@ -742,13 +678,9 @@ def music_spectrum(
     steering = upa_steering(
         array, rows=effective_rows, columns=effective_columns, elevation_rad=elevation_rad, azimuth_rad=azimuth_rad
     ).to(device=angle_data.device)
-    # ``a^H P_n a``, with the conjugate on the LEFT. The deleted original put it
-    # on the right, which evaluates the form at the CONJUGATE steering vector
-    # and therefore peaks at the mirror image of the true angle. Its own angle
-    # grids ran from ``+fov/2`` down to ``-fov/2``, which hid the mirror behind
-    # a descending axis and made the published spectrum wrong by a reflection.
-    # Corrected here, and the reflection is asserted against the pre-cutover
-    # golden in tests/processing/test_adapters.py.
+    # ``a^H P_n a``, with the conjugate on the LEFT. Conjugating on the right
+    # evaluates the form at the CONJUGATE steering vector and peaks at the
+    # mirror image of the true angle.
     projector = torch.matmul(noise, noise.transpose(-1, -2).conj())
     quadratic = torch.matmul(torch.einsum("ijk,akl->aijl", steering.conj(), projector), steering.transpose(-1, -2))
     return torch.reciprocal(quadratic.diagonal(dim1=-2, dim2=-1)).reshape(
@@ -757,26 +689,25 @@ def music_spectrum(
 
 
 def music_image(
-    profile,
+    profile: RangeProfile,
     array: ArrayGeometry,
     *,
     elevation_rad: torch.Tensor,
     azimuth_rad: torch.Tensor,
-    range_bins: torch.Tensor | None = None,
+    range_bins: torch.Tensor,
     num_signals: int = 7,
     spatial_smooth: int = 3,
     num_snapshots: int = 8,
 ) -> torch.Tensor:
     """A ``RangeProfile`` -> ``[elevation, azimuth, bins]`` MUSIC image.
 
-    ``MUSICImager.radar_image`` did its own ``torch.fft.fft(sig, dim=3)`` - a
-    third range transform, with no window and no axes record. This takes a
-    :class:`~witwin.radar.processing.signal.RangeProfile` from the one range
-    owner instead, so the image and the point cloud are formed on the same range
-    grid by construction.
-    """
+    Takes a :class:`~witwin.radar.processing.range_doppler.RangeProfile` from
+    the one range owner rather than transforming the cube itself, so the image
+    and the point cloud are formed on the same range grid by construction.
 
-    from .range_doppler import RangeProfile
+    ``range_bins`` is required: an auto-detected peak is a modelling choice
+    made silently, and the caller already has the range axis.
+    """
 
     if not isinstance(profile, RangeProfile):
         raise TypeError(
@@ -786,11 +717,6 @@ def music_image(
     data = profile.data
     if data.dim() != 4:
         raise ValueError(f"the profile must be [tx, rx, slow_time, range] for an image; got shape {tuple(data.shape)}")
-    if range_bins is None:
-        raise ValueError(
-            "range_bins is required: an auto-detected peak is a modelling choice "
-            "made silently, and the caller already has the range axis"
-        )
     selected = range_bins.to(device=data.device, dtype=torch.int64)
     # [bins, tx, rx, snapshots]
     angle_data = data[:, :, :num_snapshots, :].index_select(-1, selected).permute(3, 0, 1, 2)
@@ -805,40 +731,25 @@ def music_image(
     return image.permute(1, 2, 0)
 
 
-"""The beam / velocity / range cube.
-
-Nothing in this repository formed a beam cube. The three existing angle routes
-are ESTIMATORS - two FFT peak finders and a MUSIC spectrum - and an estimator
-answers "which direction" for a detection that already exists. A cube answers
-"how much energy in this direction, at this velocity, at this range" for a grid
-of directions, which is what a detector runs on and what a display shows.
-
-:func:`beam_cube` applies weights and knows no array geometry and no phasor. It
-computes exactly ``y[b] = sum_p conj(w[p, b]) x[p]``, which is the definition of
-a beamformer output and is what conventional, MVDR and any future weight family
-all mean. The weight owners live in
-:mod:`witwin.radar.processing.angle`, together with the array geometry and
-the phase-sign reconciliation, so a weight family can be swapped here without
-this module learning what an element is.
-
-The pair axes of the map are flattened in the order the cube is published in,
-which is TX major - ``[TX, RX, ...]`` out of ``assemble_frame_cube`` - and that
-is the order :class:`~witwin.radar.processing.angle.ArrayGeometry` builds
-its element table in.
-"""
-
-
 def beam_cube(rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.Tensor) -> BeamCube:
     """``[*pair, D, R]`` and ``[P, *beam]`` -> ``BeamCube[*beam, D, R]``.
 
-    A ``[TX, RX, D, R]`` map and a ``[P, D, R]`` one give the same cube, because
-    ``[TX, RX]`` IS ``[P]`` reshaped in the published TX-major order.
+    Computes exactly ``y[b] = sum_p conj(w[p, b]) x[p]``, which is the
+    definition of a beamformer output and is what conventional, MVDR and any
+    future weight family all mean. It applies weights and knows no array
+    geometry and no phasor; the weight owners carry those, so a weight family
+    can be swapped here without this function learning what an element is.
 
-    ``directions`` is required and keyword only, which is a deliberate deviation
-    from the design's two-argument sketch. A beam index means nothing without the
-    grid it was steered over, a weight matrix does not carry one, and the
-    alternative - defaulting it to something - would publish a cube whose angles
-    are silently wrong rather than a call that does not compile.
+    The pair axes of the map are flattened in the order the cube is published
+    in, which is TX major - ``[TX, RX, ...]`` out of ``assemble_frame_cube`` -
+    and that is the order :class:`ArrayGeometry` builds its element table in.
+    A ``[TX, RX, D, R]`` map and a ``[P, D, R]`` one therefore give the same
+    cube.
+
+    ``directions`` is required and keyword only. A beam index means nothing
+    without the grid it was steered over, a weight matrix does not carry one,
+    and defaulting it to something would publish a cube whose angles are
+    silently wrong rather than a call that does not compile.
     """
 
     if not isinstance(rd, RangeDopplerMap):
@@ -873,6 +784,3 @@ def beam_cube(rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.
             f"shape {tuple(directions.shape)}; the two are one statement"
         )
     return BeamCube(data=formed.reshape(*beam_shape, doppler, ranges), axes=rd.axes, directions=directions)
-
-
-__all__ = ["beam_cube"]

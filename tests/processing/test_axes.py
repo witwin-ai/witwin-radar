@@ -24,8 +24,9 @@ import pytest
 import torch
 from support import exact_bin_grid as grid
 
+from witwin.radar.policy import SPEED_OF_LIGHT_M_PER_S
 from witwin.radar.processing.signal import PROCESSING_UNITS, ProcessingAxes
-from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR, SPEED_OF_LIGHT_M_PER_S, SynthesisResult
+from witwin.radar.synthesis.assembly import BEAT_PHASOR, CHANNEL_PHASOR, SynthesisResult
 
 PAIRS = grid.FMCW_NUM_TX * grid.FMCW_NUM_RX
 

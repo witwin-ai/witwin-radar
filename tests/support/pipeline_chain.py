@@ -1,7 +1,7 @@
 """The full processing pipeline, as ONE callable, with ONE fixture.
 
 ``tools/benchmark_processing.py`` measures it and
-``tests/test_phase8_pipeline_budget.py`` pins the measurement. Both import from
+``tests/test_pipeline_budget.py`` pins the measurement. Both import from
 here so that the thing measured and the thing budgeted are the same call
 sequence rather than two sequences that agree today.
 
@@ -23,7 +23,7 @@ starts at waveform SYNTHESIS, with freezing, discovery and composition already
 paid for outside the timed region. ``Radar.simulate`` does all four in one call
 and cannot hand back the composed batch alone. The production entry's own
 per-frame cost is budgeted separately, in
-``tests/test_phase8_pipeline_budget.py::
+``tests/test_pipeline_budget.py::
 test_the_simulation_frame_cost_has_not_regressed``.
 """
 
@@ -80,7 +80,7 @@ def pipeline_inputs(*, num_chirps: int = 8):
     return batch, spec, array_spec()
 
 
-def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar_fast"):
+def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar"):
     """synthesize -> cube -> range -> RD -> CFAR -> AoA -> point cloud.
 
     One call sequence, no legacy name in it, and exactly one host observation:
@@ -93,16 +93,15 @@ def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar_fast"):
         ProcessingAxes,
         ProcessingCube,
         ca_cfar,
-        ca_cfar_fast,
         os_cfar,
         point_cloud,
         range_doppler_map,
         range_profile,
     )
-    from witwin.radar.synthesis import synthesize_fmcw
     from witwin.radar.synthesis.assembly import SynthesisResult
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
 
-    detectors = {"ca_cfar": ca_cfar, "ca_cfar_fast": ca_cfar_fast, "os_cfar": os_cfar}
+    detectors = {"ca_cfar": ca_cfar, "os_cfar": os_cfar}
     cube = synthesize_fmcw(batch, spec)
     result = SynthesisResult.from_fmcw(cube, spec)
     axes = ProcessingAxes.from_synthesis(result, spec, spec_array)
@@ -112,7 +111,7 @@ def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar_fast"):
     rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     cells = detectors[detector](combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
-    return point_cloud(cells, rd, axes, array, max_points=64)
+    return point_cloud(cells, rd, array, max_points=64)
 
 
 __all__ = ["PIPELINE_NUM_RX", "PIPELINE_NUM_TX", "array_spec", "pipeline_inputs", "run_pipeline"]

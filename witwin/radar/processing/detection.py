@@ -1,14 +1,9 @@
-"""Constant-false-alarm-rate detection, batched.
+"""Constant-false-alarm-rate detection, batched, and the point cloud.
 
-The three ``sigproc`` detectors took a rank-2 ``(Nd, Nr)`` map, so detecting on a
-``[B, D, R]`` beam cube meant a Python loop over beams - one launch per beam for
-an operation that is a single convolution. Every entry here takes
-``[..., D, R]`` with an arbitrary leading batch and returns
-:class:`Detections`, so a beam cube, a per-pair map and a single slice are the
-same call.
-
-A range profile with no Doppler axis had no detector at all;
-:func:`ca_cfar_1d` is the range-only form, over ``[..., R]``.
+Every detector here takes ``[..., D, R]`` with an arbitrary leading batch and
+returns :class:`Detections`, so a beam cube, a per-pair map and a single slice
+are the same call with no Python loop over beams. :func:`ca_cfar_1d` is the
+range-only form, over ``[..., R]``.
 
 The threshold law is the standard cell-averaging one and is published rather
 than buried: with ``N`` training cells and a design false-alarm probability
@@ -33,19 +28,16 @@ achieves is NOT the ``pfa`` it is handed. Its own docstring gives the law its
 rate does follow, the measured ratio, and why the constant is left alone.
 
 **Every detector here is explicitly non-differentiable and refuses a derivative
-at its entry.** This one deliberately gives up a derivative that does exist: the
+at its entry.** This deliberately gives up a derivative that does exist: the
 threshold is a ring average of the training cells, so it is a perfectly smooth
-function of the map, and before Phase 9 it silently published one -
-``d(threshold)/d(power)`` summed to 1.51e4 on the point-cloud fixture, and under
-a forward dual the tangent was live too. What the stage OUTPUTS is a detection
-decision, and the mask that carries it is a bool with no derivative at all;
-publishing a live threshold beside a severed mask is how a caller ends up
-optimising the level and believing they are optimising the detection. Item 4 of
-the Phase-9 plan names CFAR as explicitly non-differentiable, and a
-differentiable-CFAR surrogate - a soft threshold, a sigmoid mask - is a
-modelling decision with its own design rather than something a detector may
-choose. ``docs/dev/radar-ad-capability-matrix.md`` carries the same reason as
-four ``REF`` rows.
+function of the map. What the stage OUTPUTS is a detection decision, and the
+mask that carries it is a bool with no derivative at all; publishing a live
+threshold beside a severed mask is how a caller ends up optimising the level
+and believing they are optimising the detection. A differentiable-CFAR
+surrogate - a soft threshold, a sigmoid mask - is a modelling decision with its
+own design rather than something a detector may choose.
+``docs/dev/radar-ad-capability-matrix.md`` carries the same reason as four
+``REF`` rows.
 """
 
 from dataclasses import dataclass
@@ -56,6 +48,7 @@ import torch.nn.functional as F
 from ..policy import refuse_derivative
 from .angle import AOA_ROUTES, ArrayGeometry, tdm_compensate
 from .range_doppler import RangeDopplerMap
+from .signal import real_dtype_of
 
 #: Why no detector here has a derivative. Written once and quoted by all four
 #: entries, so the four cannot drift into four explanations of one decision.
@@ -105,9 +98,8 @@ def _alpha(n_train: int, pfa: float) -> float:
 
 
 def _real_values(data: torch.Tensor) -> torch.Tensor:
-    real_dtype = torch.float64 if data.dtype in {torch.float64, torch.complex128} else torch.float32
     values = torch.abs(data) if torch.is_complex(data) else data
-    return values.to(real_dtype)
+    return values.to(real_dtype_of(data))
 
 
 def _as_batch(values: torch.Tensor, rank: int) -> tuple[torch.Tensor, tuple[int, ...]]:
@@ -123,12 +115,6 @@ def _replicate_pad_2d(data: torch.Tensor, pad_h: int, pad_w: int) -> torch.Tenso
     return F.pad(data.unsqueeze(1), (pad_w, pad_w, pad_h, pad_h), mode="replicate")
 
 
-def _rect_sum(
-    integral: torch.Tensor, r0: torch.Tensor, c0: torch.Tensor, r1: torch.Tensor, c1: torch.Tensor
-) -> torch.Tensor:
-    return integral[..., r1 + 1, c1 + 1] - integral[..., r0, c1 + 1] - integral[..., r1 + 1, c0] + integral[..., r0, c0]
-
-
 def ca_cfar(
     rd_map: torch.Tensor,
     *,
@@ -136,59 +122,18 @@ def ca_cfar(
     training_cells: tuple[int, int] = (4, 6),
     pfa: float = 1e-3,
 ) -> Detections:
-    """Cell-averaging CFAR over ``[..., D, R]``, by summed-area table.
+    """Cell-averaging CFAR over ``[..., D, R]``, from two pooled averages.
 
-    The reference implementation: an exact rectangular ring average, computed
-    from one integral image per batch element. Edges are handled by replicate
-    padding, so a cell at the border sees a ring of the same size rather than a
-    smaller and therefore noisier one.
+    The ring sum is the outer mean times the outer count minus the guard mean
+    times the guard count, each mean one ``avg_pool2d`` launch. Edges are
+    handled by replicate padding, so a cell at the border sees a ring of the
+    same size rather than a smaller and therefore noisier one. The exact
+    summed-area form of the same estimator is the test oracle in
+    ``tests/support/reference_cfar.py``; the two agree up to float
+    re-association.
     """
 
     refuse_derivative("witwin.radar.processing.detection.ca_cfar", _CFAR_REASON, rd_map=rd_map)
-    values = _real_values(rd_map)
-    flat, leading = _as_batch(values, 2)
-    doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
-    gd, gr = int(guard_cells[0]), int(guard_cells[1])
-    td, tr = int(training_cells[0]), int(training_cells[1])
-    outer_d, outer_r = gd + td, gr + tr
-    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * gd + 1) * (2 * gr + 1)
-    if n_train < 1:
-        raise ValueError(
-            f"guard_cells={guard_cells} and training_cells={training_cells} leave "
-            "no training cells to estimate the noise from"
-        )
-    alpha = _alpha(n_train, pfa)
-
-    padded = _replicate_pad_2d(flat, outer_d, outer_r)
-    integral = F.pad(padded, (1, 0, 1, 0), mode="constant", value=0).cumsum(dim=-2).cumsum(dim=-1)
-    device = flat.device
-    row = torch.arange(doppler, device=device, dtype=torch.int64).reshape(-1, 1)
-    col = torch.arange(ranges, device=device, dtype=torch.int64).reshape(1, -1)
-    pi = row + outer_d
-    pj = col + outer_r
-    outer_sum = _rect_sum(integral, pi - outer_d, pj - outer_r, pi + outer_d, pj + outer_r)
-    guard_sum = _rect_sum(integral, pi - gd, pj - gr, pi + gd, pj + gr)
-    noise = (outer_sum - guard_sum) / n_train
-    threshold = (alpha * noise).squeeze(1).reshape(*leading, doppler, ranges)
-    return Detections(mask=values > threshold, threshold=threshold)
-
-
-def ca_cfar_fast(
-    rd_map: torch.Tensor,
-    *,
-    guard_cells: tuple[int, int] = (2, 3),
-    training_cells: tuple[int, int] = (4, 6),
-    pfa: float = 1e-3,
-) -> Detections:
-    """The same estimator, from two pooled averages instead of one table.
-
-    Mathematically identical to :func:`ca_cfar` up to float re-association: the
-    ring sum is the outer mean times the outer count minus the guard mean times
-    the guard count. It exists because ``avg_pool2d`` is a single fused kernel
-    where the summed-area route is three passes plus two gathers.
-    """
-
-    refuse_derivative("witwin.radar.processing.detection.ca_cfar_fast", _CFAR_REASON, rd_map=rd_map)
     values = _real_values(rd_map)
     flat, leading = _as_batch(values, 2)
     doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
@@ -252,9 +197,8 @@ def os_cfar(
     what matters, invert the law above.
 
     The constant is deliberately left alone rather than re-solved for the
-    ordered statistic: it is what the pre-cutover ``os_cfar_2d`` computed, the
-    migration adapter is pinned bitwise to that behaviour, and moving it is a
-    numerical change that owes its own decision and its own golden update.
+    ordered statistic: moving it is a numerical change that owes its own
+    decision and its own golden update.
     """
 
     refuse_derivative(
@@ -298,9 +242,8 @@ def ca_cfar_1d(
 ) -> Detections:
     """Range-only cell-averaging CFAR over ``[..., R]``.
 
-    A range profile with no Doppler axis had no detector anywhere in this
-    repository. Same law, one axis, and the same replicate-padded ring so a
-    detection at the first range bin is not systematically favoured.
+    Same law, one axis, and the same replicate-padded ring so a detection at
+    the first range bin is not systematically favoured.
     """
 
     refuse_derivative("witwin.radar.processing.detection.ca_cfar_1d", _CFAR_REASON, profile=profile)
@@ -326,41 +269,11 @@ def ca_cfar_1d(
     return Detections(mask=values > threshold, threshold=threshold)
 
 
-"""Detections plus a Range-Doppler map become points in metres.
-
-``sigproc`` had two near-identical pipelines here - ``frame2pointcloud`` and
-``_process_pc_cfar_tensor`` - that differed only in which detector produced the
-mask, and both hard coded a range gate as the bin indices ``[:, :25]`` and
-``[:, 125:]``. Those numbers are a 128 by 256 configuration written into the
-source: change the range-bin count and the gate silently moves to a different
-part of the scene.
-
-There is one pipeline here, the detector is an ARGUMENT, and the gate is a pair
-of distances in METRES read against :attr:`ProcessingAxes.range_m`. A bin index
-never appears in the signature.
-
-Everything published is float64 and on the input device. The stage performs
-exactly one host observation - the ``torch.argwhere`` that turns a mask into a
-row list - and that observation is unavoidable: a point cloud has a data
-dependent length. It is named here so the frozen pipeline budget can attribute
-it to processing rather than to the simulation half.
-
-**This stage is explicitly non-differentiable and refuses a derivative at its
-entry.** That same ``argwhere`` is the reason: which cells become points is a
-discrete choice, the number of points is data dependent, and ``max_points``
-thins the list with a ``topk`` whose indices carry no derivative either. Before
-Phase 9 the stage published a live one anyway - ``cloud.xyz`` and
-``cloud.energy`` both came back with ``requires_grad=True`` and
-``d(energy)/d(cube)`` had abs-sum 58.36 - and what that derivative describes is
-the value AT a frozen selection, not the answer moving. Perturb the map far
-enough for the selection to change and the derivative predicts nothing about
-the new point list, including its length. Item 4 of the Phase-9 plan names peak
-selection as explicitly non-differentiable.
-"""
-
-
 #: Why the point-cloud stage has no derivative. One statement, quoted by the
-#: stage and by the ``topk`` thinning inside it.
+#: stage and by the ``topk`` thinning inside it. What a derivative through the
+#: selection would describe is the value AT a frozen selection, not the answer
+#: moving: perturb the map far enough for the selection to change and it
+#: predicts nothing about the new point list, including its length.
 _SELECTION_REASON = (
     "which cells become points is a discrete selection - an argwhere over a "
     "threshold mask, thinned by a topk - so the published values are values AT "
@@ -407,9 +320,9 @@ class PointCloud:
     def as_columns(self) -> torch.Tensor:
         """``[N, 6]`` in :data:`POINT_CLOUD_COLUMNS` order.
 
-        The flat form the legacy pipeline published and the form a fixed-size
-        detection batch is assembled from. It is a VIEW-building stack, not the
-        record's storage: the named fields are the contract.
+        The flat form a fixed-size detection batch is assembled from. It is a
+        VIEW-building stack, not the record's storage: the named fields are the
+        contract.
         """
 
         return torch.stack(
@@ -455,7 +368,6 @@ def range_gate_mask(axes, gate_m: tuple[float, float] | None) -> torch.Tensor | 
 def point_cloud(
     detections: Detections,
     rd: RangeDopplerMap,
-    axes,
     array: ArrayGeometry,
     *,
     route: str = "phase_comparison",
@@ -473,10 +385,11 @@ def point_cloud(
     angle of the noise.
 
     ``route`` names the angle estimator explicitly, from
-    :data:`~witwin.radar.processing.angle.AOA_ROUTES`. The legacy dispatch on
-    ``num_tx`` is preserved only inside the ``naive_xyz`` adapter, because a
-    front-end change that silently swaps the estimator is a change of answer
-    with no change of call.
+    :data:`~witwin.radar.processing.angle.AOA_ROUTES`, because a front-end
+    change that silently swaps the estimator is a change of answer with no
+    change of call. ``range_gate_m`` is a pair of distances in METRES read
+    against :attr:`ProcessingAxes.range_m`; a bin index never appears in the
+    signature. Everything published is float64 and on the input device.
     """
 
     if not isinstance(detections, Detections):
@@ -515,6 +428,7 @@ def point_cloud(
     combined = flat.sum(dim=0)
     energy_db = 20 * torch.log10(combined.abs() + float(energy_floor))
 
+    axes = rd.axes
     gate = range_gate_mask(axes, range_gate_m)
     if gate is not None:
         mask = mask & gate.reshape(1, -1).to(mask.device)
@@ -578,39 +492,6 @@ def _keep_strongest(mask: torch.Tensor, energy: torch.Tensor, max_points: int) -
     return (keep & flat_mask).reshape(mask.shape)
 
 
-"""Combine per-component results, coherently or in power.
-
-COHERENT combination needs no function. Components are row subsets of ONE
-topology evaluated by the same waveform launches, so their cubes are complex
-amplitudes on the same axes and plain addition IS the coherent law:
-
-    ``sum_j cube(component_j) == cube(every row)``
-
-up to float re-association of the partial sums. It is not bitwise, because the
-kernel writes a literal ``0.0`` into a masked row's accumulation slot and
-``(a + 0 + c) + (0 + b + 0)`` is not ``(a + b + c)`` in float32. The acceptance
-test pins it with a tolerance derived from the row count and the largest
-per-row contribution, and records the measured residual.
-
-INCOHERENT combination is a different physical claim and therefore a different
-function. It says the components have no fixed phase relationship, so their
-POWERS add and their amplitudes do not. That is a post-synthesis statement
-about an ensemble, and it belongs here rather than inside a waveform kernel: an
-"incoherent" flag on a fused synthesis op would put a second summation
-semantic inside a kernel whose whole contract is that it sums complex
-amplitudes over a pair segment.
-
-DEFERRED, with the reason. The physically honest incoherent model is not a
-power sum at all - it is a per-realization random phase drawn into the scatter
-response, so that an ensemble of frames averages to the power sum while each
-individual frame remains a legitimate coherent field with speckle. That needs a
-native RNG and a seed contract consistent with the frontend's, which is a
-numerical change to a native response with its own decision record. Phase 8
-ships the power-domain law and says so, rather than shipping a random phase
-with an undeclared seed.
-"""
-
-
 def combine_incoherent(cubes) -> torch.Tensor:
     """``sum_j |cube_j|^2``: the power sum of independently exported components.
 
@@ -618,6 +499,16 @@ def combine_incoherent(cubes) -> torch.Tensor:
     convenience: the result has no phase, cannot be fed back into a coherent
     stage, and a caller that wanted an amplitude has to say which phase it
     meant.
+
+    Incoherent combination is a physical claim: the components have no fixed
+    phase relationship, so their POWERS add and their amplitudes do not. It is
+    a post-synthesis statement about an ensemble and belongs here rather than
+    inside a waveform kernel, whose whole contract is that it sums complex
+    amplitudes over a pair segment. The physically honest incoherent model - a
+    per-realization random phase drawn into the scatter response, so that an
+    ensemble of frames averages to the power sum while each frame keeps its
+    speckle - needs a native RNG and a seed contract consistent with the
+    frontend's, and is not what this function does.
 
     The magnitude is formed as ``re^2 + im^2`` rather than as ``abs()**2``
     because ``abs`` is not differentiable at the origin, and an exactly zero
@@ -648,4 +539,13 @@ def combine_incoherent(cubes) -> torch.Tensor:
     return total
 
 
-__all__ = ["combine_incoherent"]
+def combine_coherent(cube: torch.Tensor) -> torch.Tensor:
+    """``|sum_p cube[p]|``: the coherent (boresight) sum over sensor pairs, then abs.
+
+    ``cube`` is ``[..., D, R]`` complex with the sensor pairs in the leading
+    axes; every leading axis is folded into one pair axis and summed with the
+    phases intact, which is the boresight beam. Returns a REAL ``[D, R]``
+    magnitude for a detector that thresholds one map across the virtual array.
+    """
+
+    return cube.reshape(-1, *cube.shape[-2:]).sum(dim=0).abs()

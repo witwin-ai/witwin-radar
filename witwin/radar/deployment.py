@@ -1,9 +1,8 @@
 """Build identity and runtime diagnostics for the packaged radar extension.
 
-Phase-10 acceptance criterion A3 asks that the Channel and Radar extensions
-each fail loudly AND report their full build identity. Channel has had this
-since ADR-006 (``witwin/channel/deployment.py``); this is the Radar half, in
-the same shape so the two records can be read side by side.
+The Channel and Radar extensions each fail loudly AND report their full build
+identity. Channel's record is ``witwin/channel/deployment.py`` (ADR-006); this
+is the Radar half, in the same shape so the two can be read side by side.
 
 Three entry points, and the difference between them is the whole design:
 
@@ -32,15 +31,16 @@ DEPLOYMENT_ABI = "witwin.radar.deployment.v1"
 #: The architectures the release build compiles SASS for, mirroring
 #: ``scripts/verify_cuda_binary_arches.py::EXPECTED_SASS`` and the
 #: ``WITWIN_CUDA_GENCODE_ARCHES`` value in ``publish-witwin-radar.yml``. Kept
-#: as one list here and pinned against the verifier by the Phase-10 tests, so
-#: a release that changed its gencode list without telling the runtime record
-#: fails rather than reporting a stale matrix.
+#: as one list here and pinned against the verifier by
+#: ``tests/test_native_diagnostics.py``, so a release that changed its gencode
+#: list without telling the runtime record fails rather than reporting a stale
+#: matrix.
 DECLARED_SM_ARCHITECTURES = (70, 75, 80, 86, 87, 89, 90, 100, 101, 120)
 
 #: The architectures a Radar test run has actually executed on. Everything else
 #: is declared-and-unverified, which is a different claim and is reported as
-#: one. SM87 runtime validation needs Orin/Jetson hardware and is a named
-#: Phase-10 deferral, not a silent gap.
+#: one. SM87 runtime validation needs Orin/Jetson hardware, which no CI runner
+#: has; it stays declared-and-unverified until one does.
 VERIFIED_SM_ARCHITECTURES = (120,)
 
 #: The one architecture whose PTX is embedded for forward compatibility.

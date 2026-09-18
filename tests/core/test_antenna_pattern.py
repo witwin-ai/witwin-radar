@@ -1,28 +1,22 @@
 """Antenna-pattern interpolation, measured through the production route.
 
-This file used to drive the pattern through ``solvers.common`` and compare it
-with ``tests/reference/path_math.py``. ``solvers.common`` belonged to the legacy
-Dirichlet route and went with it when Phase 11 deleted that route; ``path_math``
-stayed, as the independent oracle for the live ``sensor_weight`` family. So the
-same four questions are now asked of the route that survives:
-:class:`witwin.radar.sensors.RoundTripPatternStage`, which applies the transmit
-and receive pattern gain to a composed round-trip batch through the native
-``sensor_weight`` family.
+Four questions asked of :class:`witwin.radar.sensors.RoundTripPatternStage`,
+which applies the transmit and receive pattern gain to a composed round-trip
+batch through the native ``sensor_weight`` family.
 
-The measured quantity is unchanged and so are the expected numbers. With one
-transmitter and one receiver co-located at the radar origin, the transmit and
-receive directions to a target are the same vector, so the stage's amplitude
-factor ``sqrt(G_t * G_r)`` is exactly ``G``, and the ratio of an off-axis row to
-a boresight row is the POWER gain the tables tabulate. That is why the dipole
-and bilinear expectations below are the same as before the migration.
+With one transmitter and one receiver co-located at the radar origin, the
+transmit and receive directions to a target are the same vector, so the stage's
+amplitude factor ``sqrt(G_t * G_r)`` is exactly ``G``, and the ratio of an
+off-axis row to a boresight row is the POWER gain the tables tabulate. That is
+what makes the dipole and bilinear expectations below closed forms.
 
-What did change is the DEFAULT. ``Radar.pattern`` is now
-``Pattern.isotropic()``, so the two dipole cases name ``Pattern.dipole()``
-themselves and the default has a case of its own asserting unit gain.
+``Radar.pattern`` defaults to ``Pattern.isotropic()``, so the two dipole cases
+name ``Pattern.dipole()`` themselves and the default has a case of its own
+asserting unit gain.
 
-These are now GPU tests. The interpolation they exercise lives in a CUDA kernel;
+These are GPU tests. The interpolation they exercise lives in a CUDA kernel;
 its Torch oracle is pinned separately, over random directions, by
-``tests/test_phase6_sensor_weight.py``.
+``tests/test_sensor_weight.py``.
 """
 
 from __future__ import annotations
@@ -31,6 +25,8 @@ import types
 
 import pytest
 import torch
+from reference.antenna_pattern import evaluate_pattern_xy
+from support.site_rows import site_rank
 
 from core import half_wave_dipole_power, local_target_position
 from witwin.radar import Radar
@@ -107,7 +103,6 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
             inbound_row=zeros,
             outbound_row=zeros,
         ),
-        join_mode="multipath",
     )
     return stage, batch
 
@@ -121,8 +116,8 @@ def _signal_peak(radar: Radar, *, x_deg: float, y_deg: float, radius: float = 2.
         batch,
         tx_pos=radar.tx_pos,
         rx_pos=radar.rx_pos,
-        tx_targets_m=(site).index_select(0, stage.site_slot),
-        rx_targets_m=(site).index_select(0, stage.site_slot),
+        tx_targets_m=site.index_select(0, site_rank(batch)),
+        rx_targets_m=site.index_select(0, site_rank(batch)),
     )
     return published.complex_transfer_ref.abs().max()
 
@@ -148,22 +143,21 @@ def _bilinear_value(
 def test_missing_antenna_pattern_is_isotropic_at_runtime():
     """The default is unit gain everywhere, and 85 degrees is the proof.
 
-    This case used to pin the opposite: a radar that declared no pattern got a
-    half-wave dipole, and the edge gain was asserted to be BELOW 0.05. The
-    default is now ``Pattern.isotropic()`` - an unchosen dipole attenuates
-    every off-boresight return by a number nobody asked for - so the same
-    edge angle is asserted to be exactly unity instead.
+    An unchosen dipole would attenuate every off-boresight return by a number
+    nobody asked for, so the edge angle is asserted to be exactly unity.
     """
 
     radar = _make_radar()
 
     assert radar.pattern == Pattern.isotropic()
 
-    center_gain = radar._evaluate_antenna_pattern_xy(
+    center_gain = evaluate_pattern_xy(
+        radar.pattern,
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
-    edge_gain = radar._evaluate_antenna_pattern_xy(
+    edge_gain = evaluate_pattern_xy(
+        radar.pattern,
         torch.tensor([85.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
@@ -174,17 +168,19 @@ def test_missing_antenna_pattern_is_isotropic_at_runtime():
 
 
 def test_a_declared_dipole_rolls_off_at_the_edge():
-    """The roll-off the default used to supply, now named by the caller."""
+    """A dipole the caller names rolls off at the edge; the default does not."""
 
     radar = _make_radar(pattern=Pattern.dipole())
 
     assert radar.pattern.kind == "separable"
 
-    center_gain = radar._evaluate_antenna_pattern_xy(
+    center_gain = evaluate_pattern_xy(
+        radar.pattern,
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )
-    edge_gain = radar._evaluate_antenna_pattern_xy(
+    edge_gain = evaluate_pattern_xy(
+        radar.pattern,
         torch.tensor([85.0], dtype=torch.float32, device=radar.device),
         torch.tensor([0.0], dtype=torch.float32, device=radar.device),
     )

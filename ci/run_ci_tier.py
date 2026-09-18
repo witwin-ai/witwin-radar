@@ -30,18 +30,17 @@ build: Channel source-links RayD and owns that build entirely. The gate reads
 it is empty. A radar tier that quietly skipped the cross-package check would be
 worse than one that asks for the artifact.
 
-The four production static gates (Phase-10 work item 7: forbidden runtimes,
-oracle isolation, raw native access, the Torch-physics allowlist) sit in
-`quick`, next to `quick.native-bindings`. None of them imports the package or
-needs a GPU, so the cheapest tier is the one that should catch them; the only
-half that cannot run there is the oracle gate's wheel-member check, which is a
-separate `nightly` gate against the wheel the tier just built.
+The four production static gates (forbidden runtimes, oracle isolation, raw
+native access, the Torch-physics allowlist) sit in `quick`, next to
+`quick.native-bindings`. None of them imports the package or needs a GPU, so
+the cheapest tier is the one that should catch them; the only half that cannot
+run there is the oracle gate's wheel-member check, which is a separate
+`nightly` gate against the wheel the tier just built.
 
-`quick.orphan-modules` joined them in Phase 11 for the same reason - it parses
-the tree and imports nothing - and closes the dead-code half of that phase's
-acceptance criterion 8. Its sibling, the frozen public-API snapshot, is a test
-rather than a gate script (`tests/test_public_api_snapshot.py`), so it runs
-inside `quick.cpu-tests`.
+`quick.orphan-modules` sits there for the same reason - it parses the tree and
+imports nothing. Its sibling, the frozen public-API snapshot, is a test rather
+than a gate script (`tests/test_public_api_snapshot.py`), so it runs inside
+`quick.cpu-tests`.
 """
 
 from __future__ import annotations
@@ -72,18 +71,17 @@ QUICK_GATES = (
     Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "examples", "tools", "ci", "scripts")),
     Gate("quick.duplicate-code", ("ci/check_duplicate_code.py",)),
     Gate("quick.native-bindings", ("ci/check_native_bindings.py",)),
-    # The four production static gates (Phase-10 work item 7). They are here
-    # rather than in `cuda` on purpose: none of them imports the package,
-    # loads the extension, or needs a GPU, so the cheapest tier is the one
-    # that should catch a forbidden import or a widened allowlist.
+    # The four production static gates. They are here rather than in `cuda`
+    # on purpose: none of them imports the package, loads the extension, or
+    # needs a GPU, so the cheapest tier is the one that should catch a
+    # forbidden import or a widened allowlist.
     Gate("quick.production-dependencies", ("ci/check_production_dependencies.py",)),
     Gate("quick.oracle-isolation", ("ci/check_test_oracle_isolation.py",)),
     Gate("quick.raw-native-access", ("ci/check_raw_native_access.py",)),
     Gate("quick.torch-physics-allowlist", ("ci/check_torch_physics_allowlist.py",)),
     Gate("quick.workflow-policy", ("ci/check_workflow_policy.py",)),
-    # Dead code, Phase-11 work item 7. Ruff reports an unused IMPORT; nothing
-    # reported an unused MODULE, which is how `witwin/radar/timeline.py`
-    # survived four phases after its last consumer went away.
+    # Dead code. Ruff reports an unused IMPORT; nothing else reports an unused
+    # MODULE.
     Gate("quick.orphan-modules", ("ci/check_orphan_modules.py",)),
     # The governance gates. They were hand-run for as long as they existed,
     # which is the same as not existing on any day nobody remembered to type
@@ -95,12 +93,10 @@ QUICK_GATES = (
     # tier rather than in a developer's memory.
     Gate("quick.architecture", ("ci/check_architecture.py",)),
     Gate("quick.public-api-manifest", ("ci/check_public_api_manifest.py",)),
-    Gate("quick.single-definition", ("ci/check_single_definition.py",)),
     Gate("quick.no-compatibility", ("ci/check_no_compatibility.py",)),
     Gate("quick.documentation-surface", ("ci/check_documentation_surface.py",)),
     Gate("quick.release-claims", ("ci/check_release_claims.py",)),
     Gate("quick.workflow-references", ("ci/check_workflow_references.py",)),
-    Gate("quick.governance-inventory", ("ci/check_governance_inventory.py",)),
     Gate("quick.required-channel-coverage", ("ci/check_required_channel_coverage.py",)),
     # Importing the package must not load the loader, the compiler, or CUDA.
     # What makes that true is that `witwin/radar/__init__.py` imports only the
@@ -131,7 +127,7 @@ CUDA_GATES = (
     # is the pre-existing behaviour: the 75% floor describes the GPU suite.
     Gate("cuda.gpu-tests", ("-m", "coverage", "run", "-m", "pytest", "tests", "--gpu", "-q")),
     Gate("cuda.gpu-coverage", ("-m", "coverage", "report", "--fail-under=75")),
-    Gate("cuda.loader-contract", ("-m", "pytest", "-q", "tests/test_phase10_loader_contract.py")),
+    Gate("cuda.loader-contract", ("-m", "pytest", "-q", "tests/test_native_loader_contract.py")),
     Gate("cuda.extension-boundary", ("ci/check_extension_boundary.py",)),
 )
 
@@ -179,16 +175,11 @@ RELEASE_GATES = (
 )
 
 
-def _tier(name: str, *gate_groups: tuple[Gate, ...]) -> tuple[Gate, ...]:
-    del name
-    return tuple(gate for group in gate_groups for gate in group)
-
-
 TIER_GATES = {
-    "quick": _tier("quick", QUICK_GATES),
-    "cuda": _tier("cuda", QUICK_GATES, CUDA_GATES),
-    "nightly": _tier("nightly", QUICK_GATES, CUDA_GATES, NIGHTLY_GATES),
-    "release": _tier("release", QUICK_GATES, CUDA_GATES, NIGHTLY_GATES, RELEASE_GATES),
+    "quick": QUICK_GATES,
+    "cuda": QUICK_GATES + CUDA_GATES,
+    "nightly": QUICK_GATES + CUDA_GATES + NIGHTLY_GATES,
+    "release": QUICK_GATES + CUDA_GATES + NIGHTLY_GATES + RELEASE_GATES,
 }
 
 

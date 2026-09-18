@@ -19,8 +19,8 @@ desktop processes throughout. Nothing here is an estimate.
 **This document is parsed, not just read.** A mutation run falsified the join
 bytes formula, its measured value and a quoted wall-time budget by factors of
 two to ten and nothing in the tree noticed: the budgets themselves are pinned by
-constants in `tests/test_phase9_backward_budget.py` and by the fixture-derived
-band law, so no enforcement was weakened, but the prose was free to drift away
+constants in `tests/test_backward_budget.py` and by the fixture-derived
+join law, so no enforcement was weakened, but the prose was free to drift away
 from them. Three tests in that module now read this file -
 `::test_the_ledger_bytes_formula_is_the_law_this_module_measures` evaluates the
 join formula below at the fixture's own row counts and compares it with bytes
@@ -46,7 +46,7 @@ retains one first-order graph per observation only when AD is requested.
   A row that only reports a number describes one run and rots on the next
   fixture change. Symbols: `K` composed rows, `R_in` / `R_out` leg rows, `S`
   response slots (sites), `T` transmitters, `R` receivers, `P` pair segments,
-  `N` samples or targets, `G` AGC groups, `F` band columns.
+  `N` samples or targets, `G` AGC groups.
 - **measured bytes** is the formula evaluated at the pinned fixture, taken by
   reading `ctx.to_save` inside `setup_context` - the only moment the storage is
   both allocated and legal to inspect.
@@ -86,9 +86,9 @@ cannot be created is worse than no row.
 
 | family | tape owner (file::symbol) | saved tensors | bytes formula | measured bytes @fixture | fwd launches | bwd launches | bwd ms (measured) | lifetime |
 |---|---|---|---|---|---|---|---|---|
-| two-way join | `witwin/radar/paths.py::_TwoWayJoin.setup_context` | `c_in_re`, `c_in_im`, `c_out_re`, `c_out_im`, `s_re`, `s_im`, `row_valid`, `idx_in`, `idx_out`, `idx_s` | `8*R_in + 8*R_out + 8*S + 28*K` | 104 B at `R_in=R_out=S=K=2` | 1 `two_way_join_forward` | 1 `two_way_join_backward` | 0.412 | created in `TwoWayComposer.compose`; released when the composed `RadarPathBatch`'s graph is freed. Under `_compose_band` there is **one context per frequency column plus one**, and all `F+1` live until the band's graph is freed - see the band section below. |
+| two-way join | `witwin/radar/paths.py::_TwoWayJoin.setup_context` | `c_in_re`, `c_in_im`, `c_out_re`, `c_out_im`, `s_re`, `s_im`, `row_valid`, `idx_in`, `idx_out`, `idx_s` | `8*R_in + 8*R_out + 8*S + 28*K` | 104 B at `R_in=R_out=S=K=2` | 1 `two_way_join_forward` | 1 `two_way_join_backward` | 0.412 | created in `TwoWayComposer.compose`; released when the composed `RadarPathBatch`'s graph is freed. |
 | aspect response | `witwin/radar/scattering.py::_AspectResponse.setup_context` | `dir_in`, `dir_out`, `axis`, `amplitude`, `phase_rad`, `idx_in`, `idx_out`, `idx_site`, `row_valid` | `12*(R_in + R_out + S) + 8*S + 28*K` | 144 B at `R_in=R_out=S=K=2` | 1 `scatter_response_aspect_forward` | 1 `scatter_response_aspect_backward` | 0.276 | created inside `AspectScatterResponse.evaluate_rows`, which the composer calls once per compose; released with the composed batch. The two direction tables are the legs' own aliased tensors, so this context pins the legs' geometry alive as well as its own. |
-| sensor weight | `witwin/radar/sensors.py::_SensorWeight.setup_context` | `tx_pos`, `rx_pos`, `site_in`, `site_out`, `intensity`, `weight_re`, `weight_im`, `tx_velocity`, `rx_velocity` | `24*T + 24*R + 36*K` | 120 B at `T=R=1`, `K=2` | 1 `sensor_weight_forward` | 1 `sensor_weight_backward` | 0.348 | created in `evaluate_sensor_weights`, once per frame; released with the `SensorWeightResult`'s graph. The geometry and the plan are attached to the context as configuration, not saved as tensors, so neither is retained storage. Since Phase 11 the PRODUCTION creator on the scene-driven route is `RoundTripPatternStage.apply` (`witwin/radar/sensors.py`), which calls the same facade and therefore reuses this one context rather than defining a `Function` of its own - it added no owner to this table. It exists only when `Radar.simulate` was given an `antenna_pattern`; a composed BAND adds one context per frequency column, exactly as the join's band loop does. |
+| sensor weight | `witwin/radar/sensors.py::_SensorWeight.setup_context` | `tx_pos`, `rx_pos`, `site_in`, `site_out`, `intensity`, `weight_re`, `weight_im`, `tx_velocity`, `rx_velocity` | `24*T + 24*R + 36*K` | 120 B at `T=R=1`, `K=2` | 1 `sensor_weight_forward` | 1 `sensor_weight_backward` | 0.348 | created in `evaluate_sensor_weights`, once per frame; released with the `SensorWeightResult`'s graph. The geometry and the plan are attached to the context as configuration, not saved as tensors, so neither is retained storage. Since Phase 11 the PRODUCTION creator on the scene-driven route is `RoundTripPatternStage.apply` (`witwin/radar/sensors.py`), which calls the same facade and therefore reuses this one context rather than defining a `Function` of its own - it added no owner to this table. |
 | FMCW beat | `witwin/radar/synthesis/fmcw.py::_FmcwSynthesis.setup_context` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**, `tx_index`; forward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`offsets`**, `tx_index` | backward `16*K + 8*K + 4*T`; forward `16*K + 8*(P+1) + 4*T` | 52 B at `K=2`, `P=1`, `T=1` | 1 `fmcw_beat_forward` | 1 `fmcw_beat_backward` | 0.313 | created in `synthesize_fmcw_rows`; released with the cube's graph. **The two lists differ**: the backward needs a per-ROW segment id to reduce into, the jvp needs the per-SEGMENT offsets to walk. That is not an inconsistency, and it means the reverse and forward tapes have different sizes whenever `K != P+1`. |
 | OFDM CFR | `witwin/radar/synthesis/ofdm.py::_OfdmCfrSynthesis.setup_context` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**; forward: same four plus **`offsets`** | backward `16*K + 8*K`; forward `16*K + 8*(P+1)` | 48 B at `K=2`, `P=1` | 1 `ofdm_cfr_forward` | 1 `ofdm_cfr_backward` | 0.332 | as FMCW, same asymmetry, no `tx_index`. |
 | pulsed echo | `witwin/radar/synthesis/pulsed.py::_PulsedEchoSynthesis.setup_context` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**; forward: same four plus **`offsets`** | backward `16*K + 8*K`; forward `16*K + 8*(P+1)` | 48 B at `K=2`, `P=1` | 1 `pulsed_echo_forward` | 1 `pulsed_echo_backward` | 0.341 | as OFDM. |
@@ -97,61 +97,11 @@ cannot be created is worse than no row.
 
 **One backward launch per forward launch, at every one of the eight.** That is
 R-ADR-004's shape and it is now pinned at every boundary rather than at the
-three synthesis families `tests/test_phase6_launch_budget.py` covers:
-`tests/test_phase9_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch`
+three synthesis families `tests/test_synthesis_launch_budget.py` covers:
+`tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch`
 and `::test_the_frontend_costs_one_backward_launch_per_forward_stage`. The set
 of budgeted boundaries is itself asserted to equal the set of autograd owners,
 so an eleventh `Function` cannot arrive unbudgeted.
-
-## The band loop, which is the lifetime finding
-
-`_compose_band` (`witwin/radar/paths.py`) calls `_TwoWayJoin.apply` once
-per frequency column plus once for the reference column, and each call retains
-its own ten-tensor context. The survey read that as "a 64-subcarrier band holds
-64 copies of the join tape". That is an **exact statement about contexts and a
-five-fold overestimate of the memory**, and the difference is measurable:
-
-```
-F      contexts   total tape B   distinct-storage B   live fwd B   peak fwd B
-1          2            808              484             79360       104960
-2          3           1212              564             96256       119296
-4          5           2020              724            151552       169472
-8          9           3636             1044            262656       273920
-16        17           6868             1684            484864       499712
-32        33          13332             2964            929792       953344
-64        65          26260             5524           1818624      1859072
-```
-
-At the pinned fixture (`R_in=3`, `R_out=7`, `S=2`, `K=11`):
-
-```
-contexts   = F + 1
-per context= 8*R_in + 8*R_out + 8*S + 28*K            = 404 B
-total      = (F + 1) * 404
-distinct   = (8*S + 28*K) + 8*(R_in + R_out)*(F + 1)  = 324 + 80*(F + 1)
-```
-
-Six of the ten saved tensors are the **same storage in every context** - the
-scatter-response pair, the validity mask and the three index tables - because
-`_compose_band` evaluates the response once above the loop and the join's index
-tables are frozen at freeze time. Only the four per-column coefficient slices
-are distinct. So the marginal retained tape per column is
-`8*(R_in + R_out) = 80 B`, not 404 B.
-
-**The honest conclusion, and it is not the one the survey expected.** At `F=64`
-the tape is 5.5 kB against 1.80 MB of total retained forward allocation. The
-tape is not the thing to bound here; the 65 sets of `[K]` complex outputs are.
-The tape law is pinned anyway, because it is the thing that would change
-silently if the join's save list changed, and because a pinned law catches that
-at any band width.
-
-Pinned by
-`tests/test_phase9_backward_budget.py::test_the_band_loop_tape_obeys_its_predicted_linear_law`
-(widths 1, 2, 4, 8, predicted from the fixture's own row counts rather than
-written down as constants) and
-`::test_the_band_loop_tape_law_holds_at_a_width_it_was_not_fitted_on` (width
-16). The aliasing itself is pinned structurally by
-`tests/test_phase9_wideband_join_ad.py::test_the_band_loop_keeps_one_join_context_per_column_and_aliases_its_tables`.
 
 ## The Channel half, read-only
 
@@ -176,7 +126,7 @@ pair would mean the accounting was reporting a constant, which is asserted
 directly rather than assumed.
 
 Pinned by
-`tests/test_phase9_backward_budget.py::test_the_channel_reevaluate_publishes_its_ad_launches_and_tape_bytes`
+`tests/test_backward_budget.py::test_the_channel_reevaluate_publishes_its_ad_launches_and_tape_bytes`
 and `::test_a_primal_only_reevaluate_builds_no_tape_at_all`.
 
 ## The budget pins
@@ -188,11 +138,11 @@ that rather than on top of the luckiest run.
 
 | pin | measured | budget | headroom | test |
 |---|---|---|---|---|
-| full FMCW pipeline, BACKWARD wall time | 2.68 ms (four medians: 1.816, 1.925, 2.153, 2.684) | 3.484 ms | 1.30x | `tests/test_phase9_backward_budget.py::test_the_full_fmcw_pipeline_backward_meets_its_time_budget` |
+| full FMCW pipeline, BACKWARD wall time | 2.68 ms (four medians: 1.816, 1.925, 2.153, 2.684) | 3.484 ms | 1.30x | `tests/test_backward_budget.py::test_the_full_fmcw_pipeline_backward_meets_its_time_budget` |
 | full FMCW pipeline, backward peak ALLOCATION | 0.1426 MB (149504 B, identical on all four runs) | 0.1782 MB | 1.25x | `::test_the_full_fmcw_pipeline_backward_meets_its_peak_memory_budget` |
 | the same, forward peak, for the ratio | 43008 B forward vs 149504 B forward-plus-backward = 3.48x | reverse > 2x forward | - | `::test_the_backward_peak_is_larger_than_the_forward_peak` |
 | Channel `reevaluate`, two legs, reverse cost as a RATIO to the forward | 1.334 to 1.523 over six processes, sampled alternately | 2.0, a structural threshold | - | `::test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve` |
-| `_compose_band` tape law | exact, see above | exact equality | - | `::test_the_band_loop_tape_obeys_its_predicted_linear_law` |
+| two-way join context bytes | exact, the formula above | exact equality | - | `::test_the_join_context_saves_the_predicted_bytes` |
 
 The reverse pass costs about a **fifty-percent surcharge** on the Channel
 forward, not a second solve, and about **3.5x the forward's peak allocation**.
@@ -230,7 +180,7 @@ comfortably.
 
 An idle RTX 5080 sits at 877 MHz. The first `pytest` invocation of a session can
 miss a wall-time budget by about one percent purely on clock ramp: measured
-while writing this document, `tests/test_phase8_pipeline_budget.py` reported
+while writing this document, `tests/test_pipeline_budget.py` reported
 2.9225 ms against a 2.8990 ms budget on the first run of a session and 2.7985 /
 2.7421 ms on the two immediately following runs, on the same unchanged tree.
 Twenty warm-up calls do not boost the clock from idle.
@@ -251,7 +201,7 @@ than inspected:
   `PointCloud` and a `DetectionFrame` - by walking every field transitively.
   A `grad_fn` is not a leak and is not what is being looked for; a field holding
   the saved tensors or the context that owns them is.
-  `tests/test_phase9_tape_non_leak.py`, four tests plus a calibration that
+  `tests/test_tape_containment.py`, four tests plus a calibration that
   plants a context in a record and checks the walker objects to it.
 - **No module outside a tape's own owner reads one.** Every
   `ctx.saved_tensors` / `ctx.to_save` read in the package is located by parsing
@@ -267,7 +217,7 @@ than inspected:
 
 The phase put roughly a thousand lines of guard and orchestration into the
 package. Every new Torch expression in it falls into exactly two categories, and
-`tests/test_phase6_no_torch_physics.py` now pins that there is no third:
+`tests/test_no_torch_physics.py` now pins that there is no third:
 
 1. **Refusal predicates.** `torch.is_grad_enabled`,
    `torch.autograd.forward_ad.unpack_dual`,
@@ -283,29 +233,23 @@ package. Every new Torch expression in it falls into exactly two categories, and
    matched Torch set is pinned by equality, so a second arithmetic expression
    there fails.
 
-One `requires_grad` route branch survives in the package and is recorded rather
-than removed: `SMPLBody._evaluate` nudges a grad-carrying shape by `1e-8` to
-keep the SMPL layer's own backward defined. It is a legacy numerical workaround
-inside a legacy path that IS driven to a loss, and deleting it is a numerical
-decision with its own evidence rather than an architecture cleanup. Pinned in
-both directions by
-`tests/test_phase6_no_torch_physics.py::test_no_phase9_guarded_package_gates_a_route_on_requires_grad`
-and `::test_the_one_recorded_requires_grad_route_still_exists`, so a stale
-allowlist entry fails as loudly as a new branch.
+No `requires_grad` route branch survives in the package:
+`tests/test_no_torch_physics.py::test_no_phase9_guard_branches_on_requires_grad`
+fails on any new one.
 
 ## Reproducing every number here
 
 ```
 conda activate witwin2
 cd <radar worktree>
-python -m pytest -q tests/test_phase9_backward_budget.py --gpu --basetemp=<short>
-python -m pytest -q tests/test_phase9_tape_non_leak.py --gpu --basetemp=<short>
-python -m pytest -q tests/test_phase6_no_torch_physics.py --basetemp=<short>
+python -m pytest -q tests/test_backward_budget.py --gpu --basetemp=<short>
+python -m pytest -q tests/test_tape_containment.py --gpu --basetemp=<short>
+python -m pytest -q tests/test_no_torch_physics.py --basetemp=<short>
 ```
 
 The per-owner rows come from wrapping each `Function`'s `setup_context` and
 reading `ctx.to_save`; `tests/support/ad_boundaries.py` is the fixture and
-`tests/test_phase9_backward_budget.py` is the pinned subset. Run on an idle GPU,
+`tests/test_backward_budget.py` is the pinned subset. Run on an idle GPU,
 with the packaged prebuilt at
 `witwin/radar/cuda/prebuilt/_radar_native.pyd` - never a JIT
 rebuild inside a test process.

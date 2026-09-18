@@ -105,7 +105,7 @@ This makes `motion_event_period_frames=None` two declarations rather than one:
 no path can be born, AND the authored world is never mutated outside the
 `DynamicScene` API. A caller that cannot assert the second must declare a
 period. Pinned by
-`tests/test_phase7_invalidation.py::test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick`,
+`tests/test_row_invalidation.py::test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick`,
 `::test_a_declared_trajectory_never_reports_a_source_mutation` and
 `::test_no_declared_cadence_means_no_revalidation_at_all`.
 
@@ -123,7 +123,7 @@ rather than an import - the adapter stays the only Radar module that names
   compiled scene, which is what "one frame / one pulse train / one symbol block"
   means physically.
 - `world_motion` joins the frozen reevaluation keyword set in
-  `tests/test_phase6_config_boundary.py`. It describes scene geometry, which is
+  `tests/test_config_vocabulary_boundary.py`. It describes scene geometry, which is
   what a propagation request is about; it carries no waveform, ADC or receive
   chain vocabulary and could not, since the vocabulary is Channel's own closed
   set.
@@ -154,7 +154,7 @@ own decision record and is not attempted here.
 - **Core C1** - `geometry_version` folds `time_s` and endpoint states, so
   endpoint-only motion over a static wall reports four distinct geometry
   versions for four snapshots. Minimal repro is in
-  `tests/test_phase7_invalidation.py::test_endpoint_only_motion_does_not_recompile`,
+  `tests/test_row_invalidation.py::test_endpoint_only_motion_does_not_recompile`,
   which asserts both halves: the loop compiles once, and the snapshots it
   declined to recompile really would have hashed differently.
 - **Core C2** - `DeformationState` carries no velocity. Routed around by

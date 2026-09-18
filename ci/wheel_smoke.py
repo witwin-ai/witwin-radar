@@ -59,16 +59,15 @@ _DISTRIBUTION = "witwin-radar"
 _DIST_INFO_LICENSE = "licenses/LICENSE"
 _DIST_INFO_FILES = frozenset({"METADATA", "RECORD", "WHEEL", _DIST_INFO_LICENSE})
 
-#: The extension stem after the Phase-10 rename. The physical name and the
-#: logical owner name are now the same string, which is the whole point of the
-#: rename: ``ci/native-binding-manifest.json`` records it once.
+#: The extension stem. The physical name and the logical owner name are the
+#: same string, so ``ci/native-binding-manifest.json`` records it once.
 _EXTENSION_NAME = "_radar_native"
 _PREBUILT_PREFIX = "witwin/radar/cuda/prebuilt/"
 _NATIVE_SUFFIXES = (".pyd", ".so")
 _DSO_SUFFIXES = frozenset({".dll", ".dylib", ".pyd", ".so"})
 
-#: The nine translation units ``build.extension_sources()`` compiles, by NAME.
-#: ``identity.source_digest`` hashes ``path.name`` plus content, so the wheel's
+#: The nine translation units ``runtime.extension_sources()`` compiles, by NAME.
+#: ``runtime.source_digest`` hashes ``path.name`` plus content, so the wheel's
 #: copies reproduce the digest without knowing where they were built.
 _SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
@@ -415,7 +414,7 @@ def _audit_wheel_contents(wheel: Path) -> tuple[str, dict[str, object]]:
             # carry a build-host path into the wheel, because the closure check
             # above already proved its packed bytes equal the repository's -
             # and scanning it anyway flags deliberate portable literals such as
-            # build.py's `os.environ.get("ProgramFiles", r"C:\Program Files")`
+            # runtime.py's `os.environ.get("ProgramFiles", r"C:\Program Files")`
             # fallback, which is a source-review question and not a packaging
             # one. What this check exists to catch is a build that BAKED this
             # machine's paths into an artifact, and every such artifact is a
@@ -452,12 +451,6 @@ sys.meta_path[:] = [
         ("_editable_impl_witwin", "_witwin_channel_editable", "__editable__")
     )
 ]
-sys.path[:] = [
-    entry
-    for entry in sys.path
-    if entry == str(target) or "site-packages" not in entry.replace("\\\\", "/") or True
-]
-
 wheel = Path({str(wheel)!r}).resolve()
 digest = hashlib.sha256()
 with wheel.open("rb") as stream:

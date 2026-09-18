@@ -112,7 +112,7 @@ def audit(repo: Path) -> list[str]:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name in RETIRED_NAMES:
                     errors.append(f"retired definition {node.name}: {relative}:{node.lineno}")
-            elif isinstance(node, ast.Name) and node.id in {"_REMOVED", "_LAZY"}:
+            elif isinstance(node, ast.Name) and node.id in ROOT_PROXY_NAMES:
                 errors.append(f"compatibility proxy {node.id}: {relative}:{node.lineno}")
             elif isinstance(node, ast.Name) and node.id == "DeprecationWarning":
                 errors.append(f"deprecation shim warning: {relative}:{node.lineno}")

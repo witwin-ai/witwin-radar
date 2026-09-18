@@ -1,6 +1,7 @@
 """What Radar refuses in AD: the wall, and the first-order-only rule.
 
-Two rules live here, and nothing else.
+Two rules live here, plus the two host admissions every domain shares: the
+speed of light and the device-placement check.
 
 **One: the non-differentiability wall.** The simulation chain and the linear
 signal processing above it are differentiable. Below the first DISCRETE
@@ -47,6 +48,28 @@ from __future__ import annotations
 import functools
 
 import torch
+
+#: Exact SI definition, m/s. The one owner: ``radar``, ``sensors``,
+#: ``scattering`` and ``synthesis`` all read it from here, so no two modules can
+#: disagree about a wavelength.
+SPEED_OF_LIGHT_M_PER_S = 299792458.0
+
+
+def resolve_device(device: object, *, owner: str) -> torch.device:
+    """The device an owner places itself on, refusing a CUDA default with no CUDA.
+
+    ``owner`` is the class that defaults to CUDA and appears in the message. A
+    CPU device is accepted as given: construction and non-rendering work run
+    there, and the caller says so by naming it.
+    """
+
+    resolved = device if isinstance(device, torch.device) else torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"{owner} defaults to CUDA, but torch.cuda.is_available() is False. "
+            "Install a CUDA-enabled PyTorch build, or pass device='cpu' explicitly."
+        )
+    return resolved
 
 
 def _carries_derivative(value: object) -> str | None:

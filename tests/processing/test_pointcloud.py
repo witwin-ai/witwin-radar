@@ -24,7 +24,7 @@ from witwin.radar.processing import (
     ArrayGeometry,
     PointCloud,
     ProcessingCube,
-    ca_cfar_fast,
+    ca_cfar,
     conventional_steering,
     point_cloud,
     range_doppler_map,
@@ -114,7 +114,7 @@ def _cube(axes, array, *, cosine: float = AZIMUTH_COSINE) -> torch.Tensor:
 def _chain(array, cube: ProcessingCube):
     rd = range_doppler_map(range_profile(cube))
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    detected = ca_cfar_fast(combined.abs(), guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6)
+    detected = ca_cfar(combined.abs(), guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6)
     return rd, detected
 
 
@@ -129,7 +129,7 @@ def test_one_target_lands_on_its_own_three_bins_and_becomes_one_point():
     axes, array = _records()
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
 
-    cloud = point_cloud(detected, rd, axes, array, route="phase_comparison")
+    cloud = point_cloud(detected, rd, array, route="phase_comparison")
     assert isinstance(cloud, PointCloud)
     assert len(cloud) == 1
 
@@ -156,7 +156,7 @@ def test_one_target_lands_on_its_own_three_bins_and_becomes_one_point():
 def test_the_published_columns_are_the_named_fields_in_the_published_order():
     axes, array = _records()
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
-    cloud = point_cloud(detected, rd, axes, array)
+    cloud = point_cloud(detected, rd, array)
     columns = cloud.as_columns()
     assert tuple(columns.shape) == (1, 6)
     assert torch.equal(columns[:, :3], cloud.xyz)
@@ -182,11 +182,11 @@ def test_the_range_gate_is_a_distance_and_not_a_bin_index():
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
     target = float(axes.range_m[RANGE_BIN])
 
-    inside = point_cloud(detected, rd, axes, array, range_gate_m=(target - axes.range_bin_m, target + axes.range_bin_m))
+    inside = point_cloud(detected, rd, array, range_gate_m=(target - axes.range_bin_m, target + axes.range_bin_m))
     assert len(inside) == 1
 
     outside = point_cloud(
-        detected, rd, axes, array, range_gate_m=(target + 2.0 * axes.range_bin_m, target + 20.0 * axes.range_bin_m)
+        detected, rd, array, range_gate_m=(target + 2.0 * axes.range_bin_m, target + 20.0 * axes.range_bin_m)
     )
     assert len(outside) == 0
 
@@ -223,7 +223,7 @@ def test_the_strongest_detections_survive_a_max_points_thinning():
     rd, detected = _chain(array, ProcessingCube(cube, axes))
     assert int(detected.mask.sum()) >= 2
 
-    thinned = point_cloud(detected, rd, axes, array, max_points=1)
+    thinned = point_cloud(detected, rd, array, max_points=1)
     assert len(thinned) == 1
     assert abs(float(thinned.range_m[0]) - float(axes.range_m[RANGE_BIN])) <= 0.5 * axes.range_bin_m
 
@@ -235,7 +235,7 @@ def test_an_empty_detection_mask_gives_an_empty_cloud_and_not_a_crash():
         mask=torch.zeros((axes.doppler_bin_count, axes.range_bin_count), dtype=torch.bool),
         threshold=torch.zeros((axes.doppler_bin_count, axes.range_bin_count), dtype=torch.float32),
     )
-    cloud = point_cloud(empty, rd, axes, array)
+    cloud = point_cloud(empty, rd, array)
     assert len(cloud) == 0
     assert tuple(cloud.xyz.shape) == (0, 3)
     assert tuple(cloud.as_columns().shape) == (0, 6)
@@ -245,19 +245,17 @@ def test_the_route_is_named_by_the_caller_and_an_unknown_one_is_refused():
     axes, array = _records()
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
     with pytest.raises(ValueError, match="route must be one of"):
-        point_cloud(detected, rd, axes, array, route="magic")
+        point_cloud(detected, rd, array, route="magic")
     with pytest.raises(TypeError):
-        point_cloud(detected.mask, rd, axes, array)
+        point_cloud(detected.mask, rd, array)
     with pytest.raises(ValueError, match=r"\[doppler, range\]"):
-        point_cloud(
-            Detections(mask=detected.mask.unsqueeze(0), threshold=detected.threshold.unsqueeze(0)), rd, axes, array
-        )
+        point_cloud(Detections(mask=detected.mask.unsqueeze(0), threshold=detected.threshold.unsqueeze(0)), rd, array)
 
 
 def test_the_positive_velocity_filter_reads_the_reconciled_sign():
     axes, array = _records()
     rd, detected = _chain(array, ProcessingCube(_cube(axes, array), axes))
-    kept = point_cloud(detected, rd, axes, array, positive_velocity_only=True)
+    kept = point_cloud(detected, rd, array, positive_velocity_only=True)
     assert len(kept) == 1
     assert float(kept.velocity_mps[0]) > 0.0
 
@@ -294,7 +292,7 @@ def test_the_cube_former_and_the_chain_agree_on_the_same_target():
     assert torch.equal(packed, cube)
 
     rd, detected = _chain(array, ProcessingCube(data=packed, axes=axes))
-    cloud = point_cloud(detected, rd, axes, array)
+    cloud = point_cloud(detected, rd, array)
     assert len(cloud) == 1
     assert abs(float(cloud.range_m[0]) - float(axes.range_m[RANGE_BIN])) <= 0.5 * axes.range_bin_m
     assert float(cloud.xyz[0, 0] / cloud.range_m[0]) == pytest.approx(AZIMUTH_COSINE, abs=1e-3)

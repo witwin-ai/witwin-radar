@@ -6,7 +6,7 @@ import pytest
 import torch
 from support import multi_endpoint_driver as drv
 from support.reference_frontend import single_sideband_psd
-from test_phase11_simulate_entry import _radar, _static_scene
+from support.simulate_fixture import fixture_radar, static_scene
 
 from witwin.radar import Noise, PointTargets
 from witwin.radar.frontend import FrontendChain, FrontendSpec
@@ -86,7 +86,7 @@ def test_delays_refuse_nonexistent_brownian_time_derivative():
 
 
 def test_scene_path_noise_preserves_output_domain_and_frame_time():
-    base = _radar()
+    base = fixture_radar()
     targets = PointTargets(
         positions=torch.tensor([[2.0, 0.2, 0.0]], device=base.device),
         amplitude=drv.FIXTURE_AMPLITUDE,
@@ -99,6 +99,6 @@ def test_scene_path_noise_preserves_output_domain_and_frame_time():
         radar = base.replace(
             waveform=replace(base.waveform, samples_per_chirp=4, chirps_per_frame=1, output=domain), noise=noise()
         )
-        outputs[domain] = radar.simulate(_static_scene(), targets, times=(0.0, 0.1), los=True, reflections=0).cube
+        outputs[domain] = radar.simulate(static_scene(), targets, times=(0.0, 0.1), los=True, reflections=0).cube
     torch.testing.assert_close(outputs["spectrum"], torch.fft.fft(outputs["beat"], dim=-1, norm="forward"))
     assert not torch.equal(outputs["beat"][0], outputs["beat"][1])

@@ -38,10 +38,9 @@ CONFIG = {
 
 
 class Walker:
-    """A closing target with a 2 Hz lateral sway, in metres and m/s.
+    """A closing target with a 2 Hz lateral sway, in metres.
 
-    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` adds the
-    analytic velocity, which keeps the fixture readable as one closed form.
+    ``positions`` is what ``PointTargets.trajectory`` takes.
     """
 
     def positions(self, t):
@@ -50,9 +49,7 @@ class Walker:
         return torch.tensor(points, dtype=torch.float32, device="cuda")
 
     def at(self, t):
-        rate = 2 * math.pi * 2.0
-        speeds = [[1.2, 0.2 * rate * math.cos(rate * t), 0.0]]
-        return Kinematics(self.positions(t), torch.tensor(speeds, dtype=torch.float32, device="cuda"))
+        return Kinematics(self.positions(t))
 
 
 def session(radar, frames, fps):
@@ -86,7 +83,6 @@ def run(frames, fps, checksum):
     scene = Scene(structures=(), endpoints=[])
     kwargs = session(radar, frames, fps)
     list(radar.stream(scene, **kwargs))  # warm native loading and the allocator
-    Radar._last_result = None
 
     def consume():
         """Produce and release every frame, which is what a writer does."""
@@ -99,7 +95,6 @@ def run(frames, fps, checksum):
 
     produced, streamed_s, streamed_peak = timed(consume)
     assert produced == frames
-    Radar._last_result = None
     torch.cuda.empty_cache()
     record = {
         "frames": frames,
@@ -130,7 +125,6 @@ def run(frames, fps, checksum):
             del frame
         record["mismatched_frames"] = mismatched
         assert mismatched == 0, record
-    Radar._last_result = None
     torch.cuda.empty_cache()
     return record
 

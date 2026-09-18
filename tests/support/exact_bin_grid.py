@@ -30,7 +30,8 @@ also exists, which is what keeps this fixture a multi-row one.
 **The delay rate.** A closing speed is chosen so the FMCW Doppler bin is an
 integer, ``q = f_ref |tau_rate| T_slot C``, and the OFDM symbol period and the
 pulsed PRI are then solved so their coherent processing intervals MATCH the
-FMCW frame's. All three therefore share one velocity bin width and put the same
+FMCW frame's. The rate is written onto the composed row as the frozen-weight
+synthesis kernels consume it; the propagation replay publishes none. All three therefore share one velocity bin width and put the same
 target on the same signed bin ``+q``, which is the sharpest available form of
 the cross-waveform criterion.
 
@@ -130,29 +131,6 @@ def site_position_m(round_trip_m: float = ROUND_TRIP_M) -> tuple[float, float, f
 SITE_POSITION_M = site_position_m()
 SITE_STABLE_ID = geo.SITE_P_STABLE_ID
 
-
-def closing_velocity_m_per_s(
-    site: tuple[float, float, float] = SITE_POSITION_M, delay_rate: float = DELAY_RATE
-) -> tuple[float, float, float]:
-    """The site velocity that produces exactly ``delay_rate``, in closed form.
-
-    The rate is linear in the velocity, so evaluating the fixture's own float64
-    rate formula at unit speed along ``-y`` and dividing is exact. ``-y`` is
-    chosen because the site sits at ``+y`` between two endpoints on the ``x``
-    axis, so moving along ``-y`` shortens BOTH legs and the target is
-    unambiguously closing - which is the only geometry in which a Doppler SIGN
-    test cannot pass by accident.
-    """
-
-    direction = (0.0, -1.0, 0.0)
-    unit = geo.leg_delay_rate_s_per_s(site, geo.TX_A_POSITION_M, "los", direction) + geo.leg_delay_rate_s_per_s(
-        site, geo.RX_A_POSITION_M, "los", direction
-    )
-    scale = float(delay_rate) / unit
-    return tuple(scale * value for value in direction)
-
-
-SITE_VELOCITY_M_PER_S = closing_velocity_m_per_s()
 
 #: The frame-invariant name of the one row every assertion is made about: the
 #: reflection-free round trip ``TX_A -> site -> RX_A``.
@@ -257,29 +235,18 @@ def isolate(batch, row: int):
     return replace(batch, row_valid=combined.contiguous())
 
 
-def moving_frame(spike, velocity=None):
-    """One composed frame carrying the exact ``delay_rate`` of ``velocity``.
+def moving_frame(spike, delay_rate: float = DELAY_RATE):
+    """One composed frame whose every row carries ``delay_rate``, s/s.
 
-    The rate reaches the batch through a forward-AD tangent on the site
-    position, which is the production seam: a rate rebuilt from Python values
-    would be a number this fixture invented rather than one the propagation
-    consumer produced.
+    The composer publishes no rate; the frozen-weight synthesis kernels take
+    one as an input, and this is where the fixture's closed-form rate is
+    written onto the rows. Only the isolated target row is ever read, so one
+    value for every row is the honest minimum.
     """
 
-    import torch.autograd.forward_ad as forward_ad
-
-    positions = spike.site_tensor()
-    tangent = torch.tensor(
-        [SITE_VELOCITY_M_PER_S if velocity is None else velocity], dtype=torch.float32, device=positions.device
-    )
-    with forward_ad.dual_level():
-        composed, _, _ = spike.frame(forward_ad.make_dual(positions, tangent), ad_mode="jvp")
-        return replace(
-            composed,
-            total_delay_s=composed.total_delay_s.clone(),
-            delay_rate=composed.delay_rate.clone(),
-            complex_transfer_ref=composed.complex_transfer_ref.clone(),
-        )
+    composed, _, _ = spike.frame()
+    rate = torch.full((composed.path_count,), float(delay_rate), dtype=torch.float32, device=composed.device)
+    return replace(composed, delay_rate=rate)
 
 
 __all__ = [
@@ -296,11 +263,9 @@ __all__ = [
     "ROUND_TRIP_M",
     "SITE_POSITION_M",
     "SITE_STABLE_ID",
-    "SITE_VELOCITY_M_PER_S",
     "TARGET_KEY",
     "TAU_S",
     "array_spec",
-    "closing_velocity_m_per_s",
     "fmcw_spec",
     "isolate",
     "make_spike",

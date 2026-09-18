@@ -2127,7 +2127,7 @@ Phase 8 验收矩阵（每行一条标准，一个测试，一个实测数）：
 | 6 | processing 不改变 propagation row identity 或 AD contracts | `test_phase8_clutter_components.py::test_every_component_export_shares_one_topology_object`（`is`）、`test_composing_is_unaffected_by_building_an_index`（bitwise）；`tests/processing/test_cube.py::test_a_dead_row_reaches_the_cube_as_an_exact_zero` | 四个分类导出共享**同一** `RadarPathTopology` 对象；建立 index 前后合成帧 **bitwise** 相同；processing 包内不读 row identity、row order 或 `row_valid` |
 | 7 | Channel capability/API/ABI 中无 Radar processing 字段 | `test_phase8_frozen_dsp_surface.py::test_the_channel_capability_record_publishes_exactly_these_fields`（集合相等）、`test_no_processing_vocabulary_appears_anywhere_in_the_channel_capabilities`、`test_the_native_binding_manifest_carries_no_processing_symbol`；`test_phase6_config_boundary.py` 的 `REEVALUATION_KEYWORDS` 相等断言 | live record **25** 个字段，逐字相等；27 条 processing 词汇在 consumer record 与包级 `capabilities()` 的全部嵌套层级命中 **0** 次；`ci/native-binding-manifest.json` **未改动** |
 | 8 | full pipeline latency 和 memory 满足冻结预算 | `test_phase8_pipeline_budget.py` 六条 | latency **2.23 ms**，冻结于 `x1.30 = 2.90 ms`；峰值增量 **1.13 MB**，冻结于 `x1.25 = 1.41 MB`；主机观测恰 **1**（point cloud 的 `argwhere`）；`torch.fft` 分派恰 **7**；每帧仿真 **3.880 ms**（base commit `4bb059a` 同场测得 **3.911 ms**，比值 0.992）；wideband 每条 leg 恰 1 次 D2H、1 次 sync，`F in {1,8,64}` 不变；join launches `1 + F` |
-| 9 | processing facade 外无散落的 production Torch DSP，例外清单未扩张 | `tests/processing/test_cutover.py::test_no_dsp_expression_survives_outside_the_processing_facade`；`test_phase8_frozen_dsp_surface.py::test_the_dsp_exception_list_has_not_expanded_into_physics_or_synthesis` 与 `test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive` | facade 外 **0** 处；例外清单恰 **1** 项（`solvers/solver_dirichlet.py`，逆变换合成信号，且被断言仍在调用且不含正变换）；`RADAR_FACADE_TORCH_PHYSICS` 五项未增；冻结 vendor DSP 清单四格逐格相等 |
+| 9 | processing facade 外无散落的 production Torch DSP，例外清单未扩张 | `tests/processing/test_cutover.py::test_no_dsp_expression_survives_outside_the_processing_facade`；`test_phase8_frozen_dsp_surface.py::test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive` | facade 外 **0** 处；例外清单恰 **1** 项（`solvers/solver_dirichlet.py`，逆变换合成信号，且被断言仍在调用且不含正变换）；`RADAR_FACADE_TORCH_PHYSICS` 五项未增；冻结 vendor DSP 清单四格逐格相等 |
 
 Phase 8 记录的偏差、延后项与未付账（不在本 phase 修补）：
 
@@ -2176,7 +2176,7 @@ Phase 8 记录的偏差、延后项与未付账（不在本 phase 修补）：
     因子。计数类钉子（主机观测、分派数、D2H、sync、launch）与设备无关。
 12. **`ca_cfar_2d_fast` 的 "~100x faster" 文档声明经实测为假并已删除。** CUDA 上
     4.1-6.1x，CPU 上 **更慢**（一张图 0.72x，八张图 0.38x）。~100x 与 CPU 上
-    `ca_cfar_fast`/`os_cfar` 的比值（96-112x）几乎相同——很可能是与错误的探测器
+    `ca_cfar`/`os_cfar` 的比值（96-112x）几乎相同——很可能是与错误的探测器
     比较得来的。
 13. **cutover 修正了五个真实缺陷，且都是公共名上的行为变更。** sink-major 的
     steering 表乘 tx-major 的 cube；FFT 角度估计从不调和 beat 共轭，把每个目标报在

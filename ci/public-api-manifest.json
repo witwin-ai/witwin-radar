@@ -48,9 +48,6 @@
       "StructureTargets": "witwin.radar.targets.StructureTargets",
       "processing": "witwin.radar.processing"
     },
-    "witwin.radar.capabilities": {
-      "capabilities": "witwin.radar.capabilities.capabilities"
-    },
     "witwin.radar.deployment": {
       "build_info": "witwin.radar.deployment.build_info",
       "require_supported_runtime": "witwin.radar.deployment.require_supported_runtime",
@@ -71,7 +68,7 @@
       "beam_cube": "witwin.radar.processing.angle.beam_cube",
       "ca_cfar": "witwin.radar.processing.detection.ca_cfar",
       "ca_cfar_1d": "witwin.radar.processing.detection.ca_cfar_1d",
-      "ca_cfar_fast": "witwin.radar.processing.detection.ca_cfar_fast",
+      "combine_coherent": "witwin.radar.processing.detection.combine_coherent",
       "combine_incoherent": "witwin.radar.processing.detection.combine_incoherent",
       "conventional_steering": "witwin.radar.processing.angle.conventional_steering",
       "fft2_aoa": "witwin.radar.processing.angle.fft2_aoa",
@@ -88,7 +85,7 @@
       "tdm_compensate": "witwin.radar.processing.angle.tdm_compensate",
       "lag_axis": "witwin.radar.processing.range_doppler.lag_axis",
       "matched_filter": "witwin.radar.processing.range_doppler.matched_filter",
-      "pulse_samples": "witwin.radar.processing.range_doppler.pulse_samples",
+      "pulse_samples": "witwin.radar.processing.signal.pulse_samples",
       "SlowTimeSignal": "witwin.radar.processing.range_doppler.SlowTimeSignal"
     },
     "witwin.radar.scattering": {
@@ -110,10 +107,7 @@
       "SlowTimeMode": "witwin.radar.synthesis.assembly.SlowTimeMode",
       "SynthesisPathBatch": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
       "SynthesisResult": "witwin.radar.synthesis.assembly.SynthesisResult",
-      "select_component": "witwin.radar.synthesis.assembly.select_component",
-      "synthesize_fmcw": "witwin.radar.synthesis.fmcw.synthesize_fmcw",
-      "synthesize_ofdm": "witwin.radar.synthesis.ofdm.synthesize_ofdm",
-      "synthesize_pulsed": "witwin.radar.synthesis.pulsed.synthesize_pulsed"
+      "select_component": "witwin.radar.synthesis.assembly.select_component"
     }
   },
   "signature_snapshot": "ci/public-api-snapshot.json",
@@ -122,12 +116,8 @@
       "primary_caller": "examples/single_point.py",
       "reason": "configured radar system entry"
     },
-    "witwin.radar.capabilities": {
-      "primary_caller": "tests/test_phase10_diagnostics.py",
-      "reason": "import-safe capability reporting"
-    },
     "witwin.radar.deployment": {
-      "primary_caller": "tests/test_phase10_diagnostics.py",
+      "primary_caller": "tests/test_native_diagnostics.py",
       "reason": "runtime and native identity reporting"
     },
     "witwin.radar.processing": {
@@ -135,15 +125,15 @@
       "reason": "typed signal products and processing algorithms"
     },
     "witwin.radar.scattering": {
-      "primary_caller": "tests/test_phase7_scatter_response_kernel.py",
+      "primary_caller": "tests/test_scatter_response_kernel.py",
       "reason": "declared target scatter response"
     },
     "witwin.radar.simulation": {
-      "primary_caller": "tests/test_phase11_simulate_entry.py",
+      "primary_caller": "tests/test_simulate_entry.py",
       "reason": "phase-centre identity for a radar on a moving structure"
     },
     "witwin.radar.smpl": {
-      "primary_caller": "tests/test_phase7_moving_structures.py",
+      "primary_caller": "tests/test_moving_structures.py",
       "reason": "SMPL authoring for Core scenes"
     },
     "witwin.radar.synthesis": {

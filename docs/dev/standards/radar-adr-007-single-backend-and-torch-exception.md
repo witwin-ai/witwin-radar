@@ -116,8 +116,8 @@ The residual surface was FROZEN by test:
 `test_the_residual_torch_path_surface_is_frozen` enumerated exactly the names
 `solvers/common.py` could define, so "recorded deviation" could not quietly
 become "growing exception". That test is gone with the module it froze, and
-`tests/test_phase5_removed_entry_points.py` now asserts the stronger claim that
-`witwin/radar/solvers/` does not exist.
+`tests/test_public_api_snapshot.py` freezes the public surface the module is
+absent from.
 
 ### No finite differences in production
 
@@ -131,14 +131,14 @@ line-of-sight chain and was being read as a statement about all of it.
 
 - **The join's own AD**: float64 Torch oracle, itself validated by float64
   central differences before anything is compared against it, then production
-  float32 in both modes. `tests/test_phase5_two_way_join_ad.py`.
+  float32 in both modes. `tests/test_two_way_join_ad.py`.
 - **Line-of-sight legs, end to end**: against the independent float64 chain in
   `tests/support/reference_chain.py`, both modes.
-  `tests/test_phase4_spike_e2e.py`.
+  `tests/test_single_site_end_to_end.py`.
 - **Reflection legs, end to end**: against a finite difference of the
   PRODUCTION chain at perturbed positions, both modes, with the loss weighted
   to zero on the one composed row that joins two line-of-sight legs so the
-  whole gradient is the reflection rows'. `tests/test_phase5_reflection_ad.py`.
+  whole gradient is the reflection rows'. `tests/test_reflection_ad.py`.
   A reimplemented oracle is not available here and should not be built: it
   would duplicate Channel's lossy-dielectric Fresnel coefficient, which is a
   Channel/RayD numerical owner.
@@ -158,16 +158,15 @@ pass, which is exactly the wrong direction.
 
 ## Acceptance evidence
 
-- `tests/test_phase4_import_boundary.py::test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar`
+- `tests/test_import_boundary.py::test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar`
   (the strict process-global assertion)
-- `tests/test_phase4_import_boundary.py::test_the_synthesis_hot_loop_is_native_not_torch`
-- `tests/test_phase4_import_boundary.py::test_the_two_way_join_hot_loop_is_native_not_torch`
-- `tests/test_phase4_import_boundary.py::test_no_drjit_reference_of_any_kind_in_the_new_modules`
-- `tests/test_phase4_import_boundary.py::test_the_spike_adds_no_drjit_rayd_or_channel_internals`
-- `tests/test_phase4_two_way.py::test_a_geometry_dependent_response_is_refused`
-- `tests/test_phase5_removed_entry_points.py` (removed names raise and name
-  their replacement; the residual Torch surface is frozen; the packaging
-  metadata no longer pulls in Dr.Jit)
-- `tests/test_phase5_reflection_ad.py` (reverse and forward mode through a
+- `tests/test_import_boundary.py::test_the_synthesis_hot_loop_is_native_not_torch`
+- `tests/test_import_boundary.py::test_the_two_way_join_hot_loop_is_native_not_torch`
+- `tests/test_import_boundary.py::test_no_drjit_reference_of_any_kind_in_the_new_modules`
+- `tests/test_import_boundary.py::test_the_spike_adds_no_drjit_rayd_or_channel_internals`
+- `tests/test_two_way_composer.py::test_a_geometry_dependent_response_is_refused`
+- `tests/test_public_api_snapshot.py` (the public surface is frozen; the
+  packaging metadata no longer pulls in Dr.Jit)
+- `tests/test_reflection_ad.py` (reverse and forward mode through a
   reflection leg against finite differences of the production chain, with a
   term-level control that isolates the transfer from the delay)

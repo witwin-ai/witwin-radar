@@ -25,25 +25,17 @@ the numbers mean, not merely how they are spelled:
   moving-target test here is therefore also the statement that the kinematics
   seam composes with the production entry.
 
-Coverage that did NOT survive the route, recorded rather than quietly dropped:
-``sigproc``'s ``topk`` detector has no owner in ``witwin.radar.processing``, so
-the two ``topk`` SNR tests became one comparison between the two detectors that
-DO exist, ``ca_cfar_fast`` and ``os_cfar``.
+There is no ``topk`` detector in ``witwin.radar.processing``, so the SNR
+comparison is between the two detectors that DO exist, ``ca_cfar`` and
+``os_cfar``.
 """
 
 import numpy as np
 import pytest
 import torch
-from conftest import FAST_CONFIG, STANDARD_CONFIG, make_scene_radar_or_skip, simulate_point_targets
+from conftest import VALIDATION_FAST_CONFIG, VALIDATION_FULL_CONFIG, scene_radar, simulate_point_targets
 
 pytestmark = pytest.mark.gpu
-
-# Validation config: adc_start_time=0 for clean signal, enough chirps for Doppler
-# ``num_doppler_bins`` used to be restated here beside ``chirp_per_frame``. The
-# loader refuses it now, and it was always the same number: a Doppler bin count
-# IS the chirp count, read back from ``radar.waveform.chirps_per_frame``.
-_VFAST = {**FAST_CONFIG, "adc_start_time": 0, "chirp_per_frame": 32}
-_VFULL = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 
 def _local(distance, *, x=0.0, y=0.0):
@@ -74,7 +66,7 @@ class TestStaticTarget:
     def test_range_accuracy(self, distance):
         """Detected range should match target distance within +/-2 range bins."""
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(distance)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
@@ -93,14 +85,14 @@ class TestStaticTarget:
         here rather than assumed by every test above.
         """
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(3.0)])
         frame.assert_axes_describe_the_cube()
 
     def test_broadside_target_angle(self):
         """A target dead ahead lands near the boresight axis in the point cloud."""
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(3.0)])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
@@ -112,7 +104,7 @@ class TestStaticTarget:
     def test_range_doppler_map_peak(self):
         """The RD map peaks at the target's range bin."""
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         distance = 3.0
         frame = simulate_point_targets(radar, [_local(distance)])
 
@@ -135,7 +127,7 @@ class TestStaticTarget:
         measurable at all.
         """
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(3.0)])
 
         chirps = frame.cube
@@ -153,7 +145,7 @@ class TestMovingTarget:
     def test_velocity_accuracy(self):
         """An approaching target produces the Doppler its closing speed implies."""
 
-        radar = make_scene_radar_or_skip(_VFULL)
+        radar = scene_radar(VALIDATION_FULL_CONFIG)
         speed = 1.5  # m/s, closing: local +z shortens the boresight range
         frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
         cloud = frame.point_cloud(positive_velocity_only=False)
@@ -171,7 +163,7 @@ class TestMovingTarget:
         inverted it would report the same |v| for both directions.
         """
 
-        radar = make_scene_radar_or_skip(_VFULL)
+        radar = scene_radar(VALIDATION_FULL_CONFIG)
         speed = 1.5
         closing = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
         receding = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, -speed))])
@@ -185,7 +177,7 @@ class TestMovingTarget:
     def test_rd_map_shows_doppler_shift(self):
         """A moving target moves the RD peak off the zero-Doppler bin."""
 
-        radar = make_scene_radar_or_skip(_VFULL)
+        radar = scene_radar(VALIDATION_FULL_CONFIG)
         speed = 2.0
         frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, speed))])
 
@@ -210,7 +202,7 @@ class TestMovingTargetAngle:
 
     @pytest.mark.parametrize("closing_speed", [-1.5, 1.5])
     def test_moving_broadside_target_stays_broadside(self, closing_speed):
-        radar = make_scene_radar_or_skip(_VFULL)
+        radar = scene_radar(VALIDATION_FULL_CONFIG)
         frame = simulate_point_targets(radar, [(_local(3.0), (0.0, 0.0, closing_speed))])
         cloud = frame.point_cloud(positive_velocity_only=False)
 
@@ -248,7 +240,7 @@ class TestEnergyScale:
         return float(cloud.energy.max())
 
     def test_a_hundredfold_cross_section_is_twenty_decibels(self):
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         low = self._peak_energy(radar, sigma_m2=self.SMALL_RCS_M2)
         high = self._peak_energy(radar, sigma_m2=self.LARGE_RCS_M2)
         assert high - low == pytest.approx(20.0, abs=0.1), f"sigma x100 changed the peak by {high - low:.2f} dB"
@@ -262,7 +254,7 @@ class TestEnergyScale:
         pair of cross sections.
         """
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         levels = []
         for sigma in (1.0, 100.0):
             frame = simulate_point_targets(radar, [_local(3.0)], sigma_m2=sigma)
@@ -270,26 +262,24 @@ class TestEnergyScale:
         assert 20.0 * np.log10(levels[1] / levels[0]) == pytest.approx(20.0, abs=1e-3)
 
     def test_the_two_detectors_report_the_same_scale_and_the_same_angle(self):
-        """``ca_cfar_fast`` and ``os_cfar`` select different cells, not different
+        """``ca_cfar`` and ``os_cfar`` select different cells, not different
         physics.
 
-        This replaces ``sigproc``'s CFAR-versus-topk pair: ``topk`` has no owner
-        in ``witwin.radar.processing``, and the claim those two tests were making
-        - that the detector choice does not change the level or the angle - is
-        exactly what these two detectors can say.
+        The claim is that the detector choice does not change the level or the
+        angle, which is exactly what these two detectors can say.
         """
 
-        from witwin.radar.processing import ca_cfar_fast, os_cfar, point_cloud
+        from witwin.radar.processing import ca_cfar, os_cfar, point_cloud
 
-        radar = make_scene_radar_or_skip(_VFAST)
+        radar = scene_radar(VALIDATION_FAST_CONFIG)
         frame = simulate_point_targets(radar, [_local(3.0)])
         rd = frame.range_doppler()
         combined = rd.data.reshape(frame.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
 
         clouds = {}
-        for name, detector in (("ca", ca_cfar_fast), ("os", os_cfar)):
+        for name, detector in (("ca", ca_cfar), ("os", os_cfar)):
             cells = detector(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
-            clouds[name] = point_cloud(cells, rd, frame.axes, frame.array, max_points=64, positive_velocity_only=False)
+            clouds[name] = point_cloud(cells, rd, frame.array, max_points=64, positive_velocity_only=False)
 
         peaks = {name: _strongest(cloud) for name, cloud in clouds.items()}
         assert abs(peaks["ca"][4] - peaks["os"][4]) < 30.0, peaks

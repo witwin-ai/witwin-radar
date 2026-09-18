@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
-from .frontend import Adc, Agc, FrontendSpec, Noise
-from .policy import refuse_derivative
+from .frontend import Adc, Agc, FrontendChain, FrontendSpec, Noise
+from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, resolve_device
 from .sensors import Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_ENERGY,
@@ -45,6 +45,7 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .paths import RadarPathBatch
     from .simulation import Motion, Paths, Result
     from .synthesis import SynthesisResult
     from .targets import PointTargets, StructureTargets
@@ -53,8 +54,6 @@ WAVEFORM_FMCW = "fmcw"
 WAVEFORM_OFDM = "ofdm"
 WAVEFORM_PULSED = "pulsed"
 WAVEFORM_KINDS = (WAVEFORM_FMCW, WAVEFORM_OFDM, WAVEFORM_PULSED)
-
-SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
 #: What ``antenna_unit`` may say. Half-wavelength offsets are the convention
 #: every TI-style configuration uses and the one the array keeps internally:
@@ -302,7 +301,7 @@ Waveform = Fmcw | Ofdm | Pulsed
 
 @dataclass(frozen=True, slots=True)
 class SensorConfig:
-    """The array, its antenna pattern, and its transmit power."""
+    """The array and its element pattern."""
 
     array: SensorArraySpec
     pattern: Pattern
@@ -358,21 +357,15 @@ class RadarSystemConfig:
     def waveform_spec(self, *, carrier_hz: float = 0.0):
         """The SI synthesis spec for whichever waveform this configuration is.
 
-        Dispatch is a match on a STORED discriminator, and an unknown kind is a
-        hard error rather than a fallback: a waveform with no owner has no
-        physics, and returning something plausible would be worse than failing.
+        ``__post_init__`` already refused any kind outside ``WAVEFORM_KINDS``,
+        so the only branch here is the FMCW spec's extra array arguments.
         """
 
         array = self.sensors.array
         reference = self.propagation.reference_frequency_hz
         if self.waveform.kind == WAVEFORM_FMCW:
             return self.waveform.to_spec(carrier=reference, num_tx=array.num_tx, num_rx=array.num_rx, offset=carrier_hz)
-        if self.waveform.kind in (WAVEFORM_OFDM, WAVEFORM_PULSED):
-            return self.waveform.to_spec(carrier=reference, offset=carrier_hz)
-        raise ValueError(
-            f"no synthesis owner for waveform kind {self.waveform.kind!r}; a "
-            "waveform without an owner has no physics and this dispatch has no fallback"
-        )
+        return self.waveform.to_spec(carrier=reference, offset=carrier_hz)
 
     def with_propagation(self, *, components=None, max_depth: int | None = None) -> RadarSystemConfig:
         """A copy whose propagation block carries these two knobs.
@@ -439,10 +432,9 @@ def vec3_tensor(value, *, name: str) -> torch.Tensor:
     """Coerce a pose vector to a CPU float32 tensor of shape (3,).
 
     A tensor carrying a gradient or a forward tangent is REFUSED rather than
-    detached. Detaching is what this used to do, and it is the failure mode
-    :mod:`witwin.radar.policy` exists to prevent: every element position is
-    derived from the pose, so a severed tape left a caller who had marked
-    ``position`` reading ``grad is None`` with nothing having said why.
+    detached: every element position is derived from the pose, so a detach
+    here would sever the tape and leave a caller who marked ``position``
+    reading ``grad is None`` with nothing having said why.
     """
 
     refuse_derivative(
@@ -572,10 +564,8 @@ class Radar:
             raise ValueError(f"Radar.seed must be a non-negative int, got {self.seed!r}")
         if not isinstance(self.pattern, Pattern):
             raise TypeError(f"Radar.pattern must be a Pattern, got {type(self.pattern).__name__}")
-        if self.waveform.kind not in WAVEFORM_KINDS:
-            raise ValueError(f"Radar.waveform must be Fmcw, Ofdm or Pulsed, got {type(self.waveform).__name__}")
 
-        set_(self, "device", _resolve_device(self.device))
+        set_(self, "device", resolve_device(self.device, owner="Radar"))
         set_(self, "tx", _elements(self.tx, name="Radar.tx"))
         set_(self, "rx", _elements(self.rx, name="Radar.rx"))
 
@@ -638,8 +628,6 @@ class Radar:
     def _build_frontend_chain(self):
         if self.system_config.frontend is None:
             return None
-        from .frontend import FrontendChain
-
         return FrontendChain(self.system_config.frontend)
 
     def _place_antennas(self) -> None:
@@ -663,11 +651,8 @@ class Radar:
         if torch.linalg.norm(torch.cross(forward, up, dim=0)) <= 1e-12:
             raise ValueError("Radar.up must not be collinear with the viewing direction.")
 
-        forward = forward / torch.linalg.norm(forward)
-        right = torch.cross(forward, up, dim=0)
-        right = right / torch.linalg.norm(right)
-        true_up = torch.cross(right, forward, dim=0)
-        true_up = true_up / torch.linalg.norm(true_up)
+        _, world_from_local = self._world_from_local_matrix(device="cpu", dtype=torch.float32)
+        right, true_up, forward = world_from_local[:, 0], world_from_local[:, 1], -world_from_local[:, 2]
 
         if self.polarization == "up":
             vector = true_up
@@ -694,7 +679,7 @@ class Radar:
 
         array = self.system_config.sensors.array
         tx_local, rx_local = array.local_offsets_m(device=self.device)
-        world_from_local = torch.stack((right, true_up, -forward), dim=1).to(device=self.device)
+        world_from_local = world_from_local.to(device=self.device)
         origin = position.to(device=self.device)
         set_(self, "tx_pos", (tx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
         set_(self, "rx_pos", (rx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
@@ -779,21 +764,6 @@ class Radar:
         true_up = true_up / torch.linalg.norm(true_up)
         return position, torch.stack((right, true_up, -forward), dim=1)
 
-    def _world_from_local_points(self, points: torch.Tensor) -> torch.Tensor:
-        position, world_from_local = self._world_from_local_matrix(device=points.device, dtype=points.dtype)
-        return points @ world_from_local.transpose(0, 1) + position
-
-    def _world_from_local_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
-        _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
-        return vectors @ world_from_local.transpose(0, 1)
-
-    def _local_from_world_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
-        _, world_from_local = self._world_from_local_matrix(device=vectors.device, dtype=vectors.dtype)
-        return vectors @ world_from_local
-
-    def _evaluate_antenna_pattern_xy(self, x_angles_deg: torch.Tensor, y_angles_deg: torch.Tensor) -> torch.Tensor:
-        return self.pattern.evaluate_xy(x_angles_deg, y_angles_deg)
-
     # -- instrument half ---------------------------------------------------
 
     def _apply_signal_models(self, signal: torch.Tensor, *, phase_in_signal: bool = False) -> torch.Tensor:
@@ -803,14 +773,13 @@ class Radar:
             return signal
         return self.frontend.apply(signal, phase_in_signal=phase_in_signal).signal
 
-    def _synthesize(self, paths, *, slow_time_mode, spec=None) -> SynthesisResult:
+    def _synthesize(self, paths: RadarPathBatch, *, slow_time_mode, spec=None) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.
 
         Dispatch is a dict lookup on the STORED ``waveform.kind``. It is not a
         ``try``/``except``, not a capability probe, and not an inference from a
-        ``slope``: a kind with no owner is a hard error, because a waveform
-        without an owner has no physics and returning a plausible cube would be
-        worse than failing.
+        ``slope``: ``RadarSystemConfig`` refused every kind without an owner
+        at construction, so the lookup cannot miss.
 
         ``slow_time_mode`` has no default for the reason it has none anywhere
         else: only the caller knows whether it froze the weight for the frame or
@@ -818,26 +787,18 @@ class Radar:
         wrong answer instead of a refusal.
         """
 
-        from .synthesis import SynthesisPathBatch, SynthesisResult, synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
+        from .synthesis import SynthesisPathBatch, SynthesisResult
+        from .synthesis.fmcw import synthesize_fmcw
+        from .synthesis.ofdm import synthesize_ofdm
+        from .synthesis.pulsed import synthesize_pulsed
 
         owners = {
             WAVEFORM_FMCW: (synthesize_fmcw, SynthesisResult.from_fmcw),
             WAVEFORM_OFDM: (synthesize_ofdm, SynthesisResult.from_ofdm),
             WAVEFORM_PULSED: (synthesize_pulsed, SynthesisResult.from_pulsed),
         }
-        kind = self.system_config.kind
-        if kind not in owners:
-            raise ValueError(
-                f"no synthesis owner for waveform kind {kind!r}; the supported "
-                f"kinds are {sorted(owners)}. This dispatch has no fallback: a "
-                "waveform without an owner has no physics."
-            )
-        batch = (
-            paths
-            if isinstance(paths, SynthesisPathBatch)
-            else SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=slow_time_mode)
-        )
-        synthesize, build_result = owners[kind]
+        batch = SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=slow_time_mode)
+        synthesize, build_result = owners[self.system_config.kind]
         spec = self.system_config.waveform_spec() if spec is None else spec
         return build_result(synthesize(batch, spec), spec)
 
@@ -991,16 +952,6 @@ class Radar:
         }
 
 
-def _resolve_device(device: Any) -> torch.device:
-    resolved = device if isinstance(device, torch.device) else torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(
-            "Radar defaults to CUDA, but torch.cuda.is_available() is False. "
-            "Install a CUDA-enabled PyTorch build and use device='cuda'."
-        )
-    return resolved
-
-
 # ---------------------------------------------------------------------------
 # The flat configuration file format
 # ---------------------------------------------------------------------------
@@ -1023,24 +974,11 @@ _FLAT_REQUIRED = (
 
 _FLAT_OPTIONAL = ("antenna_pattern", "output_domain")
 
-#: Keys the flat form used to require and nothing ever read. They described a
-#: processing grid the simulator does not use and the processing layer derives
-#: from the waveform spec, so carrying them made a caller believe a block was
-#: configured. They are named in the refusal rather than dropped.
-_FLAT_UNCONSUMED = ("frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins")
-
 
 def _radar_from_flat_config(config: Mapping[str, Any], overrides: Mapping[str, Any]) -> Radar:
     missing = [key for key in _FLAT_REQUIRED if key not in config]
     if missing:
         raise ValueError(f"Radar config is missing required keys: {', '.join(missing)}")
-    unconsumed = sorted(set(config) & set(_FLAT_UNCONSUMED))
-    if unconsumed:
-        raise ValueError(
-            f"Radar config has keys nothing consumes: {', '.join(unconsumed)}. They described a processing grid; "
-            "the range, Doppler and angle bin counts come from the waveform spec, and the frame rate is the "
-            "caller's own scheduling number. Drop them."
-        )
     unknown = sorted(set(config) - set(_FLAT_REQUIRED) - set(_FLAT_OPTIONAL))
     if unknown:
         raise ValueError(

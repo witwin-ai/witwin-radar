@@ -23,15 +23,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def pytest_addoption(parser):
-    try:
-        parser.addoption(
-            "--gpu",
-            action="store_true",
-            default=False,
-            help="Run GPU-only tests (solver cross-validation, end-to-end validation)",
-        )
-    except ValueError:
-        pass
+    parser.addoption(
+        "--gpu",
+        action="store_true",
+        default=False,
+        help="Run GPU-only tests (solver cross-validation, end-to-end validation)",
+    )
 
 
 def pytest_configure(config):
@@ -82,6 +79,11 @@ STANDARD_CONFIG = {
 }
 
 FAST_CONFIG = {**STANDARD_CONFIG, "chirp_per_frame": 32}
+
+#: The validation suite's configs: ``adc_start_time=0`` for a clean signal,
+#: and enough chirps for Doppler.
+VALIDATION_FAST_CONFIG = {**FAST_CONFIG, "adc_start_time": 0}
+VALIDATION_FULL_CONFIG = {**STANDARD_CONFIG, "adc_start_time": 0}
 
 MINIMAL_CONFIG = {
     "num_tx": 1,
@@ -141,14 +143,12 @@ def make_processing_axes(config=None, *, doppler_bins: int | None = None):
 # ---------------------------------------------------------------------------
 
 
-class MockRadar:
+class RadarFixture:
     """A CPU radar and the processing axes its waveform describes.
 
-    It stood in for a ``Radar`` back when constructing one needed a backend.
-    A ``Radar`` is now a plain frozen record that builds on ``device="cpu"``,
-    so this holds the real thing and adds only what a formula test reads: the
-    axes record, and the element offsets in metres rather than in the half
-    wavelengths the array stores.
+    It holds a real ``Radar`` built on ``device="cpu"`` and adds only what a
+    formula test reads: the axes record, and the element offsets in metres
+    rather than in the half wavelengths the array stores.
     """
 
     def __init__(self, config=None):
@@ -202,49 +202,30 @@ def minimal_config():
 
 
 @pytest.fixture
-def mock_radar():
-    return MockRadar(STANDARD_CONFIG)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-#
-# ``mag_correlation``, ``complex_correlation`` and ``peak_ratio`` stood here
-# until Phase 11. All three were similarity scores between two Dirichlet
-# entry points - "the fast route still correlates with the slow one" - and the
-# only files that called them were the cross-check tests deleted with that
-# route. The scene-driven tests assert absolute quantities against closed
-# forms instead of a correlation between two implementations, so there is
-# nothing for them to score.
+def radar_fixture():
+    return RadarFixture(STANDARD_CONFIG)
 
 
 # ---------------------------------------------------------------------------
 # The scene-driven point-target fixtures
 # ---------------------------------------------------------------------------
 #
-# ``make_static_interpolator`` and ``make_moving_interpolator`` used to live
-# just above and had two consumers between them, ``tests/solvers/`` and
-# ``tests/validation/``. Those tests now drive
-# ``Radar.simulate``, which reads a Core world rather than a callable, so the
-# moving fixture is not "ported" - it is replaced by a declaration of where the
-# targets are and how fast they move.
+# The validation tests drive ``Radar.simulate``, which reads a Core world, so a
+# moving target is a declaration of where it is and how fast it moves.
 #
 # Two conventions are fixed here once so that no validation test restates them:
 #
 # * **The radar looks along world +x** with the default up. Targets are still
 #   authored in the radar's LOCAL frame - ``[0, 0, -d]`` is still "d metres
-#   straight ahead" - and ``Radar._world_from_local_points`` does the transform,
-#   so the test text did not have to change and the production pose transform is
-#   on the path rather than mirrored.
+#   straight ahead" - and ``support.pose.world_from_local_points`` applies the
+#   radar's own pose frame, so the production pose transform is on the path
+#   rather than mirrored.
 #
-#   This pose was originally forced: the endpoint polarization was a fixed world
-#   vector, and a boresight parallel to it publishes an exactly ZERO transport,
-#   which no tolerance recovers. ``Radar.polarization`` now defaults to ``"up"``,
-#   which is derived from the pose and therefore transverse by construction, so
-#   that null is unreachable. The convention stays because every expected number
-#   in ``tests/validation`` was measured against it, and a suite-wide pose change
-#   is a physics change, not a migration.
+#   ``Radar.polarization`` defaults to ``"up"``, derived from the pose and
+#   therefore transverse by construction, so no boresight can publish the
+#   exactly ZERO transport a fixed world polarization vector would. The
+#   convention stays because every expected number in ``tests/validation`` was
+#   measured against it, and a suite-wide pose change is a physics change.
 #
 # * Moving targets use authored trajectories through the public scene entry.
 #   These DSP tests explicitly select chirp-frozen motion to isolate slow-time
@@ -257,24 +238,21 @@ SCENE_DRIVEN_LOOK_AT_M = (1.0, 0.0, 0.0)
 SCENE_DRIVEN_UP = (0.0, 1.0, 0.0)
 
 
-def make_scene_radar_or_skip(config, **pose):
+def scene_radar(config, **pose):
     """A :class:`Radar` posed along :data:`SCENE_DRIVEN_LOOK_AT_M`.
 
-    Same skip contract as :func:`make_radar_or_skip`; the only difference is the
-    pose, and the pose is the whole reason this exists rather than a keyword on
-    the other one - see the note above about the polarization null.
+    The pose is the whole reason this exists rather than a call to
+    ``Radar.from_dict`` at each site - see the note above about the
+    polarization null.
     """
 
     from witwin.radar import Radar
 
     options = {"position": (0.0, 0.0, 0.0), "look_at": SCENE_DRIVEN_LOOK_AT_M, "up": SCENE_DRIVEN_UP}
     options.update(pose)
-    try:
-        if isinstance(config, Radar):
-            return config.replace(**options)
-        return Radar.from_dict(dict(config), **options)
-    except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"radar runtime unavailable: {exc}")
+    if isinstance(config, Radar):
+        return config.replace(**options)
+    return Radar.from_dict(dict(config), **options)
 
 
 def empty_world():
@@ -345,12 +323,12 @@ class PointTargetFrame:
         return rd.data.reshape(self.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
 
     def point_cloud(self, *, window="hann", pfa=1e-2, max_points=64, **options):
-        from witwin.radar.processing import ca_cfar_fast, point_cloud
+        from witwin.radar.processing import ca_cfar, point_cloud
 
         rd = self.range_doppler(window=window)
         combined = rd.data.reshape(self.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-        cells = ca_cfar_fast(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa)
-        return point_cloud(cells, rd, self.axes, self.array, max_points=max_points, **options)
+        cells = ca_cfar(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa)
+        return point_cloud(cells, rd, self.array, max_points=max_points, **options)
 
 
 def _target_tensors(radar, targets):
@@ -390,12 +368,14 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
     Returns a :class:`PointTargetFrame`.
     """
 
+    from support.pose import world_from_local_points, world_from_local_vectors
+
     from witwin.radar import Motion, PointTargets
     from witwin.radar.processing import ArrayGeometry, ProcessingAxes
 
     local_positions, local_velocities, moving = _target_tensors(radar, targets)
-    world_positions = radar._world_from_local_points(local_positions)
-    world_velocity = radar._world_from_local_vectors(local_velocities)
+    world_positions = world_from_local_points(radar, local_positions)
+    world_velocity = world_from_local_vectors(radar, local_velocities)
 
     def linear_trajectory(time_s):
         """The same material points at ``time_s``, moving at a constant rate.
@@ -426,27 +406,3 @@ def simulate_point_targets(radar, targets, *, sigma_m2=1.0):
         array=ArrayGeometry.from_axes(axes),
         synthesis=synthesis,
     )
-
-
-def _primal(tensor):
-    import torch.autograd.forward_ad as forward_ad
-
-    return forward_ad.unpack_dual(tensor).primal
-
-
-def _detached_synthesis(synthesis):
-    """Lift one synthesis result out of a forward-AD level."""
-
-    import dataclasses
-
-    return dataclasses.replace(synthesis, cube=_primal(synthesis.cube).detach().clone())
-
-
-def make_radar_or_skip(config):
-    """Construct a Radar or skip when the local runtime/toolchain is missing."""
-    from witwin.radar import Radar
-
-    try:
-        return config if isinstance(config, Radar) else Radar.from_dict(dict(config))
-    except (FileNotFoundError, OSError, RuntimeError) as exc:
-        pytest.skip(f"radar runtime unavailable: {exc}")

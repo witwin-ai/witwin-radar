@@ -6,8 +6,11 @@
     ".github/workflows/gpu-regression.yml"
   ],
   "required_test_prefixes": [
-    "tests/test_phase11_",
-    "tests/test_phase8_wideband_",
+    "tests/test_antenna_pattern_route",
+    "tests/test_repository_gates",
+    "tests/test_scene_binding",
+    "tests/test_simulate_entry",
+    "tests/test_tdm_slot_phase",
     "tests/validation/"
   ],
   "allowed_channel_skips": 0

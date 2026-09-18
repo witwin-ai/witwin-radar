@@ -19,7 +19,7 @@ it calls is a production module.
 entirely through its support test - a rectangle has no phase for the delay to
 move, and the frozen weight already owns the carrier - so its almost-everywhere
 delay derivative is EXACTLY zero. That is a real property of the model, pinned
-by ``test_phase6_pulsed_ad.py``, and a pulsed end-to-end AD test built on a
+by ``test_pulsed_ad.py``, and a pulsed end-to-end AD test built on a
 rectangle would be asserting that zero equals zero while looking exactly like a
 test of the chain.
 
@@ -38,10 +38,8 @@ from . import multi_endpoint_geometry as geo
 from .synthesis_batch import to_synthesis
 
 
-#: A narrowband OFDM frame that fits the fixture. Eight subcarriers at 1 MHz is
-#: an 8 MHz band, which is deliberately modest: the point here is the CHAIN, and
-#: a wide band would drag in the wideband route that
-#: ``test_phase8_wideband_ofdm.py`` already owns.
+# A narrowband OFDM frame that fits the fixture. Eight subcarriers at 1 MHz is
+# an 8 MHz band, which is deliberately modest: the point here is the CHAIN.
 def ofdm_spec(*, num_symbols: int = 2, num_subcarriers: int = 8):
     from witwin.radar.synthesis import OfdmSpec
 
@@ -57,10 +55,10 @@ def ofdm_spec(*, num_symbols: int = 2, num_subcarriers: int = 8):
     )
 
 
-#: A linear-FM pulse train that fits the fixture. 500 MSPS over 32 samples is a
-#: 6.4e-8 s gate, which contains every round-trip delay the fixture produces plus
-#: the 2e-8 s pulse; the 500 MHz sweep gives a 2e-9 s range cell, and with a
-#: static fixture the range-migration bound is satisfied with room to spare.
+# A linear-FM pulse train that fits the fixture. 500 MSPS over 32 samples is a
+# 6.4e-8 s gate, which contains every round-trip delay the fixture produces plus
+# the 2e-8 s pulse; the 500 MHz sweep gives a 2e-9 s range cell, and with a
+# static fixture the range-migration bound is satisfied with room to spare.
 def pulsed_spec(*, num_pulses: int = 2, num_samples: int = 32):
     from witwin.radar.synthesis import PulsedSpec
 
@@ -85,12 +83,14 @@ def synthesize(kind: str, composed, spec) -> torch.Tensor:
 
     A ``dict.get`` with a fallback here would turn an unknown waveform into
     another waveform's cube, which is the shape of mistake the production
-    dispatch guard in ``test_phase6_no_torch_physics.py`` exists to prevent.
+    dispatch guard in ``test_no_torch_physics.py`` exists to prevent.
     Mirroring it in the fixture keeps a typo in a parametrize list from
     silently testing FMCW three times.
     """
 
-    from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
+    from witwin.radar.synthesis.fmcw import synthesize_fmcw
+    from witwin.radar.synthesis.ofdm import synthesize_ofdm
+    from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
     owners = {"fmcw": synthesize_fmcw, "ofdm": synthesize_ofdm, "pulsed": synthesize_pulsed}
     return owners[kind](to_synthesis(composed), spec)
@@ -113,11 +113,6 @@ def chain_loss(
     ``sum |cube|^2`` rather than a random-target inner product, because the
     magnitude loss is real-valued without a conjugation convention of its own
     and cannot accidentally test the fixture's target instead of the chain.
-
-    ``include_delay_rate=False``: the fixture is static, so a rate would be
-    exactly zero and would only add a second term for a finite difference to
-    cancel against. The Doppler half of the chain is owned by the Phase-7
-    kinematics tests and by the per-variable jvp tests at the operator level.
     """
 
     from . import multi_endpoint_driver as drv
@@ -128,7 +123,6 @@ def chain_loss(
         transmitters=transmitters,
         receivers=receivers,
         ad_mode=ad_mode,
-        include_delay_rate=False,
     )
     cube = synthesize(kind, composed, spec)
     return cube.abs().square().sum()

@@ -21,7 +21,7 @@ same owners in production. ``MultiEndpointSpike`` is deliberately NOT retargeted
 onto the production entry, for three reasons that are each sufficient:
 
 * **It is the independent oracle the entry is checked against.**
-  ``tests/test_phase11_simulate_entry.py::
+  ``tests/test_simulate_entry.py::
   test_the_composed_rows_agree_with_the_reference_orchestration`` asserts that
   the production entry reproduces this orchestration exactly - same row
   identity, bitwise identical round-trip delays. Retargeting the spike would
@@ -72,20 +72,24 @@ def make_response(*, requires_grad: bool = False, device: str = "cuda"):
     )
 
 
-def make_spec(*, num_chirps: int | None = None, carrier_hz: float = 0.0, output_domain: str = "beat"):
+def make_spec(
+    *,
+    config=geo.FIXTURE_RADAR_CONFIG,
+    num_chirps: int | None = None,
+    carrier_hz: float = 0.0,
+    output_domain: str = "beat",
+):
+    from dataclasses import replace
+
     from witwin.radar import Radar
 
     # device="cpu" because a waveform spec holds no tensors: the fixture must
     # stay buildable during a CUDA-less collection pass, and every number below
     # is identical either way.
-    spec = Radar.from_dict(dict(geo.FIXTURE_RADAR_CONFIG), device="cpu").waveform_spec(offset=carrier_hz)
+    spec = Radar.from_dict(dict(config), device="cpu").waveform_spec(offset=carrier_hz)
     if num_chirps is not None:
-        from dataclasses import replace
-
         spec = replace(spec, num_chirps=num_chirps)
     if spec.output_domain != output_domain:
-        from dataclasses import replace
-
         spec = replace(spec, output_domain=output_domain)
     return spec
 
@@ -244,25 +248,23 @@ class MultiEndpointSpike:
         gradient accumulate over both legs: the SAME object is handed to the
         inbound sink batch and the outbound source batch.
 
-        The transmitters and receivers used to be rebuilt from Python tuples on
-        every call, which silently made them undualisable - a forward-AD tangent
-        does not survive a rebuild from values, and the resulting
-        ``delay_rate`` contribution was a clean zero indistinguishable from a
-        static front end. Accepting a tensor here is the whole of the
-        moving-platform case; ``multi_endpoint_world.endpoint_batch`` already
-        passed a live tensor through untouched, so nothing below this changed.
+        A tensor passed here reaches the endpoint batch untouched, so a forward
+        tangent or a reverse leaf on any of the three sets survives into the
+        replay.
         """
 
-        inbound = self.adapter.reevaluate(
+        inbound = self.adapter.reevaluate_slots(
             self.inbound,
             self._transmitter_batch(self._transmitter_positions(transmitters)),
             self._site_batch(self.site_positions if sites is None else sites, role="sink"),
+            slot_count=1,
             ad_mode=ad_mode,
         )
-        outbound = self.outbound_adapter.reevaluate(
+        outbound = self.outbound_adapter.reevaluate_slots(
             self.outbound,
             self._site_batch(self.site_positions if sites is None else sites, role="source"),
             self._receiver_batch(self._receiver_positions(receivers)),
+            slot_count=1,
             ad_mode=ad_mode,
         )
         return inbound, outbound
@@ -277,22 +279,11 @@ class MultiEndpointSpike:
             return [position for _, position in self.receivers]
         return override
 
-    def frame(
-        self,
-        sites=None,
-        response=None,
-        *,
-        transmitters=None,
-        receivers=None,
-        ad_mode: str = "none",
-        include_delay_rate: bool = True,
-    ):
+    def frame(self, sites=None, response=None, *, transmitters=None, receivers=None, ad_mode: str = "none"):
         """One frame: two reevaluations and one composition."""
 
         inbound, outbound = self.legs(sites, transmitters=transmitters, receivers=receivers, ad_mode=ad_mode)
-        composed = self.composer.compose(
-            inbound, outbound, make_response() if response is None else response, include_delay_rate=include_delay_rate
-        )
+        composed = self.composer.compose(inbound, outbound, make_response() if response is None else response)
         return composed, inbound, outbound
 
     # -- a whole slot-major frame in one call per leg ------------------------
@@ -301,10 +292,9 @@ class MultiEndpointSpike:
         """Repeat one endpoint set once per slot, slot major.
 
         ``Tensor.repeat`` and not a rebuild from Python values: a forward-AD
-        dual carried by ``positions`` survives a differentiable op and dies the
-        moment the caller reads it back into a list. A dead tangent publishes
-        ``delay_rate = 0``, which is indistinguishable from a correct
-        stationary answer, so the way the stack is built is load bearing.
+        dual or a reverse leaf carried by ``positions`` survives a
+        differentiable op and dies the moment the caller reads it back into a
+        list.
         """
 
         values = (
@@ -375,7 +365,7 @@ class MultiEndpointSpike:
         slots = rows // len(listed)
         return world.endpoint_batch(positions, listed * slots, power_w=power_w, device=self.device)
 
-    def slot_frames(self, inbound, outbound, response=None, *, include_delay_rate=True):
+    def slot_frames(self, inbound, outbound, response=None):
         """Compose every slot of a slot-major pair of legs.
 
         This is the REFRESHED-weight oracle and it is deliberately a test-side
@@ -388,10 +378,7 @@ class MultiEndpointSpike:
 
         target = make_response() if response is None else response
         return [
-            self.composer.compose(
-                inbound.slot(slot), outbound.slot(slot), target, include_delay_rate=include_delay_rate
-            )
-            for slot in range(inbound.slot_count)
+            self.composer.compose(inbound.slot(slot), outbound.slot(slot), target) for slot in range(inbound.slot_count)
         ]
 
     # -- the single-pair comparison spike -----------------------------------

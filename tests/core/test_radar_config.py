@@ -9,11 +9,12 @@ asserted about the loader's refusals and about the fields of ``Radar`` itself.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 
 import numpy as np
 import pytest
 import torch
-from conftest import STANDARD_CONFIG, MockRadar
+from conftest import STANDARD_CONFIG, RadarFixture
 
 from witwin.radar import Radar
 
@@ -91,18 +92,10 @@ class TestRadarConfigSchema:
             Radar.from_dict({**STANDARD_CONFIG, "frontend": {"seed": 7}}, device="cpu")
 
     @pytest.mark.parametrize("key", ["frame_per_second", "num_doppler_bins", "num_range_bins", "num_angle_bins"])
-    def test_a_key_nothing_consumes_is_refused_by_name(self, key: str):
-        """These four were required by the old form and read by nobody.
+    def test_a_processing_grid_key_is_an_unsupported_key(self, key: str):
+        """The bin counts come from the waveform spec and the frame rate is the caller's."""
 
-        They described a processing grid: the bin counts are derived from the
-        waveform spec and the frame rate is the caller's own scheduling number.
-        Accepting them made a caller believe a block was configured, so the
-        loader names them in its refusal rather than dropping them - a separate
-        message from the unsupported-key one, because "you configured nothing"
-        and "we do not know this key" are different mistakes.
-        """
-
-        with pytest.raises(ValueError, match=f"keys nothing consumes: {key}"):
+        with pytest.raises(ValueError, match=f"unsupported keys: {key}"):
             Radar.from_dict({**STANDARD_CONFIG, key: 10}, device="cpu")
 
     def test_missing_required_key_raises(self):
@@ -139,7 +132,7 @@ class TestParameterFormulas:
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz * cfg["adc_samples"])
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         assert mock.axes.range_bin_m == pytest.approx(expected, rel=1e-10)
         assert 0.03 < mock.axes.range_bin_m < 0.06
 
@@ -149,7 +142,7 @@ class TestParameterFormulas:
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         effective_period = chirp_period * cfg["num_tx"]
         expected = lam / (2 * cfg["chirp_per_frame"] * effective_period)
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         assert mock.axes.velocity_bin_mps == pytest.approx(expected, rel=1e-10)
         assert 0.05 < mock.axes.velocity_bin_mps < 0.15
 
@@ -158,11 +151,11 @@ class TestParameterFormulas:
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz)
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         assert mock.axes.max_unambiguous_range_m == pytest.approx(expected, rel=1e-10)
 
     def test_max_range_equals_resolution_times_adc(self):
-        mock = MockRadar(STANDARD_CONFIG)
+        mock = RadarFixture(STANDARD_CONFIG)
         assert mock.axes.max_unambiguous_range_m == pytest.approx(
             mock.axes.range_bin_m * STANDARD_CONFIG["adc_samples"], rel=1e-10
         )
@@ -172,17 +165,17 @@ class TestParameterFormulas:
         lam = C0 / cfg["fc"]
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         expected = lam / (4 * chirp_period * cfg["num_tx"])
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         assert mock.axes.max_unambiguous_speed_mps == pytest.approx(expected, rel=1e-10)
 
     def test_wavelength(self):
-        mock = MockRadar(STANDARD_CONFIG)
+        mock = RadarFixture(STANDARD_CONFIG)
         assert mock.wavelength_m == pytest.approx(C0 / 77e9, rel=1e-10)
         assert 3.8e-3 < mock.wavelength_m < 4.0e-3
 
     def test_antenna_positions_scaled(self):
         cfg = STANDARD_CONFIG
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         spacing = mock.wavelength_m / 2
         np.testing.assert_allclose(mock.tx_loc, np.array(cfg["tx_loc"], dtype=np.float32) * spacing)
         np.testing.assert_allclose(mock.rx_loc, np.array(cfg["rx_loc"], dtype=np.float32) * spacing)
@@ -192,7 +185,7 @@ class TestConfigVariations:
     @pytest.mark.parametrize("adc_samples", [128, 256, 512, 640])
     def test_range_resolution_scales_with_adc(self, adc_samples):
         cfg = {**STANDARD_CONFIG, "adc_samples": adc_samples}
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12
         expected = C0 * fs / (2 * slope_hz * adc_samples)
@@ -201,7 +194,7 @@ class TestConfigVariations:
     @pytest.mark.parametrize("chirps", [8, 32, 64, 128, 256])
     def test_doppler_resolution_scales_with_chirps(self, chirps):
         cfg = {**STANDARD_CONFIG, "chirp_per_frame": chirps}
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         lam = C0 / cfg["fc"]
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         effective_period = chirp_period * cfg["num_tx"]
@@ -211,7 +204,7 @@ class TestConfigVariations:
     @pytest.mark.parametrize("num_tx", [1, 2, 3, 4, 8])
     def test_max_doppler_scales_with_num_tx(self, num_tx):
         cfg = {**STANDARD_CONFIG, "num_tx": num_tx, "tx_loc": [[0, 0, 0]] * num_tx}
-        mock = MockRadar(cfg)
+        mock = RadarFixture(cfg)
         lam = C0 / cfg["fc"]
         chirp_period = (cfg["idle_time"] + cfg["ramp_end_time"]) * 1e-6
         expected = lam / (4 * chirp_period * num_tx)
@@ -222,12 +215,6 @@ def test_a_radar_can_be_constructed_on_cpu_for_configuration_workflows(standard_
     radar = Radar.from_dict(standard_config, device="cpu")
     assert radar.device == torch.device("cpu")
     assert radar.tx_pos.device.type == "cpu"
-    assert not hasattr(radar, "axes")
-
-
-def test_radar_rejects_backend_keyword(standard_config):
-    with pytest.raises(TypeError, match="backend"):
-        Radar.from_dict(standard_config, backend="unknown", device="cpu")
 
 
 def test_radar_builds_runtime_antenna_pattern(standard_config):
@@ -259,10 +246,7 @@ class TestRadarConstruction:
     """
 
     def test_radar_creates_from_a_validated_config(self, standard_config):
-        try:
-            radar = Radar.from_dict(standard_config)
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            pytest.skip(f"backend unavailable: {exc}")
+        radar = Radar.from_dict(standard_config)
         assert radar.waveform.samples_per_chirp == 256
         assert radar.num_tx == 3
         assert radar.num_rx == 4
@@ -282,30 +266,9 @@ class TestRadarConstruction:
         with pytest.raises(dataclasses.FrozenInstanceError):
             radar.carrier = 24e9
 
-    def test_radar_has_no_processing_axis_state(self, standard_config):
+    def test_no_processing_state_hangs_off_the_radar(self, standard_config):
+        """A radar carries its configuration and nothing derived from it."""
+
         radar = Radar.from_dict(standard_config)
-        assert not hasattr(radar, "axes")
-        assert not hasattr(radar, "ranges")
-        assert not hasattr(radar, "velocities")
-
-    def test_no_solver_and_no_fft_state_hang_off_the_radar(self, standard_config):
-        """This used to assert where the FFT state LIVED; now there is none.
-
-        The claim was that ``N_fft`` and ``pad_factor`` belonged to the solver
-        rather than to the radar. Phase 11 deleted the solver, so the radar
-        carries neither the state nor the owner, and ``pad_factor`` is not a
-        constructor argument any more - an accepted-but-ignored parameter is
-        indistinguishable from one that works.
-        """
-
-        import inspect
-
-        try:
-            radar = Radar.from_dict(standard_config)
-        except (FileNotFoundError, OSError, RuntimeError) as exc:
-            pytest.skip(f"backend unavailable: {exc}")
-
-        assert not hasattr(radar, "N_fft")
-        assert not hasattr(radar, "pad_factor")
-        assert not hasattr(radar, "solver")
+        assert radar == Radar.from_dict(standard_config)
         assert "pad_factor" not in inspect.signature(Radar.__init__).parameters

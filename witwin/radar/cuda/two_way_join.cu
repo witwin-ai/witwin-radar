@@ -3,7 +3,6 @@
 // Per composed row k, with i = idx_in[k], o = idx_out[k], s = idx_s[k]:
 //
 //   tau_rt[k]  = tau_in[i]  + tau_out[o]
-//   rate_rt[k] = rate_in[i] + rate_out[o]
 //   C_rt[k]    = (C_out[o] * S[s]) * C_in[i]
 //
 // and every payload is exactly zero when the row is dead.
@@ -14,7 +13,7 @@
 // measured a flat 0.2-0.6 ms from K = 4 to K = 24000. It was launch bound, not
 // bandwidth bound, so one fused launch is the entire win.
 //
-// Five rules this file encodes, each pinned by a test:
+// Four rules this file encodes, each pinned by a test:
 //
 //  1. The association is (C_out * S) * C_in, copied verbatim from the Torch
 //     composer it replaces. Re-associating a complex product is a numerical
@@ -23,19 +22,14 @@
 //     this round trip does not exist at these endpoint positions. Publishing
 //     tau_in + 0 for it, as the Torch composer used to, is a plausible number
 //     no consumer should read.
-//  3. rate_rt carries a ZERO tangent and the rate inputs take no gradient.
-//     delay_rate arrives already unpacked from a forward-only dual and is
-//     published as a primal, which deliberately severs d(delay_rate)/dx. The
-//     Python facade REFUSES a rate input that carries requires_grad or a
-//     tangent, so "returns None" can never be confused with "dropped it".
-//  4. The VJP uses the frozen CSR tables: one thread owns one gradient slot
+//  3. The VJP uses the frozen CSR tables: one thread owns one gradient slot
 //     and loops its own segment, so there are no atomics and the summation
 //     order is a property of the frozen join. That is what makes a
 //     bit-identical gradient comparison across a permuted leg order a
 //     legitimate assertion rather than a lucky one.
-//  5. Sums accumulate in double and store float32, matching fmcw_beat.cu. For
+//  4. Sums accumulate in double and store float32, matching fmcw_beat.cu. For
 //     the delay this is free insurance; the two mixed combined paths in the
-//     Phase-5 fixture are 20 ps apart, about 1e4 float32 ULPs, so float32
+//     join fixture are 20 ps apart, about 1e4 float32 ULPs, so float32
 //     alone would also do, and nothing here depends on the difference.
 //
 // Validity itself is computed in Torch, not here, and enters as an int32 mask.
@@ -55,9 +49,9 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
 
@@ -80,8 +74,6 @@ __device__ __forceinline__ Complex load(
 __global__ void two_way_join_forward_kernel(
     const float* __restrict__ tau_in,
     const float* __restrict__ tau_out,
-    const float* __restrict__ rate_in,
-    const float* __restrict__ rate_out,
     const float* __restrict__ c_in_re,
     const float* __restrict__ c_in_im,
     const float* __restrict__ c_out_re,
@@ -93,7 +85,6 @@ __global__ void two_way_join_forward_kernel(
     const int64_t* __restrict__ idx_out,
     const int64_t* __restrict__ idx_s,
     float* __restrict__ tau_rt,
-    float* __restrict__ rate_rt,
     float* __restrict__ c_rt_re,
     float* __restrict__ c_rt_im,
     const int num_rows) {
@@ -103,7 +94,6 @@ __global__ void two_way_join_forward_kernel(
   }
   if (row_valid[k] == 0) {
     tau_rt[k] = 0.0f;
-    rate_rt[k] = 0.0f;
     c_rt_re[k] = 0.0f;
     c_rt_im[k] = 0.0f;
     return;
@@ -113,8 +103,6 @@ __global__ void two_way_join_forward_kernel(
   const int64_t s = idx_s[k];
   tau_rt[k] = static_cast<float>(
       static_cast<double>(tau_in[i]) + static_cast<double>(tau_out[o]));
-  rate_rt[k] = static_cast<float>(
-      static_cast<double>(rate_in[i]) + static_cast<double>(rate_out[o]));
   const Complex product = mul(
       mul(load(c_out_re, c_out_im, o), load(s_re, s_im, s)),
       load(c_in_re, c_in_im, i));
@@ -142,7 +130,6 @@ __global__ void two_way_join_jvp_kernel(
     const float* __restrict__ tan_s_re,
     const float* __restrict__ tan_s_im,
     float* __restrict__ tan_tau_rt,
-    float* __restrict__ tan_rate_rt,
     float* __restrict__ tan_c_rt_re,
     float* __restrict__ tan_c_rt_im,
     const int num_rows) {
@@ -150,9 +137,6 @@ __global__ void two_way_join_jvp_kernel(
   if (k >= num_rows) {
     return;
   }
-  // rate_rt = rate_in + rate_out and both are primal by contract, so its
-  // tangent is structurally zero rather than merely unpopulated.
-  tan_rate_rt[k] = 0.0f;
   if (row_valid[k] == 0) {
     tan_tau_rt[k] = 0.0f;
     tan_c_rt_re[k] = 0.0f;
@@ -289,48 +273,6 @@ __global__ void two_way_join_backward_kernel(
   }
 }
 
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t join_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
-}
-
 void check_float_len(
     const torch::stable::Tensor& tensor, int64_t expected, const char* name) {
   check_cuda_float(tensor, name);
@@ -349,28 +291,11 @@ void check_pair(
   check_float_len(im, expected, name);
 }
 
-void check_index(
-    const torch::stable::Tensor& index, int rows, const char* name) {
-  check_cuda_long(index, name);
-  STD_TORCH_CHECK(
-      index.numel() == static_cast<int64_t>(rows),
-      name,
-      " must hold one index per composed row.");
-}
-
-constexpr int kBlock = 256;
-
-dim3 linear_grid(int count) {
-  return dim3(static_cast<unsigned>((count + kBlock - 1) / kBlock), 1, 1);
-}
-
 }  // namespace
 
 void two_way_join_forward_cuda(
     const torch::stable::Tensor& tau_in,
     const torch::stable::Tensor& tau_out,
-    const torch::stable::Tensor& rate_in,
-    const torch::stable::Tensor& rate_out,
     const torch::stable::Tensor& c_in_re,
     const torch::stable::Tensor& c_in_im,
     const torch::stable::Tensor& c_out_re,
@@ -382,21 +307,12 @@ void two_way_join_forward_cuda(
     const torch::stable::Tensor& idx_out,
     const torch::stable::Tensor& idx_s,
     torch::stable::Tensor& tau_rt,
-    torch::stable::Tensor& rate_rt,
     torch::stable::Tensor& c_rt_re,
     torch::stable::Tensor& c_rt_im,
     int64_t num_rows) {
   const int rows = checked_int(num_rows, "num_rows");
   check_cuda_float(tau_in, "tau_in");
   check_cuda_float(tau_out, "tau_out");
-  check_cuda_float(rate_in, "rate_in");
-  check_cuda_float(rate_out, "rate_out");
-  STD_TORCH_CHECK(
-      rate_in.numel() == tau_in.numel(),
-      "rate_in must hold one value per inbound row.");
-  STD_TORCH_CHECK(
-      rate_out.numel() == tau_out.numel(),
-      "rate_out must hold one value per outbound row.");
   check_pair(c_in_re, c_in_im, tau_in.numel(), "c_in");
   check_pair(c_out_re, c_out_im, tau_out.numel(), "c_out");
   check_pair(s_re, s_im, s_re.numel(), "s");
@@ -407,7 +323,7 @@ void two_way_join_forward_cuda(
   check_index(idx_in, rows, "idx_in");
   check_index(idx_out, rows, "idx_out");
   check_index(idx_s, rows, "idx_s");
-  check_pair(tau_rt, rate_rt, rows, "tau_rt/rate_rt");
+  check_float_len(tau_rt, rows, "tau_rt");
   check_pair(c_rt_re, c_rt_im, rows, "c_rt");
 
   if (rows == 0) {
@@ -416,11 +332,9 @@ void two_way_join_forward_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       tau_rt.get_device_index());
   two_way_join_forward_kernel<<<
-      linear_grid(rows), dim3(kBlock, 1, 1), 0, join_stream(tau_rt)>>>(
+      linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(tau_rt)>>>(
       tau_in.const_data_ptr<float>(),
       tau_out.const_data_ptr<float>(),
-      rate_in.const_data_ptr<float>(),
-      rate_out.const_data_ptr<float>(),
       c_in_re.const_data_ptr<float>(),
       c_in_im.const_data_ptr<float>(),
       c_out_re.const_data_ptr<float>(),
@@ -432,7 +346,6 @@ void two_way_join_forward_cuda(
       idx_out.const_data_ptr<int64_t>(),
       idx_s.const_data_ptr<int64_t>(),
       tau_rt.mutable_data_ptr<float>(),
-      rate_rt.mutable_data_ptr<float>(),
       c_rt_re.mutable_data_ptr<float>(),
       c_rt_im.mutable_data_ptr<float>(),
       rows);
@@ -459,7 +372,6 @@ void two_way_join_jvp_cuda(
     const torch::stable::Tensor& tan_s_re,
     const torch::stable::Tensor& tan_s_im,
     torch::stable::Tensor& tan_tau_rt,
-    torch::stable::Tensor& tan_rate_rt,
     torch::stable::Tensor& tan_c_rt_re,
     torch::stable::Tensor& tan_c_rt_im,
     int64_t num_rows) {
@@ -485,7 +397,7 @@ void two_way_join_jvp_cuda(
   check_index(idx_in, rows, "idx_in");
   check_index(idx_out, rows, "idx_out");
   check_index(idx_s, rows, "idx_s");
-  check_pair(tan_tau_rt, tan_rate_rt, rows, "tan_tau_rt/tan_rate_rt");
+  check_float_len(tan_tau_rt, rows, "tan_tau_rt");
   check_pair(tan_c_rt_re, tan_c_rt_im, rows, "tan_c_rt");
 
   if (rows == 0) {
@@ -494,7 +406,7 @@ void two_way_join_jvp_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       tan_tau_rt.get_device_index());
   two_way_join_jvp_kernel<<<
-      linear_grid(rows), dim3(kBlock, 1, 1), 0, join_stream(tan_tau_rt)>>>(
+      linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(tan_tau_rt)>>>(
       c_in_re.const_data_ptr<float>(),
       c_in_im.const_data_ptr<float>(),
       c_out_re.const_data_ptr<float>(),
@@ -514,7 +426,6 @@ void two_way_join_jvp_cuda(
       tan_s_re.const_data_ptr<float>(),
       tan_s_im.const_data_ptr<float>(),
       tan_tau_rt.mutable_data_ptr<float>(),
-      tan_rate_rt.mutable_data_ptr<float>(),
       tan_c_rt_re.mutable_data_ptr<float>(),
       tan_c_rt_im.mutable_data_ptr<float>(),
       rows);
@@ -598,7 +509,7 @@ void two_way_join_backward_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       grad_s_re.get_device_index());
   two_way_join_backward_kernel<<<
-      linear_grid(total), dim3(kBlock, 1, 1), 0, join_stream(grad_s_re)>>>(
+      linear_grid(total), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_s_re)>>>(
       c_in_re.const_data_ptr<float>(),
       c_in_im.const_data_ptr<float>(),
       c_out_re.const_data_ptr<float>(),
@@ -709,7 +620,7 @@ void path_interpolate_run(const torch::stable::Tensor& x, const torch::stable::T
   STD_TORCH_CHECK(std::isfinite(fc) && fc>0, "interpolation carrier must be positive");
   const torch::stable::accelerator::DeviceGuard guard(x.get_device_index());
   if(n) {
-    path_interpolate_kernel<<<(n+255)/256,256,0,join_stream(x)>>>(
+    path_interpolate_kernel<<<(n+255)/256,256,0,current_cuda_stream(x)>>>(
       x.const_data_ptr<double>(),v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,nodes,fc,mode);
     STD_CUDA_KERNEL_LAUNCH_CHECK();
   }

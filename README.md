@@ -15,6 +15,7 @@ antenna weighting and ADC synthesis. The measured 128-sample × 1024-chirp rotor
 270.99 ms per frame on RTX 5080 at the default interpolation order, or 174.28 ms at
 `nodes=5` ([the 2026-09-17 comparison](docs/dev/audit/radar-matlab-comparison-2026-09-17.md));
 see [performance evidence and limits](PERFORMANCE.md).
+Dynamic FMCW simulation refreshes the scene at each ADC observation by default, including TDM timing. `Motion.chirp()` selects the faster stop-and-hop approximation. See `docs/pipeline_guide.md` for trajectories, path completeness, and typed micro-Doppler timestamps.
 
 ## Installation and runtime
 
@@ -79,7 +80,7 @@ targets = PointTargets(positions=[(0.0, 0.0, -3.0)], rcs=1.0)
 result = radar.simulate(scene, targets, times=(0.0, 0.1, 0.2), los=True, reflections=1, motion=Motion.auto())
 ```
 
-`Radar.from_dict` reads the flat FMCW configuration format examples and config files use, in its vendor units, and is the only place those units are read. Every other field is a keyword override in SI, so a receive chain and a pose attach in the same call. `Radar.from_json` loads the same mapping from a file. Keys nothing consumes are refused by name rather than stored.
+`Radar.from_dict` reads the flat FMCW configuration format examples and config files use, in its vendor units, and is the only place those units are read. Every other field is a keyword override in SI, so a receive chain and a pose attach in the same call. `Radar.from_json` loads the same mapping from a file. Keys outside the format are refused by name rather than stored.
 
 The radar has four verbs, and they are two halves and their fusion:
 
@@ -138,4 +139,3 @@ All maintained scene-driven examples require CUDA and Channel.
 ## License and citation
 
 WiTwin Radar uses the WiTwin dual-license model. See the [WiTwin licensing page](https://witwin.ai/license). The simulator is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis); cite the RF-Genesis SenSys 2023 paper when that prior work is relevant.
-Dynamic FMCW simulation refreshes the scene at each ADC observation by default, including TDM timing. `Motion.chirp()` selects the faster stop-and-hop approximation. See `docs/pipeline_guide.md` for trajectories, path completeness, and typed micro-Doppler timestamps.

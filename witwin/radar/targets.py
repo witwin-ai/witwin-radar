@@ -10,8 +10,8 @@ written in Torch on the production path is what this architecture exists to
 keep out. R-ADR-020 records the deferral and names what closing it would need.
 
 Position and strength are one record because they are one statement about the
-world. Splitting them, as the two-object form did, made a caller repeat the
-radar's own carrier and device back at it just to say how large a target is.
+world; the carrier and the device are the radar's and are supplied when the
+session starts.
 
 This module owns the target vocabulary. The scattering COEFFICIENT is owned by
 :mod:`witwin.radar.scattering` and the site binding by
@@ -25,6 +25,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+
+from .propagation import Kinematics
+from .scattering import AspectScatterResponse, ScalarRcsResponse, rcs_amplitude
+from .simulation import ScatterSitePolicy
 
 __all__ = ["Aspect", "PointTargets", "StructureTargets"]
 
@@ -43,7 +47,7 @@ class Aspect:
 
     #: One unit axis per target, world frame, shape ``(S, 3)``.
     axis: Any
-    #: Lobe sharpness ``n``, dimensionless. Larger is narrower.
+    #: Lobe sharpness ``n``, dimensionless, at least 1. Larger is narrower.
     exponent: float
     #: How long one aspect realisation stays coherent, s.
     coherent_interval: float
@@ -51,8 +55,8 @@ class Aspect:
     phase_rate: float = 0.0
 
     def __post_init__(self) -> None:
-        if not float(self.exponent) >= 0.0:
-            raise ValueError("Aspect.exponent must be non-negative")
+        if not float(self.exponent) >= 1.0:
+            raise ValueError("Aspect.exponent must be at least 1")
         if not float(self.coherent_interval) > 0.0:
             raise ValueError("Aspect.coherent_interval must be positive")
 
@@ -161,12 +165,9 @@ def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
 class _PositionTrajectory:
     """Adapt ``trajectory(time) -> positions`` to the site policy's protocol.
 
-    The policy consumes a ``Kinematics``, which pairs positions with
-    velocities, and the frame loop reads only the positions: a site velocity is
-    never differenced into physics, because the delay rate comes from the
-    propagation solve at each observation instant. The velocities are therefore
-    published as exact zeros rather than estimated from a finite difference,
-    which would be a second, disagreeing owner of the same quantity.
+    The policy consumes a ``Kinematics`` of positions. A site velocity is never
+    differenced into physics: the delay rate comes from the propagation solve
+    at each observation instant.
     """
 
     __slots__ = ("_positions",)
@@ -174,13 +175,11 @@ class _PositionTrajectory:
     def __init__(self, positions: Callable[[float], Any]) -> None:
         self._positions = positions
 
-    def at(self, time_s: float):
-        from .propagation import Kinematics
-
+    def at(self, time_s: float) -> Kinematics:
         positions = self._positions(float(time_s))
         if not isinstance(positions, torch.Tensor):
             positions = torch.tensor([[float(v) for v in row] for row in positions], dtype=torch.float32)
-        return Kinematics(positions_m=positions, velocities_m_per_s=torch.zeros_like(positions))
+        return Kinematics(positions_m=positions)
 
 
 def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tuple[Any, Any]:
@@ -192,9 +191,6 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
     the device are taken from ``radar`` here, which is why neither is a field
     of a target record.
     """
-
-    from .scattering import AspectScatterResponse, ScalarRcsResponse, rcs_amplitude
-    from .simulation import ScatterSitePolicy
 
     if isinstance(targets, PointTargets):
         positions = targets.positions
@@ -215,7 +211,7 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
             "scatterers are is a declaration, not a search"
         )
 
-    aspect = getattr(targets, "aspect", None)
+    aspect = targets.aspect if isinstance(targets, PointTargets) else None
     if aspect is None:
         if targets.rcs is not None:
             response = ScalarRcsResponse.from_rcs(

@@ -2,6 +2,7 @@
 
 import math
 
+import numpy as np
 import pytest
 import torch
 
@@ -15,8 +16,6 @@ FC = 77e9
 
 def _basis(query, nodes):
     """Independent Lagrange basis: a product loop, not the production helper."""
-
-    import numpy as np
 
     out = []
     for row in range(len(query)):
@@ -44,8 +43,6 @@ def _oracle(delays, transfers, weights):
 
 @pytest.mark.parametrize("nodes", [2, 3, 5])
 def test_interpolation_preserves_carrier_wraps_and_native_derivatives(nodes):
-    import numpy as np
-
     rows = 2
     node_times = np.asarray([[20e-9 + index * 0.7e-9 + row * 1e-9 for index in range(nodes)] for row in range(rows)])
     query = np.asarray([node_times[row, 0] + 0.37 * (node_times[row, -1] - node_times[row, 0]) for row in range(rows)])
@@ -105,8 +102,6 @@ def test_interpolation_preserves_carrier_wraps_and_native_derivatives(nodes):
 def test_single_physical_path_has_no_interpolation_fade(nodes):
     """One coherent path must survive the blend at full amplitude."""
 
-    import numpy as np
-
     node_times = np.asarray([[20e-9 + index * 0.5e-9 for index in range(nodes)]])
     query = np.asarray([node_times[0, 0] + 0.37 * (node_times[0, -1] - node_times[0, 0])])
     weights = torch.as_tensor(_basis(query, node_times), device="cuda")
@@ -121,8 +116,6 @@ def test_single_physical_path_has_no_interpolation_fade(nodes):
 
 def test_a_higher_order_basis_tracks_curvature_a_linear_one_cannot():
     """The reason the order is configurable, as a number rather than a claim."""
-
-    import numpy as np
 
     # A quadratic delay ramp: the linear rule must miss it and the quadratic
     # rule must reproduce it, both measured against the same true delay.
@@ -147,8 +140,6 @@ def test_a_higher_order_basis_tracks_curvature_a_linear_one_cannot():
 
 
 def test_the_production_basis_matches_the_independent_one():
-    import numpy as np
-
     nodes = np.asarray([[0.0, 1e-4, 2.5e-4, 4e-4, 6e-4], [1e-3, 1.1e-3, 1.25e-3, 1.4e-3, 1.6e-3]])
     query = np.asarray([1.7e-4, 1.32e-3])
     np.testing.assert_allclose(_lagrange_weights(query, nodes), _basis(query, nodes), rtol=1e-12, atol=1e-14)

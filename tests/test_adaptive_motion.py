@@ -5,10 +5,9 @@ from dataclasses import replace
 
 import pytest
 import torch
-from support import multi_endpoint_driver as drv
-from test_phase11_simulate_entry import _radar, _static_scene
+from support.simulate_fixture import fixture_radar, point_targets, static_scene
 
-from witwin.radar import Motion, Noise, PointTargets
+from witwin.radar import Motion, Noise
 from witwin.radar.simulation import AdaptiveMotionSpec
 
 pytestmark = pytest.mark.gpu
@@ -22,12 +21,6 @@ pytestmark = pytest.mark.gpu
 CORRELATED_NOISE = Noise(antenna_temperature=0.0, phase_density=-60, phase_offset=1e6, phase_sample_rate=5e6)
 
 
-def _targets(positions, *, trajectory=None):
-    return PointTargets(
-        positions=positions, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD, trajectory=trajectory
-    )
-
-
 def _beat_radar(radar, *, samples, chirps):
     return radar.replace(
         waveform=replace(radar.waveform, samples_per_chirp=samples, chirps_per_frame=chirps, output="beat")
@@ -37,7 +30,7 @@ def _beat_radar(radar, *, samples, chirps):
 @pytest.mark.parametrize("noise", [False, True])
 @pytest.mark.parametrize("curved", [False, True])
 def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
-    radar = _beat_radar(_radar(), samples=16, chirps=4)
+    radar = _beat_radar(fixture_radar(), samples=16, chirps=4)
     if noise:
         radar = radar.replace(noise=CORRELATED_NOISE, seed=7)
     origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
@@ -47,9 +40,9 @@ def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
     def trajectory(t):
         return origin + velocity * t + acceleration * t * t
 
-    kwargs = {"times": (0.0,), "targets": _targets(origin, trajectory=trajectory), "los": True, "reflections": 0}
-    exact = radar.simulate(_static_scene(), **kwargs, motion=Motion.adc())
-    adaptive = radar.simulate(_static_scene(), **kwargs, motion=Motion.adaptive())
+    kwargs = {"times": (0.0,), "targets": point_targets(origin, trajectory=trajectory), "los": True, "reflections": 0}
+    exact = radar.simulate(static_scene(), **kwargs, motion=Motion.adc())
+    adaptive = radar.simulate(static_scene(), **kwargs, motion=Motion.adaptive())
     error = (adaptive.cube - exact.cube).abs().norm() / exact.cube.abs().norm()
     assert error < 0.012, float(error)
     assert adaptive.discovery_count < exact.discovery_count
@@ -58,7 +51,7 @@ def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
     assert adaptive.sample_times_s == exact.sample_times_s
     assert adaptive.adaptive_diagnostics[0]["max_tested_phase_error_rad"] <= 0.02
     with pytest.raises(RuntimeError, match="budget exhausted"):
-        radar.simulate(_static_scene(), **kwargs, motion=Motion.adaptive(max_evaluations=2))
+        radar.simulate(static_scene(), **kwargs, motion=Motion.adaptive(max_evaluations=2))
 
 
 def test_completeness_and_exhaustiveness_are_reported_separately():
@@ -66,13 +59,13 @@ def test_completeness_and_exhaustiveness_are_reported_separately():
 
     from witwin.core import Scene
 
-    radar = _beat_radar(_radar(), samples=16, chirps=4)
+    radar = _beat_radar(fixture_radar(), samples=16, chirps=4)
     origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
     velocity = torch.tensor([[0.7, 0.0, 0.0]], device=radar.device)
 
     kwargs = {
         "times": (0.0,),
-        "targets": _targets(origin, trajectory=lambda t: origin + velocity * t),
+        "targets": point_targets(origin, trajectory=lambda t: origin + velocity * t),
         "los": True,
         "reflections": 0,
     }
@@ -86,7 +79,7 @@ def test_completeness_and_exhaustiveness_are_reported_separately():
     assert exact.path_set_complete and exact.motion_sampling_exhaustive
 
     # A structured world cannot be certified, so neither statement holds.
-    structured = radar.simulate(_static_scene(), **kwargs, motion=Motion.adaptive())
+    structured = radar.simulate(static_scene(), **kwargs, motion=Motion.adaptive())
     assert not structured.path_set_complete
     assert not structured.motion_sampling_exhaustive
 
@@ -101,11 +94,9 @@ def test_the_probe_grid_bound_is_enforced_even_for_a_certified_family():
     BORN must not relax it: the proof says nothing about how fast one moves.
     """
 
-    import math
-
     from witwin.core import Scene
 
-    radar = _radar()
+    radar = fixture_radar()
     radar = radar.replace(
         waveform=replace(
             radar.waveform,
@@ -131,7 +122,7 @@ def test_the_probe_grid_bound_is_enforced_even_for_a_certified_family():
         offset = amplitude * math.sin(2 * math.pi * hidden_hz * t)
         return origin + torch.tensor([[offset, 0.0, 0.0]], device=radar.device)
 
-    kwargs = {"times": (0.0,), "targets": _targets(origin, trajectory=hidden), "los": True, "reflections": 0}
+    kwargs = {"times": (0.0,), "targets": point_targets(origin, trajectory=hidden), "los": True, "reflections": 0}
     scene = Scene(structures=(), endpoints=[])
     exact = radar.simulate(scene, **kwargs, motion=Motion.adc())
 
@@ -163,7 +154,7 @@ def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
 
     from witwin.core import Scene
 
-    radar = _beat_radar(_radar(), samples=32, chirps=16)
+    radar = _beat_radar(fixture_radar(), samples=32, chirps=16)
     # Fast, curved motion: the case where the phase test, not the interval
     # bound, is what shortens an interval.
     origin = torch.tensor([[2.0, 0.2, 0.0]], device=radar.device)
@@ -172,7 +163,7 @@ def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
     def trajectory(t):
         return origin + swing * math.sin(2 * math.pi * 300.0 * t)
 
-    kwargs = {"times": (0.0,), "targets": _targets(origin, trajectory=trajectory), "los": True, "reflections": 0}
+    kwargs = {"times": (0.0,), "targets": point_targets(origin, trajectory=trajectory), "los": True, "reflections": 0}
     exact = radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion=Motion.adc())
 
     def adaptive(nodes):
@@ -194,7 +185,7 @@ def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
 
     # The order is the caller's declaration everywhere, including a structured
     # world; what changes is whether it can buy anything.
-    capped = radar.simulate(_static_scene(), **kwargs, motion=Motion.adaptive(nodes=9))
+    capped = radar.simulate(static_scene(), **kwargs, motion=Motion.adaptive(nodes=9))
     assert capped.adaptive_diagnostics[0]["interpolation_nodes"] == 9
 
 
@@ -252,13 +243,13 @@ def test_adaptive_recompiles_moving_reflectors_and_preserves_scene_adjoint():
     import torch.autograd.forward_ad as ad
     from support import multi_endpoint_world as world
 
-    radar = _beat_radar(_radar(), samples=4, chirps=4)
+    radar = _beat_radar(fixture_radar(), samples=4, chirps=4)
     origin = torch.tensor([[2.0, 0.6, 0.0]], device=radar.device)
 
     def solve(point, motion, mode):
         return radar.simulate(
             world.make_dynamic_scene(wall_velocity=(4.0, 0.0, 0.0)),
-            _targets(point),
+            point_targets(point),
             times=(0.0,),
             motion=motion,
             grad=mode,
@@ -282,13 +273,13 @@ def test_batched_multi_site_reflections_keep_site_gradients_and_topology_probes(
     import torch.autograd.forward_ad as ad
     from support import multi_endpoint_world as world
 
-    radar = _beat_radar(_radar(), samples=4, chirps=3)
+    radar = _beat_radar(fixture_radar(), samples=4, chirps=3)
     origin = torch.tensor([[2.0, 0.6, 0.0], [2.2, -0.4, 0.1]], device=radar.device)
     scene = world.make_dynamic_scene(wall_velocity=(0.0, 0.0, 0.0)).scene
 
     def solve(point, motion, mode):
         return radar.simulate(
-            scene, _targets(point, trajectory=lambda t: point + t * 0.7), times=(0.0,), motion=motion, grad=mode
+            scene, point_targets(point, trajectory=lambda t: point + t * 0.7), times=(0.0,), motion=motion, grad=mode
         )
 
     exact = solve(origin, Motion.adc(), "none")

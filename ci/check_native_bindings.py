@@ -2,14 +2,13 @@
 
 Schema 1 answered "is every symbol covered?". Schema 2 answers "who owns
 this symbol, in which translation unit, in which AD family, at what launch
-cost, and what does it read back to the host?" - the questions Phase-10 work
-items 3 and 4 ask. A registry that nothing checks is a document, so every
-column has an assertion here.
+cost, and what does it read back to the host?". A registry that nothing checks
+is a document, so every column has an assertion here.
 
 The two assertions worth naming, because they encode a decision rather than a
 formatting rule:
 
-* ``numerical_owner`` must be ``radar`` for every row. Item 4 forbids
+* ``numerical_owner`` must be ``radar`` for every row. R-ADR-004 forbids
   registering a RayD-owned or Channel-owned family as a Radar shared
   primitive. Channel and RayD numerics reach Radar as compact typed CUDA
   tensors through the consumer contract, never as linked code (R-ADR-004), so
@@ -20,7 +19,7 @@ formatting rule:
   and the loader's own required-symbol check - and it is the machine-checkable
   form of acceptance criterion A4.
 
-Run it directly, or through ``tests/test_phase10_binding_registry.py``, which
+Run it directly, or through ``tests/test_native_binding_registry.py``, which
 also proves the gate FIRES by feeding it a mutated copy.
 """
 
@@ -115,7 +114,7 @@ def _check_shape(manifest: dict, failures: list[str]) -> None:
         if manifest["radar_abi_version"] != RADAR_ABI_VERSION:
             failures.append(
                 f"radar_abi_version is {manifest['radar_abi_version']}, but "
-                f"identity.RADAR_ABI_VERSION is {RADAR_ABI_VERSION}"
+                f"runtime.RADAR_ABI_VERSION is {RADAR_ABI_VERSION}"
             )
 
 
@@ -127,21 +126,21 @@ def _check_sources(manifest: dict, failures: list[str]) -> None:
     """
 
     try:
-        from witwin.radar.cuda import runtime as build
+        from witwin.radar.cuda import runtime
     except ImportError as error:  # pragma: no cover - environment problem
-        failures.append(f"cannot import the radar build module: {error}")
+        failures.append(f"cannot import the radar runtime module: {error}")
         return
-    if REPO_ROOT not in Path(build.__file__).resolve().parents:
+    if REPO_ROOT not in Path(runtime.__file__).resolve().parents:
         failures.append(
-            f"witwin.radar resolved to {build.__file__}, outside {REPO_ROOT}; this gate must inspect its own checkout"
+            f"witwin.radar resolved to {runtime.__file__}, outside {REPO_ROOT}; this gate must inspect its own checkout"
         )
         return
-    actual = {str(path.relative_to(REPO_ROOT)).replace("\\", "/") for path in build.extension_sources()}
+    actual = {str(path.relative_to(REPO_ROOT)).replace("\\", "/") for path in runtime.extension_sources()}
     declared = set(manifest["sources"])
     if actual != declared:
         failures.append(
-            f"sources disagree with build.extension_sources(): only in "
-            f"manifest {sorted(declared - actual)}, only in build "
+            f"sources disagree with runtime.extension_sources(): only in "
+            f"manifest {sorted(declared - actual)}, only in runtime "
             f"{sorted(actual - declared)}"
         )
 
@@ -269,18 +268,16 @@ def _check_sidecar_symbols(manifest: dict, failures: list[str]) -> str:
     """
 
     try:
-        from witwin.radar.cuda import runtime as build
-
-        identity = build
+        from witwin.radar.cuda import runtime
     except ImportError as error:  # pragma: no cover - environment problem
         failures.append(f"cannot import the radar loader: {error}")
         return "error"
-    binary = build.prebuilt_extension_path()
+    binary = runtime.prebuilt_extension_path()
     if not binary.is_file():
         return "no packaged prebuilt; symbol-set tie not checked"
     try:
-        record = identity.read_build_info(binary)
-    except identity.RadarExtensionLoadError as error:
+        record = runtime.read_build_info(binary)
+    except runtime.RadarExtensionLoadError as error:
         failures.append(f"the packaged prebuilt has no usable build record: {error}")
         return "error"
     recorded = set(record["operator_symbols"])
@@ -327,11 +324,10 @@ def _resolves(dotted: str) -> bool:
     return False
 
 
-def check_manifest(path: Path = MANIFEST) -> list[str]:
+def check_manifest(manifest: dict) -> list[str]:
     """Every failure, collected. An empty list is a pass."""
 
     failures: list[str] = []
-    manifest = load_manifest(path)
     _check_shape(manifest, failures)
     if {"sources", "operators", "error_owners"} - set(manifest):
         return failures
@@ -349,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         manifest = load_manifest(arguments.manifest)
-        failures = check_manifest(arguments.manifest)
+        failures = check_manifest(manifest)
     except ManifestError as error:
         print(f"native binding manifest check failed: {error}")
         return 2

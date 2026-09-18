@@ -19,7 +19,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import torch
@@ -28,17 +27,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "ci" / "native-binding-manifest.json"
 
 
-def _ensure_current_device_arch() -> None:
+def _ensure_current_device_arch(cuda_build) -> None:
+    """Add the device this process runs on to TORCH_CUDA_ARCH_LIST if it is absent."""
+
     if not torch.cuda.is_available():
         return
     major, minor = torch.cuda.get_device_capability()
-    current_arch = f"{major}.{minor}"
     arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", "")
-    entries = [entry.strip() for entry in arch_list.split(";") if entry.strip()]
-    normalized = {entry.removesuffix("+PTX") for entry in entries}
-    if current_arch not in normalized:
-        entries.append(current_arch)
-        os.environ["TORCH_CUDA_ARCH_LIST"] = ";".join(entries)
+    present = {entry.removesuffix("+PTX") for entry in cuda_build.normalize_cuda_architectures(arch_list)}
+    if f"{major}{minor}" not in present:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = ";".join(entry for entry in (arch_list, f"{major}.{minor}") if entry)
 
 
 def _load_module(name: str, path: Path):
@@ -66,9 +64,9 @@ def _manifest_symbols() -> list[str]:
     return symbols
 
 
-def _resolved_cuda_architectures(identity) -> list[str]:
+def _resolved_cuda_architectures(cuda_build) -> list[str]:
     raw = os.environ.get("WITWIN_CUDA_GENCODE_ARCHES") or os.environ.get("TORCH_CUDA_ARCH_LIST", "")
-    architectures = identity.normalize_cuda_architectures(raw)
+    architectures = cuda_build.normalize_cuda_architectures(raw)
     if not architectures:
         raise SystemExit(
             "No CUDA architectures to record. Set WITWIN_CUDA_GENCODE_ARCHES "
@@ -100,20 +98,15 @@ def main() -> None:
     args = parser.parse_args()
 
     cuda_build = _load_cuda_build_module()
-    identity = cuda_build
 
-    build_dir = Path(
-        os.environ.get(
-            "WITWIN_RADAR_NATIVE_BUILD_DIR",
-            Path(tempfile.gettempdir()) / f"{cuda_build.EXTENSION_NAME}_wheel" / "stable_abi_v1",
-        )
-    )
-    os.environ["WITWIN_RADAR_NATIVE_BUILD_DIR"] = str(build_dir)
+    # The build directory is the loader's source-keyed default unless
+    # WITWIN_RADAR_NATIVE_BUILD_DIR overrides it; both are resolved by
+    # runtime._jit_build_extension, so this script sets neither.
     os.environ["WITWIN_RADAR_NATIVE_BUILD"] = "1"
-    _ensure_current_device_arch()
+    _ensure_current_device_arch(cuda_build)
 
     symbols = _manifest_symbols()
-    architectures = _resolved_cuda_architectures(identity)
+    architectures = _resolved_cuda_architectures(cuda_build)
 
     module = cuda_build.build_extension(verbose=args.verbose)
     module_file = Path(module.__file__).resolve()
@@ -133,14 +126,14 @@ def main() -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for suffix in (".pyd", ".so"):
         stale = target_dir / f"{cuda_build.EXTENSION_NAME}{suffix}"
-        for path in (stale, identity.build_info_sidecar_path(stale), identity.fingerprint_sidecar_path(stale)):
+        for path in (stale, cuda_build.build_info_sidecar_path(stale), cuda_build.fingerprint_sidecar_path(stale)):
             if path.exists():
                 path.unlink()
 
     target = cuda_build.prebuilt_extension_path()
     shutil.copy2(module_file, target)
 
-    info = identity.collect_build_info(
+    info = cuda_build.collect_build_info(
         extension_name=cuda_build.EXTENSION_NAME,
         build_type=args.build_type,
         torch_target_version=cuda_build.TORCH_TARGET_VERSION,
@@ -150,10 +143,10 @@ def main() -> None:
         binary_path=target,
         repo_root=REPO_ROOT,
     )
-    info_path, fingerprint_path = identity.write_sidecars(target, info)
+    info_path, fingerprint_path = cuda_build.write_sidecars(target, info)
 
     # Validate what was just written, with the same function the loader uses.
-    identity.validate_identity(target, cuda_build.extension_sources())
+    cuda_build.validate_identity(target, cuda_build.extension_sources())
 
     print(f"Built radar native library: {target}")
     print(f"  build_type        {info['build_type']}")

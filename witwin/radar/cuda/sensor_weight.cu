@@ -14,7 +14,8 @@
 // Pattern lookup uses a fixed world-to-pattern frame. Endpoint positions,
 // intensity, and complex input weight are differentiable; velocities, row
 // topology, the pattern frame, and lookup tables are frozen constants.
-//// THE ANTENNA PATTERN IS INTERPOLATED, NOT TABULATED IN THE PHYSICS. The table
+//
+// THE ANTENNA PATTERN IS INTERPOLATED, NOT TABULATED IN THE PHYSICS. The table
 // is a constant; the DIRECTION is differentiable, and the interpolation is
 // piecewise linear in the two angles, so the gain has an exact almost-everywhere
 // derivative that this kernel carries:
@@ -64,9 +65,9 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
 
@@ -150,7 +151,7 @@ struct Interp1d {
   float derivative;
 };
 
-// Exactly `utils/antenna.interp1d_zero_outside`, including its two edge
+// Exactly `sensors.interp1d_zero_outside`, including its two edge
 // conventions: a query outside the axis returns 0, and a query that lands on
 // the first knot takes the degenerate left == right branch whose weight is 0.
 __device__ __forceinline__ Interp1d interp1d_zero_outside(
@@ -443,10 +444,9 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
     const float raw = norm3(d_in);
     const float a = raw < kMinDistance ? kMinDistance : raw;
     const Vec3 u_in = scale3(d_in, 1.0f / a);
-    // The LENGTH uses the raw norm and the DIRECTION uses the clamped one,
-    // exactly as `compute_total_path_lengths` and `_total_path_length_rates`
-    // split it today: the length is a distance and the clamp exists only to
-    // keep a unit vector finite at a coincident pair.
+    // The LENGTH uses the raw norm and the DIRECTION uses the clamped one:
+    // the length is a distance, and the clamp exists only to keep a unit
+    // vector finite at a coincident pair.
     length = raw;
     dlen_drx = u_in;
     dlen_dtx = scale3(u_in, -1.0f);
@@ -564,14 +564,12 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
     *drx_dir_tail = sub3(*drx_dir_tail, dscale_drx_dir);
   }
 
-  const float dscale_dlength = 0.0f;
-
-  term.dscale_dsite_in =
-      add3(grad_site_in_pattern, scale3(dlen_dsite_in, dscale_dlength));
-  term.dscale_dsite_out =
-      add3(grad_site_out_pattern, scale3(dlen_dsite_out, dscale_dlength));
-  term.dscale_dtx = add3(grad_tx_pattern, scale3(dlen_dtx, dscale_dlength));
-  term.dscale_drx = add3(grad_rx_pattern, scale3(dlen_drx, dscale_dlength));
+  // The scale depends on the positions only through the pattern directions:
+  // Channel owns spreading, so the path length carries no amplitude here.
+  term.dscale_dsite_in = grad_site_in_pattern;
+  term.dscale_dsite_out = grad_site_out_pattern;
+  term.dscale_dtx = grad_tx_pattern;
+  term.dscale_drx = grad_rx_pattern;
 
   const float inv_c0 = 1.0f / in.c0;
   term.dtau_rt_dsite_in = scale3(dlen_dsite_in, inv_c0);
@@ -757,48 +755,6 @@ __global__ void sensor_weight_backward_antennas_kernel(
   }
   float* out = is_tx ? grad_tx_pos : grad_rx_pos;
   out[antenna * 3 + component] = static_cast<float>(total_grad);
-}
-
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
 }
 
 void check_row_vector(

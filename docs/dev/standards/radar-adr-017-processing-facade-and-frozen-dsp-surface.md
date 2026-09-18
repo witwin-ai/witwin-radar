@@ -140,9 +140,7 @@ solves, it never forms an inverse.
 The vendor window constructors are absent too, and that is deliberate.
 `torch.hamming_window(N, periodic=False)` and `torch.hamming_window(N,
 periodic=True)` are DIFFERENT sequences and the difference is invisible at a call
-site. The facade owns one window family with an explicit periodic/symmetric
-distinction; the legacy adapters use `hamming_symmetric` because every legacy
-transform used `periodic=False`.
+site. The facade owns one PERIODIC window family.
 
 Six adjacent vendor calls are RECORDED, also by equality, so nobody has to decide
 again whether they are DSP: `torch.angle`, `torch.einsum`, `torch.polar`,
@@ -157,7 +155,7 @@ DSP is justified only if the measurement shows one of:
 |---|---|---|---|
 | (a) | dispatch overhead dominating actual transform time | every stage is flat in problem size: `range_profile` 0.079 ms at both the fixture and a 48x larger cube; `range_doppler_map` 0.142 / 0.145 ms; `fft2_aoa` 0.396 / 0.393 ms. Dispatch DOES dominate | see below |
 | (b) | a layout conversion costing more than the transform it feeds | `assemble_frame_cube` 0.018 ms against a 0.079 ms range profile (0.23x); `beam_cube` 0.041 ms; the micro-Doppler framing copy 0.022 ms against its 0.021 ms transform (1.05x) | no |
-| (c) | a fusion opportunity removing a materialized intermediate LARGER than the output | the windowed tensor is exactly the size of the output. The one genuine outlier is `os_cfar`, 138 MB for one `[128, 256]` map against `ca_cfar_fast`'s 0.62 MB - but that is an ALGORITHM choice with a Torch-side fix (chunking), not a kernel-fusion argument | no |
+| (c) | a fusion opportunity removing a materialized intermediate LARGER than the output | the windowed tensor is exactly the size of the output. The one genuine outlier is `os_cfar`, 138 MB for one `[128, 256]` map against `ca_cfar`'s 0.62 MB - but that is an ALGORITHM choice with a Torch-side fix (chunking), not a kernel-fusion argument | no |
 | (d) | a tape or AD cost a native primal+JVP+VJP would remove | processing carries no production tape. The chain is post-synthesis and the plan already declares CFAR, peak selection and tracking non-differentiable | no |
 
 **(a) is tripped and it does not argue for a cuFFT wrapper.** Every stage being

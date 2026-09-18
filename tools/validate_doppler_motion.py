@@ -54,10 +54,10 @@ def make_radar():
 class Trajectory:
     """Material-point motion for one fixture, in metres and m/s.
 
-    ``positions`` is what ``PointTargets.trajectory`` takes; ``at`` additionally
-    publishes the analytic velocity, which only the oracles below read. They are
-    two views of one closed-form path, so the oracle can never drift from the
-    motion the simulator was handed.
+    ``positions`` is what ``PointTargets.trajectory`` takes; ``velocity`` is
+    the analytic rate, which only the oracles below read. They are two views of
+    one closed-form path, so the oracle can never drift from the motion the
+    simulator was handed.
     """
 
     def __init__(self, kind, device):
@@ -67,6 +67,12 @@ class Trajectory:
         return self.at(t).positions_m
 
     def at(self, t):
+        return Kinematics(self._state(t)[0])
+
+    def velocity(self, t):
+        return self._state(t)[1]
+
+    def _state(self, t):
         w = 2 * math.pi * 8
         if self.kind == "radial":
             points, velocity = [[2 + 0.2 * t, 0, 0]], [[0.2, 0, 0]]
@@ -77,7 +83,7 @@ class Trajectory:
         else:
             points = [[2 + 0.002 * math.sin(w * t), 0.1, 0], [2.3 + 0.004 * math.sin(w * t / 2), -0.1, 0]]
             velocity = [[0.002 * w * math.cos(w * t), 0, 0], [0.002 * w * math.cos(w * t / 2), 0, 0]]
-        return Kinematics(torch.tensor(points, device=self.device), torch.tensor(velocity, device=self.device))
+        return torch.tensor(points, device=self.device), torch.tensor(velocity, device=self.device)
 
 
 def scene_experiment(kind):
@@ -99,8 +105,7 @@ def scene_experiment(kind):
     # Independent free-space two-way oracle. All points lie in the polarization
     # transverse plane: field projection is one and amplitude is proportional to 1/R^2.
     for index, t in enumerate(result.sample_times_s[0]):
-        state = trajectory.at(t)
-        p, v = state.positions_m.double(), state.velocities_m_per_s.double()
+        p, v = trajectory.positions(t).double(), trajectory.velocity(t).double()
         distance = p.norm(dim=-1)
         delay = 2 * distance / C0
         u = spec.t_start_s + (index % spec.num_samples) * spec.sample_period_s

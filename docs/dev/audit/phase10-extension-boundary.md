@@ -212,7 +212,6 @@ nowhere:
 | ABI version constant | `CHANNEL_ABI_VERSION = 1` | none | `RADAR_ABI_VERSION = 1` |
 | runtime build identity | `_channel.build_info()`, 22 fields + sidecar | none | 18-field sidecar record + `build_info()` |
 | runtime diagnostics | `deployment.runtime_diagnostics()` | none | `witwin/radar/deployment.py` |
-| capability record | `capabilities.py` | reads Channel's only | `witwin/radar/capabilities.py` |
 | error owners | one `CapacityFailureState` + terminal check | none | `error_owners` in the binding manifest |
 
 No Channel file was edited for this audit. The Channel-side Phase-10 defects

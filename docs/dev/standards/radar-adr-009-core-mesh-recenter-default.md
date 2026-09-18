@@ -47,7 +47,7 @@ This is an owner call, not a Radar decision.
 ## Radar-side mitigation, implemented
 
 Every `Mesh` built by the Phase-4 fixture passes `recenter=False` explicitly, and
-`tests/support/phase4_world.py::assert_world_coordinates_survived` checks after
+`tests/support/single_site_world.py::assert_world_coordinates_survived` checks after
 construction that the authored wall plane is still at `x = 4`. That asserts the
 property the spike depends on instead of trusting an upstream default.
 
@@ -60,7 +60,7 @@ error.
 
 ## Acceptance evidence
 
-None yet. This is Proposed. `tests/support/phase4_world.py` carries the Radar-side
+None yet. This is Proposed. `tests/support/single_site_world.py` carries the Radar-side
 assertion; nothing upstream has changed.
 
 ## Appendix: a second Core footgun, observed in Phase 5

@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 """Fail when a production module under `witwin/radar/` is unreachable.
 
-Ruff already reports an unused *import*. It cannot report an unused *module*,
-and that gap is not hypothetical: `witwin/radar/timeline.py` shipped for four
-phases after its last production consumer went away, because every import
-inside it was used and nothing anywhere asked whether anyone imported the file.
-The Phase-11 deletion found it by hand. This gate is what finds the next one.
+Ruff already reports an unused *import*. It cannot report an unused *module*:
+a file whose every import is used, and which nothing imports, passes every
+linter. This gate is what finds it.
 
 The question it asks is reachability, not "does anyone import this". A pair of
 dead modules that import each other both have an importer, and a whole dead
@@ -34,78 +32,33 @@ import sys
 from collections import deque
 from pathlib import Path
 
+from _ast_scan import import_candidates, module_name
+
 PACKAGE = "witwin.radar"
 
 # Modules a user imports directly, so no in-tree production module has to.
-#
-# Two entries are INTERNAL owners rather than public ones and say so. They are
-# not load-bearing: both are reachable from the root facade, so removing them
-# leaves nothing unreachable. Keeping them costs nothing and names the two
-# modules whose public status changed, which is what stops the next reader
-# concluding from the list alone that they are exported.
 ENTRY_POINTS: dict[str, str] = {
     "witwin.radar": "the root facade: the flat Radar record, its waveforms and its four verbs",
-    "witwin.radar.capabilities": "public capability report owner",
     "witwin.radar.deployment": "public deployment/runtime report owner",
-    "witwin.radar.frontend": "internal receiver-chain owner; ci/public-api-manifest.json exports nothing from it",
     "witwin.radar.smpl": "public SMPL authoring facade",
     "witwin.radar.processing": "public signal-processing facade",
     "witwin.radar.scattering": "public scatter-response owner",
-    "witwin.radar.sensors": "internal array-geometry and weighting owner; not a public module",
     "witwin.radar.simulation": "public simulation/session result owner",
     "witwin.radar.synthesis": "public waveform synthesis facade",
 }
-
-
-def module_name(root: Path, path: Path) -> str:
-    parts = list(path.relative_to(root).with_suffix("").parts)
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
-def _package_of(name: str, is_package: bool) -> str:
-    if is_package:
-        return name
-    return name.rpartition(".")[0]
-
-
-def _resolve(base_package: str, level: int, module: str | None) -> str:
-    parts = base_package.split(".")
-    if level > 1:
-        parts = parts[: -(level - 1)]
-    base = ".".join(parts)
-    if not module:
-        return base
-    return f"{base}.{module}"
 
 
 def edges_from(path: Path, name: str, known: set[str]) -> set[str]:
     """Modules that importing `path` also imports."""
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    is_package = path.name == "__init__.py"
-    base_package = _package_of(name, is_package)
-    out: set[str] = set()
-
-    def note(candidate: str) -> None:
-        if candidate in known and candidate != name:
-            out.add(candidate)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                note(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            target = _resolve(base_package, node.level, node.module) if node.level else (node.module or "")
-            note(target)
-            for alias in node.names:
-                note(f"{target}.{alias.name}")
+    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+    out = {candidate for candidate in import_candidates(tree, package) if candidate in known and candidate != name}
 
     # Importing a submodule imports its parent package first.
     parent = name.rpartition(".")[0]
-    if parent and parent.startswith(PACKAGE):
-        note(parent)
+    if parent and parent.startswith(PACKAGE) and parent in known:
+        out.add(parent)
     return out
 
 

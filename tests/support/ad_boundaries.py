@@ -156,16 +156,16 @@ def _two_way(device: str = "cuda") -> Boundary:
         radar_sink_ids=sinks,
         reference_frequency_hz=REFERENCE_FREQUENCY_HZ,
     )
-    tau_in, rate_in, c_in = fx.payload(composer.inbound_row_count, seed=101, device=device)
-    tau_out, rate_out, c_out = fx.payload(composer.outbound_row_count, seed=102, device=device)
+    tau_in, c_in = fx.payload(composer.inbound_row_count, seed=101, device=device)
+    tau_out, c_out = fx.payload(composer.outbound_row_count, seed=102, device=device)
 
-    def leg(tau, coefficient, rate):
-        return fx.leg_batch(tau.to(torch.float32), coefficient.to(torch.complex64), rate=rate.to(torch.float32))
+    def leg(tau, coefficient):
+        return fx.leg_batch(tau.to(torch.float32), coefficient.to(torch.complex64))
 
     response = ScalarRcsResponse.from_values(1.4, 0.35, device=device, requires_grad=False)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
-        composed = composer.compose(leg(leaf, c_in, rate_in), leg(tau_out, c_out, rate_out), response)
+        composed = composer.compose(leg(leaf, c_in), leg(tau_out, c_out), response)
         return (
             composed.complex_transfer_ref.abs().square().sum()
             + (composed.total_delay_s.to(torch.float64) * 1.0e8).square().sum()
@@ -304,8 +304,8 @@ def _aspect(device: str = "cuda") -> Boundary:
         exponent=2.0,
         coherent_interval_s=1.0e-3,
     )
-    tau_in, _, c_in = fx.payload(rows_in, seed=201, device=device)
-    tau_out, _, c_out = fx.payload(rows_out, seed=202, device=device)
+    tau_in, c_in = fx.payload(rows_in, seed=201, device=device)
+    tau_out, c_out = fx.payload(rows_out, seed=202, device=device)
     row_valid = torch.ones(composer.path_count, dtype=torch.int32, device=device)
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
@@ -321,12 +321,10 @@ def _aspect(device: str = "cuda") -> Boundary:
 #: ledger are both asserted at, by name. Built on demand rather than eagerly:
 #: each one costs a CUDA allocation and a consumer usually wants one.
 #:
-#: There were nine until Phase 11 deleted the ``dirichlet`` and ``mimo_linear``
-#: contexts with their route. There are seven names and EIGHT tape owners:
-#: ``frontend`` runs two contexts - the noise phase and the AGC gain - in one
-#: call. Every
+#: There are seven names and EIGHT tape owners: ``frontend`` runs two
+#: contexts - the noise phase and the AGC gain - in one call. Every
 #: ``torch.autograd.Function`` in the package is reachable from this table,
-#: which is what lets ``test_phase9_backward_budget.py`` assert that the ledger
+#: which is what lets ``test_backward_budget.py`` assert that the ledger
 #: enumerates all of them rather than the ones someone remembered.
 BUILDERS = {
     "two_way": _two_way,

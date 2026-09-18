@@ -286,11 +286,11 @@ def test_an_external_associator_is_accepted_and_its_output_is_validated():
 # ---------------------------------------------------------------------------
 
 
-def test_the_fixed_size_batch_replaces_reg_datas_numpy_random_path():
+def test_the_fixed_size_batch_draws_from_an_explicit_generator():
     """Three cases, on the input device, with an EXPLICIT generator.
 
-    ``reg_data`` drew from the global ``numpy`` random state, so two runs of the
-    same simulation produced different batches and nothing said so.
+    A draw from a global random state would make two runs of the same
+    simulation produce different batches with nothing saying so.
     """
 
     frame = _frame(0, clutter=True)
@@ -303,7 +303,7 @@ def test_the_fixed_size_batch_replaces_reg_datas_numpy_random_path():
     rows = {tuple(round(float(v), 9) for v in row) for row in batch}
     assert len(rows) == 2
 
-    # Same seed, same batch: it is reproducible, which reg_data was not.
+    # Same seed, same batch.
     again = frame.as_fixed_size(8, generator=torch.Generator().manual_seed(3))
     assert torch.equal(batch, again)
 

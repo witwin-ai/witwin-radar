@@ -9,7 +9,7 @@ from typing import Protocol, runtime_checkable
 import torch
 
 from .cuda import native_ops as _ops
-from .policy import first_order_only
+from .policy import SPEED_OF_LIGHT_M_PER_S, first_order_only
 
 #: Maximum unmodelled aspect-response phase walk over one coherent interval.
 ASPECT_PHASE_BUDGET_RAD = 0.1
@@ -30,9 +30,9 @@ def require_aspect_phase_rate_bounded(aspect_phase_rate_rad_per_s: float, cohere
             "unmodelled aspect Doppler: the scatter response's argument walks "
             f"by |d(arg S)/dt| * T_frame = {walk} rad over the coherent "
             f"interval, which is not below ASPECT_PHASE_BUDGET_RAD="
-            f"{ASPECT_PHASE_BUDGET_RAD}. The two-way join publishes "
-            "tan_rate_rt = 0 and carries the whole rate in tau_rt, so that "
-            "phase would simply be dropped and the target's Doppler would be "
+            f"{ASPECT_PHASE_BUDGET_RAD}. The two-way join publishes no rate "
+            "for the response's argument, so that phase would simply be "
+            "dropped and the target's Doppler would be "
             "understated by an amount no output reports. Shorten the coherent "
             "interval, slow the aspect change, or accept a response whose "
             "argument is aspect independent - there is no approximated mode"
@@ -70,8 +70,8 @@ class ScatterResponse(Protocol):
 #:
 #: ``TwoWayComposer.compose`` refuses a geometry-dependent response, because
 #: such a response is per-path physics and composing it in Torch is exactly the
-#: thing the refusal exists to stop. Phase 7 does not delete that refusal - it
-#: NARROWS it, to everything not on this list. Membership is a claim that the
+#: thing the refusal exists to stop. This list NARROWS that refusal to
+#: everything not on it. Membership is a claim that the
 #: named class evaluates its rows in a native kernel; a response that merely
 #: declares ``is_geometry_dependent`` and grows an ``evaluate_rows`` method is
 #: still refused, because a protocol check can only see the method's name and
@@ -83,56 +83,22 @@ class ScatterResponse(Protocol):
 NATIVE_ROW_RESPONSE_OWNERS = frozenset({"witwin.radar.scattering.AspectScatterResponse"})
 
 
-@runtime_checkable
-class NativeRowScatterResponse(Protocol):
-    """A geometry-dependent response the composer is allowed to dispatch.
-
-    It publishes one complex value per COMPOSED row rather than one per site,
-    and it evaluates them in a native kernel from the direction basis the two
-    legs carry. ``native_row_owner`` is its own fully qualified name and must
-    appear in :data:`NATIVE_ROW_RESPONSE_OWNERS`; that string, not the protocol,
-    is what the composer checks.
-    """
-
-    native_row_owner: str
-
-    def evaluate_rows(
-        self, composer: object, inbound: object, outbound: object, row_valid: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the ``float32[composer.path_count]`` real/imaginary pair.
-
-        A PAIR and not a complex tensor, for the reason the join and the beat
-        family already give: no complex tensor crosses the autograd boundary,
-        so the conjugate-Wirtinger convention cannot be got wrong at the seam.
-        It also means the composer hands these straight to the join with no
-        intervening ``torch.complex`` and no ``.contiguous()`` copy, so a row
-        response costs exactly ONE extra kernel launch per frame.
-        """
-        ...
-
-
-SPEED_OF_LIGHT_M_PER_S = 299792458.0
-
-#: The normalisation that makes ``|C_rt|^2`` the bistatic radar equation.
-#:
-#: A composed two-way coefficient is
-#:
-#:   |C_rt|^2 = P_in (lam/(4 pi d_in))^2 |S|^2 P_site (lam/(4 pi d_out))^2
-#:
-#: and the bistatic radar equation is
-#:
-#:   P_r = P_t G_t G_r lam^2 sigma / ((4 pi)^3 d_in^2 d_out^2)
-#:
-#: With the site excited at exactly 1 W, matching the two requires
-#:
-#:   |S|^2 = 4 pi sigma / lam^2,   i.e.   S = sqrt(4 pi sigma) / lam
-#:
-#: This was unpinned, and an unpinned target strength is not a free parameter:
-#: it is a level that is wrong by ``lam^2 / (4 pi)``, which at 77 GHz is a
-#: factor of 6.6e5, or 58 dB.
-RCS_AMPLITUDE_LAW = "sqrt(4*pi*sigma_m2)/wavelength_m"
-
-
+# The normalisation that makes ``|C_rt|^2`` the bistatic radar equation.
+#
+# A composed two-way coefficient is
+#
+#   |C_rt|^2 = P_in (lam/(4 pi d_in))^2 |S|^2 P_site (lam/(4 pi d_out))^2
+#
+# and the bistatic radar equation is
+#
+#   P_r = P_t G_t G_r lam^2 sigma / ((4 pi)^3 d_in^2 d_out^2)
+#
+# With the site excited at exactly 1 W, matching the two requires
+#
+#   |S|^2 = 4 pi sigma / lam^2,   i.e.   S = sqrt(4 pi sigma) / lam
+#
+# Omitting the ``4 pi / lam^2`` factor is a level error of ``lam^2 / (4 pi)``,
+# which at 77 GHz is a factor of 6.6e5, or 58 dB.
 def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float | torch.Tensor:
     """``sqrt(4 pi sigma) / lambda``, the dimensionless target strength.
 
@@ -170,9 +136,8 @@ def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float 
     propagates visibly through the entire cube rather than becoming a
     plausible number. An optimiser that has to reach zero should drive the
     already-supported ``amplitude`` leaf, where the map is linear, or carry
-    ``log sigma``. The host-float route keeps its exact old behaviour,
-    including the negative-value refusal, because there is no derivative there
-    to be wrong about.
+    ``log sigma``. The host-float route refuses a negative value, because
+    there is no derivative there to be wrong about.
     """
 
     if not wavelength_m > 0.0:
@@ -251,10 +216,8 @@ class ScalarRcsResponse:
         The amplitude is then ``sqrt(4 pi sigma) / lambda`` with its graph
         intact, so the derivative composes with everything the already-covered
         ``amplitude`` leaf reaches: the join, the waveform kernels, the cube.
-        This is the inverse-design question a radar caller actually asks - how
-        large does this target have to be - and before Phase 9 it could not be
-        asked at all, because the amplitude was formed by ``math.sqrt`` on the
-        host and no refusal said so.
+        This is the inverse-design question a radar caller actually asks: how
+        large does this target have to be.
 
         Two consequences of the tensor route, both deliberate:
 
@@ -277,7 +240,7 @@ class ScalarRcsResponse:
                 "the amplitude is derived from it and is not a leaf, so there "
                 "is nothing here to mark. Mark sigma_m2 itself - the "
                 "derivative then reaches this response through "
-                "RCS_AMPLITUDE_LAW - or use from_values to author the "
+                "sqrt(4 pi sigma) / lambda - or use from_values to author the "
                 "dimensionless strength as its own leaf."
             )
         return cls(
@@ -292,11 +255,10 @@ class ScalarRcsResponse:
         """Broadcast the response across ``row_count`` composed rows.
 
         ``device`` is honoured, not decorative. The composer passes the device
-        its composed rows live on, and a CPU-authored response used to be
-        accepted here and then fail with a device-mismatch error several frames
-        of stack away from the parameter that caused it. ``Tensor.to`` is
-        autograd-aware, so a response whose parameters carry gradients keeps
-        them across the move.
+        its composed rows live on; a CPU-authored response left where it was
+        would fail with a device-mismatch error several frames of stack away
+        from the parameter that caused it. ``Tensor.to`` is autograd-aware, so
+        a response whose parameters carry gradients keeps them across the move.
         """
 
         if row_count < 0:
@@ -305,8 +267,6 @@ class ScalarRcsResponse:
         phase = self.phase_rad.to(device=device, dtype=torch.complex64)
         return (amplitude * torch.exp(-1j * phase)).expand(row_count)
 
-
-ASPECT_SCATTER_LAW = "S = amplitude * max(-dot(dir_in, axis), 0)^n * max(dot(dir_out, axis), 0)^n * exp(-i * phase_rad)"
 
 #: The fully qualified name the composer checks against its owner list.
 _OWNER = "witwin.radar.scattering.AspectScatterResponse"
@@ -639,22 +599,10 @@ class AspectScatterResponse:
 
         Host work only: shape and depth validation, then one kernel launch. The
         direction tables are the legs' own aliased tensors, so a gradient taken
-        here reaches the endpoint positions the directions were built from.
-
-        That last sentence was written in Phase 7 and was not true until
-        Channel's ADR-043 (``CONTRACT_VERSION`` 6). Before it,
-        ``PropagationGeometry.field_direction`` was marked non-differentiable in
-        both field-transport setup contexts, so ``grad_dir_in`` / ``grad_dir_out``
-        were computed by the backward kernel below and then discarded, and a
-        forward tangent never arrived. It is true now, for ``{los, reflection}``
-        under a frozen topology, which is
-        ``capabilities().direction_differentiable_components`` and a superset of
-        every component the Radar adapter is allowed to freeze. Liveness is
-        decided ONCE for a whole propagation result, so there is no result in
-        which some of these rows carry a derivative and others silently do not.
-        ``tests/test_phase9_aspect_direction_ad.py`` measures the whole chain
-        against finite differences, including the falsifier that a detached
-        direction takes this gradient to exactly zero.
+        here reaches the endpoint positions the directions were built from:
+        Channel ADR-043 keeps ``field_direction`` live for ``{los, reflection}``
+        under a frozen topology, which covers every component the Radar adapter
+        may freeze.
         """
 
         if self.site_count != composer.site_count:
@@ -692,13 +640,7 @@ class AspectScatterResponse:
 
 
 def _require_direction(leg, rows: int, name: str) -> torch.Tensor:
-    direction = getattr(leg, "field_direction", None)
-    if direction is None:
-        raise ValueError(
-            f"the {name} leg carries no field_direction, so an aspect-dependent "
-            "response has no geometry to evaluate; every batch the Channel "
-            "adapter publishes carries one"
-        )
+    direction = leg.field_direction
     if int(direction.shape[0]) != rows:
         raise ValueError(
             f"the {name} leg carries {int(direction.shape[0])} direction rows but this join was frozen against {rows}"

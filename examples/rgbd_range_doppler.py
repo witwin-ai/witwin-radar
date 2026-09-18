@@ -105,10 +105,9 @@ OUTPUT_FRAME_RATE_HZ = 10.0
 #:
 #: It is deliberately far below any physical amplitude. The processing facade
 #: publishes AMPLITUDE-normalised maps whose peak is the composed transport
-#: ``|C_rt|`` in sqrt(W) - order 1e-7 for a small target at a few metres - while
-#: the deleted legacy floor of 1e-6 was tuned to an unnormalised transform
-#: carrying a factor of ``num_samples``. Reusing it here would clip the whole map
-#: to the floor and publish a uniformly blank picture.
+#: ``|C_rt|`` in sqrt(W) - order 1e-7 for a small target at a few metres - so a
+#: floor anywhere near that would clip the whole map and publish a uniformly
+#: blank picture.
 DECIBEL_FLOOR = 1e-30
 
 DEPTH_KEYS = ("depths", "depth", "depth_frames", "depth_images")
@@ -558,23 +557,18 @@ SCENE_ANTENNA_ID = 770301
 def build_scene():
     """An empty Core world: every depth sample is a declared point scatterer."""
 
-    import torch as _torch
     from witwin.core import AntennaState, Scene
     from witwin.core.identity import reserve_antenna_id
 
     return Scene(
         structures=(),
         endpoints=[
-            AntennaState(
-                reserve_antenna_id(SCENE_ANTENNA_ID), "tx", _torch.tensor((0.0, 0.0, 0.0), dtype=_torch.float32)
-            )
+            AntennaState(reserve_antenna_id(SCENE_ANTENNA_ID), "tx", torch.tensor((0.0, 0.0, 0.0), dtype=torch.float32))
         ],
     )
 
 
 def generate_range_doppler(args: argparse.Namespace) -> None:
-    import torch
-
     from witwin.radar import PointTargets, Radar
     from witwin.radar.processing import range_doppler_map
 

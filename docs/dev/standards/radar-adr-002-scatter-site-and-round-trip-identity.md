@@ -192,24 +192,23 @@ be Radar policy in someone else's contract.
 
 ## Acceptance evidence (Phase 5)
 
-- `tests/test_phase5_join_identity.py::test_a_permuted_leg_order_composes_to_an_elementwise_identical_frame`
-- `tests/test_phase5_join_identity.py::test_a_permuted_leg_order_produces_bit_identical_gradients`
-- `tests/test_phase4_two_way.py::test_two_leg_rows_that_share_an_identity_key_are_refused`
-- `tests/test_phase4_two_way.py::test_the_pair_partition_spans_the_front_end_not_the_surviving_rows`
-- `tests/test_phase4_two_way.py::test_a_leg_endpoint_outside_the_declared_front_end_is_refused`
-- `tests/test_phase5_two_way_join_kernel.py::test_an_empty_pair_segment_composes_without_a_special_case`
-- `tests/test_phase5_two_way_join_kernel.py::test_a_dead_row_publishes_exactly_zero_in_every_output`
-- `tests/test_phase5_multipath_legs.py::test_four_combined_paths_carry_the_analytic_round_trip_delays`
-- `tests/test_phase5_multipath_legs.py::test_the_frozen_row_identity_is_the_same_storage_on_every_frame`
-- `tests/test_phase5_multipath_legs.py::test_polarimetric_multipath_discovery_is_still_refused_by_the_consumer`
-- `tests/test_phase5_join_modes.py` (direct sentinels, one contract, both modes)
-- `tests/test_phase5_frame_validation.py` (a leg batch, or a response, that does
+- `tests/test_two_way_join_identity.py::test_a_permuted_leg_order_composes_to_an_elementwise_identical_frame`
+- `tests/test_two_way_join_identity.py::test_a_permuted_leg_order_produces_bit_identical_gradients`
+- `tests/test_two_way_composer.py::test_two_leg_rows_that_share_an_identity_key_are_refused`
+- `tests/test_two_way_composer.py::test_the_pair_partition_spans_the_front_end_not_the_surviving_rows`
+- `tests/test_two_way_composer.py::test_a_leg_endpoint_outside_the_declared_front_end_is_refused`
+- `tests/test_two_way_join_kernel.py::test_an_empty_pair_segment_composes_without_a_special_case`
+- `tests/test_two_way_join_kernel.py::test_a_dead_row_publishes_exactly_zero_in_every_output`
+- `tests/test_multipath_legs.py::test_four_combined_paths_carry_the_analytic_round_trip_delays`
+- `tests/test_multipath_legs.py::test_the_frozen_row_identity_is_the_same_storage_on_every_frame`
+- `tests/test_multipath_legs.py::test_polarimetric_multipath_discovery_is_still_refused_by_the_consumer`
+- `tests/test_frame_validation.py` (a leg batch, or a response, that does
   not belong to the frozen topology is refused; the refusal does not depend on a
-  leg carrying `row_valid`; `DirectComposer` too)
+  leg carrying `row_valid`)
 
 ## Acceptance evidence (Phase 4)
 
-`tests/test_phase4_two_way.py`:
+`tests/test_two_way_composer.py`:
 
 - `test_join_is_by_identity_not_by_array_position` (permuted outbound frozen
   rows produce an identical composed result, with different outbound row indices)
@@ -217,5 +216,5 @@ be Radar policy in someone else's contract.
 - `test_rows_are_sorted_into_a_valid_pair_partition`
 - `test_a_site_without_a_leg_is_refused_rather_than_dropped`
 
-`tests/test_phase4_spike_e2e.py::test_composed_delay_and_magnitude_match_the_closed_form`
+`tests/test_single_site_end_to_end.py::test_composed_delay_and_magnitude_match_the_closed_form`
 asserts the 1 W isotropic re-radiator magnitude verbatim.

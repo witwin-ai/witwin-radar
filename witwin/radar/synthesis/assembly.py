@@ -14,9 +14,9 @@ Two contracts live here and they are not the same statement:
 * :class:`SynthesisPathBatch` is what a waveform kernel is ALLOWED TO ASSUME
   about a weight.
 
-The difference is provenance. Every double-count hazard the Phase-6 physics
-survey found is a combination of a weight and a spec that nobody validates
-against each other: a Channel coefficient already carries
+The difference is provenance. Every double-count hazard in this family is a
+combination of a weight and a spec that nobody validates against each other: a
+Channel coefficient already carries
 ``exp(-j 2 pi f_ref tau_rt)``, ``lambda/(4 pi d)`` per leg, and
 ``sqrt(tx_power)``, so a kernel that applies any of them again is silently
 wrong by a factor nobody notices. Recording that on the batch and validating
@@ -31,11 +31,11 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 import torch
 
-from ..paths import JOIN_MODES, JoinMode, RadarComponentIndex, RadarPathBatch, RadarPathTopology
-from ..policy import require_host_floats
+from ..paths import RadarComponentIndex, RadarPathBatch, RadarPathTopology
+from ..policy import SPEED_OF_LIGHT_M_PER_S, require_host_floats
 
 #: Why no waveform spec scalar is differentiable, stated once and quoted by all
-#: three specs plus the Dirichlet plan.
+#: three specs.
 #:
 #: A waveform spec DECLARES a transmission: how fast the ramp sweeps, how far
 #: apart the subcarriers sit, how long the pulse is, where the gate opens. None
@@ -59,11 +59,6 @@ WAVEFORM_SPEC_REASON = (
     "and complex weight."
 )
 
-
-#: Exact SI definition, in metres per second. Named here because the FMCW spec
-#: derives its unambiguous-velocity bound from a wavelength and must agree with
-#: ``Radar.max_doppler`` to the last bit.
-SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
 #: Channel's phasor convention, which the OFDM CFR cube is published in
 #: unchanged. Quoted verbatim from ``witwin.channel.constants.PHASOR``.
@@ -122,8 +117,7 @@ class FmcwSpec:
     nonzero:
 
     * ``carrier_hz = fc``, ``carrier_rate_hz = 0``  -  the kernel owns the whole
-      carrier phase. This reproduces the Dirichlet solver's phase structure
-      exactly, which is what the equivalence test uses.
+      carrier phase, applied to the full delay ``tau``.
     * ``carrier_hz = 0``, ``carrier_rate_hz = fc``  -  the production path for
       Channel-sourced weights, where the absolute carrier phase already sits
       inside the natively computed coefficient. That placement is more accurate,
@@ -285,8 +279,8 @@ class OfdmSpec:
     ``H[symbol, sensor_pair, subcarrier]``, not a time-domain waveform. A CFR is
     the exact analogue of the FMCW beat cube: it is what per-subcarrier
     equalisation ``H = Y / X`` leaves after the transmitted symbols are removed,
-    it needs no per-sample IFFT inside the kernel, and it is what the Phase-6
-    plan names. A time-domain OFDM waveform, if one is ever needed, is a
+    and it needs no per-sample IFFT inside the kernel. A time-domain OFDM
+    waveform, if one is ever needed, is a
     downstream IFFT plus cyclic-prefix insertion in DSP glue, not synthesis
     physics.
 
@@ -303,10 +297,9 @@ class OfdmSpec:
     f_ref`` and a stationary row, ``H[0][p][0]`` is exactly the Channel
     coefficient ``C_rt``. That identity is what pinning the origin buys.
 
-    **Narrowband and wideband, both available, and the difference quantified.**
-    A batch without a ``frequency_response`` is synthesized under the narrowband
-    offset law ``H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)``: one
-    coefficient per row, so the material and antenna response is FROZEN at
+    **Narrowband, and what it costs.** The cube is synthesized under the
+    narrowband offset law ``H(f_ref + df) = C(f_ref) * exp(-j 2 pi df delay_s)``:
+    one coefficient per row, so the material and antenna response is FROZEN at
     ``f_ref`` across the whole band and only the propagation delay is
     frequency-dependent. Channel publishes what that costs, as data on
     ``convention.narrowband_frequency_offset_error_law``:
@@ -324,21 +317,7 @@ class OfdmSpec:
       a wideband radar is actually measuring, and narrowband OFDM cannot express
       it at all.
     * ZEROTH order in dispersion. A ``DispersionSpec`` is evaluated once, at
-      compile, so neither route tracks ``d(eps_r)/df``; the wideband route
-      REFUSES a dispersive scene rather than approximating it.
-
-    A batch WITH a ``frequency_response`` replaces the first two terms exactly:
-    ``C[k]`` becomes ``C[k][n] = H_k(f_ref + n*df)``, evaluated natively at each
-    subcarrier's own frequency. :attr:`frequency_offsets_hz` is the grid to ask
-    Channel for, ``F`` must equal :attr:`num_subcarriers`, and the kernel then
-    applies only the subcarrier phase's SLOW-TIME CHANGE, because the column
-    already carries ``exp(-j 2 pi f_n tau_rt)`` at the frozen delay.
-
-    FMCW and pulsed LFM deliberately do not consume a band. Their instantaneous
-    transmit frequency is continuous in fast time, so a wideband beat needs
-    either one column per fast-time sample or a declared interpolation grid with
-    its own error term - a new approximation rather than a free consequence of
-    the OFDM contract. Rule R8 refuses a band at those owners by name.
+      compile, so ``d(eps_r)/df`` is not tracked.
 
     **Cyclic prefix.** ``max_expected_delay_s`` is a CONFIGURED bound - the
     range window the radar is set up for - and never a measured maximum delay,
@@ -367,11 +346,6 @@ class OfdmSpec:
     #: consumer never has to infer it from the waveform's name.
     phasor: ClassVar[str] = CHANNEL_PHASOR
     time_dependence: ClassVar[str] = CHANNEL_TIME_DEPENDENCE
-
-    #: OFDM is the one waveform whose transmit grid IS a discrete set of
-    #: frequencies, so it is the one that can index a ``[K, F]`` band exactly.
-    #: Rule R8 reads this; FMCW and pulsed do not set it.
-    consumes_frequency_response: ClassVar[bool] = True
 
     num_subcarriers: int
     num_symbols: int
@@ -500,28 +474,6 @@ class OfdmSpec:
 
         return self.reference_frequency_hz + subcarrier * self.subcarrier_spacing_hz
 
-    @property
-    def frequency_offsets_hz(self) -> tuple[float, ...]:
-        """The band this spec needs, as offsets from ``f_ref``, in Hz.
-
-        ``(0, df, 2*df, ..., (N-1)*df)``. This is THE mapping from a subcarrier
-        index to a propagation frequency, and it lives here because the pinned
-        origin that defines it lives here. A caller hands this tuple to
-        :class:`~witwin.radar.channel.ChannelPropagationAdapter`,
-        which is how a wideband OFDM chain is wired correctly by construction
-        rather than by a caller re-deriving ``n * df`` at the far end.
-
-        Column ``0`` is ``df = 0``, which by Channel's reference identity is
-        BIT-IDENTICAL to the reference coefficient. That is what preserves the
-        anchor ``H[0][p][0] == C_rt`` when the wideband route is used.
-
-        Note what crosses the boundary: Hz. The adapter never sees a subcarrier
-        count, a spacing, or an FFT size.
-        """
-
-        spacing = self.subcarrier_spacing_hz
-        return tuple(index * spacing for index in range(self.num_subcarriers))
-
     def subcarrier_phase_step_rad(self, round_trip_delay_s: float) -> float:
         """``-2 pi df tau``, the phase step between adjacent subcarriers.
 
@@ -588,9 +540,9 @@ class PulsedSpec:
     ``bandwidth_hz`` is the LFM sweep for ``pulse_kind = "lfm"`` and ``1 / T_p``
     for ``pulse_kind = "rect"``, which is the rectangular pulse's own
     matched-filter bandwidth. It is a declared field rather than an inferred one
-    because it sets the range cell, the range-migration bound, and (in Phase-6
-    stage S4) the receiver's noise bandwidth, and inferring it differently in
-    three places is how those three quietly disagree.
+    because it sets the range cell, the range-migration bound, and the
+    receiver's noise bandwidth, and inferring it differently in three places is
+    how those three quietly disagree.
 
     **The pulse support is half-open**, ``0 <= u < T_p``, and that is a contract
     rather than an accident of writing the comparison one way. A closed support
@@ -867,11 +819,12 @@ class SlowTimeMode(str, Enum):
     moving reflector geometry, amplitude changes, or path births. A Doppler
     aliasing bound does not bound those approximation errors.
 
-    Dynamic ``Radar.simulate`` refreshes scene transport at every ADC sample
-    for FMCW by default, and at each symbol/pulse for OFDM/pulsed waveforms.
-    Explicit FMCW ``motion_sampling="chirp"`` freezes geometry within a chirp.
-    Low-level ``Radar.synthesize`` callers choose the mode and own the validity
-    of their path history; the enum never changes parameter JVPs into velocity.
+    ``Radar.echo`` picks the mode from the ``Motion`` the trace was taken with:
+    ``Motion.static`` freezes the weight for the frame, while ``Motion.chirp``,
+    ``Motion.adc`` and ``Motion.adaptive`` refresh it per slot. A caller that
+    builds a :class:`SynthesisPathBatch` directly chooses the mode and owns the
+    validity of its path history; the enum never changes parameter JVPs into
+    velocity.
     """
 
     #: The weight was computed once, at the frame's ``tau_rt``, and does not
@@ -892,14 +845,6 @@ class WaveformSpecProtocol(Protocol):
     specs have nothing else in common: an FMCW ramp, an OFDM subcarrier grid,
     and a pulse envelope share no fields. What they DO share is a position on
     the four questions that decide whether a weight may be handed to them.
-
-    ``consumes_frequency_response`` is absent for the same reason and with a
-    sharper consequence. It is the opt-in by which a waveform declares that its
-    kernel INDEXES a ``[K, F]`` wideband response instead of one coefficient per
-    row, and :func:`require_compatible` reads it through ``getattr`` with a
-    ``False`` default. Declaring it here would make every spec answer the
-    question, and a spec that answered it wrongly by inheriting a default would
-    silently discard a whole evaluated band. Rule R8 is the check.
     """
 
     #: Absolute reference-frequency carrier the KERNEL applies, in Hz. Zero
@@ -992,13 +937,10 @@ class SynthesisPathBatch:
     # ---- transfer ------------------------------------------------------------
     complex_transfer_ref: torch.Tensor
     reference_frequency_hz: float
-    frequency_response: torch.Tensor | None
-    frequency_offsets_hz: torch.Tensor | None
 
     # ---- identity ------------------------------------------------------------
     topology: RadarPathTopology
     row_valid: torch.Tensor | None
-    join_mode: JoinMode
 
     # ---- provenance ----------------------------------------------------------
     weight_includes_reference_phase: bool
@@ -1008,8 +950,6 @@ class SynthesisPathBatch:
     weight_includes_antenna_pattern: bool = False
 
     def __post_init__(self) -> None:
-        if self.join_mode not in JOIN_MODES:
-            raise ValueError(f"join_mode must be one of {sorted(JOIN_MODES)}, got {self.join_mode!r}")
         if not isinstance(self.slow_time_mode, SlowTimeMode):
             raise TypeError(f"slow_time_mode must be a SlowTimeMode member, got {self.slow_time_mode!r}")
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
@@ -1044,22 +984,6 @@ class SynthesisPathBatch:
             _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows, device=device)
         if self.row_valid is not None:
             _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows, device=device)
-        if (self.frequency_response is None) != (self.frequency_offsets_hz is None):
-            raise ValueError(
-                "frequency_response and frequency_offsets_hz are one statement "
-                "and must be supplied together; a response without its "
-                "frequency grid says nothing"
-            )
-        if self.frequency_response is not None:
-            if self.frequency_offsets_hz.dim() != 1:
-                raise ValueError("frequency_offsets_hz must have shape (F,)")
-            bands = (self.path_count, int(self.frequency_offsets_hz.shape[0]))
-            _require_tensor(
-                "frequency_response", self.frequency_response, dtype=torch.complex64, shape=bands, device=device
-            )
-            _require_tensor(
-                "frequency_offsets_hz", self.frequency_offsets_hz, dtype=torch.float32, shape=(bands[1],), device=device
-            )
         if self.topology.row_count != self.path_count:
             raise ValueError("topology must have exactly path_count rows")
 
@@ -1085,20 +1009,13 @@ class SynthesisPathBatch:
         The fourth, ``weight_includes_antenna_pattern``, is READ off the batch
         instead. Channel has no antenna pattern to publish a contract about, and
         whether Radar applied its own is a fact about what ran upstream rather
-        than about what Channel guarantees; asserting ``True`` here - as this
-        method did for all three of the others until Phase 11 - would have been
-        a claim about a stage that did not exist.
+        than about what Channel guarantees; asserting ``True`` here would be a
+        claim about a stage that may not have run.
 
         ``slow_time_mode`` is the one thing the caller must say, because only
         the caller knows whether it froze the weight for the frame or refreshes
-        it per slot. It has no default: defaulting it would make the Phase-7
-        collision a silent wrong answer instead of a refusal.
-
-        A composed band passes through by reference like everything else. It
-        does not have to be consumed - rule R8 refuses it at the waveform owner
-        that cannot - but it is never dropped here, because a batch that
-        silently forgot its band would make a wideband request produce a
-        narrowband cube with nothing to say so.
+        it per slot. It has no default: defaulting it would make a double-counted
+        Doppler a silent wrong answer instead of a refusal.
         """
 
         if not isinstance(paths, RadarPathBatch):
@@ -1112,11 +1029,8 @@ class SynthesisPathBatch:
             delay_rate=paths.delay_rate,
             complex_transfer_ref=paths.complex_transfer_ref,
             reference_frequency_hz=float(paths.reference_frequency_hz),
-            frequency_response=paths.frequency_response,
-            frequency_offsets_hz=paths.frequency_offsets_hz,
             topology=paths.topology,
             row_valid=paths.row_valid,
-            join_mode=paths.join_mode,
             weight_includes_reference_phase=True,
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
@@ -1130,6 +1044,20 @@ FMCW_BEAT_AXES = ("chirp", "sensor_pair", "sample")
 FMCW_SPECTRUM_AXES = ("chirp", "sensor_pair", "range_bin")
 OFDM_AXES = ("symbol", "sensor_pair", "subcarrier")
 PULSED_AXES = ("pulse", "sensor_pair", "sample")
+
+#: The output domains the OFDM and pulsed products are published in. FMCW's
+#: are :data:`FMCW_OUTPUT_DOMAINS`.
+OFDM_OUTPUT_CFR = "cfr"
+PULSED_OUTPUT_TIME = "time"
+
+#: The fast-time axis name each output domain implies, so a result whose axes
+#: disagree with its domain is refused at construction.
+FAST_AXIS_BY_OUTPUT_DOMAIN = {
+    FMCW_OUTPUT_SPECTRUM: "range_bin",
+    FMCW_OUTPUT_BEAT: "sample",
+    OFDM_OUTPUT_CFR: "subcarrier",
+    PULSED_OUTPUT_TIME: "sample",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1149,9 +1077,7 @@ class SynthesisResult:
             raise ValueError(
                 f"a {self.kind} cube has {len(self.axes)} axes {self.axes}, got shape {tuple(self.cube.shape)}"
             )
-        if self.axes[-1] != {"spectrum": "range_bin", "beat": "sample", "cfr": "subcarrier", "time": "sample"}.get(
-            self.output_domain
-        ):
+        if self.axes[-1] != FAST_AXIS_BY_OUTPUT_DOMAIN.get(self.output_domain):
             raise ValueError(f"output_domain={self.output_domain!r} disagrees with axes {self.axes}")
 
     @classmethod
@@ -1176,7 +1102,7 @@ class SynthesisResult:
             phasor=spec.phasor,
             time_dependence=spec.time_dependence,
             reference_frequency_hz=float(spec.reference_frequency_hz),
-            output_domain="cfr",
+            output_domain=OFDM_OUTPUT_CFR,
         )
 
     @classmethod
@@ -1188,7 +1114,7 @@ class SynthesisResult:
             phasor=spec.phasor,
             time_dependence=spec.time_dependence,
             reference_frequency_hz=float(spec.reference_frequency_hz),
-            output_domain="time",
+            output_domain=PULSED_OUTPUT_TIME,
         )
 
 
@@ -1201,30 +1127,27 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
     that only says "invalid configuration" would send the reader looking for a
     bug in the physics.
 
-    One deviation from the Phase-6 design document is recorded here rather than
-    buried: the design states R3 as "the frozen mode requires
-    ``carrier_rate_hz == reference_frequency_hz``", full stop. That is
-    unsatisfiable for the legacy real-amplitude batch, which is frozen AND has
-    ``weight_includes_reference_phase = False``: R2 then forces
-    ``carrier_hz = f_ref``, and a spec with both carrier parameters nonzero
-    double counts the carrier and is refused by the spec itself. The physics
-    resolves it - differentiating the FMCW phase with respect to slow time gives
-    the same bracket for ``(f_ref, 0)`` and ``(0, f_ref)``, because a
-    kernel-owned carrier multiplies the FULL ``tau(t)`` and therefore already
-    walks. So R3 is enforced as "the delay change has exactly one owner, chosen
-    by the provenance": the weight's carrier home decides which of the two
-    parameters must equal ``f_ref``.
+    R3 is enforced as "the delay change has exactly one owner, chosen by the
+    provenance" rather than as a flat ``carrier_rate_hz == f_ref``: a weight
+    that carries no reference phase (``weight_includes_reference_phase =
+    False``) needs ``carrier_hz = f_ref`` by R2, and a spec with both carrier
+    parameters nonzero is refused by the spec itself. The physics allows it -
+    differentiating the FMCW phase with respect to slow time gives the same
+    bracket for ``(f_ref, 0)`` and ``(0, f_ref)``, because a kernel-owned
+    carrier multiplies the FULL ``tau(t)`` and therefore already walks. So the
+    weight's carrier home decides which of the two parameters must equal
+    ``f_ref``.
     """
 
     if not isinstance(batch, SynthesisPathBatch):
         raise TypeError(f"require_compatible needs a SynthesisPathBatch, got {type(batch).__name__}")
-    for attribute in ("carrier_hz", "carrier_rate_hz", "reference_frequency_hz", "applies_spreading"):
-        if not hasattr(spec, attribute):
-            raise TypeError(
-                f"{type(spec).__name__} does not declare {attribute!r}, so it "
-                "cannot be checked against a weight's provenance; a waveform "
-                "spec must satisfy WaveformSpecProtocol"
-            )
+    if not isinstance(spec, WaveformSpecProtocol):
+        raise TypeError(
+            f"{type(spec).__name__} does not declare carrier_hz, carrier_rate_hz, "
+            "reference_frequency_hz and applies_spreading, so it cannot be "
+            "checked against a weight's provenance; a waveform spec must satisfy "
+            "WaveformSpecProtocol"
+        )
 
     carrier_hz = float(spec.carrier_hz)
     carrier_rate_hz = float(spec.carrier_rate_hz)
@@ -1304,30 +1227,6 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
             "is not transferable between reference frequencies"
         )
 
-    # R8 - a band may only be handed to a waveform owner that consumes it.
-    if batch.frequency_response is not None:
-        if not bool(getattr(spec, "consumes_frequency_response", False)):
-            raise ValueError(
-                f"{type(spec).__name__} does not consume a wideband response: it "
-                "does not declare consumes_frequency_response=True, so its kernel "
-                "knows only the narrowband law "
-                "H(f_ref+df) = C(f_ref)*exp(-j*2*pi*df*delay_s) and would apply "
-                "it to the reference column while silently discarding the "
-                f"{batch.frequency_response.shape[1]} evaluated ones. A waveform "
-                "whose instantaneous transmit frequency is continuous in fast "
-                "time - FMCW and pulsed LFM - has no discrete frequency grid to "
-                "index, so consuming a band there needs a declared "
-                "interpolation grid with its own stated error term rather than "
-                "this contract"
-            )
-        if not batch.weight_includes_reference_phase:
-            raise ValueError(
-                "a wideband response carries the absolute phase of every column "
-                "it was evaluated at, so it is meaningless on a weight that "
-                "carries no reference phase; weight_includes_reference_phase is "
-                "False on this batch"
-            )
-
 
 def require_ofdm_compatible(batch: SynthesisPathBatch, spec: OfdmSpec) -> None:
     """The shared provenance rules, plus OFDM's cyclic-prefix contract.
@@ -1354,33 +1253,11 @@ def require_ofdm_compatible(batch: SynthesisPathBatch, spec: OfdmSpec) -> None:
 
     Both refusals name ``cyclic_prefix_s``. There is no clamp and no
     reduced-accuracy mode.
-
-    A third check applies only to a wideband batch: the response's column count
-    must equal ``num_subcarriers``, because the kernel pairs column ``n`` with
-    subcarrier ``n``. The column count is a host int already in hand, so the
-    check is free. The column VALUES are deliberately not checked: the grid is a
-    ``[F]`` device tensor and reading it here would be a per-frame
-    device-to-host transfer, for exactly the reason the cyclic-prefix bound is
-    configured rather than measured. The grid's correctness is owned at the
-    producing end instead - :attr:`OfdmSpec.frequency_offsets_hz` is the one
-    place ``n * df`` is written, and a caller that asks Channel for that tuple
-    cannot get the mapping wrong.
     """
 
     if not isinstance(spec, OfdmSpec):
         raise TypeError(f"require_ofdm_compatible needs an OfdmSpec, got {type(spec).__name__}")
     require_compatible(batch, spec)
-    if batch.frequency_response is not None and int(batch.frequency_response.shape[1]) != spec.num_subcarriers:
-        raise ValueError(
-            f"the batch carries a {int(batch.frequency_response.shape[1])}-column "
-            f"wideband response but this spec declares "
-            f"num_subcarriers={spec.num_subcarriers}. The CFR kernel indexes "
-            "column n with subcarrier n, so the two counts are the same number "
-            "and a mismatch would either read past the band or leave evaluated "
-            "columns unused. Request the band with "
-            "OfdmSpec.frequency_offsets_hz, which is the grid this spec's "
-            "pinned origin defines"
-        )
     if spec.max_expected_delay_s >= spec.cyclic_prefix_s:
         raise ValueError(
             "the configured echo window does not fit inside the cyclic prefix: "
@@ -1451,43 +1328,12 @@ def require_pulsed_compatible(batch: SynthesisPathBatch, spec: PulsedSpec) -> No
         )
 
 
-"""Structural packing between the synthesis pair axis and the sigproc array.
-
-A waveform kernel produces one cube per frame, ``[chirp, sensor_pair, sample]``,
-because a sensor pair is exactly the partition the path rows are grouped by.
-Every ``sigproc`` consumer instead wants ``[TX, RX, chirp, sample]``, because a
-virtual-array index is what an AoA estimator steers. Converting between them is
-pure structural packing - a permute, a view, and a contiguous copy - and is
-therefore Python's job under the plan's orchestration allowlist. It evaluates no
-physics and reads no tensor value.
-
-The load-bearing detail is the pair NUMBERING, and the two sides do not agree:
-
-* The composed pair rank is SINK MAJOR, ``pair = rx_rank * num_tx + tx_rank``.
-  It comes from :func:`witwin.radar.paths.sink_major_rank`, which
-  mirrors the Channel consumer's own ``sink_row_index * source_count +
-  source_row_index`` so that Radar does not put a second, silently different,
-  virtual-array numbering on the same data.
-* The ``sigproc`` virtual antenna index is TX MAJOR, ``va = tx * num_rx + rx``.
-  ``sigproc/pointcloud.py::_compensate_tdm_phase`` slices ``va_start =
-  tx * num_rx``, and ``frame2pointcloud`` flattens axes 0 and 1 of the rank-4
-  frame in that order.
-
-The two are transposes of each other, so assembling the cube with a bare
-``view`` would swap TX and RX channels whenever ``num_tx != num_rx`` and would
-silently mis-steer every angle whenever ``num_tx == num_rx``. The transpose is
-performed here, once, in :func:`assemble_frame_cube`, and the same statement of
-the numbering drives :func:`pair_tx_index`, which tells the beat kernel which
-TDM slot each pair sits in. One convention, two consumers, no second copy.
-"""
-
-
-#: The composed pair numbering, stated once. Quoted by the tests that pin it
-#: against ``witwin.radar.paths.sink_major_rank``.
+#: The composed pair numbering, stated once. It comes from
+#: :func:`witwin.radar.paths.sink_major_rank`, which mirrors the Channel
+#: consumer's own ``sink_row_index * source_count + source_row_index`` so that
+#: Radar does not put a second, silently different, virtual-array numbering on
+#: the same data. Quoted by the tests that pin it against that function.
 PAIR_RANK_LAYOUT = "sink_major: pair = rx_rank * num_tx + tx_rank"
-
-#: The layout the rank-4 frame cube is published in.
-FRAME_CUBE_AXES = ("tx", "rx", "chirp", "sample")
 
 
 def segment_of_each_row(pair_offsets: torch.Tensor, path_count: int) -> torch.Tensor:
@@ -1523,10 +1369,13 @@ def _require_array(num_tx: int, num_rx: int) -> int:
 def pair_tx_index(*, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str) -> torch.Tensor:
     """Which transmitter drives each sensor pair, as ``int32[pair_count]``.
 
-    Under :data:`PAIR_RANK_LAYOUT` the transmitter rank is ``pair % num_tx``,
-    not ``pair // num_rx``. Getting that backwards assigns the wrong TDM slot to
-    every pair, which shifts each channel's Doppler phase by a whole chirp
-    period and still produces a cube that looks entirely reasonable.
+    Under :data:`PAIR_RANK_LAYOUT` the transmitter rank is ``pair % num_tx``
+    and the receiver rank is ``pair // num_tx``, not ``pair // num_rx``.
+    Getting that backwards assigns the wrong TDM slot to every pair, which
+    shifts each channel's Doppler phase by a whole chirp period and still
+    produces a cube that looks entirely reasonable. This is the one place the
+    numbering is written as code; :func:`assemble_frame_cube` is the same
+    statement as a transpose.
 
     The pair count is checked against the declared array rather than trusted:
     a batch frozen over a different front end than the waveform spec describes
@@ -1543,25 +1392,6 @@ def pair_tx_index(*, num_tx: int, num_rx: int, sensor_pair_count: int, device: t
         )
     ranks = torch.arange(expected, device=device, dtype=torch.int32)
     return torch.remainder(ranks, num_tx)
-
-
-def pair_rx_index(*, num_tx: int, num_rx: int, sensor_pair_count: int, device: torch.device | str) -> torch.Tensor:
-    """Which receiver owns each sensor pair, as ``int32[pair_count]``.
-
-    The companion of :func:`pair_tx_index` under the same numbering. Nothing in
-    Phase 6 needs it on the hot path; it exists so the numbering is written down
-    in both directions in one place instead of being rederived by a reader.
-    """
-
-    expected = _require_array(num_tx, num_rx)
-    if sensor_pair_count != expected:
-        raise ValueError(
-            f"this batch spans {sensor_pair_count} sensor pairs but the waveform "
-            f"spec declares a {num_tx} x {num_rx} array, which is {expected} "
-            "pairs; the pair partition and the array must be the same front end"
-        )
-    ranks = torch.arange(expected, device=device, dtype=torch.int32)
-    return torch.div(ranks, num_tx, rounding_mode="floor")
 
 
 def tdm_slot_count(*, num_chirps: int, num_tx: int) -> int:
@@ -1624,54 +1454,36 @@ def pair_slot_index(
     and it is built by CALLING :func:`pair_tx_index` rather than by rederiving
     ``pair % num_tx``, so the beat kernel and a batched propagation replay
     cannot drift onto two different slot tables. The kernel multiplies the same
-    index by the chirp period; :func:`tdm_slot_times_s` is that multiplication
-    for a caller who needs the times themselves.
+    index by the chirp period. Every index is below
+    ``tdm_slot_count(num_chirps, num_tx)`` by construction.
     """
 
-    slots = tdm_slot_count(num_chirps=num_chirps, num_tx=num_tx)
     transmitter = pair_tx_index(num_tx=num_tx, num_rx=num_rx, sensor_pair_count=sensor_pair_count, device=device).to(
         torch.int64
     )
     chirp = torch.arange(num_chirps, device=device, dtype=torch.int64)
-    index = chirp.mul(num_tx).reshape(-1, 1) + transmitter.reshape(1, -1)
-    if int(index.max()) >= slots:
-        raise ValueError(f"slot index {int(index.max())} escapes the {slots}-slot frame")
-    return index
-
-
-def tdm_slot_times_s(
-    *,
-    num_chirps: int,
-    num_tx: int,
-    chirp_period_s: float,
-    device: torch.device | str,
-    dtype: torch.dtype = torch.float64,
-) -> torch.Tensor:
-    """The world time of every TDM slot in one frame, slot major.
-
-    ``t[slot] = slot * chirp_period_s`` with ``slot`` numbered by
-    :func:`pair_slot_index`, so ``t[slot(c, p)]`` is exactly the
-    ``(c * num_tx + segment_tx_index[p]) * chirp_period`` the beat kernel uses.
-    Built in float64 because a frame is a long chain of small increments and a
-    world time is a coordinate, not a phase.
-    """
-
-    slots = tdm_slot_count(num_chirps=num_chirps, num_tx=num_tx)
-    period = float(chirp_period_s)
-    if not period > 0.0:
-        raise ValueError(f"chirp_period_s must be positive, got {chirp_period_s!r}")
-    return torch.arange(slots, device=device, dtype=dtype).mul(period)
+    return chirp.mul(num_tx).reshape(-1, 1) + transmitter.reshape(1, -1)
 
 
 def assemble_frame_cube(cube: torch.Tensor, *, num_tx: int, num_rx: int) -> torch.Tensor:
     """``[chirp, pair, sample]`` -> ``[TX, RX, chirp, sample]``.
 
+    A waveform kernel produces ``[chirp, sensor_pair, sample]`` because a
+    sensor pair is the partition the path rows are grouped by. Every processing
+    stage wants ``[TX, RX, chirp, sample]``, because the virtual-antenna index
+    :class:`~witwin.radar.processing.angle.ArrayGeometry` steers is TX MAJOR,
+    ``va = tx * num_rx + rx``, while the composed pair rank is SINK MAJOR
+    (:data:`PAIR_RANK_LAYOUT`). The two are transposes of each other, so a bare
+    ``view`` would swap TX and RX channels whenever ``num_tx != num_rx`` and
+    silently mis-steer every angle whenever ``num_tx == num_rx``. The transpose
+    is performed here, once, and the same statement of the numbering drives
+    :func:`pair_tx_index`.
+
     Pure structural packing: one permute to bring the pair axis to the front,
     one view that splits it into ``(rx, tx)`` because the rank is sink major,
-    one permute that puts TX first because ``sigproc`` is tx major, and one
-    contiguous copy. No tensor value is read, no arithmetic is performed, and
-    the gradient passes straight through, so this runs inside the per-frame host
-    observation budget.
+    one permute that puts TX first, and one contiguous copy. No tensor value is
+    read, no arithmetic is performed, and the gradient passes straight through,
+    so this runs inside the per-frame host observation budget.
 
     The pair-count check is the reshape's precondition, not a physics check:
     a cube whose pair axis is not exactly ``num_tx * num_rx`` long cannot be
@@ -1729,11 +1541,6 @@ def select_component(batch: SynthesisPathBatch, index: RadarComponentIndex, name
     checked by OBJECT IDENTITY, not by row count: two topologies of the same
     length are the commonest way to mask the wrong rows, and the resulting cube
     is a perfectly plausible frame of the wrong scene.
-
-    A composed band is masked along with the reference column. Leaving it
-    unmasked would publish a batch whose narrowband weight says the row is
-    absent and whose wideband columns say it is present, and the waveform owner
-    that consumed the band would silently disagree with the one that did not.
     """
 
     if not isinstance(batch, SynthesisPathBatch):
@@ -1750,9 +1557,4 @@ def select_component(batch: SynthesisPathBatch, index: RadarComponentIndex, name
         )
     mask = index.mask(name)
     weight = torch.where(mask, batch.complex_transfer_ref, torch.zeros_like(batch.complex_transfer_ref))
-    band = (
-        None
-        if batch.frequency_response is None
-        else torch.where(mask.unsqueeze(1), batch.frequency_response, torch.zeros_like(batch.frequency_response))
-    )
-    return replace(batch, complex_transfer_ref=weight, frequency_response=band)
+    return replace(batch, complex_transfer_ref=weight)

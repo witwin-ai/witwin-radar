@@ -1,10 +1,5 @@
 // Pulsed echo train over the (pulse, fast-time sample) grid.
 //
-// This is the Phase-6 pulsed synthesis primitive. Like the beat and CFR
-// families it is registered in the single `_radar_native` library Radar ships
-// (R-ADR-004; the Phase-10 rename made the physical stem match this logical
-// name).
-//
 // Closed form, stated verbatim:
 //
 //   t_l         = l * pri_s
@@ -60,8 +55,8 @@
 // anywhere in this family.
 //
 // What this kernel emits is the matched-filter INPUT. The matched filter itself
-// is a correlation with the conjugated replica and lives in DSP glue
-// (witwin/radar/sigproc/matched_filter.py) under the plan's Torch/FFT exception.
+// is a correlation with the conjugated replica and lives in processing
+// (witwin/radar/processing/signal.py), which owns Torch FFT work.
 // Synthesis owns the received waveform; processing owns the filter. Fusing the
 // correlation in here would bake a modelling choice - which replica, which
 // window, which oversampling - into the physics.
@@ -119,13 +114,11 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
-
-constexpr double kTwoPiD = 6.283185307179586476925286766559;
 
 // Pulse-kind selector, mirroring PULSE_KIND_RECT / PULSE_KIND_LFM on the Python
 // spec. An integer rather than a template parameter because the alternative is
@@ -221,13 +214,7 @@ __global__ void pulsed_echo_forward_kernel(
     return;
   }
 
-  // A memory-safety backstop, not a validation policy: the host wrapper checks
-  // the table's SHAPE but never reads its values, because doing so per frame
-  // would be the D2H the fixed-topology capability exists to avoid.
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const double t_l = static_cast<double>(pulse) * pri_s;
   const double t_fast =
@@ -235,7 +222,7 @@ __global__ void pulsed_echo_forward_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const PulseTerm term = pulse_term(
@@ -293,10 +280,7 @@ __global__ void pulsed_echo_jvp_kernel(
     return;
   }
 
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const double t_l = static_cast<double>(pulse) * pri_s;
   const double t_fast =
@@ -304,7 +288,7 @@ __global__ void pulsed_echo_jvp_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const PulseTerm term = pulse_term(
@@ -445,55 +429,6 @@ __global__ void pulsed_echo_backward_kernel(
   grad_weight_im[k] = static_cast<float>(d_w_im);
 }
 
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
-}
-
-void check_path_inputs(
-    const torch::stable::Tensor& tau_rt,
-    const torch::stable::Tensor& tau_rate,
-    const torch::stable::Tensor& weight_re,
-    const torch::stable::Tensor& weight_im,
-    int num_paths) {
-  check_cuda_float(tau_rt, "tau_rt");
-  check_cuda_float(tau_rate, "tau_rate");
-  check_cuda_float(weight_re, "weight_re");
-  check_cuda_float(weight_im, "weight_im");
-  STD_TORCH_CHECK(
-      tau_rt.numel() == num_paths && tau_rate.numel() == num_paths &&
-          weight_re.numel() == num_paths && weight_im.numel() == num_paths,
-      "tau_rt, tau_rate, weight_re, and weight_im must each hold num_paths values.");
-}
-
 void check_output(
     const torch::stable::Tensor& out_re,
     const torch::stable::Tensor& out_im,
@@ -522,14 +457,6 @@ void check_pulse(int pulse_kind, double pulse_width_s, double pulse_amplitude) {
       "pulse_kind must be 0 (rect) or 1 (lfm).");
   STD_TORCH_CHECK(pulse_width_s > 0.0, "pulse_width_s must be positive.");
   STD_TORCH_CHECK(pulse_amplitude > 0.0, "pulse_amplitude must be positive.");
-}
-
-dim3 sample_grid(
-    int num_samples,
-    int num_segments,
-    int num_pulses,
-    int block) {
-  return dim3((num_samples + block - 1) / block, num_segments, num_pulses);
 }
 
 }  // namespace

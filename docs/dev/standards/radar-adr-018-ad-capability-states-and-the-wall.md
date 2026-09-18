@@ -69,7 +69,7 @@ or `DECL` with a named deferral, and every deferral carries a reason and a
 follow-up owner.
 
 `docs/dev/radar-ad-capability-matrix.md` is the authoritative record, and
-`tests/test_phase9_capability_matrix.py` is what makes it authoritative rather
+`tests/test_ad_capability_matrix.py` is what makes it authoritative rather
 than decorative: it parses the document, closes the four vocabularies, resolves
 every cited test node id against the source, freezes the row count per section,
 and pins the mirrored Channel rows against the live `capabilities()` record.
@@ -151,7 +151,7 @@ rather than a plea:
 
 The capability matrix records its mechanism as `torch-orchestration`, which
 R-ADR-007 allows outside the hot path, and
-`tests/test_phase6_no_torch_physics.py` pins `scattering.py`'s whole matched
+`tests/test_no_torch_physics.py` pins `scattering.py`'s whole matched
 Torch set by EQUALITY, so a second arithmetic expression in that module fails.
 
 Two consequences of the tensor route are deliberate. `requires_grad=True` is
@@ -210,7 +210,7 @@ released. Two rules:
   `ctx.saved_tensors` reads in the package, in the eight owner files, each
   inside a `backward` or a `jvp`.
 
-Both are tested (`tests/test_phase9_tape_non_leak.py`) rather than inspected,
+Both are tested (`tests/test_tape_containment.py`) rather than inspected,
 and the ledger `docs/dev/ad-tape-and-budget-ledger.md` records every owner's
 saved tensor names, a symbolic byte formula, the measured bytes, launch counts,
 backward wall time and - the column the document exists for - the context
@@ -237,14 +237,14 @@ the headroom applied on top of that. No existing budget was weakened.
   CFAR, point cloud, AoA, tracking, every spec scalar and every velocity leaf
   refuse where they previously returned a number or a `None`.
 - The refusals are all at function entry, so no caller is left holding a
-  half-built result. `tests/test_phase9_processing_wall.py`'s `_ComputeWatch`
+  half-built result. `tests/test_processing_differentiability_wall.py`'s `_ComputeWatch`
   measures that rather than asserting it, and is calibrated against the same
   stages running normally so the zero is never vacuous.
 - Adding a leaf now costs a matrix row. Forgetting one fails
-  `tests/test_phase9_capability_matrix.py::test_every_section_carries_its_frozen_row_count`.
+  `tests/test_ad_capability_matrix.py::test_every_section_carries_its_frozen_row_count`.
 - Adding a tenth-plus autograd `Function` costs a boundary entry in
   `tests/support/ad_boundaries.py`. Forgetting it fails
-  `tests/test_phase9_backward_budget.py::test_the_launch_ledger_covers_every_tape_owner_in_the_package`
+  `tests/test_backward_budget.py::test_the_launch_ledger_covers_every_tape_owner_in_the_package`
   and takes the higher-order rejection coverage with it.
 
 ## Deferrals
@@ -271,7 +271,7 @@ consumer boundary and must not diverge. Channel owns the propagation cells and
 publishes them in `PropagationCapabilities`; Radar owns everything above the
 adapter and mirrors the Channel rows it consumes. The mirror is pinned against
 the live record by
-`tests/test_phase9_capability_matrix.py::test_the_mirrored_channel_rows_agree_with_the_live_capability_record`,
+`tests/test_ad_capability_matrix.py::test_the_mirrored_channel_rows_agree_with_the_live_capability_record`,
 so a Channel change that contradicts this document fails in Radar's suite rather
 than in a reader's expectations.
 

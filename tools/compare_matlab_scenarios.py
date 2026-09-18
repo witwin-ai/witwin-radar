@@ -93,8 +93,10 @@ def material_export(directory):
                         tx = endpoint([-half_distance, 0.21, 1], source_pol, True)
                         rx = endpoint([half_distance, 0.21, 1], sink_pol, False)
                         image_tx = endpoint([-half_distance, 0.21, -1], sink_pol, True)
-                        leg = reflected.reevaluate(reflected.freeze(tx, rx), tx, rx, ad_mode="none")
-                        direct = empty.reevaluate(empty.freeze(image_tx, rx), image_tx, rx, ad_mode="none")
+                        leg = reflected.reevaluate_slots(reflected.freeze(tx, rx), tx, rx, slot_count=1, ad_mode="none")
+                        direct = empty.reevaluate_slots(
+                            empty.freeze(image_tx, rx), image_tx, rx, slot_count=1, ad_mode="none"
+                        )
                         assert len(leg.delay_s) == len(direct.delay_s) == 1
                         assert bool(leg.row_valid.all()) and bool(direct.row_valid.all())
                         coefficient = complex((leg.coefficient / direct.coefficient).item())
@@ -178,7 +180,7 @@ def performance_export(directory):
 
 
 class ExperimentMotion:
-    """``positions`` is the simulator's view; ``at`` adds the analytic velocity."""
+    """``positions`` is the simulator's view; ``velocity`` is the analytic rate."""
 
     def __init__(self, kind):
         self.kind = kind
@@ -187,6 +189,12 @@ class ExperimentMotion:
         return self.at(t).positions_m
 
     def at(self, t):
+        return Kinematics(self._state(t)[0])
+
+    def velocity(self, t):
+        return self._state(t)[1]
+
+    def _state(self, t):
         w = 2 * math.pi * 80
         if self.kind == "static":
             points, speeds = [[30, 0, 0]], [[0, 0, 0]]
@@ -198,7 +206,7 @@ class ExperimentMotion:
         else:
             points = [[30 + 0.002 * math.sin(w * t), 0.1, 0], [30.03 + 0.004 * math.sin(w * t / 2), -0.1, 0]]
             speeds = [[0.002 * w * math.cos(w * t), 0, 0], [0.002 * w * math.cos(w * t / 2), 0, 0]]
-        return Kinematics(
+        return (
             torch.tensor(points, dtype=torch.float32, device="cuda"),
             torch.tensor(speeds, dtype=torch.float32, device="cuda"),
         )
@@ -276,9 +284,9 @@ def motion_export(directory, cases, accuracy_only=False, interpolation_nodes=2):
             assert result.last_radar_paths.path_count == 4
         positions, velocities = [], []
         for chirp in range(spec.num_chirps):
-            state = trajectory.at(chirp * spec.chirp_period_s)
-            positions.append(state.positions_m.cpu().numpy())
-            velocities.append(state.velocities_m_per_s.cpu().numpy())
+            instant = chirp * spec.chirp_period_s
+            positions.append(trajectory.positions(instant).cpu().numpy())
+            velocities.append(trajectory.velocity(instant).cpu().numpy())
         savemat(
             directory / f"{kind}-motion-input.mat",
             {

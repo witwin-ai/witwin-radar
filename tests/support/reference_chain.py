@@ -2,7 +2,7 @@
 
 TEST-ONLY. CLAUDE.md permits a CPU/Torch reference implementation only under
 ``tests/``; a production module that imported this would be introducing a Torch
-numerical backend, and ``tests/test_phase4_import_boundary.py`` rejects it.
+numerical backend, and ``tests/test_import_boundary.py`` rejects it.
 
 Why an oracle and not finite differences alone: the production loss is float32
 and its magnitude is dominated by terms that are almost unrelated to the
@@ -27,7 +27,7 @@ import math
 
 import torch
 
-from . import phase4_geometry as geo
+from . import single_site_geometry as geo
 
 
 def leg_transfer(
@@ -118,7 +118,7 @@ def beat_samples(
 
     offsets = [int(v) for v in pair_offsets.tolist()]
     num_segments = len(offsets) - 1
-    num_tx = int(getattr(spec, "num_tx", 1))
+    num_tx = int(spec.num_tx)
     if segment_tx_index is None:
         tx_of_segment = [0] * num_segments
     else:

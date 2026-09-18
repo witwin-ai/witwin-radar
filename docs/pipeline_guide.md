@@ -101,7 +101,7 @@ Only `witwin/radar/channel.py` imports Channel in production. The boundary publi
 
 ## 2. Configure a radar
 
-`Radar` is one flat immutable record in SI units: the carrier, the waveform, the two antenna layouts and the transmit power are required, and the pattern, the four receive stages, the port impedance, the seed, the pose and the device have defaults. Internally it derives four conceptual blocks — waveform, sensors, propagation, frontend. There is no processing block: the four keys that used to build one (`frame_per_second`, `num_doppler_bins`, `num_range_bins`, `num_angle_bins`) were read by nothing, and the loader now refuses them by name rather than storing a number that decides nothing.
+`Radar` is one flat immutable record in SI units: the carrier, the waveform, the two antenna layouts and the transmit power are required, and the pattern, the four receive stages, the port impedance, the seed, the pose and the device have defaults. Internally it derives four conceptual blocks — waveform, sensors, propagation, frontend. There is no processing block: `frame_per_second`, `num_doppler_bins`, `num_range_bins` and `num_angle_bins` are not part of the format and the loader refuses them like any other unknown key.
 
 `Radar.from_dict(...)` accepts the flat configuration used by examples and config files, in the vendor units it is written in — slope in MHz/µs, sample rate in kSPS, the three timings in microseconds, power in dBm, element positions in half wavelengths. This is the only place those units are read; every other field is a keyword override in SI names, so a receive chain and a pose attach in the same call. Any key the record does not consume is refused.
 
@@ -139,7 +139,7 @@ There is no default target set, and Radar derives no scatterer from geometry —
 1. sample the Core world at waveform observation times within each requested frame;
 2. compile or reuse the Channel scene epoch;
 3. discover or reevaluate one-way topology according to policy;
-4. compose direct or two-way round trips;
+4. compose two-way round trips;
 5. evaluate scattering and optional sensor-pattern weights;
 6. synthesize the configured waveform;
 7. apply the declared frontend;

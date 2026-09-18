@@ -18,7 +18,7 @@ from .detection import (
     PointCloud,
     ca_cfar,
     ca_cfar_1d,
-    ca_cfar_fast,
+    combine_coherent,
     combine_incoherent,
     os_cfar,
     point_cloud,
@@ -30,11 +30,10 @@ from .range_doppler import (
     lag_axis,
     matched_filter,
     microdoppler_spectrogram,
-    pulse_samples,
     range_doppler_map,
     range_profile,
 )
-from .signal import ProcessingAxes, ProcessingCube
+from .signal import ProcessingAxes, ProcessingCube, pulse_samples
 from .tracking import DetectionFrame, TrackHandoff, nearest_neighbour_associator
 
 __all__ = [
@@ -53,7 +52,7 @@ __all__ = [
     "beam_cube",
     "ca_cfar",
     "ca_cfar_1d",
-    "ca_cfar_fast",
+    "combine_coherent",
     "combine_incoherent",
     "conventional_steering",
     "fft2_aoa",

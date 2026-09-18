@@ -92,9 +92,9 @@ chain.
   closure resolves no ray-tracing distribution), Phase 10
 - `ci/check_workflow_policy.py` (the consumer job is present, and the gate is
   proven to fail when it is deleted), Phase 10
-- `tests/test_phase10_wheel_packaging.py` (the `channel` extra exists and pins
+- `tests/test_wheel_packaging.py` (the `channel` extra exists and pins
   the versioned range), Phase 10
-- `tests/test_phase4_contracts.py::test_propagation_package_does_not_import_the_channel_adapter`
-- `tests/test_phase4_import_boundary.py::test_the_propagation_package_alone_does_not_require_channel`
-- `tests/test_phase4_import_boundary.py::test_synthesis_scattering_and_paths_do_not_require_channel`
-- `tests/test_phase4_binding_manifest.py::test_the_load_check_covers_every_operator_family`
+- `tests/test_module_contracts.py::test_propagation_package_does_not_import_the_channel_adapter`
+- `tests/test_import_boundary.py::test_the_propagation_package_alone_does_not_require_channel`
+- `tests/test_import_boundary.py::test_synthesis_scattering_and_paths_do_not_require_channel`
+- `tests/test_native_binding_manifest.py::test_the_load_check_covers_every_operator_family`

@@ -25,8 +25,10 @@ from support import exact_bin_grid as grid
 from support import multi_endpoint_driver as drv
 
 from witwin.radar.processing import ProcessingAxes, ProcessingCube, range_profile
-from witwin.radar.synthesis import synthesize_fmcw, synthesize_ofdm, synthesize_pulsed
 from witwin.radar.synthesis.assembly import PULSE_KIND_RECT, SynthesisResult
+from witwin.radar.synthesis.fmcw import synthesize_fmcw
+from witwin.radar.synthesis.ofdm import synthesize_ofdm
+from witwin.radar.synthesis.pulsed import synthesize_pulsed
 
 pytestmark = pytest.mark.gpu
 
@@ -59,18 +61,16 @@ def _row_of(profile, segment):
 
 
 # ---------------------------------------------------------------------------
-# 1 - FMCW exact range bin
+# FMCW exact range bin
 # ---------------------------------------------------------------------------
 
 
-def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target, capsys):
+def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target):
     """Bin 50, with both neighbours below -40 dB and no window.
 
     A pure beat tone whose frequency is exactly ``k f_s / N`` puts every other
     DFT bin at zero, so the sidelobe level measures how far the fixture's
-    float32 delay is from the solved one rather than any windowing choice. The
-    measured level is printed, because a number that is quoted in a report and
-    never produced by a run is a number nobody checked.
+    float32 delay is from the solved one rather than any windowing choice.
     """
 
     batch, row, segment = target
@@ -81,9 +81,7 @@ def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target, capsys):
 
     top = float(magnitude[peak])
     sidelobes = [20.0 * math.log10(float(magnitude[peak + offset]) / top) for offset in (-1, 1)]
-    assert max(sidelobes) < -40.0, sidelobes
-    with capsys.disabled():
-        print(f"\nFMCW bin {peak}, neighbours {sidelobes[0]:.1f} / {sidelobes[1]:.1f} dB")
+    assert max(sidelobes) < -40.0, f"FMCW bin {peak}, neighbours {sidelobes[0]:.1f} / {sidelobes[1]:.1f} dB"
 
     # And the bin means the right number of metres, through the axis and not
     # through a formula restated here.
@@ -91,20 +89,18 @@ def test_the_fmcw_beat_spectrum_peaks_on_the_solved_bin(target, capsys):
 
 
 # ---------------------------------------------------------------------------
-# 2 - OFDM exact CIR sample, and the amplitude anchor
+# OFDM exact CIR sample, and the amplitude anchor
 # ---------------------------------------------------------------------------
 
 
 def test_the_ofdm_cir_peaks_on_the_solved_sample_and_anchors_the_amplitude(target):
     """CIR sample 4, and ``H[0][p][0] == C_rt`` EXACTLY.
 
-       The subcarrier origin is pinned at `
-    = 0 -> f_ref``, so subcarrier zero of
-       a stationary row is the Channel coefficient itself with no phase offset at
-       all. That identity is the cross-waveform amplitude anchor and it is asserted
-       bitwise, not to a tolerance: anything else would mean the CFR kernel applied
-       something at `
-    = 0``.
+    The subcarrier origin is pinned at ``n = 0 -> f_ref``, so subcarrier zero
+    of a stationary row is the Channel coefficient itself with no phase offset
+    at all. That identity is the cross-waveform amplitude anchor and it is
+    asserted bitwise, not to a tolerance: anything else would mean the CFR
+    kernel applied something at ``n = 0``.
     """
 
     batch, row, segment = target
@@ -127,11 +123,11 @@ def test_the_ofdm_cir_peaks_on_the_solved_sample_and_anchors_the_amplitude(targe
 
 
 # ---------------------------------------------------------------------------
-# 3 - pulsed exact matched-filter lag
+# Pulsed exact matched-filter lag
 # ---------------------------------------------------------------------------
 
 
-def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
+def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target):
     """Lag 4, with the peak within the one-sample straddle the support costs.
 
     RECORDED DEVIATION. The design asks for a rectangular pulse here. Measured
@@ -162,9 +158,7 @@ def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
 
     coefficient = float(batch.complex_transfer_ref[row].abs())
     ratio = float(magnitude[peak]) / coefficient
-    assert 0.95 < ratio <= 1.0, ratio
-    with capsys.disabled():
-        print(f"\npulsed LFM lag {peak}, peak / |C_rt| = {ratio:.6f} (31/32 = {31 / 32:.6f})")
+    assert 0.95 < ratio <= 1.0, f"pulsed LFM lag {peak}, peak / |C_rt| = {ratio:.6f} (31/32 = {31 / 32:.6f})"
 
     # The rect pulse on the same grid: a triangle whose neighbours are
     # 20 log10(31/32) = -0.2757 dB down, which is why it is not the exact-bin
@@ -183,12 +177,12 @@ def test_the_pulsed_matched_filter_peaks_on_the_solved_lag(target, capsys):
 
 
 # ---------------------------------------------------------------------------
-# 9 - the DC removal is a flag, and it is off
+# The DC removal is a flag, and it is off
 # ---------------------------------------------------------------------------
 
 
 def test_remove_dc_defaults_to_off_and_removes_the_fast_time_mean_when_asked(target):
-    """``process_rd_tensor`` does this unconditionally; here it is a choice.
+    """DC removal is a choice the caller makes, not a default.
 
     A constant fast-time offset is exactly what a clutter export or a leakage
     component looks like, and silently deleting it would make a component sum
@@ -223,7 +217,7 @@ def test_remove_dc_defaults_to_off_and_removes_the_fast_time_mean_when_asked(tar
 
 
 # ---------------------------------------------------------------------------
-# 10 - rank genericity
+# Rank genericity
 # ---------------------------------------------------------------------------
 
 

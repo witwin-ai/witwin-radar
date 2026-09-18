@@ -3,7 +3,7 @@
 import pytest
 import torch
 from support import multi_endpoint_driver as drv
-from test_phase9_aspect_direction_ad import _response
+from support.aspect_fixture import aspect_response
 
 from witwin.radar.scattering import _ScatterDirection
 
@@ -29,7 +29,7 @@ def test_native_scatter_direction_primal_vjp_and_jvp():
 
 def test_outbound_reflection_aspect_uses_departure_and_carries_gradients():
     spike = drv.MultiEndpointSpike()
-    response = _response()
+    response = aspect_response()
     positions = spike.site_tensor(requires_grad=True)
     inbound, outbound = spike.legs(positions, ad_mode="vjp")
     composer = spike.composer

@@ -1,9 +1,9 @@
 """The independent Torch oracle for the native ``sensor_weight`` family.
 
 Round-trip path length, path-length rate, and transmit/receive antenna-pattern
-gain, written in Torch so ``tests/test_phase6_sensor_weight.py`` can pin the
+gain, written in Torch so ``tests/test_sensor_weight.py`` can pin the
 CUDA kernel against them term for term.
-``tests/test_phase6_oracle_independence.py`` is the structural guard that keeps
+``tests/test_oracle_independence.py`` is the structural guard that keeps
 this module from importing ``witwin.radar.sensors`` or
 ``witwin.radar.synthesis``: an oracle that imports the owner it checks agrees
 by construction and proves nothing.
@@ -13,24 +13,26 @@ shapes, and the order of the multiplications are reproduced exactly, so the
 oracle's numbers are bit-identical to what it produced before the split. A
 "cleaner" rewrite here would silently move the reference.
 
-The radar-facade calls (``_lambda``, ``local_from_world_vectors``,
-``evaluate_antenna_pattern_vectors``) are NOT copied: they belong to
-``witwin/radar/radar.py``, not to the module Phase-6 work item 8 migrated, and
-duplicating a pattern interpolator would make the oracle test a different
-antenna than the production path does.
-
+The pose frame comes from ``support.pose`` and the pattern interpolation from
+``reference.antenna_pattern``, both test-side, so no production interpolator
+is on this path.
 """
 
 from __future__ import annotations
 
 import torch
+from support.pose import local_from_world_vectors
+
+from .antenna_pattern import evaluate_pattern_xy
 
 
-def _pattern_gain_from_vectors(radar, vectors: torch.Tensor) -> torch.Tensor:
+def pattern_gain_from_vectors(pattern, vectors: torch.Tensor) -> torch.Tensor:
+    """``pattern``'s power gain along each local-frame ``vectors`` row."""
+
     forward = -vectors[..., 2]
     x_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 0], forward))
     y_angles_deg = torch.rad2deg(torch.atan2(vectors[..., 1], forward))
-    return radar._evaluate_antenna_pattern_xy(x_angles_deg, y_angles_deg)
+    return evaluate_pattern_xy(pattern, x_angles_deg, y_angles_deg)
 
 
 def compute_total_path_lengths(sample, tx_pos: torch.Tensor, rx_pos: torch.Tensor) -> torch.Tensor:
@@ -42,19 +44,19 @@ def compute_total_path_lengths(sample, tx_pos: torch.Tensor, rx_pos: torch.Tenso
 
 def compute_antenna_pattern_gains(radar, sample, tx_pos: torch.Tensor, rx_pos: torch.Tensor) -> torch.Tensor | None:
     """Return per-path power gains from the configured TX/RX antenna pattern."""
-    tx_vectors = radar._local_from_world_vectors(sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
-    rx_vectors = radar._local_from_world_vectors(sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
-    tx_gains = _pattern_gain_from_vectors(radar, tx_vectors).unsqueeze(1)
-    rx_gains = _pattern_gain_from_vectors(radar, rx_vectors).unsqueeze(0)
+    tx_vectors = local_from_world_vectors(radar, sample.entry_points.unsqueeze(0) - tx_pos.unsqueeze(1))
+    rx_vectors = local_from_world_vectors(radar, sample.points.unsqueeze(0) - rx_pos.unsqueeze(1))
+    tx_gains = pattern_gain_from_vectors(radar.pattern, tx_vectors).unsqueeze(1)
+    rx_gains = pattern_gain_from_vectors(radar.pattern, rx_vectors).unsqueeze(0)
     return tx_gains * rx_gains
 
 
 def compute_total_path_length_rates(sample, velocities, *, tx_pos, rx_pos):
     """Total path length rate with shape (TX, RX, N), verbatim from the solver.
 
-    Copied here for the same reason as the four expressions above: Phase 6
-    migrated the production statement into the native ``sensor_weight`` kernel,
-    and a kernel checked against nothing is checked against nothing.
+    Stated here for the same reason as the four expressions above: the
+    production statement lives in the native ``sensor_weight`` kernel, and a
+    kernel checked against nothing is checked against nothing.
 
     The SIGNS are the content. The inbound leg's rate dots ``entry - tx`` with
     the site velocity and the outbound leg's dots ``point - rx``, which is the

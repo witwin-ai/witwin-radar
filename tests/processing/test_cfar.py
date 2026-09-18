@@ -23,8 +23,9 @@ import math
 
 import pytest
 import torch
+from support.reference_cfar import reference_ca_cfar
 
-from witwin.radar.processing import Detections, ca_cfar, ca_cfar_1d, ca_cfar_fast, os_cfar
+from witwin.radar.processing import Detections, ca_cfar, ca_cfar_1d, os_cfar
 
 
 def _complex_gaussian_power(shape, *, variance: float, seed: int) -> torch.Tensor:
@@ -130,7 +131,7 @@ def test_a_target_at_a_known_signal_to_noise_ratio_is_detected():
     noise = _complex_gaussian_power((64, 96), variance=2.0, seed=7)
     cell = (30, 61)
     noise[cell] = 2.0 * 100.0
-    for detector in (ca_cfar, ca_cfar_fast, os_cfar):
+    for detector in (ca_cfar, reference_ca_cfar, os_cfar):
         detected = detector(noise, guard_cells=(2, 3), training_cells=(4, 6), pfa=1e-4)
         assert bool(detected.mask[cell]), detector.__name__
         assert float(noise[cell]) > float(detected.threshold[cell])
@@ -147,12 +148,28 @@ def test_the_ordered_statistic_detector_survives_a_second_target_in_its_ring():
     assert bool(detected.mask[24, 30])
 
 
+def test_the_pooled_detector_matches_the_summed_area_oracle():
+    """Two formations of one ring average: pooled means and an integral image.
+
+    Close, not bitwise: the pooled route re-associates the ring sum as
+    ``outer_mean * n_outer - guard_mean * n_guard``.
+    """
+
+    generator = torch.Generator().manual_seed(77)
+    cube = torch.rand((3, 40, 56), generator=generator, dtype=torch.float64) + 0.1
+    cube[1, 12, 30] = 40.0
+    pooled = ca_cfar(cube, guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-3)
+    exact = reference_ca_cfar(cube, guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-3)
+    torch.testing.assert_close(pooled.threshold, exact.threshold, rtol=1e-12, atol=1e-12)
+    assert torch.equal(pooled.mask, exact.mask)
+
+
 # ---------------------------------------------------------------------------
 # Batching
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("detector", [ca_cfar, ca_cfar_fast, os_cfar])
+@pytest.mark.parametrize("detector", [ca_cfar, reference_ca_cfar, os_cfar])
 def test_a_batched_map_equals_a_python_loop_over_its_slices_bitwise(detector):
     """The whole point of the rewrite: a beam cube needs no loop over beams.
 
@@ -175,9 +192,9 @@ def test_a_batched_map_equals_a_python_loop_over_its_slices_bitwise(detector):
 def test_a_rank_four_beam_cube_carries_both_of_its_leading_axes():
     generator = torch.Generator().manual_seed(5)
     cube = torch.rand((3, 4, 24, 24), generator=generator, dtype=torch.float32) + 0.1
-    detected = ca_cfar_fast(cube, guard_cells=(1, 1), training_cells=(2, 2))
+    detected = ca_cfar(cube, guard_cells=(1, 1), training_cells=(2, 2))
     assert tuple(detected.mask.shape) == (3, 4, 24, 24)
-    flat = ca_cfar_fast(cube.reshape(12, 24, 24), guard_cells=(1, 1), training_cells=(2, 2))
+    flat = ca_cfar(cube.reshape(12, 24, 24), guard_cells=(1, 1), training_cells=(2, 2))
     assert torch.equal(detected.mask.reshape(12, 24, 24), flat.mask)
 
 
@@ -241,7 +258,7 @@ def test_the_detection_record_pairs_a_mask_with_the_level_it_beat():
 
 def test_a_ring_with_no_training_cells_is_refused():
     values = torch.ones((8, 8), dtype=torch.float64)
-    for detector in (ca_cfar, ca_cfar_fast, os_cfar):
+    for detector in (ca_cfar, reference_ca_cfar, os_cfar):
         with pytest.raises(ValueError, match="no training cells"):
             detector(values, guard_cells=(2, 2), training_cells=(0, 0))
     with pytest.raises(ValueError, match="no training cells"):

@@ -1,10 +1,10 @@
 // Aspect-dependent scatter response: one complex factor per COMPOSED row.
 //
-// This is the kernel that item 6b/6c of the Phase-7 plan needs and that
-// ``TwoWayComposer.compose`` refuses to evaluate in Torch. A response that
-// depends on the inbound and outbound directions varies per path, so it is
-// hot-path physics; the standing refusal in ``paths/two_way.py`` exists to
-// stop it becoming a Torch expression, and this file is the route through it.
+// This is the kernel that ``TwoWayComposer.compose`` refuses to evaluate in
+// Torch. A response that depends on the inbound and outbound directions varies
+// per path, so it is hot-path physics; the standing refusal in ``paths.py``
+// exists to stop it becoming a Torch expression, and this file is the route
+// through it.
 //
 // Per composed row k, with i = idx_in[k], o = idx_out[k], s = idx_site[k]:
 //
@@ -60,9 +60,9 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
 
@@ -356,41 +356,6 @@ __global__ void scatter_response_aspect_backward_kernel(
   }
 }
 
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_int(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Int,
-      name,
-      " must have dtype torch.int32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
 void check_len(
     const torch::stable::Tensor& tensor, int64_t expected, const char* name) {
   check_cuda_float(tensor, name);
@@ -403,28 +368,6 @@ void check_vec3(
   check_cuda_float(tensor, name);
   STD_TORCH_CHECK(
       tensor.numel() == rows * 3, name, " must hold three values per row.");
-}
-
-void check_index(
-    const torch::stable::Tensor& index, int rows, const char* name) {
-  check_cuda_long(index, name);
-  STD_TORCH_CHECK(
-      index.numel() == static_cast<int64_t>(rows),
-      name,
-      " must hold one index per composed row.");
-}
-
-cudaStream_t response_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
-}
-
-constexpr int kBlock = 256;
-
-dim3 linear_grid(int count) {
-  return dim3(static_cast<unsigned>((count + kBlock - 1) / kBlock), 1, 1);
 }
 
 void check_shared_inputs(
@@ -496,7 +439,7 @@ void scatter_response_aspect_forward_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       s_re.get_device_index());
   scatter_response_aspect_forward_kernel<<<
-      linear_grid(rows), dim3(kBlock, 1, 1), 0, response_stream(s_re)>>>(
+      linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(s_re)>>>(
       dir_in.const_data_ptr<float>(),
       dir_out.const_data_ptr<float>(),
       idx_in.const_data_ptr<int64_t>(),
@@ -559,7 +502,7 @@ void scatter_response_aspect_jvp_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       tan_s_re.get_device_index());
   scatter_response_aspect_jvp_kernel<<<
-      linear_grid(rows), dim3(kBlock, 1, 1), 0, response_stream(tan_s_re)>>>(
+      linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(tan_s_re)>>>(
       dir_in.const_data_ptr<float>(),
       dir_out.const_data_ptr<float>(),
       idx_in.const_data_ptr<int64_t>(),
@@ -661,7 +604,7 @@ void scatter_response_aspect_backward_cuda(
   const torch::stable::accelerator::DeviceGuard device_guard(
       grad_axis.get_device_index());
   scatter_response_aspect_backward_kernel<<<
-      linear_grid(total), dim3(kBlock, 1, 1), 0, response_stream(grad_axis)>>>(
+      linear_grid(total), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_axis)>>>(
       dir_in.const_data_ptr<float>(),
       dir_out.const_data_ptr<float>(),
       idx_in.const_data_ptr<int64_t>(),
@@ -725,7 +668,7 @@ void scatter_direction_launch(const torch::stable::Tensor& a, const torch::stabl
       "scatter direction tensors must share a CUDA device");
   if (!n) return;
   const torch::stable::accelerator::DeviceGuard guard(a.get_device_index());
-  scatter_direction_kernel<Derivative><<<linear_grid(n), dim3(kBlock,1,1), 0, response_stream(out)>>>(
+  scatter_direction_kernel<Derivative><<<linear_grid(n), dim3(kBlock,1,1), 0, current_cuda_stream(out)>>>(
       a.const_data_ptr<float>(), b.const_data_ptr<float>(), v.const_data_ptr<float>(), out.mutable_data_ptr<float>(), n);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }

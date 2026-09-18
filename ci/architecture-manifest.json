@@ -4,7 +4,6 @@
   "channel_importer": "witwin.radar.channel",
   "target_modules": [
     "witwin.radar",
-    "witwin.radar.capabilities",
     "witwin.radar.channel",
     "witwin.radar.cuda",
     "witwin.radar.cuda.runtime",
@@ -76,7 +75,6 @@
   },
   "public_facades": [
     "witwin.radar",
-    "witwin.radar.capabilities",
     "witwin.radar.deployment",
     "witwin.radar.processing",
     "witwin.radar.scattering",

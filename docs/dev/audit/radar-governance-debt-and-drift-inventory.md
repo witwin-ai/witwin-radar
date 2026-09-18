@@ -45,8 +45,7 @@ The following tests exist solely to preserve the API being deleted:
 - `tests/processing/test_adapters.py`: bitwise legacy-adapter golden;
 - compatibility-only assertions in `tests/processing/test_cutover.py`;
 - removed-name replacement-message assertions in
-  `tests/test_phase5_removed_entry_points.py`,
-  `tests/test_phase11_repository_gates.py`, and
+  `tests/test_phase11_repository_gates.py` and
   `tests/test_public_api_snapshot.py`.
 
 Numerical processing coverage under `tests/processing/` remains. Any deleted

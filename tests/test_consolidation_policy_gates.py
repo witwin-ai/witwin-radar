@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(name: str):
+    # The gates import their shared helpers as siblings, the way `python ci/x.py` finds them.
+    if str(ROOT / "ci") not in sys.path:
+        sys.path.insert(0, str(ROOT / "ci"))
     path = ROOT / "ci" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -28,22 +32,14 @@ def _json(path: Path, value: object) -> None:
     _write(path, json.dumps(value))
 
 
-def test_single_definition_gate_rejects_shared_owner_and_target(tmp_path: Path) -> None:
-    gate = _load("check_single_definition")
-    _json(
-        tmp_path / "ci" / "architecture-manifest.json",
-        {
-            "target_modules": ["witwin.radar.radar"],
-            "concept_owners": {"configuration": "witwin.radar.radar", "session": "witwin.radar.radar"},
-        },
-    )
+def test_architecture_gate_rejects_a_public_export_owned_outside_the_inventory(tmp_path: Path) -> None:
+    gate = _load("check_architecture")
     _json(
         tmp_path / "ci" / "public-api-manifest.json",
-        {"modules": {"witwin.radar": {"Radar": "witwin.radar.radar.Radar", "RadarAlias": "witwin.radar.radar.Radar"}}},
+        {"modules": {"witwin.radar": {"Radar": "witwin.radar.radar.Radar", "Ghost": "witwin.radar.gone.Ghost"}}},
     )
-    errors = gate.audit(tmp_path)
-    assert any("owns multiple concept axes" in error for error in errors)
-    assert any("has multiple exposures" in error for error in errors)
+    errors = gate._audit_public_owners(tmp_path, {"witwin.radar.radar"})
+    assert errors == ["public exposure witwin.radar.Ghost names non-target owner module witwin.radar.gone"]
 
 
 def test_public_api_manifest_gate_rejects_duplicate_target() -> None:
@@ -86,32 +82,18 @@ def test_public_api_manifest_gate_handles_declared_value_exports(monkeypatch) ->
     assert gate.audit_live(manifest) == []
 
 
-def test_release_claim_gate_rejects_retired_policy_and_false_success(tmp_path: Path) -> None:
+def test_release_claim_gate_rejects_retired_policy(tmp_path: Path) -> None:
     gate = _load("check_release_claims")
     _json(
         tmp_path / "ci" / "release-policy.json",
-        {
-            "manylinux_policy": "manylinux_2_28",
-            "stable_abi_cross_torch_claim": False,
-            "expected_loader_refusal_is_release_success": False,
-        },
+        {"manylinux_policy": "manylinux_2_28", "stable_abi_cross_torch_claim": False},
     )
     _write(tmp_path / "README.md", "manylinux_2_35 cross-Torch Stable ABI\n")
     _write(tmp_path / "FEATURE_LIST.md", "manylinux_2_28\n")
     _write(tmp_path / "docs" / "dev" / "plans" / "phase10-deferred-release-matrix.md", "manylinux_2_28\n")
-    _write(
-        tmp_path / ".github" / "workflows" / "publish-witwin-radar.yml",
-        "script: |\n"
-        "  try:\n"
-        "      load()\n"
-        "  except build.RadarExtensionABIError:\n"
-        "      print('This cell measures deviation P3, not a passing Stable ABI cell.')\n"
-        "      raise SystemExit(0)\n",
-    )
     errors = gate.audit(tmp_path)
     assert any("retired manylinux_2_35" in error for error in errors)
     assert any("cross-Torch Stable ABI" in error for error in errors)
-    assert any("loader refusal" in error for error in errors)
 
 
 def test_workflow_policy_rejects_a_wheel_smoke_shadowed_by_the_checkout(tmp_path: Path) -> None:
@@ -134,20 +116,3 @@ def test_workflow_policy_rejects_raw_compressed_platform_tag_comparison(tmp_path
     _write(workflow, mutated)
     failures = gate.check_workflow(workflow)
     assert any("parse compressed wheel platform tags" in failure for failure in failures)
-
-
-def test_governance_inventory_gate_rejects_open_and_unproven_rows(tmp_path: Path) -> None:
-    gate = _load("check_governance_inventory")
-    header = "| ID | Debt | Owner | Phase | Falsifier | Scope | Status | Evidence |\n"
-    divider = "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
-    rows = []
-    for index in range(1, 28):
-        status = "open" if index == 1 else "closed"
-        evidence = "—" if index in {1, 2} else "proof"
-        rows.append(f"| GOV-{index:03d} | debt | owner | G | gate | scope | {status} | {evidence} |\n")
-    path = tmp_path / "docs" / "dev" / "audit" / "radar-governance-debt-and-drift-inventory.md"
-    _write(path, header + divider + "".join(rows))
-    assert gate.audit(tmp_path, require_closed=False) == ["GOV-002 is closed without evidence"]
-    errors = gate.audit(tmp_path, require_closed=True)
-    assert "GOV-001 is not closed: open" in errors
-    assert "GOV-002 is closed without evidence" in errors

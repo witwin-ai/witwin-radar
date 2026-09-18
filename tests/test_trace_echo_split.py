@@ -27,10 +27,10 @@ import torch
 
 pytest.importorskip("witwin.channel")
 
-from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure  # noqa: E402
-from witwin.core.identity import reserve_antenna_id  # noqa: E402
+from witwin.core import AntennaState, Mesh, PhysicalMaterial, Scene, Structure
+from witwin.core.identity import reserve_antenna_id
 
-from witwin.radar import Adc, Motion, Noise, Paths, PointTargets, Radar  # noqa: E402
+from witwin.radar import Adc, Motion, Noise, Paths, PointTargets, Radar
 
 pytestmark = pytest.mark.gpu
 
@@ -145,6 +145,7 @@ ROUTES = {
 
 def _build(route: str):
     scene_kind, target_kind, session, radar_fields = ROUTES[route]
+    radar_fields = dict(radar_fields)
     radar = _radar()
     output = radar_fields.pop("output", None)
     if output is not None:

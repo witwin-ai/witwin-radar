@@ -13,10 +13,10 @@ measurement and is retained as the record of those phases. What changed:
 * `RADAR_ABI_VERSION` is 2. The operator set shrank, which a consumer can
   observe as a lookup that no longer resolves, so it is an ABI change even
   though the sidecar schema did not move.
-* The caller-free budget in `tests/test_phase4_binding_manifest.py` is 0. The
+* The caller-free budget in `tests/test_native_binding_manifest.py` is 0. The
   `backward` symbol that held the single slot was in this family and died with
   its translation unit rather than acquiring a caller.
-* `tests/test_phase4_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
+* `tests/test_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
   is deleted: its reference no longer exists. The `carrier_hz = fc` setting it
   pinned is still supported and still exact - it is the absolute-carrier form -
   and the surrounding tests in that file pin the convention without it.
@@ -121,7 +121,7 @@ which is exactly the missing `fc * tau_rate * t_c`.
 This also makes the two derivative slots genuinely distinct:
 `d(phi)/d(tau_rate)` is `t_c * (d(phi)/d(tau_rt) + 2 pi carrier_rate_hz)`, not
 `t_c * d(phi)/d(tau_rt)`. The JVP and VJP companions carry both slots, and
-`tests/test_phase4_fmcw_beat_ad.py` runs its float64-oracle comparisons at the
+`tests/test_fmcw_beat_ad.py` runs its float64-oracle comparisons at the
 production placement so the extra term is exercised rather than zeroed.
 
 Neither supported setting is a fallback for the other.
@@ -255,9 +255,9 @@ is not self-evidently fresh.
 The load-time presence check names one operator per family and gates every load
 route, so a stale binary fails at load instead of deep inside a kernel call.
 Adding a family without updating the check is caught by
-`tests/test_phase4_binding_manifest.py::test_the_load_check_covers_every_operator_family`;
+`tests/test_native_binding_manifest.py::test_the_load_check_covers_every_operator_family`;
 routing around the check is caught by
-`tests/test_phase4_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
+`tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
 
 ## Alternatives rejected
 
@@ -278,22 +278,22 @@ Rejected: one extra `double` on three operators buys both.
 
 ## Acceptance evidence
 
-- `tests/test_phase4_fmcw_beat_kernel.py::test_production_carrier_placement_carries_the_same_doppler`
-- `tests/test_phase4_fmcw_beat_kernel.py::test_the_two_carrier_homes_cannot_both_be_used`
-- `tests/test_phase4_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
-- `tests/test_phase4_fmcw_beat_kernel.py::test_tau_is_the_round_trip_delay_and_is_never_doubled`
-- `tests/test_phase4_fmcw_beat_kernel.py::test_conjugation_is_the_only_channel_to_beat_conversion`
-- `tests/test_phase4_fmcw_beat_ad.py` (VJP and JVP against the float64 oracle)
-- `tests/test_phase5_two_way_join_ad.py::test_each_coefficient_gradient_family_matches_a_hand_derived_reduction`
+- `tests/test_fmcw_beat_kernel.py::test_production_carrier_placement_carries_the_same_doppler`
+- `tests/test_fmcw_beat_kernel.py::test_the_two_carrier_homes_cannot_both_be_used`
+- `tests/test_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
+- `tests/test_fmcw_beat_kernel.py::test_tau_is_the_round_trip_delay_and_is_never_doubled`
+- `tests/test_fmcw_beat_kernel.py::test_conjugation_is_the_only_channel_to_beat_conversion`
+- `tests/test_fmcw_beat_ad.py` (VJP and JVP against the float64 oracle)
+- `tests/test_two_way_join_ad.py::test_each_coefficient_gradient_family_matches_a_hand_derived_reduction`
   (one independent check per backward gradient slot family, derived from the
   composition rather than from the retained Torch composer, so zeroing a single
   family is not caught by exactly one test)
-- `tests/test_phase5_multipath_legs.py::test_the_multipath_cube_matches_the_independent_float64_beat_oracle`
+- `tests/test_multipath_legs.py::test_the_multipath_cube_matches_the_independent_float64_beat_oracle`
   (four interfering rows through the conjugation and the beat kernel, phase
   sensitive; the Channel-to-beat conversion had been guarded only by Phase-4
   fixtures)
-- `tests/test_phase5_multipath_legs.py::test_each_combined_row_carries_its_own_analytic_slow_time_slope`
+- `tests/test_multipath_legs.py::test_each_combined_row_carries_its_own_analytic_slow_time_slope`
   (the `carrier_rate_hz` law re-verified at the multipath geometry, per row,
   across four different delays and four different rates)
-- `tests/test_phase4_binding_manifest.py` (declared, implemented, and manifested
+- `tests/test_native_binding_manifest.py` (declared, implemented, and manifested
   operators agree; every operator has an owner, a test, and a caller)

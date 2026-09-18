@@ -47,8 +47,7 @@ F          BOTH extensions loaded in one process: distinct files, both
            delays fed into a Radar-native FMCW beat kernel.
 G          With the packaged binary hidden, ``build_extension()`` RAISES.
            ``torch.utils.cpp_extension`` is never imported and no build
-           directory appears. This is the no-silent-JIT half of A7 and
-           the reason work item 1 exists.
+           directory appears. This is the no-silent-JIT half of A7.
 H          Dependency closure: neither the base requirements nor the
            ``channel`` extra pulls a ray-tracing runtime. Criterion A8.
 I          The installed CUDA sources re-hash to the ``source_fingerprint``
@@ -122,6 +121,7 @@ _RADAR_NATIVE_MEMBERS = (_RADAR_NATIVE_MEMBER, "witwin/radar/cuda/prebuilt/_rada
 _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
     "witwin/radar/cuda/fmcw_beat.cu",
+    "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
@@ -281,11 +281,7 @@ if channel:
 runtimes = forbidden_loaded()
 if runtimes:
     raise SystemExit(f"importing witwin.radar loaded {runtimes}")
-loader = [
-    name
-    for name in ("witwin.radar.cuda.runtime", "witwin.radar.cuda.runtime")
-    if name in sys.modules
-]
+loader = [name for name in ("witwin.radar.cuda.runtime",) if name in sys.modules]
 if loader:
     raise SystemExit(f"importing witwin.radar loaded its native loader: {loader}")
 if "torch.utils.cpp_extension" in sys.modules:
@@ -443,9 +439,9 @@ channel_native = sys.modules["witwin.channel._channel"]
 after_channel = namespaces()
 channel_namespaces = sorted(after_channel - baseline)
 
-from witwin.radar.cuda import runtime as radar_build
+from witwin.radar.cuda import runtime
 
-radar = radar_build.build_extension()
+radar = runtime.build_extension()
 after_radar = namespaces()
 radar_namespaces = sorted(after_radar - after_channel)
 
@@ -533,7 +529,7 @@ adapter = ChannelPropagationAdapter(
 source = endpoint(TX, 10, power_w=1.0)
 sink = endpoint(RX, 30)
 frozen = adapter.freeze(source, sink)
-leg = adapter.reevaluate(frozen, source, sink, ad_mode="none")
+leg = adapter.reevaluate_slots(frozen, source, sink, slot_count=1, ad_mode="none")
 
 delay_s = leg.delay_s.reshape(-1)
 if delay_s.device.type != "cuda":
@@ -618,15 +614,15 @@ before = (
     sorted(entry.name for entry in build_root.iterdir()) if build_root.is_dir() else []
 )
 
-from witwin.radar.cuda import runtime as radar_build
+from witwin.radar.cuda import runtime
 from witwin.radar.cuda.runtime import RadarExtensionLoadError
 
-packaged = radar_build.prebuilt_extension_path()
+packaged = runtime.prebuilt_extension_path()
 if packaged.exists():
     raise SystemExit(f"the packaged binary was supposed to be hidden: {{packaged}}")
 
 try:
-    radar_build.build_extension()
+    runtime.build_extension()
 except RadarExtensionLoadError as exc:
     failure = str(exc)
 else:
@@ -672,7 +668,7 @@ for member in members:
         raise SystemExit(f"the wheel did not install {{member}}")
     payload = path.read_bytes()
     sizes[member] = len(payload)
-    # ``identity.source_digest``: file NAME, NUL, content, NUL - reimplemented
+    # ``runtime.source_digest``: file NAME, NUL, content, NUL - reimplemented
     # here so a defect in that helper cannot confirm itself.
     digest.update(path.name.encode("utf-8"))
     digest.update(b"\\0")

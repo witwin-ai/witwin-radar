@@ -1,6 +1,6 @@
 # Radar Performance
 
-Status: local Doppler repair measurements recorded on 2026-09-16; release-platform benchmarks remain separate.
+Status: local measurements recorded 2026-09-16 to 2026-09-17; release-platform benchmarks remain separate.
 
 ## What changed
 
@@ -223,7 +223,7 @@ below is against WiTwin's own ADC reference.
 
 Both checkouts used witwin2, Torch 2.10.0+cu128, and RTX 5080. The pre-repair
 `e0c79ad` was exported into `output/doppler-repair/baseline`, rebuilt, and ran
-the exact same `tests/test_phase8_pipeline_budget.py` measurement recipe.
+the exact same `tests/test_pipeline_budget.py` measurement recipe.
 
 | Measured route | Before repair | Repaired (isolated targeted run) |
 | --- | ---: | ---: |
@@ -261,7 +261,7 @@ For a shorter CI smoke:
 python tools/benchmark_processing.py --groups pipeline --runs 10 --warmup 3 --json
 ```
 
-GPU pipeline budgets and measurement fixtures live in `tests/test_phase8_pipeline_budget.py`. FMCW spectrum/beat correctness and domain-routing coverage live with the FMCW spectrum tests and processing-axis tests. Those tests define executable thresholds; this document does not duplicate their numeric constants.
+GPU pipeline budgets and measurement fixtures live in `tests/test_pipeline_budget.py`. FMCW spectrum/beat correctness and domain-routing coverage live with the FMCW spectrum tests and processing-axis tests. Those tests define executable thresholds; this document does not duplicate their numeric constants.
 
 ## Required rebaseline matrix
 
@@ -292,7 +292,7 @@ At minimum, use the maintained small fixture and one realistic array/frame confi
 The repository currently enforces performance through executable tests and workflow references, not through copied prose numbers:
 
 ```bash
-pytest tests/test_phase8_pipeline_budget.py --gpu -q -s
+pytest tests/test_pipeline_budget.py --gpu -q -s
 python ci/check_workflow_references.py
 ```
 

@@ -1,9 +1,5 @@
 // OFDM channel frequency response over the (symbol, subcarrier) grid.
 //
-// This is the Phase-6 OFDM synthesis primitive. Like the beat family it is
-// registered in the single `_radar_native` library Radar ships (R-ADR-004; the
-// Phase-10 rename made the physical stem match this logical name).
-//
 // Closed form, stated verbatim:
 //
 //   t_l           = l * symbol_period_s
@@ -110,13 +106,11 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "radar_checks.cuh"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
-
-constexpr double kTwoPiD = 6.283185307179586476925286766559;
 
 struct CfrPhase {
   float sin_phi;
@@ -192,13 +186,7 @@ __global__ void ofdm_cfr_forward_kernel(
     return;
   }
 
-  // A memory-safety backstop, not a validation policy: the host wrapper checks
-  // the table's SHAPE but never reads its values, because doing so per frame
-  // would be the D2H the fixed-topology capability exists to avoid.
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const bool wideband = weight_columns > 1;
   const double t_l = static_cast<double>(symbol) * symbol_period_s;
@@ -206,7 +194,7 @@ __global__ void ofdm_cfr_forward_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const CfrPhase phase = cfr_phase(
@@ -252,10 +240,7 @@ __global__ void ofdm_cfr_jvp_kernel(
     return;
   }
 
-  int64_t start = path_offsets[segment];
-  int64_t end = path_offsets[segment + 1];
-  start = start < 0 ? 0 : start;
-  end = end > num_paths ? num_paths : end;
+  const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
   const bool wideband = weight_columns > 1;
   const double t_l = static_cast<double>(symbol) * symbol_period_s;
@@ -263,7 +248,7 @@ __global__ void ofdm_cfr_jvp_kernel(
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
-  for (int64_t k = start; k < end; ++k) {
+  for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
     const double tau = static_cast<double>(tau_rt[k]) + drift;
     const CfrPhase phase = cfr_phase(
@@ -422,39 +407,6 @@ __global__ void ofdm_cfr_backward_kernel(
 
   grad_tau_rt[k] = static_cast<float>(d_tau_rt);
   grad_tau_rate[k] = static_cast<float>(d_tau_rate);
-}
-
-void check_cuda_float(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Float,
-      name,
-      " must have dtype torch.float32.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-void check_cuda_long(const torch::stable::Tensor& tensor, const char* name) {
-  STD_TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      tensor.scalar_type() == torch::headeronly::ScalarType::Long,
-      name,
-      " must have dtype torch.int64.");
-  STD_TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous.");
-}
-
-int checked_int(int64_t value, const char* name) {
-  STD_TORCH_CHECK(
-      value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<int>::max()),
-      name,
-      " is out of int32 range.");
-  return static_cast<int>(value);
-}
-
-cudaStream_t current_cuda_stream(const torch::stable::Tensor& tensor) {
-  void* stream_ptr = nullptr;
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_get_current_cuda_stream(tensor.get_device_index(), &stream_ptr));
-  return static_cast<cudaStream_t>(stream_ptr);
 }
 
 void check_path_inputs(

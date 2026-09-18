@@ -9,25 +9,15 @@ from __future__ import annotations
 
 import importlib
 
-_NATIVE_OPS = None
-
 
 def native_ops():
-    """Return the validated native operator table, loading it on first use."""
+    """Return the validated native operator table, loading it on first use.
 
-    global _NATIVE_OPS
-    if _NATIVE_OPS is None:
-        runtime = importlib.import_module("witwin.radar.cuda.runtime")
-        _NATIVE_OPS = runtime.build_extension()
-    return _NATIVE_OPS
+    ``runtime.build_extension`` caches the loaded library for the process, so
+    every call after the first is free.
+    """
 
-
-def __getattr__(name: str):
-    if name == "runtime":
-        runtime = importlib.import_module("witwin.radar.cuda.runtime")
-        globals()[name] = runtime
-        return runtime
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return importlib.import_module("witwin.radar.cuda.runtime").build_extension()
 
 
-__all__ = ["native_ops", "runtime"]
+__all__ = ["native_ops"]

@@ -36,7 +36,7 @@
     "                    after the kernel's own device helpers. This is what",
     "                    makes 'do not split a fused operation' reviewable.",
     "  host_observations host reads (.item/.cpu/.tolist/.numpy) the operator",
-    "                    performs. Zero for all 28, which is R-ADR-006's 'Radar",
+    "                    performs. Zero for every operator, which is R-ADR-006's 'Radar",
     "                    adds zero host observations' made machine-readable.",
     "                    The sanctioned freeze-time reads live in",
     "                    witwin/radar/paths.py, which is not a native",
@@ -115,7 +115,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
-      "contract_test": "tests/test_phase4_fmcw_beat_kernel.py",
+      "contract_test": "tests/test_fmcw_beat_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw.synthesize_fmcw"
     },
     {
@@ -135,7 +135,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
-      "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
+      "contract_test": "tests/test_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw._FmcwSynthesis.backward"
     },
     {
@@ -155,7 +155,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
-      "contract_test": "tests/test_phase4_fmcw_beat_ad.py",
+      "contract_test": "tests/test_fmcw_beat_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw._FmcwSynthesis.jvp"
     },
     {
@@ -236,7 +236,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm.py",
-      "contract_test": "tests/test_phase6_ofdm_kernel.py",
+      "contract_test": "tests/test_ofdm_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm.synthesize_ofdm"
     },
     {
@@ -256,7 +256,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm.py",
-      "contract_test": "tests/test_phase6_ofdm_ad.py",
+      "contract_test": "tests/test_ofdm_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm._OfdmCfrSynthesis.backward"
     },
     {
@@ -277,7 +277,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/ofdm.py",
-      "contract_test": "tests/test_phase6_ofdm_ad.py",
+      "contract_test": "tests/test_ofdm_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.ofdm._OfdmCfrSynthesis.jvp"
     },
     {
@@ -298,7 +298,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed.py",
-      "contract_test": "tests/test_phase6_pulsed_kernel.py",
+      "contract_test": "tests/test_pulsed_kernel.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed.synthesize_pulsed"
     },
     {
@@ -319,7 +319,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed.py",
-      "contract_test": "tests/test_phase6_pulsed_ad.py",
+      "contract_test": "tests/test_pulsed_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed._PulsedEchoSynthesis.backward"
     },
     {
@@ -340,7 +340,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/pulsed.py",
-      "contract_test": "tests/test_phase6_pulsed_ad.py",
+      "contract_test": "tests/test_pulsed_ad.py",
       "end_to_end_caller": "witwin.radar.synthesis.pulsed._PulsedEchoSynthesis.jvp"
     },
     {
@@ -355,12 +355,11 @@
         "row_validity_gate",
         "leg_gather",
         "delay_sum",
-        "rate_sum",
         "complex_triple_product"
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/paths.py",
-      "contract_test": "tests/test_phase5_two_way_join_kernel.py",
+      "contract_test": "tests/test_two_way_join_kernel.py",
       "end_to_end_caller": "witwin.radar.paths.TwoWayComposer.compose"
     },
     {
@@ -379,7 +378,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/paths.py",
-      "contract_test": "tests/test_phase5_two_way_join_ad.py",
+      "contract_test": "tests/test_two_way_join_ad.py",
       "end_to_end_caller": "witwin.radar.paths._TwoWayJoin.backward"
     },
     {
@@ -399,7 +398,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/paths.py",
-      "contract_test": "tests/test_phase5_two_way_join_ad.py",
+      "contract_test": "tests/test_two_way_join_ad.py",
       "end_to_end_caller": "witwin.radar.paths._TwoWayJoin.jvp"
     },
     {
@@ -418,7 +417,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/scattering.py",
-      "contract_test": "tests/test_phase7_scatter_response_kernel.py",
+      "contract_test": "tests/test_scatter_response_kernel.py",
       "end_to_end_caller": "witwin.radar.scattering.AspectScatterResponse.evaluate_rows"
     },
     {
@@ -438,7 +437,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/scattering.py",
-      "contract_test": "tests/test_phase7_scatter_response_ad.py",
+      "contract_test": "tests/test_scatter_response_ad.py",
       "end_to_end_caller": "witwin.radar.scattering._AspectResponse.backward"
     },
     {
@@ -458,7 +457,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/scattering.py",
-      "contract_test": "tests/test_phase7_scatter_response_ad.py",
+      "contract_test": "tests/test_scatter_response_ad.py",
       "end_to_end_caller": "witwin.radar.scattering._AspectResponse.jvp"
     },
     {
@@ -477,7 +476,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors.py",
-      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "contract_test": "tests/test_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors.RoundTripPatternStage.apply",
       "caller_note": "The scene-driven production route freezes the radar's Pattern once per topology epoch and applies RoundTripPatternStage between the two-way join and synthesis. The stage calls evaluate_sensor_weights, this symbol's python_owner; there is no per-call pattern override."
     },
@@ -497,7 +496,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors.py",
-      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "contract_test": "tests/test_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors._SensorWeight.backward",
       "caller_note": "Reached from the same production route through autograd: RoundTripPatternStage.apply builds the _SensorWeight context and this companion runs when that frame's graph is differentiated. The forward row names the production entry."
     },
@@ -517,7 +516,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/sensors.py",
-      "contract_test": "tests/test_phase6_sensor_weight.py",
+      "contract_test": "tests/test_sensor_weight.py",
       "end_to_end_caller": "witwin.radar.sensors._SensorWeight.jvp",
       "caller_note": "Reached from the same production route through autograd: a forward-AD dual on a site or an element position enters RoundTripPatternStage.apply and this companion carries its tangent. The forward row names the production entry."
     },
@@ -536,7 +535,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.FrontendChain.apply"
     },
     {
@@ -553,7 +552,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend._FrontendNoise.backward"
     },
     {
@@ -570,7 +569,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend._FrontendNoise.jvp"
     },
     {
@@ -588,7 +587,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.FrontendChain.apply"
     },
     {
@@ -605,7 +604,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend._FrontendAgc.backward"
     },
     {
@@ -622,7 +621,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend._FrontendAgc.jvp"
     },
     {
@@ -640,7 +639,7 @@
       ],
       "host_observations": 0,
       "python_owner": "witwin/radar/frontend.py",
-      "contract_test": "tests/test_phase6_frontend_chain.py",
+      "contract_test": "tests/test_frontend_chain.py",
       "end_to_end_caller": "witwin.radar.frontend.FrontendChain._quantize"
     },
     {
@@ -769,7 +768,7 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
       "contract_test": "tests/test_fmcw_observations.py",
-      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw.synthesize_fmcw_observations"
     },
     {
       "symbol": "fmcw_observation_backward",
@@ -785,7 +784,7 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
       "contract_test": "tests/test_fmcw_observations.py",
-      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw.synthesize_fmcw_observations"
     },
     {
       "symbol": "fmcw_observation_jvp",
@@ -801,7 +800,7 @@
       "host_observations": 0,
       "python_owner": "witwin/radar/synthesis/fmcw.py",
       "contract_test": "tests/test_fmcw_observations.py",
-      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_fmcw_observations"
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw.synthesize_fmcw_observations"
     }
   ]
 }

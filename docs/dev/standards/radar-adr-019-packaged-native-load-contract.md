@@ -236,10 +236,10 @@ intended.
 
 ## Acceptance evidence
 
-- `tests/test_phase10_loader_contract.py` (22 cases, every load case in a fresh
+- `tests/test_native_loader_contract.py` (22 cases, every load case in a fresh
   subprocess with an explicit environment, asserting on exception type and
   message)
-- `tests/test_phase4_binding_manifest.py::test_every_load_route_validates_the_required_operators`
-- `tests/test_phase4_binding_manifest.py::test_the_jit_build_directory_is_keyed_by_the_source_set`
+- `tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`
+- `tests/test_native_binding_manifest.py::test_the_jit_build_directory_is_keyed_by_the_source_set`
 - radar suite: `721 passed / 807 skipped` default, `1528 passed / 0 failed`
   with `--gpu` (Phase-9 baseline 699 / 1506, plus the 22 cases above)

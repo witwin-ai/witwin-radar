@@ -4,7 +4,7 @@ Stated once because the twelve numbers below are not independent: four
 inequalities tie them together (Nyquist for the correlation, the gate inside
 the PRI, the whole echo inside the gate, and the speed inside the unambiguous
 bound), and restating them per file is how one of the four quietly stops
-holding. ``test_phase6_pulsed_spec.py`` asserts all four.
+holding. ``test_pulsed_spec.py`` asserts all four.
 
 This grid is NOT the one the Phase-6 brief sketched, and the reasons are
 recorded rather than quietly fixed:
@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import torch
 
-from witwin.radar.synthesis.assembly import PULSE_KIND_LFM, PULSE_KIND_RECT, SPEED_OF_LIGHT_M_PER_S, PulsedSpec
+from witwin.radar.policy import SPEED_OF_LIGHT_M_PER_S
+from witwin.radar.synthesis.assembly import PULSE_KIND_LFM, PULSE_KIND_RECT, PulsedSpec
 
 C0 = SPEED_OF_LIGHT_M_PER_S
 
