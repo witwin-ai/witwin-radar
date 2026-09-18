@@ -15,8 +15,8 @@ Advanced records stay in their owner modules and are imported from there:
 """
 
 from . import processing
-from .frontend import Adc, Agc, Noise
-from .radar import Fmcw, Ofdm, Pulsed, Radar
+from .frontend import Adc, Agc, Iq, Noise
+from .radar import Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .sensors import Pattern
 from .simulation import Frame, Motion, Paths, Result
 from .targets import Aspect, PointTargets, StructureTargets
@@ -27,6 +27,8 @@ __all__ = [
     "Aspect",
     "Fmcw",
     "Frame",
+    "Iq",
+    "Leakage",
     "Motion",
     "Noise",
     "Ofdm",

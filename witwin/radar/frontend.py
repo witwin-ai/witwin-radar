@@ -6,6 +6,7 @@ phase/thermal/LNA and AGC operators, and final ADC quantization.
 
 from __future__ import annotations
 
+import cmath
 import math
 from dataclasses import dataclass, replace
 
@@ -83,6 +84,10 @@ _AGC_REASON = (
 #: clip level, and :meth:`FrontendChain._quantize` already refuses a
 #: differentiable SIGNAL. Refusing the grid as well keeps the wall in one
 #: piece: a full-scale leaf would be a derivative of a staircase's placement.
+_IQ_REASON = (
+    "a demodulator imbalance is a measured property of the receiver, not a quantity a scene differentiates through"
+)
+
 _ADC_REASON = (
     "bits and full_scale define the quantiser's grid, and `round` has a zero "
     "derivative almost everywhere and an undefined one at every code "
@@ -304,6 +309,66 @@ class Agc:
 
 
 @dataclass(frozen=True, slots=True)
+class Iq:
+    """Quadrature demodulator gain and phase imbalance.
+
+    A perfect quadrature split produces ``y = x``. A real one splits with a
+    gain ratio ``g`` and a phase error ``phi`` between the two branches, which
+    leaks a conjugate copy of the signal through:
+
+        ``y = alpha * x + beta * conj(x)``
+        ``alpha = (1 + g * exp(-j phi)) / 2``
+        ``beta  = (1 - g * exp(+j phi)) / 2``
+
+    The observable is the conjugate term, and it matters because ``conj`` is a
+    reflection of the Doppler axis: a target approaching at ``+v`` also appears
+    receding at ``-v``, at ``image_rejection_db`` below the true return. A
+    classifier whose label IS the sign of the velocity can learn to trust a
+    clean mirror axis that no real receiver has.
+
+    ``gain_db`` is ``20 log10(g)`` and ``phase_deg`` is ``phi``. Both zero is
+    a perfect demodulator, which is what ``None`` on the radar already means,
+    so a zeroed record is accepted rather than refused: it is the degenerate
+    end of a sweep, not a mistake.
+    """
+
+    #: Branch gain ratio, dB.
+    gain_db: float = 0.0
+    #: Branch phase error, degrees.
+    phase_deg: float = 0.0
+
+    def __post_init__(self) -> None:
+        require_host_floats("Iq", _IQ_REASON, gain_db=self.gain_db, phase_deg=self.phase_deg)
+
+    @property
+    def alpha(self) -> complex:
+        """The direct coefficient."""
+
+        ratio = 10.0 ** (float(self.gain_db) / 20.0)
+        phi = math.radians(float(self.phase_deg))
+        return (1.0 + ratio * cmath.exp(-1j * phi)) / 2.0
+
+    @property
+    def beta(self) -> complex:
+        """The conjugate (image) coefficient."""
+
+        ratio = 10.0 ** (float(self.gain_db) / 20.0)
+        phi = math.radians(float(self.phase_deg))
+        return (1.0 - ratio * cmath.exp(1j * phi)) / 2.0
+
+    @property
+    def image_rejection_db(self) -> float:
+        """``-20 log10|beta / alpha|``: how far the mirror sits below the truth.
+
+        Published so a test can assert the image's measured level against the
+        declaration rather than against a number spelled twice.
+        """
+
+        magnitude = abs(self.beta) / abs(self.alpha)
+        return math.inf if magnitude == 0.0 else -20.0 * math.log10(magnitude)
+
+
+@dataclass(frozen=True, slots=True)
 class Adc:
     """Uniform mid-tread quantisation, and the ONLY quantiser in the chain.
 
@@ -359,6 +424,8 @@ class FrontendSpec:
 
     noise: Noise | None = None
     lna: float | None = None
+    #: Quadrature imbalance. ``None`` is a perfect demodulator.
+    iq: Iq | None = None
     agc: Agc | None = None
     adc: Adc | None = None
     impedance: float = 50.0
@@ -776,6 +843,15 @@ class FrontendChain:
             flat = working.reshape(plan.num_outer, plan.num_phase)
             out_re, out_im, phase_rad = _FrontendNoise.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
             working = torch.complex(out_re, out_im).reshape(shape)
+
+        if spec.iq is not None:
+            # After the noise and before the gain: the imbalance is a property of
+            # the quadrature split that follows the mixer, so it acts on the noisy
+            # signal, and the AGC and the quantiser then see the image as part of
+            # the waveform - which is how a real receiver spends dynamic range on
+            # it. Torch rather than a kernel because this is two complex multiplies
+            # over the whole cube, with no per-path loop to fuse it into.
+            working = spec.iq.alpha * working + spec.iq.beta * working.conj()
 
         if spec.agc is not None:
             plan = self._agc_plan(working, spec.agc)

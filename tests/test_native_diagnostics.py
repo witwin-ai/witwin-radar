@@ -198,6 +198,8 @@ def test_the_minimal_root_does_not_load_native_or_channel():
         "Aspect",
         "Fmcw",
         "Frame",
+        "Iq",
+        "Leakage",
         "Motion",
         "Noise",
         "Ofdm",

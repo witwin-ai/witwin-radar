@@ -36,6 +36,18 @@
           "signature": "(cube: 'torch.Tensor', axes: 'object', time_s: 'float', index: 'int', synthesis: 'object') -> None"
         },
         {
+          "name": "Iq",
+          "kind": "class",
+          "target": "witwin.radar.frontend.Iq",
+          "signature": "(gain_db: 'float' = 0.0, phase_deg: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "Leakage",
+          "kind": "class",
+          "target": "witwin.radar.radar.Leakage",
+          "signature": "(isolation_db: 'float', delay_s: 'float') -> None"
+        },
+        {
           "name": "Motion",
           "kind": "class",
           "target": "witwin.radar.simulation.Motion",
@@ -81,7 +93,7 @@
           "name": "Radar",
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
-          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
+          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
         },
         {
           "name": "Result",
@@ -461,6 +473,14 @@
         },
         {
           "name": "impedance",
+          "kind": "value"
+        },
+        {
+          "name": "iq",
+          "kind": "value"
+        },
+        {
+          "name": "leakage",
           "kind": "value"
         },
         {

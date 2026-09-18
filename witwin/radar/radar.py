@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
-from .frontend import Adc, Agc, FrontendChain, FrontendSpec, Noise
-from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, resolve_device
+from .frontend import Adc, Agc, FrontendChain, FrontendSpec, Iq, Noise
+from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, require_host_floats, resolve_device
 from .sensors import Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_ENERGY,
@@ -42,6 +42,7 @@ from .synthesis.assembly import (
     FmcwSpec,
     OfdmSpec,
     PulsedSpec,
+    pair_tx_index,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -477,6 +478,51 @@ def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class Leakage:
+    """Transmit-to-receive antenna coupling: the echo that never left the board.
+
+    A fraction of every transmitted chirp reaches the receiver directly, and
+    after de-chirping it is a tone at ``slope * delay_s`` - a target at a range
+    of centimetres, tens of dB above anything the scene returns. Two things make
+    it matter rather than being a constant to subtract:
+
+    * it spends the receiver's dynamic range, so the AGC gain and the ADC
+      headroom a real system has are the ones left over after it; and
+    * the range transform of a rectangular window puts its skirt across the
+      near bins, which for a target inside a metre is where the target is.
+
+    A synthetic set without it teaches a model that the near bins are clean.
+
+    ``isolation_db`` is the transmit-to-receive isolation, positive, so the
+    coupled amplitude is ``sqrt(P_tx) * 10^(-isolation_db/20)`` in the sqrt(W)
+    the synthesis families publish. ``delay_s`` is the coupling path's own
+    round-trip delay, which sets the beat tone and therefore which bin the
+    skirt radiates from.
+
+    This is one more path row, not a new physics owner: it is synthesized by the
+    same waveform kernel the scene is, with the same phase law, so nothing here
+    can drift from the echo it sits on top of.
+    """
+
+    #: Transmit-to-receive isolation, dB. Larger is better isolated.
+    isolation_db: float
+    #: Coupling path delay, s.
+    delay_s: float
+
+    def __post_init__(self) -> None:
+        require_host_floats("Leakage", _LEAKAGE_REASON, isolation_db=self.isolation_db, delay_s=self.delay_s)
+        if not self.isolation_db > 0.0:
+            raise ValueError(f"isolation_db must be positive, got {self.isolation_db}")
+        if self.delay_s < 0.0:
+            raise ValueError(f"delay_s must not be negative, got {self.delay_s}")
+
+    def amplitude(self, power_dbm: float) -> float:
+        """Coupled amplitude in sqrt(W), from the declared transmit power."""
+
+        return math.sqrt(watts_from_dbm(power_dbm)) * 10.0 ** (-float(self.isolation_db) / 20.0)
+
+
 @dataclass(frozen=True)
 class Radar:
     """One radar: its waveform, its array, its receive chain and its pose.
@@ -523,6 +569,11 @@ class Radar:
     agc: Agc | None = None
     #: ``None`` is no quantisation.
     adc: Adc | None = None
+    #: Quadrature demodulator imbalance. ``None`` is a perfect demodulator.
+    iq: Iq | None = None
+    #: Transmit-to-receive antenna coupling. ``None`` is perfect isolation,
+    #: which is what a scene-only dataset assumes whether it says so or not.
+    leakage: Leakage | None = None
     #: Receive port reference impedance, ohm.
     impedance: float = 50.0
     #: The Philox base seed every receiver stage derives its own stream from.
@@ -619,6 +670,7 @@ class Radar:
         return FrontendSpec(
             noise=noise,
             lna=None if self.lna_gain is None else float(self.lna_gain),
+            iq=self.iq,
             agc=self.agc,
             adc=self.adc,
             impedance=float(self.impedance),
@@ -800,7 +852,48 @@ class Radar:
         batch = SynthesisPathBatch.from_radar_paths(paths, slow_time_mode=slow_time_mode)
         synthesize, build_result = owners[self.system_config.kind]
         spec = self.system_config.waveform_spec() if spec is None else spec
-        return build_result(synthesize(batch, spec), spec)
+        cube = synthesize(batch, spec)
+        return build_result(cube + self._leakage_cube(spec, batch.sensor_pair_count, cube), spec)
+
+    def _leakage_cube(self, spec, sensor_pair_count: int, cube: torch.Tensor):
+        """The coupled transmit signal, synthesized by the waveform's own kernel.
+
+        Zero when no coupling is declared, which is the default. One row per
+        sensor pair carries the coupling delay and the coupled amplitude, and the
+        same ``synthesize_fmcw_rows`` that produced the echo produces this, so
+        the phase law has one owner rather than a second copy in Torch.
+
+        One isolation figure describes every pair: a per-pair coupling table is a
+        measured property of a board, and inventing a spread here would put a
+        number nobody declared into the near bins.
+        """
+
+        if self.leakage is None:
+            return cube.new_zeros(())
+        if self.system_config.kind != WAVEFORM_FMCW:
+            raise NotImplementedError(
+                "antenna coupling is modelled for FMCW, whose de-chirp turns it "
+                f"into a near-range tone; {self.system_config.kind} would need its "
+                "own statement of what the coupled signal becomes"
+            )
+        from .synthesis.fmcw import synthesize_fmcw_rows
+
+        device = cube.device
+        rows = int(sensor_pair_count)
+        delay = torch.full((rows,), float(self.leakage.delay_s), dtype=torch.float32, device=device)
+        amplitude = self.leakage.amplitude(self.power)
+        weight = torch.full((rows,), amplitude, dtype=torch.complex64, device=device)
+        offsets = torch.arange(rows + 1, dtype=torch.int64, device=device)
+        return synthesize_fmcw_rows(
+            delay,
+            None,
+            weight,
+            offsets,
+            spec,
+            segment_tx_index=pair_tx_index(
+                num_tx=len(self.tx), num_rx=len(self.rx), sensor_pair_count=rows, device=device
+            ),
+        )
 
     # -- entry points ------------------------------------------------------
 
@@ -955,6 +1048,8 @@ class Radar:
 # ---------------------------------------------------------------------------
 # The flat configuration file format
 # ---------------------------------------------------------------------------
+
+_LEAKAGE_REASON = "antenna coupling is a measured board property, not a quantity a scene differentiates through"
 
 _FLAT_REQUIRED = (
     "num_tx",
