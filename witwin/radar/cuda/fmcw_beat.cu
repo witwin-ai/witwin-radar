@@ -29,6 +29,7 @@
 #include <cuda_runtime.h>
 #include "fmcw_phase.cuh"
 #include "fmcw_tdm.cuh"
+#include "path_interpolation.cuh"
 
 #include <cstdint>
 #include <cmath>
@@ -506,6 +507,29 @@ void fmcw_beat_backward_cuda(
 // phase owner and float sin/cos rounding are shared with the regular beat
 // kernel above. Time is a fixed schedule, not an AD input. Oracle:
 // test_fmcw_observations.py (independent complex phase and directional AD).
+struct ObservationValue { BeatPhase phase; double re,im; };
+
+__device__ __forceinline__ ObservationValue observation_value(
+    double tau, double re, double im, double time, double slope, double carrier) {
+  const auto p=beat_phase(tau,0,0,time,slope,carrier,0,0);
+  return {p,re*p.cos_phi-im*p.sin_phi,re*p.sin_phi+im*p.cos_phi};
+}
+
+__device__ __forceinline__ void observation_vjp(
+    ObservationValue value, double gr, double gi, double out[3]) {
+  const auto p=value.phase;
+  out[0]=p.dphi_dtau_rt*(-gr*value.im+gi*value.re);
+  out[1]=gr*p.cos_phi+gi*p.sin_phi;
+  out[2]=-gr*p.sin_phi+gi*p.cos_phi;
+}
+
+__device__ __forceinline__ void observation_jvp(
+    ObservationValue value, const double d[3], double& re, double& im) {
+  const auto p=value.phase;
+  re+=d[1]*p.cos_phi-d[2]*p.sin_phi-value.im*p.dphi_dtau_rt*d[0];
+  im+=d[1]*p.sin_phi+d[2]*p.cos_phi+value.re*p.dphi_dtau_rt*d[0];
+}
+
 template<int Mode>
 __global__ void fmcw_observation_kernel(const double* x, const int64_t* offsets,
     const int64_t* segment, const double* v, double* out, int64_t rows,
@@ -516,25 +540,19 @@ __global__ void fmcw_observation_kernel(const double* x, const int64_t* offsets,
     const int64_t owner=segment[i];
     if(owner<0 || owner>=segments) { for(int k=0;k<4;++k) out[4*i+k]=0; return; }
     const double* a=x+4*i;
-    const auto p=beat_phase(a[0],0,0,a[3],slope,carrier,0,0);
-    const double r=a[1]*p.cos_phi-a[2]*p.sin_phi, j=a[1]*p.sin_phi+a[2]*p.cos_phi;
-    const double gr=v[2*owner], gj=v[2*owner+1];
-    out[4*i]=p.dphi_dtau_rt*(-gr*j+gj*r);
-    out[4*i+1]=gr*p.cos_phi+gj*p.sin_phi;
-    out[4*i+2]=-gr*p.sin_phi+gj*p.cos_phi;
+    const auto value=observation_value(a[0],a[1],a[2],a[3],slope,carrier);
+    observation_vjp(value,v[2*owner],v[2*owner+1],out+4*i);
     out[4*i+3]=0;
   } else {
     const int64_t lo=offsets[i], hi=offsets[i+1];
     double r=0,j=0;
     if(lo>=0 && hi>=lo && hi<=rows) for(int64_t k=lo;k<hi;++k) {
       const double* a=x+4*k;
-      const auto p=beat_phase(a[0],0,0,a[3],slope,carrier,0,0);
-      const double wr=a[1]*p.cos_phi-a[2]*p.sin_phi, wi=a[1]*p.sin_phi+a[2]*p.cos_phi;
-      if constexpr(Mode==0) { r+=wr; j+=wi; }
+      const auto value=observation_value(a[0],a[1],a[2],a[3],slope,carrier);
+      if constexpr(Mode==0) { r+=value.re; j+=value.im; }
       else {
         const double* d=v+4*k;
-        r+=d[1]*p.cos_phi-d[2]*p.sin_phi-wi*p.dphi_dtau_rt*d[0];
-        j+=d[1]*p.sin_phi+d[2]*p.cos_phi+wr*p.dphi_dtau_rt*d[0];
+        observation_jvp(value,d,r,j);
       }
     }
     out[2*i]=r; out[2*i+1]=j;
@@ -573,7 +591,152 @@ void fmcw_observation_run(const torch::stable::Tensor& x, const torch::stable::T
   }
 }
 
+// Compact adaptive observations. Each output is one (ADC instant, active RX)
+// segment. Its node starts and pair-local bounds address the retained probes
+// directly; no observation-by-path payload is allocated. Interpolation and
+// beat numerics are the same helpers as the standalone operators above.
+struct AdaptivePathNodes {
+  const double* samples;
+  const int64_t* starts;
+  const double* basis;
+  int64_t local, sample_count;
+  __device__ InterpolationNode operator()(int64_t j) const {
+    const int64_t row=starts[j]+local;
+    if(row<0 || row>=sample_count) return {0,0,0,0};
+    const double* a=samples+3*row;
+    return {a[0],a[1],a[2],basis[j]};
+  }
+};
+
+__device__ __forceinline__ double float_round(double value) {
+  // Preserve the existing interpolation -> float32 -> synthesis boundary.
+  // Keeping all intermediates double would change the model's phase inputs.
+  return static_cast<double>(static_cast<float>(value));
+}
+
+template<int Mode>
+__global__ void fmcw_adaptive_kernel(const double* samples, const int32_t* valid,
+    const int64_t* starts, const double* basis, const int64_t* bounds,
+    const int64_t* owners, const double* clock, const double* vector, double* out,
+    int64_t sample_count, int64_t nodes, int64_t bound_rows, int64_t pairs,
+    int64_t begin, int64_t end, int64_t num_tx, int64_t num_samples,
+    double interpolation_carrier, double slope, double carrier) {
+  const int64_t receiver_count=pairs/num_tx;
+  const int64_t segment=static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(segment>=(end-begin)*receiver_count) return;
+  const int64_t observation=begin+segment/receiver_count;
+  const int64_t pair=(segment%receiver_count)*num_tx+(observation/num_samples)%num_tx;
+  const int64_t owner=owners[observation];
+  double re=0,im=0;
+  if(owner>=0 && owner<bound_rows) {
+    const int64_t lo=bounds[owner*(pairs+1)+pair], hi=bounds[owner*(pairs+1)+pair+1];
+    if(lo>=0 && hi>=lo && hi<=sample_count) for(int64_t local=lo;local<hi;++local) {
+      const AdaptivePathNodes read{samples,starts+observation*nodes,basis+observation*nodes,local,sample_count};
+      const auto interpolated=interpolate_path(read,nodes,interpolation_carrier);
+      const int64_t first=read.starts[0]+local;
+      const bool alive=first>=0 && first<sample_count && valid[first]!=0;
+      // Channel -> dechirped beat conjugation occurs exactly once, after
+      // interpolation, just as in the unfused FMCW facade. Dead coefficients
+      // are zeroed after interpolation, before phase evaluation.
+      const double wr=alive ? float_round(interpolated.re) : 0;
+      const double wi=alive ? -float_round(interpolated.im) : 0;
+      const auto value=observation_value(float_round(interpolated.tau),wr,wi,clock[observation],slope,carrier);
+      if constexpr(Mode==0) {
+        // Serial path order and double accumulation match CSR synthesis.
+        re+=value.re; im+=value.im;
+      } else if constexpr(Mode==1) {
+        double grad[3];
+        observation_vjp(value,vector[2*segment],vector[2*segment+1],grad);
+        grad[0]=float_round(grad[0]);
+        grad[1]=alive ? float_round(grad[1]) : 0;
+        grad[2]=alive ? -float_round(grad[2]) : 0;
+        for(int64_t j=0;j<nodes;++j) {
+          const int64_t row=read.starts[j]+local;
+          if(row<0 || row>=sample_count) continue;
+          double jac[3][3];
+          interpolation_jacobian(read(j),interpolated,interpolation_carrier,jac);
+          for(int col=0;col<3;++col) {
+            double sum=0;
+            for(int r=0;r<3;++r) sum+=jac[r][col]*grad[r];
+            // Several queries share a retained probe. Double accumulation
+            // matches the indexed interpolant's scatter-add precision.
+            atomicAdd(out+3*row+col,sum);
+          }
+        }
+      } else {
+        const AdaptivePathNodes tangent{vector,read.starts,read.basis,local,sample_count};
+        double direction[3]={0,0,0};
+        for(int64_t j=0;j<nodes;++j) {
+          double jac[3][3];
+          interpolation_jacobian(read(j),interpolated,interpolation_carrier,jac);
+          const auto d=tangent(j);
+          const double dv[3]={d.tau,d.re,d.im};
+          for(int r=0;r<3;++r) for(int col=0;col<3;++col) direction[r]+=jac[r][col]*dv[col];
+        }
+        direction[0]=float_round(direction[0]);
+        direction[1]=alive ? float_round(direction[1]) : 0;
+        direction[2]=alive ? -float_round(direction[2]) : 0;
+        observation_jvp(value,direction,re,im);
+      }
+    }
+  }
+  if constexpr(Mode!=1) { out[2*segment]=re; out[2*segment+1]=im; }
+}
+
+template<int Mode>
+void fmcw_adaptive_run(const torch::stable::Tensor& samples, const torch::stable::Tensor& valid,
+    const torch::stable::Tensor& starts, const torch::stable::Tensor& basis,
+    const torch::stable::Tensor& bounds, const torch::stable::Tensor& owners,
+    const torch::stable::Tensor& clock, const torch::stable::Tensor& vector,
+    torch::stable::Tensor& out, int64_t begin, int64_t end, int64_t num_tx,
+    int64_t num_samples, double interpolation_carrier, double slope, double carrier) {
+  const torch::stable::Tensor* payloads[5]={&samples,&basis,&clock,&vector,&out};
+  for(const auto* t : payloads) {
+    STD_TORCH_CHECK(t->is_cuda() && t->is_contiguous() &&
+      t->scalar_type()==torch::headeronly::ScalarType::Double,
+      "adaptive FMCW payloads require contiguous CUDA doubles");
+    STD_TORCH_CHECK(t->get_device_index()==samples.get_device_index(), "adaptive FMCW devices differ");
+  }
+  for(const auto* t : {&starts,&bounds,&owners}) {
+    check_cuda_long(*t,"adaptive FMCW routing");
+    STD_TORCH_CHECK(t->get_device_index()==samples.get_device_index(), "adaptive FMCW routing devices differ");
+  }
+  check_cuda_int(valid,"adaptive FMCW validity");
+  STD_TORCH_CHECK(valid.get_device_index()==samples.get_device_index(), "adaptive FMCW validity device differs");
+  STD_TORCH_CHECK(samples.dim()==2 && samples.size(1)==3, "adaptive FMCW samples must be [S,3]");
+  STD_TORCH_CHECK(valid.dim()==1 && valid.numel()==samples.size(0), "adaptive FMCW validity shape");
+  STD_TORCH_CHECK(starts.dim()==2 && starts.size(1)>=2, "adaptive FMCW starts must be [observations,K], K>=2");
+  const int64_t observations=starts.size(0), nodes=starts.size(1);
+  STD_TORCH_CHECK(basis.dim()==2 && basis.size(0)==observations && basis.size(1)==nodes,
+    "adaptive FMCW basis must match starts");
+  STD_TORCH_CHECK(owners.dim()==1 && owners.numel()==observations && clock.dim()==1 && clock.numel()==observations,
+    "adaptive FMCW schedule shape");
+  STD_TORCH_CHECK(bounds.dim()==2 && bounds.size(1)>=2 && num_tx>0 && num_samples>0,
+    "adaptive FMCW pair layout");
+  const int64_t pairs=bounds.size(1)-1;
+  STD_TORCH_CHECK(pairs%num_tx==0, "adaptive FMCW pairs must partition by transmitter");
+  STD_TORCH_CHECK(begin>=0 && end>=begin && end<=observations, "adaptive FMCW observation bounds");
+  const int64_t segments=(end-begin)*(pairs/num_tx);
+  STD_TORCH_CHECK(out.numel()==(Mode==1 ? samples.numel() : segments*2), "adaptive FMCW output shape");
+  STD_TORCH_CHECK(vector.numel()==(Mode==0 ? 0 : Mode==1 ? segments*2 : samples.numel()),
+    "adaptive FMCW vector shape");
+  STD_TORCH_CHECK(std::isfinite(interpolation_carrier) && interpolation_carrier>0 &&
+    std::isfinite(slope) && std::isfinite(carrier), "adaptive FMCW phase constants");
+  const torch::stable::accelerator::DeviceGuard guard(samples.get_device_index());
+  if(segments) {
+    fmcw_adaptive_kernel<Mode><<<(segments+255)/256,256,0,current_cuda_stream(samples)>>>(
+      samples.const_data_ptr<double>(),valid.const_data_ptr<int32_t>(),starts.const_data_ptr<int64_t>(),
+      basis.const_data_ptr<double>(),bounds.const_data_ptr<int64_t>(),owners.const_data_ptr<int64_t>(),
+      clock.const_data_ptr<double>(),vector.const_data_ptr<double>(),out.mutable_data_ptr<double>(),
+      samples.size(0),nodes,bounds.size(0),pairs,begin,end,num_tx,num_samples,interpolation_carrier,slope,carrier);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("fmcw_adaptive_forward", TORCH_BOX(&fmcw_adaptive_run<0>));
+  m.impl("fmcw_adaptive_backward", TORCH_BOX(&fmcw_adaptive_run<1>));
+  m.impl("fmcw_adaptive_jvp", TORCH_BOX(&fmcw_adaptive_run<2>));
   m.impl("fmcw_observation_forward", TORCH_BOX(&fmcw_observation_run<0>));
   m.impl("fmcw_observation_backward", TORCH_BOX(&fmcw_observation_run<1>));
   m.impl("fmcw_observation_jvp", TORCH_BOX(&fmcw_observation_run<2>));

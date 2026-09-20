@@ -1,6 +1,180 @@
 # Radar Performance
 
-Status: local measurements recorded 2026-09-16 to 2026-09-18; release-platform benchmarks remain separate.
+Status: local measurements recorded 2026-09-16 to 2026-09-19; release-platform benchmarks remain separate.
+
+## Motion sequence to complete ADC: fused CUDA (2026-09-19)
+
+The current adaptive FMCW route fuses compact probe interpolation and dechirped
+ADC synthesis in CUDA. It retains the same float32 boundaries, double phase
+evaluation, serial path accumulation, fixed observation schedule and first-order
+VJP/JVP. It does not generate RF transmit/receive chirps. Dirichlet remains the
+constant-delay direct-spectrum route; dynamic ADC synthesis is a different
+output/model contract, not a replacement of Dirichlet.
+
+The full SMPL benchmark remains 128 material sites, 3 TX x 4 RX, 128 chirps x
+256 samples, unchanged adaptive tolerances, and 300 frames over a 30 s walk
+within 15 m. Beat output includes every complex ADC sample; diffusion, setup,
+file output and all DSP remain outside timing. Other desktop GPU applications
+remain running. The control is the **previously optimized implementation**,
+interleaved with the new implementation at every frame of this same run.
+
+| Completed-CUDA measurement | Previous optimized control | Fused CUDA |
+| --- | ---: | ---: |
+| Full 300-frame simulation | 39.143 s | **14.275 s** |
+| Median frame | 127.96 ms | **45.18 ms** |
+| P95 frame | 153.83 ms | **67.01 ms** |
+| Throughput over the full sequence | 7.66 frames/s | **21.02 frames/s** |
+| Synthesis batches per frame | 49 | **2** |
+| Maximum incremental Torch allocation, paired single frames | 151.33 MiB | **34.33 MiB** |
+
+The incremental sequence speedup is **2.74x**. Maximum ADC relative L2 difference
+is **zero** across all 300 paired frames; adaptive probe counts match throughout.
+All 15 paired standalone frames are bit-identical. The small exhaustive ADC
+oracle remains at **0.2323%** adaptive error. Neither motion fidelity nor
+sampling tolerance was reduced. This fixture now exceeds its 10 Hz target;
+this is not a throughput guarantee for denser sites, multipath or phase noise.
+
+Nsight Systems correlates the echo's CUDA launches with its NVTX range:
+**2,371 -> 27 kernels**, **79.80 -> 12.44 ms** cumulative device kernel time in
+one instrumented frame. The removed gather alone cost 48.23 ms. These profiler
+numbers are separate from clean sequence timings. Synchronized stage timing
+places the world half at 60.26 ms, including 15.86 ms SMPL and 11.80 ms Channel;
+echo is 13.40 ms. World sampling and propagation now dominate that frame.
+
+Oscillator phase noise retains separate interpolation and synthesis because a
+receiver effect intervenes. The native boundary is **ABI 10**, with 41 operators
+and a locally rebuilt developer binary. Both paired variants use that binary;
+this comparison isolates compact fusion versus the previous expanded route,
+not independently loaded historical DLLs. See the
+[CUDA fusion report](docs/dev/audit/radar-adc-cuda-fusion-2026-09-19.md) and
+retained raw evidence in `output/adc-fusion/`.
+
+Validation: the full GPU suite had 1466 passes, two new-owner inventory-count
+failures and one nightly-evidence skip. The two inventories were updated;
+the final 98-test targeted run passed, including native AD and trace/echo
+identity. All 18 non-CPU-test quick gates passed. See the report for exact
+run boundaries; the full suite was not repeated after the inventory fixes.
+
+## Historical first optimization pass (2026-09-19)
+
+The following paired run predates CUDA fusion. Its before/current columns
+describe that pass only; shared desktop load differs from the current run.
+
+The current benchmark explicitly requests **beat output**, so it includes live
+SMPL evaluation, adaptive world sampling, propagation, scattering, interpolation
+and every complex ADC sample, with **no diffusion, range FFT or Range-Doppler**.
+The workload remains 128 material sites on the complete 6,890-vertex SMPL body,
+3 TX x 4 RX, 128 chirps x 256 samples, and unchanged adaptive tolerances.
+
+`tools/benchmark_motion_adc.py` alternates the before-change and current
+implementations at **every frame** of the same 30 s / 300-frame walking sequence.
+The RTX 5080 desktop continues to carry the user's other GPU applications.
+
+| Completed-CUDA measurement | Before | Current |
+| --- | ---: | ---: |
+| Full 300-frame simulation | 148.324 s | **45.399 s** |
+| Median frame | 459.41 ms | **147.55 ms** |
+| P95 frame | 745.83 ms | **182.49 ms** |
+| Throughput over the full sequence | 2.02 frames/s | **6.61 frames/s** |
+| Synthesis batches per frame | 193 | **49** |
+
+The measured sequence speedup is **3.27x**, with every frame included. This still
+falls short of 10 Hz real time. Maximum ADC relative L2 difference across all
+300 before/after pairs is **4.964e-7**; probe counts match at every frame.
+All vertices at 31 instants across the route match exactly. The small exhaustive
+ADC oracle remains at **0.2323%** relative error from adaptive sampling.
+
+Production changes remove repeated SMPL face uploads and shape blending,
+prepare observation metadata once, reuse CSR routing, and gather compact probe
+samples inside the native interpolation operator. The benchmark's fixed-motion
+adapter additionally replays the complete SMPL expression in a CUDA Graph;
+it still computes every vertex at each probe and owns every returned tensor.
+This adapter is inference-only; production SMPL and interpolation retain their
+existing differentiation contracts.
+
+Larger batches trade memory for fewer launches: the paired single-frame runs
+measure about **90 MiB before / 151 MiB current** in maximum incremental Torch
+CUDA allocation. These are not the entire desktop's VRAM use. A synchronized
+instrumented frame attributes **107.0 ms** to echo assembly/interpolation/
+synthesis and **62.4 ms** to the world half, including **16.6 ms** for SMPL and
+**14.3 ms** for Channel discovery/replay. Echo assembly is the remaining largest
+stage; the measurements do not equate it with native-kernel execution alone.
+
+The native interface is now **ABI 9**, and the packaged developer binary was
+rebuilt and its identity validated locally. The before-change control retains
+the old SMPL, motion adapter and orchestration sources, while both variants use
+the rebuilt native library's respective packed/indexed modes. This is a paired
+implementation comparison, not a comparison of independently loaded old/new DLLs.
+See the [optimization and acceptance report](docs/dev/audit/radar-motion-adc-optimization-2026-09-19.md)
+and retained evidence under `output/adc-optimization/acceptance/`.
+Validation: **1458 tests passed, 1 nightly coexistence-evidence check skipped**
+under `pytest tests/ --gpu`; all 18 non-CPU-test quick gates passed.
+
+## Historical pre-optimization SMPL walking measurement (2026-09-19)
+
+The following numbers describe the earlier spectrum-output run under different
+desktop load. They must not be divided by the current ADC timings to claim a speedup.
+
+`tools/benchmark_smpl_walk.py` now measures an actual Genesis-generated walking
+motion, with the full **6,890-vertex / 13,776-face SMPL mesh evaluated at every
+motion probe**. The fixed motion is `tools/fixtures/smpl_walk_genesis_seed10.npz`;
+licensed SMPL model files are supplied locally. This is distinct from the
+single-point `walker` fixture below.
+
+The primary workload uses 128 stable material surface sites, scalar RCS,
+LOS propagation, 3 TX x 4 RX, 128 chirps x 256 ADC samples and default adaptive
+tolerances. The root follows a smooth return route with sampled body ranges
+2.75–13.33 m. The slope is **40 MHz/us**, giving a **16.49 m** range window;
+the older fixture's 60.012 MHz/us slope would alias beyond 10.99 m.
+
+Measured on RTX 5080 / Torch 2.10.0 / CUDA 12.8 / Windows, **under the shared
+desktop GPU load the user requested**, with synchronization around every frame:
+
+| Measurement | Result |
+| --- | ---: |
+| 30 s of motion, 300 streamed frames at 10 Hz: simulation | **1033.615 s** |
+| Range-Doppler processing, all frames | **1.249 s** |
+| Full loop including checks and three sample exports | **1036.696 s** |
+| Mean / median / P95 simulation time per frame | **3.445 / 3.355 / 5.320 s** |
+| Worst frame; no outliers removed | **20.778 s** |
+| Peak Torch CUDA allocation including DSP and checks | **245.23 MiB** |
+| Probe count, min / median / max | **27 / 53 / 101** |
+| Synthesis batches per frame | **193** |
+
+A separately instrumented 2.851 s frame spends **1.350 s in live SMPL geometry**
+and **1.202 s in echo assembly/interpolation/synthesis**, about 47% and 42%.
+The complete stream evaluates SMPL 14,844 times. At 128 sites each frame carries
+50,331,648 row contributions, which explains the much larger echo workload.
+Discovery occurs once for the streamed LOS session; no topology refinements occur.
+The older single-point native-device percentage is not evidence for this workload.
+
+`tools/benchmark_smpl_scaling.py` interleaves three site counts at two motion
+instants over three rounds, rather than comparing runs far apart in time:
+
+| Surface sites | Single-frame median | Synthesis batches |
+| --- | ---: | ---: |
+| 32 | **1.274 s** | 49 |
+| 128 | **3.114 s** | 193 |
+| 512 | **9.211 s** | 775 |
+
+These are shared-load measurements, not idle-machine throughput or a real-time
+guarantee. The single-frame and sequence runs saw different desktop load; their
+ratio must not be presented as a streaming penalty. No one-minute extrapolation
+is published. Motion generation plus SMPL fitting cost **154.191 s once**, and
+is excluded from the reusable-motion simulation timer.
+
+The small exhaustive ADC comparison measures **0.2323% IQ relative L2 error**;
+the analytic vertex-velocity diagnostic agrees with central differences to
+**0.0381% relative L2**. The velocity diagnostic is timed separately and is not
+called by the public position-trajectory route. All 300 cubes are finite and
+nonzero. These checks are not validation against measured human radar data.
+
+This is a full LOS material-point simulation driven by a real SMPL mesh,
+**not** mesh electromagnetic scattering: body self-occlusion, room multipath,
+skin calibration and a receiver/noise chain are not included. Root motion is
+reauthored and the generated joint clip is smoothly looped; foot contact is not
+constrained. See the [workload, exact timings, profiling and reproduction report](docs/dev/audit/radar-smpl-walking-benchmark-2026-09-19.md).
+Evidence is retained in `output/smpl-walk/range15m/` and `output/smpl-walk/scaling/`.
 
 ## Retraction and corrected measurement (2026-09-18)
 

@@ -32,30 +32,37 @@ class _PathInterpolation(torch.autograd.Function):
     """First-order native interpolation at a fixed adaptive time partition."""
 
     @staticmethod
-    def forward(values, carrier):
-        result = values.new_empty((len(values), 3))
-        _ops().path_interpolate_forward(values, values.new_empty(0), result, carrier)
+    def forward(values, indices, weights, carrier):
+        rows = len(indices) if indices.ndim == 2 else len(values)
+        result = values.new_empty((rows, 3))
+        _ops().path_interpolate_forward(values, indices, weights, values.new_empty(0), result, carrier)
         return result
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        values, ctx.carrier = inputs
-        ctx.save_for_backward(values)
-        ctx.save_for_forward(values)
+        values, indices, weights, ctx.carrier = inputs
+        ctx.save_for_backward(values, indices, weights)
+        ctx.save_for_forward(values, indices, weights)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad):
-        (values,) = ctx.saved_tensors
-        result = torch.empty_like(values)
-        _ops().path_interpolate_backward(values, grad.contiguous(), result, ctx.carrier)
-        return result, None
+        values, indices, weights = ctx.saved_tensors
+        indexed = indices.ndim == 2
+        result = values.new_empty((len(indices), 4 * indices.shape[1])) if indexed else torch.empty_like(values)
+        _ops().path_interpolate_backward(values, indices, weights, grad.contiguous(), result, ctx.carrier)
+        if indexed:
+            # Sum cotangents from every observation reading the same probe.
+            # Repeated node indices are intentional (exactly sampled queries).
+            result = torch.zeros_like(values).index_add(0, indices.reshape(-1), result.reshape(-1, 4)[:, :3])
+        return result, None, None, None
 
     @staticmethod
-    def jvp(ctx, tangent, carrier_tangent):
-        (values,) = ctx.saved_tensors
-        result = values.new_empty((len(values), 3))
-        _ops().path_interpolate_jvp(values, tangent.contiguous(), result, ctx.carrier)
+    def jvp(ctx, tangent, indices_tangent, weights_tangent, carrier_tangent):
+        values, indices, weights = ctx.saved_tensors
+        rows = len(indices) if indices.ndim == 2 else len(values)
+        result = values.new_empty((rows, 3))
+        _ops().path_interpolate_jvp(values, indices, weights, tangent.contiguous(), result, ctx.carrier)
         return result
 
 
@@ -83,7 +90,30 @@ def interpolate_path_rows(delays, transfers, weights, carrier_hz):
     columns = []
     for index, (delay, transfer) in enumerate(zip(delays, transfers, strict=True)):
         columns += [delay.double(), transfer.real.double(), transfer.imag.double(), weights[:, index].double()]
-    result = _PathInterpolation.apply(torch.stack(columns, dim=1).contiguous(), carrier_hz)
+    return _interpolate_packed_rows(torch.stack(columns, dim=1).contiguous(), carrier_hz)
+
+
+def _interpolate_packed_rows(values, carrier_hz):
+    """Native interpolation over repeated [delay, real, imaginary, basis] columns.
+
+    Used by the adaptive controller's small error probes. Full observation
+    synthesis uses indexed compact samples, through the same native equation.
+    """
+    result = _PathInterpolation.apply(
+        values, torch.empty(0, device=values.device, dtype=torch.int64), values.new_empty(0), carrier_hz
+    )
+    return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
+
+
+def _interpolate_indexed_rows(samples, indices, weights, carrier_hz):
+    """Gather compact probe triples inside the interpolation kernel.
+
+    ``samples`` stores float64 (delay [s], real C, imaginary C) per probe path;
+    ``indices`` and the fixed Lagrange ``weights`` are [observations*paths, K].
+    The same native transport equation handles both indexed and packed rows.
+    """
+    refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
+    result = _PathInterpolation.apply(samples, indices, weights, carrier_hz)
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 

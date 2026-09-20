@@ -232,3 +232,18 @@ def test_the_smpl_body_itself_still_publishes_a_pose_gradient(smpl):
     vertices.square().sum().backward()
     assert pose.grad is not None
     assert float(pose.grad.abs().sum()) > 0.0
+
+
+def test_mesh_faces_are_owned_by_the_result_and_shape_updates_stay_live(smpl):
+    SMPLBody, _, root = smpl
+    shape = _shape()
+    body = SMPLBody(pose=_pose(), shape=shape, model_root=root, device="cpu")
+    vertices, faces = body.to_mesh()
+    expected_faces = faces.clone()
+    faces.zero_()
+    # The shared layer owns model constants, never a caller's mutable result.
+    shape[0] = 1.0
+    updated, topology = body.to_mesh()
+    assert topology.dtype == torch.int64
+    assert torch.equal(topology, expected_faces)
+    assert not torch.equal(vertices, updated)

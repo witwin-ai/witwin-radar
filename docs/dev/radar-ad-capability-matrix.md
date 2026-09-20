@@ -183,6 +183,8 @@ per-path product downstream of it is still a native kernel.
 | synthesis/fmcw_beat | tau_rate at the first chirp | jvp | ZERO | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis | tests/test_fmcw_variable_jvp.py::test_a_rate_only_tangent_is_not_the_zero_tangent | analytic |
 | synthesis/fmcw_observation | refreshed delay and complex weight | both | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwObservations | tests/test_fmcw_observations.py::test_ragged_observations_match_complex_oracle_and_ad | oracle-f64 |
 | synthesis/fmcw_observation | ADC time | both | REF | native-companion | witwin/radar/synthesis/fmcw.py::synthesize_fmcw_observations | tests/test_fmcw_observations.py::test_empty_observations_and_time_derivative_refusal | refusal |
+| synthesis/fmcw_adaptive | compact probe delay and complex transfer | both | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_AdaptiveFmcw | tests/test_adaptive_fmcw_fusion.py::test_compact_fmcw_matches_complex_oracle_and_first_order_ad | oracle-f64 |
+| synthesis/fmcw_adaptive | partition basis and ADC clock | both | REF | native-companion | witwin/radar/synthesis/fmcw.py::_synthesize_adaptive_fmcw | tests/test_adaptive_fmcw_fusion.py::test_compact_fmcw_empty_rows_and_derivative_refusals | refusal |
 
 ### End-to-end waveform chains (`tests/support/waveform_chains.py`)
 

@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 8,
+  "radar_abi_version": 10,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -801,6 +801,60 @@
       "python_owner": "witwin/radar/synthesis/fmcw.py",
       "contract_test": "tests/test_fmcw_observations.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw.synthesize_fmcw_observations"
+    },
+    {
+      "symbol": "fmcw_adaptive_forward",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "fmcw_adaptive",
+      "launches": 1,
+      "fused_stages": [
+        "compact_observation_routing",
+        "carrier_transport_interpolation",
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_adaptive_fmcw_fusion.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_adaptive_fmcw"
+    },
+    {
+      "symbol": "fmcw_adaptive_backward",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "backward",
+      "ad_group": "fmcw_adaptive",
+      "launches": 1,
+      "fused_stages": [
+        "compact_observation_routing",
+        "carrier_transport_interpolation",
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_adaptive_fmcw_fusion.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_adaptive_fmcw"
+    },
+    {
+      "symbol": "fmcw_adaptive_jvp",
+      "family": "fmcw_beat_synthesis",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "numerical_owner": "radar",
+      "ad_role": "jvp",
+      "ad_group": "fmcw_adaptive",
+      "launches": 1,
+      "fused_stages": [
+        "compact_observation_routing",
+        "carrier_transport_interpolation",
+        "refreshed_csr_beat_phase"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "contract_test": "tests/test_adaptive_fmcw_fusion.py",
+      "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_adaptive_fmcw"
     }
   ]
 }

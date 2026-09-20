@@ -50,6 +50,7 @@
 
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
+#include "path_interpolation.cuh"
 
 #include <cstdint>
 
@@ -560,35 +561,52 @@ void two_way_join_backward_cuda(
 // are a discrete time-grid decision, so the kernel publishes NO derivative for
 // them. Valid only within a topology-stable, error-tested interval. No
 // spreading/scattering is added here. Oracle: test_path_interpolation.py.
-__global__ void path_interpolate_kernel(const double* x, const double* v,
-    double* out, int64_t n, int64_t nodes, double fc, int mode) {
+template<bool Indexed>
+__device__ InterpolationNode interpolation_node(const double* x, const int64_t* indices,
+    const double* weights, int64_t i, int64_t j, int64_t nodes, int64_t samples) {
+  if constexpr(Indexed) {
+    const int64_t row=indices[i*nodes+j];
+    // Routing is discrete metadata. Do not let a malformed native caller read
+    // outside the compact table; Python's partition builder supplies valid IDs.
+    if(row<0 || row>=samples) return {0,0,0,0};
+    const double* a=x+3*row;
+    return {a[0],a[1],a[2],weights[i*nodes+j]};
+  } else {
+    const double* a=x+4*(nodes*i+j);
+    return {a[0],a[1],a[2],a[3]};
+  }
+}
+
+template<bool Indexed>
+struct PackedPathNodes {
+  const double* x;
+  const int64_t* indices;
+  const double* weights;
+  int64_t i,nodes,samples;
+  __device__ InterpolationNode operator()(int64_t j) const {
+    return interpolation_node<Indexed>(x,indices,weights,i,j,nodes,samples);
+  }
+};
+
+template<bool Indexed>
+__global__ void path_interpolate_kernel(const double* x, const int64_t* indices,
+    const double* weights, const double* v, double* out, int64_t n,
+    int64_t nodes, int64_t samples, double fc, int mode) {
   const int64_t i = static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
   if (i >= n) return;
-  const double* a = x+4*nodes*i;
-  const double k = 6.2831853071795864769*fc;
-  double tau = 0;
-  for (int64_t j=0;j<nodes;++j) tau += a[4*j+3]*a[4*j];
-  // Transported, weighted sum. theta is recomputed rather than cached so the
-  // register cost does not grow with the node count.
-  double re = 0, im = 0;
-  for (int64_t j=0;j<nodes;++j) {
-    double s,c; sincos(-k*(tau-a[4*j]),&s,&c);
-    re += a[4*j+3]*(a[4*j+1]*c-a[4*j+2]*s);
-    im += a[4*j+3]*(a[4*j+1]*s+a[4*j+2]*c);
-  }
-  if (mode==0) { out[3*i]=tau; out[3*i+1]=re; out[3*i+2]=im; }
+  const PackedPathNodes<Indexed> read{x,indices,weights,i,nodes,samples};
+  const auto value=interpolate_path(read,nodes,fc);
+  if (mode==0) { out[3*i]=value.tau; out[3*i+1]=value.re; out[3*i+2]=value.im; }
   else {
     // Column m of the Jacobian, for node m. d(theta_j)/d(tau_m) = -k(w_m -
     // delta_jm) collapses the transported sum into the published re/im, so a
     // delay column needs only this node's own transported value.
     double* row = out+(mode==1 ? 4*nodes*i : 3*i);
-    const double* vec = v+(mode==1 ? 3*i : 4*nodes*i);
+    const double* vec = mode==1 ? v+3*i : v;
     double jvp[3] = {0,0,0};
     for (int64_t j=0;j<nodes;++j) {
-      double s,c; sincos(-k*(tau-a[4*j]),&s,&c);
-      const double w=a[4*j+3];
-      const double rj=a[4*j+1]*c-a[4*j+2]*s, ij=a[4*j+1]*s+a[4*j+2]*c;
-      const double jac[3][3]={{w,0,0},{k*w*(im-ij),w*c,-w*s},{-k*w*(re-rj),w*s,w*c}};
+      double jac[3][3];
+      interpolation_jacobian(read(j),value,fc,jac);
       if (mode==1) {
         for(int col=0;col<3;++col) {
           double sum=0; for(int r=0;r<3;++r) sum+=jac[r][col]*vec[r];
@@ -596,41 +614,60 @@ __global__ void path_interpolate_kernel(const double* x, const double* v,
         }
         row[4*j+3]=0;
       } else {
-        for(int r=0;r<3;++r) for(int col=0;col<3;++col) jvp[r]+=jac[r][col]*vec[4*j+col];
+        const auto d=interpolation_node<Indexed>(vec,indices,weights,i,j,nodes,samples);
+        const double direction[3]={d.tau,d.re,d.im};
+        for(int r=0;r<3;++r) for(int col=0;col<3;++col) jvp[r]+=jac[r][col]*direction[col];
       }
     }
     if (mode==2) for(int r=0;r<3;++r) row[r]=jvp[r];
   }
 }
 
-void path_interpolate_run(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
+void path_interpolate_run(const torch::stable::Tensor& x, const torch::stable::Tensor& indices,
+    const torch::stable::Tensor& weights, const torch::stable::Tensor& v,
     torch::stable::Tensor& out, double fc, int mode) {
-  const torch::stable::Tensor* tensors[3] = {&x,&v,&out};
+  const torch::stable::Tensor* tensors[4] = {&x,&weights,&v,&out};
   for (const auto* tensor : tensors) {
     STD_TORCH_CHECK(tensor->is_cuda() && tensor->is_contiguous() &&
       tensor->scalar_type()==torch::headeronly::ScalarType::Double,
       "path interpolation requires contiguous CUDA doubles");
     STD_TORCH_CHECK(tensor->get_device_index()==x.get_device_index(), "interpolation devices differ");
   }
-  STD_TORCH_CHECK(x.dim()==2 && x.size(1)>=8 && x.size(1)%4==0,
-    "interpolation x must be [N,4K] with K>=2 nodes of (delay, re, im, weight)");
-  const int64_t n=x.size(0), nodes=x.size(1)/4, wide=4*nodes;
+  check_cuda_long(indices,"interpolation indices");
+  STD_TORCH_CHECK(indices.get_device_index()==x.get_device_index(), "interpolation index device differs");
+  const bool indexed=indices.dim()==2;
+  STD_TORCH_CHECK(x.dim()==2, "interpolation x must be a matrix");
+  STD_TORCH_CHECK(indexed ? x.size(1)==3 && indices.size(1)>=2 :
+    indices.dim()==1 && indices.numel()==0 && x.size(1)>=8 && x.size(1)%4==0,
+    "interpolation needs compact [S,3] with [N,K] indices, or packed [N,4K], K>=2");
+  const int64_t n=indexed ? indices.size(0) : x.size(0);
+  const int64_t nodes=indexed ? indices.size(1) : x.size(1)/4, wide=4*nodes;
+  STD_TORCH_CHECK(indexed ? weights.dim()==2 && weights.size(0)==n && weights.size(1)==nodes : weights.numel()==0,
+    "interpolation basis shape differs from indices");
   STD_TORCH_CHECK(out.numel()==n*(mode==1?wide:3), "interpolation output shape");
-  STD_TORCH_CHECK(v.numel()==(mode==0?0:n*(mode==1?3:wide)), "interpolation vector shape");
+  STD_TORCH_CHECK(v.numel()==(mode==0?0:mode==1?n*3:x.numel()), "interpolation vector shape");
   STD_TORCH_CHECK(std::isfinite(fc) && fc>0, "interpolation carrier must be positive");
   const torch::stable::accelerator::DeviceGuard guard(x.get_device_index());
   if(n) {
-    path_interpolate_kernel<<<(n+255)/256,256,0,current_cuda_stream(x)>>>(
-      x.const_data_ptr<double>(),v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,nodes,fc,mode);
+    const auto stream=current_cuda_stream(x);
+    if(indexed) path_interpolate_kernel<true><<<(n+255)/256,256,0,stream>>>(
+      x.const_data_ptr<double>(),indices.const_data_ptr<int64_t>(),weights.const_data_ptr<double>(),
+      v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,nodes,x.size(0),fc,mode);
+    else path_interpolate_kernel<false><<<(n+255)/256,256,0,stream>>>(
+      x.const_data_ptr<double>(),indices.const_data_ptr<int64_t>(),weights.const_data_ptr<double>(),
+      v.const_data_ptr<double>(),out.mutable_data_ptr<double>(),n,nodes,x.size(0),fc,mode);
     STD_CUDA_KERNEL_LAUNCH_CHECK();
   }
 }
-void path_interpolate_forward(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
-    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,0); }
-void path_interpolate_backward(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
-    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,1); }
-void path_interpolate_jvp(const torch::stable::Tensor& x, const torch::stable::Tensor& v,
-    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,v,out,fc,2); }
+void path_interpolate_forward(const torch::stable::Tensor& x, const torch::stable::Tensor& indices,
+    const torch::stable::Tensor& weights, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,indices,weights,v,out,fc,0); }
+void path_interpolate_backward(const torch::stable::Tensor& x, const torch::stable::Tensor& indices,
+    const torch::stable::Tensor& weights, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,indices,weights,v,out,fc,1); }
+void path_interpolate_jvp(const torch::stable::Tensor& x, const torch::stable::Tensor& indices,
+    const torch::stable::Tensor& weights, const torch::stable::Tensor& v,
+    torch::stable::Tensor& out, double fc) { path_interpolate_run(x,indices,weights,v,out,fc,2); }
 
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("path_interpolate_forward", TORCH_BOX(&path_interpolate_forward));

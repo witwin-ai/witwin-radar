@@ -23,6 +23,8 @@ Two structural contracts, each with a test:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 from ..cuda import native_ops as _ops
@@ -62,9 +64,10 @@ def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     ``+j``. The two conventions are therefore conjugates, and a Channel
     coefficient becomes a beat weight by conjugation.
 
-    This is the ONE conversion site. A complex target response is authored in
-    the Channel convention, because it multiplies transports authored there;
-    it is converted here along with everything else it multiplies.
+    A complex target response is authored in the Channel convention, because
+    it multiplies transports authored there. The unfused route converts here;
+    fused adaptive synthesis performs the same single conjugation after its
+    interpolation, inside the FMCW native owner.
     """
 
     if coefficient.dtype not in (torch.complex64, torch.complex128):
@@ -233,21 +236,105 @@ class _FmcwObservations(torch.autograd.Function):
         return result
 
 
-def synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec):
+def synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec, *, segment=None):
     """One complex beat value per CSR segment, using refreshed path rows.
 
     Delay [s] and conjugated Channel weight are differentiable. Chirp-local
     ADC times [s] are fixed schedule metadata. There is no delay-rate term:
     each row already describes its observation instant.
+    ``segment`` may reuse the caller's CSR inverse when it expanded these
+    rows itself; otherwise this owner derives it from ``offsets``.
     """
 
     refuse_derivative("FMCW observation schedule", "ADC times are fixed metadata", adc_time=adc_time)
     if delay.shape != weight.shape or delay.shape != adc_time.shape:
         raise ValueError("observation delay, weight and ADC time must have the same shape")
+    if segment is None:
+        segment = segment_of_each_row(offsets, len(delay))
     values = torch.stack([delay.double(), weight.real.double(), weight.imag.double(), adc_time.double()], dim=1)
-    result = _FmcwObservations.apply(
-        values, offsets.contiguous(), segment_of_each_row(offsets, len(delay)), spec.slope_hz_per_s, spec.carrier_hz
-    )
+    result = _FmcwObservations.apply(values, offsets.contiguous(), segment, spec.slope_hz_per_s, spec.carrier_hz)
+    return torch.complex(result[:, 0].float(), result[:, 1].float())
+
+
+@dataclass(frozen=True)
+class _AdaptiveObservationSpec:
+    waveform: FmcwSpec
+    interpolation_carrier: float
+    begin: int
+    stop: int
+
+    def native_args(self):
+        spec = self.waveform
+        return (
+            self.begin,
+            self.stop,
+            spec.num_tx,
+            spec.num_samples,
+            self.interpolation_carrier,
+            spec.slope_hz_per_s,
+            spec.carrier_hz,
+        )
+
+    def output_shape(self, bounds):
+        return ((self.stop - self.begin) * ((bounds.shape[1] - 1) // self.waveform.num_tx), 2)
+
+
+class _AdaptiveFmcw(torch.autograd.Function):
+    """Fused compact interpolation and ADC synthesis, with native first-order AD."""
+
+    @staticmethod
+    def forward(samples, validity, starts, basis, bounds, owners, clock, plan):
+        result = samples.new_empty(plan.output_shape(bounds))
+        _ops().fmcw_adaptive_forward(
+            samples, validity, starts, basis, bounds, owners, clock, samples.new_empty(0), result, *plan.native_args()
+        )
+        return result
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.plan = inputs[-1]
+        ctx.save_for_backward(*inputs[:-1])
+        ctx.save_for_forward(*inputs[:-1])
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, gradient):
+        samples, *metadata = ctx.saved_tensors
+        result = torch.zeros_like(samples)
+        _ops().fmcw_adaptive_backward(samples, *metadata, gradient.contiguous(), result, *ctx.plan.native_args())
+        return result, None, None, None, None, None, None, None
+
+    @staticmethod
+    def jvp(
+        ctx,
+        tangent,
+        validity_tangent,
+        starts_tangent,
+        basis_tangent,
+        bounds_tangent,
+        owners_tangent,
+        clock_tangent,
+        plan_tangent,
+    ):
+        samples, *metadata = ctx.saved_tensors
+        bounds = metadata[3]
+        result = samples.new_empty(ctx.plan.output_shape(bounds))
+        tangent = torch.zeros_like(samples) if tangent is None else tangent.contiguous()
+        _ops().fmcw_adaptive_jvp(samples, *metadata, tangent, result, *ctx.plan.native_args())
+        return result
+
+
+def _synthesize_adaptive_fmcw(samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop):
+    """Direct complete ADC values from compact adaptive probe rows.
+
+    All routing and timestamps are discrete metadata. Samples retain native
+    VJP/JVP; interpolation's float32 boundary and serial path sum are retained.
+    A row-dependent receiver effect must be applied before using observation
+    synthesis instead; this operator does not absorb oscillator phase noise.
+    """
+    refuse_derivative("adaptive observation schedule", "partition and ADC times are fixed", basis=basis, clock=clock)
+    plan = _AdaptiveObservationSpec(spec, carrier_hz, begin, stop)
+    result = _AdaptiveFmcw.apply(samples, validity, starts, basis, bounds, owners, clock, plan)
     return torch.complex(result[:, 0].float(), result[:, 1].float())
 
 

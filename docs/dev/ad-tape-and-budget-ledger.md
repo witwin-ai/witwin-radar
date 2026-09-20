@@ -37,6 +37,34 @@ first-order refusal guard. These are structural counts; historical timings
 below do not measure this owner or per-ADC scene sampling. Scene sampling
 retains one first-order graph per observation only when AD is requested.
 
+## Compact adaptive ADC owner (2026-09-19)
+
+`synthesis/fmcw.py::_AdaptiveFmcw` saves `samples`, `validity`, `starts`,
+`basis`, `bounds`, `owners`, and `clock` for either first-order AD mode.
+These are compact per-frame inputs shared by reference across output batches,
+not expanded observation-by-path tensors. With `S` retained probe path rows,
+`O` ADC instants, `K` interpolation nodes, `Q` pair-bound tables, and `P` sensor
+pairs, their unique storage is `28*S + 16*O*K + 8*Q*(P+1) + 16*O` bytes.
+This is a structural count, not a measured reverse-time budget. Each output
+batch launches one native forward, backward, or JVP kernel in `fmcw_beat.cu`.
+Reverse initializes an additional `24*S`-byte gradient buffer; repeated probe
+indices accumulate in double precision with atomics, so reduction order is
+not deterministic. No reduction-order change is made to primal path sums.
+
+The context begins at each batch's `Function.apply` and is released when its
+AD graph is freed. Batches retain references to the same compact frame inputs;
+there is no saved expanded interpolation or beat payload. With oscillator
+phase noise, interpolation and waveform synthesis retain their separate
+contexts because the receiver effect lies between them. The new owner's
+oracle, stream, batch-cut and first-order-refusal tests are in
+`tests/test_adaptive_fmcw_fusion.py`. Historical timings below do not measure it.
+
+The standalone interpolator now accepts `[N,K,4]` packed probe values or
+`[S,3]` compact values with `[N,K]` int64 indices and float64 basis. The old
+`[N,7]` endpoint description below is historical. The current Dirichlet
+spectrum route is owned by `_FmcwSynthesis` in `synthesis/fmcw.py`; the old
+Phase 11 deletion mentioned below does not describe the current waveform API.
+
 ## How to read a row
 
 - **saved tensors** are the literal names, in save order, so the row is

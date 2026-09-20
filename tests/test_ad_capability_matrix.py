@@ -100,7 +100,7 @@ SECTION_ROWS = {
     # because there is one numerical owner.
     "Sensor weight (`witwin/radar/sensors.py`)": 13,
     "Scatter response (`witwin/radar/scattering.py`)": 6,
-    "FMCW beat synthesis (`witwin/radar/synthesis/fmcw.py`)": 7,
+    "FMCW beat synthesis (`witwin/radar/synthesis/fmcw.py`)": 9,
     "End-to-end waveform chains (`tests/support/waveform_chains.py`)": 8,
     "Frontend chain (`witwin/radar/frontend.py`)": 2,
     "Adaptive path interpolation (`witwin/radar/paths.py`)": 1,

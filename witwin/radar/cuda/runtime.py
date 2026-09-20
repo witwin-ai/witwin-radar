@@ -43,11 +43,8 @@ import torch
 #: different value is rejected; it is never silently upgraded, and it never
 #: triggers a rebuild.
 #:
-#: 8 - the ``path_interpolate`` family takes K nodes of four columns each
-#:     instead of a fixed two-node input of seven columns. The symbol names are
-#:     unchanged and the shapes are not, so an older caller reaches a library
-#:     that accepts its tensor rank and rejects its width.
-RADAR_ABI_VERSION = 8
+#: 10 - fused compact adaptive FMCW synthesis, with native VJP and JVP.
+RADAR_ABI_VERSION = 10
 
 BUILD_INFO_SUFFIX = ".build-info.json"
 FINGERPRINT_SUFFIX = ".build-fingerprint"

@@ -124,7 +124,6 @@ def _load_model(fname_or_dict):
 
 
 _SMPL_LAYER_CACHE: dict[tuple[str, str, str], Any] = {}
-_SMPL_FACES_CACHE: dict[tuple[str, str, str], np.ndarray] = {}
 
 
 def _default_smpl_model_root() -> str:
@@ -147,6 +146,8 @@ def _get_smpl_layer(*, gender: str, model_root: str, device: str):
     layer = _SMPL_LAYER_CACHE.get(key)
     if layer is None:
         layer = smpl_layer.SMPL_Layer(center_idx=0, gender=gender, model_root=model_root).to(device)
+        # Immutable model topology stays on the same device as the blend shapes.
+        layer._radar_parents = torch.tensor(layer.kintree_parents[1:], dtype=torch.int64, device=device)
         _SMPL_LAYER_CACHE[key] = layer
     return layer
 
@@ -170,14 +171,14 @@ def _axis_angle_matrices(rvecs: torch.Tensor) -> torch.Tensor:
 def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor) -> torch.Tensor:
     """Vectorized SMPL linear blend skinning: ``(V, 3)`` vertices centred on joint 0.
 
-    The same skinning ``SMPL_Layer.forward`` runs in Python at ~21 ms per
-    call; this batched version is ~2 ms. ``tests/test_smpl_pose_refusal.py``
-    pins the two against each other.
+    ``tests/test_smpl_pose_refusal.py`` pins this against ``SMPL_Layer.forward``.
+    Shape blending and local transforms are evaluated once per call; only the
+    parent-dependent products follow the articulated tree serially.
     """
     device = pose.device
     v_template = layer.th_v_template[0]
-    joints_rest = layer.th_J_regressor @ (v_template + torch.einsum("vdk,k->vd", layer.th_shapedirs, betas.reshape(-1)))
     v_shaped = v_template + torch.einsum("vdk,k->vd", layer.th_shapedirs, betas.reshape(-1))
+    joints_rest = layer.th_J_regressor @ v_shaped
 
     rotations = _axis_angle_matrices(pose.reshape(24, 3))
     eye = torch.eye(3, dtype=pose.dtype, device=device)
@@ -185,15 +186,12 @@ def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor) -> torch.
     v_posed = v_shaped + torch.einsum("vdk,k->vd", layer.th_posedirs, pose_feature)
 
     parents = layer.kintree_parents
-    relative = [joints_rest[0]]
+    relative = torch.cat((joints_rest[:1], joints_rest[1:] - joints_rest[layer._radar_parents]))
+    bottom = torch.eye(4, dtype=pose.dtype, device=device)[3:].expand(24, -1, -1)
+    local = torch.cat((torch.cat((rotations, relative[:, :, None]), dim=2), bottom), dim=1)
+    transforms = [local[0]]
     for j in range(1, 24):
-        relative.append(joints_rest[j] - joints_rest[parents[j]])
-
-    bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=pose.dtype, device=device)
-    transforms: list[torch.Tensor] = []
-    for j in range(24):
-        local = torch.cat([torch.cat([rotations[j], relative[j].reshape(3, 1)], dim=1), bottom], dim=0)
-        transforms.append(local if j == 0 else transforms[parents[j]] @ local)
+        transforms.append(transforms[parents[j]] @ local[j])
     global_transforms = torch.stack(transforms)
 
     posed_joints = global_transforms[:, :3, 3]
@@ -282,19 +280,14 @@ class SMPLBody(GeometryBase):
         pose = self.pose.to(device=device, dtype=torch.float32)
         shape = self.shape.to(device=device, dtype=torch.float32)
         vertices = self._transform_mesh_verts(_fast_smpl_forward(layer, pose, shape))
-        cache_key = (self.gender, self.model_root, device)
-        faces = _SMPL_FACES_CACHE.get(cache_key)
-        if faces is None:
-            faces = np.ascontiguousarray(layer.th_faces.detach().cpu().numpy().astype(np.int32))
-            _SMPL_FACES_CACHE[cache_key] = faces
-        return vertices.contiguous(), faces
+        # Own the returned topology, just as the previous host-to-device copy
+        # did: a caller mutating its mesh must not corrupt the cached model.
+        return vertices.contiguous(), layer.th_faces.clone()
 
     def to_mesh(self, segments=16, *, device=None):
         del segments
         resolved_device = str(resolve_device(device or self.position.device, owner="SMPLBody"))
-        vertices, faces = self._evaluate(device=resolved_device)
-        face_tensor = torch.as_tensor(faces, device=vertices.device, dtype=torch.int64)
-        return vertices, face_tensor
+        return self._evaluate(device=resolved_device)
 
 
 class SmplPoseDeformation:

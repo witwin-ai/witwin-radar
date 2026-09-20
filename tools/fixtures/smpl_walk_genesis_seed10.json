@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "motion_path": "E:\\Code\\witwin-platform\\radar\\output\\smpl-walk\\assets\\motions\\genesis_walk.npz",
+  "project_relative_path": "assets/motions/genesis_walk.npz",
+  "frame_count": 120,
+  "fps": 20.0,
+  "prompt": "a person walks forward at a natural steady pace, swinging both arms",
+  "pose_key": "smpl_pose",
+  "betas_key": "shape",
+  "trans_key": "root",
+  "wall_seconds": 154.19146889999683,
+  "seed": 10,
+  "smplify_iters": 20,
+  "torch": "2.10.0",
+  "gpu": "NVIDIA GeForce RTX 5080",
+  "sha256": "203c690f6b03d12f4b39d0aea9668907b9fb26e2290629bd8faebcc340d38329"
+}

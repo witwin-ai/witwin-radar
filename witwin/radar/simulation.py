@@ -1535,8 +1535,8 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     to report.
     """
 
-    from .paths import interpolate_path_rows
-    from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_observations
+    from .paths import _interpolate_indexed_rows
+    from .synthesis.fmcw import _synthesize_adaptive_fmcw, channel_phasor_to_beat_weight, synthesize_fmcw_observations
 
     delays, transfers, validity = table.delays, table.transfers, table.validity
     node_count, pairs, device = table.node_count, table.pairs, table.device
@@ -1555,53 +1555,70 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
     # An accepted interval's nodes share a topology identity and therefore
     # share their pair layout, so one node's bounds describe every observation
     # the interval covers; only the base offsets in ``starts`` differ.
-    slot_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * np.arange(
-        receivers
-    )
     node_rank = table.rank[table.node_index[:, 0]][:, None]
-    row_counts = (table.bounds[node_rank, slot_pairs + 1] - table.bounds[node_rank, slot_pairs]).sum(axis=1)
-    # The row bound caps the temporary node table, whose width is 4 columns per
-    # node. Stated against the two-node width so that raising the polynomial
-    # order does not silently raise peak allocation along with it.
-    row_budget = 262144 * 8 // (4 * node_count)
-    cumulative = np.concatenate(([0], np.cumsum(row_counts)))
-
-    # The per-row maps are expanded ON the device from these per-observation
-    # columns. Expanding them here instead would author one integer per row on
-    # the host and then send it: measured at this frame's 393216 rows, 9.23 ms
-    # of numpy and transfer against 0.64 ms of device work for identical
-    # indices. What stays on the host is the batching bound above, which reads
-    # only row totals - this function may not OBSERVE the device at all, which
-    # ``tests/test_import_boundary.py`` holds it to by name.
-    #
-    # It does still SYNCHRONIZE, once per upload below, because a pageable
-    # host-to-device copy is synchronous. That is six per frame rather than
-    # five per BATCH, which is the trade; a single-batch frame pays one more
-    # than it used to. Both ``repeat_interleave`` calls declare an
-    # ``output_size`` taken from the host's own row totals, so the expansion
-    # itself adds none.
-    bounds, starts, basis = upload(table.bounds), upload(table.starts), upload(table.basis)
-    nodes, owners, counts = upload(table.node_index), upload(node_rank[:, 0]), upload(row_counts)
+    # Upload only compact per-observation routing. This function must not
+    # observe device values; test_import_boundary.py enforces that boundary.
+    bounds, basis = upload(table.bounds), upload(table.basis)
+    node_starts, owners = upload(table.starts[table.node_index]), upload(node_rank[:, 0])
+    samples = torch.stack((delays.double(), transfers.real.double(), transfers.imag.double()), dim=1)
+    # The same float64 clock as the row expression, evaluated once per ADC
+    # instant instead of once per contributing path.
+    adc_clock = (
+        spec.t_start_s
+        + (torch.arange(observations_total, device=device) % spec.num_samples).double() * spec.sample_period_s
+    )
     # Guarded on the phase noise rather than on the front end, because
     # ``_apply_path_phase_rows`` returns its input untouched without it and
     # the timestamp tensor would be uploaded and gathered for nothing.
     phase_noise = frontend is not None and frontend.has_phase_noise
     clock = upload(table.clock) if phase_noise else None
-    receiver_rank = torch.arange(receivers, device=device)
+    native_validity = validity.to(torch.int32) if not phase_noise else None
+    if phase_noise:
+        slot_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[
+            :, None
+        ] + spec.num_tx * np.arange(receivers)
+        row_counts = (table.bounds[node_rank, slot_pairs + 1] - table.bounds[node_rank, slot_pairs]).sum(axis=1)
+        # The intervening receiver effect needs expanded rows. Cap its int64
+        # indices plus float64 basis at 32 MiB, excluding waveform buffers.
+        row_budget = (32 * 1024 * 1024) // (16 * node_count)
+        cumulative = np.concatenate(([0], np.cumsum(row_counts)))
+        receiver_rank = torch.arange(receivers, device=device)
 
     values = []
     begin = 0
     while begin < observations_total:
-        # Bound temporary expanded payloads by both observations and path rows.
-        # One unusually large observation is indivisible and is still supported.
+        # Bound each output allocation by observations. The phase-noise route
+        # additionally limits expanded path rows below.
         stop = min(observations_total, begin + options.batch_observations * spec.num_samples)
+        if not phase_noise:
+            # No effect intervenes between interpolation and dechirping: the
+            # native operator can read compact probes and accumulate ADC values
+            # without expanded path rows. All four verbs use this same route,
+            # including VJP/JVP. Row-dependent phase noise keeps its seam below.
+            values.append(
+                _synthesize_adaptive_fmcw(
+                    samples,
+                    native_validity,
+                    node_starts,
+                    basis,
+                    bounds,
+                    owners,
+                    adc_clock,
+                    spec,
+                    carrier_hz,
+                    begin,
+                    stop,
+                ).reshape(stop - begin, receivers)
+            )
+            begin = stop
+            continue
         stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + row_budget)) - 1))
         # Known from the host's own row totals, which is what lets every
         # ``repeat_interleave`` below declare its output size instead of
         # synchronizing to discover it.
         total = int(cumulative[stop] - cumulative[begin])
         batch = torch.arange(begin, stop, device=device)
-        owner = owners[batch][:, None]
+        owner = owners[begin:stop, None]
         active = (batch // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * receiver_rank
         segment_prefix = bounds[owner, active].ravel()
         segment_counts = bounds[owner, active + 1].ravel() - segment_prefix
@@ -1610,24 +1627,15 @@ def _adaptive_echo(table, spec, options, carrier_hz, frontend):
             torch.arange(segment_counts.numel(), device=device), segment_counts, output_size=total
         )
         local_row = segment_prefix[segment] + torch.arange(total, device=device) - offsets[segment]
-        observation = torch.repeat_interleave(batch, counts[batch], output_size=total)
-        node_rows = [starts[nodes[observation, node]] + local_row for node in range(node_count)]
-        delay, transfer = interpolate_path_rows(
-            [delays[rows] for rows in node_rows],
-            [transfers[rows] for rows in node_rows],
-            basis[observation],
-            carrier_hz,
-        )
-        transfer = torch.where(validity[node_rows[0]], transfer, torch.zeros_like(transfer))
-        if phase_noise:
-            transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
-        # float64 explicitly: an int64 tensor times a Python float promotes to
-        # the DEFAULT dtype, which would silently synthesize the ADC instants
-        # in float32.
-        adc_time = spec.t_start_s + (observation % spec.num_samples).double() * spec.sample_period_s
+        observation = begin + segment // receivers
+        node_rows = node_starts[observation] + local_row[:, None]
+        delay, transfer = _interpolate_indexed_rows(samples, node_rows, basis[observation], carrier_hz)
+        transfer = torch.where(validity[node_rows[:, 0]], transfer, torch.zeros_like(transfer))
+        transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
+        adc_time = adc_clock[observation]
         values.append(
             synthesize_fmcw_observations(
-                delay, channel_phasor_to_beat_weight(transfer), offsets, adc_time, spec
+                delay, channel_phasor_to_beat_weight(transfer), offsets, adc_time, spec, segment=segment
             ).reshape(stop - begin, receivers)
         )
         begin = stop

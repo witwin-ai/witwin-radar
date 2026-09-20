@@ -343,7 +343,14 @@ def _audit_identity(archive: zipfile.ZipFile, native: str) -> dict[str, object]:
     if missing_sources:
         raise WheelSmokeError(f"wheel does not ship the sources its identity is keyed by: {missing_sources}")
     digest = hashlib.sha256()
-    for member in _SOURCE_MEMBERS:
+    # Match runtime.source_digest: translation units first, then all direct
+    # sibling CUDA headers in sorted order. Shared equation headers are build
+    # inputs too; omitting them rejects a valid wheel or misses header changes.
+    source_dirs = {Path(member).parent for member in _SOURCE_MEMBERS}
+    headers = sorted(
+        member for member in archive.namelist() if Path(member).suffix == ".cuh" and Path(member).parent in source_dirs
+    )
+    for member in (*_SOURCE_MEMBERS, *headers):
         digest.update(Path(member).name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(archive.read(member))

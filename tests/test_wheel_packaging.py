@@ -194,6 +194,7 @@ def _make_wheel(wheel_smoke, path: Path, *, mutate=None) -> Path:
 
     binary = b"MZ" + b"\x00" * 512
     sources = {member: f"// {member}\n".encode() for member in wheel_smoke._SOURCE_MEMBERS}
+    sources["witwin/radar/cuda/fmcw_phase.cuh"] = b"// shared phase equation\n"
     record = {
         "binary_sha256": hashlib.sha256(binary).hexdigest(),
         "build_type": "developer",
@@ -209,7 +210,7 @@ def _make_wheel(wheel_smoke, path: Path, *, mutate=None) -> Path:
         "radar_abi_version": 1,
         "radar_git_dirty": False,
         "radar_git_sha": "0" * 40,
-        "source_fingerprint": _sources_digest(sources, wheel_smoke._SOURCE_MEMBERS),
+        "source_fingerprint": _sources_digest(sources, sources),
         "torch_target_version": "0x020a000000000000",
         "torch_version": "2.10.0",
     }
@@ -253,7 +254,8 @@ def test_a_swapped_binary_is_caught_by_the_recorded_digest(wheel_smoke, tmp_path
         _audit(wheel_smoke, wheel)
 
 
-def test_repacked_sources_are_caught_by_the_source_fingerprint(wheel_smoke, tmp_path):
+@pytest.mark.parametrize("member", ["fmcw_beat.cu", "fmcw_phase.cuh"])
+def test_repacked_sources_are_caught_by_the_source_fingerprint(wheel_smoke, tmp_path, member):
     """The wheel packed sources it did not build from.
 
     This is the check the loader repeats at import time, so a wheel that fails
@@ -262,9 +264,18 @@ def test_repacked_sources_are_caught_by_the_source_fingerprint(wheel_smoke, tmp_
     """
 
     def mutate(record, members):
-        members["witwin/radar/cuda/fmcw_beat.cu"] = b"// a different revision\n"
+        members[f"witwin/radar/cuda/{member}"] = b"// a different revision\n"
 
     wheel = _make_wheel(wheel_smoke, tmp_path / "repacked.whl", mutate=mutate)
+    with pytest.raises(wheel_smoke.WheelSmokeError, match="source_fingerprint"):
+        _audit(wheel_smoke, wheel)
+
+
+def test_missing_shared_header_is_caught_by_source_fingerprint(wheel_smoke, tmp_path):
+    def mutate(record, members):
+        del members["witwin/radar/cuda/fmcw_phase.cuh"]
+
+    wheel = _make_wheel(wheel_smoke, tmp_path / "missing-header.whl", mutate=mutate)
     with pytest.raises(wheel_smoke.WheelSmokeError, match="source_fingerprint"):
         _audit(wheel_smoke, wheel)
 

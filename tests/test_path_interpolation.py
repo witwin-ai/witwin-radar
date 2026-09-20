@@ -6,12 +6,66 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.radar.paths import interpolate_path_rows
+from witwin.radar.paths import _interpolate_indexed_rows, interpolate_path_rows
 from witwin.radar.simulation import _lagrange_weights
 
 pytestmark = pytest.mark.gpu
 
 FC = 77e9
+
+
+@pytest.mark.parametrize("nodes", [2, 5, 9])
+def test_indexed_probe_table_matches_oracle_with_repeated_indices_and_ad(nodes):
+    """Several observations share probe leaves, including exact-node queries."""
+    sample_count = 13
+    delays = torch.linspace(20e-9, 21e-9, sample_count, device="cuda", dtype=torch.float64)
+    samples = torch.stack((delays, torch.cos(delays * FC), torch.sin(delays * FC)), dim=1).requires_grad_()
+    indices = torch.arange(4 * nodes, device="cuda").reshape(4, nodes) % sample_count
+    indices[0] = 0
+    weights = torch.full((4, nodes), 1.0 / nodes, device="cuda", dtype=torch.float64)
+
+    def reference(value):
+        gathered = value[indices]
+        return _oracle(
+            list(gathered[:, :, 0].unbind(1)),
+            list(torch.complex(gathered[:, :, 1], gathered[:, :, 2]).unbind(1)),
+            weights,
+        )
+
+    def loss(value):
+        return value[0].sum() * 1e8 + value[1].real.sum() + 0.3 * value[1].imag.sum()
+
+    actual = _interpolate_indexed_rows(samples, indices, weights, FC)
+    expected = reference(samples)
+    for a, b in zip(actual, expected, strict=True):
+        torch.testing.assert_close(a, b, rtol=2e-6, atol=1e-7)
+    actual_grad = torch.autograd.grad(loss(actual), samples)[0]
+    expected_grad = torch.autograd.grad(loss(expected), samples)[0]
+    torch.testing.assert_close(actual_grad, expected_grad, rtol=2e-5, atol=1e-6)
+    direction = torch.ones_like(samples)
+    direction[:, 0] *= 1e-12
+    with torch.autograd.forward_ad.dual_level():
+        dual = torch.autograd.forward_ad.make_dual(samples.detach(), direction)
+        result = _interpolate_indexed_rows(dual, indices, weights, FC)
+        oracle = reference(dual)
+        for a, b in zip(result, oracle, strict=True):
+            torch.testing.assert_close(
+                torch.autograd.forward_ad.unpack_dual(a).tangent,
+                torch.autograd.forward_ad.unpack_dual(b).tangent,
+                rtol=3e-6,
+                atol=1e-6,
+            )
+
+
+def test_empty_indexed_probe_queries_and_basis_refusal():
+    samples = torch.empty((0, 3), device="cuda", dtype=torch.float64, requires_grad=True)
+    indices = torch.empty((0, 2), device="cuda", dtype=torch.int64)
+    weights = torch.empty((0, 2), device="cuda", dtype=torch.float64)
+    delay, transfer = _interpolate_indexed_rows(samples, indices, weights, FC)
+    assert delay.numel() == transfer.numel() == 0
+    assert torch.autograd.grad(delay.sum() + transfer.real.sum(), samples)[0].shape == samples.shape
+    with pytest.raises(RuntimeError, match="partition"):
+        _interpolate_indexed_rows(samples, indices, weights.requires_grad_(), FC)
 
 
 def _basis(query, nodes):
