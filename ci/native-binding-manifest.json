@@ -23,8 +23,9 @@
   "no_backward": {
     "cfar_order_statistic": "Detection is a discrete selection below the R-ADR-018 differentiability wall; witwin/radar/processing/detection.py refuses a differentiable map before this operator runs.",
     "dbscan_labels": "Cluster labels are discrete; witwin/radar/processing/detection.py refuses a differentiable point cloud before this operator runs.",
+    "frontend_baseband": "The kernel writes the additive DC offset and flicker term; witwin/radar/frontend.py adds it to the signal, so the identity derivative is carried by that addition and the family needs no companion.",
     "frontend_quantize": "The ADC sits below the R-ADR-018 differentiability wall: quantization is a discrete choice, and witwin/radar/frontend.py refuses a differentiable input before this operator runs.",
-    "oscillator_phase": "Wiener oscillator phase is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs."
+    "oscillator_phase": "Oscillator phase (white-FM, flicker-FM and floor regions) is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs."
   },
   "error_owners": [
     {
@@ -210,6 +211,36 @@
       ]
     },
     {
+      "symbol": "frontend_agc_dynamic_backward",
+      "ad_group": "frontend_agc_dynamic",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendAgcDynamic.backward"
+      ]
+    },
+    {
+      "symbol": "frontend_agc_dynamic_forward",
+      "ad_group": "frontend_agc_dynamic",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendAgcDynamic.forward"
+      ]
+    },
+    {
+      "symbol": "frontend_agc_dynamic_jvp",
+      "ad_group": "frontend_agc_dynamic",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendAgcDynamic.jvp"
+      ]
+    },
+    {
       "symbol": "frontend_agc_forward",
       "ad_group": "frontend_agc",
       "ad_role": "primal",
@@ -227,6 +258,46 @@
       "python_owner": "witwin/radar/frontend.py",
       "python_callers": [
         "_FrontendAgc.jvp"
+      ]
+    },
+    {
+      "symbol": "frontend_baseband_forward",
+      "ad_group": "frontend_baseband",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "FrontendChain._baseband"
+      ]
+    },
+    {
+      "symbol": "frontend_compress_backward",
+      "ad_group": "frontend_compress",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendCompress.backward"
+      ]
+    },
+    {
+      "symbol": "frontend_compress_forward",
+      "ad_group": "frontend_compress",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendCompress.forward"
+      ]
+    },
+    {
+      "symbol": "frontend_compress_jvp",
+      "ad_group": "frontend_compress",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/frontend.cu",
+      "python_owner": "witwin/radar/frontend.py",
+      "python_callers": [
+        "_FrontendCompress.jvp"
       ]
     },
     {

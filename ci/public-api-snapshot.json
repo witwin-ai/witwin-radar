@@ -15,13 +15,25 @@
           "name": "Agc",
           "kind": "class",
           "target": "witwin.radar.frontend.Agc",
-          "signature": "(target_rms: 'float', mode: 'str' = 'per_rx', min_gain: 'float' = -60.0, max_gain: 'float' = 60.0) -> None"
+          "signature": "(target_rms: 'float', mode: 'str' = 'per_rx', min_gain: 'float' = -60.0, max_gain: 'float' = 60.0, time_constant: 'float | None' = None, block_period: 'float | None' = None) -> None"
         },
         {
           "name": "Aspect",
           "kind": "class",
           "target": "witwin.radar.targets.Aspect",
           "signature": "(axis: 'Any', exponent: 'float', coherent_interval: 'float', phase_rate: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "Compression",
+          "kind": "class",
+          "target": "witwin.radar.frontend.Compression",
+          "signature": "(iip3: 'float', p1db: 'float | None' = None, am_pm: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "Coupling",
+          "kind": "class",
+          "target": "witwin.radar.sensors.Coupling",
+          "signature": "(tx: 'tuple[tuple[complex, ...], ...] | None' = None, rx: 'tuple[tuple[complex, ...], ...] | None' = None) -> None"
         },
         {
           "name": "Fmcw",
@@ -45,7 +57,7 @@
           "name": "Leakage",
           "kind": "class",
           "target": "witwin.radar.radar.Leakage",
-          "signature": "(isolation_db: 'float', delay_s: 'float') -> None"
+          "signature": "(isolation_db: 'Any', delay_s: 'Any', phase: 'Any' = 0.0) -> None"
         },
         {
           "name": "Motion",
@@ -57,7 +69,7 @@
           "name": "Noise",
           "kind": "class",
           "target": "witwin.radar.frontend.Noise",
-          "signature": "(figure: 'float' = 0.0, antenna_temperature: 'float' = 290.0, bandwidth: 'float | None' = None, phase_density: 'float | None' = None, phase_offset: 'float | None' = None, phase_sample_rate: 'float | None' = None) -> None"
+          "signature": "(figure: 'float' = 0.0, antenna_temperature: 'float' = 290.0, bandwidth: 'float | None' = None, phase_density: 'float | None' = None, phase_offset: 'float | None' = None, phase_sample_rate: 'float | None' = None, phase_flicker_density: 'float | None' = None, phase_flicker_offset: 'float | None' = None, phase_floor: 'float | None' = None, flicker_corner: 'float | None' = None) -> None"
         },
         {
           "name": "Ofdm",
@@ -75,7 +87,7 @@
           "name": "Pattern",
           "kind": "class",
           "target": "witwin.radar.sensors.Pattern",
-          "signature": "(kind: 'str', x_angles: 'tuple[float, ...]', y_angles: 'tuple[float, ...]', x_gain: 'tuple[float, ...] | None' = None, y_gain: 'tuple[float, ...] | None' = None, gain: 'tuple[tuple[float, ...], ...] | None' = None) -> None"
+          "signature": "(kind: 'str', x_angles: 'tuple[float, ...]', y_angles: 'tuple[float, ...]', x_gain: 'tuple | None' = None, y_gain: 'tuple | None' = None, gain_table: 'tuple | None' = None, quantity: 'str' = 'power', gain: 'float' = 0.0) -> None"
         },
         {
           "name": "PointTargets",
@@ -87,13 +99,13 @@
           "name": "Pulsed",
           "kind": "class",
           "target": "witwin.radar.radar.Pulsed",
-          "signature": "(pulse_kind: 'str', pulse_width: 'float', bandwidth: 'float', pri: 'float', num_pulses: 'int', sample_rate: 'float', num_samples: 'int', range_gate_start: 'float', max_expected_delay_rate: 'float' = 0.0, pulse_normalization: 'str' = 'unit_energy') -> None"
+          "signature": "(pulse_kind: 'str', pulse_width: 'float', bandwidth: 'float', pri: 'float', num_pulses: 'int', sample_rate: 'float', num_samples: 'int', range_gate_start: 'float', max_expected_delay_rate: 'float' = 0.0, pulse_normalization: 'str' = 'unit_amplitude') -> None"
         },
         {
           "name": "Radar",
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
-          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
+          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
         },
         {
           "name": "Result",
@@ -525,7 +537,7 @@
           "name": "PulsedSpec",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.PulsedSpec",
-          "signature": "(num_pulses: int, num_samples: int, sample_period_s: float, pri_s: float, range_gate_start_s: float, pulse_kind: str, pulse_width_s: float, bandwidth_hz: float, reference_frequency_hz: float, max_expected_delay_rate: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, pulse_normalization: str = 'unit_energy') -> None"
+          "signature": "(num_pulses: int, num_samples: int, sample_period_s: float, pri_s: float, range_gate_start_s: float, pulse_kind: str, pulse_width_s: float, bandwidth_hz: float, reference_frequency_hz: float, max_expected_delay_rate: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, pulse_normalization: str = 'unit_amplitude') -> None"
         },
         {
           "name": "SlowTimeMode",
@@ -568,6 +580,18 @@
         },
         {
           "name": "antenna_unit",
+          "kind": "value"
+        },
+        {
+          "name": "compression",
+          "kind": "value"
+        },
+        {
+          "name": "coupling",
+          "kind": "value"
+        },
+        {
+          "name": "dc_offset",
           "kind": "value"
         },
         {
@@ -633,6 +657,10 @@
           "name": "replace",
           "kind": "function",
           "signature": "(self, **fields: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "rx_pattern",
+          "kind": "value"
         },
         {
           "name": "seed",

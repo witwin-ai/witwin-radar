@@ -120,7 +120,7 @@ class TestRadarConfigSchema:
                 "values": [[0.1, 0.2, 0.1], [0.5, 1.0], [0.1, 0.2, 0.1]],
             },
         }
-        with pytest.raises(ValueError, match="each gain row needs one entry per x sample"):
+        with pytest.raises(ValueError, match="each gain_table row needs one entry per x sample"):
             Radar.from_dict(broken, device="cpu")
 
 

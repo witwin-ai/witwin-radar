@@ -178,8 +178,9 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch):
     site or per pair would not, and a single frame cannot tell those apart from
     the total.
 
-    The pattern is the isotropic table so that this is a launch count rather
-    than a physics change; the stage runs either way.
+    The pattern is the dipole table: the isotropic 0 dBi default is the
+    identity and skips the launch altogether, which
+    ``test_element_patterns.py`` pins separately.
     """
 
     from support import multi_endpoint_geometry as geo
@@ -188,7 +189,7 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch):
     from witwin.radar import Pattern, PointTargets, Radar
 
     radar = Radar.from_dict(
-        dict(geo.FIXTURE_RADAR_CONFIG), pattern=Pattern.isotropic(), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0)
+        dict(geo.FIXTURE_RADAR_CONFIG), pattern=Pattern.dipole(), position=(0.0, 0.0, 0.0), look_at=(1.0, 0.0, 0.0)
     )
     scene, mesh = world.make_scene()
     world.assert_world_coordinates_survived(mesh)

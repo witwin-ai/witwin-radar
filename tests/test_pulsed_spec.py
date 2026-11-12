@@ -95,7 +95,8 @@ def test_the_derived_quantities_are_the_closed_forms():
     assert spec.max_unambiguous_speed_m_s == pytest.approx(spec.wavelength_m / (4.0 * PRI_S), rel=1e-12)
     assert spec.range_cell_delay_s == pytest.approx(5.0e-8, rel=1e-12)
     assert spec.range_migration_delay_s == pytest.approx(abs(TAU_RATE) * NUM_PULSES * PRI_S, rel=1e-12)
-    assert spec.pulse_amplitude == pytest.approx(1.0 / math.sqrt(PULSE_WIDTH_S), rel=1e-12)
+    assert spec.pulse_amplitude == 1.0
+    assert spec.replica_amplitude == pytest.approx(1.0 / PULSE_WIDTH_S, rel=1e-12)
     assert spec.pulse_sample_count == 500
     assert spec.pulse_grid_is_commensurate
 
@@ -152,7 +153,7 @@ def test_the_doppler_and_slow_time_closed_forms():
         ({"reference_frequency_hz": 0.0}, "reference_frequency_hz"),
         ({"max_expected_delay_rate": -1.0e-9}, "max_expected_delay_rate"),
         ({"pulse_kind": "gaussian"}, "pulse_kind"),
-        ({"pulse_normalization": "unit_amplitude"}, "pulse_normalization"),
+        ({"pulse_normalization": "unit_energy"}, "pulse_normalization"),
     ],
 )
 def test_the_spec_refuses_an_impossible_grid(override, message):
@@ -332,13 +333,16 @@ def test_the_pulsed_guard_refuses_a_spec_of_another_waveform():
 
 
 # --------------------------------------------------------------------------
-# (first half)  the unit-energy replica
+# (first half)  the unit-gain replica
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("spec_factory", [reference_spec, rect_spec])
-def test_the_replica_carries_exactly_unit_energy(spec_factory):
-    """``sum_m |p[m]|^2 T_s == 1`` to ``rtol=1e-12``, for BOTH pulse kinds.
+def test_the_replica_carries_exactly_unit_gain(spec_factory):
+    """``sum_m |r[m]| T_s == 1`` to ``rtol=1e-12``, for BOTH pulse kinds.
+
+    The replica's height is ``1 / T_p`` so that correlating it against the
+    unit-amplitude received pulse is a unit-gain filter (R-ADR-029).
 
     Exact rather than approximate because the pulse spans a whole number of
     samples on this grid and its support is HALF-OPEN. With a closed support the
@@ -354,10 +358,10 @@ def test_the_replica_carries_exactly_unit_energy(spec_factory):
     replica = pulse_samples(spec)
     assert replica.shape == (500,)
     assert replica.dtype == torch.complex128
-    energy = float((replica.abs() ** 2).sum()) * spec.sample_period_s
-    assert energy == pytest.approx(1.0, rel=1e-12)
-    assert float(replica.abs().max()) == pytest.approx(spec.pulse_amplitude, rel=1e-12)
-    assert float(replica.abs().min()) == pytest.approx(spec.pulse_amplitude, rel=1e-12)
+    gain = float(replica.abs().sum()) * spec.sample_period_s
+    assert gain == pytest.approx(1.0, rel=1e-12)
+    assert float(replica.abs().max()) == pytest.approx(spec.replica_amplitude, rel=1e-12)
+    assert float(replica.abs().min()) == pytest.approx(spec.replica_amplitude, rel=1e-12)
 
 
 def test_the_two_replicas_differ_only_by_phase():
@@ -389,9 +393,13 @@ def test_a_pulse_shorter_than_one_sample_is_refused():
 
 
 def _delayed_replica(spec: PulsedSpec, shift_samples: int) -> torch.Tensor:
-    """The received train for one on-grid row, built without the kernel."""
+    """The received train for one on-grid row, built without the kernel.
 
-    replica = pulse_samples(spec)
+    The received pulse has the kernel's unit amplitude, so it is the replica
+    rescaled by ``pulse_amplitude / replica_amplitude``.
+    """
+
+    replica = pulse_samples(spec) * (spec.pulse_amplitude / spec.replica_amplitude)
     signal = torch.zeros((1, 1, spec.num_samples), dtype=torch.complex128)
     signal[0, 0, shift_samples : shift_samples + replica.shape[0]] = replica
     return signal
@@ -416,10 +424,11 @@ def test_the_matched_filter_is_a_correlation_not_a_convolution():
 def test_the_matched_filter_peak_is_the_coefficient_at_an_on_grid_delay():
     """T3.3. ``MF peak == C_rt``, magnitude AND argument, exactly.
 
-    The unit-ENERGY normalisation plus the ``T_s`` factor in the correlation is
-    what removes every sample-count factor: with a unit-amplitude pulse the peak
-    would be ``C_rt T_p / T_s``, 500x larger here, and every cross-waveform
-    amplitude comparison would have to carry it.
+    The ``1 / T_p`` replica plus the ``T_s`` factor in the correlation is what
+    removes every sample-count factor: correlating the unit-amplitude pulse
+    against an unscaled copy of itself would peak at ``C_rt T_p / T_s``, 500x
+    larger here, and every cross-waveform amplitude comparison would have to
+    carry it.
 
     Asserted at an ON-GRID delay because that is where the identity is exact.
     Off the grid the sampled correlation loses ``O(T_s / T_p)`` to the partial

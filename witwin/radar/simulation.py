@@ -1771,7 +1771,13 @@ def _open_session(
         # The pattern tables are a property of the frozen join - which pair each
         # row belongs to and which site it visits - so they are built here, once
         # per epoch, and the frame loop only gathers positions and launches.
-        stage = RoundTripPatternStage.freeze(radar, composer, site_ids=binding.site_ids, pattern=antenna_pattern)
+        stage = RoundTripPatternStage.freeze(
+            radar,
+            composer,
+            site_ids=binding.site_ids,
+            pattern=antenna_pattern,
+            rx_pattern=radar.system_config.sensors.rx_pattern,
+        )
         # The binding travels with the epoch so the frame that just froze does
         # not build a second one from the same snapshot. It is deterministic, so
         # the two would agree - which is exactly why building both is waste.
@@ -2149,8 +2155,12 @@ def _open_session(
     return session, traces()
 
 
-def _finish_frame(session: _Session, synthesis):
-    """Apply the receive chain, then land the frame in its declared domain."""
+def _finish_frame(session: _Session, synthesis, frame_time_s: float):
+    """Apply the receive chain, then land the frame in its declared domain.
+
+    ``frame_time_s`` keys the frame's receiver noise realisation, so two frames
+    never share one.
+    """
 
     from .synthesis.assembly import FmcwSpec, SynthesisResult, assemble_frame_cube
 
@@ -2158,6 +2168,7 @@ def _finish_frame(session: _Session, synthesis):
     frame_cube = radar._apply_signal_models(
         assemble_frame_cube(synthesis.cube, num_tx=session.array.num_tx, num_rx=session.array.num_rx),
         phase_in_signal=session.path_phase_noise,
+        frame_time_s=frame_time_s,
     )
     output_spec = session.output_spec
     if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != synthesis.output_domain:
@@ -2239,7 +2250,7 @@ def _echo_frame(session: _Session, trace: _FrameTrace) -> _SceneFrame:
             else:
                 synthesis = replace(synthesis, cube=stacked[session.pair_samples, pairs])
 
-    frame_cube, synthesis = _finish_frame(session, synthesis)
+    frame_cube, synthesis = _finish_frame(session, synthesis, trace.time_s)
     loop = session.loop
     return _SceneFrame(
         cube=frame_cube,

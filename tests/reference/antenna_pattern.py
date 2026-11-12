@@ -72,7 +72,7 @@ def evaluate_pattern_xy(pattern, x_angles_deg: torch.Tensor, y_angles_deg: torch
         x_gain = torch.tensor(pattern.x_gain, dtype=torch.float32, device=device)
         y_gain = torch.tensor(pattern.y_gain, dtype=torch.float32, device=device)
         return interp1d_zero_outside(x_axis, x_gain, x_angles_deg) * interp1d_zero_outside(y_axis, y_gain, y_angles_deg)
-    gain = torch.tensor(pattern.gain, dtype=torch.float32, device=device)
+    gain = torch.tensor(pattern.gain_table, dtype=torch.float32, device=device)
     return interp2d_zero_outside(x_axis, y_axis, gain, x_angles_deg, y_angles_deg)
 
 

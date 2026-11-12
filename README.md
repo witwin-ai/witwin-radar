@@ -101,7 +101,7 @@ The split buys reuse and costs retention. One trace can be echoed by several rec
 
 A radar is never edited in place: `Radar.replace(...)` and `Radar.to(device)` return a new one, and a radar retains nothing from a run, so a result is the only thing that can say which frame a diagnostic describes.
 
-The root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules.
+The root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Compression`, `Coupling`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules.
 
 Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds. `result.frame(i)` returns the `Frame` that pairs one frame's cube with that metadata; its `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` are facades over that package and compute nothing themselves.
 

@@ -2,14 +2,33 @@
 //
 // Channel exclusively owns propagation spreading, transmit power, reference
 // phase, and endpoint polarization projection. This operator applies only the
-// transmit/receive antenna power patterns and sqrt(intensity), while publishing
-// geometric delay and delay rate for diagnostics and differentiation.
+// transmit and receive ELEMENT patterns (each with its own absolute peak gain)
+// and sqrt(intensity), while publishing geometric delay and delay rate for
+// diagnostics and differentiation.
 //
-// Per row k:
+// Per row k, with a_t, a_r the elements' peak voltage gains 10^(G_dBi/20):
 //   tau_rt = L / c0
-//   pattern_gain = G_t * G_r
-//   scale = sqrt(max(intensity, 0)) * sqrt(max(G_t * G_r, 0))
-//   out = weight_in * scale
+//   power x power:  pattern_gain = G_t * G_r
+//                   scale = sqrt(max(intensity, 0)) * sqrt(max(G_t * G_r, 0)) * a_t a_r
+//   any field:      A = F (complex field pattern) or sqrt(max(G, 0)) (power)
+//                   pattern_gain = |A_t|^2 |A_r|^2
+//                   scale = sqrt(max(intensity, 0)) * A_t A_r * a_t a_r   (complex)
+//   out = weight_in * scale                                               (complex)
+//
+// The absolute gain is applied HERE and only here: the tables are normalised
+// (power at most 1, |field| at most 1) and Channel's transport carries no
+// antenna gain. The power-by-power branch is the original real expression,
+// kept verbatim, so a radar without field patterns is bit-identical to one
+// built before field patterns existed.
+//
+// PACKED ELEMENT PATTERNS. Each element pattern is one float32 buffer:
+//   [kind, quantity, num_x, num_y, peak_amplitude, 0, 0, 0,
+//    x_axis[num_x], y_axis[num_y], values...]
+// kind 0 (separable): x_re[num_x], y_re[num_y], x_im[num_x], y_im[num_y]
+// kind 1 (map):       re[num_y*num_x], im[num_y*num_x]   (row-major in y)
+// quantity 0 is a POWER pattern (imaginary parts zero, unused), 1 a complex
+// FIELD pattern. A future polarimetric quantity appends its second component
+// after these and takes a new quantity code; the header does not move.
 //
 // Pattern lookup uses a fixed world-to-pattern frame. Endpoint positions,
 // intensity, and complex input weight are differentiable; velocities, row
@@ -324,6 +343,123 @@ __device__ __forceinline__ DirectionalGain evaluate_pattern_vector(
   return result;
 }
 
+constexpr int kQuantityPower = 0;
+constexpr int kQuantityField = 1;
+constexpr int kPatternHeader = 8;
+
+// One element pattern evaluated in a world direction: a complex value and its
+// complex gradient with respect to the direction vector. A power pattern
+// returns its gain in `re` with `im == 0`.
+struct ElementValue {
+  int quantity;
+  float amplitude;  // the element's peak voltage gain a = 10^(G_dBi/20)
+  float re;
+  float im;
+  Vec3 grad_re;
+  Vec3 grad_im;
+};
+
+__device__ __forceinline__ ElementValue evaluate_element(
+    const float* __restrict__ packed,
+    const Vec3 axis_right,
+    const Vec3 axis_up,
+    const Vec3 axis_back,
+    const Vec3 world_vector) {
+  const int kind = static_cast<int>(packed[0]);
+  const int num_x = static_cast<int>(packed[2]);
+  const int num_y = static_cast<int>(packed[3]);
+  const float* x_axis = packed + kPatternHeader;
+  const float* y_axis = x_axis + num_x;
+  const float* values = y_axis + num_y;
+  ElementValue out;
+  out.quantity = static_cast<int>(packed[1]);
+  out.amplitude = packed[4];
+
+  if (kind == kPatternMap) {
+    const int cells = num_x * num_y;
+    const DirectionalGain real_part = evaluate_pattern_vector(
+        kPatternMap, x_axis, y_axis, values, values, values, num_x, num_y, axis_right, axis_up, axis_back,
+        world_vector);
+    out.re = real_part.value;
+    out.grad_re = real_part.gradient;
+    if (out.quantity == kQuantityField) {
+      const DirectionalGain imaginary_part = evaluate_pattern_vector(
+          kPatternMap, x_axis, y_axis, values + cells, values + cells, values + cells, num_x, num_y, axis_right,
+          axis_up, axis_back, world_vector);
+      out.im = imaginary_part.value;
+      out.grad_im = imaginary_part.gradient;
+    } else {
+      out.im = 0.0f;
+      out.grad_im = make_vec3(0.0f, 0.0f, 0.0f);
+    }
+    return out;
+  }
+
+  const float* x_re = values;
+  const float* y_re = x_re + num_x;
+  if (out.quantity != kQuantityField) {
+    const DirectionalGain gain = evaluate_pattern_vector(
+        kPatternSeparable, x_axis, y_axis, x_re, y_re, x_re, num_x, num_y, axis_right, axis_up, axis_back,
+        world_vector);
+    out.re = gain.value;
+    out.grad_re = gain.gradient;
+    out.im = 0.0f;
+    out.grad_im = make_vec3(0.0f, 0.0f, 0.0f);
+    return out;
+  }
+  // Complex separable: F = Fx(x) Fy(y), with the same angle map and the same
+  // a.e. interpolation derivatives as the power branch.
+  const float* x_im = y_re + num_y;
+  const float* y_im = x_im + num_x;
+  const float w0 = dot3(world_vector, axis_right);
+  const float w1 = dot3(world_vector, axis_up);
+  const float w2 = dot3(world_vector, axis_back);
+  const float fwd = -w2;
+  const float den_x = w0 * w0 + fwd * fwd;
+  const float den_y = w1 * w1 + fwd * fwd;
+  const float x_deg = kRadToDeg * atan2f(w0, fwd);
+  const float y_deg = kRadToDeg * atan2f(w1, fwd);
+  const Interp1d fxr = interp1d_zero_outside(x_axis, x_re, num_x, x_deg);
+  const Interp1d fxi = interp1d_zero_outside(x_axis, x_im, num_x, x_deg);
+  const Interp1d fyr = interp1d_zero_outside(y_axis, y_re, num_y, y_deg);
+  const Interp1d fyi = interp1d_zero_outside(y_axis, y_im, num_y, y_deg);
+  out.re = fxr.value * fyr.value - fxi.value * fyi.value;
+  out.im = fxr.value * fyi.value + fxi.value * fyr.value;
+  const float dre_dx = fxr.derivative * fyr.value - fxi.derivative * fyi.value;
+  const float dim_dx = fxr.derivative * fyi.value + fxi.derivative * fyr.value;
+  const float dre_dy = fxr.value * fyr.derivative - fxi.value * fyi.derivative;
+  const float dim_dy = fxr.value * fyi.derivative + fxi.value * fyr.derivative;
+  const float dx_dw0 = den_x > 0.0f ? kRadToDeg * fwd / den_x : 0.0f;
+  const float dx_dw2 = den_x > 0.0f ? kRadToDeg * w0 / den_x : 0.0f;
+  const float dy_dw1 = den_y > 0.0f ? kRadToDeg * fwd / den_y : 0.0f;
+  const float dy_dw2 = den_y > 0.0f ? kRadToDeg * w1 / den_y : 0.0f;
+  out.grad_re = add3(
+      add3(scale3(axis_right, dre_dx * dx_dw0), scale3(axis_up, dre_dy * dy_dw1)),
+      scale3(axis_back, dre_dx * dx_dw2 + dre_dy * dy_dw2));
+  out.grad_im = add3(
+      add3(scale3(axis_right, dim_dx * dx_dw0), scale3(axis_up, dim_dy * dy_dw1)),
+      scale3(axis_back, dim_dx * dx_dw2 + dim_dy * dy_dw2));
+  return out;
+}
+
+// A power element as a voltage amplitude sqrt(max(G, 0)), with the a.e.
+// derivative 0.5 / sqrt(G) dG (zero at and below the clamp).
+__device__ __forceinline__ void element_amplitude(
+    const ElementValue& element, float* re, float* im, Vec3* grad_re, Vec3* grad_im) {
+  if (element.quantity == kQuantityField) {
+    *re = element.re;
+    *im = element.im;
+    *grad_re = element.grad_re;
+    *grad_im = element.grad_im;
+    return;
+  }
+  const float amplitude = element.re > 0.0f ? sqrtf(element.re) : 0.0f;
+  *re = amplitude;
+  *im = 0.0f;
+  *grad_re = element.re > 0.0f ? scale3(element.grad_re, 0.5f / amplitude) : make_vec3(0.0f, 0.0f, 0.0f);
+  *grad_im = make_vec3(0.0f, 0.0f, 0.0f);
+}
+
 // Everything one row needs, primal and partial derivatives together, so that
 // the three operators cannot drift apart: forward reads the values, jvp
 // contracts the partials with the input tangents, and backward contracts them
@@ -332,8 +468,10 @@ __device__ __forceinline__ DirectionalGain evaluate_pattern_vector(
 struct RowTerm {
   float tau_rt;
   float tau_rate;
-  float pattern_gain;  // G_t * G_r, the published power product
-  float scale;         // the real signed factor the weight is multiplied by
+  float pattern_gain;  // G_t * G_r, the published normalised power product
+  float scale;         // the factor the weight is multiplied by (real part)
+  float scale_im;      // its imaginary part; zero unless a field pattern is used
+  bool complex_scale;  // false: the power-by-power branch, scale is real
 
   // d(scale) and d(tau_*) with respect to the four differentiable positions.
   Vec3 dscale_dsite_in;
@@ -350,6 +488,13 @@ struct RowTerm {
   Vec3 dtau_rate_drx;
 
   float dscale_dintensity;
+
+  // Imaginary parts of d(scale), populated only when complex_scale is true.
+  Vec3 dscale_im_dsite_in;
+  Vec3 dscale_im_dsite_out;
+  Vec3 dscale_im_dtx;
+  Vec3 dscale_im_drx;
+  float dscale_im_dintensity;
 };
 
 struct RowInputs {
@@ -366,16 +511,10 @@ struct RowInputs {
   const int32_t* row_kind;
   const float* intensity;
   const float* pattern_frame;
-  const float* pattern_x_axis;
-  const float* pattern_y_axis;
-  const float* pattern_x_values;
-  const float* pattern_y_values;
-  const float* pattern_values;
+  const float* tx_pattern;
+  const float* rx_pattern;
   int num_tx;
   int num_rx;
-  int pattern_kind;
-  int num_x;
-  int num_y;
   float c0;
 };
 
@@ -399,6 +538,13 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
   term.dtau_rate_dtx = zero;
   term.dtau_rate_drx = zero;
   term.dscale_dintensity = 0.0f;
+  term.scale_im = 0.0f;
+  term.complex_scale = false;
+  term.dscale_im_dsite_in = zero;
+  term.dscale_im_dsite_out = zero;
+  term.dscale_im_dtx = zero;
+  term.dscale_im_drx = zero;
+  term.dscale_im_dintensity = 0.0f;
 
   int64_t ti = in.tx_index[k];
   ti = ti < 0 ? 0 : (ti >= in.num_tx ? in.num_tx - 1 : ti);
@@ -503,66 +649,82 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
     drx_dir_tail = &grad_rx_pattern;
   }
 
-  const DirectionalGain gain_tx = evaluate_pattern_vector(
-      in.pattern_kind,
-      in.pattern_x_axis,
-      in.pattern_y_axis,
-      in.pattern_x_values,
-      in.pattern_y_values,
-      in.pattern_values,
-      in.num_x,
-      in.num_y,
-      axis_right,
-      axis_up,
-      axis_back,
-      direction_tx);
-  const DirectionalGain gain_rx = evaluate_pattern_vector(
-      in.pattern_kind,
-      in.pattern_x_axis,
-      in.pattern_y_axis,
-      in.pattern_x_values,
-      in.pattern_y_values,
-      in.pattern_values,
-      in.num_x,
-      in.num_y,
-      axis_right,
-      axis_up,
-      axis_back,
-      direction_rx);
-
-  const float gain_product = gain_tx.value * gain_rx.value;
-  term.pattern_gain = gain_product;
-  const float clamped_gain = gain_product > 0.0f ? gain_product : 0.0f;
-  const float gain_amplitude = sqrtf(clamped_gain);
+  const ElementValue element_tx =
+      evaluate_element(in.tx_pattern, axis_right, axis_up, axis_back, direction_tx);
+  const ElementValue element_rx =
+      evaluate_element(in.rx_pattern, axis_right, axis_up, axis_back, direction_rx);
+  const float peak = element_tx.amplitude * element_rx.amplitude;
 
   const float raw_intensity = in.intensity[k];
   const float clamped_intensity = raw_intensity > 0.0f ? raw_intensity : 0.0f;
   const float intensity_amplitude = sqrtf(clamped_intensity);
 
-  const float scale = intensity_amplitude * gain_amplitude;
-  term.scale = scale;
+  if (element_tx.quantity != kQuantityField && element_rx.quantity != kQuantityField) {
+    const float gain_product = element_tx.re * element_rx.re;
+    term.pattern_gain = gain_product;
+    const float clamped_gain = gain_product > 0.0f ? gain_product : 0.0f;
+    const float gain_amplitude = sqrtf(clamped_gain);
+
+    const float scale = intensity_amplitude * gain_amplitude * peak;
+    term.scale = scale;
+
+    // d(scale)/d(intensity): the derivative of the square root, taken to be
+    // zero at and below the clamp, which is the almost-everywhere derivative
+    // of sqrt(clamp(x, 0)).
+    if (raw_intensity > 0.0f) {
+      term.dscale_dintensity = 0.5f / intensity_amplitude * gain_amplitude * peak;
+    }
+
+    // d(scale)/d(direction), through sqrt(clamp(G_t G_r, 0)).
+    if (gain_product > 0.0f) {
+      const float common = 0.5f / gain_amplitude * intensity_amplitude * peak;
+      const Vec3 dscale_dtx_dir = scale3(element_tx.grad_re, common * element_rx.re);
+      const Vec3 dscale_drx_dir = scale3(element_rx.grad_re, common * element_tx.re);
+      *dtx_dir_head = add3(*dtx_dir_head, dscale_dtx_dir);
+      *dtx_dir_tail = sub3(*dtx_dir_tail, dscale_dtx_dir);
+      *drx_dir_head = add3(*drx_dir_head, dscale_drx_dir);
+      *drx_dir_tail = sub3(*drx_dir_tail, dscale_drx_dir);
+    }
+  } else {
+    // A field pattern on either side: the scale is the complex product of
+    // the two element amplitudes.
+    float at_re, at_im, ar_re, ar_im;
+    Vec3 gt_re, gt_im, gr_re, gr_im;
+    element_amplitude(element_tx, &at_re, &at_im, &gt_re, &gt_im);
+    element_amplitude(element_rx, &ar_re, &ar_im, &gr_re, &gr_im);
+    const float product_re = at_re * ar_re - at_im * ar_im;
+    const float product_im = at_re * ar_im + at_im * ar_re;
+    term.pattern_gain = (at_re * at_re + at_im * at_im) * (ar_re * ar_re + ar_im * ar_im);
+    term.complex_scale = true;
+    const float common = intensity_amplitude * peak;
+    term.scale = common * product_re;
+    term.scale_im = common * product_im;
+    if (raw_intensity > 0.0f) {
+      const float d = 0.5f / intensity_amplitude * peak;
+      term.dscale_dintensity = d * product_re;
+      term.dscale_im_dintensity = d * product_im;
+    }
+    // d(A_t A_r) = dA_t A_r (transmit direction) + A_t dA_r (receive direction).
+    const Vec3 dtx_re = scale3(sub3(scale3(gt_re, ar_re), scale3(gt_im, ar_im)), common);
+    const Vec3 dtx_im = scale3(add3(scale3(gt_re, ar_im), scale3(gt_im, ar_re)), common);
+    const Vec3 drx_re = scale3(sub3(scale3(gr_re, at_re), scale3(gr_im, at_im)), common);
+    const Vec3 drx_im = scale3(add3(scale3(gr_im, at_re), scale3(gr_re, at_im)), common);
+    *dtx_dir_head = add3(*dtx_dir_head, dtx_re);
+    *dtx_dir_tail = sub3(*dtx_dir_tail, dtx_re);
+    *drx_dir_head = add3(*drx_dir_head, drx_re);
+    *drx_dir_tail = sub3(*drx_dir_tail, drx_re);
+    // The imaginary parts follow the same head/tail routing.
+    Vec3* im_head_tx = dtx_dir_head == &grad_rx_pattern ? &term.dscale_im_drx : &term.dscale_im_dsite_in;
+    Vec3* im_tail_tx = &term.dscale_im_dtx;
+    Vec3* im_head_rx = drx_dir_head == &grad_tx_pattern ? &term.dscale_im_dtx : &term.dscale_im_dsite_out;
+    Vec3* im_tail_rx = &term.dscale_im_drx;
+    *im_head_tx = add3(*im_head_tx, dtx_im);
+    *im_tail_tx = sub3(*im_tail_tx, dtx_im);
+    *im_head_rx = add3(*im_head_rx, drx_im);
+    *im_tail_rx = sub3(*im_tail_rx, drx_im);
+  }
   term.tau_rt = length / in.c0;
   term.tau_rate = rate / in.c0;
-
-  // d(scale)/d(intensity): the derivative of the square root, taken to be zero
-  // at and below the clamp, which is the almost-everywhere derivative of
-  // sqrt(clamp(x, 0)).
-  if (raw_intensity > 0.0f) {
-    term.dscale_dintensity =
-        0.5f / intensity_amplitude * gain_amplitude;
-  }
-
-  // d(scale)/d(direction), through sqrt(clamp(G_t G_r, 0)).
-  if (gain_product > 0.0f) {
-    const float common =
-        0.5f / gain_amplitude * intensity_amplitude;
-    const Vec3 dscale_dtx_dir = scale3(gain_tx.gradient, common * gain_rx.value);
-    const Vec3 dscale_drx_dir = scale3(gain_rx.gradient, common * gain_tx.value);
-    *dtx_dir_head = add3(*dtx_dir_head, dscale_dtx_dir);
-    *dtx_dir_tail = sub3(*dtx_dir_tail, dscale_dtx_dir);
-    *drx_dir_head = add3(*drx_dir_head, dscale_drx_dir);
-    *drx_dir_tail = sub3(*drx_dir_tail, dscale_drx_dir);
-  }
 
   // The scale depends on the positions only through the pattern directions:
   // Channel owns spreading, so the path length carries no amplitude here.
@@ -598,8 +760,15 @@ __global__ void sensor_weight_forward_kernel(
     return;
   }
   const RowTerm term = evaluate_row(in, k);
-  out_re[k] = weight_in_re[k] * term.scale;
-  out_im[k] = weight_in_im[k] * term.scale;
+  if (term.complex_scale) {
+    const float w_re = weight_in_re[k];
+    const float w_im = weight_in_im[k];
+    out_re[k] = w_re * term.scale - w_im * term.scale_im;
+    out_im[k] = w_re * term.scale_im + w_im * term.scale;
+  } else {
+    out_re[k] = weight_in_re[k] * term.scale;
+    out_im[k] = weight_in_im[k] * term.scale;
+  }
   tau_rt[k] = term.tau_rt;
   tau_rate[k] = term.tau_rate;
   pattern_gain[k] = term.pattern_gain;
@@ -641,8 +810,20 @@ __global__ void sensor_weight_jvp_kernel(
       dot3(term.dscale_dsite_out, d_site_out) + dot3(term.dscale_dtx, d_tx) +
       dot3(term.dscale_drx, d_rx) + term.dscale_dintensity * tan_intensity[k];
 
-  tan_out_re[k] = tan_weight_re[k] * term.scale + weight_in_re[k] * d_scale;
-  tan_out_im[k] = tan_weight_im[k] * term.scale + weight_in_im[k] * d_scale;
+  if (term.complex_scale) {
+    const float d_scale_im = dot3(term.dscale_im_dsite_in, d_site_in) +
+        dot3(term.dscale_im_dsite_out, d_site_out) + dot3(term.dscale_im_dtx, d_tx) +
+        dot3(term.dscale_im_drx, d_rx) + term.dscale_im_dintensity * tan_intensity[k];
+    const float w_re = weight_in_re[k];
+    const float w_im = weight_in_im[k];
+    const float t_re = tan_weight_re[k];
+    const float t_im = tan_weight_im[k];
+    tan_out_re[k] = t_re * term.scale - t_im * term.scale_im + w_re * d_scale - w_im * d_scale_im;
+    tan_out_im[k] = t_re * term.scale_im + t_im * term.scale + w_re * d_scale_im + w_im * d_scale;
+  } else {
+    tan_out_re[k] = tan_weight_re[k] * term.scale + weight_in_re[k] * d_scale;
+    tan_out_im[k] = tan_weight_im[k] * term.scale + weight_in_im[k] * d_scale;
+  }
   tan_tau_rt[k] = dot3(term.dtau_rt_dsite_in, d_site_in) +
       dot3(term.dtau_rt_dsite_out, d_site_out) + dot3(term.dtau_rt_dtx, d_tx) +
       dot3(term.dtau_rt_drx, d_rx);
@@ -678,29 +859,40 @@ __global__ void sensor_weight_backward_rows_kernel(
   const float g_tau = grad_tau_rt[k];
   const float g_rate = grad_tau_rate[k];
 
-  grad_weight_re[k] = g_re * term.scale;
-  grad_weight_im[k] = g_im * term.scale;
-
   // The cotangent that reaches `scale` from both output components.
   const float g_scale = g_re * weight_in_re[k] + g_im * weight_in_im[k];
-  grad_intensity[k] = g_scale * term.dscale_dintensity;
-
-  const Vec3 site_in_grad = add3(
+  Vec3 site_in_grad = add3(
       add3(
           scale3(term.dscale_dsite_in, g_scale),
           scale3(term.dtau_rt_dsite_in, g_tau)),
       scale3(term.dtau_rate_dsite_in, g_rate));
-  const Vec3 site_out_grad = add3(
+  Vec3 site_out_grad = add3(
       add3(
           scale3(term.dscale_dsite_out, g_scale),
           scale3(term.dtau_rt_dsite_out, g_tau)),
       scale3(term.dtau_rate_dsite_out, g_rate));
-  const Vec3 tx_grad = add3(
+  Vec3 tx_grad = add3(
       add3(scale3(term.dscale_dtx, g_scale), scale3(term.dtau_rt_dtx, g_tau)),
       scale3(term.dtau_rate_dtx, g_rate));
-  const Vec3 rx_grad = add3(
+  Vec3 rx_grad = add3(
       add3(scale3(term.dscale_drx, g_scale), scale3(term.dtau_rt_drx, g_tau)),
       scale3(term.dtau_rate_drx, g_rate));
+  if (term.complex_scale) {
+    // out = w s: dL/dw = g conj(s), and a real parameter p sees
+    // Re(conj(g) w ds/dp) = ds_re g_scale + ds_im g_scale_im.
+    const float g_scale_im = g_im * weight_in_re[k] - g_re * weight_in_im[k];
+    grad_weight_re[k] = g_re * term.scale + g_im * term.scale_im;
+    grad_weight_im[k] = g_im * term.scale - g_re * term.scale_im;
+    grad_intensity[k] = g_scale * term.dscale_dintensity + g_scale_im * term.dscale_im_dintensity;
+    site_in_grad = add3(site_in_grad, scale3(term.dscale_im_dsite_in, g_scale_im));
+    site_out_grad = add3(site_out_grad, scale3(term.dscale_im_dsite_out, g_scale_im));
+    tx_grad = add3(tx_grad, scale3(term.dscale_im_dtx, g_scale_im));
+    rx_grad = add3(rx_grad, scale3(term.dscale_im_drx, g_scale_im));
+  } else {
+    grad_weight_re[k] = g_re * term.scale;
+    grad_weight_im[k] = g_im * term.scale;
+    grad_intensity[k] = g_scale * term.dscale_dintensity;
+  }
 
   const int64_t base = static_cast<int64_t>(k) * 3;
   grad_site_in[base] = site_in_grad.x;
@@ -775,6 +967,15 @@ void check_row_scalar(
       " must hold one value per path.");
 }
 
+// The packed layout is validated against its own header ON THE HOST, from the
+// buffer's length alone: the header lives on the device, so the host checks
+// the one property it can (a non-empty CUDA float buffer) and the Python owner
+// that packed it (sensors.Pattern.packed) is the layout's single writer.
+void check_packed_pattern(const torch::stable::Tensor& tensor, const char* name) {
+  check_cuda_float(tensor, name);
+  STD_TORCH_CHECK(tensor.numel() >= kPatternHeader + 4, name, " must be a packed element pattern.");
+}
+
 struct GeometryTensors {
   const torch::stable::Tensor& tx_pos;
   const torch::stable::Tensor& rx_pos;
@@ -789,11 +990,8 @@ struct GeometryTensors {
   const torch::stable::Tensor& row_kind;
   const torch::stable::Tensor& intensity;
   const torch::stable::Tensor& pattern_frame;
-  const torch::stable::Tensor& pattern_x_axis;
-  const torch::stable::Tensor& pattern_y_axis;
-  const torch::stable::Tensor& pattern_x_values;
-  const torch::stable::Tensor& pattern_y_values;
-  const torch::stable::Tensor& pattern_values;
+  const torch::stable::Tensor& tx_pattern;
+  const torch::stable::Tensor& rx_pattern;
 };
 
 RowInputs build_inputs(
@@ -801,14 +999,10 @@ RowInputs build_inputs(
     int num_paths,
     int num_tx,
     int num_rx,
-    int pattern_kind,
     double c0) {
   STD_TORCH_CHECK(num_tx > 0, "num_tx must be positive.");
   STD_TORCH_CHECK(num_rx > 0, "num_rx must be positive.");
   STD_TORCH_CHECK(c0 > 0.0, "c0 must be positive.");
-  STD_TORCH_CHECK(
-      pattern_kind == kPatternSeparable || pattern_kind == kPatternMap,
-      "pattern_kind must be 0 (separable) or 1 (map).");
 
   check_cuda_float(t.tx_pos, "tx_pos");
   check_cuda_float(t.rx_pos, "rx_pos");
@@ -842,23 +1036,8 @@ RowInputs build_inputs(
       t.pattern_frame.numel() == 9,
       "pattern_frame must hold the three world-space pattern frame axes.");
 
-  check_cuda_float(t.pattern_x_axis, "pattern_x_axis");
-  check_cuda_float(t.pattern_y_axis, "pattern_y_axis");
-  check_cuda_float(t.pattern_x_values, "pattern_x_values");
-  check_cuda_float(t.pattern_y_values, "pattern_y_values");
-  check_cuda_float(t.pattern_values, "pattern_values");
-  const int num_x = checked_int(t.pattern_x_axis.numel(), "pattern_x_axis");
-  const int num_y = checked_int(t.pattern_y_axis.numel(), "pattern_y_axis");
-  STD_TORCH_CHECK(num_x >= 2 && num_y >= 2, "the pattern axes need two samples.");
-  if (pattern_kind == kPatternSeparable) {
-    STD_TORCH_CHECK(
-        t.pattern_x_values.numel() == num_x && t.pattern_y_values.numel() == num_y,
-        "a separable pattern needs one value per axis sample.");
-  } else {
-    STD_TORCH_CHECK(
-        t.pattern_values.numel() == static_cast<int64_t>(num_x) * num_y,
-        "a map pattern needs one value per (y, x) grid cell.");
-  }
+  check_packed_pattern(t.tx_pattern, "tx_pattern");
+  check_packed_pattern(t.rx_pattern, "rx_pattern");
 
   RowInputs in;
   in.tx_pos = t.tx_pos.const_data_ptr<float>();
@@ -874,16 +1053,10 @@ RowInputs build_inputs(
   in.row_kind = t.row_kind.const_data_ptr<int32_t>();
   in.intensity = t.intensity.const_data_ptr<float>();
   in.pattern_frame = t.pattern_frame.const_data_ptr<float>();
-  in.pattern_x_axis = t.pattern_x_axis.const_data_ptr<float>();
-  in.pattern_y_axis = t.pattern_y_axis.const_data_ptr<float>();
-  in.pattern_x_values = t.pattern_x_values.const_data_ptr<float>();
-  in.pattern_y_values = t.pattern_y_values.const_data_ptr<float>();
-  in.pattern_values = t.pattern_values.const_data_ptr<float>();
+  in.tx_pattern = t.tx_pattern.const_data_ptr<float>();
+  in.rx_pattern = t.rx_pattern.const_data_ptr<float>();
   in.num_tx = num_tx;
   in.num_rx = num_rx;
-  in.pattern_kind = pattern_kind;
-  in.num_x = num_x;
-  in.num_y = num_y;
   in.c0 = static_cast<float>(c0);
   return in;
 }
@@ -906,11 +1079,8 @@ void sensor_weight_forward_cuda(
     const torch::stable::Tensor& weight_in_re,
     const torch::stable::Tensor& weight_in_im,
     const torch::stable::Tensor& pattern_frame,
-    const torch::stable::Tensor& pattern_x_axis,
-    const torch::stable::Tensor& pattern_y_axis,
-    const torch::stable::Tensor& pattern_x_values,
-    const torch::stable::Tensor& pattern_y_values,
-    const torch::stable::Tensor& pattern_values,
+    const torch::stable::Tensor& tx_pattern,
+    const torch::stable::Tensor& rx_pattern,
     torch::stable::Tensor& out_re,
     torch::stable::Tensor& out_im,
     torch::stable::Tensor& tau_rt,
@@ -919,7 +1089,6 @@ void sensor_weight_forward_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    int64_t pattern_kind,
     double c0) {
   const int paths = checked_int(num_paths, "num_paths");
   const GeometryTensors tensors{
@@ -936,17 +1105,13 @@ void sensor_weight_forward_cuda(
       row_kind,
       intensity,
       pattern_frame,
-      pattern_x_axis,
-      pattern_y_axis,
-      pattern_x_values,
-      pattern_y_values,
-      pattern_values};
+      tx_pattern,
+      rx_pattern};
   RowInputs in = build_inputs(
       tensors,
       paths,
       checked_int(num_tx, "num_tx"),
       checked_int(num_rx, "num_rx"),
-      checked_int(pattern_kind, "pattern_kind"),
       c0);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
@@ -995,11 +1160,8 @@ void sensor_weight_jvp_cuda(
     const torch::stable::Tensor& weight_in_re,
     const torch::stable::Tensor& weight_in_im,
     const torch::stable::Tensor& pattern_frame,
-    const torch::stable::Tensor& pattern_x_axis,
-    const torch::stable::Tensor& pattern_y_axis,
-    const torch::stable::Tensor& pattern_x_values,
-    const torch::stable::Tensor& pattern_y_values,
-    const torch::stable::Tensor& pattern_values,
+    const torch::stable::Tensor& tx_pattern,
+    const torch::stable::Tensor& rx_pattern,
     const torch::stable::Tensor& tan_tx_pos,
     const torch::stable::Tensor& tan_rx_pos,
     const torch::stable::Tensor& tan_site_in,
@@ -1014,7 +1176,6 @@ void sensor_weight_jvp_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    int64_t pattern_kind,
     double c0) {
   const int paths = checked_int(num_paths, "num_paths");
   const int transmitters = checked_int(num_tx, "num_tx");
@@ -1033,17 +1194,13 @@ void sensor_weight_jvp_cuda(
       row_kind,
       intensity,
       pattern_frame,
-      pattern_x_axis,
-      pattern_y_axis,
-      pattern_x_values,
-      pattern_y_values,
-      pattern_values};
+      tx_pattern,
+      rx_pattern};
   RowInputs in = build_inputs(
       tensors,
       paths,
       transmitters,
       receivers,
-      checked_int(pattern_kind, "pattern_kind"),
       c0);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
@@ -1110,11 +1267,8 @@ void sensor_weight_backward_cuda(
     const torch::stable::Tensor& weight_in_re,
     const torch::stable::Tensor& weight_in_im,
     const torch::stable::Tensor& pattern_frame,
-    const torch::stable::Tensor& pattern_x_axis,
-    const torch::stable::Tensor& pattern_y_axis,
-    const torch::stable::Tensor& pattern_x_values,
-    const torch::stable::Tensor& pattern_y_values,
-    const torch::stable::Tensor& pattern_values,
+    const torch::stable::Tensor& tx_pattern,
+    const torch::stable::Tensor& rx_pattern,
     const torch::stable::Tensor& grad_out_re,
     const torch::stable::Tensor& grad_out_im,
     const torch::stable::Tensor& grad_tau_rt,
@@ -1131,7 +1285,6 @@ void sensor_weight_backward_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    int64_t pattern_kind,
     double c0) {
   const int paths = checked_int(num_paths, "num_paths");
   const int transmitters = checked_int(num_tx, "num_tx");
@@ -1150,17 +1303,13 @@ void sensor_weight_backward_cuda(
       row_kind,
       intensity,
       pattern_frame,
-      pattern_x_axis,
-      pattern_y_axis,
-      pattern_x_values,
-      pattern_y_values,
-      pattern_values};
+      tx_pattern,
+      rx_pattern};
   RowInputs in = build_inputs(
       tensors,
       paths,
       transmitters,
       receivers,
-      checked_int(pattern_kind, "pattern_kind"),
       c0);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
