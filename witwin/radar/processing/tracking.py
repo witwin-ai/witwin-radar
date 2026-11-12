@@ -1,10 +1,8 @@
-"""The frame-to-frame detection contract. An interface, not a tracker.
+"""The frame-to-frame detection contract, a reference associator and a Kalman tracker.
 
-There is no track, no association and no Kalman filter here. This is the
-CONTRACT a tracker plugs into, because that is the thing the simulator owes an
-external tracker and the thing a tracker cannot supply for itself.
-
-Three pieces:
+The CONTRACT a tracker plugs into comes first, because that is the thing the
+simulator owes an external tracker and the thing a tracker cannot supply for
+itself. Four pieces:
 
 * :class:`DetectionFrame` - one frame's detections plus the world time they were
   taken at and the frame index they came from. Time in SECONDS, not a frame
@@ -16,6 +14,9 @@ Three pieces:
   velocity plus nearest neighbour, so that the contract has a worked example and
   the acceptance test has something to run. It is labelled reference and it is
   not a recommendation.
+* :class:`KalmanTracker` - a multi-target constant-velocity Kalman tracker
+  with Mahalanobis gating, greedy association and a miss-count track
+  lifetime, vectorised over tracks.
 
 **This whole module is explicitly NON-DIFFERENTIABLE, and it enforces it.**
 A detection is the output of a threshold comparison and an ``argwhere``; a
@@ -247,9 +248,8 @@ def nearest_neighbour_associator(
     """
 
     device = current.xyz.device
-    result = torch.full((len(current),), -1, dtype=torch.int64, device=device)
     if previous is None or len(previous) == 0 or len(current) == 0:
-        return result
+        return torch.full((len(current),), -1, dtype=torch.int64, device=device)
 
     # Radial closing velocity moves a target ALONG its own line of sight, which
     # is the unit vector from the array to where it was.
@@ -260,18 +260,249 @@ def nearest_neighbour_associator(
     # arithmetic here, and this package does not reach for a geometry primitive
     # that the physics packages are statically forbidden from naming.
     distance = (current.xyz.unsqueeze(1) - predicted.unsqueeze(0)).square().sum(dim=-1).sqrt()
-    claimed = torch.zeros((len(previous),), dtype=torch.bool, device=device)
-    order = torch.argsort(distance.reshape(-1))
-    columns = int(distance.shape[1])
-    for flat in order.tolist():
-        row, column = divmod(flat, columns)
-        if result[row] >= 0 or claimed[column]:
-            continue
-        if float(distance[row, column]) > float(gate_m):
+    return greedy_assignment(distance, gate=float(gate_m))
+
+
+def greedy_assignment(cost: torch.Tensor, *, gate: float) -> torch.Tensor:
+    """``[N, T]`` costs -> ``[N]`` int64 column per row, ``-1`` for none.
+
+    Global greedy: the cheapest remaining pair within ``gate`` is matched, its
+    row and column leave, and so on. Evaluated in rounds rather than pair by
+    pair: in each round every MUTUALLY cheapest pair - the row's best column
+    whose best row is that row - is matched at once. The cheapest remaining
+    pair is always mutual, and matching one mutual pair never makes another
+    one non-mutual, so the rounds produce exactly the pair-by-pair greedy
+    matching, in a number of rounds bounded by the matching's chain length
+    rather than by the number of detections.
+    """
+
+    rows, columns = int(cost.shape[0]), int(cost.shape[1])
+    result = torch.full((rows,), -1, dtype=torch.int64, device=cost.device)
+    if rows == 0 or columns == 0:
+        return result
+    live = torch.where(cost <= gate, cost.to(torch.float64), torch.full_like(cost, torch.inf, dtype=torch.float64))
+    row_index = torch.arange(rows, device=cost.device)
+    for _ in range(min(rows, columns)):
+        best_column = live.argmin(dim=1)
+        best_row = live.argmin(dim=0)
+        finite = torch.isfinite(live[row_index, best_column])
+        mutual = finite & (best_row[best_column] == row_index)
+        if not bool(mutual.any()):
             break
-        result[row] = column
-        claimed[column] = True
+        result = torch.where(mutual, best_column, result)
+        taken = torch.zeros(columns, dtype=torch.bool, device=cost.device)
+        taken[best_column[mutual]] = True
+        live = torch.where(mutual.reshape(-1, 1) | taken.reshape(1, -1), torch.inf, live)
     return result
 
 
-__all__ = ["Associator", "DetectionFrame", "TrackHandoff", "nearest_neighbour_associator"]
+@dataclass(frozen=True, slots=True, eq=False)
+class TrackState:
+    """The live tracks of a :class:`KalmanTracker`, ``T`` of them.
+
+    ``position``/``velocity`` are ``[T, 3]`` float64 in the frame the detection
+    frames were in (metres, metres per second), ``covariance`` is the
+    ``[T, 6, 6]`` state covariance over ``(position, velocity)``. ``hits``
+    counts the frames a track was updated in and ``misses`` the consecutive
+    frames it was not.
+    """
+
+    ids: torch.Tensor
+    position: torch.Tensor
+    velocity: torch.Tensor
+    covariance: torch.Tensor
+    hits: torch.Tensor
+    misses: torch.Tensor
+
+    def __len__(self) -> int:
+        return int(self.ids.shape[0])
+
+
+class KalmanTracker:
+    """Multi-target constant-velocity Kalman tracking of :class:`DetectionFrame` positions.
+
+    State ``x = (p, v)`` in the detection frame's coordinates. Between frames
+    ``dt`` seconds apart, ``p <- p + v dt`` with white-acceleration process
+    noise of spectral density ``q = process_noise_mps2 ** 2``:
+
+        ``Q = q [[dt^3 / 3 I, dt^2 / 2 I], [dt^2 / 2 I, dt I]]``
+
+    Each detection measures position with covariance
+    ``measurement_noise_m ** 2 I``. A detection may continue a track when its
+    Mahalanobis distance ``sqrt(y^T S^-1 y)`` to the track's prediction is at
+    most ``gate``; within the gate, pairs are matched by
+    :func:`greedy_assignment` on that distance. A matched track is updated
+    (Joseph form, so the covariance stays symmetric positive definite); an
+    unmatched track coasts and is dropped after more than ``max_misses``
+    consecutive misses; an unmatched detection opens a track at its position
+    with zero velocity and ``initial_velocity_std_mps`` uncertainty.
+
+    Every per-track and per-detection step is one batched tensor operation;
+    the only Python loop is the assignment's round loop. Not differentiable:
+    an association is a discrete choice, and a derivative-carrying frame is
+    refused by :class:`DetectionFrame` itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        process_noise_mps2: float = 1.0,
+        measurement_noise_m: float = 0.1,
+        gate: float = 3.5,
+        initial_velocity_std_mps: float = 5.0,
+        max_misses: int = 2,
+    ) -> None:
+        for name, value in (
+            ("process_noise_mps2", process_noise_mps2),
+            ("measurement_noise_m", measurement_noise_m),
+            ("gate", gate),
+            ("initial_velocity_std_mps", initial_velocity_std_mps),
+        ):
+            if not float(value) > 0.0:
+                raise ValueError(f"{name} must be positive, got {value!r}")
+        if type(max_misses) is not int or max_misses < 0:
+            raise ValueError(f"max_misses must be a non-negative int, got {max_misses!r}")
+        self.process_noise_mps2 = float(process_noise_mps2)
+        self.measurement_noise_m = float(measurement_noise_m)
+        self.gate = float(gate)
+        self.initial_velocity_std_mps = float(initial_velocity_std_mps)
+        self.max_misses = max_misses
+        self._state: torch.Tensor | None = None
+        self._covariance: torch.Tensor | None = None
+        self._ids: torch.Tensor | None = None
+        self._hits: torch.Tensor | None = None
+        self._misses: torch.Tensor | None = None
+        self._time_s: float | None = None
+        self._next_id = 0
+
+    @property
+    def tracks(self) -> TrackState:
+        """The live tracks after the last :meth:`push`."""
+
+        if self._state is None:
+            empty = torch.zeros((0,), dtype=torch.int64)
+            return TrackState(
+                ids=empty,
+                position=torch.zeros((0, 3), dtype=torch.float64),
+                velocity=torch.zeros((0, 3), dtype=torch.float64),
+                covariance=torch.zeros((0, 6, 6), dtype=torch.float64),
+                hits=empty,
+                misses=empty,
+            )
+        return TrackState(
+            ids=self._ids,
+            position=self._state[:, :3],
+            velocity=self._state[:, 3:],
+            covariance=self._covariance,
+            hits=self._hits,
+            misses=self._misses,
+        )
+
+    def push(self, frame: DetectionFrame) -> torch.Tensor:
+        """Advance to ``frame`` and return each detection's ``[N]`` int64 track id."""
+
+        if not isinstance(frame, DetectionFrame):
+            raise TypeError(f"push takes a DetectionFrame, got {type(frame).__name__}")
+        if self._time_s is not None and not frame.time_s > self._time_s:
+            raise ValueError(
+                f"frame {frame.frame_index} is stamped {frame.time_s} s, which is not after the previous frame's "
+                f"{self._time_s} s"
+            )
+        device = frame.xyz.device
+        measured = frame.xyz.to(torch.float64)
+        count = len(frame)
+        if self._state is None:
+            self._state = torch.zeros((0, 6), dtype=torch.float64, device=device)
+            self._covariance = torch.zeros((0, 6, 6), dtype=torch.float64, device=device)
+            self._ids = torch.zeros((0,), dtype=torch.int64, device=device)
+            self._hits = torch.zeros((0,), dtype=torch.int64, device=device)
+            self._misses = torch.zeros((0,), dtype=torch.int64, device=device)
+        elapsed = 0.0 if self._time_s is None else frame.time_s - self._time_s
+        self._time_s = frame.time_s
+        self._predict(elapsed)
+
+        noise = self.measurement_noise_m**2 * torch.eye(3, dtype=torch.float64, device=device)
+        innovation_cov = self._covariance[:, :3, :3] + noise
+        # [T, 3, N]: every detection's innovation against every prediction.
+        innovation = measured.transpose(0, 1).unsqueeze(0) - self._state[:, :3].unsqueeze(-1)
+        whitened = torch.linalg.solve(innovation_cov, innovation)
+        distance = (innovation * whitened).sum(dim=1).clamp(min=0.0).sqrt().transpose(0, 1)
+        assigned = greedy_assignment(distance, gate=self.gate)
+
+        matched = assigned >= 0
+        track_of = assigned[matched]
+        hit = torch.zeros(int(self._ids.shape[0]), dtype=torch.bool, device=device)
+        hit[track_of] = True
+        if bool(matched.any()):
+            self._update(track_of, measured[matched], noise)
+        self._hits = self._hits + hit.to(torch.int64)
+        self._misses = torch.where(hit, torch.zeros_like(self._misses), self._misses + 1)
+
+        ids = torch.full((count,), -1, dtype=torch.int64, device=device)
+        ids[matched] = self._ids[track_of]
+        fresh = ~matched
+        born = int(fresh.sum())
+        if born:
+            new_ids = torch.arange(self._next_id, self._next_id + born, dtype=torch.int64, device=device)
+            self._next_id += born
+            ids[fresh] = new_ids
+            self._birth(measured[fresh], new_ids, noise)
+        keep = self._misses <= self.max_misses
+        self._state, self._covariance = self._state[keep], self._covariance[keep]
+        self._ids, self._hits, self._misses = self._ids[keep], self._hits[keep], self._misses[keep]
+        return ids
+
+    def _predict(self, dt: float) -> None:
+        if dt <= 0.0 or int(self._state.shape[0]) == 0:
+            return
+        device = self._state.device
+        eye = torch.eye(3, dtype=torch.float64, device=device)
+        transition = torch.eye(6, dtype=torch.float64, device=device)
+        transition[:3, 3:] = dt * eye
+        q = self.process_noise_mps2**2
+        process = torch.zeros((6, 6), dtype=torch.float64, device=device)
+        process[:3, :3] = q * dt**3 / 3.0 * eye
+        process[:3, 3:] = q * dt**2 / 2.0 * eye
+        process[3:, :3] = q * dt**2 / 2.0 * eye
+        process[3:, 3:] = q * dt * eye
+        self._state = self._state @ transition.transpose(0, 1)
+        self._covariance = transition @ self._covariance @ transition.transpose(0, 1) + process
+
+    def _update(self, tracks: torch.Tensor, measured: torch.Tensor, noise: torch.Tensor) -> None:
+        state = self._state[tracks]
+        covariance = self._covariance[tracks]
+        innovation_cov = covariance[:, :3, :3] + noise
+        # K = P H^T S^-1, solved rather than inverted: S K^T = H P.
+        gain = torch.linalg.solve(innovation_cov, covariance[:, :3, :]).transpose(1, 2)
+        innovation = measured - state[:, :3]
+        state = state + (gain @ innovation.unsqueeze(-1)).squeeze(-1)
+        identity = torch.eye(6, dtype=torch.float64, device=state.device)
+        reduce = identity - torch.cat((gain, torch.zeros_like(gain)), dim=2)
+        covariance = reduce @ covariance @ reduce.transpose(1, 2) + gain @ noise @ gain.transpose(1, 2)
+        self._state = self._state.index_copy(0, tracks, state)
+        self._covariance = self._covariance.index_copy(0, tracks, covariance)
+
+    def _birth(self, measured: torch.Tensor, ids: torch.Tensor, noise: torch.Tensor) -> None:
+        count = int(measured.shape[0])
+        device = measured.device
+        state = torch.cat((measured, torch.zeros_like(measured)), dim=1)
+        covariance = torch.zeros((count, 6, 6), dtype=torch.float64, device=device)
+        covariance[:, :3, :3] = noise
+        covariance[:, 3:, 3:] = self.initial_velocity_std_mps**2 * torch.eye(3, dtype=torch.float64, device=device)
+        zero = torch.zeros(count, dtype=torch.int64, device=device)
+        self._state = torch.cat((self._state, state))
+        self._covariance = torch.cat((self._covariance, covariance))
+        self._ids = torch.cat((self._ids, ids))
+        self._hits = torch.cat((self._hits, zero + 1))
+        self._misses = torch.cat((self._misses, zero))
+
+
+__all__ = [
+    "Associator",
+    "DetectionFrame",
+    "KalmanTracker",
+    "TrackHandoff",
+    "TrackState",
+    "greedy_assignment",
+    "nearest_neighbour_associator",
+]
