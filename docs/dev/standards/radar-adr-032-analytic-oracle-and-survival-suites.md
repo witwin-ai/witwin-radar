@@ -71,8 +71,8 @@ CUDA context usable today.
 | Case | Today | Verdict |
 |---|---|---|
 | target occluded mid-sequence | `ValueError: site ... has no inbound leg row in the frozen topology` | strict xfail (MP-2); expected: completes, the occluded frame exactly zero |
-| site on a PEC wall | 4 rows, echo exactly 0 | passes: the tangential field vanishes on a conductor |
-| site 0.05 mm in front of a PEC wall | 4 rows, echo `(2 sin(k delta))^4` of free space (-32 dB) | passes against the image method to 3% |
+| site on a PEC wall | 0.5.0: 4 rows, echo exactly 0; 0.6.0: 1 row (line of sight), free-space echo | passes on 0.5.0 (the tangential field vanishes on a conductor); strict xfail on Channel >= 0.6 (C-12) |
+| site 0.05 mm in front of a PEC wall | 0.5.0: 4 rows, echo `(2 sin(k delta))^4` of free space (-32 dB); 0.6.0: 1 row, free-space echo (+32 dB too strong) | passes on 0.5.0 against the image method to 3%; strict xfail on Channel >= 0.6 (C-12) |
 | site on an array element | 1 row, finite cube of mean power 7.6e29 W, no refusal | strict xfail (no audit ID; cited as M0-6); expected: a named refusal |
 | empty scene | 1 row, radar-equation level | passes |
 | no targets | `ValueError: site_count must be a positive int, got 0` | passes as a named refusal |
@@ -80,6 +80,17 @@ CUDA context usable today.
 | degenerate mesh (zero-area and duplicate faces) | 4 rows, no duplicated reflection | passes |
 | 50 km | radar-equation level (1.2e-29 W) | passes |
 | 20 000 sites | 20 000 rows | passes |
+
+### Channel 0.6.0
+
+The whole directory was also run in `radar-rel` (Channel 0.6.0, tag build
+65b6da0). Every oracle number above is unchanged to the printed precision,
+including the D-1 table. The one difference is C-12: Channel 0.6 rejects
+reflection segments shorter than about 1e-5 of the scene diagonal, so a site on
+or 0.05 mm from a wall keeps only its line of sight. The two wall-adjacent
+survival cases carry a strict xfail conditioned on the installed Channel
+release, so the suite is green on both and flips when either side restores the
+cancellation.
 
 ## Consequences
 
