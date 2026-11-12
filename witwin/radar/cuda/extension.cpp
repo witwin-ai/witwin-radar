@@ -67,11 +67,13 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // cell is its TDM slot, (chirp * num_tx + segment_tx_index[segment]) *
   // chirp_period_s, not the chirp index. They are kernel ARGUMENTS rather than
   // a second pass, so TDM costs no extra launch. `num_tx = 1` with a zero table
-  // reduces the slot to the chirp index exactly.
+  // reduces the slot to the chirp index exactly. `segment_t_start` (float64,
+  // empty or one per segment) replaces the uniform ADC window start per
+  // segment, so one launch covers many ADC instants of a refreshed frame.
   m.def(
       "fmcw_beat_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
-      "Tensor(a!) out_re, "
+      "Tensor segment_t_start, Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
       "int num_chirps, "
       "int num_samples, float sample_period_s, float chirp_period_s, "
@@ -80,7 +82,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def(
       "fmcw_beat_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
-      "Tensor grad_out_re, "
+      "Tensor segment_t_start, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_samples, "
@@ -89,7 +91,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def(
       "fmcw_beat_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
-      "Tensor tan_tau_rt, "
+      "Tensor segment_t_start, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_samples, "

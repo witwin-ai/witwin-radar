@@ -19,7 +19,8 @@
 - `simulate` writes frames into one preallocated cube when no gradient is being taken, and no longer keeps every
   frame's intermediate results.
 - Chirp- and ADC-refreshed FMCW sessions replay topology-identical instants of a frame together and synthesize each
-  group in one launch (one per ADC sample index on the ADC route) over only the active transmitter's sensor pairs.
+  group in one launch over only the active transmitter's sensor pairs; on the ADC route each segment carries its own
+  ADC instant through a new per-segment window start on the native beat family.
   `Motion.batch_observations` now bounds these groups for every kind, and therefore the rows a fused run holds at once.
 
 All of these produce the same bits as the session they replace.

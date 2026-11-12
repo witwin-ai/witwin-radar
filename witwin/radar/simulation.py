@@ -1093,8 +1093,8 @@ def _echo_slot_batches(
     An observation sits in one TDM slot and is heard by one transmitter's
     ``num_rx`` pairs; the frame cube reads nothing else from it. Each slot
     batch is therefore synthesized as ONE launch over just those pair
-    segments - per ADC sample index on the ADC route, because the sample
-    instant is a launch parameter - and the frame cube gathers the results.
+    segments, each carrying its own ADC window start on the ADC route, and the
+    frame cube gathers the results.
     Every segment sums the same rows in the same order as a per-observation
     launch would, so the cube is the same to the bit. Returns the
     ``[chirp, pair, sample]`` cube, the opening epoch frame and the closing
@@ -1129,38 +1129,42 @@ def _echo_slot_batches(
         index = np.asarray([entry[0] for entry in pending], dtype=np.int64)
         slot_in_batch = np.asarray([entry[1].slot for entry in pending], dtype=np.int64)
         sample = index % samples
-        for value in np.unique(sample):
-            chosen = sample == value
-            frame_slot = index[chosen] // samples
-            # Sink-major ranks: the slot's transmitter ``t`` is heard on pairs
-            # ``t + num_tx * r``, one per receiver ``r``.
-            pair = ((frame_slot % num_tx)[:, None] + num_tx * np.arange(num_rx)).ravel()
-            owner = np.repeat(slot_in_batch[chosen], num_rx)
-            begin = owner * rows_per_slot + batch.offsets[pair]
-            counts = batch.offsets[pair + 1] - batch.offsets[pair]
-            prefix = np.cumsum(counts) - counts
-            rows = np.repeat(begin - prefix, counts) + np.arange(int(counts.sum()))
-            segment_offsets = np.concatenate(([0], np.cumsum(counts)))
-            routing = _uploaded(session, np.concatenate((rows, segment_offsets, pair % num_tx)), composed.device)
-            row_index, offsets, transmitter = torch.split(routing, [len(rows), len(segment_offsets), len(pair)])
-            transfer = channel_phasor_to_beat_weight(composed.complex_transfer_ref.index_select(0, row_index))
-            if composed.row_valid is not None:
-                valid = composed.row_valid.index_select(0, row_index)
-                transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
-            spec = single
-            if session.adc_sampled:
-                spec = replace(single, t_start_s=working.t_start_s + int(value) * working.sample_period_s)
-            out = synthesize_fmcw_rows(
-                composed.total_delay_s.index_select(0, row_index),
-                None,
-                transfer,
-                offsets,
-                spec,
-                segment_tx_index=transmitter.to(torch.int32),
-            )
-            values.append(out.reshape(len(pair), spec.num_samples))
-            chirp = np.repeat(frame_slot // num_tx, num_rx)
-            targets.append(((chirp * pairs + pair) * samples + value) * spec.num_samples)
+        frame_slot = index // samples
+        # Sink-major ranks: the slot's transmitter ``t`` is heard on pairs
+        # ``t + num_tx * r``, one per receiver ``r``.
+        pair = ((frame_slot % num_tx)[:, None] + num_tx * np.arange(num_rx)).ravel()
+        owner = np.repeat(slot_in_batch, num_rx)
+        begin = owner * rows_per_slot + batch.offsets[pair]
+        counts = batch.offsets[pair + 1] - batch.offsets[pair]
+        prefix = np.cumsum(counts) - counts
+        rows = np.repeat(begin - prefix, counts) + np.arange(int(counts.sum()))
+        segment_offsets = np.concatenate(([0], np.cumsum(counts)))
+        tables = [rows, segment_offsets, pair % num_tx]
+        if session.adc_sampled:
+            # Each segment's own ADC window start, formed exactly as a
+            # one-instant spec's ``t_start_s`` would be, and carried bit for
+            # bit through the int64 upload.
+            starts = working.t_start_s + np.repeat(sample, num_rx).astype(np.float64) * working.sample_period_s
+            tables.append(starts.view(np.int64))
+        routing = _uploaded(session, np.concatenate(tables), composed.device)
+        parts = torch.split(routing, [len(table) for table in tables])
+        row_index, offsets, transmitter = parts[0], parts[1], parts[2]
+        transfer = channel_phasor_to_beat_weight(composed.complex_transfer_ref.index_select(0, row_index))
+        if composed.row_valid is not None:
+            valid = composed.row_valid.index_select(0, row_index)
+            transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
+        out = synthesize_fmcw_rows(
+            composed.total_delay_s.index_select(0, row_index),
+            None,
+            transfer,
+            offsets,
+            single,
+            segment_tx_index=transmitter.to(torch.int32),
+            segment_t_start_s=parts[3].view(torch.float64) if session.adc_sampled else None,
+        )
+        values.append(out.reshape(len(pair), single.num_samples))
+        chirp = np.repeat(frame_slot // num_tx, num_rx)
+        targets.append(((chirp * pairs + pair) * samples + np.repeat(sample, num_rx)) * single.num_samples)
         pending.clear()
 
     for position, observation in enumerate(observations):

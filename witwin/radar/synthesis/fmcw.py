@@ -79,7 +79,7 @@ class _FmcwSynthesis(torch.autograd.Function):
     """Autograd bridge for the selected native FMCW output domain."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec):
+    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -95,6 +95,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             offsets,
             tx_index,
+            *(() if spectrum else (starts,)),
             out_re,
             out_im,
             num_paths,
@@ -113,16 +114,16 @@ class _FmcwSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, spec) = inputs
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, tx_index)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index)
+        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, tx_index, starts)
+        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index, starts)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        (tau_rt, tau_rate, weight_re, weight_im, segment, tx_index) = ctx.saved_tensors
+        (tau_rt, tau_rate, weight_re, weight_im, segment, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
         grad_tau_rt = torch.empty_like(tau_rt)
@@ -139,6 +140,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             segment,
             tx_index,
+            *(() if spectrum else (starts,)),
             grad_out_re.contiguous(),
             grad_out_im.contiguous(),
             grad_tau_rt,
@@ -157,13 +159,22 @@ class _FmcwSynthesis(torch.autograd.Function):
             spec.carrier_rate_hz,
             spec.t_start_s,
         )
-        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
+        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None, None)
 
     @staticmethod
     def jvp(
-        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_tx_index, tan_spec
+        ctx,
+        tan_tau_rt,
+        tan_tau_rate,
+        tan_weight_re,
+        tan_weight_im,
+        tan_offsets,
+        tan_segment,
+        tan_tx_index,
+        tan_starts,
+        tan_spec,
     ):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index) = ctx.saved_tensors
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -182,6 +193,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             offsets,
             tx_index,
+            *(() if spectrum else (starts,)),
             tan_tau_rt,
             *(() if spectrum else (tan_tau_rate,)),
             tan_weight_re,
@@ -346,6 +358,7 @@ def synthesize_fmcw_rows(
     spec: FmcwSpec,
     *,
     segment_tx_index: torch.Tensor | None = None,
+    segment_t_start_s: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize the configured FMCW output from conjugated Channel weights.
 
@@ -361,6 +374,13 @@ def synthesize_fmcw_rows(
     guessing it would put a whole chirp period of Doppler walk on the wrong
     channel and still produce a plausible cube. :func:`synthesize_fmcw`
     derives it from the array layout.
+
+    ``segment_t_start_s`` is ``float64[segments]``: each segment's own ADC
+    window start in seconds, in place of ``spec.t_start_s``. It is how one
+    launch synthesizes segments that are different ADC instants of a refreshed
+    frame; each segment's value is the one a launch with that start as
+    ``spec.t_start_s`` would produce. Beat domain only, and schedule data: a
+    derivative in it is refused.
 
     This is the ROW-LEVEL entry, and what it does NOT check is part of its
     contract. There is no :class:`SynthesisPathBatch` here, so the eight
@@ -408,6 +428,21 @@ def synthesize_fmcw_rows(
                 f"{tuple(segment_tx_index.shape)}"
             )
         tx_index = segment_tx_index
+    if segment_t_start_s is None:
+        starts = torch.empty(0, dtype=torch.float64, device=total_delay_s.device)
+    else:
+        if spec.output_domain == FMCW_OUTPUT_SPECTRUM:
+            raise ValueError(
+                "per-segment ADC window starts belong to the beat domain; the range spectrum's closed form "
+                "assumes one uniform window"
+            )
+        refuse_derivative("FMCW segment window starts", "ADC times are fixed metadata", starts=segment_t_start_s)
+        if segment_t_start_s.dtype != torch.float64 or tuple(segment_t_start_s.shape) != (num_segments,):
+            raise ValueError(
+                f"segment_t_start_s must be float64 with shape ({num_segments},), got "
+                f"{segment_t_start_s.dtype} {tuple(segment_t_start_s.shape)}"
+            )
+        starts = segment_t_start_s.contiguous()
     segment = segment_of_each_row(pair_offsets, path_count)
     # Torch-owned, autograd-aware accessors: the real pair crosses the
     # boundary, never the complex tensor.
@@ -419,6 +454,7 @@ def synthesize_fmcw_rows(
         pair_offsets.contiguous(),
         segment,
         tx_index.contiguous(),
+        starts,
         spec,
     )
     return torch.complex(out_re, out_im)
