@@ -20,7 +20,7 @@ the multiply.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -416,6 +416,54 @@ class ProcessingAxes:
         quietly the wrong scale.
         """
 
+        return cls._build(result, spec, array, range_oversample=range_oversample, device=result.cube.device)
+
+    @classmethod
+    def from_radar(
+        cls, radar, *, range_oversample: int = 1, device: torch.device | str | None = None
+    ) -> "ProcessingAxes":
+        """The record a cube this radar produces is described by, with no cube.
+
+        ``radar`` is a :class:`witwin.radar.Radar`. Its waveform spec and its
+        array are the same two records the echo builds ``Result.axes`` from, and
+        the cube's published conventions - axis names, phasor, output domain -
+        come from the same :class:`SynthesisResult` factory the synthesis owner
+        calls, evaluated on a shape-only ``meta`` tensor. So for any radar,
+        ``ProcessingAxes.from_radar(radar)`` and the ``Result.axes`` of a frame
+        it simulated describe the same grid, field for field.
+
+        This is the entry for a RECORDED or externally synthesized cube. It
+        assumes the cube follows this package's conventions: an FMCW cube is in
+        the de-chirped BEAT phasor (a target at positive range is a positive
+        beat frequency), OFDM and pulsed cubes are in Channel's phasor, and the
+        FMCW fast axis is whatever ``Fmcw.output`` declares - ADC samples are
+        ``output="beat"``. A device whose IQ runs the other way is conjugated by
+        the caller before it reaches here.
+
+        ``device`` is where the two float64 axes are placed; it defaults to the
+        radar's own device.
+        """
+
+        from ..radar import Radar
+
+        if not isinstance(radar, Radar):
+            raise TypeError(f"from_radar takes a witwin.radar.Radar, got {type(radar).__name__}")
+        spec = radar.waveform_spec()
+        array = radar.system_config.sensors.array
+        result = _shape_only_result(spec, array.sensor_pair_count)
+        target = radar.device if device is None else torch.device(device)
+        return cls._build(result, spec, array, range_oversample=range_oversample, device=target)
+
+    @classmethod
+    def _build(
+        cls,
+        result: SynthesisResult,
+        spec: FmcwSpec | OfdmSpec | PulsedSpec,
+        array: SensorArraySpec,
+        *,
+        range_oversample: int,
+        device: torch.device,
+    ) -> "ProcessingAxes":
         cube = result.cube
         if cube.dim() != 3:
             raise ValueError(
@@ -447,7 +495,6 @@ class ProcessingAxes:
         if type(range_oversample) is not int or range_oversample < 1:
             raise ValueError(f"range_oversample must be a positive int, got {range_oversample!r}")
 
-        device = cube.device
         slow_count = int(cube.shape[0])
         fast_count = int(cube.shape[2])
         wavelength = SPEED_OF_LIGHT_M_PER_S / reference
@@ -482,12 +529,6 @@ class ProcessingAxes:
             replica_period = float(spec.sample_period_s)
             replica = pulse_samples(spec, device=device)
 
-        velocity_bin = wavelength / (2.0 * slow_count * slow_period)
-        range_m = torch.arange(range_count, dtype=torch.float64, device=device) * range_bin + range_origin
-        velocity_mps = torch.fft.fftshift(
-            torch.fft.fftfreq(slow_count, d=slow_period, dtype=torch.float64, device=device)
-        ) * (wavelength / 2.0)
-
         return cls(
             waveform=kind,
             output_domain=str(result.output_domain),
@@ -499,7 +540,7 @@ class ProcessingAxes:
             range_bin_m=range_bin,
             range_origin_m=range_origin,
             max_unambiguous_range_m=max_range,
-            velocity_bin_mps=velocity_bin,
+            velocity_bin_mps=wavelength / (2.0 * slow_count * slow_period),
             max_unambiguous_speed_mps=max_speed,
             wavelength_m=wavelength,
             reference_frequency_hz=reference,
@@ -510,12 +551,89 @@ class ProcessingAxes:
             element_spacing_m=float(array.element_spacing_m),
             tx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in array.tx_loc),
             rx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in array.rx_loc),
-            range_m=range_m.contiguous(),
-            velocity_mps=velocity_mps.contiguous(),
+            range_m=_range_axis(range_count, range_bin, range_origin, device),
+            velocity_mps=_velocity_axis(slow_count, slow_period, wavelength, device),
             range_oversample=range_oversample,
             matched_filter_replica=replica,
             matched_filter_sample_period_s=replica_period,
         )
+
+    def with_bin_counts(self, *, range_bins: int | None = None, doppler_bins: int | None = None) -> "ProcessingAxes":
+        """The record of a product whose transforms have other lengths.
+
+        ``range_bins`` is a zero-padded range transform: the span
+        ``range_bin_count * range_bin_m`` is unchanged and the bin shrinks to
+        span / ``range_bins``. ``doppler_bins`` is the length of the slow-time
+        transform, for a zero-padded Doppler transform or for a slow-time filter
+        that shortened the sequence; the slow-time period is unchanged, so the
+        velocity bin is ``lambda / (2 * doppler_bins * T_slow)`` and the axis
+        is the same ``fftshift``ed formula :meth:`from_synthesis` publishes.
+
+        A pulsed range grid is refined with ``range_oversample``, which is exact
+        band-limited interpolation of the matched filter; a second refinement
+        knob for one grid is refused.
+        """
+
+        record = self
+        if range_bins is not None:
+            if type(range_bins) is not int or range_bins < 1:
+                raise ValueError(f"range_bins must be a positive int, got {range_bins!r}")
+            if self.waveform == "pulsed":
+                raise ValueError(
+                    "the pulsed range grid is refined by range_oversample on the axes record, which interpolates "
+                    "the matched filter exactly; range_bins does not apply to it"
+                )
+            span = self.range_bin_m * self.range_bin_count
+            bin_m = span / range_bins
+            record = replace(
+                record,
+                range_bin_count=range_bins,
+                range_bin_m=bin_m,
+                range_m=_range_axis(range_bins, bin_m, self.range_origin_m, self.device),
+            )
+        if doppler_bins is not None:
+            if type(doppler_bins) is not int or doppler_bins < 1:
+                raise ValueError(f"doppler_bins must be a positive int, got {doppler_bins!r}")
+            period = self.slow_time_period_s
+            record = replace(
+                record,
+                doppler_bin_count=doppler_bins,
+                velocity_bin_mps=self.wavelength_m / (2.0 * doppler_bins * period),
+                velocity_mps=_velocity_axis(doppler_bins, period, self.wavelength_m, self.device),
+            )
+        return record
+
+
+def _range_axis(count: int, bin_m: float, origin_m: float, device) -> torch.Tensor:
+    """``origin + k * bin`` in float64 metres: the one formula behind every range axis."""
+
+    return (torch.arange(count, dtype=torch.float64, device=device) * bin_m + origin_m).contiguous()
+
+
+def _velocity_axis(count: int, period_s: float, wavelength_m: float, device) -> torch.Tensor:
+    """``lambda f / 2`` over the ``fftshift``ed slow-time frequencies, closing positive."""
+
+    frequency = torch.fft.fftshift(torch.fft.fftfreq(count, d=period_s, dtype=torch.float64, device=device))
+    return (frequency * (wavelength_m / 2.0)).contiguous()
+
+
+def _shape_only_result(spec, pairs: int) -> SynthesisResult:
+    """The :class:`SynthesisResult` a frame of ``spec`` would publish, on a ``meta`` cube.
+
+    The factory is the one the synthesis owner calls, so the axis names, the
+    phasor and the output domain come from their single owner rather than from
+    a second table here. A ``meta`` tensor has a shape and no storage.
+    """
+
+    if isinstance(spec, FmcwSpec):
+        shape, build = (spec.num_chirps, pairs, spec.num_samples), SynthesisResult.from_fmcw
+    elif isinstance(spec, OfdmSpec):
+        shape, build = (spec.num_symbols, pairs, spec.num_subcarriers), SynthesisResult.from_ofdm
+    elif isinstance(spec, PulsedSpec):
+        shape, build = (spec.num_pulses, pairs, spec.num_samples), SynthesisResult.from_pulsed
+    else:
+        raise TypeError(f"no processing owner for a {type(spec).__name__}")
+    return build(torch.empty(shape, dtype=torch.complex64, device="meta"), spec)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -590,3 +708,46 @@ class ProcessingCube:
                 "backwards"
             )
         return cls(data=assemble_frame_cube(result.cube, num_tx=axes.num_tx, num_rx=axes.num_rx), axes=axes)
+
+    @classmethod
+    def from_tensor(cls, cube: torch.Tensor, radar, *, range_oversample: int = 1) -> "ProcessingCube":
+        """A recorded or synthetic complex cube, described by the radar that took it.
+
+        Two layouts are accepted, told apart by rank:
+
+        * ``[slow, pair, fast]`` - the synthesis layout. The pair axis is SINK
+          MAJOR, ``pair = rx * num_tx + tx`` (``PAIR_RANK_LAYOUT``), exactly as
+          ``Result.synthesis.cube`` publishes it. It is transposed to the
+          TX-major array layout by ``assemble_frame_cube``, the one packer.
+        * ``[tx, rx, slow, fast]`` - already in the array layout, used as is.
+
+        ``slow`` is chirp slots (one slot fires every transmitter once under
+        TDM), symbols or pulses; ``fast`` is what the radar's waveform declares
+        (for FMCW, ADC samples need ``Fmcw(output="beat")``). Both lengths and
+        the TX and RX counts must equal the radar's; nothing is inferred from
+        the shape. The axes record is :meth:`ProcessingAxes.from_radar` on the
+        cube's device, so the conventions are the ones that method documents.
+        """
+
+        if not isinstance(cube, torch.Tensor):
+            raise TypeError(f"cube must be a torch.Tensor, got {type(cube).__name__}")
+        axes = ProcessingAxes.from_radar(radar, range_oversample=range_oversample, device=cube.device)
+        fast = axes.range_bin_count // axes.range_oversample
+        slow = axes.doppler_bin_count
+        if cube.dim() == 3:
+            expected = (slow, axes.sensor_pair_count, fast)
+            if tuple(cube.shape) != expected:
+                raise ValueError(
+                    f"a [slow, pair, fast] cube for this radar is {expected}, got {tuple(cube.shape)}; the pair axis "
+                    "is sink major, pair = rx * num_tx + tx"
+                )
+            _require_complex("cube", cube)
+            return cls(data=assemble_frame_cube(cube, num_tx=axes.num_tx, num_rx=axes.num_rx), axes=axes)
+        if cube.dim() == 4:
+            expected = (axes.num_tx, axes.num_rx, slow, fast)
+            if tuple(cube.shape) != expected:
+                raise ValueError(f"a [tx, rx, slow, fast] cube for this radar is {expected}, got {tuple(cube.shape)}")
+            return cls(data=cube, axes=axes)
+        raise ValueError(
+            f"a cube is [slow, pair, fast] (sink-major pairs) or [tx, rx, slow, fast]; got shape {tuple(cube.shape)}"
+        )

@@ -118,12 +118,11 @@ def scene_experiment(kind):
     relative_rms = float((beat - expected).abs().square().mean().sqrt() / expected.abs().square().mean().sqrt())
     assert relative_rms < 2e-3, (kind, relative_rms)
     times = tuple(result.sample_times_s[0][:: spec.num_samples].tolist())
-    centres, frequencies, spectrum = microdoppler_spectrogram(
-        SlowTimeSignal(beat[:, 0], times, BEAT_PHASOR), window_slots=32, hop_slots=8
-    )
-    _, _, reference = microdoppler_spectrogram(
+    product = microdoppler_spectrogram(SlowTimeSignal(beat[:, 0], times, BEAT_PHASOR), window_slots=32, hop_slots=8)
+    centres, frequencies, spectrum = product.times_s, product.frequency_hz, product.data
+    reference = microdoppler_spectrogram(
         SlowTimeSignal(expected[:, 0], times, BEAT_PHASOR), window_slots=32, hop_slots=8
-    )
+    ).data
     spectrum_error = float((spectrum - reference).abs().norm() / reference.abs().norm())
     assert spectrum_error < 2e-3
     metrics = {
