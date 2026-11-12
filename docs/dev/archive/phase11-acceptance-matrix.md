@@ -1,5 +1,9 @@
 # Phase 11 acceptance matrix
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 One row per acceptance criterion of the plan's Phase-11 section
 (`docs/dev/plans/channel-radar-architecture-plan.md:2306-2313`), each with the
 command that was actually run, an excerpt of what it printed, and a verdict.

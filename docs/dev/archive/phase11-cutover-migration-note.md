@@ -1,5 +1,9 @@
 # Phase 11 Cutover - Migration Note
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Status: authoritative record of the Phase-11 public API break.
 
 Phase 11 is the one-shot production cutover. `Radar.simulate` stops being a

@@ -2,7 +2,7 @@ name: Radar GPU regression
 
 # Manually dispatched only, and the one radar workflow that runs on a
 # self-hosted runner: no GitHub-hosted runner offers a CUDA device. That is
-# deviation P4 in docs/dev/plans/phase10-deferred-release-matrix.md, and
+# deviation P4 in docs/dev/release-deferrals.md, and
 # ci/check_workflows.py allows the exception by filename with its reason,
 # so no other radar workflow can acquire a self-hosted runner quietly. This job
 # builds no wheel and publishes nothing.

@@ -1,5 +1,9 @@
 # Radar governance debt and documentation drift inventory
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Status: active; zero open rows is a completion gate.
 
 Recorded: 2026-07-28.

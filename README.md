@@ -131,8 +131,9 @@ All maintained scene-driven examples require CUDA and Channel.
 
 - Pipeline: `docs/pipeline_guide.md`
 - Development standard: `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`
-- Consolidation plan: `docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md`
-- Governance inventory: `docs/dev/audit/radar-governance-debt-and-drift-inventory.md`
+- Governance and gates: `docs/dev/standards/radar-adr-026-generated-governance-and-trimmed-gates.md`
+- Release deferrals: `docs/dev/release-deferrals.md`
+- History (finished plans, phase records, superseded measurements): `docs/dev/archive/README.md`
 - AD capability matrix: `docs/dev/radar-ad-capability-matrix.md`
 - AD tape/budget ledger: `docs/dev/ad-tape-and-budget-ledger.md`
 

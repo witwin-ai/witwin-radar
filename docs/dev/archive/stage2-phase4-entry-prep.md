@@ -1,5 +1,9 @@
 # Stage-II Phase 4 入口准备（2026-07-25）
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 本文档记录 Phase 4 启动前的现状盘点、源码级 smoke 证据和入口清单状态。
 它不修改 Radar production source，符合 Stage-I exit gate 的约束。
 

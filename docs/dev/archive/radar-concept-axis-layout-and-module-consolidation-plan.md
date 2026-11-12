@@ -1,5 +1,9 @@
 # Radar concept-axis layout and module consolidation plan
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Status: **completed — all consolidation, API reset, native flattening, governance and documentation gates passed.**
 
 Binding adversarial corrections are recorded in

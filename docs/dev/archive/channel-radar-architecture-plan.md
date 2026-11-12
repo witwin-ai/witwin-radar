@@ -1,5 +1,9 @@
 # Radar 消费 `witwin.channel` 传播核心架构与实施计划
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 状态：大阶段 I 的 Core/Channel production 实现与本地集中验收已完成；Windows RC 已通过
 Core+Channel 双 wheel 隔离 smoke；真实 manylinux_2_28 发布门禁待 GitHub Actions 执行；
 大阶段 II 尚未开始

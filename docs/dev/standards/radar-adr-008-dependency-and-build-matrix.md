@@ -62,7 +62,7 @@ consumer job that installs `witwin-radar[channel]` on a CPU Linux runner,
 asserts that no `rayd*`, `drjit*`, `mitsuba*` or `sionna*` distribution is
 resolved and that `witwin-channel` IS, then runs the import-isolation subset.
 The job's REMOTE execution is a named deferral (D1 in
-`docs/dev/plans/phase10-deferred-release-matrix.md`) under the Phase-10 owner
+`docs/dev/release-deferrals.md`) under the Phase-10 owner
 directive, which makes the workflow configuration the deliverable and defers
 hosted-runner runs. It was validated locally: the YAML parses, its embedded
 Python programs parse, and `ci/check_workflows.py` asserts the job's

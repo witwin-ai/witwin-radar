@@ -1,5 +1,9 @@
 # Radar API redesign: domain objects, and the trace/echo split
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Status: Implemented (2026-09-18).
 
 All five commits of section 10 are on the branch. Commits 1, 4 and 5 shipped the

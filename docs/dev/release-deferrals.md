@@ -1,6 +1,7 @@
-# Phase 10 deferred release matrix
+# Release deferral register
 
-Status: accepted, 2026-07-27.
+Status: living. First recorded for Phase 10 on 2026-07-27; a row leaves this register only when the run it names
+has produced its evidence.
 
 Everything in Phase 10 that cannot be executed on the development machine is
 listed here. Each entry says what is deferred, why it cannot run locally, the
@@ -14,7 +15,7 @@ real GitHub Actions run.** The deliverable for CI configuration is the
 configuration itself, validated as far as it can be locally - YAML syntax and
 schema, job and matrix logic reviewed against
 `GITHUB_ACTIONS_PREBUILD_MATRIX.md`, and the machine-checkable invariants
-asserted by `ci/check_workflow_policy.py`. Wheel builds, fresh installs,
+asserted by `ci/check_workflows.py`. Wheel builds, fresh installs,
 coexistence and import isolation run locally for the cells this machine can
 build; the Linux and `manylinux_2_28` cells are configured, reviewed, and
 recorded here rather than executed.
@@ -70,7 +71,7 @@ The workflow now carries `release: [published]`, `workflow_dispatch` with a
 `scope` input, and `pull_request: types: [labeled]` behind a single
 `github.event.label.name == 'run-ci'` guard on the one entry job. Every other
 job reaches that job through `needs`, so the guard is the whole boundary.
-`ci/check_workflow_policy.py` fails if a `push` or `schedule` trigger returns.
+`ci/check_workflows.py` fails if a `push` or `schedule` trigger returns.
 
 `core/.github/workflows/publish-witwin.yml` has the same violation and Core is
 read-only this phase. **Recorded, not fixed.** Owner: Core maintainer. The same
@@ -114,7 +115,7 @@ built artifact, an explicit identity/indexing policy, and a real successful
 load matrix.
 
 Owner: Radar release-policy owner. Executable enforcement:
-ci/check_release_claims.py and ci/check_workflow_policy.py.
+ci/check_workflows.py.
 ### P4 - `gpu-regression.yml` uses a self-hosted runner
 
 The policy states that GitHub-hosted runners are mandatory and `self-hosted`
@@ -124,7 +125,7 @@ suite is the phase's main numerical evidence.
 
 It is manually dispatched only, produces no wheel, and publishes nothing, so it
 is outside the paid-build and release-artifact concerns the policy rule protects.
-`ci/check_workflow_policy.py` freezes the exception **by filename with its
+`ci/check_workflows.py` freezes the exception **by filename with its
 reason**: any other radar workflow that grows a `self-hosted` runner fails the
 gate. Owner: platform policy owner, to either grant the exception in the policy
 document or provide a hosted GPU lane.
@@ -145,5 +146,5 @@ against nothing:
 - the architecture verifier correctly FAILING a local `120-real` build against
   the release expectation, which is what makes D3 a deferral rather than a
   claim;
-- `ci/check_workflow_policy.py` passing on the checked-in workflow and failing
+- `ci/check_workflows.py` passing on the checked-in workflow and failing
   on seven separately mutated copies of it.
