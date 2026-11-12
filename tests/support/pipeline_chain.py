@@ -110,7 +110,8 @@ def run_pipeline(batch, spec, spec_array, *, detector: str = "ca_cfar"):
     profile = range_profile(processing)
     rd = range_doppler_map(profile, window="hann")
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    cells = detectors[detector](combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
+    # The complex map: every detector is square law (R-ADR-027).
+    cells = detectors[detector](combined, guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     return point_cloud(cells, rd, array, max_points=64)
 
 

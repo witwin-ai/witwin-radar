@@ -357,13 +357,18 @@ def test_smpl_limb_microdoppler_matches_an_independent_reference():
 # --------------------------------------------------------------------------
 
 
-#: Analysis vocabulary. None of it may appear anywhere under ``cuda/``, and the
-#: micro-Doppler module may not reach the native extension at all.
+#: Analysis vocabulary. None of it may appear under ``cuda/`` outside the one
+#: DECLARED native processing family, and the micro-Doppler module may not
+#: reach the native extension at all.
 #:
-#: This is the owner directive of 2026-07-25 written as an assertion:
-#: simulation is native, post-processing is Torch. ``processing`` already carries
-#: the Torch/DSP exception; what this pins is the OTHER direction - that the
-#: exception did not leak a spectrogram into a kernel.
+#: The owner directive of 2026-07-25 made post-processing Torch; R-ADR-027
+#: amended it for selections that are not a few library calls on a CUDA map -
+#: the ordered-statistic CFAR level and DBSCAN - which live in one translation
+#: unit, ``processing_select.cu``, registered in the native manifest with a
+#: ``witwin/radar/processing/`` Python owner. That unit, and its declared
+#: symbols wherever they are registered, are what is exempt. The micro-Doppler
+#: words stay forbidden everywhere, that unit included.
+MICRODOPPLER_VOCABULARY = ("spectrogram", "stft")
 ANALYSIS_VOCABULARY = (
     "spectrogram",
     "stft",
@@ -408,6 +413,14 @@ def test_microdoppler_analysis_is_torch_only():
     # output lives. That reference is the split being documented, which is the
     # opposite of the split being broken, and a scan that failed on it would
     # push the documentation out of the kernels.
+    import json
+
+    manifest = json.loads((root / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
+    declared = [row for row in manifest["operators"] if row["python_owner"].startswith("witwin/radar/processing/")]
+    declared_units = {_pathlib.Path(row["native_tu"]).name for row in declared}
+    declared_symbols = {row["symbol"] for row in declared}
+    assert declared_units == {"processing_select.cu"}, declared_units
+
     kernels = root / "witwin" / "radar" / "cuda"
     offenders = []
     for path in sorted(kernels.rglob("*")):
@@ -415,6 +428,11 @@ def test_microdoppler_analysis_is_torch_only():
             continue
         text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
         text = re.sub(r"//.*", " ", text).lower()
+        offenders.extend((path.name, word) for word in MICRODOPPLER_VOCABULARY if word in text)
+        if path.name in declared_units:
+            continue
+        for symbol in declared_symbols:
+            text = text.replace(symbol, " ")
         offenders.extend((path.name, word) for word in ANALYSIS_VOCABULARY if word in text)
     assert offenders == [], offenders
 

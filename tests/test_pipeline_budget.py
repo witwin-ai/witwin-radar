@@ -72,12 +72,17 @@ PIPELINE_PEAK_BUDGET_MB = MEASURED_PIPELINE_PEAK_MB * PIPELINE_MEMORY_HEADROOM
 
 #: Exact integers, attributed. One host observation - the ``torch.argwhere``
 #: inside ``point_cloud``, which IS the stage because a point cloud has a
-#: data-dependent length - and seven ``torch.fft`` dispatches: one range
-#: transform, two for the Doppler stage (transform plus shift), two building the
-#: velocity axis (``fftfreq`` plus ``fftshift``), and two inside the phase
-#: comparison.
+#: data-dependent length - and four ``torch.fft`` dispatches: two for the
+#: Doppler stage (transform plus shift) and two building the velocity axis
+#: (``fftfreq`` plus ``fftshift``). The FMCW cube is in the spectrum domain, so
+#: there is no range transform. ``point_cloud`` defaults to the ``"scan"`` angle
+#: route (R-ADR-028), one steering matmul per detection batch and no transform;
+#: the two azimuth/elevation FFTs the phase-comparison route used to dispatch
+#: here are gone because that route refuses this fixture's uniform line (its
+#: layout needs a third, elevated transmitter row), not because a transform was
+#: skipped.
 PIPELINE_HOST_OBSERVATIONS = 1
-PIPELINE_TRANSFORM_DISPATCHES = 6
+PIPELINE_TRANSFORM_DISPATCHES = 4
 
 #: Measured marginal cost of one ``Radar.simulate`` frame, in ms, on the
 #: recording machine - see ``test_the_simulation_frame_cost_has_not_regressed``
@@ -85,11 +90,13 @@ PIPELINE_TRANSFORM_DISPATCHES = 6
 MEASURED_SIMULATION_FRAME_MS = 8.67
 SIMULATION_FRAME_BUDGET_MS = MEASURED_SIMULATION_FRAME_MS * 1.30
 
-#: ``os_cfar`` is the memory outlier of the three detectors and its cost is
-#: pinned rather than discovered. One ``[128, 256]`` magnitude map: 138.0 MB
-#: against ``ca_cfar``'s 0.62 MB, a factor of 222. It materialises
-#: ``[batch, D * R, n_outer]`` training patches and sorts them.
-MEASURED_OS_CFAR_PEAK_MB = 138.0
+#: ``os_cfar`` on a CUDA map runs the native ordered-statistic selection
+#: (R-ADR-027): one thread per cell selects in a thread-local buffer, so the
+#: peak allocation is the padded map and the output, not a patch tensor. One
+#: ``[128, 256]`` map measured 0.28 MB against ``ca_cfar``'s 0.94 MB. The Torch
+#: route it replaced on the device materialised ``[batch, D * R, n_outer]``
+#: training patches and sorted them: 138.0 MB, 222x ``ca_cfar``.
+MEASURED_OS_CFAR_PEAK_MB = 0.28
 OS_CFAR_PEAK_BUDGET_MB = MEASURED_OS_CFAR_PEAK_MB * 1.25
 
 
@@ -210,6 +217,10 @@ def test_the_full_pipeline_meets_the_frozen_peak_memory_budget(inputs):
     """``measured 1.13 MB * 1.25 = 1.41 MB`` of peak allocation delta."""
 
     batch, spec, spec_array = inputs
+    # One call first: the per-process allocations a first call makes - the
+    # cuBLAS workspace of the scan angle route's steering matmul, the cached
+    # per-configuration CFAR constants - are not the per-call cost budgeted here.
+    run_pipeline(batch, spec, spec_array)
     peak = _peak_mb(lambda: run_pipeline(batch, spec, spec_array))
     assert peak <= PIPELINE_PEAK_BUDGET_MB, (
         f"full pipeline peak delta: {peak:.4f} MB (budget {PIPELINE_PEAK_BUDGET_MB:.4f} MB)"
@@ -217,11 +228,12 @@ def test_the_full_pipeline_meets_the_frozen_peak_memory_budget(inputs):
 
 
 def test_the_ordered_statistic_detector_stays_inside_its_recorded_memory_cost():
-    """The outlier, pinned. It is 222x ``ca_cfar`` and that is the point.
+    """The former outlier, bounded: no larger than the cell-averaging detector.
 
-    A pipeline that swaps the detector swaps this in, so the number belongs in
-    the budget file rather than in a report: 138 MB for ONE ``[128, 256]`` map,
-    which is not a per-beam cost anyone should pay by accident.
+    The device route used to cost 138 MB for ONE ``[128, 256]`` map, 222x
+    ``ca_cfar``. The native selection forms no patch tensor, so a regression
+    back to a materialised ``[cells, N]`` route fails both bounds by two orders
+    of magnitude.
     """
 
     from witwin.radar.processing import ca_cfar, os_cfar
@@ -234,7 +246,7 @@ def test_the_ordered_statistic_detector_stays_inside_its_recorded_memory_cost():
         f"({ordered / max(pooled, 1e-9):.0f}x); budget {OS_CFAR_PEAK_BUDGET_MB:.2f} MB"
     )
     assert ordered <= OS_CFAR_PEAK_BUDGET_MB, report
-    assert ordered > 50.0 * pooled, report
+    assert ordered <= pooled, report
 
 
 #: How many frames the marginal per-frame measurement below spans.
