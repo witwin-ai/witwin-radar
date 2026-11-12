@@ -278,7 +278,8 @@ def test_the_processing_results_carry_no_tape():
 
     from witwin.radar.processing.tracking import DetectionFrame
 
-    cloud = run_pipeline(*pipeline_inputs(num_chirps=4))
+    # Eight chirps: the pipeline's CFAR ring spans seven Doppler bins and refuses a shorter, wrapped axis.
+    cloud = run_pipeline(*pipeline_inputs(num_chirps=8))
     _assert_clean("point_cloud", cloud)
     _assert_clean("detection_frame", DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0))
 

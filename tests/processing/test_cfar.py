@@ -344,7 +344,7 @@ def test_invalid_windows_and_rates_are_refused():
             detector(values, guard_cells=(2, 2), training_cells=(0, 0))
         with pytest.raises(ValueError, match="pfa"):
             detector(values, guard_cells=(1, 1), training_cells=(1, 1), pfa=1.5)
-        with pytest.raises(ValueError, match="count a cell twice"):
+        with pytest.raises(ValueError, match=r"count a cell twice. Use guard_cells\[0\] \+ training_cells\[0\] <= 3"):
             detector(values, guard_cells=(2, 1), training_cells=(3, 1))
     with pytest.raises(ValueError, match="no training cells"):
         ca_cfar_1d(values, guard_cells=1, training_cells=0)

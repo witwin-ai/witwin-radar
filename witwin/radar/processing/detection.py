@@ -398,8 +398,10 @@ def _pad_window(flat: torch.Tensor, ring: _Ring, *, range_fill: float) -> torch.
     doppler = int(flat.shape[-2])
     if 2 * ring.outer_d + 1 > doppler:
         raise ValueError(
-            f"the Doppler window spans {2 * ring.outer_d + 1} bins but the map has {doppler}; a wrapped window that "
-            "long would count a cell twice"
+            f"the Doppler window spans {2 * ring.outer_d + 1} bins (guard {ring.gd} + training {ring.td} each side "
+            f"of the cell) but the map has {doppler}; the Doppler axis wraps, so a window that long would count a "
+            f"cell twice. Use guard_cells[0] + training_cells[0] <= {(doppler - 1) // 2} for this map, or more "
+            "slow-time samples"
         )
     padded = flat.unsqueeze(1)
     if ring.outer_d > 0:
