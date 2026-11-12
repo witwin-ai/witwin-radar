@@ -293,7 +293,7 @@ class Frame:
         pfa: float = 1e-4,
         guard_cells: tuple[int, int] = (2, 4),
         training_cells: tuple[int, int] = (4, 8),
-        route: str = "phase_comparison",
+        route: str = "scan",
         fft_size: int = 64,
         max_points: int | None = None,
         window: str | None = "hann",
