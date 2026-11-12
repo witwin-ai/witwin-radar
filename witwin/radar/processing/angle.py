@@ -32,6 +32,15 @@ Channel-convention manifold points every beam at the mirror-image direction.
 ``axes.doppler_sign`` the Doppler stage reads, so there is one derived quantity
 behind both reconciliations rather than two sign decisions that can drift.
 
+**One frame for every direction: the PROCESSING frame.** ``x`` is the radar's
+right, ``y`` its boresight and ``z`` its up. Element positions, steering
+directions, beam grids, direction cosines and point clouds are all in it. The
+radar's own LOCAL frame (``Radar.tx``/``rx`` and ``SensorArraySpec``) is
+``(right, up, -boresight)``, so :meth:`ArrayGeometry.from_axes` maps an offset
+``(x, y, z)`` declared there to ``(x, -z, y)`` here, and
+:meth:`~witwin.radar.processing.detection.PointCloud.to_world` maps back
+through the radar's pose.
+
 **Build it once per array.** The record holds a materialised ``[P, 3]`` tensor,
 so a per-frame :func:`conventional_steering` costs no host-to-device copy of the
 element table. Rebuilding the geometry inside every call was measured at
@@ -42,16 +51,17 @@ quantity that does not change between frames.
 split is by function rather than by file.** :func:`tdm_compensate` is one
 multiply, :func:`upa_steering` is a manifold, :func:`music_spectrum` is a
 smooth pseudo-spectrum of the covariance and :func:`beam_cube` is a weighted
-sum; all stay differentiable. :func:`phase_comparison_aoa` and
-:func:`fft2_aoa` read an ``argmax`` BIN and publish a direction cosine derived
-from that index, so both refuse a derivative at their entry.
+sum; :func:`range_angle_map` is a beam cube's power. All stay differentiable.
+:func:`phase_comparison_aoa`, :func:`fft2_aoa` and :func:`scan_aoa` read an
+``argmax`` BIN and publish a direction cosine derived from that index, so all
+three refuse a derivative at their entry.
 :func:`music_image` selects range bins the CALLER supplies - it refuses to
 auto-detect a peak - and then calls :func:`music_spectrum`, so there is no
 peak pick in it to guard.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -98,10 +108,16 @@ class BeamCube:
 class ArrayGeometry:
     """Where every virtual element is, in metres, and which way its phase runs.
 
-    ``element_positions_m`` is ``[P, 3]`` float64 in the array's LOCAL frame,
-    ordered TX major. A TDM-MIMO virtual element sits at the SUM of its
-    transmitter and receiver offsets, because the round-trip phase is the sum of
-    the two one-way phases.
+    ``element_positions_m`` is ``[P, 3]`` float64 in the PROCESSING frame
+    (``x`` right, ``y`` boresight, ``z`` up), ordered TX major. A TDM-MIMO
+    virtual element sits at the SUM of its transmitter and receiver offsets,
+    because the round-trip phase is the sum of the two one-way phases. The two
+    offset tuples are in the same frame, in units of ``element_spacing_m``.
+
+    ``lattice`` is the array's description as a planar grid when it is one -
+    see :class:`ArrayLattice` - and ``None`` otherwise. It is derived from the
+    declared offsets on the host at construction, so no estimator reads an
+    element position back from the device to decide what it may do.
     """
 
     element_positions_m: torch.Tensor
@@ -112,8 +128,10 @@ class ArrayGeometry:
     phase_sign: int
     tx_loc_half_wavelength: tuple[tuple[float, float, float], ...]
     rx_loc_half_wavelength: tuple[tuple[float, float, float], ...]
+    lattice: "ArrayLattice | None" = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "lattice", ArrayLattice.of(self._virtual_offsets()))
         if not isinstance(self.element_positions_m, torch.Tensor):
             raise TypeError(
                 f"element_positions_m must be a torch.Tensor, got {type(self.element_positions_m).__name__}"
@@ -144,6 +162,15 @@ class ArrayGeometry:
     @property
     def device(self) -> torch.device:
         return self.element_positions_m.device
+
+    def _virtual_offsets(self) -> tuple[tuple[float, float, float], ...]:
+        """The ``P`` virtual offsets in spacing units, TX major, as host floats."""
+
+        return tuple(
+            tuple(a + b for a, b in zip(tx, rx, strict=True))
+            for tx in self.tx_loc_half_wavelength
+            for rx in self.rx_loc_half_wavelength
+        )
 
     @property
     def spacing_wavelengths(self) -> float:
@@ -178,13 +205,16 @@ class ArrayGeometry:
         """Build it from the one metadata record every processing stage reads.
 
         The half-wavelength offsets and the spacing come off the record, which
-        got them off the ``SensorArraySpec``; the phase sign comes off the same
-        derived ``doppler_sign`` the Doppler stage uses.
+        got them off the ``SensorArraySpec`` in the radar's LOCAL frame
+        ``(right, up, -boresight)``; they are mapped to the processing frame
+        ``(right, boresight, up)`` here, once, as ``(x, y, z) -> (x, -z, y)``.
+        The phase sign comes off the same derived ``doppler_sign`` the Doppler
+        stage uses.
         """
 
         return cls.from_offsets(
-            axes.tx_loc_half_wavelength,
-            axes.rx_loc_half_wavelength,
+            _radar_local_to_processing(axes.tx_loc_half_wavelength),
+            _radar_local_to_processing(axes.rx_loc_half_wavelength),
             element_spacing_m=float(axes.element_spacing_m),
             wavelength_m=float(axes.wavelength_m),
             phase_sign=int(axes.doppler_sign),
@@ -204,6 +234,9 @@ class ArrayGeometry:
     ) -> "ArrayGeometry":
         """Build it from two element-offset grids in units of the spacing.
 
+        The offsets are in the PROCESSING frame: ``x`` right, ``y`` boresight,
+        ``z`` up. An offset list written in the radar's local frame (the one
+        ``Radar.tx`` uses) goes through :meth:`from_axes` instead.
         ``element_spacing_m`` is an explicit argument rather than
         ``wavelength_m / 2``, which is what makes a non-half-wavelength array
         expressible at all.
@@ -235,6 +268,92 @@ class ArrayGeometry:
             phase_sign=int(phase_sign),
             tx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in tx_loc),
             rx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in rx_loc),
+        )
+
+
+def _radar_local_to_processing(rows) -> tuple[tuple[float, float, float], ...]:
+    """``(right, up, -boresight)`` offsets -> ``(right, boresight, up)``: ``(x, y, z) -> (x, -z, y)``."""
+
+    return tuple((float(x), -float(z) + 0.0, float(y)) for x, y, z in rows)
+
+
+#: How close a declared offset must sit to a lattice point, in spacing units.
+_LATTICE_TOLERANCE = 1e-6
+#: The largest lattice extent an FFT route accepts along one axis. An offset
+#: list with an irrational spacing ratio has a float GCD near the tolerance and
+#: an extent near ``1 / tolerance``; it is not a lattice in any useful sense.
+_LATTICE_MAX_EXTENT = 4096
+
+
+def _float_gcd(values) -> float:
+    """The largest ``g`` with every value an integer multiple of it, to the lattice tolerance."""
+
+    found = 0.0
+    for value in values:
+        a, b = max(found, value), min(found, value)
+        while b > _LATTICE_TOLERANCE:
+            a, b = b, math.fmod(a, b)
+            if a - b < _LATTICE_TOLERANCE:
+                b = 0.0
+        found = a
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class ArrayLattice:
+    """A virtual array whose elements sit on a planar ``x``-``z`` grid.
+
+    ``pitch_x``/``pitch_z`` are the grid steps in units of the element spacing,
+    ``0.0`` along an axis the array does not extend in. ``index_x``/``index_z``
+    give each TX-major virtual element its grid cell, and ``size_x``/``size_z``
+    the grid extent. Several elements may share a cell (overlapping MIMO
+    virtual elements); a cell may be empty (a hole). Every element shares one
+    boresight (``y``) offset, which is what makes the grid planar.
+
+    The grid steps fix the FFT routes' unambiguous field of view: along ``x``
+    a direction cosine is recovered modulo ``1 / (pitch_x * spacing_wavelengths)``,
+    so a half-wavelength grid sees all of ``[-1, 1)`` and a one-wavelength grid
+    sees ``[-1/2, 1/2)``.
+    """
+
+    pitch_x: float
+    pitch_z: float
+    index_x: tuple[int, ...]
+    index_z: tuple[int, ...]
+    size_x: int
+    size_z: int
+
+    @classmethod
+    def of(cls, offsets) -> "ArrayLattice | None":
+        """The lattice the offsets sit on, or ``None`` when they sit on none."""
+
+        boresight = [row[1] for row in offsets]
+        if max(boresight) - min(boresight) > _LATTICE_TOLERANCE:
+            return None
+        pitches, indices, sizes = [], [], []
+        for axis in (0, 2):
+            values = [row[axis] - min(r[axis] for r in offsets) for row in offsets]
+            pitch = _float_gcd(values)
+            if pitch <= _LATTICE_TOLERANCE:
+                pitches.append(0.0)
+                indices.append(tuple(0 for _ in values))
+                sizes.append(1)
+                continue
+            index = [round(value / pitch) for value in values]
+            if any(abs(value / pitch - cell) > _LATTICE_TOLERANCE for value, cell in zip(values, index, strict=True)):
+                return None
+            if max(index) + 1 > _LATTICE_MAX_EXTENT:
+                return None
+            pitches.append(pitch)
+            indices.append(tuple(index))
+            sizes.append(max(index) + 1)
+        return cls(
+            pitch_x=pitches[0],
+            pitch_z=pitches[1],
+            index_x=indices[0],
+            index_z=indices[1],
+            size_x=sizes[0],
+            size_z=sizes[1],
         )
 
 
@@ -418,25 +537,15 @@ def tdm_compensate(
     return (aoa_input * compensation).to(aoa_input.dtype)
 
 
-def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor, array: ArrayGeometry) -> torch.Tensor:
-    """``[3, N]``: reconcile the phasor, complete the unit vector, zero the rest.
+def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor) -> torch.Tensor:
+    """``[3, N]``: complete reconciled ``x``/``z`` cosines into unit vectors, zero the rest.
 
-    **The conjugation trap, for the third and last time.** A DFT peak measures
-    the phase progression of the data it was given. Channel's array response is
-    ``exp(+j k <r, u>)``, so a Channel-convention cube's peak sits at ``+u`` and
-    a CONJUGATED beat cube's peak sits at ``-u``: the same target reads as its
-    own mirror image. It is reconciled here, from the same derived
-    ``phase_sign`` the Doppler stage and the steering weights read, so there is
-    one quantity behind all three and not three sign decisions that can drift.
-
-    ``y`` is the boresight component. A pair of direction cosines whose squares
-    already exceed one describes no real direction, so its row is published as
-    an exact zero triple rather than as a clamped guess a consumer would plot.
+    ``y`` is the boresight component, taken in front of the array. A pair of
+    direction cosines whose squares already exceed one describes no real
+    direction, so its row is published as an exact zero triple rather than as
+    a clamped guess a consumer would plot.
     """
 
-    reconcile = -array.phase_sign
-    x_vector = reconcile * x_vector
-    z_vector = reconcile * z_vector
     possible = 1 - x_vector.square() - z_vector.square()
     valid = possible >= 0
     zero = torch.zeros_like(x_vector)
@@ -446,134 +555,254 @@ def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor, ar
     return torch.stack((x_vector, y_vector, z_vector), dim=0)
 
 
+def _signed_bin(index: torch.Tensor, size: int) -> torch.Tensor:
+    return torch.where(index > size // 2 - 1, index - size, index)
+
+
+def _require_fft_size(fft_size) -> int:
+    if type(fft_size) is not int or fft_size < 2:
+        raise ValueError(f"fft_size must be an int of at least 2, got {fft_size!r}")
+    return fft_size
+
+
+def _refuse_layout(route: str, array: ArrayGeometry, why: str) -> ValueError:
+    offsets = array._virtual_offsets()
+    return ValueError(
+        f"route {route!r} cannot estimate angles on this {array.num_tx} x {array.num_rx} array: {why}. Its virtual "
+        f"elements sit at {offsets} (processing frame, spacing units). Use route='scan', which steers the declared "
+        "geometry directly, or route='fft2' for an array on a planar lattice"
+    )
+
+
 def phase_comparison_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor:
-    """``[P, N]`` -> ``[3, N]`` direction cosines, by two one-dimensional FFTs.
+    """``[P, N]`` -> ``[3, N]`` direction cosines, by one FFT and one phase comparison.
 
-    Azimuth comes from the ``2 * num_rx`` sub-aperture at the head of the
-    virtual array; elevation from the phase difference between that peak and the
-    peak of the sub-aperture offset by ``2 * num_rx`` elements, corrected for the
-    azimuth walk between the two transmitter rows.
+    The layout this route is written for, checked rather than assumed: the
+    first ``2 * num_rx`` virtual elements, in index order, form a uniform line
+    along ``x`` (pitch ``p`` spacing units), and the next ``num_rx`` form a
+    uniform line of the same pitch displaced by ``dz != 0`` along ``z`` and by a
+    whole number ``m`` of pitches along ``x``, so that it sits directly above
+    elements ``m .. m + num_rx - 1`` of the first line. The TI three-transmitter
+    layout is this shape. Anything else is refused by name.
 
-    The exact-bin relation this publishes, and that its test pins:
-    ``wx = (2 pi / fft_size) * signed_k`` and ``x = wx / pi``, so on a
-    half-wavelength array ``x = sin(theta_az)`` and bin ``k`` is exact when
-    ``sin(theta_az) = 2 k / fft_size``.
-
-    Accuracy note for the ELEVATION row. The azimuth-walk correction is built
-    from ``wx``, which is the azimuth FFT PEAK BIN and not the continuous
-    azimuth, so a target between bins leaves a residual walk of
-    ``el_tx_dx`` times the azimuth quantization in the elevation phase. On a
-    noiseless off-bin scene at ``fft_size=64`` that measured as a cosine bias of
-    about 0.009 at an elevation cosine of 0.08 - inside any half-bin criterion,
-    and the reason this route is the coarse one. Precision elevation wants the
-    two-dimensional estimator, :func:`fft2_aoa`, which reads both angles off one
-    grid instead of correcting one with the other.
+    Azimuth is the zero-padded FFT peak of the first line:
+    ``u_x = s k / (fft_size * p * d / lambda)`` with ``s = -phase_sign`` and
+    ``d`` the element spacing, so on a half-wavelength line bin ``k`` is exact
+    when ``u_x = 2 k / fft_size``. Elevation is the phase of
+    ``sum_i b_i conj(a_{m+i})`` over the vertically aligned pairs, which carries
+    ``s 2 pi (d / lambda) dz u_z`` and nothing of the azimuth, so it needs no
+    walk correction and is unbiased between azimuth bins.
     """
 
     refuse_derivative("witwin.radar.processing.angle.phase_comparison_aoa", _PEAK_BIN_REASON, virtual_ant=virtual_ant)
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
-    if type(fft_size) is not int or fft_size < 2:
-        raise ValueError(f"fft_size must be an int of at least 2, got {fft_size!r}")
-    if array.num_tx < 3:
-        raise ValueError(
-            f"phase comparison needs at least three transmitter rows to measure "
-            f"an elevation; this array has {array.num_tx}"
-        )
-
+    fft_size = _require_fft_size(fft_size)
+    pitch, shift, dz = _phase_comparison_layout(array)
     num_rx = array.num_rx
-    detections = int(virtual_ant.shape[1])
-    device = virtual_ant.device
+    n_az = 2 * num_rx
+    if fft_size < n_az:
+        raise ValueError(f"fft_size={fft_size} is shorter than the {n_az}-element azimuth line")
     real_dtype = real_dtype_of(virtual_ant)
-    column = torch.arange(detections, device=device)
+    reconcile = -array.phase_sign
+    turn = array.spacing_wavelengths
 
-    n_az = min(2 * num_rx, fft_size)
-    azimuth_padded = torch.zeros((fft_size, detections), dtype=virtual_ant.dtype, device=device)
-    azimuth_padded[:n_az, :] = virtual_ant[:n_az, :]
-    azimuth_fft = torch.fft.fft(azimuth_padded, dim=0)
+    azimuth_fft = torch.fft.fft(virtual_ant[:n_az], n=fft_size, dim=0)
     k_max = torch.argmax(torch.abs(azimuth_fft), dim=0).to(torch.int64)
-    peak_azimuth = azimuth_fft[k_max, column]
-    signed_k = torch.where(k_max > (fft_size // 2) - 1, k_max - fft_size, k_max)
-    wx = (2 * torch.pi / fft_size) * signed_k.to(real_dtype)
-    x_vector = wx / torch.pi
+    x_vector = reconcile * _signed_bin(k_max, fft_size).to(real_dtype) / (fft_size * pitch * turn)
 
-    el_start = 2 * num_rx
-    n_el = min(num_rx, int(virtual_ant.shape[0]) - el_start)
-    if n_el < 1:
-        raise ValueError(
-            "the elevation sub-aperture is empty: this array has "
-            f"{array.sensor_pair_count} virtual elements and the azimuth "
-            f"sub-aperture already consumes {el_start}"
+    upper = virtual_ant[n_az : n_az + num_rx]
+    lower = virtual_ant[shift : shift + num_rx]
+    wz = torch.angle((upper * lower.conj()).sum(dim=0))
+    z_vector = reconcile * wz / (2.0 * math.pi * turn * dz)
+    return _finish_direction_cosines(x_vector, z_vector)
+
+
+def _phase_comparison_layout(array: ArrayGeometry) -> tuple[float, int, float]:
+    """``(pitch, m, dz)`` of the phase-comparison layout, or a named refusal."""
+
+    route = "phase_comparison"
+    if array.num_tx < 3:
+        raise _refuse_layout(
+            route, array, f"it needs a third transmitter row for elevation, this array has {array.num_tx}"
         )
-    elevation_padded = torch.zeros((fft_size, detections), dtype=virtual_ant.dtype, device=device)
-    elevation_padded[:n_el, :] = virtual_ant[el_start : el_start + n_el, :]
-    elevation_fft = torch.fft.fft(elevation_padded, dim=0)
-    elevation_max = torch.argmax(torch.abs(elevation_fft), dim=0).to(torch.int64)
-    peak_elevation = elevation_fft[elevation_max, column]
+    offsets = array._virtual_offsets()
+    num_rx = array.num_rx
+    line = offsets[: 2 * num_rx]
+    upper = offsets[2 * num_rx : 3 * num_rx]
+    tolerance = _LATTICE_TOLERANCE
 
-    # The two sub-apertures sit at different transmitters, so the elevation
-    # phase difference also carries the azimuth walk between their x offsets.
-    # That offset is READ off the declared array rather than assumed to be two.
-    tx_offsets = array.tx_loc_half_wavelength
-    el_tx_dx = float(tx_offsets[2][0] - tx_offsets[0][0])
-    phase_adjust = torch.exp(1j * torch.tensor(el_tx_dx, dtype=real_dtype, device=device) * wx)
-    # The ELEVATION aperture leads the azimuth one by the array's own z offset,
-    # so the ratio is taken that way round: elevation times conj(azimuth). The
-    # reciprocal publishes an elevation cosine that points the opposite way to
-    # the array's z axis.
-    wz = torch.angle(peak_elevation * torch.conj(peak_azimuth) * torch.conj(phase_adjust))
-    return _finish_direction_cosines(x_vector, wz / torch.pi, array)
+    def uniform(rows) -> float | None:
+        if any(abs(r[1] - rows[0][1]) > tolerance or abs(r[2] - rows[0][2]) > tolerance for r in rows):
+            return None
+        if len(rows) < 2:
+            return None
+        step = rows[1][0] - rows[0][0]
+        if step <= tolerance:
+            return None
+        if any(abs(b[0] - a[0] - step) > tolerance for a, b in zip(rows, rows[1:], strict=False)):
+            return None
+        return step
+
+    pitch = uniform(line)
+    if pitch is None:
+        raise _refuse_layout(route, array, f"its first {2 * num_rx} virtual elements are not a uniform line along x")
+    if num_rx > 1 and (uniform(upper) is None or abs(uniform(upper) - pitch) > tolerance):
+        raise _refuse_layout(route, array, "the third transmitter's elements are not a line of the same pitch")
+    dz = upper[0][2] - line[0][2]
+    if abs(dz) <= tolerance or abs(upper[0][1] - line[0][1]) > tolerance:
+        raise _refuse_layout(route, array, "the third transmitter is not displaced along z alone")
+    shift_float = (upper[0][0] - line[0][0]) / pitch
+    shift = round(shift_float)
+    if abs(shift_float - shift) > tolerance or not 0 <= shift <= num_rx:
+        raise _refuse_layout(
+            route, array, "the third transmitter's elements do not sit above elements of the first line"
+        )
+    return pitch, int(shift), dz
+
+
+def _lattice_grid(virtual_ant: torch.Tensor, array: ArrayGeometry, lattice: ArrayLattice) -> torch.Tensor:
+    """``[P, N]`` -> ``[size_z, size_x, N]``: the snapshot placed on its lattice.
+
+    Elements sharing a cell are averaged, which is exact for a plane wave (they
+    carry the same phase) and keeps the grid in the snapshot's amplitude. An
+    empty cell is a zero, so the transform of the grid is the steering scan of
+    the declared elements evaluated on the FFT's direction grid.
+    """
+
+    cells = lattice.size_z * lattice.size_x
+    flat_index = torch.tensor(
+        [z * lattice.size_x + x for x, z in zip(lattice.index_x, lattice.index_z, strict=True)],
+        dtype=torch.int64,
+        device=virtual_ant.device,
+    )
+    detections = int(virtual_ant.shape[1])
+    grid = torch.zeros((cells, detections), dtype=virtual_ant.dtype, device=virtual_ant.device)
+    grid.index_add_(0, flat_index, virtual_ant)
+    multiplicity = torch.zeros(cells, dtype=real_dtype_of(virtual_ant), device=virtual_ant.device)
+    multiplicity.index_add_(0, flat_index, torch.ones_like(flat_index, dtype=multiplicity.dtype))
+    grid = grid / multiplicity.clamp(min=1.0).reshape(-1, 1)
+    return grid.reshape(lattice.size_z, lattice.size_x, detections)
 
 
 def fft2_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor:
-    """``[P, N]`` -> ``[3, N]`` direction cosines, by one zero-padded ``fft2``.
+    """``[P, N]`` -> ``[3, N]`` direction cosines, by one zero-padded FFT over the lattice.
 
-    For a virtual planar array: the odd and even transmitter rows are
-    interleaved into a ``num_tx // 2`` by ``2 * num_rx`` grid, zero padded to
-    ``fft_size`` on both axes, and the joint peak read directly. The same exact
-    bin relation holds on both axes as in :func:`phase_comparison_aoa`.
+    For any array on a planar lattice (:class:`ArrayLattice`): a uniform line
+    (ULA) is the one-row case, a filled or holed rectangle the general one.
+    The snapshot is placed on its grid, zero padded to ``fft_size`` along each
+    axis the array extends in, and the joint peak read directly:
+    ``u_x = s k_x / (fft_size * pitch_x * d / lambda)``, likewise for ``z``,
+    with ``s = -phase_sign``. An axis the array does not extend in has no
+    phase progression and its cosine is published as zero; a line array
+    therefore reports the cone angle it measures, placed in the
+    ``x``-``y`` (or ``z``-``y``) plane.
+
+    The cosine is recovered within the lattice's unambiguous field of view,
+    ``|u| < 1 / (2 pitch d / lambda)`` - all of ``[-1, 1)`` for a half
+    wavelength pitch - and an array without a lattice is refused by name.
     """
 
     refuse_derivative("witwin.radar.processing.angle.fft2_aoa", _PEAK_BIN_REASON, virtual_ant=virtual_ant)
     array = _require_array(array)
     _require_virtual(virtual_ant, array)
-    if type(fft_size) is not int or fft_size < 2:
-        raise ValueError(f"fft_size must be an int of at least 2, got {fft_size!r}")
-    if array.num_tx < 4:
+    fft_size = _require_fft_size(fft_size)
+    lattice = array.lattice
+    if lattice is None:
+        raise _refuse_layout("fft2", array, "its elements do not sit on a planar x-z lattice with one boresight offset")
+    if max(lattice.size_x, lattice.size_z) > fft_size:
         raise ValueError(
-            "the two-dimensional route needs at least four transmitter rows to "
-            f"form a planar grid; this array has {array.num_tx}"
+            f"fft_size={fft_size} is shorter than the {lattice.size_z} x {lattice.size_x} lattice it transforms"
         )
-
-    num_tx = array.num_tx
-    num_rx = array.num_rx
-    detections = int(virtual_ant.shape[1])
-    device = virtual_ant.device
     real_dtype = real_dtype_of(virtual_ant)
-
-    reshaped = virtual_ant.reshape(num_tx, num_rx, detections)
-    rows = num_tx // 2
-    grid = torch.zeros((rows, 2 * num_rx, detections), dtype=virtual_ant.dtype, device=device)
-    grid[:, :num_rx, :] = reshaped[0::2][:rows]
-    grid[:, num_rx:, :] = reshaped[1::2][:rows]
-
-    padded = torch.zeros((fft_size, fft_size, detections), dtype=virtual_ant.dtype, device=device)
-    padded[:rows, : 2 * num_rx, :] = grid
-    spectrum = torch.fft.fft2(padded, dim=(0, 1))
+    detections = int(virtual_ant.shape[1])
+    grid = _lattice_grid(virtual_ant, array, lattice)
+    size_z = fft_size if lattice.size_z > 1 else 1
+    size_x = fft_size if lattice.size_x > 1 else 1
+    spectrum = torch.fft.fft2(grid, s=(size_z, size_x), dim=(0, 1))
     peak = torch.argmax(torch.abs(spectrum).reshape(-1, detections), dim=0).to(torch.int64)
-    k_el = peak // fft_size
-    k_az = peak % fft_size
-    k_az = torch.where(k_az > fft_size // 2 - 1, k_az - fft_size, k_az)
-    k_el = torch.where(k_el > fft_size // 2 - 1, k_el - fft_size, k_el)
-    x_vector = (2 * torch.pi / fft_size) * k_az.to(real_dtype) / torch.pi
-    z_vector = (2 * torch.pi / fft_size) * k_el.to(real_dtype) / torch.pi
-    return _finish_direction_cosines(x_vector, z_vector, array)
+    k_z = _signed_bin(peak // size_x, size_z)
+    k_x = _signed_bin(peak % size_x, size_x)
+    reconcile = -array.phase_sign
+    turn = array.spacing_wavelengths
+    zero = torch.zeros(detections, dtype=real_dtype, device=virtual_ant.device)
+    x_vector = zero if size_x == 1 else reconcile * k_x.to(real_dtype) / (size_x * lattice.pitch_x * turn)
+    z_vector = zero if size_z == 1 else reconcile * k_z.to(real_dtype) / (size_z * lattice.pitch_z * turn)
+    return _finish_direction_cosines(x_vector, z_vector)
 
 
-#: The two FFT routes, by name. Route selection is EXPLICIT - the caller picks -
-#: because a dispatch on ``num_tx`` is how a change of front end silently
-#: changes the estimator.
-AOA_ROUTES = {"phase_comparison": phase_comparison_aoa, "fft2": fft2_aoa}
+def scan_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor:
+    """``[P, N]`` -> ``[3, N]`` direction cosines, by a steering-vector scan of any layout.
+
+    The peak of ``|w(u)^H a|^2`` over a grid of directions, where ``w`` is
+    :func:`conventional_steering` of the declared element positions - any
+    planar or non-planar layout, holes, overlaps and non-integer offsets
+    included. The grid is ``fft_size`` direction cosines per axis the array
+    extends in, ``u = -U + 2 U k / fft_size`` with ``U = 1`` or, on a lattice,
+    the lattice's unambiguous half width when that is smaller, so a
+    grating-lobe pair is never two equal peaks of one scan. On a half
+    wavelength lattice this is the FFT route's own grid, and the two routes
+    agree bin for bin.
+
+    A line array measures one cosine; the axis it does not extend in is
+    published as zero, as on :func:`fft2_aoa`. A line that is not along ``x`` or
+    ``z`` mixes the two and is refused by name.
+    """
+
+    refuse_derivative("witwin.radar.processing.angle.scan_aoa", _PEAK_BIN_REASON, virtual_ant=virtual_ant)
+    array = _require_array(array)
+    _require_virtual(virtual_ant, array)
+    fft_size = _require_fft_size(fft_size)
+    offsets = array._virtual_offsets()
+    extent = [max(r[axis] for r in offsets) - min(r[axis] for r in offsets) for axis in range(3)]
+    spans_x = extent[0] > _LATTICE_TOLERANCE
+    spans_z = extent[2] > _LATTICE_TOLERANCE
+    if spans_x and spans_z and _collinear(offsets):
+        raise _refuse_layout("scan", array, "it is a line that is not along x or z, so it measures a mixed cosine")
+    lattice = array.lattice
+    turn = array.spacing_wavelengths
+
+    def half_width(pitch: float) -> float:
+        return 1.0 if pitch <= 0.0 else min(1.0, 1.0 / (2.0 * pitch * turn))
+
+    device = virtual_ant.device
+    step = torch.arange(fft_size, dtype=torch.float64, device=device) / fft_size
+    zero = torch.zeros(1, dtype=torch.float64, device=device)
+    width_x = half_width(lattice.pitch_x if lattice is not None else 0.0)
+    width_z = half_width(lattice.pitch_z if lattice is not None else 0.0)
+    grid_x = width_x * (2.0 * step - 1.0) if spans_x else zero
+    grid_z = width_z * (2.0 * step - 1.0) if spans_z else zero
+    u_z, u_x = torch.meshgrid(grid_z, grid_x, indexing="ij")
+    u_x, u_z = u_x.reshape(-1), u_z.reshape(-1)
+    boresight_sq = 1.0 - u_x.square() - u_z.square()
+    directions = torch.stack((u_x, torch.sqrt(boresight_sq.clamp(min=0.0)), u_z), dim=1)
+    weights = conventional_steering(array, directions, normalize=False, dtype=virtual_ant.dtype)
+    response = torch.abs(weights.transpose(0, 1).conj() @ virtual_ant)
+    response = torch.where(boresight_sq.reshape(-1, 1) >= 0, response, torch.full_like(response, -1.0))
+    best = torch.argmax(response, dim=0)
+    real_dtype = real_dtype_of(virtual_ant)
+    return _finish_direction_cosines(u_x[best].to(real_dtype), u_z[best].to(real_dtype))
+
+
+def _collinear(offsets) -> bool:
+    origin = offsets[0]
+    vectors = [tuple(b - a for a, b in zip(origin, row, strict=True)) for row in offsets[1:]]
+    vectors = [v for v in vectors if max(abs(c) for c in v) > _LATTICE_TOLERANCE]
+    if not vectors:
+        return True
+    base = vectors[0]
+    for v in vectors[1:]:
+        cross = (base[1] * v[2] - base[2] * v[1], base[2] * v[0] - base[0] * v[2], base[0] * v[1] - base[1] * v[0])
+        if max(abs(c) for c in cross) > _LATTICE_TOLERANCE:
+            return False
+    return True
+
+
+#: The angle routes, by name. Route selection is EXPLICIT - the caller picks -
+#: because a dispatch on the layout is how a change of front end silently
+#: changes the estimator. Every route checks the layout it needs and refuses
+#: one it cannot read rather than returning a wrong angle.
+AOA_ROUTES = {"phase_comparison": phase_comparison_aoa, "fft2": fft2_aoa, "scan": scan_aoa}
 
 
 def upa_steering(
@@ -784,3 +1013,85 @@ def beam_cube(rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.
             f"shape {tuple(directions.shape)}; the two are one statement"
         )
     return BeamCube(data=formed.reshape(*beam_shape, doppler, ranges), axes=rd.axes, directions=directions)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RangeAngleMap:
+    """``[A, R]`` real POWER over a beam grid and the range axis.
+
+    ``directions`` is ``[A, 3]`` in the processing frame, ``azimuth_rad`` the
+    ``[A]`` float64 azimuth grid it was built from (positive toward ``+x``,
+    the radar's right) and ``elevation_rad`` the one elevation of the cut. The
+    range axis is :attr:`ProcessingAxes.range_m`.
+
+    The power is ``sum_D |y[a, D, R]|^2`` over the Doppler bins of the beam
+    cube, which by Parseval with the ``1 / D`` Doppler normalisation is the
+    mean slow-time power of the beamformed range profile (exactly so for a
+    rectangular slow-time window; a taper weights the slow-time samples by
+    ``w^2 / mean(w^2)``). With unit-response beam weights, a return on a beam
+    and on a range bin reads ``|C|^2`` times the squared coherent gains.
+    Differentiable in the map.
+    """
+
+    data: torch.Tensor
+    axes: ProcessingAxes
+    directions: torch.Tensor
+    azimuth_rad: torch.Tensor
+    elevation_rad: float
+
+    def __post_init__(self) -> None:
+        if self.data.is_complex() or self.data.dim() != 2:
+            raise ValueError(
+                f"a range-angle map is real [angle, range]; got {self.data.dtype} {tuple(self.data.shape)}"
+            )
+        if int(self.data.shape[1]) != int(self.axes.range_bin_count):
+            raise ValueError(
+                f"the map has {int(self.data.shape[1])} range bins but its axes record publishes "
+                f"{int(self.axes.range_bin_count)}"
+            )
+        if tuple(self.azimuth_rad.shape) != (int(self.data.shape[0]),):
+            raise ValueError(f"azimuth_rad must be [{int(self.data.shape[0])}], got {tuple(self.azimuth_rad.shape)}")
+
+    @property
+    def range_axis(self) -> torch.Tensor:
+        return self.axes.range_m
+
+
+def azimuth_directions(azimuth_rad: torch.Tensor, elevation_rad: float = 0.0) -> torch.Tensor:
+    """``[A]`` azimuths at one elevation -> ``[A, 3]`` processing-frame unit vectors.
+
+    ``(sin az cos el, cos az cos el, sin el)``: azimuth from boresight toward
+    the radar's right, elevation from the ``x``-``y`` plane toward up.
+    """
+
+    if not isinstance(azimuth_rad, torch.Tensor) or azimuth_rad.dim() != 1:
+        raise ValueError("azimuth_rad must be a one-dimensional tensor of angles in radians")
+    azimuth = azimuth_rad.to(torch.float64)
+    cos_el = math.cos(float(elevation_rad))
+    elevation = torch.full_like(azimuth, math.sin(float(elevation_rad)))
+    return torch.stack((torch.sin(azimuth) * cos_el, torch.cos(azimuth) * cos_el, elevation), dim=1)
+
+
+def range_angle_map(
+    rd: RangeDopplerMap, array: ArrayGeometry, *, azimuth_rad: torch.Tensor, elevation_rad: float = 0.0
+) -> RangeAngleMap:
+    """``RangeDopplerMap[*pair, D, R]`` -> ``RangeAngleMap[A, R]`` by conventional beamforming.
+
+    The beams are :func:`conventional_steering` of ``array`` toward
+    :func:`azimuth_directions`, formed by :func:`beam_cube`, and their power is
+    summed over Doppler. One weight owner, one beamformer; this function only
+    chooses the grid and the reduction.
+    """
+
+    array = _require_array(array)
+    directions = azimuth_directions(azimuth_rad, elevation_rad).to(array.device)
+    weights = conventional_steering(array, directions, dtype=rd.data.dtype)
+    beams = beam_cube(rd, weights, directions=directions)
+    power = (beams.data.real.square() + beams.data.imag.square()).sum(dim=-2)
+    return RangeAngleMap(
+        data=power,
+        axes=rd.axes,
+        directions=directions,
+        azimuth_rad=azimuth_rad.to(device=directions.device, dtype=torch.float64),
+        elevation_rad=float(elevation_rad),
+    )

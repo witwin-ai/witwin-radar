@@ -1,6 +1,8 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(_radar_native, m) {
+  m.def("cfar_order_statistic_forward(Tensor padded, Tensor offsets, Tensor rank, Tensor(a!) level, int window_height, int window_width) -> ()");
+  m.def("dbscan_labels_forward(Tensor features, Tensor(a!) parent, Tensor(b!) core, float eps, int min_points) -> ()");
   m.def("fmcw_adaptive_forward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");
   m.def("fmcw_adaptive_backward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");
   m.def("fmcw_adaptive_jvp(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");

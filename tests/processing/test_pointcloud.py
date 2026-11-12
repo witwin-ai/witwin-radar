@@ -38,7 +38,7 @@ from witwin.radar.processing.detection import Detections, range_gate_mask
 #: estimate carries no azimuth-walk correction.
 CONFIG = {
     **PROCESSING_CONFIG,
-    "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 0, 1]],
+    "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
 
@@ -114,7 +114,7 @@ def _cube(axes, array, *, cosine: float = AZIMUTH_COSINE) -> torch.Tensor:
 def _chain(array, cube: ProcessingCube):
     rd = range_doppler_map(range_profile(cube))
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    detected = ca_cfar(combined.abs(), guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6)
+    detected = ca_cfar(combined, guard_cells=(1, 2), training_cells=(3, 4), pfa=1e-6)
     return rd, detected
 
 
@@ -210,12 +210,13 @@ def test_the_strongest_detections_survive_a_max_points_thinning():
 
     axes, array = _records()
     cube = _cube(axes, array)
-    # A second target six range bins away, in the SAME direction so that both
+    # A second target twelve range bins away - outside the first one's training
+    # ring, which would mask it - in the SAME direction so that both
     # see the same array factor when the pairs are summed, and a fifth of the
     # amplitude so which one is stronger is decided by the amplitude alone.
     samples = int(axes.range_bin_count)
     fast = torch.arange(samples, dtype=torch.float64)
-    shift = torch.polar(torch.ones(samples, dtype=torch.float64), 2.0 * math.pi * 6.0 * fast / samples).to(
+    shift = torch.polar(torch.ones(samples, dtype=torch.float64), 2.0 * math.pi * 12.0 * fast / samples).to(
         torch.complex64
     )
     cube = cube + 0.2 * _cube(axes, array) * shift.reshape(1, 1, 1, -1)

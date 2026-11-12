@@ -171,7 +171,15 @@ def fmcw_range_fft(samples: torch.Tensor) -> torch.Tensor:
     return torch.fft.fft(samples, dim=-1, norm="forward")
 
 
-def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc: bool = False) -> RangeProfile:
+def _padded_fmcw_range_fft(samples: torch.Tensor, range_bins: int) -> torch.Tensor:
+    """The ``range_bins``-point zero-padded beat transform, still normalised by ``1 / N``."""
+
+    return torch.fft.fft(samples, n=range_bins, dim=-1) * (1.0 / int(samples.shape[-1]))
+
+
+def range_profile(
+    cube: ProcessingCube, *, window: str | None = None, remove_dc: bool = False, range_bins: int | None = None
+) -> RangeProfile:
     """Convert one typed synthesis/processing cube to a range profile.
 
     `ProcessingCube` carries waveform, output-domain and physical-axis
@@ -196,12 +204,38 @@ def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc:
     analytic answer. ``remove_dc`` is the fast-time mean subtraction; it is a
     clutter operation, so it is a flag and defaults to off.
 
+    ``range_bins`` zero pads the range transform to that many bins (FMCW beat
+    and OFDM only): the window tapers the ``N`` recorded samples, the transform
+    is ``range_bins`` long, and the published axes record is
+    :meth:`ProcessingAxes.with_bin_counts` of the input's, so the bin shrinks
+    and the span is unchanged. Zero padding interpolates the spectrum; it adds
+    no resolution. An FMCW spectrum cube is already transformed and a pulsed
+    grid is refined with ``range_oversample``, so both refuse it.
+
     Every backend is amplitude normalised, so an isolated on-bin row peaks at
-    ``|C_rt| * window_coherent_gain`` in all three.
+    ``|C_rt| * window_coherent_gain`` in all three, with or without padding:
+    the padded transform is rescaled by ``range_bins / N`` so its normalisation
+    stays ``1 / N``.
     """
 
     data, record = _unpack(cube)
     name = DEFAULT_WINDOW if window is None else str(window)
+    if range_bins is not None:
+        if type(range_bins) is not int or range_bins < int(data.shape[-1]):
+            raise ValueError(
+                f"range_bins must be an int no smaller than the {int(data.shape[-1])} recorded fast-time samples, "
+                f"got {range_bins!r}"
+            )
+        if record.waveform == "pulsed" or (record.waveform == "fmcw" and record.output_domain == "spectrum"):
+            raise ValueError(
+                f"range_bins zero pads a range transform this stage performs; a {record.waveform} "
+                f"{record.output_domain} cube "
+                + (
+                    "is refined with range_oversample on its axes record"
+                    if record.waveform == "pulsed"
+                    else "is already transformed (use Fmcw(output='beat') to pad)"
+                )
+            )
 
     if record.waveform == "fmcw":
         if record.output_domain == "spectrum":
@@ -250,12 +284,20 @@ def range_profile(cube: ProcessingCube, *, window: str | None = None, remove_dc:
             else:
                 windowed = taper(data, name, dim=-1)
                 # Amplitude normalised: the unnormalised beat FFT peaks at N |C|.
-                profile = fmcw_range_fft(windowed)
+                profile = (
+                    fmcw_range_fft(windowed) if range_bins is None else _padded_fmcw_range_fft(windowed, range_bins)
+                )
         else:
             windowed = taper(data, name, dim=-1)
             # The CIR. The inverse transform already carries the 1 / N_sc that
-            # makes the peak the coefficient itself.
-            profile = torch.fft.ifft(windowed, dim=-1)
+            # makes the peak the coefficient itself; a padded inverse carries
+            # 1 / range_bins and is rescaled back to 1 / N_sc.
+            if range_bins is None:
+                profile = torch.fft.ifft(windowed, dim=-1)
+            else:
+                profile = torch.fft.ifft(windowed, n=range_bins, dim=-1) * (range_bins / taper_length)
+        if range_bins is not None:
+            record = record.with_bin_counts(range_bins=range_bins)
 
     return RangeProfile(
         data=profile, axes=record, window=name, window_coherent_gain=window_coherent_gain(name, taper_length)
@@ -277,7 +319,9 @@ def _reverse_frequency(spectrum: torch.Tensor, dim: int) -> torch.Tensor:
     return spectrum.index_select(dim, reversed_index)
 
 
-def range_doppler_map(profile: RangeProfile, *, window: str | None = None) -> RangeDopplerMap:
+def range_doppler_map(
+    profile: RangeProfile, *, window: str | None = None, doppler_bins: int | None = None
+) -> RangeDopplerMap:
     """``RangeProfile[..., C, R]`` -> ``RangeDopplerMap[..., D, R]``.
 
     Rank generic with an arbitrary leading batch, so ``[P, C, R]`` and
@@ -299,6 +343,11 @@ def range_doppler_map(profile: RangeProfile, *, window: str | None = None) -> Ra
     axis :class:`ProcessingAxes` publishes, ascending and ``fftshift``ed, for
     every waveform. The reconciliation is :func:`_reverse_frequency`, applied
     only when ``axes.doppler_sign`` is ``+1`` and BEFORE the shift.
+
+    ``doppler_bins`` zero pads the slow-time transform to that many bins. The
+    window tapers the recorded slow-time samples, the published axes record is
+    :meth:`ProcessingAxes.with_bin_counts`, and the transform is rescaled so
+    its normalisation stays ``1 / C`` over the ``C`` recorded samples.
     """
 
     if not isinstance(profile, RangeProfile):
@@ -316,16 +365,79 @@ def range_doppler_map(profile: RangeProfile, *, window: str | None = None) -> Ra
             f"metadata record's transform is {int(record.doppler_bin_count)} long"
         )
 
-    spectrum = torch.fft.fft(taper(data, name, dim=-2), dim=-2, norm="forward")
+    slow_count = int(record.doppler_bin_count)
+    if doppler_bins is None:
+        spectrum = torch.fft.fft(taper(data, name, dim=-2), dim=-2, norm="forward")
+    else:
+        if type(doppler_bins) is not int or doppler_bins < slow_count:
+            raise ValueError(
+                f"doppler_bins must be an int no smaller than the {slow_count} slow-time samples, got {doppler_bins!r}"
+            )
+        spectrum = torch.fft.fft(taper(data, name, dim=-2), n=doppler_bins, dim=-2) * (1.0 / slow_count)
+        record = record.with_bin_counts(doppler_bins=doppler_bins)
     if record.doppler_sign == 1:
         spectrum = _reverse_frequency(spectrum, -2)
     spectrum = torch.fft.fftshift(spectrum, dim=-2)
 
     return RangeDopplerMap(
-        data=spectrum,
-        axes=record,
-        window=name,
-        window_coherent_gain=window_coherent_gain(name, int(record.doppler_bin_count)),
+        data=spectrum, axes=record, window=name, window_coherent_gain=window_coherent_gain(name, slow_count)
+    )
+
+
+#: The slow-time static-clutter filters :func:`remove_static_clutter` offers.
+#: ``"mean"`` subtracts the slow-time mean per range bin; ``"mti2"`` and
+#: ``"mti3"`` are the two- and three-pulse binomial cancellers.
+CLUTTER_FILTERS = ("mean", "mti2", "mti3")
+
+
+def remove_static_clutter(profile: RangeProfile, *, method: str = "mean") -> RangeProfile:
+    """Suppress the zero-Doppler return along slow time, per range bin.
+
+    ``profile`` is ``RangeProfile[..., C, R]``; the filter runs along ``C``.
+
+    * ``"mean"`` - ``x[n] - mean_n x[n]``. Zero Doppler is removed exactly and
+      every other bin of a ``C``-point transform is untouched, because the
+      mean is the DFT's own zero bin. Length is kept.
+    * ``"mti2"`` - ``y[n] = x[n+1] - x[n]``, the two-pulse canceller, with
+      ``|H(f)| = 2 |sin(pi f T)|``.
+    * ``"mti3"`` - ``y[n] = x[n+2] - 2 x[n+1] + x[n]``, ``|H(f)| = 4 sin^2(pi f T)``.
+
+    The cancellers are FIR filters of the stated, un-normalised response: a
+    target's amplitude is scaled by ``|H(f_D)|``, and a slow target is
+    attenuated, which is the price of a canceller and is not hidden. They are
+    computed only where the filter has full support, so the output has
+    ``C - 1`` or ``C - 2`` slow-time samples and its axes record is
+    :meth:`ProcessingAxes.with_bin_counts` with that count: the slow-time
+    period is unchanged, so the velocity axis of a map formed from it is on
+    the same closing-positive scale with a coarser bin. Differentiable: every
+    filter is a fixed linear map.
+    """
+
+    if not isinstance(profile, RangeProfile):
+        raise TypeError(f"remove_static_clutter takes a RangeProfile, got {type(profile).__name__}")
+    if method not in CLUTTER_FILTERS:
+        raise ValueError(f"method must be one of {CLUTTER_FILTERS}, got {method!r}")
+    data = profile.data
+    slow = int(data.shape[-2])
+    if method == "mean":
+        return RangeProfile(
+            data=remove_mean(data, dim=-2),
+            axes=profile.axes,
+            window=profile.window,
+            window_coherent_gain=profile.window_coherent_gain,
+        )
+    order = 1 if method == "mti2" else 2
+    if slow <= order:
+        raise ValueError(f"a {method} canceller needs more than {order} slow-time samples, got {slow}")
+    if order == 1:
+        filtered = data[..., 1:, :] - data[..., :-1, :]
+    else:
+        filtered = data[..., 2:, :] - 2.0 * data[..., 1:-1, :] + data[..., :-2, :]
+    return RangeProfile(
+        data=filtered,
+        axes=profile.axes.with_bin_counts(doppler_bins=slow - order),
+        window=profile.window,
+        window_coherent_gain=profile.window_coherent_gain,
     )
 
 
@@ -356,8 +468,7 @@ def doppler_frequencies_hz(slot_count: int, slot_period_s: float, *, device=None
         raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
     if not float(slot_period_s) > 0.0:
         raise ValueError(f"slot_period_s must be positive, got {slot_period_s}")
-    bins = torch.fft.fftshift(torch.fft.fftfreq(slot_count, d=float(slot_period_s), device=device))
-    return bins
+    return torch.fft.fftshift(torch.fft.fftfreq(slot_count, d=float(slot_period_s), dtype=torch.float64, device=device))
 
 
 def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann"):
@@ -384,16 +495,21 @@ def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann"):
 
 @dataclass(frozen=True, slots=True, eq=False)
 class SlowTimeSignal:
-    """Complex samples [..., time], absolute SI timestamps, and source phasor.
+    """Complex samples ``[..., time]``, absolute SI timestamps, and source phasor.
 
     One sequence represents one sensor pair and one range gate. TDM transmitter
     interleaving and gaps between frames are not uniform slow-time samples.
     Resample or segment those explicitly before asking for an STFT.
+
+    ``wavelength_m`` is optional. With it the spectrogram also publishes a
+    velocity axis, ``v = lambda f / 2``, the same conversion the
+    Range-Doppler axis uses; without it only the frequency axis is published.
     """
 
     samples: torch.Tensor
     times_s: tuple[float, ...]
     phasor: str
+    wavelength_m: float | None = None
 
     def __post_init__(self):
         _require_complex("samples", self.samples)
@@ -408,15 +524,57 @@ class SlowTimeSignal:
         ):
             raise ValueError("slow-time timestamps must be strictly increasing and uniform; split frame gaps")
         _doppler_sign_from_phasor(self.phasor)
+        if self.wavelength_m is not None and not (math.isfinite(self.wavelength_m) and self.wavelength_m > 0.0):
+            raise ValueError(f"wavelength_m must be a positive finite length, got {self.wavelength_m!r}")
 
 
-def microdoppler_spectrogram(signal: SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = "hann"):
-    """STFT with canonical physical Doppler f_D=-f_ref*d(tau)/dt.
+@dataclass(frozen=True, slots=True, eq=False)
+class MicroDopplerSpectrogram:
+    """``[..., W, F]`` complex short-time slow-time spectra, with their axes.
 
-    Return absolute window-centre times, signed frequencies, and complex
-    spectra [..., windows, frequency]. Beat-domain bins are reversed using the
-    declared phasor, exactly as for range_doppler_map. No time gaps are hidden.
+    ``times_s`` is ``[W]`` float64, the absolute centre of each window.
+    ``frequency_hz`` is ``[F]`` float64, ascending and ``fftshift``ed, in the
+    canonical sign: positive for a CLOSING target, ``f = -f_ref d(tau)/dt``,
+    for every phasor. ``velocity_mps`` is ``lambda f / 2`` on the same bins when
+    the signal declared a wavelength, else ``None``.
+
+    Amplitude normalised exactly like :class:`RangeDopplerMap`: each window's
+    transform carries ``1 / window_slots``, so a unit tone on a bin peaks at
+    ``window_coherent_gain``. Differentiable in the samples.
     """
+
+    data: torch.Tensor
+    times_s: torch.Tensor
+    frequency_hz: torch.Tensor
+    velocity_mps: torch.Tensor | None
+    window: str
+    window_coherent_gain: float
+
+    def __post_init__(self) -> None:
+        _require_complex("data", self.data)
+        if self.data.dim() < 2:
+            raise ValueError(f"a spectrogram is [..., windows, frequency]; got shape {tuple(self.data.shape)}")
+        if tuple(self.times_s.shape) != (int(self.data.shape[-2]),):
+            raise ValueError(f"times_s must be [{int(self.data.shape[-2])}], got {tuple(self.times_s.shape)}")
+        if tuple(self.frequency_hz.shape) != (int(self.data.shape[-1]),):
+            raise ValueError(f"frequency_hz must be [{int(self.data.shape[-1])}], got {tuple(self.frequency_hz.shape)}")
+        if self.velocity_mps is not None and tuple(self.velocity_mps.shape) != tuple(self.frequency_hz.shape):
+            raise ValueError("velocity_mps must be on the frequency bins")
+
+
+def microdoppler_spectrogram(
+    signal: SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = "hann"
+) -> MicroDopplerSpectrogram:
+    """Short-time Fourier transform of one slow-time sequence.
+
+    Frames of ``window_slots`` samples every ``hop_slots``, each tapered by the
+    named window and transformed with ``1 / window_slots`` normalisation. A
+    conjugated (beat-phasor) sequence has its frequency index reversed before
+    the shift, exactly as :func:`range_doppler_map` does, so the published
+    frequency is positive for a closing target in every phasor. No time gap is
+    hidden: :class:`SlowTimeSignal` refuses non-uniform timestamps.
+    """
+
     if not isinstance(signal, SlowTimeSignal):
         raise TypeError("microdoppler_spectrogram requires a SlowTimeSignal with timestamps and phasor")
     samples = signal.samples
@@ -430,19 +588,27 @@ def microdoppler_spectrogram(signal: SlowTimeSignal, *, window_slots: int, hop_s
             f"window_slots={window_slots} exceeds the {slots} available slow-time "
             "samples; a spectrogram cannot be wider than its signal"
         )
-    if not float(slot_period_s) > 0.0:
-        raise ValueError(f"slot_period_s must be positive, got {slot_period_s}")
+    if window not in MICRODOPPLER_WINDOWS:
+        raise ValueError(f"window must be one of {MICRODOPPLER_WINDOWS}, got {window!r}")
 
     frames = (slots - window_slots) // hop_slots + 1
-    framed = samples.unfold(-1, window_slots, hop_slots).contiguous()
-    # unfold gives [..., frames, window_slots] already; the transform is over
-    # the window axis, which slow_time_spectrum takes as the trailing one.
-    spectrum = slow_time_spectrum(framed, window=window)
+    # [..., frames, window_slots]; the transform runs over the trailing axis.
+    framed = samples.unfold(-1, window_slots, hop_slots)
+    spectrum = torch.fft.fft(taper(framed, window, dim=-1), dim=-1, norm="forward")
     if _doppler_sign_from_phasor(signal.phasor) == 1:
-        spectrum = torch.fft.fftshift(_reverse_frequency(torch.fft.ifftshift(spectrum, dim=-1), -1), dim=-1)
+        spectrum = _reverse_frequency(spectrum, -1)
+    spectrum = torch.fft.fftshift(spectrum, dim=-1)
     frequencies = doppler_frequencies_hz(window_slots, slot_period_s, device=samples.device)
     centre = (window_slots - 1) / 2.0
     times = (torch.arange(frames, dtype=torch.float64, device=samples.device) * hop_slots + centre) * float(
         slot_period_s
+    ) + signal.times_s[0]
+    velocity = None if signal.wavelength_m is None else frequencies * (signal.wavelength_m / 2.0)
+    return MicroDopplerSpectrogram(
+        data=spectrum,
+        times_s=times,
+        frequency_hz=frequencies,
+        velocity_mps=velocity,
+        window=window,
+        window_coherent_gain=window_coherent_gain(window, window_slots),
     )
-    return times + signal.times_s[0], frequencies, spectrum

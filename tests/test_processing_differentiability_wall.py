@@ -48,16 +48,21 @@ from conftest import PROCESSING_CONFIG, make_processing_axes
 
 from witwin.radar.processing import (
     ArrayGeometry,
+    PointCloud,
     ProcessingCube,
     beam_cube,
     ca_cfar,
+    cluster_points,
     conventional_steering,
+    go_cfar,
+    group_peaks,
     os_cfar,
     point_cloud,
     range_doppler_map,
     range_profile,
+    so_cfar,
 )
-from witwin.radar.processing.angle import fft2_aoa, music_spectrum, phase_comparison_aoa, tdm_compensate
+from witwin.radar.processing.angle import fft2_aoa, music_spectrum, phase_comparison_aoa, scan_aoa, tdm_compensate
 from witwin.radar.processing.detection import Detections, _keep_strongest, ca_cfar_1d
 from witwin.radar.processing.tracking import DetectionFrame
 
@@ -66,7 +71,7 @@ from witwin.radar.processing.tracking import DetectionFrame
 #: here and a failure there describe one geometry.
 CONFIG = {
     **PROCESSING_CONFIG,
-    "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 0, 1]],
+    "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 1, 0]],
     "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
 }
 
@@ -154,7 +159,7 @@ class _Scene:
         self.cube = cube
         self.rd = range_doppler_map(range_profile(ProcessingCube(cube, axes)))
         combined = self.rd.data.reshape(array.sensor_pair_count, *self.rd.data.shape[-2:]).sum(dim=0)
-        self.power = combined.abs().to(torch.float64)
+        self.power = (combined.real.square() + combined.imag.square()).to(torch.float64)
         self.detected = ca_cfar(self.power, **DETECTOR)
 
 
@@ -182,6 +187,7 @@ _INSTRUMENTED = (
     (torch.fft, "fft"),
     (torch.fft, "fft2"),
     (F, "avg_pool2d"),
+    (F, "max_pool2d"),
     (F, "unfold"),
     (torch, "sort"),
     (torch, "topk"),
@@ -416,7 +422,7 @@ def test_music_image_carries_the_same_live_derivative_as_the_spectrum(scene):
 # ---------------------------------------------------------------------------
 
 
-CFAR_ENTRIES = {"ca_cfar": ca_cfar, "os_cfar": os_cfar}
+CFAR_ENTRIES = {"ca_cfar": ca_cfar, "go_cfar": go_cfar, "os_cfar": os_cfar, "so_cfar": so_cfar}
 
 
 @pytest.mark.parametrize("entry", sorted(CFAR_ENTRIES))
@@ -442,6 +448,21 @@ def test_a_cfar_detector_refuses_a_forward_dual_before_any_compute(scene, watch,
     with forward_ad.dual_level():
         with pytest.raises(RuntimeError, match="a forward tangent"):
             CFAR_ENTRIES[entry](_dual_of(scene.power), **DETECTOR)
+    assert watch.calls == []
+
+
+def test_peak_grouping_and_clustering_refuse_both_modes_before_any_compute(scene, watch):
+    """The two selections R-ADR-027 added sit below the wall too."""
+
+    detections = Detections(mask=torch.zeros_like(scene.power, dtype=torch.bool), threshold=scene.power)
+    with pytest.raises(RuntimeError, match="witwin.radar.processing.detection.group_peaks is not differentiable"):
+        group_peaks(detections, scene.power.clone().requires_grad_(True))
+    xyz = torch.rand((4, 3), dtype=torch.float64)
+    zero = torch.zeros(4, dtype=torch.float64)
+    with forward_ad.dual_level():
+        cloud = PointCloud(xyz=_dual_of(xyz), velocity_mps=zero, energy=zero, range_m=zero)
+        with pytest.raises(RuntimeError, match="a forward tangent"):
+            cluster_points(cloud, eps_m=1.0, min_points=1)
     assert watch.calls == []
 
 
@@ -536,7 +557,7 @@ def test_the_point_cloud_still_produces_its_one_point(scene):
 # ---------------------------------------------------------------------------
 
 
-AOA_ENTRIES = {"phase_comparison_aoa": phase_comparison_aoa, "fft2_aoa": fft2_aoa}
+AOA_ENTRIES = {"phase_comparison_aoa": phase_comparison_aoa, "fft2_aoa": fft2_aoa, "scan_aoa": scan_aoa}
 
 
 @pytest.mark.parametrize("entry", sorted(AOA_ENTRIES))
@@ -561,14 +582,20 @@ def test_an_argmax_angle_estimator_refuses_both_modes_before_any_compute(scene, 
 def test_the_fft2_route_still_enforces_its_own_contract(scene):
     """The refusal did not displace the estimator's own checks.
 
-    ``fft2_aoa`` needs four transmitter rows and this array has three, so the
-    guard runs BEFORE that check without swallowing it: a detached input still
-    reaches the original ``ValueError``.
+    ``fft2_aoa`` needs a planar lattice and this array has an element displaced
+    along the boresight, so the guard runs BEFORE that check without
+    swallowing it: a detached input still reaches the layout ``ValueError``.
     """
 
-    virtual = torch.zeros((scene.array.sensor_pair_count, 1), dtype=torch.complex64)
-    with pytest.raises(ValueError, match="at least four transmitter rows"):
-        fft2_aoa(virtual, scene.array, fft_size=64)
+    off_plane = ArrayGeometry.from_offsets(
+        ((0.0, 0.0, 0.0), (0.0, 0.3, 0.0)),
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        element_spacing_m=scene.array.element_spacing_m,
+        wavelength_m=scene.array.wavelength_m,
+    )
+    virtual = torch.zeros((off_plane.sensor_pair_count, 1), dtype=torch.complex64)
+    with pytest.raises(ValueError, match="planar x-z lattice"):
+        fft2_aoa(virtual, off_plane, fft_size=64)
 
 
 # ---------------------------------------------------------------------------
