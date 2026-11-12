@@ -199,7 +199,7 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
 
     config = {
         **PROCESSING_CONFIG,
-        "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 0, 1]],
+        "tx_loc": [[0, 0, 0], [4, 0, 0], [0, 1, 0]],
         "rx_loc": [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]],
     }
     axes = make_processing_axes(config)
@@ -224,11 +224,11 @@ def test_the_whole_chain_runs_from_a_synthesis_layout_to_a_detection_frame():
 
     # The batched detector runs on the whole beam cube at once, which is the
     # capability that did not exist: three rank-2 detectors and a loop.
-    detected = ca_cfar(beams.data.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
+    detected = ca_cfar(beams.data, guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     assert tuple(detected.mask.shape) == tuple(beams.data.shape)
 
     combined = rd.data.reshape(array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-    cells = ca_cfar(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
+    cells = ca_cfar(combined, guard_cells=(1, 2), training_cells=(2, 3), pfa=1e-2)
     cloud = point_cloud(cells, rd, array, max_points=8)
     handoff = TrackHandoff()
     assignment = handoff.push(DetectionFrame.from_point_cloud(cloud, time_s=0.0, frame_index=0))

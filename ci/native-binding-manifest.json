@@ -51,7 +51,7 @@
     "it guarantees about partial results."
   ],
   "schema_version": 2,
-  "radar_abi_version": 10,
+  "radar_abi_version": 11,
   "library": "_radar_native",
   "logical_owner": "_radar_native",
   "sources": [
@@ -60,6 +60,7 @@
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
     "witwin/radar/cuda/sensor_weight.cu",
@@ -855,6 +856,42 @@
       "python_owner": "witwin/radar/synthesis/fmcw.py",
       "contract_test": "tests/test_adaptive_fmcw_fusion.py",
       "end_to_end_caller": "witwin.radar.synthesis.fmcw._synthesize_adaptive_fmcw"
+    },
+    {
+      "symbol": "cfar_order_statistic_forward",
+      "family": "processing_select",
+      "native_tu": "witwin/radar/cuda/processing_select.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "cfar_order_statistic",
+      "launches": 1,
+      "fused_stages": [
+        "training_ring_gather",
+        "quickselect"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/processing/detection.py",
+      "contract_test": "tests/processing/test_processing_native.py",
+      "end_to_end_caller": "witwin.radar.processing.detection.os_cfar"
+    },
+    {
+      "symbol": "dbscan_labels_forward",
+      "family": "processing_select",
+      "native_tu": "witwin/radar/cuda/processing_select.cu",
+      "numerical_owner": "radar",
+      "ad_role": "primal",
+      "ad_group": "dbscan_labels",
+      "launches": 4,
+      "fused_stages": [
+        "neighbour_count",
+        "core_union_find",
+        "path_compression",
+        "border_assignment"
+      ],
+      "host_observations": 0,
+      "python_owner": "witwin/radar/processing/detection.py",
+      "contract_test": "tests/processing/test_processing_native.py",
+      "end_to_end_caller": "witwin.radar.processing.detection.cluster_points"
     }
   ]
 }

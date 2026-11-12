@@ -47,7 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: here rather than inside the JSON on purpose: a digest a document carries is
 #: a checksum, and a digest a second file carries is a decision. Recomputed and
 #: printed on failure, so an intentional widening costs one copy.
-FROZEN_BASELINE_DIGEST = "fb8cc60480bd22ec17b26cf0a66458ea625683a0a9a179869ff68145c5801a49"
+FROZEN_BASELINE_DIGEST = "51522fba819927d19a1fada2581cf8e5b57044a940269e48f4ab69fd163649af"
 
 SCHEMA_VERSION = 1
 

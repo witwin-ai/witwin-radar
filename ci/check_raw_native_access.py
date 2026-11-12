@@ -53,6 +53,7 @@ EXPECTED_LOADER_CONSUMERS = {
     "witwin/radar/deployment.py": "public build_info(), from the validated record",
     "witwin/radar/frontend.py": "frontend_chain facade",
     "witwin/radar/paths.py": "two_way_join facade",
+    "witwin/radar/processing/detection.py": "processing_select facade",
     "witwin/radar/scattering.py": "scatter_response_aspect facade",
     "witwin/radar/sensors.py": "sensor_weight facade",
     "witwin/radar/synthesis/fmcw.py": "fmcw_beat_synthesis facade",

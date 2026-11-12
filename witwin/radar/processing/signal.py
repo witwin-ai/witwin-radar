@@ -444,9 +444,9 @@ class ProcessingAxes:
         radar's own device.
         """
 
-        from ..radar import Radar
-
-        if not isinstance(radar, Radar):
+        # Read by its interface rather than imported: the radar record imports the
+        # session, which imports this package.
+        if not (hasattr(radar, "waveform_spec") and hasattr(radar, "system_config") and hasattr(radar, "device")):
             raise TypeError(f"from_radar takes a witwin.radar.Radar, got {type(radar).__name__}")
         spec = radar.waveform_spec()
         array = radar.system_config.sensors.array

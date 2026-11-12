@@ -105,7 +105,7 @@ SECTION_ROWS = {
     "Frontend chain (`witwin/radar/frontend.py`)": 2,
     "Adaptive path interpolation (`witwin/radar/paths.py`)": 1,
     "Above the wall (`SUP`)": 7,
-    "Below the wall (`REF`)": 14,
+    "Below the wall (`REF`)": 21,
     "Higher order: first derivatives only, everywhere": 13,
     "The combined-input matrix: one scenario, one frozen topology": 11,
     "Row validity: a row that stops existing": 8,

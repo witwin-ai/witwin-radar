@@ -1,68 +1,138 @@
-"""The exact summed-area cell-averaging CFAR: the oracle for ``ca_cfar``.
+"""An independent CFAR: the oracle for every detector in ``witwin.radar.processing``.
 
-``witwin.radar.processing.ca_cfar`` forms the ring average from two pooled
-means. This is the same estimator from one integral image per batch element,
-kept as a test oracle so the production detector is measured against an
-independent formation of the same rectangular ring, up to float
-re-association.
+Formed from the definitions, cell by cell in spirit and offset by offset in
+code, sharing nothing with the production path but the training-ring geometry
+it is told to use:
+
+* the ring is enumerated as an explicit list of ``(doppler, range)`` offsets,
+  split into a lagging half (negative range offset, or zero range offset and
+  negative Doppler offset) and its mirror;
+* every offset is applied as a shift of the whole map - ``torch.roll`` along
+  Doppler, which is the wrap, and a zero-filled shift with a validity mask
+  along range, which is the truncation;
+* the threshold constants are solved by ``scipy.optimize.brentq`` against the
+  false-alarm laws written from their definitions: the closed forms for CA and
+  OS, and for GO and SO a ``scipy.integrate.quad`` of ``E[exp(-a stat)]`` over
+  the density of the max or min of two gamma-distributed half means.
+
+A test oracle, so loops over offsets and over distinct ring sizes are fine
+here and nowhere else.
 """
 
 from __future__ import annotations
 
+import functools
+import math
+
 import torch
-import torch.nn.functional as F
-
-from witwin.radar.processing import Detections
+from scipy import integrate, optimize, stats
 
 
-def _rect_sum(
-    integral: torch.Tensor, r0: torch.Tensor, c0: torch.Tensor, r1: torch.Tensor, c1: torch.Tensor
-) -> torch.Tensor:
-    return integral[..., r1 + 1, c1 + 1] - integral[..., r0, c1 + 1] - integral[..., r1 + 1, c0] + integral[..., r0, c0]
+def ring_offsets(guard_cells, training_cells) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    gd, gr = guard_cells
+    td, tr = training_cells
+    od, orr = gd + td, gr + tr
+    lag, lead = [], []
+    for d in range(-od, od + 1):
+        for r in range(-orr, orr + 1):
+            if abs(d) <= gd and abs(r) <= gr:
+                continue
+            if r < 0 or (r == 0 and d < 0):
+                lag.append((d, r))
+            else:
+                lead.append((d, r))
+    return lag, lead
 
 
-def reference_ca_cfar(
-    rd_map: torch.Tensor,
+def _shift(power: torch.Tensor, d: int, r: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """``power[..., i + d (mod D), j + r]`` and whether ``j + r`` is on the map."""
+
+    ranges = int(power.shape[-1])
+    rolled = torch.roll(power, shifts=-d, dims=-2)
+    shifted = torch.zeros_like(rolled)
+    valid = torch.zeros(ranges, dtype=torch.bool)
+    if r >= 0:
+        shifted[..., : ranges - r] = rolled[..., r:]
+        valid[: ranges - r] = True
+    else:
+        shifted[..., -r:] = rolled[..., : ranges + r]
+        valid[-r:] = True
+    return shifted, valid
+
+
+def _law(kind: str, alpha: float, n1: int, n2: int, rank: int) -> float:
+    if kind == "ca":
+        n = n1 + n2
+        return (1.0 + alpha / n) ** (-n)
+    if kind == "os":
+        n = n1 + n2
+        return math.prod((n - i) / (n - i + alpha) for i in range(rank))
+    if n1 == 0 or n2 == 0:
+        n = max(n1, n2)
+        return (1.0 + alpha / n) ** (-n)
+    a = stats.gamma(n1, scale=1.0 / n1)
+    b = stats.gamma(n2, scale=1.0 / n2)
+    if kind == "go":
+        density = lambda t: a.pdf(t) * b.cdf(t) + a.cdf(t) * b.pdf(t)  # noqa: E731
+    else:
+        density = lambda t: a.pdf(t) * b.sf(t) + a.sf(t) * b.pdf(t)  # noqa: E731
+    value, _ = integrate.quad(
+        lambda t: math.exp(-alpha * t) * density(t), 0.0, math.inf, epsabs=0.0, epsrel=1e-12, limit=400
+    )
+    return value
+
+
+@functools.cache
+def solve_alpha(kind: str, pfa: float, n1: int, n2: int, rank: int = 0) -> float:
+    high = 1.0
+    while _law(kind, high, n1, n2, rank) > pfa:
+        high *= 2.0
+    return optimize.brentq(lambda a: _law(kind, a, n1, n2, rank) - pfa, 0.0, high, xtol=1e-14, rtol=1e-14)
+
+
+def reference_cfar(
+    kind: str,
+    power: torch.Tensor,
     *,
-    guard_cells: tuple[int, int] = (2, 3),
-    training_cells: tuple[int, int] = (4, 6),
+    guard_cells=(2, 3),
+    training_cells=(4, 6),
     pfa: float = 1e-3,
-) -> Detections:
-    """Cell-averaging CFAR over ``[..., D, R]``, by summed-area table.
+    rank_fraction: float = 0.75,
+) -> torch.Tensor:
+    """The ``[..., D, R]`` threshold of detector ``kind`` on a real POWER map, in float64."""
 
-    An exact rectangular ring average from one integral image. Edges are
-    replicate padded, so a cell at the border sees a ring of the same size
-    rather than a smaller and therefore noisier one. Same threshold law and
-    same defaults as the production detector.
-    """
-
-    real_dtype = torch.float64 if rd_map.dtype in {torch.float64, torch.complex128} else torch.float32
-    values = (torch.abs(rd_map) if torch.is_complex(rd_map) else rd_map).to(real_dtype)
-    if values.dim() < 2:
-        raise ValueError(f"the map must be [..., doppler, range]; got shape {tuple(values.shape)}")
-    leading = tuple(values.shape[:-2])
-    flat = values.reshape(-1, *values.shape[-2:])
-    doppler, ranges = int(flat.shape[-2]), int(flat.shape[-1])
-    gd, gr = int(guard_cells[0]), int(guard_cells[1])
-    td, tr = int(training_cells[0]), int(training_cells[1])
-    outer_d, outer_r = gd + td, gr + tr
-    n_train = (2 * outer_d + 1) * (2 * outer_r + 1) - (2 * gd + 1) * (2 * gr + 1)
-    if n_train < 1:
-        raise ValueError(
-            f"guard_cells={guard_cells} and training_cells={training_cells} leave "
-            "no training cells to estimate the noise from"
-        )
-    alpha = n_train * (float(pfa) ** (-1.0 / n_train) - 1.0)
-
-    padded = F.pad(flat.unsqueeze(1), (outer_r, outer_r, outer_d, outer_d), mode="replicate")
-    integral = F.pad(padded, (1, 0, 1, 0), mode="constant", value=0).cumsum(dim=-2).cumsum(dim=-1)
-    device = flat.device
-    row = torch.arange(doppler, device=device, dtype=torch.int64).reshape(-1, 1)
-    col = torch.arange(ranges, device=device, dtype=torch.int64).reshape(1, -1)
-    pi = row + outer_d
-    pj = col + outer_r
-    outer_sum = _rect_sum(integral, pi - outer_d, pj - outer_r, pi + outer_d, pj + outer_r)
-    guard_sum = _rect_sum(integral, pi - gd, pj - gr, pi + gd, pj + gr)
-    noise = (outer_sum - guard_sum) / n_train
-    threshold = (alpha * noise).squeeze(1).reshape(*leading, doppler, ranges)
-    return Detections(mask=values > threshold, threshold=threshold)
+    power = power.to(torch.float64)
+    lag, lead = ring_offsets(guard_cells, training_cells)
+    ranges = int(power.shape[-1])
+    sums, counts, shifted_all, valid_all = [], [], [], []
+    for half in (lag, lead):
+        total = torch.zeros_like(power)
+        count = torch.zeros(ranges, dtype=torch.int64)
+        for d, r in half:
+            shifted, valid = _shift(power, d, r)
+            total = total + shifted
+            count = count + valid.to(torch.int64)
+            shifted_all.append(torch.where(valid, shifted, torch.full_like(shifted, math.inf)))
+            valid_all.append(valid)
+        sums.append(total)
+        counts.append(count)
+    alpha = torch.zeros(ranges, dtype=torch.float64)
+    level = torch.zeros_like(power)
+    if kind == "os":
+        ordered = torch.stack(shifted_all, dim=0).sort(dim=0).values
+    for column in range(ranges):
+        n1, n2 = int(counts[0][column]), int(counts[1][column])
+        n = n1 + n2
+        if kind == "ca":
+            alpha[column] = solve_alpha("ca", pfa, n1, n2)
+            level[..., column] = (sums[0][..., column] + sums[1][..., column]) / n
+        elif kind == "os":
+            index = min(int(rank_fraction * n), n - 1)
+            alpha[column] = solve_alpha("os", pfa, n1, n2, index + 1)
+            level[..., column] = ordered[index][..., column]
+        else:
+            alpha[column] = solve_alpha(kind, pfa, n1, n2)
+            mean1 = sums[0][..., column] / n1 if n1 else sums[1][..., column] / n2
+            mean2 = sums[1][..., column] / n2 if n2 else mean1
+            level[..., column] = torch.maximum(mean1, mean2) if kind == "go" else torch.minimum(mean1, mean2)
+    return alpha * level

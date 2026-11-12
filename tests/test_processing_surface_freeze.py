@@ -52,7 +52,9 @@ PROCESSING = REPO_ROOT / "witwin" / "radar" / "processing"
 FROZEN_TORCH_FFT = frozenset({"fft", "ifft", "fft2", "fftshift", "ifftshift", "fftfreq"})
 
 #: Pooling, padding and patch extraction, from ``torch.nn.functional``.
-FROZEN_FUNCTIONAL = frozenset({"avg_pool2d", "unfold", "pad"})
+#: ``max_pool2d`` is R-ADR-027's amendment: peak grouping reads the argmax of a
+#: pooled neighbourhood.
+FROZEN_FUNCTIONAL = frozenset({"avg_pool2d", "max_pool2d", "unfold", "pad"})
 
 #: Decompositions and solves. ``solve`` is there because ``mvdr_weights`` must
 #: never form an explicit inverse.
@@ -70,9 +72,11 @@ FROZEN_TORCH_LINALG = frozenset({"eigh", "solve"})
 #: * ``unfold`` (the TENSOR method, not ``F.unfold``) - the MUSIC sub-aperture
 #:   view and the micro-Doppler framing. It replaced an ``(L + 1) ** 2``-way
 #:   ``torch.stack`` over a list comprehension.
-FROZEN_SELECTION = frozenset(
-    {"argsort", "argwhere", "cumsum", "gather", "index_select", "sort", "topk", "unfold", "where"}
-)
+#:
+#: R-ADR-027 removed two: the tracker's association is greedy rounds of
+#: ``argmin`` rather than an ``argsort`` over every candidate, and the range-only
+#: detector shares the pooled ring instead of a ``cumsum`` integral.
+FROZEN_SELECTION = frozenset({"argwhere", "gather", "index_select", "sort", "topk", "unfold", "where"})
 
 #: The vocabulary the selection scan looks for. A name in here that appears in
 #: the facade must be in :data:`FROZEN_SELECTION`; a name in here that does NOT
@@ -407,17 +411,22 @@ def test_no_processing_vocabulary_appears_anywhere_in_the_channel_capabilities()
     assert walk(channel.capabilities(), "channel") == []
 
 
-def test_the_native_binding_manifest_carries_no_processing_symbol():
-    """Criterion 7's ABI half, on the RADAR manifest.
+def test_the_native_binding_manifest_carries_exactly_the_processing_selections():
+    """Criterion 7's ABI half, on the RADAR manifest, as amended by R-ADR-027.
 
-    Phase 8 added no native symbol at all - the manifest is asserted UNCHANGED
-    by ``test_native_binding_manifest.py`` - so what is asserted here is the
-    narrower and more durable claim: no manifest entry names a processing stage.
+    The processing package owns exactly two native symbols, the ordered-statistic
+    CFAR level and the DBSCAN labels, both primal-only selections behind facades
+    that refuse a derivative. No other manifest entry names a processing stage.
     """
 
     import json
 
     manifest = json.loads((REPO_ROOT / "ci" / "native-binding-manifest.json").read_text(encoding="utf-8"))
+    selections = [row for row in manifest["operators"] if row["python_owner"].startswith("witwin/radar/processing/")]
+    assert {row["symbol"] for row in selections} == {"cfar_order_statistic_forward", "dbscan_labels_forward"}
+    assert {row["ad_role"] for row in selections} == {"primal"}
+    manifest["operators"] = [row for row in manifest["operators"] if row not in selections]
+    manifest["sources"] = [path for path in manifest["sources"] if not path.endswith("processing_select.cu")]
     blob = json.dumps(manifest).lower()
     for token in (
         "cfar",

@@ -44,7 +44,8 @@ import torch
 #: triggers a rebuild.
 #:
 #: 10 - fused compact adaptive FMCW synthesis, with native VJP and JVP.
-RADAR_ABI_VERSION = 10
+#: 11 - processing selections: ordered-statistic CFAR level and DBSCAN labels.
+RADAR_ABI_VERSION = 11
 
 BUILD_INFO_SUFFIX = ".build-info.json"
 FINGERPRINT_SUFFIX = ".build-fingerprint"
@@ -616,6 +617,7 @@ def extension_sources() -> list[Path]:
         root / "fmcw_spectrum.cu",
         root / "frontend.cu",
         root / "ofdm_cfr.cu",
+        root / "processing_select.cu",
         root / "pulsed_echo.cu",
         root / "scatter_response.cu",
         root / "sensor_weight.cu",
@@ -682,6 +684,7 @@ _REQUIRED_OPERATORS = (
     "fmcw_spectrum_forward",
     "frontend_noise_forward",
     "ofdm_cfr_forward",
+    "cfar_order_statistic_forward",
     "pulsed_echo_forward",
     "scatter_response_aspect_forward",
     "sensor_weight_forward",

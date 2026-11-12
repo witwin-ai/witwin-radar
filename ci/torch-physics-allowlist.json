@@ -29,7 +29,8 @@
     "dsp_replica": "A reference waveform or steering vector built for correlation or estimation, downstream of the cube. It reconstructs a KNOWN transmit or array law to match against measured samples; it does not evaluate scene propagation.",
     "dsp_estimation": "Angle, Doppler or phase estimation over the cube. Behind the R-ADR-018 non-differentiability wall.",
     "result_assembly": "Per-response, not per-path, construction of a complex result whose per-path factors are all native.",
-    "smpl_pose_authoring": "Body-model pose math upstream of the Core/Channel compile boundary."
+    "smpl_pose_authoring": "Body-model pose math upstream of the Core/Channel compile boundary.",
+    "detector_constant": "A detector's exact false-alarm law, evaluated in float64 on the host while its threshold constant is solved once per configuration and cached. It touches no cube value. R-ADR-027."
   },
   "entries": [
     {
@@ -57,15 +58,6 @@
       "occurrences": 1,
       "category": "dsp_estimation",
       "reason": "Removes the known TDM slot phase ramp from an already-measured cube so the virtual array is coherent. The ramp is a property of the transmit schedule, not of the scene.",
-      "adr": "R-ADR-017"
-    },
-    {
-      "module": "witwin/radar/processing/angle.py",
-      "function": "phase_comparison_aoa",
-      "call": "torch.exp",
-      "occurrences": 1,
-      "category": "dsp_estimation",
-      "reason": "Phase-comparison angle estimation across two measured channels.",
       "adr": "R-ADR-017"
     },
     {
@@ -148,6 +140,42 @@
       "category": "result_assembly",
       "reason": "ScalarRcsResponse's per-target complex assembly: one complex number per target, broadcast across its rows. R-ADR-007 places it inside the Torch allowlist by name, and its aspect-dependent successor is native (scatter_response_aspect).",
       "adr": "R-ADR-007"
+    },
+    {
+      "module": "witwin/radar/processing/angle.py",
+      "function": "azimuth_directions",
+      "call": "torch.sin",
+      "occurrences": 1,
+      "category": "dsp_replica",
+      "reason": "Unit look directions of a range-angle beam grid, built once per call from the caller's azimuth grid.",
+      "adr": "R-ADR-027"
+    },
+    {
+      "module": "witwin/radar/processing/angle.py",
+      "function": "azimuth_directions",
+      "call": "torch.cos",
+      "occurrences": 1,
+      "category": "dsp_replica",
+      "reason": "Unit look directions of a range-angle beam grid, built once per call from the caller's azimuth grid.",
+      "adr": "R-ADR-027"
+    },
+    {
+      "module": "witwin/radar/processing/detection.py",
+      "function": "_two_half_law",
+      "call": "torch.exp",
+      "occurrences": 3,
+      "category": "detector_constant",
+      "reason": "GO/SO-CFAR false-alarm law (cell-averaging terms and the double series) evaluated during the host bisection for the threshold constant.",
+      "adr": "R-ADR-027"
+    },
+    {
+      "module": "witwin/radar/processing/detection.py",
+      "function": "cfar_false_alarm_probability",
+      "call": "torch.exp",
+      "occurrences": 2,
+      "category": "detector_constant",
+      "reason": "CA- and OS-CFAR false-alarm laws, published for tests and solved on the host for the threshold constant.",
+      "adr": "R-ADR-027"
     }
   ]
 }

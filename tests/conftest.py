@@ -327,7 +327,7 @@ class PointTargetFrame:
 
         rd = self.range_doppler(window=window)
         combined = rd.data.reshape(self.array.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
-        cells = ca_cfar(combined.abs(), guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa)
+        cells = ca_cfar(combined, guard_cells=(1, 2), training_cells=(2, 3), pfa=pfa)
         return point_cloud(cells, rd, self.array, max_points=max_points, **options)
 
 

@@ -141,16 +141,37 @@
       "module": "witwin.radar.processing",
       "exports": [
         {
+          "name": "AOA_ROUTES",
+          "kind": "value",
+          "target": "<dict> AOA_ROUTES"
+        },
+        {
           "name": "ArrayGeometry",
           "kind": "class",
           "target": "witwin.radar.processing.angle.ArrayGeometry",
           "signature": "(element_positions_m: torch.Tensor, num_tx: int, num_rx: int, element_spacing_m: float, wavelength_m: float, phase_sign: int, tx_loc_half_wavelength: tuple[tuple[float, float, float], ...], rx_loc_half_wavelength: tuple[tuple[float, float, float], ...]) -> None"
         },
         {
+          "name": "ArrayLattice",
+          "kind": "class",
+          "target": "witwin.radar.processing.angle.ArrayLattice",
+          "signature": "(pitch_x: float, pitch_z: float, index_x: tuple[int, ...], index_z: tuple[int, ...], size_x: int, size_z: int) -> None"
+        },
+        {
           "name": "BeamCube",
           "kind": "class",
           "target": "witwin.radar.processing.angle.BeamCube",
           "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, directions: torch.Tensor) -> None"
+        },
+        {
+          "name": "CFAR_KINDS",
+          "kind": "value",
+          "target": "<tuple> CFAR_KINDS"
+        },
+        {
+          "name": "CLUTTER_FILTERS",
+          "kind": "value",
+          "target": "<tuple> CLUTTER_FILTERS"
         },
         {
           "name": "DetectionFrame",
@@ -165,15 +186,38 @@
           "signature": "(mask: torch.Tensor, threshold: torch.Tensor) -> None"
         },
         {
+          "name": "KalmanTracker",
+          "kind": "class",
+          "target": "witwin.radar.processing.tracking.KalmanTracker",
+          "signature": "(*, process_noise_mps2: 'float' = 1.0, measurement_noise_m: 'float' = 0.1, gate: 'float' = 3.5, initial_velocity_std_mps: 'float' = 5.0, max_misses: 'int' = 2) -> 'None'"
+        },
+        {
+          "name": "MicroDopplerSpectrogram",
+          "kind": "class",
+          "target": "witwin.radar.processing.range_doppler.MicroDopplerSpectrogram",
+          "signature": "(data: torch.Tensor, times_s: torch.Tensor, frequency_hz: torch.Tensor, velocity_mps: torch.Tensor | None, window: str, window_coherent_gain: float) -> None"
+        },
+        {
           "name": "POINT_CLOUD_COLUMNS",
           "kind": "value",
           "target": "<tuple> POINT_CLOUD_COLUMNS"
         },
         {
+          "name": "POINT_CLOUD_FRAMES",
+          "kind": "value",
+          "target": "<tuple> POINT_CLOUD_FRAMES"
+        },
+        {
           "name": "PointCloud",
           "kind": "class",
           "target": "witwin.radar.processing.detection.PointCloud",
-          "signature": "(xyz: torch.Tensor, velocity_mps: torch.Tensor, energy: torch.Tensor, range_m: torch.Tensor) -> None"
+          "signature": "(xyz: torch.Tensor, velocity_mps: torch.Tensor, energy: torch.Tensor, range_m: torch.Tensor, frame: str = 'radar') -> None"
+        },
+        {
+          "name": "PointClusters",
+          "kind": "class",
+          "target": "witwin.radar.processing.detection.PointClusters",
+          "signature": "(labels: torch.Tensor, centroid: torch.Tensor, velocity_mps: torch.Tensor, size: torch.Tensor) -> None"
         },
         {
           "name": "ProcessingAxes",
@@ -186,6 +230,12 @@
           "kind": "class",
           "target": "witwin.radar.processing.signal.ProcessingCube",
           "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes) -> None"
+        },
+        {
+          "name": "RangeAngleMap",
+          "kind": "class",
+          "target": "witwin.radar.processing.angle.RangeAngleMap",
+          "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, directions: torch.Tensor, azimuth_rad: torch.Tensor, elevation_rad: float) -> None"
         },
         {
           "name": "RangeDopplerMap",
@@ -203,13 +253,25 @@
           "name": "SlowTimeSignal",
           "kind": "class",
           "target": "witwin.radar.processing.range_doppler.SlowTimeSignal",
-          "signature": "(samples: torch.Tensor, times_s: tuple[float, ...], phasor: str) -> None"
+          "signature": "(samples: torch.Tensor, times_s: tuple[float, ...], phasor: str, wavelength_m: float | None = None) -> None"
         },
         {
           "name": "TrackHandoff",
           "kind": "class",
           "target": "witwin.radar.processing.tracking.TrackHandoff",
           "signature": "(associator: 'Associator | None' = None, frames: 'list[DetectionFrame]' = <factory>, assignments: 'list[torch.Tensor]' = <factory>, _next_track_id: 'int' = 0) -> None"
+        },
+        {
+          "name": "TrackState",
+          "kind": "class",
+          "target": "witwin.radar.processing.tracking.TrackState",
+          "signature": "(ids: 'torch.Tensor', position: 'torch.Tensor', velocity: 'torch.Tensor', covariance: 'torch.Tensor', hits: 'torch.Tensor', misses: 'torch.Tensor') -> None"
+        },
+        {
+          "name": "azimuth_directions",
+          "kind": "function",
+          "target": "witwin.radar.processing.angle.azimuth_directions",
+          "signature": "(azimuth_rad: torch.Tensor, elevation_rad: float = 0.0) -> torch.Tensor"
         },
         {
           "name": "beam_cube",
@@ -228,6 +290,18 @@
           "kind": "function",
           "target": "witwin.radar.processing.detection.ca_cfar_1d",
           "signature": "(profile: torch.Tensor, *, guard_cells: int = 2, training_cells: int = 8, pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
+        },
+        {
+          "name": "cfar_false_alarm_probability",
+          "kind": "function",
+          "target": "witwin.radar.processing.detection.cfar_false_alarm_probability",
+          "signature": "(kind: str, alpha: torch.Tensor, n_lag: torch.Tensor, n_lead: torch.Tensor, *, rank_fraction: float = 0.75) -> torch.Tensor"
+        },
+        {
+          "name": "cluster_points",
+          "kind": "function",
+          "target": "witwin.radar.processing.detection.cluster_points",
+          "signature": "(cloud: witwin.radar.processing.detection.PointCloud, *, eps_m: float, min_points: int, velocity_scale_s: float = 0.0) -> witwin.radar.processing.detection.PointClusters"
         },
         {
           "name": "combine_coherent",
@@ -254,6 +328,24 @@
           "signature": "(virtual_ant: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor"
         },
         {
+          "name": "go_cfar",
+          "kind": "function",
+          "target": "witwin.radar.processing.detection.go_cfar",
+          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
+        },
+        {
+          "name": "greedy_assignment",
+          "kind": "function",
+          "target": "witwin.radar.processing.tracking.greedy_assignment",
+          "signature": "(cost: 'torch.Tensor', *, gate: 'float') -> 'torch.Tensor'"
+        },
+        {
+          "name": "group_peaks",
+          "kind": "function",
+          "target": "witwin.radar.processing.detection.group_peaks",
+          "signature": "(detections: witwin.radar.processing.detection.Detections, rd_map: torch.Tensor, *, neighbourhood: tuple[int, int] = (3, 3)) -> witwin.radar.processing.detection.Detections"
+        },
+        {
           "name": "lag_axis",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.lag_axis",
@@ -269,7 +361,7 @@
           "name": "microdoppler_spectrogram",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.microdoppler_spectrogram",
-          "signature": "(signal: witwin.radar.processing.range_doppler.SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = 'hann')"
+          "signature": "(signal: witwin.radar.processing.range_doppler.SlowTimeSignal, *, window_slots: int, hop_slots: int, window: str = 'hann') -> witwin.radar.processing.range_doppler.MicroDopplerSpectrogram"
         },
         {
           "name": "music_image",
@@ -311,7 +403,7 @@
           "name": "point_cloud",
           "kind": "function",
           "target": "witwin.radar.processing.detection.point_cloud",
-          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06) -> witwin.radar.processing.detection.PointCloud"
+          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06, peak_neighbourhood: tuple[int, int] | None = (3, 3)) -> witwin.radar.processing.detection.PointCloud"
         },
         {
           "name": "pulse_samples",
@@ -320,16 +412,40 @@
           "signature": "(spec: witwin.radar.synthesis.assembly.PulsedSpec, device: torch.device | str = 'cpu') -> torch.Tensor"
         },
         {
+          "name": "range_angle_map",
+          "kind": "function",
+          "target": "witwin.radar.processing.angle.range_angle_map",
+          "signature": "(rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, azimuth_rad: torch.Tensor, elevation_rad: float = 0.0) -> witwin.radar.processing.angle.RangeAngleMap"
+        },
+        {
           "name": "range_doppler_map",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.range_doppler_map",
-          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, *, window: str | None = None) -> witwin.radar.processing.range_doppler.RangeDopplerMap"
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, *, window: str | None = None, doppler_bins: int | None = None) -> witwin.radar.processing.range_doppler.RangeDopplerMap"
         },
         {
           "name": "range_profile",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.range_profile",
-          "signature": "(cube: witwin.radar.processing.signal.ProcessingCube, *, window: str | None = None, remove_dc: bool = False) -> witwin.radar.processing.range_doppler.RangeProfile"
+          "signature": "(cube: witwin.radar.processing.signal.ProcessingCube, *, window: str | None = None, remove_dc: bool = False, range_bins: int | None = None) -> witwin.radar.processing.range_doppler.RangeProfile"
+        },
+        {
+          "name": "remove_static_clutter",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.remove_static_clutter",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, *, method: str = 'mean') -> witwin.radar.processing.range_doppler.RangeProfile"
+        },
+        {
+          "name": "scan_aoa",
+          "kind": "function",
+          "target": "witwin.radar.processing.angle.scan_aoa",
+          "signature": "(virtual_ant: torch.Tensor, array: witwin.radar.processing.angle.ArrayGeometry, *, fft_size: int = 64) -> torch.Tensor"
+        },
+        {
+          "name": "so_cfar",
+          "kind": "function",
+          "target": "witwin.radar.processing.detection.so_cfar",
+          "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
           "name": "tdm_compensate",
