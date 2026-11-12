@@ -20,9 +20,8 @@ occluded target (MP-2).
 `tests/oracle/` holds the gates. Every oracle runs through the public verbs
 (`Radar.simulate`, `Radar.trace` and its `Paths.rows`), on GPU, marked `gpu`,
 and compares against a closed form in `tests/reference/radar_oracles.py`,
-which imports nothing from `witwin` (the existing AST scan in
-`tests/test_oracle_independence.py` covers it, and
-`ci/check_test_oracle_isolation.py` keeps production from importing it).
+which imports nothing from `witwin` (a review rule; no automated scan enforces this
+direction) while `ci/check_test_oracle_isolation.py` keeps production from importing it.
 Scenes and the user-side sampling recipes live in
 `tests/support/oracle_scenes.py`. A defect the plan has not fixed yet is a
 `pytest.mark.xfail(strict=True)` whose reason starts with the finding ID, so a

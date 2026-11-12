@@ -3,7 +3,7 @@
 TEST-ONLY, and deliberately free of any ``witwin`` import: every expression
 here is written from the textbook statement, in Python floats or NumPy
 float64, so that an oracle built on it cannot agree with production by
-construction. ``tests/test_oracle_independence.py`` scans this package, and
+construction. Keeping it free of ``witwin`` imports is a review rule, and
 ``ci/check_test_oracle_isolation.py`` keeps production from importing it.
 
 Conventions, stated once:
