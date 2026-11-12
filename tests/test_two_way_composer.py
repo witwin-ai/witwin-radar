@@ -125,23 +125,19 @@ def test_freeze_host_reads_are_counted(monkeypatch):
     ``TwoWayComposer.freeze`` reads leg identity to the host to build the join.
     That is sanctioned and one-time, but Channel never sees those reads, so no
     Channel diagnostic counts them and the one-time total was implied rather
-    than measured. Fourteen reads: six identity columns per leg (source_id,
-    sink_id, component_id, depth, primitive_sequence, material_sequence), plus
-    site_ids, plus the composed pair index that
-    ``synthesis.assembly.validate_pair_ordering`` checks. The front-end
-    endpoint IDs are passed as Python lists here, so they add none.
-
-    The fourteenth read is Phase 7's. Wiring the layout gate is the plan's own
-    Phase-6 gap 5, and the gate reads its input on the host BY DESIGN - that is
-    why it is a freeze-time function and not part of ``assemble_frame_cube``.
-    It costs one one-time read and it is what makes the sink-major assertion
-    non-empty in production; the per-FRAME budget is untouched, which
+    than measured. Three reads: each leg's identity columns cross in ONE packed
+    copy, plus site_ids, which this caller passes as a device tensor (the
+    session passes a host tuple). The pair ranks are validated on the host
+    before they are uploaded, so the layout gate reads nothing back. The
+    per-FRAME budget is untouched, which
     ``test_compose_performs_no_host_observation_at_all`` still pins at zero.
     """
 
     ledger = DspLedger(monkeypatch, ())
     _one_site_composer()
-    assert ledger.host["tolist"] == 14, ledger.host
+    assert ledger.host["cpu"] == 2, ledger.host
+    assert ledger.host["tolist"] == 1, ledger.host
+    assert ledger.host["item"] == 0, ledger.host
 
 
 @pytest.mark.gpu
@@ -280,7 +276,7 @@ def test_the_frozen_offsets_partition_is_validated_where_it_is_free():
     with pytest.raises(ValueError, match="pair_count must be positive"):
         paths.pair_offsets([], pair_count=0)
     # Empty segments are legal; only an out-of-range pair rank is not.
-    assert paths.pair_offsets([0, 0, 3], pair_count=4) == [0, 2, 2, 2, 3]
+    assert paths.pair_offsets([0, 0, 3], pair_count=4).tolist() == [0, 2, 2, 2, 3]
 
 
 def test_a_site_without_a_leg_is_refused_rather_than_dropped():

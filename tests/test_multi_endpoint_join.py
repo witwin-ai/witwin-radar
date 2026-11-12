@@ -490,15 +490,15 @@ def test_rows_that_die_under_motion_are_data_in_a_multi_pair_frame(spike):
 
 
 def test_freeze_host_reads_are_counted_at_multi_pair_width(spike, monkeypatch):
-    """Fourteen ``tolist`` calls: six identity columns per leg, the sites, and
-    the composed pair index the freeze-time layout gate reads.
+    """Three device reads: one packed identity copy per leg, and the sites.
 
-    The same fourteen the one-site Phase-4 join costs, at three and seven leg
-    rows over four endpoint pairs. Freeze-time host traffic is a property of the
-    number of COLUMNS read, not of the rows in them, and asserting it against a
-    real wide leg is what makes that a measurement. The fourteenth is Phase 7
-    wiring ``synthesis.assembly.validate_pair_ordering`` into production; it is
-    one-time, and the per-frame budget below is still exactly zero.
+    The same three the one-site join costs, at three and seven leg rows over
+    four endpoint pairs. Freeze-time host traffic is a property of the number of
+    LEGS read, not of the rows or columns in them, and asserting it against a
+    real wide leg is what makes that a measurement. The site IDs are read only
+    because this caller passes them as a device tensor; the session passes a
+    host tuple. The pair ranks are validated on the host before their upload,
+    so the layout gate reads nothing back. The per-frame budget is still zero.
     """
 
     from witwin.radar.paths import TwoWayComposer
@@ -512,7 +512,9 @@ def test_freeze_host_reads_are_counted_at_multi_pair_width(spike, monkeypatch):
         radar_sink_ids=list(spike.receiver_ids),
         reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
     )
-    assert ledger.host["tolist"] == 14, ledger.host
+    assert ledger.host["cpu"] == 2, ledger.host
+    assert ledger.host["tolist"] == 1, ledger.host
+    assert ledger.host["item"] == 0, ledger.host
 
 
 def test_compose_performs_no_host_observation_at_eleven_rows(spike, monkeypatch):

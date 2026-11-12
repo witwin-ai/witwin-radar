@@ -163,20 +163,15 @@ def test_one_backward_launch_per_forward_launch(batch, monkeypatch):
 
 
 def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch):
-    """One ``sensor_weight_forward`` per frame, on the scene-driven route.
+    """One ``sensor_weight_forward`` per composed batch, on the scene-driven route.
 
     ``sensors.py`` applies the pattern inside ``Radar.simulate``, and ONE launch
-    covers the whole frame's composed rows however many pairs and sites they
-    span.
+    covers a composed batch's rows however many pairs and sites they span.
 
-    This route also synthesizes a waveform, so ``fmcw_spectrum_forward`` is
-    asserted at the same count rather than required to be zero - the claim is
-    that the pattern stage adds exactly one launch on top of the frame the
-    entry already pays for. The run is TWO frames, which is what makes this a
-    per-frame budget: a stage that rebuilt its row tables inside the frame loop
-    would still launch once per frame, but one that re-applied the pattern per
-    site or per pair would not, and a single frame cannot tell those apart from
-    the total.
+    The world here holds still, so the session composes and synthesizes its
+    rows once and every later frame republishes them: two frames cost one
+    pattern launch and one ``fmcw_spectrum_forward``. A stage that re-applied
+    the pattern per site, per pair or per frame would show up as more.
 
     The pattern is the dipole table: the isotropic 0 dBi default is the
     identity and skips the launch altogether, which
@@ -210,10 +205,12 @@ def test_the_sensor_weight_owner_costs_one_launch_per_frame(monkeypatch):
     operators = _operators()
     ledger = DspLedger(monkeypatch, SYNTHESIS_OPERATORS, operators)
     simulate(tuple(index * 1.0e-3 for index in range(frames)))
-    assert ledger.launches["sensor_weight_forward"] == frames, ledger.launches
+    # A still world composes its rows once and publishes them every frame, so
+    # the stage launches once per session rather than once per frame.
+    assert ledger.launches["sensor_weight_forward"] == 1, ledger.launches
     assert ledger.launches["sensor_weight_backward"] == 0, ledger.launches
     assert ledger.launches["sensor_weight_jvp"] == 0, ledger.launches
-    assert ledger.launches["fmcw_spectrum_forward"] == frames, ledger.launches
+    assert ledger.launches["fmcw_spectrum_forward"] == 1, ledger.launches
     for name in SYNTHESIS_OPERATORS:
         if not name.startswith("sensor_weight") and name != "fmcw_spectrum_forward":
             assert ledger.launches[name] == 0, (name, ledger.launches)

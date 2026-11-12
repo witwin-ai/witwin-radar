@@ -30,4 +30,6 @@ All of these are bit-identical to 0.4.1.
 
 ## Changed
 
+- `Frame.points` defaults to `route="scan"`, matching `processing.point_cloud`; pass `route="phase_comparison"` to keep
+  the previous estimator on a layout it supports.
 - The adaptive controller compares packed topology identities, and the session's slot-batched table cache is bounded.

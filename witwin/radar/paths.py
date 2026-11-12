@@ -304,7 +304,7 @@ def sink_major_rank(sources: list[int], sinks: list[int]) -> Callable[[np.ndarra
     return rank
 
 
-def pair_offsets(pair_of_row: np.ndarray, pair_count: int) -> np.ndarray:
+def pair_offsets(pair_of_row: np.ndarray | Sequence[int], pair_count: int) -> np.ndarray:
     """A half-open partition of composed rows by sensor pair.
 
     Empty segments are legal and expected: the partition spans the FRONT END's
@@ -322,6 +322,7 @@ def pair_offsets(pair_of_row: np.ndarray, pair_count: int) -> np.ndarray:
 
     if pair_count < 1:
         raise ValueError(f"pair_count must be positive, got {pair_count}")
+    pair_of_row = np.asarray(pair_of_row, dtype=np.int64)
     outside = np.flatnonzero((pair_of_row < 0) | (pair_of_row >= pair_count))
     if outside.size:
         row = int(outside[0])
