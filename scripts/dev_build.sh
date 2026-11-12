@@ -19,7 +19,7 @@ E=$CONDA_PREFIX
 # Conda's CUDA: the real nvcc (the targets/ symlink has no nvcc.profile) and the env as CUDA_HOME.
 export CUDA_HOME=$E CUDA_NVCC_EXECUTABLE=$E/bin/nvcc
 export TORCH_CUDA_ARCH_LIST=${RADAR_DEV_CUDA_ARCH:-8.6}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-1}
 unset WITWIN_CUDA_GENCODE_ARCHES
 
 mkdir -p "$ROOT/build"
