@@ -93,6 +93,7 @@ path = "hatch_build.py"
 testpaths = ["tests"]
 markers = [
     "gpu: test requires CUDA GPU (use --gpu flag)",
+    "benchmark: absolute wall-clock budget (use --benchmark with --gpu)",
 ]
 
 [tool.ruff]

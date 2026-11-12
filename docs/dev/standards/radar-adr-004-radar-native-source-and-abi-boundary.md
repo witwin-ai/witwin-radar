@@ -76,7 +76,7 @@ sources it covers were edited.
 text paired the rename with that relocation. It did not happen and is no longer
 planned. A translation unit's directory is not an ownership statement in this
 repository; `ci/native-binding-manifest.json`'s `native_tu` column is, and it
-maps each of the 34 symbols to its `.cu` file. Moving a file so a directory
+maps each symbol to the `.cu` file that registers its `m.impl`. Moving a file so a directory
 listing reads like a registry would change the build inputs, the
 `source_fingerprint`, and therefore every packaged artifact's identity, in
 exchange for nothing a reader cannot already get from the manifest.
@@ -224,9 +224,11 @@ trip.
 
 ### Manifest
 
-`ci/native-binding-manifest.json` maps every symbol to owner, contract test, and
-end-to-end caller. It is seeded with the six Dirichlet operators plus the three
-new ones. A symbol without a production caller is cleanup debt, not a feature.
+`ci/native-binding-manifest.json` maps every symbol to its translation unit, AD
+group and role, Python owner and calling functions. Since R-ADR-026 every one of
+those columns is generated from the `m.def`/`m.impl` registrations and the
+Python call sites by `python ci/check_native_bindings.py --write`; a symbol
+without a production caller fails that gate.
 
 ### The JIT build directory is keyed by the source set
 

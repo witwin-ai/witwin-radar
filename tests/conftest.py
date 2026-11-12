@@ -29,14 +29,27 @@ def pytest_addoption(parser):
         default=False,
         help="Run GPU-only tests (solver cross-validation, end-to-end validation)",
     )
+    parser.addoption(
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help="Also run the absolute wall-clock budgets (machine-dependent; needs --gpu and an idle device)",
+    )
 
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: test requires CUDA GPU")
+    config.addinivalue_line("markers", "benchmark: absolute wall-clock budget, run only with --benchmark")
 
 
 def pytest_collection_modifyitems(config, items):
     import torch
+
+    if not config.getoption("--benchmark"):
+        skip_benchmark = pytest.mark.skip(reason="absolute wall-clock budget; needs --benchmark")
+        for item in items:
+            if "benchmark" in item.keywords:
+                item.add_marker(skip_benchmark)
 
     run_gpu = config.getoption("--gpu") and torch.cuda.is_available()
     if run_gpu:

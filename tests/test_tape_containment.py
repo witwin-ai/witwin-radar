@@ -21,7 +21,7 @@ lifetime the result's lifetime.
 **Two - no module outside a tape's own owner reads it.** Asserted by parsing
 every production module and finding every ``ctx.saved_tensors`` read, then
 checking that each one sits inside a ``backward`` or ``jvp`` of an autograd
-``Function`` in one of the seven owner files. Its limit, stated honestly: a read
+``Function``. Its limit, stated honestly: a read
 spelled through an alias (``c = ctx; c.saved_tensors``) or reached by
 ``getattr`` would not be found. That is a real gap and it is accepted, because
 the failure this test exists to catch is a consumer reaching into another
@@ -36,23 +36,10 @@ import pathlib
 
 import pytest
 import torch
+from support import autograd_owners
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "witwin" / "radar"
-
-#: The seven files that own a ``torch.autograd.Function``. Between them they
-#: hold the eleven owners ``test_the_context_scan_is_not_vacuous`` counts.
-TAPE_OWNER_FILES = frozenset(
-    {
-        "frontend.py",
-        "paths.py",
-        "scattering.py",
-        "sensors.py",
-        "synthesis/fmcw.py",
-        "synthesis/ofdm.py",
-        "synthesis/pulsed.py",
-    }
-)
 
 #: The two methods that are allowed to read a context. ``backward`` is the VJP
 #: and ``jvp`` is the forward companion; ``setup_context`` WRITES the tape and
@@ -61,61 +48,49 @@ TAPE_READER_METHODS = frozenset({"backward", "jvp"})
 
 
 def _production_modules():
-    return sorted(path for path in PACKAGE.rglob("*.py") if "__pycache__" not in path.parts)
+    return autograd_owners.production_modules()
 
 
-# ---------------------------------------------------------------------------
-# Nobody outside an owner reads a context
-# ---------------------------------------------------------------------------
-
-
-def _saved_tensor_reads(path: pathlib.Path):
-    """``(function name, line)`` for every ``<name>.saved_tensors`` read."""
-
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    enclosing: dict[int, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for child in ast.walk(node):
-                enclosing.setdefault(id(child), node.name)
-    reads = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in {"saved_tensors", "saved_for_forward", "to_save"}:
-            reads.append((enclosing.get(id(node), "<module>"), node.lineno, node.attr))
-    return reads
+def _tape_reads(node: ast.AST) -> list[tuple[int, str]]:
+    return [
+        (child.lineno, child.attr)
+        for child in ast.walk(node)
+        if isinstance(child, ast.Attribute) and child.attr in {"saved_tensors", "saved_for_forward", "to_save"}
+    ]
 
 
 def test_every_context_read_sits_inside_a_tape_owner():
     """A consumer that unpacked another owner's tape would appear here."""
 
+    allowed: dict[str, set[int]] = {}
+    for relative, function in autograd_owners.autograd_functions():
+        for name in TAPE_READER_METHODS:
+            method = autograd_owners.method(function, name)
+            if method is not None:
+                allowed.setdefault(relative, set()).update(line for line, _ in _tape_reads(method))
     offenders = []
     for path in _production_modules():
         relative = path.relative_to(PACKAGE).as_posix()
-        reads = _saved_tensor_reads(path)
-        if not reads:
-            continue
-        if relative not in TAPE_OWNER_FILES:
-            offenders.append((relative, reads))
-            continue
-        for function, line, attr in reads:
-            if function not in TAPE_READER_METHODS:
-                offenders.append((relative, function, line, attr))
+        for line, attr in _tape_reads(ast.parse(path.read_text(encoding="utf-8"))):
+            if line not in allowed.get(relative, set()):
+                offenders.append((relative, line, attr))
     assert not offenders, offenders
 
 
 def test_the_context_scan_is_not_vacuous():
-    """Calibration: the scan finds the reads that are supposed to be there.
+    """Calibration: every owner reads its tape in both backward and jvp.
 
-    Twelve owners each read their tape in backward and jvp: twenty-four reads,
-    including compact adaptive ADC fusion. A scanner that
+    The owners are the ``Function`` subclasses in exactly the modules the
+    binding manifest records as calling a native backward. A scanner that
     silently matched nothing would make the assertion above pass forever.
     """
 
-    found = {path.relative_to(PACKAGE).as_posix(): _saved_tensor_reads(path) for path in _production_modules()}
-    live = {name: reads for name, reads in found.items() if reads}
-    assert set(live) == TAPE_OWNER_FILES, sorted(live)
-    total = sum(len(reads) for reads in live.values())
-    assert total == 24, {name: len(reads) for name, reads in live.items()}
+    functions = autograd_owners.autograd_functions()
+    assert {relative for relative, _ in functions} == autograd_owners.native_backward_owners()
+    for relative, function in functions:
+        for name in sorted(TAPE_READER_METHODS):
+            method = autograd_owners.method(function, name)
+            assert method is not None and _tape_reads(method), (relative, function.name, name)
 
 
 def test_no_production_module_stores_a_context_on_an_object():

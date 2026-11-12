@@ -189,6 +189,7 @@ def inputs():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.benchmark
 def test_the_full_pipeline_meets_the_frozen_latency_budget(inputs):
     """``FROZEN_BASELINE_PIPELINE_MS * PIPELINE_LATENCY_HEADROOM``, CUDA events, best of medians.
 
@@ -314,6 +315,7 @@ def _simulation_driver():
     return simulate
 
 
+@pytest.mark.benchmark
 def test_the_simulation_frame_cost_has_not_regressed():
     """One production frame, wall clock, against the SAME frozen budget.
 

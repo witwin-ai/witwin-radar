@@ -132,7 +132,7 @@ written in exactly one place (`build.EXTENSION_NAME`).
 | `radar_git_sha` | str | 40 hex, or `unknown` |
 | `radar_git_dirty` | bool | |
 | `source_fingerprint` | str | sha256 over the nine-file source set, names + content |
-| `operator_symbols` | list[str] | sorted, read from `ci/native-binding-manifest.json` at build time |
+| `operator_symbols` | list[str] | sorted, read from `ci/native-binding-manifest.json` at build time; the build refuses a manifest that disagrees with `extension.cpp` |
 | `binary_sha256` | str | sha256 of the produced binary |
 | `build_fingerprint` | str | sha256 over canonical JSON of every field above |
 
