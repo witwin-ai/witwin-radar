@@ -2,11 +2,9 @@
 
 Round-trip path length, path-length rate, and transmit/receive antenna-pattern
 gain, written in Torch so ``tests/test_sensor_weight.py`` can pin the
-CUDA kernel against them term for term.
-``tests/test_oracle_independence.py`` is the structural guard that keeps
-this module from importing ``witwin.radar.sensors`` or
-``witwin.radar.synthesis``: an oracle that imports the owner it checks agrees
-by construction and proves nothing.
+CUDA kernel against them term for term. It imports neither
+``witwin.radar.sensors`` nor ``witwin.radar.synthesis``: an oracle that imports
+the owner it checks agrees by construction and proves nothing.
 
 Verbatim is the whole point. The expression order, the clamps, the broadcast
 shapes, and the order of the multiplications are reproduced exactly, so the

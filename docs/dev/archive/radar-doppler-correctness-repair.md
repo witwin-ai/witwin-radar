@@ -1,5 +1,9 @@
 # Doppler correctness repair
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Requested scope: close audit A1-A8, commit each validated stage, and retain final numerical and test evidence.
 
 1. Separate parameter JVP from physical time derivatives (A4).

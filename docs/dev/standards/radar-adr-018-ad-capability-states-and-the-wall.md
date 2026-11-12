@@ -150,9 +150,7 @@ rather than a plea:
   native `rcs_amplitude` for it to be a Torch replay of.
 
 The capability matrix records its mechanism as `torch-orchestration`, which
-R-ADR-007 allows outside the hot path, and
-`tests/test_no_torch_physics.py` pins `scattering.py`'s whole matched
-Torch set by EQUALITY, so a second arithmetic expression in that module fails.
+R-ADR-007 allows outside the hot path.
 
 Two consequences of the tensor route are deliberate. `requires_grad=True` is
 refused together with a tensor cross section, because the leaf is `sigma_m2`
@@ -240,8 +238,8 @@ the headroom applied on top of that. No existing budget was weakened.
   half-built result. `tests/test_processing_differentiability_wall.py`'s `_ComputeWatch`
   measures that rather than asserting it, and is calibrated against the same
   stages running normally so the zero is never vacuous.
-- Adding a leaf now costs a matrix row. Forgetting one fails
-  `tests/test_ad_capability_matrix.py::test_every_section_carries_its_frozen_row_count`.
+- Adding a leaf costs a matrix row. Since R-ADR-026 no frozen row count enforces it; review does, and every row
+  that exists must cite a test that resolves (`tests/test_ad_capability_matrix.py`).
 - Adding a tenth-plus autograd `Function` costs a boundary entry in
   `tests/support/ad_boundaries.py`. Forgetting it fails
   `tests/test_backward_budget.py::test_the_launch_ledger_covers_every_tape_owner_in_the_package`

@@ -1,5 +1,9 @@
 # Phase-10 audit: the `_radar_native` / `_channel` source and link boundary
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 This is the evidence behind acceptance criterion A5 - "no shared RF/geometry
 binary, no third Python binding, no second RayD registry, no cross-extension
 private call" - and the Radar half of A8, "the Radar wheel needs no Dr.Jit or

@@ -1,5 +1,9 @@
 # Receiver physics, adaptive motion, and MATLAB comparison
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 User-authorized work, 2026-09-16, witwin2 on Windows / RTX 5080.
 
 1. Correct receiver domain ordering and pin hardware-equivalent beat/spectrum output.

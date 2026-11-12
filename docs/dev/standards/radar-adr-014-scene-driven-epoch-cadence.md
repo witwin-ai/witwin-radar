@@ -1,6 +1,11 @@
 # R-ADR-014: The scene-driven epoch cadence, and what a moving world costs
 
-Status: Accepted (Phase 7)
+Status: Accepted (Phase 7), partly historical (R-ADR-026, 2026-11-12)
+
+> **Partly historical.** The cadence decision - what a moving world forces to be recompiled, refrozen or
+> rediscovered - stands. The endpoint delay-rate channel ("Structure motion does not reach `delay_rate`") was deleted, and so
+> was `test_structure_motion_does_not_reach_the_endpoint_delay_rate`, which pinned it (audit finding D-13,
+> `radar_development_plan.md` section 3.4). The cited tests in `tests/test_row_invalidation.py` still exist.
 
 ## Context
 

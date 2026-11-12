@@ -160,10 +160,11 @@ pass, which is exactly the wrong direction.
 
 - `tests/test_import_boundary.py::test_no_drjit_or_rayd_in_the_process_after_importing_witwin_radar`
   (the strict process-global assertion)
-- `tests/test_import_boundary.py::test_the_synthesis_hot_loop_is_native_not_torch`
-- `tests/test_import_boundary.py::test_the_two_way_join_hot_loop_is_native_not_torch`
-- `tests/test_import_boundary.py::test_no_drjit_reference_of_any_kind_in_the_new_modules`
 - `tests/test_import_boundary.py::test_the_spike_adds_no_drjit_rayd_or_channel_internals`
+- `ci/check_production_dependencies.py` (no forbidden runtime is named in
+  production code or declared as a dependency)
+- `tests/test_synthesis_launch_budget.py` and `tests/test_backward_budget.py`
+  (each waveform and AD boundary costs its native launches and no more)
 - `tests/test_two_way_composer.py::test_a_geometry_dependent_response_is_refused`
 - `tests/test_public_api_snapshot.py` (the public surface is frozen; the
   packaging metadata no longer pulls in Dr.Jit)

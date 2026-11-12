@@ -1,5 +1,9 @@
 # Phase 10 acceptance matrix
 
+> **Historical record** (archived 2026-11-12, see [the archive index](README.md)). It describes work that is
+> finished or superseded and is not a current instruction; paths, line numbers, counts and statuses in it are as of
+> the date it was written.
+
 Every row of the plan's eight acceptance criteria
 (`docs/dev/plans/channel-radar-architecture-plan.md`, "#### Phase 10"), mapped
 to the artifact that satisfies it, the command that produced the artifact, and

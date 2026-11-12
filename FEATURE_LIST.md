@@ -80,7 +80,7 @@ The processing layer consumes named-axis metadata. For FMCW spectrum input, rang
 ## Public API and architecture governance
 
 - Public exports are declared in `ci/public-api-manifest.json` and signature-pinned by `ci/public-api-snapshot.json`.
-- The package root exports sixteen names, the whole happy path: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules and are not re-exported here.
+- The package root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules and are not re-exported here.
 - Concept owners and permitted module topology are declared in `ci/architecture-manifest.json`.
 - There is no maximum-file-line policy. Consolidation favors fewer files and a shallow layout when one concept remains cohesive.
 - Compatibility aliases, fallback imports, deprecation shims, and legacy package mirrors are forbidden by static gates.

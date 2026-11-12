@@ -10,7 +10,7 @@ rather than a scan that does nothing.
 
 The ELF branch has no case here because no ELF radar binary exists on a Windows
 developer machine. It was verified by hand against two real ELF64 libraries and
-the result is recorded in ``docs/dev/audit/phase10-extension-boundary.md``; the
+the result is recorded in ``docs/dev/archive/phase10-extension-boundary.md``; the
 manylinux cells of the release matrix are what will exercise it in anger.
 
 Every case SKIPS rather than silently passes when the artifact it needs is not

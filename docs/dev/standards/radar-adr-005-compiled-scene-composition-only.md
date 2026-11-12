@@ -39,9 +39,11 @@ a native-handle feature.
 
 ## Acceptance evidence
 
-`tests/test_import_boundary.py::test_static_closure_of_the_new_modules_names_nothing_forbidden`
-asserts the adapter names only `witwin.channel.propagation[.consumer]`, so no
-scene-internal type is reachable. The adapter's `compiled_scene` parameter is
+`ci/check_architecture.py` pins `witwin.radar.channel` as the only module that
+imports `witwin.channel`, and
+`tests/test_import_boundary.py::test_radar_adds_nothing_to_the_consumer_facade_closure`
+measures, in a fresh process, that Radar loads nothing beyond the consumer
+facade's own closure, so no scene-internal type is reachable. The adapter's `compiled_scene` parameter is
 typed `object` and is only ever passed through.
 
 ## Amendment (Phase 7): the token may be REPLACED, and a frozen handle names one

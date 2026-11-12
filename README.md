@@ -101,7 +101,7 @@ The split buys reuse and costs retention. One trace can be echoed by several rec
 
 A radar is never edited in place: `Radar.replace(...)` and `Radar.to(device)` return a new one, and a radar retains nothing from a run, so a result is the only thing that can say which frame a diagnostic describes.
 
-The root exports the whole happy path in sixteen names: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules.
+The root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules.
 
 Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds. `result.frame(i)` returns the `Frame` that pairs one frame's cube with that metadata; its `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` are facades over that package and compute nothing themselves.
 
@@ -133,8 +133,9 @@ All maintained scene-driven examples require CUDA and Channel.
 
 - Pipeline: `docs/pipeline_guide.md`
 - Development standard: `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`
-- Consolidation plan: `docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md`
-- Governance inventory: `docs/dev/audit/radar-governance-debt-and-drift-inventory.md`
+- Governance and gates: `docs/dev/standards/radar-adr-026-generated-governance-and-trimmed-gates.md`
+- Release deferrals: `docs/dev/release-deferrals.md`
+- History (finished plans, phase records, superseded measurements): `docs/dev/archive/README.md`
 - AD capability matrix: `docs/dev/radar-ad-capability-matrix.md`
 - AD tape/budget ledger: `docs/dev/ad-tape-and-budget-ledger.md`
 

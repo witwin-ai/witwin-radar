@@ -1,6 +1,12 @@
 # R-ADR-012: The kinematics-to-dual seam owns delay rate's input
 
-Status: Accepted (Phase 7)
+Status: Historical (Phase 7; marked historical by R-ADR-026, 2026-11-12)
+
+> **Historical.** The mechanism this record decides - `two_way_duals`, the `DeformationVelocity` protocol,
+> `rotation_centre_m`, and the delay-rate input they fed - does not exist in the current tree (audit finding D-13,
+> `radar_development_plan.md` section 3.4). Kinematics now reach Radar through the sampled world states of the
+> session in `witwin/radar/simulation.py` and `witwin/radar/propagation.py`. The tests cited below that no longer
+> exist, such as `test_a_dead_tangent_is_detectable`, were deleted with it.
 
 ## Context
 

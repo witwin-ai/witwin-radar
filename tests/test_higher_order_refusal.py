@@ -47,26 +47,13 @@ import pytest
 import torch
 import torch.autograd.forward_ad as forward_ad
 from support import ad_boundaries as ab
+from support import autograd_owners
 
 #: Only the per-boundary tests need a device. The structural scan, the
 #: Torch-owned nested-forward pin and the decorator-ordering measurement are
 #: contract questions and run in the default suite, where a regression in the
 #: guard shows up without a GPU.
 gpu = pytest.mark.gpu
-
-
-#: Every registered autograd ``Function`` in the package and the file that owns
-#: it. Written out rather than discovered so that a new ``Function`` added
-#: without a first-order decision fails the structural test below.
-REGISTERED_BACKWARDS = {
-    "witwin/radar/paths.py": 2,
-    "witwin/radar/scattering.py": 2,
-    "witwin/radar/sensors.py": 1,
-    "witwin/radar/synthesis/fmcw.py": 3,
-    "witwin/radar/synthesis/ofdm.py": 1,
-    "witwin/radar/synthesis/pulsed.py": 1,
-    "witwin/radar/frontend.py": 2,
-}
 
 
 def _radar_root() -> pathlib.Path:
@@ -79,36 +66,26 @@ def _radar_root() -> pathlib.Path:
 
 
 def test_every_registered_backward_is_decorated_by_the_one_owner():
-    """Twelve backwards, one decorator, including compact adaptive ADC fusion.
+    """Every ``Function`` in the package carries the one explicit refusal.
 
-    New Function owners must enter this inventory and carry the same explicit
-    refusal; a bare backward could silently publish a partial second derivative.
+    A bare backward could silently publish a partial second derivative. The scan
+    is not vacuous: the modules it finds a ``Function`` in are exactly the
+    modules the binding manifest records as calling a native backward.
     """
 
-    total_functions = 0
-    for relative, expected in REGISTERED_BACKWARDS.items():
-        source = (_radar_root().parent.parent / relative).read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        functions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef)
-            and any(isinstance(base, ast.Attribute) and base.attr == "Function" for base in node.bases)
-        ]
-        assert len(functions) == expected, (relative, len(functions))
-        total_functions += len(functions)
-        for function in functions:
-            backwards = [
-                node for node in function.body if isinstance(node, ast.FunctionDef) and node.name == "backward"
-            ]
-            assert len(backwards) == 1, (relative, function.name)
-            names = {decorator.id for decorator in backwards[0].decorator_list if isinstance(decorator, ast.Name)}
-            assert "first_order_only" in names, (relative, function.name)
-            # The raw decorator cannot be left beside it: applying both would
-            # put the grad-mode check inside the no_grad body and disarm it.
-            assert "once_differentiable" not in names, (relative, function.name)
+    functions = autograd_owners.autograd_functions()
+    assert {relative for relative, _ in functions} == autograd_owners.native_backward_owners()
+    for relative, function in functions:
+        backward = autograd_owners.method(function, "backward")
+        assert backward is not None, (relative, function.name)
+        names = {decorator.id for decorator in backward.decorator_list if isinstance(decorator, ast.Name)}
+        assert "first_order_only" in names, (relative, function.name)
+        # The raw decorator cannot be left beside it: applying both would put
+        # the grad-mode check inside the no_grad body and disarm it.
+        assert "once_differentiable" not in names, (relative, function.name)
+    for relative in {relative for relative, _ in functions}:
+        source = (_radar_root() / relative).read_text(encoding="utf-8")
         assert "once_differentiable" not in source.replace("``once_differentiable``", ""), relative
-    assert total_functions == 12, total_functions
 
 
 def test_the_package_names_no_second_higher_order_rule():

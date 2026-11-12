@@ -6,10 +6,41 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 PATH_TOKEN = re.compile(r"`((?:witwin/radar|ci|tests|examples|docs)/[^`\s:]+(?:\.[A-Za-z0-9]+)?)")
+
+
+class _PathOracle:
+    """Answer "does this repository path exist?" the same way on every platform and checkout.
+
+    A plain ``Path.exists`` makes the answer depend on what the local machine has
+    built: a document naming the Windows prebuilt ``_radar_native.pyd`` passes on
+    a Windows tree that built it and fails on a clean Linux clone. A path the
+    repository's ``.gitignore`` excludes is a build or run product, not a tracked
+    file, so its existence is never asked; every other claimed path must exist in
+    the working tree. Outside a git checkout every path is checked on disk.
+    """
+
+    def __init__(self, repo: Path) -> None:
+        self._repo = repo
+        self._git = (repo / ".git").exists()
+
+    def ignored(self, claimed: list[str]) -> set[str]:
+        if not self._git or not claimed:
+            return set()
+        completed = subprocess.run(
+            ["git", "-C", str(self._repo), "check-ignore", "--stdin"],
+            input="\n".join(claimed),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode not in (0, 1):
+            raise RuntimeError(f"git check-ignore failed: {completed.stderr.strip()}")
+        return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
 
 
 def _python_symbols(path: Path) -> set[str]:
@@ -72,6 +103,50 @@ def _audit_symbol_owner_tables(repo: Path, manifest: dict) -> list[str]:
     return errors
 
 
+ROOT_EXPORT_MARKER = "exports the whole happy path"
+NUMBER_WORDS = {
+    word: value
+    for value, word in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+        "seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four".split()
+    )
+}
+
+
+def _audit_root_exports(repo: Path, manifest: dict) -> list[str]:
+    """A living sentence that lists the root exports lists exactly ``ci/public-api-manifest.json``'s root.
+
+    The sentence is the one containing ``ROOT_EXPORT_MARKER``. Its backticked names must equal the root
+    exports, and a count written next to them must equal their number.
+    """
+
+    if not manifest.get("root_export_lists"):
+        return []
+    public = json.loads((repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8"))
+    exported = set(public["modules"]["witwin.radar"])
+    errors: list[str] = []
+    for relative in manifest.get("root_export_lists", ()):
+        lines = [
+            line for line in (repo / relative).read_text(encoding="utf-8").splitlines() if ROOT_EXPORT_MARKER in line
+        ]
+        if len(lines) != 1:
+            errors.append(
+                f"{relative} must state the root exports in exactly one line containing {ROOT_EXPORT_MARKER!r}"
+            )
+            continue
+        listed = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", lines[0]))
+        if listed != exported:
+            errors.append(
+                f"{relative} lists root exports {sorted(listed)}; the package exports {sorted(exported)} "
+                f"(missing {sorted(exported - listed)}, extra {sorted(listed - exported)})"
+            )
+        for word in re.findall(r"\b([a-z-]+|\d+) names\b", lines[0].lower()):
+            count = int(word) if word.isdigit() else NUMBER_WORDS.get(word)
+            if count is not None and count != len(exported):
+                errors.append(f"{relative} says {word} names; the package root exports {len(exported)}")
+    return errors
+
+
 def _living_documents(repo: Path, manifest: dict, errors: list[str]) -> list[str]:
     """Expand the ``living`` list, resolving a trailing-slash entry to its Markdown files.
 
@@ -108,6 +183,7 @@ def audit(repo: Path) -> list[str]:
     manifest = json.loads((repo / "ci" / "documentation-manifest.json").read_text(encoding="utf-8"))
     errors: list[str] = []
     living = _living_documents(repo, manifest, errors)
+    claims: list[tuple[str, str]] = []
     for relative in living:
         path = repo / relative
         if not path.is_file():
@@ -130,10 +206,15 @@ def audit(repo: Path) -> list[str]:
                 continue
             if claimed in missing_exemptions:
                 continue
-            if not (repo / claimed).exists():
-                errors.append(f"{relative} names missing current path {claimed!r}")
+            claims.append((relative, claimed))
+
+    ignored = _PathOracle(repo).ignored(sorted({claimed for _, claimed in claims}))
+    for relative, claimed in claims:
+        if claimed not in ignored and not (repo / claimed).exists():
+            errors.append(f"{relative} names missing current path {claimed!r}")
 
     errors.extend(_audit_symbol_owner_tables(repo, manifest))
+    errors.extend(_audit_root_exports(repo, manifest))
 
     prefixes = tuple(manifest["historical_prefixes"])
     overlap = [

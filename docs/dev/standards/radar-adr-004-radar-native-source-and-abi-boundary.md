@@ -76,7 +76,7 @@ sources it covers were edited.
 text paired the rename with that relocation. It did not happen and is no longer
 planned. A translation unit's directory is not an ownership statement in this
 repository; `ci/native-binding-manifest.json`'s `native_tu` column is, and it
-maps each of the 34 symbols to its `.cu` file. Moving a file so a directory
+maps each symbol to the `.cu` file that registers its `m.impl`. Moving a file so a directory
 listing reads like a registry would change the build inputs, the
 `source_fingerprint`, and therefore every packaged artifact's identity, in
 exchange for nothing a reader cannot already get from the manifest.
@@ -224,9 +224,11 @@ trip.
 
 ### Manifest
 
-`ci/native-binding-manifest.json` maps every symbol to owner, contract test, and
-end-to-end caller. It is seeded with the six Dirichlet operators plus the three
-new ones. A symbol without a production caller is cleanup debt, not a feature.
+`ci/native-binding-manifest.json` maps every symbol to its translation unit, AD
+group and role, Python owner and calling functions. Since R-ADR-026 every one of
+those columns is generated from the `m.def`/`m.impl` registrations and the
+Python call sites by `python ci/check_native_bindings.py --write`; a symbol
+without a production caller fails that gate.
 
 ### The JIT build directory is keyed by the source set
 
@@ -255,9 +257,9 @@ is not self-evidently fresh.
 The load-time presence check names one operator per family and gates every load
 route, so a stale binary fails at load instead of deep inside a kernel call.
 Adding a family without updating the check is caught by
-`tests/test_native_binding_manifest.py::test_the_load_check_covers_every_operator_family`;
-routing around the check is caught by
-`tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
+`tests/test_native_binding_manifest.py::test_the_load_check_covers_every_native_translation_unit`;
+a library missing a required operator is refused by
+`tests/test_native_binding_manifest.py::test_a_library_missing_a_required_operator_is_refused`.
 
 ## Alternatives rejected
 
@@ -280,7 +282,6 @@ Rejected: one extra `double` on three operators buys both.
 
 - `tests/test_fmcw_beat_kernel.py::test_production_carrier_placement_carries_the_same_doppler`
 - `tests/test_fmcw_beat_kernel.py::test_the_two_carrier_homes_cannot_both_be_used`
-- `tests/test_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
 - `tests/test_fmcw_beat_kernel.py::test_tau_is_the_round_trip_delay_and_is_never_doubled`
 - `tests/test_fmcw_beat_kernel.py::test_conjugation_is_the_only_channel_to_beat_conversion`
 - `tests/test_fmcw_beat_ad.py` (VJP and JVP against the float64 oracle)

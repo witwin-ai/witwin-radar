@@ -83,7 +83,7 @@ def synthesize(kind: str, composed, spec) -> torch.Tensor:
 
     A ``dict.get`` with a fallback here would turn an unknown waveform into
     another waveform's cube, which is the shape of mistake the production
-    dispatch guard in ``test_no_torch_physics.py`` exists to prevent.
+    dispatch refuses by validating the waveform kind at construction.
     Mirroring it in the fixture keeps a typo in a parametrize list from
     silently testing FMCW three times.
     """

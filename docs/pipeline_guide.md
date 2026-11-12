@@ -207,7 +207,7 @@ The pairing is what the seam adds. A caller used to assemble it from a re-viewed
 - `range_profile` defaults to a rectangular window. The FMCW spectrum output domain has already run the range transform, so a fast-time taper there would be applied to the wrong domain and the stage refuses it; pass a taper only when the radar declares the beat output domain.
 - `range_doppler` tapers the slow axis with Hann by default, because the slow axis is never pre-transformed. Its `range_window` keeps the rectangular default for the reason above.
 
-`points()` runs range-Doppler, combines the sensor pairs incoherently so that one threshold means the same thing across the virtual array, applies CA-CFAR and returns a point cloud. It is named for the product rather than for the stage because the detector, angle-estimator and beamformer names are fenced out of every module outside the processing package, by name and with no allowance list, and a facade is not a reason to blunt that fence.
+`points()` runs range-Doppler, combines the sensor pairs coherently - the complex boresight sum `combine_coherent`, then its magnitude - so that one threshold applies to one map across the virtual array, applies CA-CFAR and returns a point cloud. It is named for the product rather than for the stage because the detector, angle-estimator and beamformer names are fenced out of every module outside the processing package, by name and with no allowance list, and a facade is not a reason to blunt that fence.
 
 What `Frame` does not do is widen the surface. It offers one detection route, not a detector menu: a caller who wants a different detector takes `range_doppler()` and calls one from `witwin.radar.processing` on it. The typed products themselves - range profiles, Range-Doppler maps, detections, point clouds - gain no methods, because R-ADR-017 keeps that surface functional.
 
@@ -253,8 +253,7 @@ python -m examples.rgbd_range_doppler --input path/to/depths.npz
 pytest tests/
 pytest tests/ --gpu
 python ci/run_ci_tier.py quick
-python ci/check_required_channel_coverage.py
-python ci/check_workflow_references.py
+python ci/check_workflows.py
 ```
 
 The commands above define how to obtain evidence; they are not themselves evidence that a GPU job, wheel load, or remote workflow has run.

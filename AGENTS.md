@@ -72,12 +72,12 @@ Important static checks include:
 python ci/check_architecture.py
 python ci/check_duplicate_code.py
 python ci/check_documentation_surface.py
-python ci/check_no_compatibility.py
+python ci/check_native_bindings.py
 python ci/check_public_api_manifest.py
-python ci/check_release_claims.py
-python ci/check_required_channel_coverage.py
-python ci/check_workflow_references.py
+python ci/check_workflows.py
 ```
+
+`ci/native-binding-manifest.json` is generated: after adding, renaming or removing a native operator, run `python ci/check_native_bindings.py --write`. Only its `no_backward` and `error_owners` sections are written by hand.
 
 Required-Channel workflows install the Channel extra, record `build_info()["build_fingerprint"]`, and allow zero missing-Channel skips. Do not describe a skipped integration suite as passing.
 
@@ -89,8 +89,8 @@ Release artifacts use exact Torch/CUDA/ABI runtime identity. A loader refusal is
 
 ## Documentation discipline
 
-`README.md`, `FEATURE_LIST.md`, `PERFORMANCE.md`, `docs/pipeline_guide.md`, the AD capability/ledger documents, the completed consolidation record, and the development standards are living documents. Historical records must be labeled historical and must not be treated as current instructions. Never claim a benchmark, GPU suite, wheel load, or remote workflow passed unless that exact action was executed and its evidence was retained.
+`README.md`, `FEATURE_LIST.md`, `PERFORMANCE.md`, `docs/pipeline_guide.md`, the AD capability/ledger documents, the release deferral register, and the development standards are living documents; `ci/documentation-manifest.json` lists them. Finished plans, phase records and superseded measurements live in `docs/dev/archive/`, indexed by its `README.md`; the dated reports in `docs/dev/audit/` are historical too. Historical records must be labeled historical and must not be treated as current instructions. Never claim a benchmark, GPU suite, wheel load, or remote workflow passed unless that exact action was executed and its evidence was retained.
 
 Comments explain invariants, ownership, units, sign/phasor conventions, normalization, numerical choices, and refusal boundaries; they do not narrate syntax. Equations must state their symbols and SI units, sign convention, normalization, validity domain, factor owners, and a test oracle. Channel owns one-way transport; Radar owns round-trip composition, scattering, sensors/frontend, waveform synthesis, and processing. Processing consumes result metadata and never infers a waveform domain from tensor shape.
 
-The completed consolidation record is `docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md`. The normative development standard is `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`. Governance debt and closure evidence are tracked in `docs/dev/audit/radar-governance-debt-and-drift-inventory.md`.
+The normative development standard is `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`. What governance tests and gates are for, and which kinds are not kept, is `docs/dev/standards/radar-adr-026-generated-governance-and-trimmed-gates.md`: behaviour tests and the public-API snapshot are never weakened; a test that only pins source text, layout, line numbers, hashes, counts or milestone history is replaced by a derived check or deleted. Absolute wall-clock budgets run only with `pytest --gpu --benchmark`.

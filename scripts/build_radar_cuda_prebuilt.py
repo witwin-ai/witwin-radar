@@ -17,6 +17,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -57,10 +58,25 @@ def _load_cuda_build_module():
 
 
 def _manifest_symbols() -> list[str]:
+    """The manifest's operator set, refused when it no longer matches ``extension.cpp``.
+
+    The manifest is generated from the ``m.def`` registrations; a build after an
+    operator change but before regeneration would otherwise stamp a sidecar
+    whose operator set omits the new family.
+    """
+
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     symbols = sorted({entry["symbol"] for entry in manifest["operators"]})
     if not symbols:
         raise SystemExit(f"{MANIFEST} declares no operators.")
+    extension = (REPO_ROOT / "witwin" / "radar" / "cuda" / "extension.cpp").read_text(encoding="utf-8")
+    declared = sorted(set(re.findall(r'm\.def\(\s*"(\w+)\(', extension)))
+    if declared != symbols:
+        raise SystemExit(
+            f"{MANIFEST.relative_to(REPO_ROOT)} does not match extension.cpp: only declared "
+            f"{sorted(set(declared) - set(symbols))}, only manifested {sorted(set(symbols) - set(declared))}. "
+            "Run `python ci/check_native_bindings.py --write`."
+        )
     return symbols
 
 
@@ -118,8 +134,8 @@ def main() -> None:
     if missing:
         raise SystemExit(
             f"The freshly built library {module_file} does not register "
-            f"{missing}; refusing to publish it. Update "
-            f"{MANIFEST.relative_to(REPO_ROOT)} or fix the sources."
+            f"{missing}; refusing to publish it. Fix the sources or regenerate "
+            f"{MANIFEST.relative_to(REPO_ROOT)}."
         )
 
     target_dir = cuda_build.prebuilt_root()

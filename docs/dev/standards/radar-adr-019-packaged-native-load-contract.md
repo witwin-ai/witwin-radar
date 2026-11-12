@@ -132,7 +132,7 @@ written in exactly one place (`build.EXTENSION_NAME`).
 | `radar_git_sha` | str | 40 hex, or `unknown` |
 | `radar_git_dirty` | bool | |
 | `source_fingerprint` | str | sha256 over the nine-file source set, names + content |
-| `operator_symbols` | list[str] | sorted, read from `ci/native-binding-manifest.json` at build time |
+| `operator_symbols` | list[str] | sorted, read from `ci/native-binding-manifest.json` at build time; the build refuses a manifest that disagrees with `extension.cpp` |
 | `binary_sha256` | str | sha256 of the produced binary |
 | `build_fingerprint` | str | sha256 over canonical JSON of every field above |
 
@@ -239,7 +239,7 @@ intended.
 - `tests/test_native_loader_contract.py` (22 cases, every load case in a fresh
   subprocess with an explicit environment, asserting on exception type and
   message)
-- `tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`
+- `tests/test_native_binding_manifest.py::test_a_library_missing_a_required_operator_is_refused`
 - `tests/test_native_binding_manifest.py::test_the_jit_build_directory_is_keyed_by_the_source_set`
 - radar suite: `721 passed / 807 skipped` default, `1528 passed / 0 failed`
   with `--gpu` (Phase-9 baseline 699 / 1506, plus the 22 cases above)

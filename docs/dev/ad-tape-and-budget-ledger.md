@@ -244,8 +244,7 @@ than inspected:
 ## What Phase 9 added to the production graph, by category
 
 The phase put roughly a thousand lines of guard and orchestration into the
-package. Every new Torch expression in it falls into exactly two categories, and
-`tests/test_no_torch_physics.py` now pins that there is no third:
+package. Every new Torch expression in it falls into exactly two categories:
 
 1. **Refusal predicates.** `torch.is_grad_enabled`,
    `torch.autograd.forward_ad.unpack_dual`,
@@ -257,13 +256,10 @@ package. Every new Torch expression in it falls into exactly two categories, and
    which is `sqrt(4 pi sigma)/lambda`. It runs once per response rather than
    once per path, off the per-path loop, and every product downstream of it is
    still a native kernel. The capability matrix records its mechanism as
-   `torch-orchestration` for exactly that reason. `scattering.py`'s whole
-   matched Torch set is pinned by equality, so a second arithmetic expression
-   there fails.
+   `torch-orchestration` for exactly that reason.
 
-No `requires_grad` route branch survives in the package:
-`tests/test_no_torch_physics.py::test_no_phase9_guard_branches_on_requires_grad`
-fails on any new one.
+No route in the package branches on `requires_grad`; differentiability is
+declared at typed boundaries and refused by `witwin/radar/policy.py`.
 
 ## Reproducing every number here
 
@@ -272,12 +268,10 @@ conda activate witwin2
 cd <radar worktree>
 python -m pytest -q tests/test_backward_budget.py --gpu --basetemp=<short>
 python -m pytest -q tests/test_tape_containment.py --gpu --basetemp=<short>
-python -m pytest -q tests/test_no_torch_physics.py --basetemp=<short>
 ```
 
 The per-owner rows come from wrapping each `Function`'s `setup_context` and
 reading `ctx.to_save`; `tests/support/ad_boundaries.py` is the fixture and
 `tests/test_backward_budget.py` is the pinned subset. Run on an idle GPU,
-with the packaged prebuilt at
-`witwin/radar/cuda/prebuilt/_radar_native.pyd` - never a JIT
-rebuild inside a test process.
+with the packaged prebuilt in `witwin/radar/cuda/prebuilt/` (the platform's
+`_radar_native` extension module) - never a JIT rebuild inside a test process.

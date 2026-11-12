@@ -127,9 +127,7 @@ exist.
 - `tests/test_channel_adapter.py::test_freeze_is_never_called_per_frame` (a
   counting monkeypatch: two preparations total across five frames)
 - `tests/test_single_site_end_to_end.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
-- `tests/test_import_boundary.py::test_no_hot_path_host_observation_in_the_new_modules`
 - `tests/test_single_site_end_to_end.py::test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients`
-- `tests/test_channel_adapter.py::test_jvp_publishes_delay_rate_and_refuses_to_invent_one`
 
 ## Amendment (Phase 7): a frame of slow-time slots costs one frame
 
@@ -185,40 +183,17 @@ unchanged and still measured at zero.
 - `tests/test_slot_batching.py::test_pair_count_grows_linearly_not_quadratically`
 - `tests/test_slot_batching.py::test_the_batched_replay_is_exactly_one_consumer_call_per_leg`
 
-## Amendment (Phase 10): the record is machine-readable
+## Amendment (Phase 10, superseded by R-ADR-026): the record is machine-readable
 
-"Radar adds zero host observations" and "backward is ONE launch" were prose in
-this document and in R-ADR-004, pinned indirectly by two budget tests. Prose is
-not a registry: a new operator could be added with a second launch and a host
-read and nothing would say so until somebody reread an ADR.
-
-`ci/native-binding-manifest.json` schema 2 carries three columns per operator
-that state it directly, and `ci/check_native_bindings.py` requires every one of
-them on every row:
-
-- `host_observations` - **0 on all 34 operators.** This is the machine-readable
-  form of the section above. A kernel that read a count back to decide a size
-  would have to declare it here.
-- `launches` - 1 on 29 operators and 2 on 5. It is the fusion/launch contract as
-  data rather than as the sentence "Backward: ONE launch", and it is the value
-  a refactor would have to change on purpose.
-- `fused_stages` - what a single launch actually does, mirroring Channel's
-  `runtime/kernel_metadata.py`. A stage list is what makes a `launches` value
-  reviewable: 1 launch over 3 named stages is a fusion, and 1 launch over 1
-  stage is an operator.
-
-The two budget tests are unchanged and remain the measurement;
-`tests/test_synthesis_launch_budget.py` counts launches in a running frame and
-`tests/test_backward_budget.py` counts them in a backward pass. The
-manifest is the DECLARATION, the tests are the MEASUREMENT, and neither
-replaces the other. This amendment adds no number and relaxes none: every
-declared value is the value the existing tests already measure.
-
-Two further registry columns land with them and belong to R-ADR-004's ownership
-half rather than to this budget: `numerical_owner`, which must read `radar` on
-every row so that a RayD-owned or Channel-owned family cannot be registered as
-a Radar shared primitive, and `native_tu`, which maps each symbol to the `.cu`
-file that implements it.
+Phase 10 added hand-written `launches`, `fused_stages` and `host_observations`
+columns to `ci/native-binding-manifest.json` so the budget above would be data
+rather than prose. R-ADR-026 removed them: a hand-transcribed launch count is
+a second, unmeasured copy of what the budget tests already measure, and it had
+to be edited by hand for every new operator family. The manifest is now
+generated from the operator registrations, and the budget is stated once, by
+measurement: `tests/test_synthesis_launch_budget.py` counts launches in a
+running frame, `tests/test_backward_budget.py` counts them in a backward pass,
+and `tests/test_join_host_budget.py` counts host observations.
 
 `error_owners` names the six failure domains and the module that owns each -
 `native_load`, `operator_contract`, `differentiability_wall`, `higher_order_ad`,
@@ -227,10 +202,12 @@ file that implements it.
 its failures are host-side refusals before any launch, so the honest record is
 one owner per domain rather than one device flag.
 
-### Acceptance evidence (Phase 10)
+### Acceptance evidence
 
-- `ci/check_native_bindings.py` (every column present on all 34 operators; the
-  manifest symbol set equals the packaged sidecar's `operator_symbols`)
-- `tests/test_native_binding_registry.py` (the gate fires on a mutated copy)
+- `ci/check_native_bindings.py` (the committed manifest equals what the
+  registrations generate; when a packaged prebuilt is present, its sidecar's
+  `operator_symbols` equal the manifest's)
+- `tests/test_native_binding_manifest.py` (each derived check fires on an edited
+  copy of its inputs)
 - `tests/test_synthesis_launch_budget.py`, `tests/test_backward_budget.py`
-  (unchanged, still the measurement)
+  (the measurement)

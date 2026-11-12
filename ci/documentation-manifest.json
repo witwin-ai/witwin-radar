@@ -9,20 +9,15 @@
     "docs/pipeline_guide.md",
     "docs/dev/ad-tape-and-budget-ledger.md",
     "docs/dev/radar-ad-capability-matrix.md",
+    "docs/dev/release-deferrals.md",
     "docs/dev/standards/",
-    "docs/dev/plans/phase10-deferred-release-matrix.md",
-    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md",
     "examples/music_imaging.py",
     "examples/rgbd_range_doppler.py",
     "examples/single_point.py"
   ],
   "historical_prefixes": [
-    "docs/dev/audit/phase10-",
-    "docs/dev/audit/phase11-",
-    "docs/dev/migration/",
-    "docs/dev/plans/channel-radar-architecture-plan.md",
-    "docs/dev/plans/phase10-acceptance-matrix.md",
-    "docs/dev/plans/stage2-phase4-entry-prep.md"
+    "docs/dev/archive/",
+    "docs/dev/audit/"
   ],
   "retired_living_tokens": [
     "AdaptiveMotionSpec",
@@ -57,14 +52,6 @@
     "witwin/radar/sigproc"
   ],
   "retired_token_exemptions": {
-    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md": {
-      "reason": "Completed removal plan cites deleted compatibility surfaces as historical deletion targets, never as current APIs.",
-      "tokens": [
-        "processing/adapters.py",
-        "witwin.radar.sigproc",
-        "witwin/radar/sigproc"
-      ]
-    },
     "docs/dev/standards/radar-adr-020-scene-binding-and-site-policy.md": {
       "reason": "ScatterSitePolicy was retired from the PUBLIC surface, not from the tree: it remains the internal site-policy record in witwin/radar/simulation.py, and this ADR names it as that internal record.",
       "tokens": [
@@ -72,14 +59,7 @@
       ]
     }
   },
-  "missing_path_exemptions": {
-    "docs/dev/plans/radar-concept-axis-layout-and-module-consolidation-plan.md": {
-      "reason": "Completed removal plan records the deleted adapter path as a completed removal target.",
-      "paths": [
-        "witwin/radar/processing/adapters.py"
-      ]
-    }
-  },
+  "missing_path_exemptions": {},
   "symbol_owner_tables": [
     {
       "path": "docs/dev/radar-ad-capability-matrix.md",
@@ -91,5 +71,9 @@
       "columns": 9,
       "owner_column": 1
     }
+  ],
+  "root_export_lists": [
+    "README.md",
+    "FEATURE_LIST.md"
   ]
 }

@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "witwin>=0.4.0,<0.5",
     "numpy>=1.24",
-    "torch>=2.10",
+    "torch==2.10.0",
     "scipy>=1.10",
 ]
 
@@ -38,7 +38,7 @@ dev = [
     "coverage>=7.0",
     "pytest>=8.0",
     "ruff>=0.15",
-    # ci/check_workflow_policy.py PARSES the workflow YAML rather than grepping
+    # ci/check_workflows.py PARSES the workflow YAML rather than grepping
     # it, so a comment mentioning the right architecture string cannot satisfy a
     # policy check. The `quick` tier runs that gate, so its parser belongs in
     # the extra the tier is installed from.
@@ -62,6 +62,10 @@ dev = [
 # Deliberately no forbidden-runtime token appears in this file:
 # `tests/test_public_api_snapshot.py` scans the whole pyproject text,
 # comments included, and that scan is worth more than a comment is.
+#
+# Channel's wheels cover CPython 3.10-3.13, so the extra carries that marker;
+# on 3.14 `witwin-radar[channel]` installs Radar alone, and Radar's own Python
+# matrix is unchanged.
 channel = [
     "witwin-channel>=0.6.0,<0.7; python_version < '3.14'",
 ]
@@ -95,6 +99,7 @@ path = "hatch_build.py"
 testpaths = ["tests"]
 markers = [
     "gpu: test requires CUDA GPU (use --gpu flag)",
+    "benchmark: absolute wall-clock budget (use --benchmark with --gpu)",
 ]
 
 [tool.ruff]
