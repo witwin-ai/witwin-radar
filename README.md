@@ -25,6 +25,8 @@ pip install witwin-radar[channel]
 
 CUDA is required for propagation and native waveform synthesis. CPU construction and PyTorch signal-processing workflows remain useful without a GPU. Linux and Windows are supported.
 
+The `channel` extra installs `witwin-channel` 0.6 on CPython 3.10-3.13, the versions Channel publishes; on 3.14 it installs nothing, so scene-driven simulation needs 3.10-3.13. Channel chooses its ray-tracing backend when it compiles a scene: OptiX where the driver provides it, otherwise a slower pure-CUDA tracer. `witwin-channel-doctor` reports which one a machine gets and why.
+
 Release policy is explicit and conservative:
 
 - CPython 3.10-3.14;

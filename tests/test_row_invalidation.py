@@ -462,6 +462,76 @@ def test_a_world_mutated_in_place_is_caught_on_the_motion_event_tick():
     assert loop.compile_count == 2
 
 
+def test_c10_an_in_place_edit_between_ticks_is_refused_by_channel_not_replayed():
+    """Plan item C-10: between two motion-event ticks the edit is refused, not answered.
+
+    Radar rehashes the live world only on the tick. On the frames between, the
+    replay reaches Channel with a compiled scene whose source was edited in
+    place, and Channel's consumer compares the structure state recorded at
+    compile time on every ``reevaluate``: it refuses with its own message
+    rather than answering from the old wall. The next tick still detects the
+    edit as ``SOURCE_MUTATION`` and recompiles from a new snapshot; the old
+    compiled scene stays refused, because its source still names the edited
+    mesh.
+    """
+
+    from witwin.core.dynamics import DynamicScene
+
+    scene, mesh = world.make_scene()
+    world.assert_world_coordinates_survived(mesh)
+    loop, state = _epoch_loop(DynamicScene(scene), period=2)
+
+    first = loop.frame(0.0)
+    assert first.reason == FIRST_FRAME
+    _inbound(state.spike)
+    with torch.no_grad():
+        mesh.vertices[:, 0] += 0.5
+
+    between = loop.frame(1.0e-3)
+    assert not between.rediscovered
+    assert loop.compile_count == 1
+    with pytest.raises(ValueError, match="the compiled scene is stale"):
+        _inbound(state.spike)
+
+    tick = loop.frame(2.0e-3)
+    assert tick.reason == SOURCE_MUTATION
+    assert loop.compile_count == 2
+    assert first.compiled.stale_domain() == "geometry_version"
+    assert tick.compiled.stale_domain() is None
+    _inbound(state.spike)
+
+
+def test_c11_a_moving_structure_recompiles_and_never_evaluates_a_stale_scene():
+    """Plan item C-11: per-observation recompiles of a moving wall, measured.
+
+    Channel refits a shared RayD scene in place when the SAME geometry object is
+    recompiled with new vertices, and that retires every compiled scene built
+    on it. A ``DynamicScene`` snapshot is a new set of geometry objects at each
+    instant, so a moving wall, rigid or deformed, rebuilds a RayD scene per
+    compile and no earlier compiled scene goes stale; the count of distinct
+    RayD scenes pins which route was taken. Every frame replays on the scene it
+    just compiled, which is the property that must hold whichever route runs.
+    """
+
+    from test_moving_structures import _LinearWallDeformation
+
+    for dynamic in (
+        world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S),
+        world.make_dynamic_scene(wall_deformation=_LinearWallDeformation()),
+    ):
+        loop, state = _epoch_loop(dynamic, period=None)
+        assert loop.structures_move is True
+        frames = []
+        for index in range(4):
+            frame = loop.frame(index * 1.0e-2)
+            assert frame.compiled.stale_domain() is None
+            _inbound(state.spike)
+            frames.append(frame)
+        assert loop.compile_count == 4
+        assert len({id(frame.compiled.rayd) for frame in frames}) == 4
+        assert [frame.compiled.stale_domain() for frame in frames] == [None] * 4
+
+
 def test_a_declared_trajectory_never_reports_a_source_mutation():
     """The revalidation isolates the live world from the recorded provenance.
 

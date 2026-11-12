@@ -394,7 +394,9 @@ def test_the_mirrored_channel_rows_agree_with_the_live_capability_record():
     pytest.importorskip("witwin.channel")
     from witwin.channel.propagation import consumer
 
-    assert consumer.CONTRACT_VERSION == 6
+    # Version 7 added the discovery source and the completeness flag; the AD
+    # rows mirrored below are unchanged from version 6.
+    assert consumer.CONTRACT_VERSION == 7
     record = consumer.capabilities()
 
     assert record.direction_differentiable_components == frozenset({"los", "reflection"})

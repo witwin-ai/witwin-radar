@@ -293,6 +293,9 @@ def test_no_synthesis_or_physics_module_calls_a_frozen_dsp_primitive():
 #: ``primal_only_ad_inputs`` and ``supports_higher_order_ad`` are ADR-043's.
 #: They are AD vocabulary over propagation leaves and propagation outputs; not
 #: one of them names a processing stage, a bin count, or a detector parameter.
+#:
+#: ``discovery_modes`` is contract 7's: the reflection candidate sources
+#: (``auto``, ``exhaustive``, ``rays``), which are propagation vocabulary.
 EXPECTED_CAPABILITY_FIELDS = frozenset(
     {
         "ad_accounting",
@@ -303,6 +306,7 @@ EXPECTED_CAPABILITY_FIELDS = frozenset(
         "contract_version",
         "differentiable_geometry_outputs",
         "direction_differentiable_components",
+        "discovery_modes",
         "fixed_topology_components",
         "fixed_topology_responses",
         "fixed_topology_row_validity_components",

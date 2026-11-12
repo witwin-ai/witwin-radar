@@ -50,9 +50,13 @@ def _radar(**extra) -> Radar:
 
 
 def test_neither_artifact_is_on_unless_it_is_declared():
-    """The default is the ideal instrument, because a dataset must opt in."""
+    """The default is the ideal instrument, because a dataset must opt in.
 
-    radar = _radar()
+    Construction only, so the radar is placed on the host and the test runs
+    without a CUDA device.
+    """
+
+    radar = _radar(device="cpu")
     assert radar.leakage is None
     assert radar.iq is None
     assert radar.system_config.frontend is None or radar.system_config.frontend.iq is None

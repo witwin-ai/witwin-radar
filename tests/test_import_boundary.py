@@ -50,8 +50,13 @@ RADAR_ROOT = REPO_ROOT / "witwin" / "radar"
 # Modules that must NEVER appear in the process when Radar imports the spike:
 # every Channel solver, the enumerated engine, and the internal propagation
 # contracts. These are the ADR-008 properties and they hold absolutely.
+# Channel 0.6 moved the radiomap solvers to ``radiomap`` and BDPT to
+# ``experimental``; ``deterministic`` and ``montecarlo`` remain only as import
+# paths that raise ``ImportError``, and stay listed so Radar never names them.
 SOLVER_AND_INTERNALS = (
     "witwin.channel.path",
+    "witwin.channel.radiomap",
+    "witwin.channel.experimental",
     "witwin.channel.deterministic",
     "witwin.channel.montecarlo",
     "witwin.channel.propagation.enumerated",
@@ -785,11 +790,15 @@ def test_the_consumer_contract_is_the_version_this_adapter_was_built_against():
     # Version 6 (Channel ADR-043): ``field_direction`` carries a derivative on
     # the fixed-topology route, ``PropagationCapabilities`` publishes the
     # per-route AD record the adapter queries, and ``PropagationDiagnostics``
-    # carries AD launch and tape accounting.
+    # carries AD launch and tape accounting. Version 7 (Channel 0.6) adds
+    # ``PropagationRequest.discovery`` (default ``"auto"``),
+    # ``PropagationEvaluation.complete`` and
+    # ``PropagationCapabilities.discovery_modes``; nothing the adapter reads
+    # changed meaning.
     pytest.importorskip("witwin.channel")
     from witwin.channel.propagation import consumer
 
-    assert consumer.CONTRACT_VERSION == 6
+    assert consumer.CONTRACT_VERSION == 7
     capabilities = consumer.capabilities()
     assert capabilities.fixed_topology_components == frozenset({"los", "reflection"})
     assert capabilities.supports_fixed_topology

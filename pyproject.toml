@@ -53,15 +53,17 @@ dev = [
 # still pulls in no ray-tracing distribution, which the dependency-closure
 # check in the coexistence smoke asserts.
 #
-# Pinned to `<0.6` rather than left open because Channel's propagation consumer
+# Pinned to `<0.7` rather than left open because Channel's propagation consumer
 # contract is versioned and Radar reads it; a new minor Channel is a contract
-# review, not an automatic upgrade.
+# review, not an automatic upgrade. The marker matches Channel's own
+# `requires-python` (3.10-3.13): on Python 3.14 the extra installs nothing
+# rather than failing to resolve, and Radar's own Python matrix is unchanged.
 #
 # Deliberately no forbidden-runtime token appears in this file:
 # `tests/test_public_api_snapshot.py` scans the whole pyproject text,
 # comments included, and that scan is worth more than a comment is.
 channel = [
-    "witwin-channel>=0.5.0,<0.6",
+    "witwin-channel>=0.6.0,<0.7; python_version < '3.14'",
 ]
 # `witwin.radar.smpl` imports both at first use; the SMPL model files are
 # chumpy pickles that the module unpickles itself, so chumpy is not needed.

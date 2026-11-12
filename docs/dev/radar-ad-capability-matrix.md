@@ -38,7 +38,15 @@ Radar's acceptance cannot depend on reading another repository's file at test
 time, so the Channel rows Radar actually consumes are mirrored here and pinned
 against the live `witwin.channel.propagation.consumer.capabilities()` record by
 `tests/test_import_boundary.py::test_the_consumer_contract_is_the_version_this_adapter_was_built_against`.
-The authority is Channel ADR-043 and consumer `CONTRACT_VERSION` 6.
+The authority is Channel ADR-043 and consumer `CONTRACT_VERSION` 7 (Channel
+0.6.0). Version 7 added the reflection discovery source and the completeness
+flag; every row mirrored below reads the same in Channel 0.6.0's propagation AD
+capability matrix as it did at version 6.
+
+A forward-mode tangent on mesh vertices is refused by Channel 0.6.0 at compile: RayD's finite-vertex check
+reduces the vertex buffer with `aminmax`, which has no forward-AD formula, so compiling a mesh whose vertices
+carry a dual raises `NotImplementedError` before any propagation. Channel's own matrix lists only the reverse
+mode for vertices. The two vertex-tangent tests are strict xfails until Channel checks the primal.
 
 Radar requests exactly one response, `scalar_transport`, with
 `components <= {los, reflection}`, always on the fixed-topology route. Every
@@ -48,7 +56,7 @@ mirrored row below is therefore a row Radar can actually reach.
 |---|---|---|---|---|---|---|---|
 | reevaluate/prepared | endpoint positions | both | SUP | native-companion | witwin/radar/channel.py::ChannelPropagationAdapter.reevaluate_slots | tests/test_single_site_end_to_end.py::test_reverse_mode_loss_gradients_match_the_oracle, tests/test_reflection_ad.py::test_reverse_mode_site_gradients_match_finite_differences | fd |
 | reevaluate/prepared | mesh vertices | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_mesh_vertex_gradient_reaches_a_synthesized_fmcw_loss | fd |
-| reevaluate/prepared | mesh vertices | jvp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient | adjoint |
+| reevaluate/prepared | mesh vertices | jvp | REF | native-declared | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient | refusal |
 | reevaluate/prepared | mesh vertices, in-plane components | both | ZERO | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct | analytic |
 | reevaluate/prepared | material eps_r | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss | fd |
 | reevaluate/prepared | material eps_r, beside an endpoint tangent | jvp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_vertices_permittivity_and_endpoints_are_live_in_one_call | fd |

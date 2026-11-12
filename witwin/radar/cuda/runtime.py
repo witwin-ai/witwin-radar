@@ -635,9 +635,21 @@ def _cuda_gencode_flags() -> list[str]:
     return flags
 
 
-def _conda_torch_ldflags() -> list[str]:
+def _link_flags() -> list[str]:
+    """Extra linker flags, so the library records only the runtimes it references.
+
+    ``torch.utils.cpp_extension`` always passes ``-ltorch_python`` unless the
+    target is a standalone executable. MSVC's linker records a DLL only when a
+    symbol is taken from it, but GNU ld records every ``-l`` it is given, so a
+    Linux build would name ``libtorch_python.so`` (and through it the Python C
+    API) although this dispatcher library uses no symbol from it.
+    ``--as-needed`` precedes every ``-l`` torch appends and makes the ELF
+    ``DT_NEEDED`` list the set of libraries actually referenced, the same set
+    the PE import table holds; ``ci/check_extension_boundary.py`` gates both.
+    """
+
     if os.name != "nt":
-        return []
+        return ["-Wl,--as-needed"]
     library_lib = Path(sys.prefix) / "Library" / "lib"
     if (library_lib / "c10.lib").exists():
         return [f"/LIBPATH:{library_lib}"]
@@ -886,7 +898,7 @@ def _jit_build_extension(*, verbose: bool = False):
         extra_include_paths=[str(root)],
         extra_cflags=(["/O2", f"/D{target_flag}"] if os.name == "nt" else ["-O3", f"-D{target_flag}"]),
         extra_cuda_cflags=["-O3", f"-D{target_flag}", "-DUSE_CUDA", *_cuda_gencode_flags()],
-        extra_ldflags=_conda_torch_ldflags(),
+        extra_ldflags=_link_flags(),
         is_python_module=False,
         verbose=verbose,
     )
