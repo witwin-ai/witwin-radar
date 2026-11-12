@@ -2,7 +2,7 @@
 # Usage: source scripts/dev_env.sh   (then run Python and pytest from the worktree root)
 #
 # RADAR_DEV_CONDA_ENV   conda env to activate, default radar-rel (Channel 0.6.0, used read-only)
-# RADAR_DEV_TOOLS_BIN   directory holding pinned ruff/mypy/clang-format; put first on PATH when given
+# RADAR_DEV_TOOLS_BIN   directory holding pinned ruff/mypy/clang-format; appended to PATH (it may hold its own python)
 # CUDA_VISIBLE_DEVICES  set to 1 unless already set
 # The native library is built separately with scripts/dev_build.sh.
 
@@ -22,7 +22,7 @@ _radar_dev_env() {
     if [[ -n ${RADAR_DEV_TOOLS_BIN:-} ]]; then
         case ":$PATH:" in
             *":$RADAR_DEV_TOOLS_BIN:"*) ;;
-            *) export PATH=$RADAR_DEV_TOOLS_BIN:$PATH ;;
+            *) export PATH=$PATH:$RADAR_DEV_TOOLS_BIN ;;
         esac
     fi
     echo "dev_env.sh: conda env $env, CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
