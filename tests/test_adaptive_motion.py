@@ -9,7 +9,6 @@ import torch
 from support.simulate_fixture import fixture_radar, point_targets, static_scene
 
 from witwin.radar import Motion, Noise
-from witwin.radar.simulation import AdaptiveMotionSpec
 
 pytestmark = pytest.mark.gpu
 
@@ -194,17 +193,17 @@ def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():
 
 @pytest.mark.parametrize("options", [{"phase_error": float("nan")}, {"batch_observations": 0}, {"nodes": 1}])
 def test_adaptive_options_refuse_invalid_values(options):
-    """The public knobs are validated where they are turned into the spec."""
+    """The public knobs are validated when the sampling record is built."""
 
     with pytest.raises(ValueError):
-        Motion.adaptive(**options)._adaptive_spec()
+        Motion.adaptive(**options)
 
 
 @pytest.mark.parametrize("baseline", [0, 1])
 def test_short_lived_topology_event_is_refined_without_blending_path_identities(baseline):
     from types import SimpleNamespace
 
-    from witwin.radar.simulation import _adaptive_echo, _adaptive_trace
+    from witwin.radar.adaptive import echo_adaptive_frame, trace_adaptive_frame
     from witwin.radar.synthesis.assembly import FmcwSpec
 
     # Long enough that the default order's nine-instant grid can accept whole
@@ -225,7 +224,11 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
                 pair_offsets=torch.tensor([0, count], device="cuda", dtype=torch.int64),
             )
             records.append(
-                (SimpleNamespace(topology_complete=False, rediscovered=True), None, paths, tuple(range(count)))
+                SimpleNamespace(
+                    epoch_frame=SimpleNamespace(topology_complete=False, rediscovered=True),
+                    composed=paths,
+                    identity=tuple(range(count)),
+                )
             )
         return records
 
@@ -233,9 +236,10 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
     # reads it. Calling them in sequence here is what the production route
     # does, and it keeps this test measuring the refinement rather than the
     # seam between them.
-    options = AdaptiveMotionSpec()
-    table, stats, _, _ = _adaptive_trace(times, evaluate, spec, options, 77e9)
-    result, _ = _adaptive_echo(table, spec, options, 77e9, None)
+    motion = Motion.adaptive()
+    frame = trace_adaptive_frame(np.asarray(times), evaluate, spec, motion, 77e9)
+    table, stats = frame.table, frame.stats
+    result, _ = echo_adaptive_frame(table, spec, motion.batch_observations, 77e9, None)
     expected = torch.tensor([float(baseline + int(60e-6 <= t <= 68e-6)) for t in times], device="cuda")
     torch.testing.assert_close(result[0, 0].real, expected, rtol=0, atol=0)
     assert stats["topology_refinements"] > 0

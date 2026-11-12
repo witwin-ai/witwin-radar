@@ -1008,7 +1008,7 @@ class RoundTripPatternStage:
             pattern_frame=self.pattern_frame,
         )
 
-    def _for_slots(self, count: int) -> RoundTripPatternStage:
+    def for_slots(self, count: int) -> RoundTripPatternStage:
         """Replicate routing for slot-major endpoints, sharing antenna tables."""
 
         slot = torch.arange(count, device=self.tx_index.device, dtype=torch.int64)[:, None]

@@ -37,9 +37,9 @@ from support import multi_endpoint_world as world
 from support.simulate_fixture import SITE_POSITIONS_M, fixture_radar, fixture_targets, static_scene
 
 from witwin.radar import Motion, PointTargets, Radar, Result, StructureTargets
+from witwin.radar.binding import StableIdAllocator
 from witwin.radar.paths import RadarPathBatch
 from witwin.radar.propagation import RadarLegBatch, RadarPropagationLegs
-from witwin.radar.simulation import StableIdAllocator
 
 pytestmark = pytest.mark.gpu
 

@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import torch
 
-from witwin.radar.paths import _interpolate_indexed_rows, interpolate_path_rows
-from witwin.radar.simulation import _lagrange_weights
+from witwin.radar.adaptive import lagrange_weights
+from witwin.radar.paths import interpolate_indexed_rows, interpolate_path_rows
 
 pytestmark = pytest.mark.gpu
 
@@ -35,7 +35,7 @@ def test_indexed_probe_table_matches_oracle_with_repeated_indices_and_ad(nodes):
     def loss(value):
         return value[0].sum() * 1e8 + value[1].real.sum() + 0.3 * value[1].imag.sum()
 
-    actual = _interpolate_indexed_rows(samples, indices, weights, FC)
+    actual = interpolate_indexed_rows(samples, indices, weights, FC)
     expected = reference(samples)
     for a, b in zip(actual, expected, strict=True):
         torch.testing.assert_close(a, b, rtol=2e-6, atol=1e-7)
@@ -46,7 +46,7 @@ def test_indexed_probe_table_matches_oracle_with_repeated_indices_and_ad(nodes):
     direction[:, 0] *= 1e-12
     with torch.autograd.forward_ad.dual_level():
         dual = torch.autograd.forward_ad.make_dual(samples.detach(), direction)
-        result = _interpolate_indexed_rows(dual, indices, weights, FC)
+        result = interpolate_indexed_rows(dual, indices, weights, FC)
         oracle = reference(dual)
         for a, b in zip(result, oracle, strict=True):
             torch.testing.assert_close(
@@ -61,11 +61,11 @@ def test_empty_indexed_probe_queries_and_basis_refusal():
     samples = torch.empty((0, 3), device="cuda", dtype=torch.float64, requires_grad=True)
     indices = torch.empty((0, 2), device="cuda", dtype=torch.int64)
     weights = torch.empty((0, 2), device="cuda", dtype=torch.float64)
-    delay, transfer = _interpolate_indexed_rows(samples, indices, weights, FC)
+    delay, transfer = interpolate_indexed_rows(samples, indices, weights, FC)
     assert delay.numel() == transfer.numel() == 0
     assert torch.autograd.grad(delay.sum() + transfer.real.sum(), samples)[0].shape == samples.shape
     with pytest.raises(RuntimeError, match="partition"):
-        _interpolate_indexed_rows(samples, indices, weights.requires_grad_(), FC)
+        interpolate_indexed_rows(samples, indices, weights.requires_grad_(), FC)
 
 
 def _basis(query, nodes):
@@ -196,8 +196,8 @@ def test_a_higher_order_basis_tracks_curvature_a_linear_one_cannot():
 def test_the_production_basis_matches_the_independent_one():
     nodes = np.asarray([[0.0, 1e-4, 2.5e-4, 4e-4, 6e-4], [1e-3, 1.1e-3, 1.25e-3, 1.4e-3, 1.6e-3]])
     query = np.asarray([1.7e-4, 1.32e-3])
-    np.testing.assert_allclose(_lagrange_weights(query, nodes), _basis(query, nodes), rtol=1e-12, atol=1e-14)
-    np.testing.assert_allclose(_lagrange_weights(query, nodes).sum(axis=1), 1.0, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(lagrange_weights(query, nodes), _basis(query, nodes), rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(lagrange_weights(query, nodes).sum(axis=1), 1.0, rtol=0, atol=1e-12)
 
 
 def test_interpolation_refuses_a_misshaped_node_set():

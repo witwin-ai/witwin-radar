@@ -9,8 +9,12 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 ## Concept-axis layout
 
 - `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat-configuration loader.
-- `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py` and the site binding in `simulation.py`; nothing here computes either.
-- `witwin/radar/simulation.py` — scene-session orchestration, the `Motion` sampling record, the `Paths` the world half retains, and the `Result` and `Frame` records the instrument half publishes.
+- `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py` and the site binding in `binding.py`; nothing here computes either.
+- `witwin/radar/simulation.py` — scene-session orchestration: the typed `Session` record, the `WorldHalf` that owns the epoch loop and every Channel call, the instrument half (`echo_frame` and the one synthesis dispatch), and the `Paths` the world half retains.
+- `witwin/radar/motion.py` — the `Motion` sampling record and its adaptive tolerances.
+- `witwin/radar/binding.py` — binding one radar to one snapshot: stable IDs, the scatter-site policy, `SensorEndpointIds`, and the endpoint specs the legs consume.
+- `witwin/radar/adaptive.py` — adaptive motion control: the host-side probe refinement and the interpolated echo of its accepted partition.
+- `witwin/radar/results.py` — the `Result` and `Frame` records the instrument half publishes.
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
 - `witwin/radar/paths.py` — two-way round-trip path contracts and composition.
@@ -75,9 +79,12 @@ python ci/check_documentation_surface.py
 python ci/check_native_bindings.py
 python ci/check_public_api_manifest.py
 python ci/check_workflows.py
+python -m mypy --config-file ci/mypy.ini
 ```
 
 `ci/native-binding-manifest.json` is generated: after adding, renaming or removing a native operator, run `python ci/check_native_bindings.py --write`. Only its `no_backward` and `error_owners` sections are written by hand.
+
+`ci/mypy.ini` types the scene-session modules (`simulation`, `motion`, `binding`, `adaptive`, `results`, `paths`, `propagation`) strictly; widen its `files` list as other modules gain annotations.
 
 Required-Channel workflows install the Channel extra, record `build_info()["build_fingerprint"]`, and allow zero missing-Channel skips. Do not describe a skipped integration suite as passing.
 

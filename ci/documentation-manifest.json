@@ -53,7 +53,7 @@
   ],
   "retired_token_exemptions": {
     "docs/dev/standards/radar-adr-020-scene-binding-and-site-policy.md": {
-      "reason": "ScatterSitePolicy was retired from the PUBLIC surface, not from the tree: it remains the internal site-policy record in witwin/radar/simulation.py, and this ADR names it as that internal record.",
+      "reason": "ScatterSitePolicy was retired from the PUBLIC surface, not from the tree: it remains the internal site-policy record in witwin/radar/binding.py, and this ADR names it as that internal record.",
       "tokens": [
         "ScatterSitePolicy"
       ]

@@ -25,8 +25,8 @@ def main():
     args = parser.parse_args()
     body = walk.WalkingBody(args.motion, args.model_root, 128, 10)
     session = walk.make_session(body, {**walk.WALK_RADAR, "output_domain": "beat"})
-    before = benchmark.load_snapshot("witwin.radar._profile_before", args.baseline / "simulation.py")
-    echoes = {"baseline": before._adaptive_echo, "current": simulation._adaptive_echo}
+    before = benchmark.load_snapshot("witwin.radar._profile_before", args.baseline / "adaptive.py")
+    echoes = {"baseline": before.echo_adaptive_frame, "current": simulation.echo_adaptive_frame}
 
     def run(name):
         original = echoes[name]
@@ -35,7 +35,7 @@ def main():
             with torch.cuda.nvtx.range(f"{name}/adaptive_echo"):
                 return original(*args, **kwargs)
 
-        with patch.object(simulation, "_adaptive_echo", echo):
+        with patch.object(simulation, "echo_adaptive_frame", echo):
             with torch.cuda.nvtx.range(f"{name}/motion_to_adc"):
                 return walk.completed(lambda: walk.simulate(*session, 2.3))
 

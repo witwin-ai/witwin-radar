@@ -1,1076 +1,238 @@
-"""Scene-driven radar assembly with motion evaluated at waveform observation times.
+"""Scene-session orchestration: the world half, the instrument half, and their fusion.
 
 Core owns geometry and authored motion; Channel evaluates each one-way path;
-Radar composes the round trip and synthesizes the waveform. Dynamic observations
-refresh the complex transport, so no parameter JVP is interpreted as velocity.
-Topology is rediscovered at every observation by default: replay alone cannot
-identify new paths. An explicitly longer discovery cadence is reported as an
-incomplete path set. No velocity is inferred by subtracting adjacent path rows.
+Radar composes the round trip and synthesizes the waveform. Dynamic
+observations refresh the complex transport, so no parameter JVP is interpreted
+as velocity. Topology is rediscovered at every observation by default: replay
+alone cannot identify new paths. An explicitly longer discovery cadence is
+reported as an incomplete path set. No velocity is inferred by subtracting
+adjacent path rows.
+
+All four public verbs run one :class:`Session`, opened by
+:func:`open_session`: :meth:`~witwin.radar.Radar.trace` drains its frame traces
+into a :class:`Paths`, and :meth:`~witwin.radar.Radar.simulate`,
+:meth:`~witwin.radar.Radar.stream` and :meth:`~witwin.radar.Radar.echo` hand
+each one to :func:`echo_frame`. :class:`WorldHalf` owns the epoch loop and every
+Channel call; :func:`echo_frame` drives every synthesis launch outside the
+adaptive route, through the radar's own waveform dispatch, and
+:mod:`witwin.radar.adaptive` drives that route's.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 from witwin.core.dynamics import DynamicScene
 
-from .propagation import (
-    FrozenEpoch,
-    Kinematics,
-    RadarEndpointSpec,
-    RadarPropagationLegs,
-    SceneEpochLoop,
-    endpoint_kinematics,
-)
+from .adaptive import AdaptiveTable, echo_adaptive_frame, trace_adaptive_frame
+from .binding import SITE_SOURCE_EXPLICIT, RadarWorldBinding, ScatterSitePolicy, SensorEndpointIds, bind_radar_world
+from .motion import Motion
+from .propagation import EpochFrame, FrozenEpoch, RadarEndpointSpec, RadarPropagationLegs, SceneEpochLoop
+from .results import Result, SceneFrame, assemble
 
-#: The three default ID bases, chosen far above Core's own counters.
-#:
-#: ``witwin.core.identity`` allocates structure, material, assignment and
-#: antenna IDs from zero-based process counters, and a radar endpoint ID that
-#: collided with one of those would be two different things wearing one name in
-#: the same world. Starting each block at a distinct million keeps the three
-#: radar blocks apart from each other AND clear of any plausible Core counter,
-#: while staying small enough to read in a failure message.
-DEFAULT_TRANSMITTER_ID_BASE = 1_000_000
-DEFAULT_RECEIVER_ID_BASE = 2_000_000
-DEFAULT_SITE_ID_BASE = 3_000_000
+if TYPE_CHECKING:
+    from .paths import RadarPathBatch, TwoWayComposer
+    from .radar import PropagationConfig, Radar
+    from .scattering import ScatterResponse
+    from .sensors import Pattern, RoundTripPatternStage, SensorArraySpec
+    from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec, SlowTimeMode, SynthesisResult
 
-#: The world-frame endpoint polarization used when a caller declares none.
-#:
-#: Channel's endpoint polarization is a WORLD-frame vector. Channel owns the
-#: material-field projection exactly once; the radar sensor stage receives the
-#: resulting complex transfer and therefore has no polarization input.
-DEFAULT_POLARIZATION = (0.0, 0.0, 1.0)
+    WaveformSpec = FmcwSpec | OfdmSpec | PulsedSpec
 
 
-@dataclass(frozen=True, slots=True)
-class AdaptiveMotionSpec:
-    """Sampled error control, not a proof of absent events between probes.
-
-    The phase tolerance is radians per path, before coherent summation; the
-    amplitude tolerance is relative per path. Near coherent nulls a relative IQ
-    bound cannot be inferred from these path bounds. Exhausting the discovery
-    budget raises.
-
-    ``max_interval_s`` is the MAXIMUM PROBE SPACING in seconds and it always
-    applies: no accepted interval spans more than this, so the probe grid is
-    never coarser than ``max_interval_s / (2 * (interpolation_nodes - 1))``.
-    LOWERING it refines the grid. Every tolerance here is checked by sampling,
-    so it bounds only what it samples: motion periodic at the grid's step, or
-    at a divisor of it, sits at a zero of every probe and is invisible to all
-    of these tests. This bound is what sets that step, and it is therefore an
-    accuracy control as much as a topology one. It is NOT relaxed for a
-    topologically certified family: the certification says no path can be born,
-    not that no path moves fast. Within the bound the run starts from the
-    coarsest partition it allows rather than bisecting down to it. Set it from
-    the motion's bandwidth; the default 2 ms resolves roughly 250 Hz at two
-    nodes.
-
-    ``interpolation_nodes`` is how many sampled instants carry one accepted
-    interval, and therefore the polynomial order of the delay it interpolates:
-    the default 2 is the linear rule and 5 is a quartic. Each interval probes a
-    grid of ``2 * (nodes - 1) + 1`` instants, spends the even ones as
-    interpolation nodes and tests the error at the odd ones.
-
-    Raise it when the PHASE TEST is what shortens your intervals, which is
-    micro-Doppler at a high carrier: on a 4.096 ms frame of an 80 Hz rotor,
-    2/3/5 nodes measured 38/21/25 probes and 36.0/22.2/21.7 ms per frame. Leave
-    it at 2 when the bound above decides the length instead, because then the
-    order cannot reduce the interval count and only multiplies each interval's
-    grid: the same measurement on a 24.96 ms MIMO frame gave 27/53/105 probes
-    and 95.5/166.7/173.5 ms for one unchanged 13-interval partition. Raising it
-    never makes a coarse grid safe - the grid still has to resolve the motion.
-    """
-
-    phase_error_rad: float = 0.02
-    relative_amplitude_error: float = 0.02
-    max_interval_s: float = 0.002
-    interpolation_nodes: int = 2
-    max_evaluations: int = 8192
-    batch_observations: int = 256
-
-    def __post_init__(self):
-        for name in ("phase_error_rad", "relative_amplitude_error", "max_interval_s"):
-            value = getattr(self, name)
-            if isinstance(value, torch.Tensor) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f"{name} must be a finite positive host value")
-        for name in ("max_evaluations", "batch_observations"):
-            _positive_int(getattr(self, name), name=name)
-        if _positive_int(self.interpolation_nodes, name="interpolation_nodes") < 2:
-            raise ValueError("interpolation_nodes must be at least 2; one node cannot interpolate")
-
-
-MOTION_KINDS = ("auto", "static", "chirp", "adc", "adaptive")
-
-
-@dataclass(frozen=True, slots=True)
-class Motion:
-    """How often the world is resampled inside one frame.
-
-    Build one with :meth:`auto`, :meth:`static`, :meth:`chirp`, :meth:`adc` or
-    :meth:`adaptive`. The constructors are the only way to spell a sampling
-    choice, so a tolerance without adaptive sampling, or a discovery cadence
-    with it, is unwritable rather than refused.
-
-    The tolerance fields belong to :meth:`adaptive` and are ignored by every
-    other kind. They are fields of this one record rather than a second object
-    because a sampling choice and the error budget that justifies it are one
-    statement.
-    """
-
-    kind: str = "auto"
-    #: Adaptive: the largest tested round-trip phase error an accepted interval
-    #: may carry, rad.
-    phase_error: float = 0.02
-    #: Adaptive: the largest tested relative amplitude error, dimensionless.
-    relative_amplitude_error: float = 0.02
-    #: Adaptive: the maximum probe spacing, s. Enforced unconditionally,
-    #: including for a family certified complete for all time. Every tolerance
-    #: here is checked by sampling and therefore cannot see motion periodic at
-    #: the probe grid's step; this bound is what sets that step.
-    max_interval: float = 0.002
-    #: Adaptive: how many sampled instants one accepted interval interpolates
-    #: through. Two is the linear rule and five is a quartic.
-    nodes: int = 2
-    #: Adaptive: the discovery budget. Exhausting it raises rather than
-    #: returning an unchecked cube.
-    max_evaluations: int = 8192
-    #: Adaptive: observations per batched replay.
-    batch_observations: int = 256
-    #: Topology rediscovery cadence in frames. ``None`` rediscovers at every
-    #: observation, which is the only cadence that cannot miss a path birth.
-    rediscover_every_frames: int | None = None
-    #: Channel's replay vocabulary for compiled geometry.
-    world: str = "frozen_world"
-
-    def __post_init__(self) -> None:
-        if self.kind not in MOTION_KINDS:
-            raise ValueError(f"Motion.kind must be one of {list(MOTION_KINDS)}, got {self.kind!r}")
-
-    @classmethod
-    def auto(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Resample at every ADC instant when anything moves, else once a frame.
-
-        "Anything moves" is a property of the session, not of this record:
-        structure trajectories or deformations, endpoint trajectories, a target
-        trajectory, or a receiver with oscillator phase noise, which needs
-        ADC-time observations to place its delayed phase difference.
-        """
-
-        return cls(kind="auto", rediscover_every_frames=rediscover_every_frames, world=world)
-
-    @classmethod
-    def static(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """One observation per frame. Refused for a world that moves."""
-
-        return cls(kind="static", rediscover_every_frames=rediscover_every_frames, world=world)
-
-    @classmethod
-    def chirp(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Stop and hop: geometry frozen within each chirp, symbol or pulse."""
-
-        return cls(kind="chirp", rediscover_every_frames=rediscover_every_frames, world=world)
-
-    @classmethod
-    def adc(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Resample at every ADC instant. The exhaustive reference."""
-
-        return cls(kind="adc", rediscover_every_frames=rediscover_every_frames, world=world)
-
-    @classmethod
-    def adaptive(
-        cls,
-        *,
-        phase_error: float = 0.02,
-        relative_amplitude_error: float = 0.02,
-        max_interval: float = 0.002,
-        nodes: int = 2,
-        max_evaluations: int = 8192,
-        batch_observations: int = 256,
-        rediscover_every_frames: int | None = None,
-        world: str = "frozen_world",
-    ) -> Motion:
-        """Interpolate between error-controlled probes. FMCW only.
-
-        Faster than :meth:`adc` by 3 to 64 times on the measured scenes, and it
-        certifies nothing between its probes: an arbitrarily brief path birth
-        or oscillation is invisible to a sampled test. The run publishes
-        ``path_set_complete`` and ``motion_sampling_exhaustive`` separately so
-        that limit is readable rather than implied.
-        """
-
-        return cls(
-            kind="adaptive",
-            phase_error=phase_error,
-            relative_amplitude_error=relative_amplitude_error,
-            max_interval=max_interval,
-            nodes=nodes,
-            max_evaluations=max_evaluations,
-            batch_observations=batch_observations,
-            rediscover_every_frames=rediscover_every_frames,
-            world=world,
-        )
-
-    def _adaptive_spec(self) -> AdaptiveMotionSpec:
-        return AdaptiveMotionSpec(
-            phase_error_rad=float(self.phase_error),
-            relative_amplitude_error=float(self.relative_amplitude_error),
-            max_interval_s=float(self.max_interval),
-            interpolation_nodes=int(self.nodes),
-            max_evaluations=int(self.max_evaluations),
-            batch_observations=int(self.batch_observations),
-        )
-
-
-#: A scatter site is excited at exactly one watt.
-#:
-#: The site is a re-radiator, not a second transmitter: the whole target
-#: strength lives in the two-way join's ``S = sqrt(4 pi sigma) / lambda``
-#: factor. A site excitation of anything but unit power multiplies that factor
-#: again, and with a transmit power of 1 W the extra ``sqrt(P)`` is numerically
-#: invisible - which is exactly how a squared transmit power ships.
-SITE_EXCITATION_POWER_W = 1.0
-
-#: Where scatter sites may come from. Both are declarations by the caller or by
-#: Core; neither derives a site from geometry.
-SITE_SOURCE_EXPLICIT = "explicit"
-SITE_SOURCE_STRUCTURE_ANCHOR = "structure_anchor"
-SITE_SOURCES = (SITE_SOURCE_EXPLICIT, SITE_SOURCE_STRUCTURE_ANCHOR)
-
-_MESH_SITE_DEFERRAL = (
-    "deriving scatter sites by sampling a structure's MESH is deferred by "
-    "R-ADR-020. A sampling rule is a geometry algorithm, and "
-    "geometry on a production path belongs to Channel's native geometry owner, "
-    "not to a Torch expression in Radar. Declare the sites instead - "
-    "PointTargets(positions=...) - or give the structure a rigid "
-    "motion so that Core publishes a world anchor for it"
-)
-
-
-def _positive_int(value: object, *, name: str) -> int:
-    if type(value) is not int or value < 1:
-        raise ValueError(f"{name} must be a positive int, got {value!r}")
-    return value
-
-
-@dataclass(frozen=True, slots=True)
-class StableIdAllocator:
-    """Deterministic stable world IDs for one radar's endpoints and sites.
-
-    Three contiguous blocks, one per endpoint role, each starting at a declared
-    base. An ID is therefore a pure function of ``(role, array index)`` and of
-    nothing else: not of construction order, not of the process, not of how many
-    frames have been simulated. That is the property a frozen leg topology
-    depends on, because it names its rows by ``source_id`` and ``sink_id`` and a
-    later frame must be able to say it is talking about the same endpoints.
-
-    The blocks are checked for overlap when they are allocated rather than when
-    they are declared, because whether two bases collide depends on the counts.
-    An overlap is refused: two endpoints sharing a stable ID is not a smaller
-    answer, it is a leg that joins the wrong rows and still publishes a full
-    result.
-    """
-
-    transmitter_base: int = DEFAULT_TRANSMITTER_ID_BASE
-    receiver_base: int = DEFAULT_RECEIVER_ID_BASE
-    site_base: int = DEFAULT_SITE_ID_BASE
-
-    def __post_init__(self) -> None:
-        for name in ("transmitter_base", "receiver_base", "site_base"):
-            value = getattr(self, name)
-            if type(value) is not int or value < 0:
-                raise ValueError(f"{name} must be a non-negative int, got {value!r}")
-
-    def allocate(
-        self, *, transmitter_count: int, receiver_count: int, site_count: int
-    ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
-        """The three ID tuples, in array order, with the blocks proved disjoint."""
-
-        counts = (
-            _positive_int(transmitter_count, name="transmitter_count"),
-            _positive_int(receiver_count, name="receiver_count"),
-            _positive_int(site_count, name="site_count"),
-        )
-        bases = (self.transmitter_base, self.receiver_base, self.site_base)
-        names = ("transmitter", "receiver", "site")
-        blocks = tuple(tuple(range(base, base + count)) for base, count in zip(bases, counts, strict=True))
-        for first in range(len(blocks)):
-            for second in range(first + 1, len(blocks)):
-                low, high = bases[first], bases[second]
-                if low < high + counts[second] and high < low + counts[first]:
-                    raise ValueError(
-                        f"the {names[first]} ID block "
-                        f"[{bases[first]}, {bases[first] + counts[first]}) "
-                        f"overlaps the {names[second]} block "
-                        f"[{bases[second]}, {bases[second] + counts[second]}); "
-                        "two endpoints cannot share one stable world ID"
-                    )
-        return blocks
+# ---------------------------------------------------------------------------
+# Records
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class ScatterSitePolicy:
-    """Where the scatter sites of one binding come from, declared explicitly.
+class FrozenRoundTrip:
+    """What one topology epoch freezes besides its two leg handles.
 
-    Two sources, and the restriction is the design rather than an unfinished
-    edge:
-
-    ``explicit``
-        The caller hands over an ``(S, 3)`` tensor (or a sequence of triples) of
-        world positions. A live tensor is passed through UNTOUCHED, so a
-        ``requires_grad`` leaf or a forward-AD dual keeps its tape all the way
-        into both legs.
-
-    ``structure_anchor``
-        One site per selected structure, at the world translation the snapshot's
-        rigid motion publishes for it. This is a Core-owned quantity read as it
-        stands; Radar computes nothing from the mesh. A structure with no rigid
-        motion has no Core-owned anchor and is refused by name.
-
-    What is deliberately absent is any rule that *derives* a site from geometry -
-    a surface sample, a centroid, a bounding-box centre, a visibility-weighted
-    scatterer set. Every one of those is a geometry algorithm, and a geometry
-    algorithm written in Torch on the production path is the thing this
-    architecture exists to keep out. R-ADR-020 records the deferral and names
-    what closing it would need.
-
-    ``power_w`` is the site excitation and defaults to
-    :data:`SITE_EXCITATION_POWER_W`. Changing it is almost always wrong; read
-    that constant's note first.
+    ``composer`` is the identity join, ``binding`` the endpoint specs the
+    freeze used (a frame that just froze replays against them rather than
+    building a second, identical binding), and ``pattern`` the antenna-pattern
+    stage's constant tables for that join.
     """
 
-    source: str
-    positions_m: object | None = None
-    structure_ids: tuple[int, ...] | None = None
-    stable_ids: tuple[int, ...] | None = None
-    power_w: float = SITE_EXCITATION_POWER_W
-    trajectory: object | None = None
-
-    def __post_init__(self) -> None:
-        if self.trajectory is not None and not callable(getattr(self.trajectory, "at", None)):
-            raise TypeError("a site trajectory must expose at(time_s) returning Kinematics")
-        if self.trajectory is not None and self.source != SITE_SOURCE_EXPLICIT:
-            raise ValueError("a site trajectory requires explicit material-point positions")
-        if self.source not in SITE_SOURCES:
-            raise ValueError(f"source must be one of {list(SITE_SOURCES)}, got {self.source!r}")
-        if self.source == SITE_SOURCE_EXPLICIT:
-            if self.positions_m is None:
-                raise ValueError(
-                    "an explicit site policy requires positions_m; PointTargets(positions=...) supplies them"
-                )
-            if self.structure_ids is not None:
-                raise ValueError(
-                    "structure_ids belongs to the structure_anchor policy; an "
-                    "explicit policy already names its sites by position"
-                )
-        else:
-            if self.positions_m is not None:
-                raise ValueError(
-                    "positions_m belongs to the explicit policy; a "
-                    "structure_anchor policy reads its positions from the "
-                    "snapshot"
-                )
-        if not float(self.power_w) > 0.0:
-            raise ValueError("power_w must be positive")
-
-    @classmethod
-    def explicit(
-        cls,
-        positions_m: object,
-        *,
-        stable_ids: tuple[int, ...] | None = None,
-        power_w: float = SITE_EXCITATION_POWER_W,
-        trajectory: object | None = None,
-    ) -> ScatterSitePolicy:
-        return cls(
-            source=SITE_SOURCE_EXPLICIT,
-            positions_m=positions_m,
-            stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
-            power_w=power_w,
-            trajectory=trajectory,
-        )
-
-    @classmethod
-    def structure_anchor(
-        cls,
-        *,
-        structure_ids: tuple[int, ...] | None = None,
-        stable_ids: tuple[int, ...] | None = None,
-        power_w: float = SITE_EXCITATION_POWER_W,
-    ) -> ScatterSitePolicy:
-        """Sites at the world anchors Core publishes for moving structures.
-
-        ``structure_ids`` selects a subset; ``None`` takes every structure the
-        snapshot carries. Selection and ordering are both by ascending structure
-        ID rather than by the snapshot's tuple order, so the site array order is
-        a function of world identity and survives a reordered scene.
-        """
-
-        return cls(
-            source=SITE_SOURCE_STRUCTURE_ANCHOR,
-            structure_ids=(None if structure_ids is None else tuple(int(value) for value in structure_ids)),
-            stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
-            power_w=power_w,
-        )
-
-    def resolve(self, snapshot: object, *, device: torch.device) -> torch.Tensor:
-        """The ``(S, 3)`` float32 site positions this policy names."""
-
-        if self.source == SITE_SOURCE_EXPLICIT:
-            if self.trajectory is not None:
-                sample = self.trajectory.at(snapshot.time_s)
-                if not isinstance(sample, Kinematics):
-                    raise TypeError("site trajectory.at(time_s) must return Kinematics")
-                positions = _site_positions(sample.positions_m, device=device)
-                if positions.shape != _site_positions(self.positions_m, device=device).shape:
-                    raise ValueError("a site trajectory must preserve material-point count and ordering")
-                return positions
-            return _site_positions(self.positions_m, device=device)
-        return _structure_anchor_positions(snapshot, self.structure_ids, device=device)
+    composer: TwoWayComposer
+    binding: RadarWorldBinding
+    pattern: RoundTripPatternStage
 
 
-def _site_positions(positions: object, *, device: torch.device) -> torch.Tensor:
-    """Normalise declared site positions without disturbing a live tensor.
-
-    A tensor is validated and returned as it stands. It is deliberately NOT
-    moved, cast, or made contiguous here: every one of those is a new node that
-    would leave the caller holding a tensor that is no longer the one the legs
-    differentiate through, and a device or dtype mismatch is a caller error
-    worth a message rather than a silent copy.
-    """
-
-    if isinstance(positions, torch.Tensor):
-        if positions.dtype != torch.float32:
-            raise TypeError(
-                f"site positions must use torch.float32, got {positions.dtype}; "
-                "casting here would detach the tensor a caller expects to "
-                "differentiate through"
-            )
-        if positions.device != device:
-            raise ValueError(
-                f"site positions are on {positions.device} but this binding is "
-                f"on {device}; move them before declaring the policy so the "
-                "moved tensor is the one you hold"
-            )
-        if positions.ndim != 2 or int(positions.shape[1]) != 3:
-            raise ValueError(f"site positions must have shape (S, 3), got {tuple(positions.shape)}")
-        if not positions.is_contiguous():
-            raise ValueError("site positions must be contiguous")
-        return positions
-    return torch.tensor([tuple(float(value) for value in row) for row in positions], dtype=torch.float32, device=device)
-
-
-def _structure_anchor_positions(
-    snapshot: object, structure_ids: tuple[int, ...] | None, *, device: torch.device
-) -> torch.Tensor:
-    """One world anchor per selected structure, read out of the snapshot.
-
-    ``StructureState.rigid_motion.translation`` is a world-frame vector Core
-    already owns, and ``torch.stack`` preserves whatever tape it carries, so a
-    site that rides a ``LinearTrajectory`` reaches the legs differentiably
-    without this module ever forming a position of its own.
-    """
-
-    states = getattr(snapshot, "structures", None)
-    if states is None:
-        raise TypeError("snapshot must expose structures; pass a witwin.core SceneSnapshot")
-    by_id: dict[int, object] = {}
-    for state in states:
-        key = int(state.structure_id)
-        if key in by_id:
-            raise ValueError(
-                f"structure_id {key} appears twice in the snapshot; a site anchor must name exactly one structure"
-            )
-        by_id[key] = state
-    if structure_ids is None:
-        selected = sorted(by_id)
-    else:
-        selected = sorted(structure_ids)
-        missing = [key for key in selected if key not in by_id]
-        if missing:
-            raise ValueError(f"structure_ids {missing} are not in this snapshot, which carries {sorted(by_id)}")
-        if len(set(selected)) != len(selected):
-            raise ValueError("structure_ids must not repeat a structure")
-    anchors = []
-    for key in selected:
-        motion = getattr(by_id[key], "rigid_motion", None)
-        translation = None if motion is None else motion.translation
-        if translation is None:
-            raise NotImplementedError(
-                f"structure {key} carries no rigid-motion world anchor, so this "
-                f"snapshot publishes no Core-owned site position for it: "
-                f"{_MESH_SITE_DEFERRAL}"
-            )
-        anchors.append(translation.reshape(3))
-    return torch.stack(anchors).to(device=device, dtype=torch.float32).contiguous()
+def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
+    payload = epoch.payload
+    if not isinstance(payload, FrozenRoundTrip):
+        raise TypeError(f"a scene session epoch carries a FrozenRoundTrip, got {type(payload).__name__}")
+    return payload
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class RadarWorldBinding:
-    """One radar and one snapshot, as the endpoint specs the legs consume.
+class EvaluatedObservation:
+    """One evaluated instant, as the frame loop and the adaptive controller read it.
 
-    Four specs and three ID tuples. The two site specs are the same sites in
-    their two roles - sink of the inbound leg, source of the outbound leg - and
-    they SHARE one ``positions_m`` object, which ``__post_init__`` asserts
-    rather than assumes. That aliasing is the whole reason this is one type
-    instead of four loose arguments.
-
-    The ID tuples are host tuples, not tensors, because the composer's declared
-    identity lists are host lists and because reading them back out of a device
-    tensor would be a host observation on a path that has none.
+    ``legs`` is a CALLABLE returning that instant's legs: a batched group
+    never reads them and the adaptive controller never reads them either, so
+    only an observation that gets published pays for narrowing its slot out of
+    the batch. ``identity`` is what the adaptive controller compares; it is
+    ``()`` on every other route.
     """
 
-    transmitters: RadarEndpointSpec
-    receivers: RadarEndpointSpec
-    site_sources: RadarEndpointSpec
-    site_sinks: RadarEndpointSpec
-    transmitter_ids: tuple[int, ...]
-    receiver_ids: tuple[int, ...]
-    site_ids: tuple[int, ...]
-
-    def __post_init__(self) -> None:
-        if self.site_sources.positions_m is not self.site_sinks.positions_m:
-            raise ValueError(
-                "the site source and sink specs must share one positions_m "
-                "tensor; rebuilding it for the second role drops half of a "
-                "reverse gradient and all of a forward tangent"
-            )
-        if self.transmitters.powers_w is None:
-            raise ValueError("the transmitter spec must carry powers_w")
-        if self.site_sources.powers_w is None:
-            raise ValueError("the site source spec must carry powers_w")
-        if self.receivers.powers_w is not None:
-            raise ValueError("the receiver spec must not carry powers_w")
-        if self.site_sinks.powers_w is not None:
-            raise ValueError("the site sink spec must not carry powers_w")
-
-    @property
-    def site_positions_m(self) -> torch.Tensor:
-        """The one site tensor both legs differentiate through."""
-
-        return self.site_sources.positions_m
-
-    @property
-    def site_count(self) -> int:
-        return self.site_sources.count
-
-    @property
-    def device(self) -> torch.device:
-        return self.transmitters.device
+    time_s: float
+    epoch_frame: EpochFrame
+    legs: Callable[[], RadarPropagationLegs]
+    composed: RadarPathBatch
+    identity: Hashable
 
 
-def _endpoint_spec(
-    positions_m: torch.Tensor, stable_ids: tuple[int, ...], *, polarization: torch.Tensor, power_w: float | None
-) -> RadarEndpointSpec:
-    rows = int(positions_m.shape[0])
-    if rows != len(stable_ids):
-        raise ValueError(
-            f"{rows} positions were given {len(stable_ids)} stable IDs; the "
-            "array order IS the ID order and the two are permuted together"
-        )
-    device = positions_m.device
-    return RadarEndpointSpec(
-        stable_ids=torch.tensor(stable_ids, dtype=torch.int64, device=device),
-        positions_m=positions_m,
-        polarizations=polarization.expand(rows, 3).contiguous(),
-        powers_w=(None if power_w is None else torch.full((rows,), float(power_w), dtype=torch.float32, device=device)),
-    )
+@dataclass(frozen=True, slots=True, eq=False)
+class _PendingObservation:
+    """An instant whose world has advanced and whose replay is not yet run."""
+
+    time_s: float
+    epoch_frame: EpochFrame
+    binding: RadarWorldBinding
+    identity: Hashable
 
 
-def _polarization_tensor(polarization: object, *, device: torch.device) -> torch.Tensor:
-    """Validate the declared polarization on the HOST, then build it once.
+@dataclass(frozen=True, slots=True, eq=False)
+class Observation:
+    """One published instant: the world it saw and the rows it composed."""
 
-    The non-zero check is made on the three declared floats rather than on the
-    tensor. ``bool(torch.any(...))`` would read a device tensor back, which is a
-    host observation this module has no budget for even at setup, and it would
-    be a strictly worse message besides.
+    time_s: float
+    epoch_frame: EpochFrame
+    legs: RadarPropagationLegs
+    composed: RadarPathBatch
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FrameTrace:
+    """One frame's composed rows, before any instrument stage has run.
+
+    ``observations`` is an ITERATOR on the fused route and is drained exactly
+    once, in order, so the route never holds more than one observation;
+    :func:`trace_scene` materialises it into a tuple instead.
+
+    An adaptive frame yields a single observation, the one that closed it,
+    because its rows live in ``adaptive`` rather than one batch per instant.
     """
 
-    values = tuple(float(value) for value in polarization)
-    if len(values) != 3:
-        raise ValueError(f"polarization must be a 3-vector, got {values!r}")
-    if not any(values):
-        raise ValueError("polarization must be non-zero")
-    return torch.tensor(values, dtype=torch.float32, device=device)
-
-
-def _array_positions(radar: object, name: str) -> torch.Tensor:
-    positions = getattr(radar, name, None)
-    if not isinstance(positions, torch.Tensor):
-        raise TypeError(f"radar.{name} must be a torch.Tensor of world element positions; pass a witwin.radar.Radar")
-    if positions.dtype != torch.float32:
-        raise TypeError(f"radar.{name} must use torch.float32, got {positions.dtype}")
-    if positions.ndim != 2 or int(positions.shape[1]) != 3:
-        raise ValueError(f"radar.{name} must have shape (N, 3), got {tuple(positions.shape)}")
-    if not positions.is_contiguous():
-        raise ValueError(f"radar.{name} must be contiguous")
-    return positions
+    time_s: float
+    sample_times_s: np.ndarray
+    observations: Iterator[Observation] | tuple[Observation, ...]
+    path_set_complete: bool
+    motion_sampling_exhaustive: bool
+    adaptive: AdaptiveTable | None = None
+    stats: dict[str, Any] | None = None
+    opened: EpochFrame | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class SensorEndpointIds:
-    """Core phase-centre IDs in the radar's TX and RX array order.
+class InstrumentSpecs:
+    """The three waveform specs one radar's instrument half works from.
 
-    Endpoint trajectories move phase centres. The antenna orientation remains
-    the Radar pose; rotating elements must author their pattern pose explicitly.
+    ``declared`` is the radar's own spec and the output domain the result is
+    published in; ``working`` is what synthesis runs, which is the beat domain
+    whenever a receive chain must see ADC-time samples; ``single`` is the
+    one-observation spec a sampled session synthesizes each observation with.
     """
 
-    transmitters: tuple[int, ...]
-    receivers: tuple[int, ...]
-
-    def __post_init__(self):
-        for name in ("transmitters", "receivers"):
-            values = getattr(self, name)
-            if not values or len(set(values)) != len(values):
-                raise ValueError(f"{name} must contain distinct endpoint IDs")
-
-
-def bind_radar_world(
-    radar: object,
-    snapshot: object,
-    *,
-    sites: ScatterSitePolicy,
-    polarization: object = DEFAULT_POLARIZATION,
-    sensor_endpoints: SensorEndpointIds | None = None,
-) -> RadarWorldBinding:
-    """Turn one ``Radar`` plus one ``SceneSnapshot`` into endpoint specs.
-
-    The transmit elements become SOURCES carrying the array's transmit power in
-    watts; the receive elements become SINKS with no power at all. Both come
-    from ``radar.tx_pos`` / ``radar.rx_pos``, which are the pose-transformed
-    world positions the radar already maintains - they are used as they stand
-    rather than rebuilt, so a caller who supplied moving Core phase centres
-    through ``sensor_endpoints`` keeps their tape all the way into both legs.
-    The radar's own pose carries none: it is a host declaration, and
-    :func:`~witwin.radar.radar.vec3_tensor` refuses a derivative in it.
-
-    ``snapshot`` is required even for an explicit site policy. A binding is
-    against a world at an instant, and letting it be optional would invite a
-    caller to bind once and replay against a world that has moved on.
-
-    It runs once per topology epoch, and once per observation when the sites or
-    the sensor endpoints move with the snapshot. It allocates IDs, builds three
-    small constant tensors, and copies nothing back to the host.
-    """
-
-    transmitter_positions = _array_positions(radar, "tx_pos")
-    receiver_positions = _array_positions(radar, "rx_pos")
-    device = transmitter_positions.device
-    if sensor_endpoints is not None:
-        if not isinstance(sensor_endpoints, SensorEndpointIds):
-            raise TypeError("sensor_endpoints must be SensorEndpointIds")
-        tx = endpoint_kinematics(snapshot, sensor_endpoints.transmitters, device=device)
-        rx = endpoint_kinematics(snapshot, sensor_endpoints.receivers, device=device)
-        if tx.positions_m.shape != transmitter_positions.shape or rx.positions_m.shape != receiver_positions.shape:
-            raise ValueError("sensor endpoint counts must match the radar array")
-        transmitter_positions, receiver_positions = tx.positions_m, rx.positions_m
-    if receiver_positions.device != device:
-        raise ValueError(
-            f"radar.tx_pos is on {device} but radar.rx_pos is on {receiver_positions.device}; one radar is one device"
-        )
-    site_positions = sites.resolve(snapshot, device=device)
-
-    transmitter_ids, receiver_ids, allocated_site_ids = StableIdAllocator().allocate(
-        transmitter_count=int(transmitter_positions.shape[0]),
-        receiver_count=int(receiver_positions.shape[0]),
-        site_count=int(site_positions.shape[0]),
-    )
-    site_ids = allocated_site_ids if sites.stable_ids is None else sites.stable_ids
-    if len(site_ids) != int(site_positions.shape[0]):
-        raise ValueError(
-            f"the site policy declared {len(site_ids)} stable IDs for {int(site_positions.shape[0])} site positions"
-        )
-    overlap = (set(site_ids) & set(transmitter_ids)) | (set(site_ids) & set(receiver_ids))
-    if overlap:
-        raise ValueError(
-            f"site stable IDs {sorted(overlap)} collide with the transmitter or "
-            "receiver blocks; two endpoints cannot share one stable world ID"
-        )
-
-    polarization_vector = _polarization_tensor(polarization, device=device)
-    transmit_power_w = float(radar.transmit_power_watts)
-    return RadarWorldBinding(
-        transmitters=_endpoint_spec(
-            transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
-        ),
-        receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=polarization_vector, power_w=None),
-        site_sources=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=sites.power_w),
-        site_sinks=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=None),
-        transmitter_ids=transmitter_ids,
-        receiver_ids=receiver_ids,
-        site_ids=tuple(site_ids),
-    )
-
-
-#: The axis names of the published multi-frame cube. The last two are the
-#: waveform's own slow and fast axes and are filled in from the synthesis
-#: result, so an OFDM run publishes ``("frame", "tx", "rx", "symbol",
-#: "subcarrier")`` without this module knowing what a symbol is.
-SIMULATION_CUBE_LEADING_AXES = ("frame", "tx", "rx")
+    declared: WaveformSpec
+    working: WaveformSpec
+    single: WaveformSpec | None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class Result:
-    """What one :meth:`witwin.radar.Radar.simulate` call produced.
+class Session:
+    """What the instrument half needs that does not change between frames.
 
-    Data only. The driver builds it through :meth:`from_frames`, which is this
-    repository's standing shape for a result: the producer knows what it made,
-    and a consumer never has to infer a phasor convention from a method name.
-
-    ``cube`` is ``[frame, TX, RX, slow, fast]`` and is the product. It is one
-    stacked tensor rather than a list because a frame sequence is what every
-    downstream consumer - a range-Doppler map, a tracker, a loss - indexes, and
-    the stack is a single differentiable op outside the frame loop.
-
-    The four ``last_*`` members are the LAST frame's typed state, and this
-    record is their only home: a radar holds no run state, so there is no
-    second copy to disagree with these and no way for a call that raised part
-    way through to leave one behind describing a world it never simulated.
-    They describe one frame, not the sequence: a compiled scene and a leg pair
-    are per-epoch and per-frame objects, and stacking them would either
-    misrepresent the epochs or retain every frame's device memory for the life
-    of the result. Keeping the last one is the smallest retention that answers
-    "what did the closing frame see".
-
-    ``path_set_complete`` and ``motion_sampling_exhaustive`` are TWO
-    statements, and a consumer that needs to know how much to trust a run
-    needs both. The first says no path birth can have been missed - because
-    every observation was evaluated, or because the candidate family was
-    certified complete for all time. The second says no observation's transport
-    was interpolated between probes. Adaptive sampling routinely gives the
-    first and not the second, which is exactly the trade it exists to make;
-    collapsing them into one flag would report a proven-complete adaptive run
-    as if it might have lost a path.
-
-    RETENTION, stated because these members are a real tensor lifetime. The
-    ``last_*`` members alias the frame's own batches, so holding this result
-    holds that frame's device tensors - and, when ``ad_mode`` asked for a graph,
-    that frame's autograd graph. None of them holds a tape: an autograd context
-    or a ``saved_tensors`` tuple in any of these fields would be a data record
-    turned into a handle on somebody else's memory, and
-    ``tests/test_tape_containment.py`` walks all four to keep it that way.
+    Built once by :func:`open_session` from the radar and the resolved motion,
+    and read by :func:`echo_frame`. Nothing here describes the world beyond
+    the epoch loop's counters, which is the property that lets one traced
+    session be echoed against a different receive chain.
     """
 
-    cube: torch.Tensor
-    times_s: tuple[float, ...]
-    kind: str
-    #: The cube's named axes, outermost first. ``axes`` is the metadata record
-    #: below, not this.
-    axis_names: tuple[str, ...]
-    #: Everything a processing stage reads: the SI range and velocity axes, the
-    #: phasor convention, the Doppler sign and the array layout. Built once,
-    #: here, from the waveform spec and the array that produced the cube, so no
-    #: caller assembles it from a re-viewed synthesis result.
-    axes: object
-    phasor: str
-    time_dependence: str
+    radar: Radar
+    array: SensorArraySpec
+    loop: SceneEpochLoop
+    mode: SlowTimeMode
+    specs: InstrumentSpecs
+    #: World-time offsets of this session's observations within a frame,
+    #: ``float64[observations]``. An ADC-refreshed frame has one per chirp,
+    #: transmitter and sample, which is why it is an array.
+    offsets: np.ndarray
+    #: ``int64[slow, pairs]``: which observation each output slot reads.
+    pair_samples: torch.Tensor | None
+    sampled: bool
+    adc_sampled: bool
+    samples_per_slot: int
+    path_phase_noise: bool
     reference_frequency_hz: float
-    epochs: tuple[int, ...]
-    rediscovery_reasons: tuple[str | None, ...]
-    compile_count: int
-    discovery_count: int
-    last_snapshot: object
-    last_compiled_scene: object
-    last_propagation: object
-    last_radar_paths: object
-    #: Every observation instant of every frame, ``float64[observations]``
-    #: per frame. An ADC-refreshed frame schedules one per chirp,
-    #: transmitter and sample, so this is an array rather than a tuple of
-    #: Python floats: materialising those costs more than the frame does.
-    sample_times_s: tuple[object, ...]
-    path_set_complete: bool
-    motion_sampling_exhaustive: bool
-    motion_sampling: str
-    #: The synthesis result's own output domain.
-    output_domain: str
-    adaptive_diagnostics: tuple[dict, ...]
+    #: The published sampling kind, after ``Motion.auto()`` resolved.
+    kind: str
+    components: frozenset[str]
+    max_depth: int
+    grad: str
+    #: The sampling record as requested; its adaptive fields are the route's
+    #: tolerances.
+    motion: Motion
+    times: tuple[float, ...]
 
-    def __post_init__(self) -> None:
-        if self.cube.dim() != len(self.axis_names):
-            raise ValueError(
-                f"a {self.kind} simulation cube has {len(self.axis_names)} axes "
-                f"{self.axis_names}, got shape {tuple(self.cube.shape)}"
-            )
-        frames = int(self.cube.shape[0])
-        for name in ("times_s", "epochs", "rediscovery_reasons"):
-            values = getattr(self, name)
-            if len(values) != frames:
-                raise ValueError(
-                    f"{name} carries {len(values)} entries for {frames} frames; "
-                    "the per-frame records and the cube's frame axis are the "
-                    "same sequence"
-                )
+    def specs_for(self, radar: Radar) -> InstrumentSpecs:
+        """The spec triple ``radar`` would work from on this session's schedule.
 
-    @property
-    def frame_count(self) -> int:
-        return int(self.cube.shape[0])
-
-    def frame(self, index: int = 0) -> Frame:
-        """One frame of this result, with the metadata a processing stage reads.
-
-        A view, not a copy: the cube is indexed, not cloned. The returned
-        record's methods are facades over :mod:`witwin.radar.processing` and
-        compute nothing themselves.
+        ONE owner: the session setup and :func:`echo_paths` against a
+        different receive chain both derive the specs through this, so a
+        receiver that flips the FMCW output domain cannot end up paired with a
+        slot schedule derived from the other domain. The observation offsets
+        are deliberately not re-derived: they are the traced schedule, and a
+        spec that would change them is refused by name rather than silently
+        re-scheduled.
         """
 
-        return Frame(
-            cube=self.cube[index],
-            axes=self.axes,
-            time_s=float(self.times_s[index]),
-            index=int(index),
-            synthesis=self.frame_synthesis(index),
+        from .synthesis.assembly import FmcwSpec, waveform_sampling
+
+        declared = radar.system_config.waveform_spec()
+        working = declared
+        if isinstance(declared, FmcwSpec) and radar.frontend is not None:
+            working = replace(declared, output_domain="beat")
+        if not self.sampled:
+            return InstrumentSpecs(declared=declared, working=working, single=None)
+        _, _, single = waveform_sampling(
+            working, num_tx=self.array.num_tx, num_rx=self.array.num_rx, device=radar.device
         )
+        if self.adc_sampled:
+            single = replace(single, num_samples=1, output_domain="beat")
+        return InstrumentSpecs(declared=declared, working=working, single=single)
 
-    def frame_synthesis(self, frame_index: int = 0):
-        """Expose a simulated frame and its recorded axes without resynthesis."""
-        from .synthesis.assembly import SynthesisResult
+    def echoing(self, radar: Radar) -> Session:
+        """This session with ``radar``'s instrument half in place of its own."""
 
-        frame = self.cube[frame_index]
-        tx, rx, slow, fast = frame.shape
-        packed = frame.permute(2, 1, 0, 3).reshape(slow, rx * tx, fast)
-        return SynthesisResult(
-            cube=packed,
-            kind=self.kind,
-            axes=(self.axis_names[-2], "sensor_pair", self.axis_names[-1]),
-            phasor=self.phasor,
-            time_dependence=self.time_dependence,
-            reference_frequency_hz=self.reference_frequency_hz,
-            output_domain=self.output_domain,
-        )
-
-    @classmethod
-    def from_frames(
-        cls,
-        cubes,
-        *,
-        times_s,
-        synthesis,
-        axes,
-        epochs,
-        rediscovery_reasons,
-        compile_count: int,
-        discovery_count: int,
-        last_snapshot: object,
-        last_compiled_scene: object,
-        last_propagation: object,
-        last_radar_paths: object,
-        sample_times_s,
-        path_set_complete: bool,
-        motion_sampling_exhaustive: bool,
-        motion_sampling: str,
-        adaptive_diagnostics,
-    ) -> Result:
-        """Stack the per-frame cubes and carry the waveform's conventions.
-
-        ``synthesis`` is the LAST frame's
-        :class:`~witwin.radar.synthesis.assembly.SynthesisResult`. Its
-        conventions are properties of the waveform spec, which is the radar's
-        stored configuration and therefore the same for every frame; taking them
-        from one frame rather than re-deriving them is what keeps this result
-        from becoming a second owner of the phasor convention.
-        """
-
-        stacked = torch.stack(tuple(cubes), dim=0)
-        return cls(
-            cube=stacked,
-            times_s=tuple(float(value) for value in times_s),
-            kind=synthesis.kind,
-            axis_names=(SIMULATION_CUBE_LEADING_AXES + (synthesis.axes[0], synthesis.axes[2])),
-            axes=axes,
-            phasor=synthesis.phasor,
-            time_dependence=synthesis.time_dependence,
-            reference_frequency_hz=float(synthesis.reference_frequency_hz),
-            epochs=tuple(int(value) for value in epochs),
-            rediscovery_reasons=tuple(rediscovery_reasons),
-            compile_count=int(compile_count),
-            discovery_count=int(discovery_count),
-            last_snapshot=last_snapshot,
-            last_compiled_scene=last_compiled_scene,
-            last_propagation=last_propagation,
-            last_radar_paths=last_radar_paths,
-            sample_times_s=tuple(sample_times_s),
-            path_set_complete=path_set_complete,
-            motion_sampling_exhaustive=motion_sampling_exhaustive,
-            motion_sampling=motion_sampling,
-            output_domain=synthesis.output_domain,
-            adaptive_diagnostics=tuple(adaptive_diagnostics),
+        return replace(
+            self,
+            radar=radar,
+            specs=self.specs_for(radar),
+            path_phase_noise=radar.frontend is not None and radar.frontend.has_phase_noise,
         )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class Frame:
-    """One frame of a :class:`Result`, and the products it can become.
-
-    Every method here delegates to :mod:`witwin.radar.processing` and adds no
-    arithmetic of its own. What it adds is the pairing: a cube and the metadata
-    record that describes it, built by the echo from the array that produced
-    the cube, so no caller can pair the cube with a different array.
-    """
-
-    #: ``[tx, rx, slow, fast]``, a view into the result's stacked cube.
-    cube: torch.Tensor
-    #: The processing metadata, shared with the result this came from.
-    axes: object
-    #: This frame's instant, s.
-    time_s: float
-    #: Its position in the result.
-    index: int
-    #: The rank-3 synthesis view, for a stage that wants the waveform's own
-    #: ``(slow, sensor_pair, fast)`` layout.
-    synthesis: object
-
-    def processing_cube(self):
-        """The cube and its axes as the typed record every stage takes."""
-
-        from .processing import ProcessingCube
-
-        return ProcessingCube(data=self.cube, axes=self.axes)
-
-    def range_profile(self, *, window: str | None = None, remove_dc: bool = False):
-        """Range profile.
-
-        ``window`` defaults to rectangular, and that default is load-bearing
-        for FMCW: the spectrum output domain has already run the range
-        transform, so a fast-time taper here would be applied to the wrong
-        domain and the stage refuses it. Pass a taper only with
-        ``Fmcw(output="beat")``.
-        """
-
-        from .processing import range_profile
-
-        return range_profile(self.processing_cube(), window=window, remove_dc=remove_dc)
-
-    def range_doppler(self, *, window: str | None = "hann", range_window: str | None = None, remove_dc: bool = False):
-        """Range-Doppler map.
-
-        ``window`` tapers the slow axis, which is never pre-transformed, so
-        Hann is a safe default there. ``range_window`` goes to the range stage
-        and keeps its rectangular default for the reason above.
-        """
-
-        from .processing import range_doppler_map
-
-        return range_doppler_map(self.range_profile(window=range_window, remove_dc=remove_dc), window=window)
-
-    def array(self):
-        """The element geometry this frame's axes describe."""
-
-        from .processing import ArrayGeometry
-
-        return ArrayGeometry.from_axes(self.axes)
-
-    def points(
-        self,
-        *,
-        pfa: float = 1e-4,
-        guard_cells: tuple[int, int] = (2, 4),
-        training_cells: tuple[int, int] = (4, 8),
-        route: str = "phase_comparison",
-        fft_size: int = 64,
-        max_points: int | None = None,
-        window: str | None = "hann",
-    ):
-        """Range-Doppler, then CA-CFAR, then a point cloud, in one call.
-
-        The sensor pairs are combined coherently - the boresight complex sum -
-        before the detector, which is what makes one threshold meaningful
-        across the virtual array. A caller who wants a different detector
-        takes :meth:`range_doppler` and runs one from
-        :mod:`witwin.radar.processing` on it.
-
-        Named for the product rather than for the stage: the processing fence
-        forbids any of the detector, angle-estimator and beamformer names
-        outside that package, by name and without an allowance list, and a
-        facade is not a reason to blunt it.
-        """
-
-        from .processing import ca_cfar, combine_coherent, point_cloud
-
-        rd = self.range_doppler(window=window)
-        found = ca_cfar(combine_coherent(rd.data), guard_cells=guard_cells, training_cells=training_cells, pfa=pfa)
-        return point_cloud(found, rd, self.array(), route=route, fft_size=fft_size, max_points=max_points)
+# ---------------------------------------------------------------------------
+# The world half
+# ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class _SceneFrame:
-    """One produced frame and the session state as of that frame.
-
-    The unit a scene session yields, so that stacking the sequence and
-    streaming it read the same record. Everything a one-frame
-    :class:`Result` needs is here; nothing that only makes sense
-    for a whole run is. ``diagnostics`` is ``None`` for a route that does not
-    adapt, which is what distinguishes "this route publishes no probe record"
-    from "the probes found nothing".
-
-    The tensor members ALIAS the frame's own device storage. This record is a
-    hand-off, not a retention point.
-    """
-
-    cube: torch.Tensor
-    synthesis: object
-    time_s: float
-    sample_times_s: object
-    epoch: int
-    reason: str | None
-    path_set_complete: bool
-    motion_sampling_exhaustive: bool
-    compile_count: int
-    discovery_count: int
-    epoch_frame: object
-    legs: object
-    composed: object
-    diagnostics: dict | None
-    motion_sampling: str
-    #: The declared waveform spec and the array, so that assembling the result
-    #: builds its processing metadata from the same two records the cube came
-    #: from rather than from whatever a caller has to hand.
-    output_spec: object
-    array: object
-
-
-def _assemble(frames: list[_SceneFrame]) -> Result:
-    """Stack one or more session frames into the published result.
-
-    The run-level completeness statements are conjunctions: one frame that
-    could have missed a path birth makes the sequence one that could have
-    missed a path birth.
-    """
-
-    last = frames[-1]
-    from .processing import ProcessingAxes
-
-    return Result.from_frames(
-        [frame.cube for frame in frames],
-        axes=ProcessingAxes.from_synthesis(last.synthesis, last.output_spec, last.array),
-        times_s=[frame.time_s for frame in frames],
-        synthesis=last.synthesis,
-        epochs=[frame.epoch for frame in frames],
-        rediscovery_reasons=[frame.reason for frame in frames],
-        compile_count=last.compile_count,
-        discovery_count=last.discovery_count,
-        last_snapshot=last.epoch_frame.snapshot,
-        last_compiled_scene=last.epoch_frame.compiled,
-        last_propagation=last.legs,
-        last_radar_paths=last.composed,
-        sample_times_s=[frame.sample_times_s for frame in frames],
-        path_set_complete=all(frame.path_set_complete for frame in frames),
-        motion_sampling_exhaustive=all(frame.motion_sampling_exhaustive for frame in frames),
-        motion_sampling=last.motion_sampling,
-        adaptive_diagnostics=[frame.diagnostics for frame in frames if frame.diagnostics is not None],
-    )
-
-
-def _dynamic_scene(scene: object) -> object:
+def _dynamic_scene(scene: object) -> DynamicScene:
     """A ``DynamicScene`` for whichever of the two Core worlds was passed.
 
     A static ``Scene`` is wrapped rather than refused: it IS a dynamic scene
     with no declared motion, the loop then reports ``structures_move = False``,
-    and the compiled scene is built exactly once for the whole run. Refusing it
-    would force every caller with a still world to write the wrapper themselves.
+    and the compiled scene is built exactly once for the whole run.
     """
 
     if isinstance(scene, DynamicScene):
@@ -1078,7 +240,7 @@ def _dynamic_scene(scene: object) -> object:
     return DynamicScene(scene)
 
 
-def _times(times: object) -> tuple[float, ...]:
+def _times(times: Sequence[float]) -> tuple[float, ...]:
     values = tuple(float(value) for value in times)
     if not values:
         raise ValueError(
@@ -1091,660 +253,120 @@ def _times(times: object) -> tuple[float, ...]:
     return values
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class _AdaptiveTable:
-    """Every row the adaptive refinement evaluated, and how to read them.
+def _stacked(specs: Sequence[RadarEndpointSpec]) -> RadarEndpointSpec:
+    """One slot-major endpoint stack, or the single spec itself."""
 
-    One row table for the whole frame, plus the host-authored integer maps that
-    say which evaluated observations each observation interpolates through.
-    ``node_index[i]`` names ``node_count`` evaluated observations and
-    ``basis[i]`` their weights, which sum to one; an observation that was
-    evaluated itself appears as K copies of itself with the first weight one,
-    the same exact answer on a rectangular table without a degenerate basis.
-
-    ``starts[i]`` is where evaluated observation ``i``'s rows begin in
-    ``delays``; ``bounds`` says where each sensor pair's block begins inside
-    one such observation and holds ONE ROW PER EVALUATED OBSERVATION, reached
-    through ``rank[i]``. Both are indexed by a node, never by the observation
-    being interpolated, because only an evaluated observation owns rows.
-
-    The tensors ALIAS the frame's own device storage. This is a hand-off, not a
-    retention point, except when :func:`trace_scene` keeps it on purpose.
-    """
-
-    delays: torch.Tensor
-    transfers: torch.Tensor
-    validity: torch.Tensor
-    starts: object
-    bounds: object
-    rank: object
-    node_index: object
-    basis: object
-    clock: object
-    device: object
-    node_count: int
-    observation_count: int
-    pairs: int
-
-    @property
-    def row_count(self) -> int:
-        return int(self.delays.shape[0])
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class _Observation:
-    """One evaluated instant: the world it saw and the rows it composed."""
-
-    time_s: float
-    epoch_frame: object
-    legs: object
-    composed: object
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class _FrameTrace:
-    """One frame's composed rows, before any instrument stage has run.
-
-    ``observations`` is an ITERATOR and is drained exactly once, in order. The
-    fused route drains it as it synthesizes, so it never holds more than one
-    observation; :func:`trace_scene` materialises it instead.
-
-    An adaptive frame yields a single observation, the one that closed it,
-    because its rows live in ``adaptive`` rather than one batch per instant.
-    """
-
-    time_s: float
-    sample_times_s: object
-    observations: object
-    path_set_complete: bool
-    motion_sampling_exhaustive: bool
-    adaptive: _AdaptiveTable | None = None
-    stats: dict | None = None
-    opened: object = None
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class _Session:
-    """What the instrument half needs that does not change between frames.
-
-    Built once by :func:`_open_session` from the radar and the resolved motion,
-    and read by :func:`_echo_frame`. Nothing here describes the world, which is
-    the property that lets one traced session be echoed against a different
-    receive chain.
-    """
-
-    radar: object
-    array: object
-    loop: object
-    mode: object
-    full_spec: object
-    output_spec: object
-    single_spec: object
-    #: World-time offsets of this session's observations within a frame,
-    #: ``float64[observations]``. An ADC-refreshed frame has one per
-    #: chirp, transmitter and sample, which is why it is an array.
-    offsets: object
-    pair_samples: object
-    sampled: bool
-    adc_sampled: bool
-    samples_per_slot: int
-    path_phase_noise: bool
-    adaptive: AdaptiveMotionSpec
-    reference_frequency_hz: float
-    #: Derives the declared, working and single-observation specs for a radar.
-    #: A callable rather than three stored specs because :func:`echo_paths` has
-    #: to re-derive them for whatever receive chain it was handed.
-    instrument: object
-    kind: str
-    waveform: object
-    carrier: float
-    components: frozenset
-    max_depth: int
-    grad: str
-    motion: Motion
-    times: tuple[float, ...]
-
-
-def _lagrange_weights(query_s, node_s):
-    """The Lagrange basis at ``query_s`` for each row's node instants.
-
-    ``query_s`` is ``[rows]`` and ``node_s`` is ``[rows, K]``, both absolute
-    times in seconds; the return is ``[rows, K]``, dimensionless. Row ``i``
-    holds the unique degree-``K-1`` polynomial basis through that row's own
-    nodes, so ``sum_j w_ij = 1`` identically and a query landing on a node
-    gives that node weight one. Rows are independent: the adaptive partition
-    gives different observations different intervals.
-
-    Validity: the nodes of a row must be DISTINCT, which the caller guarantees
-    by enumerating any interval too short to carry ``K`` separate instants. A
-    repeated node divides by zero here rather than silently producing a
-    plausible weight. Node spacing need not be uniform, and is not: ADC
-    instants cluster inside a chirp and jump across the idle gap.
-
-    Oracle: ``tests/test_path_interpolation.py`` checks the basis and the
-    interpolant it drives against an independent numpy/complex formulation.
-    """
-
-    weights = np.ones(node_s.shape)
-    for near in range(node_s.shape[1]):
-        for far in range(node_s.shape[1]):
-            if far != near:
-                weights[:, near] *= (query_s - node_s[:, far]) / (node_s[:, near] - node_s[:, far])
-    return weights
-
-
-def _adaptive_trace(times, evaluate_many, spec, options, carrier_hz):
-    """Control topology probes on the host and publish the accepted partition.
-
-    The world half of the adaptive route. The grid's interior tests bound
-    OBSERVED errors only: arbitrarily brief path births or adversarial
-    oscillations between probes require the ADC reference, and the two
-    completeness statements this returns are what say so. Host copies here are
-    explicit adaptive decisions, not a differentiable physics implementation.
-    AD follows the accepted, fixed partition.
-
-    :func:`_adaptive_echo` consumes what this returns and is where every kernel
-    launch happens.
-    """
-
-    # The refinement tests its probes against the same interpolant the echo
-    # half will use on the accepted partition. That is deliberate: a tolerance
-    # measured with one rule and spent by another bounds nothing.
-    from .paths import interpolate_path_rows
-
-    cache, partitions, pair_tables = {}, [], {}
-    stats = {
-        "evaluations": 0,
-        "topology_refinements": 0,
-        "accepted_intervals": 0,
-        "max_tested_phase_error_rad": 0.0,
-        "max_tested_relative_amplitude_error": 0.0,
-        "max_interval_s": options.max_interval_s,
-        "exhaustive": False,
-        "topology_proved_complete": False,
-    }
-
-    def ensure(indices):
-        missing = sorted(set(indices) - cache.keys())
-        if len(cache) + len(missing) > options.max_evaluations:
-            raise RuntimeError("adaptive motion discovery budget exhausted before satisfying error/topology tests")
-        for begin in range(0, len(missing), options.batch_observations):
-            batch = missing[begin : begin + options.batch_observations]
-            records = evaluate_many([float(times[index]) for index in batch])
-            for index, record in zip(batch, records, strict=True):
-                cache[index] = record
-                pair_tables[index] = record[2].pair_offsets.tolist()
-
-    # The maximum interval is the MAXIMUM probe spacing, and it is
-    # unconditional. Lowering it refines the grid.
-    # Every error test here is a sampled test: it can only see motion at the
-    # instants it probes. A sinusoid whose period divides the grid spacing sits
-    # at a zero of every node and every test point, so the controller measures
-    # no error at all while the interpolant misses the whole oscillation. This
-    # bound is the only thing that sets how fine that grid is, which is why it
-    # is not skipped for a topologically certified family: the certification
-    # says no path can be BORN, and says nothing about how fast one moves.
-    def within_interval_bound(left, right):
-        return times[right] - times[left] <= options.max_interval_s
-
-    # Start from the coarsest partition the bound allows rather than bisecting
-    # down to it: the intervening levels are guaranteed to fail that bound, and
-    # their probes answer a question already decided here.
-    span = times[-1] - times[0]
-    pieces = max(1, math.ceil(span / options.max_interval_s))
-    edges = sorted({round(index * (len(times) - 1) / pieces) for index in range(pieces + 1)})
-    pending = list(zip(edges, edges[1:], strict=False))
-
-    # A higher polynomial order buys a LONGER accepted interval, so it pays only
-    # where the phase test, not the bound above, is what shortens one. Where the
-    # bound decides the length the order cannot reduce the interval count and
-    # multiplies the per-interval grid instead: on the three-wall fixture nodes
-    # 2/3/5/9 all accept nine intervals for the same 6e-4 error. The caller owns
-    # that trade because only the caller knows which regime the motion is in.
-    node_count = options.interpolation_nodes
-    # One candidate interval spends `node_count` instants on the interpolation
-    # and tests the error at the instants between them, so its probe grid is
-    # this wide and the even positions are the nodes.
-    grid_width = 2 * (node_count - 1) + 1
-    stats["interpolation_nodes"] = node_count
-
-    while pending:
-        probes, enumerated = {}, []
-        for left, right in pending:
-            if right - left < grid_width:
-                # Too short to carry distinct nodes. Enumerating it costs no
-                # more probes than testing it would, and an enumerated
-                # observation needs no interpolation at all.
-                enumerated.append((left, right))
-            else:
-                probes[left, right] = [
-                    left + round((right - left) * step / (grid_width - 1)) for step in range(grid_width)
-                ]
-        ensure(
-            [index for group in probes.values() for index in group]
-            + [index for left, right in enumerated for index in range(left, right + 1)]
-        )
-        stats["accepted_intervals"] += len(enumerated)
-        tested = {
-            (left, right): indices
-            for (left, right), indices in probes.items()
-            if within_interval_bound(left, right) and all(cache[index][3] == cache[left][3] for index in indices)
-        }
-        queries = [
-            (left, right, index, tuple(indices[::2]))
-            for (left, right), indices in tested.items()
-            for index in indices[1::2]
-        ]
-        observations = {}
-        if queries:
-            actual = [cache[index][2] for _, _, index, _ in queries]
-            counts = [len(value.total_delay_s) for value in actual]
-            node_paths = [[cache[group[node]][2] for *_, group in queries] for node in range(len(queries[0][3]))]
-            basis = _lagrange_weights(
-                np.asarray([times[index] for _, _, index, _ in queries]),
-                np.asarray([[times[index] for index in group] for *_, group in queries]),
-            )
-            device = node_paths[0][0].total_delay_s.device
-            delay, transfer = interpolate_path_rows(
-                [torch.cat([value.total_delay_s for value in column]) for column in node_paths],
-                [torch.cat([value.complex_transfer_ref for value in column]) for column in node_paths],
-                torch.as_tensor(np.repeat(basis, counts, axis=0), device=device),
-                carrier_hz,
-            )
-            observed = torch.cat([value.complex_transfer_ref for value in actual])
-            # One synchronization per refinement round. These detached columns
-            # drive host decisions only; production rows retain their AD tape.
-            columns = (
-                torch.stack(
-                    [
-                        delay.double(),
-                        torch.cat([value.total_delay_s for value in actual]).double(),
-                        transfer.real.double(),
-                        transfer.imag.double(),
-                        observed.real.double(),
-                        observed.imag.double(),
-                        torch.cat([value.row_valid for value in actual]).double(),
-                    ],
-                    dim=1,
-                )
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            begin = 0
-            for query, count in zip(queries, counts, strict=True):
-                observations[query] = columns[begin : begin + count].T
-                begin += count
-        next_pending = []
-        for (left, right), indices in probes.items():
-            identities = [cache[index][3] for index in indices]
-            topology_ok = all(key == identities[0] for key in identities)
-            phase_error = amplitude_error = 0.0
-            accepted = False
-            if topology_ok and within_interval_bound(left, right):
-                for index in indices[1::2]:
-                    predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[
-                        left, right, index, tuple(indices[::2])
-                    ]
-                    d = predicted_delay - observed_delay
-                    predicted = pr + 1j * pi
-                    observed = ar + 1j * ai
-                    live = flags.astype(bool)
-                    if not np.any(live):
-                        continue
-                    if not all(np.isfinite(value[live]).all() for value in (d, predicted, observed)):
-                        raise RuntimeError("nonfinite adaptive path probe; no error bound can be accepted")
-                    magnitude = np.maximum(np.abs(predicted), np.abs(observed))
-                    floor = max(float(magnitude.max()) * 1e-6, 1e-30)
-                    phase_live = live & (magnitude > floor)
-                    waveform_frequency = abs(spec.slope_hz_per_s) * (
-                        abs(spec.t_start_s)
-                        + (spec.num_samples - 1) * spec.sample_period_s
-                        + float(
-                            np.max(np.maximum(np.abs(predicted_delay[live]), np.abs(observed_delay[live])), initial=0)
-                        )
-                    )
-                    phase_error = max(
-                        phase_error,
-                        float(np.max(2 * np.pi * carrier_hz * np.abs(d[live]), initial=0)),
-                        float(
-                            np.max(
-                                np.abs(np.angle(predicted[phase_live] * observed[phase_live].conj()))
-                                + 2 * np.pi * waveform_frequency * np.abs(d[phase_live]),
-                                initial=0,
-                            )
-                        ),
-                    )
-                    amplitude_error = max(
-                        amplitude_error,
-                        float(
-                            np.max(
-                                np.abs(np.abs(predicted[live]) - np.abs(observed[live]))
-                                / np.maximum(magnitude[live], floor),
-                                initial=0,
-                            )
-                        ),
-                    )
-                accepted = (
-                    phase_error <= options.phase_error_rad and amplitude_error <= options.relative_amplitude_error
-                )
-            if accepted:
-                stats["accepted_intervals"] += 1
-                stats["max_tested_phase_error_rad"] = max(stats["max_tested_phase_error_rad"], phase_error)
-                stats["max_tested_relative_amplitude_error"] = max(
-                    stats["max_tested_relative_amplitude_error"], amplitude_error
-                )
-                partitions.append((left, right, indices[::2]))
-            else:
-                stats["topology_refinements"] += int(not topology_ok)
-                middle = (left + right) // 2
-                next_pending.extend([(left, middle), (middle, right)])
-        pending = next_pending
-
-    # Store each discovered row once. ADC scheduling gathers these differentiable
-    # columns with host-authored integer maps; it never allocates one tensor per
-    # observation. Ragged row counts and empty sensor pairs remain explicit.
-    ordered = sorted(cache)
-    records = [cache[index][2] for index in ordered]
-    device = records[0].total_delay_s.device
-    delays = torch.cat([record.total_delay_s for record in records])
-    transfers = torch.cat([record.complex_transfer_ref for record in records])
-    validity = torch.cat([record.row_valid for record in records])
-    starts = np.zeros(len(times), dtype=np.int64)
-    starts[ordered] = np.cumsum([0] + [len(record.total_delay_s) for record in records[:-1]])
-    pairs = spec.num_tx * spec.num_rx
-    # ``pair_offsets`` already IS the exclusive prefix of an observation's rows
-    # over its sensor pairs, so pair ``p`` owns rows ``bounds[p]:bounds[p + 1]``
-    # of that observation's block and no cumulative sum is owed here. One row
-    # per EVALUATED observation, reached through ``rank``: an interpolated
-    # observation reads its interval's nodes and never a row of its own, so a
-    # table with one row per observation would be zeros for all but these.
-    bounds = np.asarray([pair_tables[index] for index in ordered])
-    rank = np.zeros(len(times), dtype=np.int64)
-    rank[ordered] = np.arange(len(ordered))
-    # An observation reads either its own evaluated row or its interval's
-    # nodes. An evaluated observation is written as K copies of itself with the
-    # first weight one, which is the same exact answer and keeps the table
-    # rectangular without a degenerate basis.
-    #
-    # Written one slice per accepted interval, not one row per observation: the
-    # partition holds as many distinct answers as it has intervals, and an ADC
-    # frame has four orders of magnitude more observations than intervals. A
-    # later interval overwrites an earlier one where they meet, which is the
-    # accept order, and an interval endpoint is always itself a probe, so the
-    # self-reference on the next line settles every shared row anyway.
-    node_index = np.zeros((len(times), node_count), dtype=np.int64)
-    for left, right, group in partitions:
-        node_index[left : right + 1] = group
-    node_index[ordered] = np.asarray(ordered)[:, None]
-    clock = np.asarray(times)
-    basis = np.zeros((len(times), node_count))
-    basis[:, 0] = 1.0
-    interpolated = np.ones(len(times), dtype=bool)
-    interpolated[ordered] = False
-    if interpolated.any():
-        basis[interpolated] = _lagrange_weights(clock[interpolated], clock[node_index[interpolated]])
-
-    stats["evaluations"] = len(cache)
-    stats["exhaustive"] = len(cache) == len(times)
-    # Two independent reasons no path birth can have been missed: every
-    # observation was evaluated, or the family was certified complete for all
-    # time. Neither implies the other.
-    #
-    # The certification is a property of the world and the propagation
-    # configuration, not of an instant, so one probe carrying it proves the
-    # family cannot change. The first probe of a run cannot carry it - nothing
-    # is frozen yet - but it rediscovers, which enumerates the family at its
-    # own instant. Those two together cover the frame. A probe that neither
-    # certifies nor rediscovers leaves a gap and is refused. A source mutation
-    # strictly between two probes remains outside every sampled test, as
-    # AdaptiveMotionSpec states.
-    frames = [cache[index][0] for index in cache]
-    stats["topology_proved_complete"] = any(frame.topology_complete for frame in frames) and all(
-        frame.topology_complete or frame.rediscovered for frame in frames
+    if len(specs) == 1:
+        return specs[0]
+    first = specs[0]
+    return RadarEndpointSpec(
+        stable_ids=torch.cat([spec.stable_ids for spec in specs], dim=0),
+        positions_m=torch.cat([spec.positions_m for spec in specs], dim=0),
+        polarizations=torch.cat([spec.polarizations for spec in specs], dim=0),
+        powers_w=None if first.powers_w is None else torch.cat([_powers(spec) for spec in specs], dim=0),
     )
-    stats["observation_count"] = len(times)
-    table = _AdaptiveTable(
-        delays=delays,
-        transfers=transfers,
-        validity=validity,
-        starts=starts,
-        bounds=bounds,
-        rank=rank,
-        node_index=node_index,
-        basis=basis,
-        clock=clock,
-        device=device,
-        node_count=node_count,
-        observation_count=len(times),
-        pairs=pairs,
-    )
-    return table, stats, cache[0], cache[len(times) - 1]
 
 
-def _adaptive_echo(table, spec, options, carrier_hz, frontend):
-    """Interpolate the accepted partition and synthesize it, in bounded batches.
+def _present(value: torch.Tensor | None, name: str) -> torch.Tensor:
+    """A member every replayed batch publishes, refused by name if absent."""
 
-    The instrument half of the adaptive route: every kernel launch of that
-    route is here and nothing here decides anything about the world. The
-    partition is fixed by the time this runs, which is what makes the native
-    interpolant's VJP and JVP well defined.
+    if value is None:
+        raise ValueError(f"a replayed batch always carries {name}")
+    return value
 
-    Returns the frame's beat cube and how many batches it took, which is an
-    echo quantity: a traced frame that has never been echoed has no batch count
-    to report.
+
+def _slot_legs(replay: RadarPropagationLegs, index: int) -> RadarPropagationLegs:
+    """One slot of a slot-major replay, narrowed only when a caller reads it."""
+
+    return RadarPropagationLegs(inbound=replay.inbound.slot(index), outbound=replay.outbound.slot(index))
+
+
+def _powers(spec: RadarEndpointSpec) -> torch.Tensor:
+    if spec.powers_w is None:
+        raise ValueError("every slot of a source stack carries powers_w")
+    return spec.powers_w
+
+
+class WorldHalf:
+    """One session's world: the epoch loop, the binding, and every Channel call.
+
+    Built once per session. The frozen join and pattern tables live in the
+    loop's epochs; the slot-batched replicas of them live here, keyed by the
+    leg identity they were built for and the group size.
     """
 
-    from .paths import _interpolate_indexed_rows
-    from .synthesis.fmcw import _synthesize_adaptive_fmcw, channel_phasor_to_beat_weight, synthesize_fmcw_observations
+    def __init__(
+        self,
+        radar: Radar,
+        dynamic: DynamicScene,
+        *,
+        sites: ScatterSitePolicy,
+        polarization: Sequence[float],
+        sensor_endpoints: SensorEndpointIds | None,
+        response: ScatterResponse,
+        antenna_pattern: Pattern,
+        propagation: PropagationConfig,
+        array: SensorArraySpec,
+        motion_sampling: str,
+        ad_mode: str,
+        cadence: int | None,
+        world_motion: str,
+    ) -> None:
+        from .channel import compile_scene
 
-    delays, transfers, validity = table.delays, table.transfers, table.validity
-    node_count, pairs, device = table.node_count, table.pairs, table.device
-    observations_total = table.observation_count
-
-    def upload(value):
-        return torch.as_tensor(value, device=device)
-
-    # An observation sits in one TDM slot and hears one transmitter. Under
-    # PAIR_RANK_LAYOUT that transmitter's pairs are the ``num_rx`` ranks
-    # congruent to it modulo ``num_tx``; the rest carry no signal this
-    # observation can receive and the slot gather at the end discards them.
-    # Synthesizing only the active pairs is the same cube for ``1/num_tx`` of
-    # the rows, which is the frame's dominant cost.
-    receivers = pairs // spec.num_tx
-    # An accepted interval's nodes share a topology identity and therefore
-    # share their pair layout, so one node's bounds describe every observation
-    # the interval covers; only the base offsets in ``starts`` differ.
-    node_rank = table.rank[table.node_index[:, 0]][:, None]
-    # Upload only compact per-observation routing. This function must not
-    # observe device values; test_import_boundary.py enforces that boundary.
-    bounds, basis = upload(table.bounds), upload(table.basis)
-    node_starts, owners = upload(table.starts[table.node_index]), upload(node_rank[:, 0])
-    samples = torch.stack((delays.double(), transfers.real.double(), transfers.imag.double()), dim=1)
-    # The same float64 clock as the row expression, evaluated once per ADC
-    # instant instead of once per contributing path.
-    adc_clock = (
-        spec.t_start_s
-        + (torch.arange(observations_total, device=device) % spec.num_samples).double() * spec.sample_period_s
-    )
-    # Guarded on the phase noise rather than on the front end, because
-    # ``_apply_path_phase_rows`` returns its input untouched without it and
-    # the timestamp tensor would be uploaded and gathered for nothing.
-    phase_noise = frontend is not None and frontend.has_phase_noise
-    clock = upload(table.clock) if phase_noise else None
-    native_validity = validity.to(torch.int32) if not phase_noise else None
-    if phase_noise:
-        slot_pairs = (np.arange(observations_total) // spec.num_samples % spec.num_tx)[
-            :, None
-        ] + spec.num_tx * np.arange(receivers)
-        row_counts = (table.bounds[node_rank, slot_pairs + 1] - table.bounds[node_rank, slot_pairs]).sum(axis=1)
-        # The intervening receiver effect needs expanded rows. Cap its int64
-        # indices plus float64 basis at 32 MiB, excluding waveform buffers.
-        row_budget = (32 * 1024 * 1024) // (16 * node_count)
-        cumulative = np.concatenate(([0], np.cumsum(row_counts)))
-        receiver_rank = torch.arange(receivers, device=device)
-
-    values = []
-    begin = 0
-    while begin < observations_total:
-        # Bound each output allocation by observations. The phase-noise route
-        # additionally limits expanded path rows below.
-        stop = min(observations_total, begin + options.batch_observations * spec.num_samples)
-        if not phase_noise:
-            # No effect intervenes between interpolation and dechirping: the
-            # native operator can read compact probes and accumulate ADC values
-            # without expanded path rows. All four verbs use this same route,
-            # including VJP/JVP. Row-dependent phase noise keeps its seam below.
-            values.append(
-                _synthesize_adaptive_fmcw(
-                    samples,
-                    native_validity,
-                    node_starts,
-                    basis,
-                    bounds,
-                    owners,
-                    adc_clock,
-                    spec,
-                    carrier_hz,
-                    begin,
-                    stop,
-                ).reshape(stop - begin, receivers)
-            )
-            begin = stop
-            continue
-        stop = min(stop, max(begin + 1, int(np.searchsorted(cumulative, cumulative[begin] + row_budget)) - 1))
-        # Known from the host's own row totals, which is what lets every
-        # ``repeat_interleave`` below declare its output size instead of
-        # synchronizing to discover it.
-        total = int(cumulative[stop] - cumulative[begin])
-        batch = torch.arange(begin, stop, device=device)
-        owner = owners[begin:stop, None]
-        active = (batch // spec.num_samples % spec.num_tx)[:, None] + spec.num_tx * receiver_rank
-        segment_prefix = bounds[owner, active].ravel()
-        segment_counts = bounds[owner, active + 1].ravel() - segment_prefix
-        offsets = torch.cat((segment_counts.new_zeros(1), torch.cumsum(segment_counts, 0)))
-        segment = torch.repeat_interleave(
-            torch.arange(segment_counts.numel(), device=device), segment_counts, output_size=total
+        self.radar = radar
+        self.dynamic = dynamic
+        self.sites = sites
+        self.polarization = polarization
+        self.sensor_endpoints = sensor_endpoints
+        self.response = response
+        self.antenna_pattern = antenna_pattern
+        self.propagation = propagation
+        self.array = array
+        self.motion_sampling = motion_sampling
+        self.ad_mode = ad_mode
+        self.reference_frequency_hz = propagation.reference_frequency_hz
+        self.loop = SceneEpochLoop(
+            dynamic,
+            reference_frequency_hz=self.reference_frequency_hz,
+            bind=self.bind,
+            compile_scene=compile_scene,
+            motion_event_period_frames=cadence,
+            world_motion=world_motion,
         )
-        local_row = segment_prefix[segment] + torch.arange(total, device=device) - offsets[segment]
-        observation = begin + segment // receivers
-        node_rows = node_starts[observation] + local_row[:, None]
-        delay, transfer = _interpolate_indexed_rows(samples, node_rows, basis[observation], carrier_hz)
-        transfer = torch.where(validity[node_rows[:, 0]], transfer, torch.zeros_like(transfer))
-        transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
-        adc_time = adc_clock[observation]
-        values.append(
-            synthesize_fmcw_observations(
-                delay, channel_phasor_to_beat_weight(transfer), offsets, adc_time, spec, segment=segment
-            ).reshape(stop - begin, receivers)
+        self._identities: dict[int, Hashable] = {}
+        self._slot_composers: dict[tuple[Hashable, int], TwoWayComposer] = {}
+        self._slot_patterns: dict[tuple[Hashable, int], RoundTripPatternStage] = {}
+
+    def _bind_world(self, snapshot: object) -> RadarWorldBinding:
+        return bind_radar_world(
+            self.radar,
+            snapshot,
+            sites=self.sites,
+            polarization=self.polarization,
+            sensor_endpoints=self.sensor_endpoints,
         )
-        begin = stop
-    # Each slot now carries its own transmitter's receivers, so the gather
-    # reads a pair by its receiver rank ``pair // num_tx`` in the slot its
-    # transmitter rank ``pair % num_tx`` selects.
-    all_slots = torch.cat(values).reshape(-1, spec.num_samples, receivers).transpose(1, 2)
-    pair = torch.arange(pairs, device=all_slots.device)
-    slot = torch.arange(spec.num_chirps, device=all_slots.device)[:, None] * spec.num_tx + pair[None, :] % spec.num_tx
-    return all_slots[slot, pair // spec.num_tx], len(values)
 
+    def bind(self, compiled: object, snapshot: object, previous: FrozenEpoch | None) -> FrozenEpoch:
+        """Freeze one topology epoch: both legs, the join and the pattern tables.
 
-def _open_session(
-    radar: object,
-    scene: object,
-    *,
-    times,
-    response: object,
-    sites: ScatterSitePolicy,
-    components: frozenset[str],
-    max_depth: int,
-    ad_mode: str,
-    polarization: object,
-    antenna_pattern: object,
-    sensor_endpoints: SensorEndpointIds | None,
-    motion: Motion,
-) -> tuple[_Session, Iterator[_FrameTrace]]:
-    """Open one scene session: the world half, and what the instrument half needs.
+        The loop's ``bind`` callback, run once per topology epoch. The pattern
+        tables are a property of the frozen join - which pair each row belongs
+        to and which site it visits - so they are built here, and the frame
+        loop only gathers positions and launches.
+        """
 
-    The single owner of the session. All four public verbs come through here -
-    :meth:`~witwin.radar.Radar.trace` drains the frame traces into a
-    :class:`Paths`, and :meth:`~witwin.radar.Radar.simulate`,
-    :meth:`~witwin.radar.Radar.stream` and :meth:`~witwin.radar.Radar.echo`
-    hand each one to :func:`_echo_frame` - so the setup, the epoch loop and the
-    synthesis route are written once. Returns the session record and a
-    generator of per-frame traces. Every argument arrives resolved by
-    :meth:`~witwin.radar.Radar._session`.
+        from .channel import ChannelPropagationAdapter
+        from .paths import TwoWayComposer, validate_pair_ordering
+        from .sensors import RoundTripPatternStage
 
-    ``sites`` is the internal :class:`ScatterSitePolicy` that
-    :mod:`witwin.radar.targets` builds from ``PointTargets`` or
-    ``StructureTargets``. A structure with no rigid motion has no Core-owned
-    world anchor and is refused by name; that refusal is the design
-    (R-ADR-020), because the alternative is a mesh-sampling rule, which is a
-    geometry algorithm and does not belong in a Torch expression here.
-
-    ``components`` and ``max_depth`` carry the ``los`` / ``reflections``
-    request for THIS call through
-    :meth:`~witwin.radar.radar.RadarSystemConfig.with_propagation`, which
-    returns a new configuration rather than mutating the radar's stored one.
-
-    ``motion`` is a :class:`Motion`. ``Motion.auto()`` resolves below, once it
-    is known whether anything moves within a frame and whether the receiver
-    carries oscillator phase noise. Adaptive FMCW batches topology-identical
-    probes, interpolates carrier-transported coefficients, and refines at
-    observed path identity and validity changes; its sampled error tests cannot
-    exclude arbitrarily brief unseen events between probes, so
-    ``path_set_complete`` is true only when every observation was evaluated or
-    the candidate family was certified complete for all time, and
-    ``motion_sampling_exhaustive`` separately records whether any observation
-    was interpolated. ``Motion.rediscover_every_frames`` converts from frames
-    to observation count and marks path completeness false unless structure
-    motion already forces discovery; ``Motion.world`` still controls whether
-    compiled handles may be replayed.
-
-    ``ad_mode`` is forwarded to every replay. ``"none"`` is the default and
-    builds no graph; ``"vjp"`` makes the published cube differentiable with
-    respect to the endpoint and site positions the binding passed through by
-    identity.
-
-    ``antenna_pattern`` is a :class:`~witwin.radar.sensors.Pattern`. A radar
-    always supplies one - :attr:`~witwin.radar.Radar.pattern` defaults to
-    ``Pattern.isotropic()`` - so the stage runs on every solve, including for
-    the isotropic default, where it multiplies by exactly one.
-    """
-
-    from .channel import ChannelPropagationAdapter, compile_scene
-    from .paths import TwoWayComposer, validate_pair_ordering
-    from .sensors import RoundTripPatternStage
-
-    requested = motion
-    if not isinstance(requested, Motion):
-        raise TypeError(f"motion must be a Motion, got {type(requested).__name__}")
-    adaptive = requested._adaptive_spec()
-    world_motion = requested.world
-    motion_event_period_frames = requested.rediscover_every_frames
-    instants = _times(times)
-    policy = sites
-    if not isinstance(policy, ScatterSitePolicy):
-        raise TypeError(
-            f"sites must be a ScatterSitePolicy, got {type(policy).__name__}; "
-            "where the scatter sites come from is a declaration, not a search"
-        )
-    orientation = polarization
-
-    solve_config = radar.system_config.with_propagation(components=components, max_depth=max_depth)
-    propagation = solve_config.propagation
-    array = solve_config.sensors.array
-    reference_frequency_hz = propagation.reference_frequency_hz
-
-    def bind(compiled, snapshot, previous):
-        binding = bind_radar_world(
-            radar, snapshot, sites=policy, polarization=orientation, sensor_endpoints=sensor_endpoints
-        )
+        binding = self._bind_world(snapshot)
         adapter = (
             ChannelPropagationAdapter(
                 compiled,
-                reference_frequency_hz=reference_frequency_hz,
-                components=propagation.components,
-                max_depth=propagation.max_depth,
+                reference_frequency_hz=self.reference_frequency_hz,
+                components=self.propagation.components,
+                max_depth=self.propagation.max_depth,
             )
             if previous is None
             else previous.adapter
@@ -1757,31 +379,336 @@ def _open_session(
             torch.tensor(binding.site_ids, dtype=torch.int64, device=binding.device),
             radar_source_ids=list(binding.transmitter_ids),
             radar_sink_ids=list(binding.receiver_ids),
-            reference_frequency_hz=reference_frequency_hz,
+            reference_frequency_hz=self.reference_frequency_hz,
         )
-        # Once per topology epoch, where the topology is decided and the host
-        # read is free. It must never move into the frame loop: the same read
-        # there is a per-frame device-to-host transfer.
         validate_pair_ordering(
             composer.sensor_pair_index,
-            num_tx=array.num_tx,
-            num_rx=array.num_rx,
+            num_tx=self.array.num_tx,
+            num_rx=self.array.num_rx,
             sensor_pair_count=composer.sensor_pair_count,
         )
-        # The pattern tables are a property of the frozen join - which pair each
-        # row belongs to and which site it visits - so they are built here, once
-        # per epoch, and the frame loop only gathers positions and launches.
-        stage = RoundTripPatternStage.freeze(
-            radar,
+        pattern = RoundTripPatternStage.freeze(
+            self.radar,
             composer,
             site_ids=binding.site_ids,
-            pattern=antenna_pattern,
-            rx_pattern=radar.system_config.sensors.rx_pattern,
+            pattern=self.antenna_pattern,
+            rx_pattern=self.radar.system_config.sensors.rx_pattern,
         )
-        # The binding travels with the epoch so the frame that just froze does
-        # not build a second one from the same snapshot. It is deterministic, so
-        # the two would agree - which is exactly why building both is waste.
-        return FrozenEpoch(adapter=adapter, handles=(inbound, outbound), payload=(composer, binding, stage))
+        return FrozenEpoch(
+            adapter=adapter,
+            handles=(inbound, outbound),
+            payload=FrozenRoundTrip(composer=composer, binding=binding, pattern=pattern),
+        )
+
+    def _complete_los(self) -> bool:
+        """Whether the adaptive route may certify this world's family for all time.
+
+        Only an empty authored world proves the absence of occluders and
+        reflection/diffraction births. Every endpoint pair must be present
+        too: a degenerate initial LOS discovery cannot certify it.
+        """
+
+        frozen = self.loop.frozen
+        authored_world = getattr(self.dynamic, "scene", None)
+        if not (
+            self.motion_sampling == "adaptive"
+            and authored_world is not None
+            and not authored_world.structures
+            and self.propagation.components == frozenset({"los"})
+            and frozen is not None
+        ):
+            return False
+        site_count = _round_trip(frozen).binding.site_count
+        return (
+            frozen.handles[0].row_count == self.array.num_tx * site_count
+            and frozen.handles[1].row_count == self.array.num_rx * site_count
+        )
+
+    def _binding_for(self, frame: EpochFrame) -> RadarWorldBinding:
+        """The endpoint specs at ``frame``'s instant.
+
+        A frame that just froze replays against the binding it froze with. An
+        explicit site policy without moving sensor endpoints re-resolves only
+        the site positions; anything else rebinds the radar to the snapshot.
+        """
+
+        template = _round_trip(frame.frozen).binding
+        if frame.rediscovered:
+            return template
+        if self.sites.source == SITE_SOURCE_EXPLICIT and self.sensor_endpoints is None:
+            positions = self.sites.resolve(frame.snapshot, device=template.device)
+            if positions.shape != template.site_positions_m.shape:
+                raise ValueError("a site trajectory must preserve the declared site count")
+            return replace(
+                template,
+                site_sources=replace(template.site_sources, positions_m=positions),
+                site_sinks=replace(template.site_sinks, positions_m=positions),
+            )
+        return self._bind_world(frame.snapshot)
+
+    def _identity(self, frame: EpochFrame) -> Hashable:
+        """The leg identity the adaptive controller groups and compares by.
+
+        Read once per epoch; every other route groups nothing and compares
+        nothing, so it is ``()`` there.
+        """
+
+        from .paths import leg_identity
+
+        if self.motion_sampling != "adaptive":
+            return ()
+        if frame.epoch not in self._identities:
+            self._identities[frame.epoch] = tuple(
+                tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles
+            )
+        return self._identities[frame.epoch]
+
+    def evaluate(self, query_times: Sequence[float]) -> list[EvaluatedObservation]:
+        """Advance the world to each instant, then batch-replay identical handles.
+
+        One record per query instant, in order. Moving compiled geometry is
+        replayed before the next refreeze retires its handles. Static geometry
+        permits one slot batch per full leg identity.
+        """
+
+        results: dict[float, EvaluatedObservation] = {}
+        groups: dict[Hashable, list[_PendingObservation]] = {}
+        for time_s in query_times:
+            frame = self.loop.frame(time_s, topology_complete=self._complete_los())
+            pending = _PendingObservation(
+                time_s=time_s, epoch_frame=frame, binding=self._binding_for(frame), identity=self._identity(frame)
+            )
+            if self.loop.structures_move:
+                self._replay([pending], results)
+            else:
+                groups.setdefault(pending.identity, []).append(pending)
+        for group in groups.values():
+            self._replay(group, results)
+        return [results[time_s] for time_s in query_times]
+
+    def _replay(self, group: list[_PendingObservation], results: dict[float, EvaluatedObservation]) -> None:
+        """Replay one group of topology-identical instants as one slot batch."""
+
+        first = group[0].epoch_frame.frozen
+        bindings = [entry.binding for entry in group]
+        transmitters = _stacked([binding.transmitters for binding in bindings])
+        receivers = _stacked([binding.receivers for binding in bindings])
+        replay = RadarPropagationLegs(
+            inbound=first.adapter.reevaluate_slots(
+                first.handles[0],
+                transmitters,
+                _stacked([binding.site_sinks for binding in bindings]),
+                slot_count=len(group),
+                ad_mode=self.ad_mode,
+            ),
+            outbound=first.adapter.reevaluate_slots(
+                first.handles[1],
+                _stacked([binding.site_sources for binding in bindings]),
+                receivers,
+                slot_count=len(group),
+                ad_mode=self.ad_mode,
+            ),
+        )
+        if len(group) == 1:
+            entry = group[0]
+            round_trip = _round_trip(entry.epoch_frame.frozen)
+            paths = round_trip.composer.compose(replay.inbound, replay.outbound, self.response)
+            paths = round_trip.pattern.apply(
+                paths,
+                tx_pos=entry.binding.transmitters.positions_m,
+                rx_pos=entry.binding.receivers.positions_m,
+                tx_targets_m=_present(replay.inbound.departure_target_m, "departure_target_m").index_select(
+                    0, paths.topology.inbound_row
+                ),
+                rx_targets_m=_present(replay.outbound.arrival_origin_m, "arrival_origin_m").index_select(
+                    0, paths.topology.outbound_row
+                ),
+            )
+            identity = entry.identity
+            if self.motion_sampling == "adaptive":
+                identity = (identity, tuple(_present(paths.row_valid, "row_valid").tolist()))
+            results[entry.time_s] = EvaluatedObservation(
+                time_s=entry.time_s,
+                epoch_frame=entry.epoch_frame,
+                legs=lambda: replay,
+                composed=paths,
+                identity=identity,
+            )
+            return
+        batched = self._compose_slots(group, replay, transmitters, receivers)
+        batched_valid = _present(batched.row_valid, "row_valid")
+        valid_rows = batched_valid.reshape(len(group), -1).tolist()
+        for slot, entry in enumerate(group):
+            composer = _round_trip(entry.epoch_frame.frozen).composer
+            selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
+            paths = replace(
+                batched,
+                sensor_pair_count=composer.sensor_pair_count,
+                path_count=composer.path_count,
+                sensor_pair_index=composer.sensor_pair_index,
+                pair_offsets=composer.pair_offsets,
+                topology=composer.topology,
+                total_delay_s=batched.total_delay_s[selection],
+                complex_transfer_ref=batched.complex_transfer_ref[selection],
+                row_valid=batched_valid[selection],
+            )
+            identity = entry.identity
+            if self.motion_sampling == "adaptive":
+                identity = (identity, tuple(valid_rows[slot]))
+            # The per-slot narrowing is DEFERRED: a batched group composes once
+            # and reads nothing from its individual slots, so narrowing eagerly
+            # would build two revalidated single-slot batches per observation
+            # for a record whose legs only a published observation reads.
+            results[entry.time_s] = EvaluatedObservation(
+                time_s=entry.time_s,
+                epoch_frame=entry.epoch_frame,
+                legs=partial(_slot_legs, replay, slot),
+                composed=paths,
+                identity=identity,
+            )
+
+    def _compose_slots(
+        self,
+        group: list[_PendingObservation],
+        replay: RadarPropagationLegs,
+        transmitters: RadarEndpointSpec,
+        receivers: RadarEndpointSpec,
+    ) -> RadarPathBatch:
+        """Compose and pattern-weight a slot-major replay with the slot tables."""
+
+        round_trip = _round_trip(group[0].epoch_frame.frozen)
+        key = (group[0].identity, len(group))
+        if key not in self._slot_composers:
+            self._slot_composers[key] = round_trip.composer.for_slots(len(group))
+        batched = self._slot_composers[key].compose(replay.inbound, replay.outbound, self.response)
+        if key not in self._slot_patterns:
+            self._slot_patterns[key] = round_trip.pattern.for_slots(len(group))
+        return self._slot_patterns[key].apply(
+            batched,
+            tx_pos=transmitters.positions_m,
+            rx_pos=receivers.positions_m,
+            tx_targets_m=_present(replay.inbound.departure_target_m, "departure_target_m").index_select(
+                0, batched.topology.inbound_row
+            ),
+            rx_targets_m=_present(replay.outbound.arrival_origin_m, "arrival_origin_m").index_select(
+                0, batched.topology.outbound_row
+            ),
+        )
+
+    def observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
+        """One frame's evaluated observations, in schedule order.
+
+        A generator rather than a list: the fused route drops each observation
+        once it has been synthesized, so nothing scales with the
+        ``chirps * transmitters * samples`` observations an ADC-refreshed frame
+        has. :func:`trace_scene` materialises the same generator and pays that
+        cost deliberately.
+
+        Both consumers drain a frame completely before asking for the next.
+        These observations share the epoch loop's state, so interleaving two
+        frames would replay one frame's legs against another frame's frozen
+        topology.
+        """
+
+        for offset in offsets:
+            time_s = float(start + offset)
+            record = self.evaluate([time_s])[0]
+            yield Observation(
+                time_s=time_s, epoch_frame=record.epoch_frame, legs=record.legs(), composed=record.composed
+            )
+
+
+# ---------------------------------------------------------------------------
+# Opening a session
+# ---------------------------------------------------------------------------
+
+
+def _resolve_sampling(requested: Motion, *, sampled: bool) -> str:
+    """The route a request runs, once it is known whether anything moves.
+
+    ``static`` is refused rather than silently upgraded: it asks for one
+    observation a frame, and a world that moves inside a frame would publish
+    no Doppler at all. A still world evaluates the same single observation
+    per frame whatever the kind, which the rest of the session spells ``adc``.
+    """
+
+    motion_sampling = ("adc" if sampled else "static") if requested.kind == "auto" else requested.kind
+    if motion_sampling == "static" and sampled:
+        raise ValueError(
+            "Motion.static() asks for one observation per frame, but this session moves within a frame; "
+            "use Motion.adc() for the exhaustive reference, Motion.chirp() for stop-and-hop, or "
+            "Motion.adaptive() for error-controlled interpolation"
+        )
+    return "adc" if motion_sampling == "static" else motion_sampling
+
+
+def open_session(
+    radar: Radar,
+    scene: object,
+    *,
+    times: Sequence[float],
+    response: ScatterResponse,
+    sites: ScatterSitePolicy,
+    components: frozenset[str],
+    max_depth: int,
+    ad_mode: str,
+    polarization: Sequence[float],
+    antenna_pattern: Pattern,
+    sensor_endpoints: SensorEndpointIds | None,
+    motion: Motion,
+) -> tuple[Session, Iterator[FrameTrace]]:
+    """Open one scene session: the world half, and what the instrument half needs.
+
+    The single owner of the session; every argument arrives resolved by
+    :meth:`~witwin.radar.Radar._session`. Returns the session record and a
+    generator of per-frame traces.
+
+    ``sites`` is the internal :class:`~witwin.radar.binding.ScatterSitePolicy`
+    that :mod:`witwin.radar.targets` builds. A structure with no rigid motion
+    has no Core-owned world anchor and is refused by name (R-ADR-020).
+
+    ``components`` and ``max_depth`` carry the ``los`` / ``reflections``
+    request for THIS call through
+    :meth:`~witwin.radar.radar.RadarSystemConfig.with_propagation`, which
+    returns a new configuration rather than mutating the radar's stored one.
+
+    ``motion`` is a :class:`~witwin.radar.motion.Motion`. ``Motion.auto()``
+    resolves here, once it is known whether anything moves within a frame and
+    whether the receiver carries oscillator phase noise. Adaptive FMCW batches
+    topology-identical probes, interpolates carrier-transported coefficients,
+    and refines at observed path identity and validity changes; its sampled
+    error tests cannot exclude arbitrarily brief unseen events between probes,
+    so ``path_set_complete`` is true only when every observation was evaluated
+    or the candidate family was certified complete for all time, and
+    ``motion_sampling_exhaustive`` separately records whether any observation
+    was interpolated. ``Motion.rediscover_every_frames`` converts from frames to
+    observation count and marks path completeness false unless structure
+    motion already forces discovery; ``Motion.world`` still controls whether
+    compiled handles may be replayed.
+
+    ``ad_mode`` is forwarded to every replay. ``"none"`` builds no graph;
+    ``"vjp"`` makes the published cube differentiable with respect to the
+    endpoint and site positions the binding passed through by identity.
+
+    ``antenna_pattern`` is a :class:`~witwin.radar.sensors.Pattern`. A radar
+    always supplies one, so the stage runs on every solve, including for the
+    isotropic default, where it multiplies by exactly one.
+    """
+
+    from .synthesis.assembly import FmcwSpec, SlowTimeMode, waveform_sampling
+
+    if not isinstance(motion, Motion):
+        raise TypeError(f"motion must be a Motion, got {type(motion).__name__}")
+    instants = _times(times)
+    if not isinstance(sites, ScatterSitePolicy):
+        raise TypeError(
+            f"sites must be a ScatterSitePolicy, got {type(sites).__name__}; "
+            "where the scatter sites come from is a declaration, not a search"
+        )
+    solve_config = radar.system_config.with_propagation(components=components, max_depth=max_depth)
+    propagation = solve_config.propagation
+    array = solve_config.sensors.array
+    reference_frequency_hz = propagation.reference_frequency_hz
 
     dynamic = _dynamic_scene(scene)
     if dynamic.endpoint_trajectories and sensor_endpoints is None:
@@ -1790,372 +717,152 @@ def _open_session(
         dynamic.structure_trajectories
         or dynamic.structure_deformations
         or dynamic.endpoint_trajectories
-        or policy.trajectory is not None
+        or sites.trajectory is not None
     )
-    from .synthesis.assembly import FmcwSpec, SlowTimeMode, waveform_sampling
-
-    mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
-    full_spec = solve_config.waveform_spec()
+    declared = solve_config.waveform_spec()
     path_phase_noise = radar.frontend is not None and radar.frontend.has_phase_noise
     if path_phase_noise:
-        if not isinstance(full_spec, FmcwSpec):
+        if not isinstance(declared, FmcwSpec):
             raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
         # Checked against the REQUEST, because the kind is not resolved yet:
         # this branch is one of the things that decides it.
-        if requested.kind not in ("auto", "adc", "adaptive"):
+        if motion.kind not in ("auto", "adc", "adaptive"):
             raise ValueError("common-oscillator phase noise requires ADC-time observations")
         sampled = True
-    # ``auto`` resolves HERE rather than at the top, because whether anything
-    # moves is a property of the session and oscillator phase noise has just
-    # made a still world a sampled one. ``static`` is refused rather than
-    # silently upgraded: it asks for one observation a frame, and a world that
-    # moves inside a frame would publish no Doppler at all.
-    if requested.kind == "auto":
-        motion_sampling = "adc" if sampled else "static"
-    else:
-        motion_sampling = requested.kind
-    if motion_sampling == "static" and sampled:
-        raise ValueError(
-            "Motion.static() asks for one observation per frame, but this session moves within a frame; "
-            "use Motion.adc() for the exhaustive reference, Motion.chirp() for stop-and-hop, or "
-            "Motion.adaptive() for error-controlled interpolation"
-        )
-    if motion_sampling == "static":
-        # Nothing moves, so every sampling kind evaluates the same single
-        # observation per frame; ``adc`` is the name the rest of this function
-        # already spells that with.
-        motion_sampling = "adc"
+    motion_sampling = _resolve_sampling(motion, sampled=sampled)
 
-    output_spec = full_spec
     # Receiver nonlinearity and oscillator noise act on ADC-time samples.
     # Preserve the direct-spectrum fast path only for an ideal receiver.
-    if isinstance(full_spec, FmcwSpec) and radar.frontend is not None:
-        full_spec = replace(full_spec, output_domain="beat")
-    if motion_sampling == "adaptive" and not isinstance(full_spec, FmcwSpec):
+    working = declared
+    if isinstance(declared, FmcwSpec) and radar.frontend is not None:
+        working = replace(declared, output_domain="beat")
+    if motion_sampling == "adaptive" and not isinstance(working, FmcwSpec):
         raise NotImplementedError("adaptive motion currently requires FMCW")
-    if motion_sampling == "adaptive" and motion_event_period_frames is not None:
+    if motion_sampling == "adaptive" and motion.rediscover_every_frames is not None:
         raise ValueError("adaptive motion owns its topology discovery cadence")
-    adc_sampled = sampled and motion_sampling in ("adc", "adaptive") and isinstance(full_spec, FmcwSpec)
-    samples_per_slot = full_spec.num_samples if adc_sampled else 1
+    adc_sampled = sampled and motion_sampling in ("adc", "adaptive") and isinstance(working, FmcwSpec)
+    samples_per_slot = working.num_samples if adc_sampled and isinstance(working, FmcwSpec) else 1
 
+    mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
+    cadence: int | None
+    pair_samples: torch.Tensor | None = None
+    single: WaveformSpec | None = None
     if sampled:
-        offsets, pair_samples, single_spec = waveform_sampling(
-            full_spec, num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
+        slot_offsets, pair_samples, single = waveform_sampling(
+            working, num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
         )
-        offsets = np.asarray(offsets, dtype=np.float64)
-        if adc_sampled:
-            if (
-                full_spec.t_start_s + (full_spec.num_samples - 1) * full_spec.sample_period_s
-                >= full_spec.chirp_period_s
-            ):
+        offsets = np.asarray(slot_offsets, dtype=np.float64)
+        if adc_sampled and isinstance(working, FmcwSpec):
+            if working.t_start_s + (working.num_samples - 1) * working.sample_period_s >= working.chirp_period_s:
                 raise ValueError("ADC observations must fit inside each chirp period")
             # An ADC frame has chirps * transmitters * samples observations, so
             # the schedule is an array rather than Python floats: the same
             # additions in the same order, paid once by numpy instead of once
             # per observation by the interpreter.
             offsets = (
-                offsets[:, None] + full_spec.t_start_s + np.arange(full_spec.num_samples) * full_spec.sample_period_s
+                offsets[:, None] + working.t_start_s + np.arange(working.num_samples) * working.sample_period_s
             ).ravel()
-            single_spec = replace(single_spec, num_samples=1, output_domain="beat")
+            single = replace(single, num_samples=1, output_domain="beat")
         mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         # A version poll cannot detect endpoint-induced path births. Complete
         # dynamic sampling therefore rediscovers at each observed instant.
-        cadence = 1 if motion_event_period_frames is None else motion_event_period_frames * len(offsets)
+        cadence = 1 if motion.rediscover_every_frames is None else motion.rediscover_every_frames * len(offsets)
     else:
-        offsets, pair_samples, single_spec = np.zeros(1), None, None
-        cadence = motion_event_period_frames
+        offsets = np.zeros(1)
+        cadence = motion.rediscover_every_frames
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
-    loop = SceneEpochLoop(
+
+    world = WorldHalf(
+        radar,
         dynamic,
-        reference_frequency_hz=reference_frequency_hz,
-        bind=bind,
-        compile_scene=compile_scene,
-        motion_event_period_frames=cadence,
-        world_motion=world_motion,
+        sites=sites,
+        polarization=polarization,
+        sensor_endpoints=sensor_endpoints,
+        response=response,
+        antenna_pattern=antenna_pattern,
+        propagation=propagation,
+        array=array,
+        motion_sampling=motion_sampling,
+        ad_mode=ad_mode,
+        cadence=cadence,
+        world_motion=motion.world,
     )
-
-    identity_cache = {}
-    slot_composers = {}
-    slot_patterns = {}
-
-    def evaluate_many(query_times):
-        """Discover probes, then batch replay only identical live scene handles.
-
-        One record per query instant: the epoch frame, a CALLABLE returning
-        that instant's legs, the composed rows, and the identity the adaptive
-        controller tests. The legs are a callable because a batched group
-        never reads them and the adaptive controller never reads them either;
-        only an observation that gets published pays for the narrowing.
-
-        Moving compiled geometry is replayed before the next refreeze retires
-        its handles. Static geometry permits one slot batch per full leg key.
-        Host identity observations belong to adaptive control, not a replay.
-        """
-        from .paths import leg_identity
-
-        results = {}
-        groups = {}
-
-        def finish(group):
-            first = group[0][1].frozen
-            bindings = [entry[2] for entry in group]
-
-            def endpoints(name):
-                specs = [getattr(binding, name) for binding in bindings]
-                if len(specs) == 1:
-                    return specs[0]
-                return RadarEndpointSpec(
-                    **{
-                        field: None
-                        if getattr(specs[0], field) is None
-                        else torch.cat([getattr(spec, field) for spec in specs], dim=0)
-                        for field in ("stable_ids", "positions_m", "polarizations", "powers_w")
-                    }
-                )
-
-            replay = RadarPropagationLegs(
-                inbound=first.adapter.reevaluate_slots(
-                    first.handles[0],
-                    endpoints("transmitters"),
-                    endpoints("site_sinks"),
-                    slot_count=len(group),
-                    ad_mode=ad_mode,
-                ),
-                outbound=first.adapter.reevaluate_slots(
-                    first.handles[1],
-                    endpoints("site_sources"),
-                    endpoints("receivers"),
-                    slot_count=len(group),
-                    ad_mode=ad_mode,
-                ),
-            )
-            composer, _, pattern_stage = first.payload
-            batched_paths = None
-            if len(group) > 1:
-                key = (group[0][3], len(group))
-                if key not in slot_composers:
-                    slot_composers[key] = composer._for_slots(len(group))
-                batched_paths = slot_composers[key].compose(replay.inbound, replay.outbound, response)
-                if key not in slot_patterns:
-                    slot_patterns[key] = pattern_stage._for_slots(len(group))
-                batched_paths = slot_patterns[key].apply(
-                    batched_paths,
-                    tx_pos=endpoints("transmitters").positions_m,
-                    rx_pos=endpoints("receivers").positions_m,
-                    tx_targets_m=replay.inbound.departure_target_m.index_select(0, batched_paths.topology.inbound_row),
-                    rx_targets_m=replay.outbound.arrival_origin_m.index_select(0, batched_paths.topology.outbound_row),
-                )
-                valid_rows = batched_paths.row_valid.reshape(len(group), -1).tolist()
-            for slot, (t, frame, binding, identity) in enumerate(group):
-                # The per-slot narrowing is DEFERRED, because a batched group
-                # composes once and then reads nothing from its individual
-                # slots: the rows it needs are already sliced out of
-                # ``batched_paths``. Narrowing eagerly builds two revalidated
-                # single-slot batches per observation for a record whose legs
-                # only a published observation ever reads - on the adaptive
-                # route, one per frame out of every probe it took.
-                legs = (
-                    (lambda: replay)
-                    if len(group) == 1
-                    else (
-                        lambda index=slot: RadarPropagationLegs(
-                            inbound=replay.inbound.slot(index), outbound=replay.outbound.slot(index)
-                        )
-                    )
-                )
-                composer, _, pattern_stage = frame.frozen.payload
-                if batched_paths is None:
-                    # One slot, so this narrowing is the replay itself.
-                    direct = legs()
-                    paths = composer.compose(direct.inbound, direct.outbound, response)
-                else:
-                    selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
-                    paths = replace(
-                        batched_paths,
-                        sensor_pair_count=composer.sensor_pair_count,
-                        path_count=composer.path_count,
-                        sensor_pair_index=composer.sensor_pair_index,
-                        pair_offsets=composer.pair_offsets,
-                        topology=composer.topology,
-                        total_delay_s=batched_paths.total_delay_s[selection],
-                        complex_transfer_ref=batched_paths.complex_transfer_ref[selection],
-                        row_valid=batched_paths.row_valid[selection],
-                    )
-                if batched_paths is None:
-                    paths = pattern_stage.apply(
-                        paths,
-                        tx_pos=binding.transmitters.positions_m,
-                        rx_pos=binding.receivers.positions_m,
-                        tx_targets_m=direct.inbound.departure_target_m.index_select(0, paths.topology.inbound_row),
-                        rx_targets_m=direct.outbound.arrival_origin_m.index_select(0, paths.topology.outbound_row),
-                    )
-                if motion_sampling == "adaptive":
-                    identity = (
-                        identity,
-                        tuple(paths.row_valid.tolist() if batched_paths is None else valid_rows[slot]),
-                    )
-                results[t] = (frame, legs, paths, identity)
-
-        for t in query_times:
-            frozen = loop.frozen
-            authored_world = getattr(dynamic, "scene", None)
-            # Only an empty authored world proves the absence of occluders and
-            # reflection/diffraction births. Require every endpoint pair to be
-            # present too: a degenerate initial LOS discovery cannot certify it.
-            complete_los = (
-                motion_sampling == "adaptive"
-                and authored_world is not None
-                and not authored_world.structures
-                and propagation.components == frozenset({"los"})
-                and frozen is not None
-                and frozen.handles[0].row_count == array.num_tx * frozen.payload[1].site_count
-                and frozen.handles[1].row_count == array.num_rx * frozen.payload[1].site_count
-            )
-            frame = loop.frame(t, topology_complete=complete_los)
-            template = frame.frozen.payload[1]
-            if frame.rediscovered:
-                binding = template
-            elif policy.source == SITE_SOURCE_EXPLICIT and sensor_endpoints is None:
-                positions = policy.resolve(frame.snapshot, device=template.device)
-                if positions.shape != template.site_positions_m.shape:
-                    raise ValueError("a site trajectory must preserve the declared site count")
-                binding = replace(
-                    template,
-                    site_sources=replace(template.site_sources, positions_m=positions),
-                    site_sinks=replace(template.site_sinks, positions_m=positions),
-                )
-            else:
-                binding = bind_radar_world(
-                    radar, frame.snapshot, sites=policy, polarization=orientation, sensor_endpoints=sensor_endpoints
-                )
-            identity = ()
-            if motion_sampling == "adaptive":
-                if frame.epoch not in identity_cache:
-                    identity_cache[frame.epoch] = tuple(
-                        tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles
-                    )
-                identity = identity_cache[frame.epoch]
-            entry = (t, frame, binding, identity)
-            if loop.structures_move:
-                finish([entry])
-            else:
-                groups.setdefault(identity, []).append(entry)
-        for group in groups.values():
-            finish(group)
-        return [results[t] for t in query_times]
-
-    # Whether a non-adaptive route can have missed a path birth is a property
-    # of the declared cadence and world motion, not of any one frame, so it is
-    # decided once here and repeated on every frame the run publishes.
-    sampled_completeness = not sampled or cadence == 1 or (world_motion == "frozen_world" and loop.structures_move)
-    published_sampling = "static" if not sampled else motion_sampling
-
-    def instrument(other):
-        """The spec pair this radar's instrument half works from.
-
-        ONE owner: the setup here and :func:`echo_paths` against a different
-        receive chain both derive the specs through this, so a receiver that
-        flips the FMCW output domain cannot end up paired with a slot schedule
-        derived from the other domain. The observation offsets are deliberately
-        not re-derived: they are the traced schedule, and a spec that would
-        change them is refused by name rather than silently re-scheduled.
-        """
-
-        declared = other.system_config.waveform_spec()
-        working = declared
-        if isinstance(declared, FmcwSpec) and other.frontend is not None:
-            working = replace(declared, output_domain="beat")
-        if not sampled:
-            return declared, working, None
-        _, _, single = waveform_sampling(working, num_tx=array.num_tx, num_rx=array.num_rx, device=other.device)
-        if adc_sampled:
-            single = replace(single, num_samples=1, output_domain="beat")
-        return declared, working, single
-
-    session = _Session(
+    session = Session(
         radar=radar,
         array=array,
-        loop=loop,
+        loop=world.loop,
         mode=mode,
-        full_spec=full_spec,
-        output_spec=output_spec,
-        single_spec=single_spec,
+        specs=InstrumentSpecs(declared=declared, working=working, single=single),
         offsets=offsets,
         pair_samples=pair_samples,
         sampled=sampled,
         adc_sampled=adc_sampled,
         samples_per_slot=samples_per_slot,
         path_phase_noise=path_phase_noise,
-        adaptive=adaptive,
         reference_frequency_hz=reference_frequency_hz,
-        instrument=instrument,
-        kind=published_sampling,
-        waveform=radar.waveform,
-        carrier=float(reference_frequency_hz),
+        kind="static" if not sampled else motion_sampling,
         components=frozenset(propagation.components),
         max_depth=int(propagation.max_depth),
         grad=str(ad_mode),
-        motion=requested,
+        motion=motion,
         times=instants,
     )
-
-    def observations(start):
-        """One frame's evaluated observations, in schedule order.
-
-        A generator rather than a list, and that is the whole reason the fused
-        route's peak allocation did not change: it drops each observation once
-        it has been synthesized, so nothing scales with the
-        ``chirps * transmitters * samples`` observations an ADC-refreshed frame
-        has. :func:`trace_scene` materialises the same generator and pays that
-        cost deliberately, which is the trade its docstring states.
-
-        Both consumers drain a frame completely before asking for the next.
-        That is not politeness: these observations share the epoch loop's
-        state, so interleaving two frames would replay one frame's legs against
-        another frame's frozen topology.
-        """
-
-        for offset in offsets:
-            time_s = float(start + offset)
-            epoch_frame, legs, composed, _ = evaluate_many([time_s])[0]
-            yield _Observation(time_s=time_s, epoch_frame=epoch_frame, legs=legs(), composed=composed)
-
-    def traces():
-        if sampled and motion_sampling == "adaptive":
-            for start in instants:
-                actual_times = start + offsets
-                table, stats, first, last = _adaptive_trace(
-                    actual_times, evaluate_many, full_spec, adaptive, reference_frequency_hz
-                )
-                epoch_frame, legs, composed, _ = last
-                closing = _Observation(
-                    time_s=float(actual_times[-1]), epoch_frame=epoch_frame, legs=legs(), composed=composed
-                )
-                yield _FrameTrace(
-                    time_s=float(start),
-                    sample_times_s=actual_times,
-                    observations=iter((closing,)),
-                    adaptive=table,
-                    stats=stats,
-                    opened=first[0],
-                    path_set_complete=bool(stats["exhaustive"] or stats["topology_proved_complete"]),
-                    motion_sampling_exhaustive=bool(stats["exhaustive"]),
-                )
-            return
-        for start in instants:
-            yield _FrameTrace(
-                time_s=float(start),
-                sample_times_s=start + offsets,
-                observations=observations(start),
-                path_set_complete=bool(sampled_completeness),
-                motion_sampling_exhaustive=True,
-            )
-
-    return session, traces()
+    # Whether a non-adaptive route can have missed a path birth is a property
+    # of the declared cadence and world motion, not of any one frame, so it is
+    # decided once here and repeated on every frame the run publishes.
+    complete = not sampled or cadence == 1 or (motion.world == "frozen_world" and world.loop.structures_move)
+    if sampled and motion_sampling == "adaptive":
+        return session, _adaptive_traces(session, world)
+    return session, _frame_traces(session, world, path_set_complete=bool(complete))
 
 
-def _finish_frame(session: _Session, synthesis, frame_time_s: float):
+def _frame_traces(session: Session, world: WorldHalf, *, path_set_complete: bool) -> Iterator[FrameTrace]:
+    for start in session.times:
+        yield FrameTrace(
+            time_s=float(start),
+            sample_times_s=start + session.offsets,
+            observations=world.observations(start, session.offsets),
+            path_set_complete=path_set_complete,
+            motion_sampling_exhaustive=True,
+        )
+
+
+def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]:
+    from .synthesis.assembly import FmcwSpec
+
+    spec = session.specs.working
+    if not isinstance(spec, FmcwSpec):
+        raise NotImplementedError("adaptive motion currently requires FMCW")
+    for start in session.times:
+        actual_times = start + session.offsets
+        frame = trace_adaptive_frame(actual_times, world.evaluate, spec, session.motion, session.reference_frequency_hz)
+        last = frame.last
+        if not isinstance(last, EvaluatedObservation):
+            raise TypeError("the adaptive controller returns the session's evaluated observations")
+        closing = Observation(
+            time_s=float(actual_times[-1]), epoch_frame=last.epoch_frame, legs=last.legs(), composed=last.composed
+        )
+        yield FrameTrace(
+            time_s=float(start),
+            sample_times_s=actual_times,
+            observations=iter((closing,)),
+            adaptive=frame.table,
+            stats=frame.stats,
+            opened=frame.first.epoch_frame,
+            path_set_complete=bool(frame.stats["exhaustive"] or frame.stats["topology_proved_complete"]),
+            motion_sampling_exhaustive=bool(frame.stats["exhaustive"]),
+        )
+
+
+# ---------------------------------------------------------------------------
+# The instrument half
+# ---------------------------------------------------------------------------
+
+
+def _finish_frame(
+    session: Session, synthesis: SynthesisResult, frame_time_s: float
+) -> tuple[torch.Tensor, SynthesisResult]:
     """Apply the receive chain, then land the frame in its declared domain.
 
     ``frame_time_s`` keys the frame's receiver noise realisation, so two frames
@@ -2165,24 +872,24 @@ def _finish_frame(session: _Session, synthesis, frame_time_s: float):
     from .synthesis.assembly import FmcwSpec, SynthesisResult, assemble_frame_cube
 
     radar = session.radar
-    frame_cube = radar._apply_signal_models(
-        assemble_frame_cube(synthesis.cube, num_tx=session.array.num_tx, num_rx=session.array.num_rx),
-        phase_in_signal=session.path_phase_noise,
-        frame_time_s=frame_time_s,
-    )
-    output_spec = session.output_spec
-    if isinstance(output_spec, FmcwSpec) and output_spec.output_domain != synthesis.output_domain:
+    frame_cube = assemble_frame_cube(synthesis.cube, num_tx=session.array.num_tx, num_rx=session.array.num_rx)
+    if radar.frontend is not None:
+        frame_cube = radar.frontend.apply(
+            frame_cube, phase_in_signal=session.path_phase_noise, frame_time_s=frame_time_s
+        ).signal
+    declared, working = session.specs.declared, session.specs.working
+    if isinstance(declared, FmcwSpec) and declared.output_domain != synthesis.output_domain:
         from .processing.range_doppler import fmcw_range_fft
 
+        assert isinstance(working, FmcwSpec)
         frame_cube = fmcw_range_fft(frame_cube)
         synthesis = SynthesisResult.from_fmcw(
-            frame_cube.permute(2, 1, 0, 3).reshape(session.full_spec.num_chirps, -1, session.full_spec.num_samples),
-            output_spec,
+            frame_cube.permute(2, 1, 0, 3).reshape(working.num_chirps, -1, working.num_samples), declared
         )
     return frame_cube, synthesis
 
 
-def _echo_frame(session: _Session, trace: _FrameTrace) -> _SceneFrame:
+def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
     """Synthesize one traced frame. The whole instrument half lives here.
 
     Everything this does is a property of the radar and the waveform, never of
@@ -2194,65 +901,77 @@ def _echo_frame(session: _Session, trace: _FrameTrace) -> _SceneFrame:
     ``trace.observations`` is drained exactly once, in order.
     """
 
-    from .synthesis.assembly import SynthesisResult
+    from .synthesis.assembly import FmcwSpec, SynthesisResult
 
     radar = session.radar
-    full_spec = session.full_spec
-    opened = None
-    closing = None
+    working = session.specs.working
+    opened: EpochFrame | None = None
+    closing: Observation | None = None
+    published: RadarPathBatch | None = None
+    synthesis: SynthesisResult | None = None
     if trace.adaptive is not None:
+        assert isinstance(working, FmcwSpec)
         for observation in trace.observations:
             opened = trace.opened
             closing = observation
-        cube, batches = _adaptive_echo(
-            trace.adaptive, full_spec, session.adaptive, session.reference_frequency_hz, radar.frontend
+            published = observation.composed
+        cube, batches = echo_adaptive_frame(
+            trace.adaptive,
+            working,
+            int(session.motion.batch_observations),
+            session.reference_frequency_hz,
+            radar.frontend,
         )
         # Written by the half that did the batching, so a Paths that has never
         # been echoed does not claim a synthesis count it could not have.
+        assert trace.stats is not None
         trace.stats["synthesis_batches"] = batches
-        synthesis = SynthesisResult.from_fmcw(cube, replace(full_spec, output_domain="beat"))
-        composed = closing.composed
+        synthesis = SynthesisResult.from_fmcw(cube, replace(working, output_domain="beat"))
     else:
-        slot_cubes = []
-        synthesis = None
-        composed = None
+        slot_cubes: list[torch.Tensor] = []
+        single = session.specs.single
         for observation in trace.observations:
             if opened is None:
                 opened = observation.epoch_frame
             closing = observation
             composed = observation.composed
             if session.path_phase_noise:
+                assert radar.frontend is not None
                 composed = radar.frontend.apply_path_phase(composed, observation.time_s)
-            observation_spec = (
-                replace(
-                    session.single_spec,
-                    t_start_s=full_spec.t_start_s
-                    + (len(slot_cubes) % session.samples_per_slot) * full_spec.sample_period_s,
-                )
-                if session.adc_sampled
-                else session.single_spec
-            )
-            synthesis = radar._synthesize(
-                composed, slow_time_mode=session.mode, spec=observation_spec if session.sampled else full_spec
-            )
+            published = composed
+            observation_spec = working
+            if session.sampled:
+                assert single is not None
+                observation_spec = single
+                if session.adc_sampled:
+                    assert isinstance(working, FmcwSpec) and isinstance(single, FmcwSpec)
+                    observation_spec = replace(
+                        single,
+                        t_start_s=working.t_start_s
+                        + (len(slot_cubes) % session.samples_per_slot) * working.sample_period_s,
+                    )
+            synthesis = radar._synthesize(composed, slow_time_mode=session.mode, spec=observation_spec)
             slot_cubes.append(synthesis.cube)
+        assert synthesis is not None
         if session.sampled:
             stacked = torch.cat(slot_cubes, dim=0)
             pairs = torch.arange(session.array.num_tx * session.array.num_rx, device=stacked.device)
             if session.adc_sampled:
+                assert isinstance(working, FmcwSpec)
                 stacked = stacked.reshape(-1, session.samples_per_slot, len(pairs)).transpose(1, 2)
                 cube = stacked[session.pair_samples, pairs]
-                if full_spec.output_domain == "spectrum":
+                if working.output_domain == "spectrum":
                     from .processing.range_doppler import fmcw_range_fft
 
                     cube = fmcw_range_fft(cube)
-                synthesis = SynthesisResult.from_fmcw(cube, full_spec)
+                synthesis = SynthesisResult.from_fmcw(cube, working)
             else:
                 synthesis = replace(synthesis, cube=stacked[session.pair_samples, pairs])
-
+    if opened is None or closing is None or published is None or synthesis is None:
+        raise ValueError("a frame trace must carry at least one observation")
     frame_cube, synthesis = _finish_frame(session, synthesis, trace.time_s)
     loop = session.loop
-    return _SceneFrame(
+    return SceneFrame(
         cube=frame_cube,
         synthesis=synthesis,
         time_s=trace.time_s,
@@ -2265,15 +984,15 @@ def _echo_frame(session: _Session, trace: _FrameTrace) -> _SceneFrame:
         discovery_count=int(loop.discovery_count),
         epoch_frame=closing.epoch_frame,
         legs=closing.legs,
-        composed=composed,
+        composed=published,
         diagnostics=trace.stats,
         motion_sampling=session.kind,
-        output_spec=session.output_spec,
+        output_spec=session.specs.declared,
         array=session.array,
     )
 
 
-def _scene_frames(*args, **kwargs) -> Iterator[_SceneFrame]:
+def _scene_frames(radar: Radar, scene: object, **arguments: Any) -> Iterator[SceneFrame]:
     """Trace one frame, echo it, drop its rows, repeat.
 
     The fused route. It is a generator so that argument validation still
@@ -2281,9 +1000,14 @@ def _scene_frames(*args, **kwargs) -> Iterator[_SceneFrame]:
     what :func:`stream_scene` promises.
     """
 
-    session, traces = _open_session(*args, **kwargs)
+    session, traces = open_session(radar, scene, **arguments)
     for trace in traces:
-        yield _echo_frame(session, trace)
+        yield echo_frame(session, trace)
+
+
+# ---------------------------------------------------------------------------
+# The world half's record, and the verbs
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -2327,14 +1051,14 @@ class Paths:
     times: tuple[float, ...]
     #: Every observation instant of every frame, ``float64[observations]``
     #: per frame.
-    sample_times: tuple[object, ...]
+    sample_times: tuple[np.ndarray, ...]
     #: The propagation request these rows answer. ``path_set_complete`` is a
     #: statement relative to it, not an absolute one.
     los: bool
     reflections: int
     #: The differentiation mode the replay ran under.
     grad: str
-    #: The resolved sampling record, after ``Motion.auto()`` chose.
+    #: The sampling record as requested; ``kind`` is what it resolved to.
     motion: Motion
     epochs: tuple[int, ...]
     rediscovery_reasons: tuple[str | None, ...]
@@ -2342,14 +1066,14 @@ class Paths:
     discovery_count: int
     path_set_complete: bool
     motion_sampling_exhaustive: bool
-    adaptive_diagnostics: tuple[dict, ...]
+    adaptive_diagnostics: tuple[dict[str, Any], ...]
     #: The closing observation's typed state, as the result publishes it.
     last_snapshot: object
     last_compiled_scene: object
-    last_propagation: object
-    last_radar_paths: object
-    _session: object
-    _frames: tuple
+    last_propagation: RadarPropagationLegs
+    last_radar_paths: RadarPathBatch
+    _session: Session
+    _frames: tuple[FrameTrace, ...]
 
     @property
     def frame_count(self) -> int:
@@ -2368,7 +1092,7 @@ class Paths:
 
         total = 0
         for frame in self._frames:
-            total += frame.adaptive.observation_count if frame.adaptive is not None else len(frame.observations)
+            total += frame.adaptive.observation_count if frame.adaptive is not None else len(_retained(frame))
         return total
 
     @property
@@ -2380,7 +1104,7 @@ class Paths:
             if frame.adaptive is not None:
                 total += frame.adaptive.row_count
             else:
-                total += sum(int(observation.composed.path_count) for observation in frame.observations)
+                total += sum(int(observation.composed.path_count) for observation in _retained(frame))
         return total
 
     def frame(self, index: int) -> Paths:
@@ -2392,7 +1116,7 @@ class Paths:
         """
 
         frame_trace = self._frames[index]
-        closing = frame_trace.observations[-1]
+        closing = _retained(frame_trace)[-1]
         return replace(
             self,
             times=(self.times[index],),
@@ -2409,7 +1133,7 @@ class Paths:
             _frames=(frame_trace,),
         )
 
-    def rows(self, frame: int = 0, observation: int = -1):
+    def rows(self, frame: int = 0, observation: int = -1) -> RadarPathBatch:
         """One evaluated observation's composed rows, as a typed batch.
 
         An adaptive frame keeps its rows in one interpolation table rather than
@@ -2423,18 +1147,25 @@ class Paths:
                 "an adaptive frame stores its rows as one interpolation table, not one batch per instant, "
                 "so only the observation that closed it is published as a batch"
             )
-        return frame_trace.observations[observation].composed
+        return _retained(frame_trace)[observation].composed
 
 
-def trace_scene(*args, **kwargs) -> Paths:
+def _retained(frame: FrameTrace) -> tuple[Observation, ...]:
+    observations = frame.observations
+    if not isinstance(observations, tuple):
+        raise TypeError("a traced frame retains its observations as a tuple")
+    return observations
+
+
+def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
     """Run the world half of a session and keep every composed row.
 
     The same generator :func:`simulate_scene` consumes, drained into a record
     instead of synthesized. Read :class:`Paths` on what that costs.
     """
 
-    session, traces = _open_session(*args, **kwargs)
-    frames: list[_FrameTrace] = []
+    session, traces = open_session(radar, scene, **arguments)
+    frames: list[FrameTrace] = []
     epochs: list[int] = []
     reasons: list[str | None] = []
     for trace in traces:
@@ -2443,11 +1174,11 @@ def trace_scene(*args, **kwargs) -> Paths:
         frames.append(replace(trace, observations=observations, opened=opened))
         epochs.append(int(opened.epoch))
         reasons.append(opened.reason)
-    closing = frames[-1].observations[-1]
+    closing = _retained(frames[-1])[-1]
     return Paths(
         kind=session.kind,
-        carrier=session.carrier,
-        waveform=session.waveform,
+        carrier=float(session.reference_frequency_hz),
+        waveform=session.radar.waveform,
         times=tuple(session.times),
         sample_times=tuple(frame.sample_times_s for frame in frames),
         los="los" in session.components,
@@ -2470,7 +1201,7 @@ def trace_scene(*args, **kwargs) -> Paths:
     )
 
 
-def echo_paths(radar: object, paths: Paths) -> Result:
+def echo_paths(radar: Radar, paths: Paths) -> Result:
     """Run the instrument half over traced rows and publish the frame cubes.
 
     ``radar`` supplies the receive chain and the output domain; the rows supply
@@ -2481,25 +1212,12 @@ def echo_paths(radar: object, paths: Paths) -> Result:
 
     if not isinstance(paths, Paths):
         raise TypeError(f"echo takes the Paths that trace returned, got {type(paths).__name__}")
-    session = paths._session
-    _require_same_instrument(radar, paths, session)
-    session = replace(session, radar=radar, **_instrument_specs(session, radar))
-    return _assemble([_echo_frame(session, trace) for trace in paths._frames])
+    _require_same_instrument(radar, paths, paths._session)
+    session = paths._session.echoing(radar)
+    return assemble([echo_frame(session, trace) for trace in paths._frames])
 
 
-def _instrument_specs(session: _Session, radar: object) -> dict:
-    """The session fields that belong to whichever radar is echoing."""
-
-    declared, working, single = session.instrument(radar)
-    return {
-        "full_spec": working,
-        "output_spec": declared,
-        "single_spec": single,
-        "path_phase_noise": radar.frontend is not None and radar.frontend.has_phase_noise,
-    }
-
-
-def _require_same_instrument(radar: object, paths: Paths, session: _Session) -> None:
+def _require_same_instrument(radar: Radar, paths: Paths, session: Session) -> None:
     """Refuse a radar these rows do not describe, by name.
 
     What may differ is the receive chain and the FMCW output domain. What may
@@ -2533,25 +1251,23 @@ def _require_same_instrument(radar: object, paths: Paths, session: _Session) -> 
             f"time, and these paths were traced with {paths.kind!r} sampling, which has no ADC instants. "
             "Re-trace with Motion.adc() or Motion.adaptive()."
         )
-    if phase_noise and not isinstance(session.output_spec, FmcwSpec):
+    if phase_noise and not isinstance(session.specs.declared, FmcwSpec):
         raise NotImplementedError("scene-driven common-oscillator phase noise currently requires FMCW")
 
 
-def simulate_scene(*args, **kwargs) -> Result:
+def simulate_scene(radar: Radar, scene: object, **arguments: Any) -> Result:
     """Run one scene session to completion and stack every frame.
 
     The whole sequence stays in device memory: the frame cubes accumulate and
-    :meth:`Result.from_frames` stacks them, so peak allocation
-    scales with the frame count - measured near three times the published cube
-    at 128 frames, because the list and the stack are both live. Use
-    :func:`stream_scene` for a sequence long enough that this is the binding
-    constraint.
+    :meth:`Result.from_frames` stacks them, so peak allocation scales with the
+    frame count. Use :func:`stream_scene` for a sequence long enough that this
+    is the binding constraint.
     """
 
-    return _assemble(list(_scene_frames(*args, **kwargs)))
+    return assemble(list(_scene_frames(radar, scene, **arguments)))
 
 
-def stream_scene(*args, **kwargs) -> Iterator[Result]:
+def stream_scene(radar: Radar, scene: object, **arguments: Any) -> Iterator[Result]:
     """Yield each frame of a scene session as its own one-frame result.
 
     Same physics, same session state and the same per-frame cubes as
@@ -2565,12 +1281,8 @@ def stream_scene(*args, **kwargs) -> Iterator[Result]:
     not less: the point of this entry is that the caller consumes and drops.
     """
 
-    for frame in _scene_frames(*args, **kwargs):
-        yield _assemble([frame])
+    for frame in _scene_frames(radar, scene, **arguments):
+        yield assemble([frame])
 
 
-#: ``Motion``, ``Paths`` and ``Result`` are declared at the package
-#: root instead: one public name per type, and the root is where the happy
-#: path lives. This module's own public contribution is the identity record
-#: a radar mounted on a moving structure needs.
-__all__ = ["SensorEndpointIds"]
+__all__: list[str] = []

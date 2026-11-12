@@ -134,7 +134,7 @@ There is no default target set, and Radar derives no scatterer from geometry —
 
 ## 4. Execute the simulation session
 
-`witwin/radar/simulation.py` owns the frame loop:
+`witwin/radar/simulation.py` owns the frame loop, with the binding in `binding.py`, the adaptive controller in `adaptive.py` and the published records in `results.py`:
 
 1. sample the Core world at waveform observation times within each requested frame;
 2. compile or reuse the Channel scene epoch;

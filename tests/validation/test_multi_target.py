@@ -200,7 +200,7 @@ class TestPointCloudOutputFormat:
         contract rather than a silent one.
         """
 
-        from witwin.radar.simulation import ScatterSitePolicy
+        from witwin.radar.binding import ScatterSitePolicy
 
         radar = scene_radar(VALIDATION_FAST_CONFIG)
         with pytest.raises(ValueError, match="site_count must be a positive int"):

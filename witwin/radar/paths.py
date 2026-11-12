@@ -17,13 +17,18 @@ this package never crosses the Channel boundary either.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative
-from .propagation import RadarLegBatch, require_tensor
+from .propagation import FrozenLeg, RadarLegBatch, require_tensor
+
+if TYPE_CHECKING:
+    from .scattering import ScatterResponse
 
 LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
 
@@ -32,21 +37,21 @@ class _PathInterpolation(torch.autograd.Function):
     """First-order native interpolation at a fixed adaptive time partition."""
 
     @staticmethod
-    def forward(values, indices, weights, carrier):
+    def forward(values: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, carrier: float) -> torch.Tensor:
         rows = len(indices) if indices.ndim == 2 else len(values)
         result = values.new_empty((rows, 3))
         _ops().path_interpolate_forward(values, indices, weights, values.new_empty(0), result, carrier)
         return result
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         values, indices, weights, ctx.carrier = inputs
         ctx.save_for_backward(values, indices, weights)
         ctx.save_for_forward(values, indices, weights)
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad):
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
         values, indices, weights = ctx.saved_tensors
         indexed = indices.ndim == 2
         result = values.new_empty((len(indices), 4 * indices.shape[1])) if indexed else torch.empty_like(values)
@@ -58,7 +63,9 @@ class _PathInterpolation(torch.autograd.Function):
         return result, None, None, None
 
     @staticmethod
-    def jvp(ctx, tangent, indices_tangent, weights_tangent, carrier_tangent):
+    def jvp(
+        ctx: Any, tangent: torch.Tensor, indices_tangent: Any, weights_tangent: Any, carrier_tangent: Any
+    ) -> torch.Tensor:
         values, indices, weights = ctx.saved_tensors
         rows = len(indices) if indices.ndim == 2 else len(values)
         result = values.new_empty((rows, 3))
@@ -66,7 +73,9 @@ class _PathInterpolation(torch.autograd.Function):
         return result
 
 
-def interpolate_path_rows(delays, transfers, weights, carrier_hz):
+def interpolate_path_rows(
+    delays: Sequence[torch.Tensor], transfers: Sequence[torch.Tensor], weights: torch.Tensor, carrier_hz: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Transport Channel phasors to the interpolated delay, then blend envelopes.
 
     ``delays`` and ``transfers`` are ``K`` sequences of per-row node samples of
@@ -93,7 +102,7 @@ def interpolate_path_rows(delays, transfers, weights, carrier_hz):
     return _interpolate_packed_rows(torch.stack(columns, dim=1).contiguous(), carrier_hz)
 
 
-def _interpolate_packed_rows(values, carrier_hz):
+def _interpolate_packed_rows(values: torch.Tensor, carrier_hz: float) -> tuple[torch.Tensor, torch.Tensor]:
     """Native interpolation over repeated [delay, real, imaginary, basis] columns.
 
     Used by the adaptive controller's small error probes. Full observation
@@ -105,7 +114,9 @@ def _interpolate_packed_rows(values, carrier_hz):
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
-def _interpolate_indexed_rows(samples, indices, weights, carrier_hz):
+def interpolate_indexed_rows(
+    samples: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, carrier_hz: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Gather compact probe triples inside the interpolation kernel.
 
     ``samples`` stores float64 (delay [s], real C, imaginary C) per probe path;
@@ -117,7 +128,7 @@ def _interpolate_indexed_rows(samples, indices, weights, carrier_hz):
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
-def stable_ids(values, name: str) -> list[int]:
+def stable_ids(values: torch.Tensor | Sequence[int], name: str) -> list[int]:
     """Normalize a stable-ID sequence to a host list of distinct ints."""
 
     if isinstance(values, torch.Tensor):
@@ -133,7 +144,7 @@ def stable_ids(values, name: str) -> list[int]:
     return listed
 
 
-def leg_identity(frozen, name: str) -> tuple[list[int], list[int], list[LegKey]]:
+def leg_identity(frozen: FrozenLeg, name: str) -> tuple[list[int], list[int], list[LegKey]]:
     """Read one frozen leg's row identity to the host, once.
 
     The key is everything that distinguishes two rows of the SAME leg: which
@@ -187,7 +198,7 @@ def group_rows(source: list[int], sink: list[int], keys: list[LegKey], name: str
     return groups
 
 
-def sink_major_rank(sources: list[int], sinks: list[int]):
+def sink_major_rank(sources: list[int], sinks: list[int]) -> Callable[[int, int], int]:
     """The sensor-pair index, mirroring the Channel consumer's convention.
 
     Channel computes ``sink_row_index * source_count + source_row_index`` and
@@ -357,7 +368,9 @@ class RadarPathBatch:
         return self.total_delay_s.device
 
 
-def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_count):
+def validate_pair_ordering(
+    sensor_pair_index: torch.Tensor, *, num_tx: int, num_rx: int, sensor_pair_count: int
+) -> None:
     """Validate the frozen sink-major sensor-pair partition once on the host."""
 
     if isinstance(num_tx, bool) or not isinstance(num_tx, int) or num_tx < 1:
@@ -408,21 +421,21 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        tau_in,
-        tau_out,
-        c_in_re,
-        c_in_im,
-        c_out_re,
-        c_out_im,
-        s_re,
-        s_im,
-        row_valid,
-        idx_in,
-        idx_out,
-        idx_s,
-        join,
-        response_family,
-    ):
+        tau_in: torch.Tensor,
+        tau_out: torch.Tensor,
+        c_in_re: torch.Tensor,
+        c_in_im: torch.Tensor,
+        c_out_re: torch.Tensor,
+        c_out_im: torch.Tensor,
+        s_re: torch.Tensor,
+        s_im: torch.Tensor,
+        row_valid: torch.Tensor,
+        idx_in: torch.Tensor,
+        idx_out: torch.Tensor,
+        idx_s: torch.Tensor,
+        join: TwoWayComposer,
+        response_family: tuple[torch.Tensor, torch.Tensor, int],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(idx_in.shape[0])
         tau_rt = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
         c_rt_re = torch.empty_like(tau_rt)
@@ -448,7 +461,7 @@ class _TwoWayJoin(torch.autograd.Function):
         return tau_rt, c_rt_re, c_rt_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         (
             _tau_in,
             _tau_out,
@@ -478,7 +491,9 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_tau_rt, grad_c_rt_re, grad_c_rt_im):
+    def backward(
+        ctx: Any, grad_tau_rt: torch.Tensor, grad_c_rt_re: torch.Tensor, grad_c_rt_im: torch.Tensor
+    ) -> tuple[torch.Tensor | None, ...]:
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         join = ctx.join
         response_offsets, response_rows, response_slots = ctx.response_family
@@ -542,31 +557,31 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_in,
-        tan_tau_out,
-        tan_c_in_re,
-        tan_c_in_im,
-        tan_c_out_re,
-        tan_c_out_im,
-        tan_s_re,
-        tan_s_im,
-        tan_row_valid,
-        tan_idx_in,
-        tan_idx_out,
-        tan_idx_s,
-        tan_join,
-        tan_response_family,
-    ):
+        ctx: Any,
+        tan_tau_in: torch.Tensor | None,
+        tan_tau_out: torch.Tensor | None,
+        tan_c_in_re: torch.Tensor | None,
+        tan_c_in_im: torch.Tensor | None,
+        tan_c_out_re: torch.Tensor | None,
+        tan_c_out_im: torch.Tensor | None,
+        tan_s_re: torch.Tensor | None,
+        tan_s_im: torch.Tensor | None,
+        tan_row_valid: Any,
+        tan_idx_in: Any,
+        tan_idx_out: Any,
+        tan_idx_s: Any,
+        tan_join: Any,
+        tan_response_family: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
 
-        def inbound(tangent):
+        def inbound(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
 
-        def outbound(tangent):
+        def outbound(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
 
-        def site(tangent):
+        def site(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
 
         rows = int(idx_in.shape[0])
@@ -641,7 +656,14 @@ class TwoWayComposer:
 
     @classmethod
     def freeze(
-        cls, inbound, outbound, site_ids, *, radar_source_ids, radar_sink_ids, reference_frequency_hz: float
+        cls,
+        inbound: FrozenLeg,
+        outbound: FrozenLeg,
+        site_ids: torch.Tensor | Sequence[int],
+        *,
+        radar_source_ids: Sequence[int],
+        radar_sink_ids: Sequence[int],
+        reference_frequency_hz: float,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -772,7 +794,7 @@ class TwoWayComposer:
     def path_count(self) -> int:
         return int(self.inbound_row.shape[0])
 
-    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response) -> RadarPathBatch:
+    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response: ScatterResponse) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
 
         A dead row's payload is exactly zero, not a partial composition. The
@@ -822,7 +844,7 @@ class TwoWayComposer:
             topology=self.topology,
         )
 
-    def _for_slots(self, count: int) -> TwoWayComposer:
+    def for_slots(self, count: int) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
 
         Sites remain shared across slots, including their gradient owners.
@@ -833,10 +855,10 @@ class TwoWayComposer:
         slot = torch.arange(count, device=device, dtype=torch.int64)[:, None]
         rows = self.path_count
 
-        def shifted(table, stride):
+        def shifted(table: torch.Tensor, stride: int) -> torch.Tensor:
             return (table[None, :] + slot * stride).reshape(-1)
 
-        def slot_csr(offsets):
+        def slot_csr(offsets: torch.Tensor) -> torch.Tensor:
             return torch.cat((shifted(offsets[:-1], rows), offsets[-1:] * count))
 
         inbound = shifted(self.inbound_row, self.inbound_row_count)
@@ -899,7 +921,14 @@ class TwoWayComposer:
                     "to this frozen topology"
                 )
 
-    def _response(self, response, inbound, outbound, flags, device):
+    def _response(
+        self,
+        response: ScatterResponse,
+        inbound: RadarLegBatch,
+        outbound: RadarLegBatch,
+        flags: torch.Tensor,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor, int]]:
         """The response as a real pair, its index, and its gradient family.
 
         Two shapes, one join. A per-SITE response is broadcast across the rows
@@ -931,7 +960,10 @@ class TwoWayComposer:
                 "a geometry-dependent scatter response varies per path and must "
                 "be evaluated in a native kernel, not composed here"
             )
-        rows_re, rows_im = response.evaluate_rows(self, inbound, outbound, flags)
+        # The whitelist above is what licenses the row entry; the protocol
+        # declares only the per-site one.
+        row_response: Any = response
+        rows_re, rows_im = row_response.evaluate_rows(self, inbound, outbound, flags)
         for name, value in (("real", rows_re), ("imaginary", rows_im)):
             if not isinstance(value, torch.Tensor) or value.numel() != self.path_count:
                 raise ValueError(
@@ -940,7 +972,7 @@ class TwoWayComposer:
                 )
         return (rows_re, rows_im, self.row_slot, (self.by_row_offsets, self.by_row_rows, self.path_count))
 
-    def _site_response(self, response, device: torch.device) -> torch.Tensor:
+    def _site_response(self, response: ScatterResponse, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.
 
         ``ScatterResponse`` is an extension point, and ``evaluate`` returning
@@ -1004,7 +1036,7 @@ COMPONENT_NAMES: tuple[str, ...] = (TARGET, ENVIRONMENT_CLUTTER, DIRECT_LEAKAGE,
 NO_INTERACTION = -1
 
 
-def _int_set(values: object, name: str) -> frozenset[int]:
+def _int_set(values: Any, name: str) -> frozenset[int]:
     if values is None:
         return frozenset()
     if isinstance(values, torch.Tensor):
@@ -1089,7 +1121,7 @@ class ComponentDeclaration:
         return tuple(matched)
 
 
-def _leg_facts(leg, name: str) -> tuple[list[int], list[frozenset[int]]]:
+def _leg_facts(leg: FrozenLeg, name: str) -> tuple[list[int], list[frozenset[int]]]:
     """One frozen leg's depth and interacted material slots, read once."""
 
     depth = [int(value) for value in leg.depth.tolist()]
@@ -1142,7 +1174,9 @@ class RadarComponentIndex:
         return self.class_id == self.index_of(name)
 
     @classmethod
-    def from_two_way(cls, composer, inbound, outbound, declaration: ComponentDeclaration) -> RadarComponentIndex:
+    def from_two_way(
+        cls, composer: TwoWayComposer, inbound: FrozenLeg, outbound: FrozenLeg, declaration: ComponentDeclaration
+    ) -> RadarComponentIndex:
         """Classify a two-way join's rows from its two frozen leg topologies.
 
         ``composer`` is a :class:`~witwin.radar.paths.TwoWayComposer`

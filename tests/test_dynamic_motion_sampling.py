@@ -112,7 +112,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     from witwin.core.dynamics import DynamicScene, LinearTrajectory
     from witwin.core.scene import AntennaState, Scene
 
-    from witwin.radar.simulation import SensorEndpointIds
+    from witwin.radar.binding import SensorEndpointIds
 
     radar = fixture_radar()
     radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))

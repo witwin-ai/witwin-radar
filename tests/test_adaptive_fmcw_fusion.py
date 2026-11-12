@@ -7,7 +7,7 @@ import torch
 import torch.autograd.forward_ad as ad
 
 from witwin.radar.synthesis.assembly import FmcwSpec
-from witwin.radar.synthesis.fmcw import _synthesize_adaptive_fmcw
+from witwin.radar.synthesis.fmcw import synthesize_adaptive_fmcw
 
 pytestmark = pytest.mark.gpu
 FC = 77e9
@@ -75,7 +75,7 @@ def _case(nodes, carrier=0.0):
         return torch.stack(result).cfloat()
 
     def solve(x, begin=0, stop=16):
-        return _synthesize_adaptive_fmcw(x, *metadata, spec, FC, begin, stop)
+        return synthesize_adaptive_fmcw(x, *metadata, spec, FC, begin, stop)
 
     return samples, metadata, spec, solve, oracle
 
@@ -125,11 +125,11 @@ def test_compact_fmcw_empty_rows_and_derivative_refusals():
         torch.autograd.grad(solve(leaf).real.sum(), leaf, create_graph=True)
     validity, starts, basis, bounds, owners, clock = metadata
     with pytest.raises(RuntimeError, match="fixed"):
-        _synthesize_adaptive_fmcw(
+        synthesize_adaptive_fmcw(
             samples, validity, starts, basis.requires_grad_(), bounds, owners, clock, spec, FC, 0, 16
         )
     empty = samples.new_empty((0, 3), requires_grad=True)
-    value = _synthesize_adaptive_fmcw(
+    value = synthesize_adaptive_fmcw(
         empty, validity[:0], starts * 0, basis.detach(), bounds * 0, owners, clock, spec, FC, 0, 16
     )
     assert torch.equal(value, torch.zeros_like(value))
@@ -145,4 +145,4 @@ def test_compact_fmcw_refuses_differentiable_schedule_in_both_modes(column, mode
         value = metadata[column]
         metadata[column] = value.requires_grad_() if mode == "vjp" else ad.make_dual(value, torch.ones_like(value))
         with pytest.raises(RuntimeError, match="fixed"):
-            _synthesize_adaptive_fmcw(samples, *metadata, spec, FC, 0, 16)
+            synthesize_adaptive_fmcw(samples, *metadata, spec, FC, 0, 16)

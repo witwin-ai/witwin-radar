@@ -56,7 +56,7 @@ Production ownership is intentionally shallow:
 
 - `witwin/radar/radar.py` — the flat `Radar` record, its waveforms, its pose, and the flat-configuration loader;
 - `witwin/radar/targets.py` — the target vocabulary: positions, cross section or strength, trajectory, and identity;
-- `witwin/radar/simulation.py` — scene-session execution, motion sampling, and frame results;
+- `witwin/radar/simulation.py` — scene-session execution; `motion.py`, `binding.py`, `adaptive.py` and `results.py` hold the sampling record, the scene binding, adaptive motion control, and the published results;
 - `witwin/radar/channel.py` — the only production Channel importer;
 - `witwin/radar/propagation.py` and `witwin/radar/paths.py` — propagation policy and round-trip composition;
 - `witwin/radar/scattering.py`, `sensors.py`, and `frontend.py` — radar physics around the path;

@@ -324,7 +324,7 @@ class _AdaptiveFmcw(torch.autograd.Function):
         return result
 
 
-def _synthesize_adaptive_fmcw(samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop):
+def synthesize_adaptive_fmcw(samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop):
     """Direct complete ADC values from compact adaptive probe rows.
 
     All routing and timestamps are discrete metadata. Samples retain native

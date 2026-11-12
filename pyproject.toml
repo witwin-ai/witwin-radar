@@ -36,6 +36,7 @@ License = "https://witwin.ai/license"
 dev = [
     "build>=1.0",
     "coverage>=7.0",
+    "mypy==1.18.2",
     "pytest>=8.0",
     "ruff>=0.15",
     # ci/check_workflows.py PARSES the workflow YAML rather than grepping
