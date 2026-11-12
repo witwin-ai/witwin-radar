@@ -58,9 +58,13 @@ Non-adaptive sampled sessions evaluate a frame's instants in groups of
 slot-major replay and one composition; an instant replays the frozen handle of
 the first instant of its group when their packed identities are equal. A
 refreshed FMCW frame is synthesized per group as one launch over only the pair
-segments the frame cube reads - the slot's own transmitter - and on the ADC
-route one launch per sample index, because the sample instant is a launch
-parameter. Oscillator phase noise and a declared coupling keep one launch per
+segments the frame cube reads - the slot's own transmitter. On the ADC route
+every segment is a different ADC instant, so the beat family takes an optional
+per-segment window start (`segment_t_start`, float64 seconds) in place of the
+uniform `t_start`; it replaces exactly that scalar of the phase expression and
+leaves each segment's path order unchanged, so the group is still one launch
+and every value, cotangent and tangent is the bit a one-instant launch gives.
+Oscillator phase noise and a declared coupling keep one launch per
 observation, because they act on or add rows between replay and synthesis.
 
 The fused verbs therefore retain one replay group, at most
