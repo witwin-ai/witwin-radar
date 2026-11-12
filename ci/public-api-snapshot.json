@@ -403,7 +403,7 @@
           "name": "point_cloud",
           "kind": "function",
           "target": "witwin.radar.processing.detection.point_cloud",
-          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'phase_comparison', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06, peak_neighbourhood: tuple[int, int] | None = (3, 3)) -> witwin.radar.processing.detection.PointCloud"
+          "signature": "(detections: witwin.radar.processing.detection.Detections, rd: witwin.radar.processing.range_doppler.RangeDopplerMap, array: witwin.radar.processing.angle.ArrayGeometry, *, route: str = 'scan', fft_size: int = 64, range_gate_m: tuple[float, float] | None = None, max_points: int | None = None, positive_velocity_only: bool = False, energy_floor: float = 1e-06, peak_neighbourhood: tuple[int, int] | None = (3, 3)) -> witwin.radar.processing.detection.PointCloud"
         },
         {
           "name": "pulse_samples",
