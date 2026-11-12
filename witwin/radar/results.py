@@ -8,7 +8,7 @@ facade delegates every product to :mod:`witwin.radar.processing`.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -335,7 +335,10 @@ class SceneFrame:
     """
 
     cube: torch.Tensor
-    synthesis: SynthesisResult
+    #: The four members below are the frame's own device state. A stacked run
+    #: publishes only its closing frame's, so it releases them from every
+    #: earlier frame (:meth:`released`) rather than holding a run of them.
+    synthesis: SynthesisResult | None
     time_s: float
     sample_times_s: np.ndarray
     epoch: int
@@ -344,9 +347,9 @@ class SceneFrame:
     motion_sampling_exhaustive: bool
     compile_count: int
     discovery_count: int
-    epoch_frame: EpochFrame
-    legs: RadarPropagationLegs
-    composed: RadarPathBatch
+    epoch_frame: EpochFrame | None
+    legs: RadarPropagationLegs | None
+    composed: RadarPathBatch | None
     diagnostics: dict[str, Any] | None
     motion_sampling: str
     #: The declared waveform spec and the array, so that assembling the result
@@ -354,6 +357,11 @@ class SceneFrame:
     #: from rather than from whatever a caller has to hand.
     output_spec: FmcwSpec | OfdmSpec | PulsedSpec
     array: SensorArraySpec
+
+    def released(self) -> SceneFrame:
+        """This frame without the device state only a closing frame publishes."""
+
+        return replace(self, synthesis=None, epoch_frame=None, legs=None, composed=None)
 
 
 def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = None) -> Result:
@@ -370,6 +378,9 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
 
     last = frames[-1]
     from .processing import ProcessingAxes
+
+    if last.synthesis is None or last.epoch_frame is None or last.legs is None or last.composed is None:
+        raise ValueError("the closing frame of a result must keep its synthesis and its world state")
 
     return Result.from_frames(
         [frame.cube for frame in frames] if stacked is None else stacked,

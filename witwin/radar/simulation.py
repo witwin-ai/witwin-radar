@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -153,6 +153,36 @@ class InstrumentSpecs:
     single: WaveformSpec | None
 
 
+class _HeldSynthesis:
+    """One unsampled frame's synthesis, reused while its rows are the same object.
+
+    A still world publishes the same composed batch every frame (see
+    :class:`WorldHalf`), and synthesis is a deterministic function of the rows
+    and the spec, so the frame's waveform is synthesized once and only the
+    receive chain runs per frame. A batch that carries a derivative is never
+    held, for the same reason the world half does not hold one.
+    """
+
+    __slots__ = ("composed", "spec", "synthesis")
+
+    def __init__(self) -> None:
+        self.composed: RadarPathBatch | None = None
+        self.spec: WaveformSpec | None = None
+        self.synthesis: SynthesisResult | None = None
+
+    def synthesize(
+        self, radar: Radar, composed: RadarPathBatch, mode: SlowTimeMode, spec: WaveformSpec
+    ) -> SynthesisResult:
+        if self.synthesis is not None and self.composed is composed and self.spec == spec:
+            return self.synthesis
+        synthesis = radar._synthesize(composed, slow_time_mode=mode, spec=spec)
+        if _carries_derivative(composed):
+            self.composed = self.spec = self.synthesis = None
+        else:
+            self.composed, self.spec, self.synthesis = composed, spec, synthesis
+        return synthesis
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Session:
     """What the instrument half needs that does not change between frames.
@@ -188,6 +218,9 @@ class Session:
     #: tolerances.
     motion: Motion
     times: tuple[float, ...]
+    #: The last unsampled frame's waveform result, keyed by the rows it was
+    #: synthesized from; see :class:`_HeldSynthesis`.
+    held: _HeldSynthesis = field(default_factory=lambda: _HeldSynthesis())
 
     def specs_for(self, radar: Radar) -> InstrumentSpecs:
         """The spec triple ``radar`` would work from on this session's schedule.
@@ -224,6 +257,7 @@ class Session:
             radar=radar,
             specs=self.specs_for(radar),
             path_phase_noise=radar.frontend is not None and radar.frontend.has_phase_noise,
+            held=_HeldSynthesis(),
         )
 
 
@@ -301,6 +335,20 @@ class _Bounded(Generic[K, V]):
             self._entries.popitem(last=False)
 
 
+def _tensor_carries_derivative(tensor: torch.Tensor) -> bool:
+    """Whether a tensor is on a reverse tape or carries a forward tangent."""
+
+    from torch.autograd.forward_ad import unpack_dual
+
+    return tensor.requires_grad or unpack_dual(tensor).tangent is not None
+
+
+def _carries_derivative(paths: RadarPathBatch) -> bool:
+    """Whether a batch's payload is on a reverse tape or carries a forward tangent."""
+
+    return _tensor_carries_derivative(paths.total_delay_s) or _tensor_carries_derivative(paths.complex_transfer_ref)
+
+
 def _present(value: torch.Tensor | None, name: str) -> torch.Tensor:
     """A member every replayed batch publishes, refused by name if absent."""
 
@@ -345,6 +393,7 @@ class WorldHalf:
         ad_mode: str,
         cadence: int | None,
         world_motion: str,
+        still_world: bool = False,
     ) -> None:
         from .channel import compile_scene
 
@@ -368,6 +417,14 @@ class WorldHalf:
             motion_event_period_frames=cadence,
             world_motion=world_motion,
         )
+        #: A world that nothing moves and nothing rediscovers replays the same
+        #: endpoints against the same frozen topology every frame, and Channel's
+        #: replay is deterministic, so its rows are evaluated once and every
+        #: later frame publishes them again. Only a still world that carries no
+        #: derivative holds them: a shared graph would sum every frame's
+        #: cotangent before the replay's backward rather than after it.
+        self.still_world = still_world
+        self._still: Observation | None = None
         self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
             SLOT_TABLE_CACHE
         )
@@ -647,10 +704,31 @@ class WorldHalf:
 
         for offset in offsets:
             time_s = float(start + offset)
-            record = self.evaluate([time_s])[0]
-            yield Observation(
+            held = self._still
+            if held is not None:
+                frame = self.loop.frame(time_s)
+                if not frame.rediscovered and frame.frozen is held.epoch_frame.frozen:
+                    yield replace(held, time_s=time_s, epoch_frame=frame)
+                    continue
+                record = self._replay_frame(time_s, frame)
+            else:
+                record = self.evaluate([time_s])[0]
+            observation = Observation(
                 time_s=time_s, epoch_frame=record.epoch_frame, legs=record.legs(), composed=record.composed
             )
+            if self.still_world and not _carries_derivative(observation.composed):
+                self._still = observation
+            yield observation
+
+    def _replay_frame(self, time_s: float, frame: EpochFrame) -> EvaluatedObservation:
+        """Replay one instant whose world the loop has already advanced."""
+
+        results: dict[float, EvaluatedObservation] = {}
+        pending = _PendingObservation(
+            time_s=time_s, epoch_frame=frame, binding=self._binding_for(frame), identity=self._identity(frame)
+        )
+        self._replay([pending], results)
+        return results[time_s]
 
 
 # ---------------------------------------------------------------------------
@@ -726,8 +804,8 @@ def open_session(
     endpoint and site positions the binding passed through by identity.
 
     ``antenna_pattern`` is a :class:`~witwin.radar.sensors.Pattern`. A radar
-    always supplies one, so the stage runs on every solve, including for the
-    isotropic default, where it multiplies by exactly one.
+    always supplies one; the isotropic default is a unit gain, which the stage
+    publishes without a launch.
     """
 
     from .synthesis.assembly import FmcwSpec, SlowTimeMode, waveform_sampling
@@ -822,6 +900,7 @@ def open_session(
         ad_mode=ad_mode,
         cadence=cadence,
         world_motion=motion.world,
+        still_world=not sampled and cadence is None,
     )
     session = Session(
         radar=radar,
@@ -985,7 +1064,10 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
                         t_start_s=working.t_start_s
                         + (len(slot_cubes) % session.samples_per_slot) * working.sample_period_s,
                     )
-            synthesis = radar._synthesize(composed, slow_time_mode=session.mode, spec=observation_spec)
+            if session.sampled:
+                synthesis = radar._synthesize(composed, slow_time_mode=session.mode, spec=observation_spec)
+            else:
+                synthesis = session.held.synthesize(radar, composed, session.mode, observation_spec)
             slot_cubes.append(synthesis.cube)
         assert synthesis is not None
         if session.sampled:
@@ -1293,13 +1375,31 @@ def _require_same_instrument(radar: Radar, paths: Paths, session: Session) -> No
 def simulate_scene(radar: Radar, scene: object, **arguments: Any) -> Result:
     """Run one scene session to completion and stack every frame.
 
-    The whole sequence stays in device memory: the frame cubes accumulate and
-    :meth:`Result.from_frames` stacks them, so peak allocation scales with the
-    frame count. Use :func:`stream_scene` for a sequence long enough that this
-    is the binding constraint.
+    The whole sequence stays in device memory, so peak allocation scales with the
+    frame count: one cube per frame plus the closing frame's state. Use
+    :func:`stream_scene` for a sequence long enough that this is the binding
+    constraint.
     """
 
-    return assemble(list(_scene_frames(radar, scene, **arguments)))
+    session, traces = open_session(radar, scene, **arguments)
+    frames: list[SceneFrame] = []
+    stacked: torch.Tensor | None = None
+    for trace in traces:
+        frame = echo_frame(session, trace)
+        index = len(frames)
+        # A cube with no derivative is written straight into the stacked
+        # result, so a run holds one cube per frame rather than a list of
+        # frame cubes and then their stack. A differentiable cube is stacked
+        # by ``torch.stack`` instead, which owns its backward.
+        if index == 0 and not _tensor_carries_derivative(frame.cube):
+            stacked = frame.cube.new_empty((len(session.times), *frame.cube.shape))
+        if stacked is not None:
+            stacked[index].copy_(frame.cube)
+            frame = replace(frame, cube=stacked[index])
+        if frames:
+            frames[-1] = frames[-1].released()
+        frames.append(frame)
+    return assemble(frames, stacked=stacked)
 
 
 def stream_scene(radar: Radar, scene: object, **arguments: Any) -> Iterator[Result]:
