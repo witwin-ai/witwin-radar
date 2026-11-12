@@ -209,6 +209,14 @@ def test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct(spec):
     assert abs(_value(spec, vertices=narrowed(0.5)) - baseline) > 1.0e-3 * abs(baseline)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason=(
+        "M0-3 (c): Channel 0.6 cannot compile a mesh whose vertices carry a forward-mode tangent; RayD's "
+        "finite-vertex check calls aten::aminmax, which has no forward-AD formula. Reported to Channel"
+    ),
+)
 def test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient(spec):
     """JVP against the projected VJP, on a scene leaf rather than an endpoint.
 
@@ -271,6 +279,14 @@ def test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss(spec):
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason=(
+        "M0-3 (c): Channel 0.6 cannot compile a mesh whose vertices carry a forward-mode tangent; RayD's "
+        "finite-vertex check calls aten::aminmax, which has no forward-AD formula. Reported to Channel"
+    ),
+)
 def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_base):
     """The combined-input test: three leaves at once against three differences.
 
