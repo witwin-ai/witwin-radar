@@ -78,33 +78,33 @@ PROFILED_SLACK = 0.03
 #: in :data:`COUNTERS` order. Profiled columns hold the larger of two
 #: processes' measurements.
 BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
-    "static": ((2, 2, 2, 0, 0, 2, 131, 61, 104, 944, 1, 1, 1, 1, 1), (0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)),
+    "static": ((2, 2, 2, 0, 0, 2, 129, 61, 104, 944, 1, 1, 1, 1, 1), (0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)),
     "chirp_point": (
-        (8, 8, 2, 2, 12, 2, 404, 197, 303, 2568, 1, 4, 4, 1, 1),
+        (8, 8, 2, 2, 12, 2, 402, 197, 303, 2568, 1, 4, 4, 1, 1),
         (8, 8, 2, 2, 16, 2, 364, 186, 268, 2416, 0, 4, 4, 1, 0),
     ),
     "adc_point": (
-        (64, 64, 2, 2, 124, 9, 2931, 1485, 2133, 16839, 1, 32, 32, 1, 1),
+        (64, 64, 2, 2, 124, 9, 2929, 1485, 2133, 16839, 1, 32, 32, 1, 1),
         (64, 64, 2, 2, 128, 9, 2884, 1474, 2094, 16685, 0, 32, 32, 1, 0),
     ),
     "adc_point_per_frame": (
-        (2, 2, 2, 2, 62, 9, 172, 59, 147, 1153, 1, 1, 32, 1, 1),
+        (2, 2, 2, 2, 62, 9, 170, 59, 147, 1153, 1, 1, 32, 1, 1),
         (2, 2, 2, 2, 66, 9, 125, 48, 102, 999, 0, 1, 32, 1, 0),
     ),
     "adaptive_point": (
-        (6, 6, 2, 2, 8, 3, 322, 156, 244, 2097, 1, 3, 3, 1, 1),
+        (6, 6, 2, 2, 8, 3, 320, 156, 244, 2097, 1, 3, 3, 1, 1),
         (6, 6, 2, 2, 12, 3, 284, 145, 206, 1943, 0, 3, 3, 1, 0),
     ),
     "chirp_structure": (
-        (8, 8, 8, 0, 12, 8, 494, 244, 405, 3672, 4, 4, 4, 4, 1),
+        (8, 8, 8, 0, 12, 8, 492, 244, 405, 3672, 4, 4, 4, 4, 1),
         (8, 8, 8, 0, 16, 8, 480, 244, 397, 3637, 4, 4, 4, 4, 0),
     ),
     "adc_structure": (
-        (64, 64, 64, 0, 124, 64, 3854, 1952, 3178, 29210, 32, 32, 32, 32, 1),
+        (64, 64, 64, 0, 124, 64, 3852, 1952, 3178, 29210, 32, 32, 32, 32, 1),
         (64, 64, 64, 0, 128, 64, 3840, 1952, 3168, 29210, 32, 32, 32, 32, 0),
     ),
     "adaptive_structure": (
-        (6, 6, 6, 0, 8, 5, 383, 190, 310, 2781, 3, 3, 3, 3, 1),
+        (6, 6, 6, 0, 8, 5, 381, 190, 310, 2781, 3, 3, 3, 3, 1),
         (6, 6, 6, 0, 12, 5, 372, 190, 299, 2744, 3, 3, 3, 3, 0),
     ),
 }
@@ -198,7 +198,10 @@ def _simulate(case: str, frames: int):
 def _measure_once(case: str, frames: int, monkeypatch) -> tuple[int, ...]:
     from support.session_ledger import SessionLedger, profiled_copies
 
-    copies = profiled_copies(_simulate(case, frames))
+    # The profiler's counts carry other first-use work that lands in whichever
+    # pass meets it first; the smaller of two passes is the session's own.
+    passes = [profiled_copies(_simulate(case, frames)) for _ in range(2)]
+    copies = {name: min(counts[name] for counts in passes) for name in passes[0]}
     with monkeypatch.context() as patch:
         ledger = SessionLedger(patch)
         result = ledger.run(_simulate(case, frames))
