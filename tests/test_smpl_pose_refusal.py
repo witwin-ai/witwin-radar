@@ -189,13 +189,19 @@ def test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate(smpl):
 
 
 def test_the_default_model_root_is_the_checkout_models_directory():
-    """``models/smpl_models`` beside ``witwin/``, and it exists in this checkout."""
+    """``models/smpl_models`` beside ``witwin/``.
+
+    The SMPL pickles are licensed separately and are not in the repository, so
+    the location is asserted everywhere and its presence only where a
+    developer installed them.
+    """
 
     import witwin.radar.smpl as smpl_module
 
     root = pathlib.Path(smpl_module._default_smpl_model_root())
     assert root == pathlib.Path(smpl_module.__file__).resolve().parents[2] / "models" / "smpl_models"
-    assert root.is_dir(), root
+    if not root.is_dir():
+        pytest.skip(f"no SMPL model directory in this checkout: {root}")
 
 
 def test_the_fast_lbs_matches_smplpytorch(smpl):

@@ -85,7 +85,9 @@ EPS_R_FD_RTOL = 5.0e-3
 #: 5.6e-4 and -4.4e-4 and their sum is a 4x amplification of each one's noise.
 #: Measured at 2e-4: sum-of-parts against all-at-once 8.4e-5 relative, analytic
 #: against all-at-once 0.27%.
-SITE_DIRECTION = torch.tensor([[-0.4, 0.8, 0.0], [0.6, -0.3, 0.0]], dtype=torch.float32, device="cuda")
+#: Built on the host so collecting this module needs no CUDA device; the test
+#: moves it beside the sites.
+SITE_DIRECTION = torch.tensor([[-0.4, 0.8, 0.0], [0.6, -0.3, 0.0]], dtype=torch.float32)
 COMBINED_STEP = 2.0e-4
 COMBINED_FD_RTOL = 2.0e-2
 
@@ -280,6 +282,7 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_bas
     single-leaf differences can.
     """
 
+    site_direction = SITE_DIRECTION.to(site_base.device)
     vertices = BASE_VERTICES.clone().requires_grad_(True)
     eps_r = torch.tensor(BASE_EPS_R).requires_grad_(True)
     sites = site_base.clone().requires_grad_(True)
@@ -288,7 +291,7 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_bas
     parts = (
         float((vertices.grad * PLANE_DIRECTION).sum()),
         float(eps_r.grad),
-        float((sites.grad * SITE_DIRECTION).sum()),
+        float((sites.grad * site_direction).sum()),
     )
     combined = sum(parts)
     # Every part is a real contribution and they ADD rather than cancel, so the
@@ -305,7 +308,7 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_bas
                 spec,
                 vertices=BASE_VERTICES + step * vertex_on * PLANE_DIRECTION,
                 eps_r=BASE_EPS_R + step * eps_on,
-                sites=site_base + step * site_on * SITE_DIRECTION,
+                sites=site_base + step * site_on * site_direction,
             )
         return fd.fourth_order_difference(samples, COMBINED_STEP)
 
@@ -320,7 +323,7 @@ def test_vertices_permittivity_and_endpoints_are_live_in_one_call(spec, site_bas
                 spec,
                 vertices=forward_ad.make_dual(BASE_VERTICES.clone(), PLANE_DIRECTION),
                 eps_r=forward_ad.make_dual(torch.tensor(BASE_EPS_R), torch.tensor(1.0)),
-                sites=forward_ad.make_dual(site_base.clone(), SITE_DIRECTION),
+                sites=forward_ad.make_dual(site_base.clone(), site_direction),
                 ad_mode="jvp",
             )[0]
         ).tangent
