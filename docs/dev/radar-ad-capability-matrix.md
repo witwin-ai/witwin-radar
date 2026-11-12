@@ -40,8 +40,8 @@ against the live `witwin.channel.propagation.consumer.capabilities()` record by
 `tests/test_import_boundary.py::test_the_consumer_contract_is_the_version_this_adapter_was_built_against`.
 The authority is Channel ADR-043 and consumer `CONTRACT_VERSION` 7 (Channel
 0.6.0). Version 7 added the reflection discovery source and the completeness
-flag; every row mirrored below reads the same in Channel 0.6.0's
-`docs/dev/propagation-ad-capability-matrix.md` as it did at version 6.
+flag; every row mirrored below reads the same in Channel 0.6.0's propagation AD
+capability matrix as it did at version 6.
 
 Radar requests exactly one response, `scalar_transport`, with
 `components <= {los, reflection}`, always on the fixed-topology route. Every
