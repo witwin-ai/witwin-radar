@@ -278,6 +278,5 @@ python -m pytest -q tests/test_no_torch_physics.py --basetemp=<short>
 The per-owner rows come from wrapping each `Function`'s `setup_context` and
 reading `ctx.to_save`; `tests/support/ad_boundaries.py` is the fixture and
 `tests/test_backward_budget.py` is the pinned subset. Run on an idle GPU,
-with the packaged prebuilt at
-`witwin/radar/cuda/prebuilt/_radar_native.pyd` - never a JIT
-rebuild inside a test process.
+with the packaged prebuilt in `witwin/radar/cuda/prebuilt/` (the platform's
+`_radar_native` extension module) - never a JIT rebuild inside a test process.

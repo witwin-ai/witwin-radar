@@ -6,10 +6,41 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 PATH_TOKEN = re.compile(r"`((?:witwin/radar|ci|tests|examples|docs)/[^`\s:]+(?:\.[A-Za-z0-9]+)?)")
+
+
+class _PathOracle:
+    """Answer "does this repository path exist?" the same way on every platform and checkout.
+
+    A plain ``Path.exists`` makes the answer depend on what the local machine has
+    built: a document naming the Windows prebuilt ``_radar_native.pyd`` passes on
+    a Windows tree that built it and fails on a clean Linux clone. A path the
+    repository's ``.gitignore`` excludes is a build or run product, not a tracked
+    file, so its existence is never asked; every other claimed path must exist in
+    the working tree. Outside a git checkout every path is checked on disk.
+    """
+
+    def __init__(self, repo: Path) -> None:
+        self._repo = repo
+        self._git = (repo / ".git").exists()
+
+    def ignored(self, claimed: list[str]) -> set[str]:
+        if not self._git or not claimed:
+            return set()
+        completed = subprocess.run(
+            ["git", "-C", str(self._repo), "check-ignore", "--stdin"],
+            input="\n".join(claimed),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode not in (0, 1):
+            raise RuntimeError(f"git check-ignore failed: {completed.stderr.strip()}")
+        return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
 
 
 def _python_symbols(path: Path) -> set[str]:
@@ -108,6 +139,7 @@ def audit(repo: Path) -> list[str]:
     manifest = json.loads((repo / "ci" / "documentation-manifest.json").read_text(encoding="utf-8"))
     errors: list[str] = []
     living = _living_documents(repo, manifest, errors)
+    claims: list[tuple[str, str]] = []
     for relative in living:
         path = repo / relative
         if not path.is_file():
@@ -130,8 +162,12 @@ def audit(repo: Path) -> list[str]:
                 continue
             if claimed in missing_exemptions:
                 continue
-            if not (repo / claimed).exists():
-                errors.append(f"{relative} names missing current path {claimed!r}")
+            claims.append((relative, claimed))
+
+    ignored = _PathOracle(repo).ignored(sorted({claimed for _, claimed in claims}))
+    for relative, claimed in claims:
+        if claimed not in ignored and not (repo / claimed).exists():
+            errors.append(f"{relative} names missing current path {claimed!r}")
 
     errors.extend(_audit_symbol_owner_tables(repo, manifest))
 
