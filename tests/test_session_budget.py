@@ -64,6 +64,7 @@ COUNTERS = (
     "discoveries",
     "world_advances",
     "compositions",
+    "joins",
 )
 
 #: The counters read from the profiler. They move by a few percent between
@@ -77,30 +78,30 @@ PROFILED_SLACK = 0.03
 #: in :data:`COUNTERS` order. Profiled columns hold the larger of two
 #: processes' measurements.
 BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
-    "static": ((2, 2, 2, 0, 0, 3, 160, 74, 125, 935, 1, 1, 1, 1), (0, 0, 2, 0, 2, 3, 4, 2, 6, 304, 0, 0, 1, 1)),
+    "static": ((2, 2, 2, 0, 0, 3, 160, 74, 125, 935, 1, 1, 1, 1, 1), (0, 0, 2, 0, 2, 3, 4, 2, 6, 304, 0, 0, 1, 1, 0)),
     "chirp_point": (
-        (8, 8, 8, 0, 12, 12, 554, 255, 410, 3371, 1, 4, 4, 4),
-        (8, 8, 8, 0, 16, 12, 524, 245, 387, 3295, 0, 4, 4, 4),
+        (8, 8, 8, 0, 12, 12, 554, 255, 410, 3371, 1, 4, 4, 4, 4),
+        (8, 8, 8, 0, 16, 12, 524, 245, 387, 3295, 0, 4, 4, 4, 4),
     ),
     "adc_point": (
-        (64, 64, 64, 0, 124, 96, 4222, 1963, 3070, 26333, 1, 32, 32, 32),
-        (64, 64, 64, 0, 128, 96, 4192, 1952, 3038, 26248, 0, 32, 32, 32),
+        (64, 64, 64, 0, 124, 96, 4222, 1963, 3070, 26333, 1, 32, 32, 32, 32),
+        (64, 64, 64, 0, 128, 96, 4192, 1952, 3038, 26248, 0, 32, 32, 32, 32),
     ),
     "adaptive_point": (
-        (6, 6, 2, 2, 8, 4, 461, 231, 308, 2126, 1, 3, 3, 1),
-        (6, 6, 2, 2, 12, 4, 431, 220, 278, 1997, 0, 3, 3, 1),
+        (6, 6, 2, 2, 8, 4, 461, 231, 308, 2126, 1, 3, 3, 1, 3),
+        (6, 6, 2, 2, 12, 4, 431, 220, 278, 1997, 0, 3, 3, 1, 3),
     ),
     "chirp_structure": (
-        (8, 8, 8, 0, 12, 12, 631, 296, 491, 3723, 4, 4, 4, 4),
-        (8, 8, 8, 0, 16, 12, 628, 296, 488, 3710, 4, 4, 4, 4),
+        (8, 8, 8, 0, 12, 12, 631, 296, 491, 3723, 4, 4, 4, 4, 4),
+        (8, 8, 8, 0, 16, 12, 628, 296, 488, 3710, 4, 4, 4, 4, 4),
     ),
     "adc_structure": (
-        (64, 64, 64, 0, 124, 96, 5027, 2368, 3907, 29653, 32, 32, 32, 32),
-        (64, 64, 64, 0, 128, 96, 5024, 2368, 3904, 29638, 32, 32, 32, 32),
+        (64, 64, 64, 0, 124, 96, 5027, 2368, 3907, 29653, 32, 32, 32, 32, 32),
+        (64, 64, 64, 0, 128, 96, 5024, 2368, 3904, 29638, 32, 32, 32, 32, 32),
     ),
     "adaptive_structure": (
-        (6, 6, 6, 0, 8, 8, 522, 265, 374, 2799, 3, 3, 3, 3),
-        (6, 6, 6, 0, 12, 8, 519, 265, 371, 2786, 3, 3, 3, 3),
+        (6, 6, 6, 0, 8, 8, 522, 265, 374, 2799, 3, 3, 3, 3, 3),
+        (6, 6, 6, 0, 12, 8, 519, 265, 371, 2786, 3, 3, 3, 3, 3),
     ),
 }
 
@@ -208,6 +209,7 @@ def _measure_once(case: str, frames: int, monkeypatch) -> tuple[int, ...]:
         int(result.discovery_count),
         ledger.trips["SceneEpochLoop.frame"],
         ledger.trips["TwoWayComposer.compose"],
+        ledger.trips["TwoWayComposer.freeze"],
     )
 
 
@@ -260,7 +262,8 @@ if __name__ == "__main__":
             self.undo: list = []
 
         def setattr(self, target, name, value, raising=True):
-            self.undo.append((target, name, getattr(target, name)))
+            original = target.__dict__[name] if isinstance(target, type) else getattr(target, name)
+            self.undo.append((target, name, original))
             setattr(target, name, value)
 
         def context(self):

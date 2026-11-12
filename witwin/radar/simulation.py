@@ -21,10 +21,11 @@ adaptive route, through the radar's own waveform dispatch, and
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
 import torch
@@ -64,6 +65,10 @@ class FrozenRoundTrip:
     composer: TwoWayComposer
     binding: RadarWorldBinding
     pattern: RoundTripPatternStage
+    #: The two legs' packed row identities. Two epochs with equal identities
+    #: join to the same composed rows, so a rediscovery that found the same
+    #: topology reuses the join and pattern tables instead of rebuilding them.
+    identity: tuple[bytes, bytes]
 
 
 def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
@@ -267,6 +272,35 @@ def _stacked(specs: Sequence[RadarEndpointSpec]) -> RadarEndpointSpec:
     )
 
 
+#: How many slot-batched join and pattern table sets a session keeps. Each is
+#: ``slots x rows`` int64 tables, so the cache is bounded by entries rather
+#: than left to grow with every group size and epoch a run produces.
+SLOT_TABLE_CACHE = 4
+
+K = TypeVar("K")
+V = TypeVar("V")
+
+
+class _Bounded(Generic[K, V]):
+    """A least-recently-used map with a fixed number of entries."""
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = capacity
+        self._entries: OrderedDict[K, V] = OrderedDict()
+
+    def get(self, key: K) -> V | None:
+        value = self._entries.get(key)
+        if value is not None:
+            self._entries.move_to_end(key)
+        return value
+
+    def put(self, key: K, value: V) -> None:
+        self._entries[key] = value
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._capacity:
+            self._entries.popitem(last=False)
+
+
 def _present(value: torch.Tensor | None, name: str) -> torch.Tensor:
     """A member every replayed batch publishes, refused by name if absent."""
 
@@ -334,9 +368,9 @@ class WorldHalf:
             motion_event_period_frames=cadence,
             world_motion=world_motion,
         )
-        self._identities: dict[int, Hashable] = {}
-        self._slot_composers: dict[tuple[Hashable, int], TwoWayComposer] = {}
-        self._slot_patterns: dict[tuple[Hashable, int], RoundTripPatternStage] = {}
+        self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
+            SLOT_TABLE_CACHE
+        )
 
     def _bind_world(self, snapshot: object) -> RadarWorldBinding:
         return bind_radar_world(
@@ -357,7 +391,7 @@ class WorldHalf:
         """
 
         from .channel import ChannelPropagationAdapter
-        from .paths import TwoWayComposer, validate_pair_ordering
+        from .paths import TwoWayComposer, read_leg_identity
         from .sensors import RoundTripPatternStage
 
         binding = self._bind_world(snapshot)
@@ -373,31 +407,37 @@ class WorldHalf:
         )
         inbound = adapter.freeze(binding.transmitters, binding.site_sinks)
         outbound = adapter.freeze(binding.site_sources, binding.receivers)
-        composer = TwoWayComposer.freeze(
-            inbound,
-            outbound,
-            torch.tensor(binding.site_ids, dtype=torch.int64, device=binding.device),
-            radar_source_ids=list(binding.transmitter_ids),
-            radar_sink_ids=list(binding.receiver_ids),
-            reference_frequency_hz=self.reference_frequency_hz,
-        )
-        validate_pair_ordering(
-            composer.sensor_pair_index,
-            num_tx=self.array.num_tx,
-            num_rx=self.array.num_rx,
-            sensor_pair_count=composer.sensor_pair_count,
-        )
-        pattern = RoundTripPatternStage.freeze(
-            self.radar,
-            composer,
-            site_ids=binding.site_ids,
-            pattern=self.antenna_pattern,
-            rx_pattern=self.radar.system_config.sensors.rx_pattern,
-        )
+        arriving = read_leg_identity(inbound, "inbound")
+        leaving = read_leg_identity(outbound, "outbound")
+        identity = (arriving.packed, leaving.packed)
+        retiring = None if previous is None else _round_trip(previous)
+        if retiring is not None and retiring.identity == identity and retiring.binding.site_ids == binding.site_ids:
+            # The same rows under the same declared IDs: the join and the
+            # pattern tables are functions of exactly these, so the retiring
+            # epoch's are this epoch's.
+            composer, pattern = retiring.composer, retiring.pattern
+        else:
+            composer = TwoWayComposer.freeze(
+                inbound,
+                outbound,
+                binding.site_ids,
+                radar_source_ids=binding.transmitter_ids,
+                radar_sink_ids=binding.receiver_ids,
+                reference_frequency_hz=self.reference_frequency_hz,
+                inbound_identity=arriving,
+                outbound_identity=leaving,
+            )
+            pattern = RoundTripPatternStage.freeze(
+                self.radar,
+                composer,
+                site_ids=binding.site_ids,
+                pattern=self.antenna_pattern,
+                rx_pattern=self.radar.system_config.sensors.rx_pattern,
+            )
         return FrozenEpoch(
             adapter=adapter,
             handles=(inbound, outbound),
-            payload=FrozenRoundTrip(composer=composer, binding=binding, pattern=pattern),
+            payload=FrozenRoundTrip(composer=composer, binding=binding, pattern=pattern, identity=identity),
         )
 
     def _complete_los(self) -> bool:
@@ -449,19 +489,13 @@ class WorldHalf:
     def _identity(self, frame: EpochFrame) -> Hashable:
         """The leg identity the adaptive controller groups and compares by.
 
-        Read once per epoch; every other route groups nothing and compares
-        nothing, so it is ``()`` there.
+        Every other route groups nothing and compares nothing, so it is ``()``
+        there.
         """
-
-        from .paths import leg_identity
 
         if self.motion_sampling != "adaptive":
             return ()
-        if frame.epoch not in self._identities:
-            self._identities[frame.epoch] = tuple(
-                tuple(zip(*leg_identity(handle, "adaptive"), strict=True)) for handle in frame.frozen.handles
-            )
-        return self._identities[frame.epoch]
+        return _round_trip(frame.frozen).identity
 
     def evaluate(self, query_times: Sequence[float]) -> list[EvaluatedObservation]:
         """Advance the world to each instant, then batch-replay identical handles.
@@ -526,7 +560,7 @@ class WorldHalf:
             )
             identity = entry.identity
             if self.motion_sampling == "adaptive":
-                identity = (identity, tuple(_present(paths.row_valid, "row_valid").tolist()))
+                identity = (identity, _present(paths.row_valid, "row_valid").cpu().numpy().tobytes())
             results[entry.time_s] = EvaluatedObservation(
                 time_s=entry.time_s,
                 epoch_frame=entry.epoch_frame,
@@ -537,7 +571,7 @@ class WorldHalf:
             return
         batched = self._compose_slots(group, replay, transmitters, receivers)
         batched_valid = _present(batched.row_valid, "row_valid")
-        valid_rows = batched_valid.reshape(len(group), -1).tolist()
+        valid_rows = batched_valid.reshape(len(group), -1).cpu().numpy() if self.motion_sampling == "adaptive" else None
         for slot, entry in enumerate(group):
             composer = _round_trip(entry.epoch_frame.frozen).composer
             selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
@@ -553,8 +587,8 @@ class WorldHalf:
                 row_valid=batched_valid[selection],
             )
             identity = entry.identity
-            if self.motion_sampling == "adaptive":
-                identity = (identity, tuple(valid_rows[slot]))
+            if valid_rows is not None:
+                identity = (identity, valid_rows[slot].tobytes())
             # The per-slot narrowing is DEFERRED: a batched group composes once
             # and reads nothing from its individual slots, so narrowing eagerly
             # would build two revalidated single-slot batches per observation
@@ -577,13 +611,14 @@ class WorldHalf:
         """Compose and pattern-weight a slot-major replay with the slot tables."""
 
         round_trip = _round_trip(group[0].epoch_frame.frozen)
-        key = (group[0].identity, len(group))
-        if key not in self._slot_composers:
-            self._slot_composers[key] = round_trip.composer.for_slots(len(group))
-        batched = self._slot_composers[key].compose(replay.inbound, replay.outbound, self.response)
-        if key not in self._slot_patterns:
-            self._slot_patterns[key] = round_trip.pattern.for_slots(len(group))
-        return self._slot_patterns[key].apply(
+        key = (round_trip.identity, len(group))
+        tables = self._slot_tables.get(key)
+        if tables is None:
+            tables = (round_trip.composer.for_slots(len(group)), round_trip.pattern.for_slots(len(group)))
+            self._slot_tables.put(key, tables)
+        composer, pattern = tables
+        batched = composer.compose(replay.inbound, replay.outbound, self.response)
+        return pattern.apply(
             batched,
             tx_pos=transmitters.positions_m,
             rx_pos=receivers.positions_m,

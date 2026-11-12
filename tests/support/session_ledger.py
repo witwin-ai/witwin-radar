@@ -19,7 +19,8 @@ budgets:
   from a separate profiled pass so the profiler cannot perturb the counts
   above.
 * ``trips``: Python-level per-observation work: world advances
-  (``SceneEpochLoop.frame``) and composed batches (``TwoWayComposer.compose``).
+  (``SceneEpochLoop.frame``), composed batches (``TwoWayComposer.compose``)
+  and join builds (``TwoWayComposer.freeze``).
 
 Every count is an exact integer for a fixed fixture. Wall time is not measured
 here and must not be inferred from any of these.
@@ -39,6 +40,7 @@ CHANNEL_ENTRIES = ("evaluate", "prepare_fixed_topology", "reevaluate", "replicat
 TRIP_HOOKS = (
     ("witwin.radar.propagation", "SceneEpochLoop", "frame"),
     ("witwin.radar.paths", "TwoWayComposer", "compose"),
+    ("witwin.radar.paths", "TwoWayComposer", "freeze"),
 )
 
 SYNC_MESSAGE = "called a synchronizing CUDA operation"
@@ -66,7 +68,12 @@ class SessionLedger:
         for module_name, owner, attribute in TRIP_HOOKS:
             cls = getattr(importlib.import_module(module_name), owner)
             label = f"{owner}.{attribute}"
-            monkeypatch.setattr(cls, attribute, self._counting(self.trips, label, getattr(cls, attribute)))
+            raw = cls.__dict__[attribute]
+            if isinstance(raw, classmethod):
+                wrapped: object = classmethod(self._counting(self.trips, label, raw.__func__))
+            else:
+                wrapped = self._counting(self.trips, label, raw)
+            monkeypatch.setattr(cls, attribute, wrapped)
 
     @staticmethod
     def _counting(counter: Counter, name: str, original):

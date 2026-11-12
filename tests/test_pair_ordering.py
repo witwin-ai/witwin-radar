@@ -59,7 +59,7 @@ def test_validate_pair_ordering_runs_in_production(monkeypatch):
     )
     assert len(seen) == 1, seen
     index, kwargs = seen[0]
-    assert torch.equal(index, composer.sensor_pair_index)
+    assert list(index) == composer.sensor_pair_index.tolist()
     assert kwargs == {
         "num_tx": len(spike.transmitter_ids),
         "num_rx": len(spike.receiver_ids),
