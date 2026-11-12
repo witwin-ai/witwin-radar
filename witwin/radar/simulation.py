@@ -1104,6 +1104,57 @@ def _resolve_sampling(requested: Motion, *, sampled: bool) -> str:
     return "adc" if motion_sampling == "static" else motion_sampling
 
 
+def _schedule(route: str, *, sampled: bool, adc_sampled: bool) -> str:
+    """The observation schedule a session runs, as the synthesis owner names it.
+
+    One of :data:`~witwin.radar.synthesis.assembly.OBSERVATION_SCHEDULES`:
+    ``frame`` for a still world, ``adaptive`` for the adaptive route,
+    ``fast_time`` when every fast-time sample (an FMCW ADC instant, a pulsed
+    fast-time sample, a time-domain OFDM sample) is its own observation, and
+    ``slow_time`` when the world is held over each chirp, symbol or pulse.
+    """
+
+    from .synthesis.assembly import (
+        OBSERVATION_ADAPTIVE,
+        OBSERVATION_FAST_TIME,
+        OBSERVATION_FRAME,
+        OBSERVATION_SLOW_TIME,
+    )
+
+    if not sampled:
+        return OBSERVATION_FRAME
+    if route == "adaptive":
+        return OBSERVATION_ADAPTIVE
+    return OBSERVATION_FAST_TIME if adc_sampled else OBSERVATION_SLOW_TIME
+
+
+def _published_sampling(schedule: str, working: object) -> tuple[str, bool]:
+    """``(motion_sampling, exhaustive)`` derived from the observation schedule that ran.
+
+    The kind names the schedule, not the request: ``fast_time`` is ``"adc"``,
+    ``adaptive`` is ``"adaptive"``, a still world is ``"static"``, and a
+    ``slow_time`` schedule is named by what it holds the world over, ``"chirp"``
+    (FMCW), ``"symbol"`` (OFDM) or ``"pulse"`` (pulsed). ``exhaustive`` says the
+    world was evaluated at EVERY instant the waveform puts a sample at, which
+    is exactly the ``frame`` and ``fast_time`` schedules; an adaptive frame is
+    decided per frame by its controller.
+    """
+
+    from .synthesis.assembly import OBSERVATION_ADAPTIVE, OBSERVATION_FAST_TIME, OBSERVATION_FRAME, OfdmSpec, PulsedSpec
+
+    if schedule == OBSERVATION_FRAME:
+        return "static", True
+    if schedule == OBSERVATION_ADAPTIVE:
+        return "adaptive", False
+    if schedule == OBSERVATION_FAST_TIME:
+        return "adc", True
+    if isinstance(working, OfdmSpec):
+        return "symbol", False
+    if isinstance(working, PulsedSpec):
+        return "pulse", False
+    return "chirp", False
+
+
 def open_session(
     radar: Radar,
     scene: object,
@@ -1311,6 +1362,9 @@ def open_session(
         frequency_offsets_hz=band_offsets,
     )
 
+    kind, exhaustive = _published_sampling(
+        _schedule(motion_sampling, sampled=sampled, adc_sampled=adc_sampled), working
+    )
     world = WorldHalf(
         radar,
         dynamic,
@@ -1342,7 +1396,7 @@ def open_session(
         samples_per_slot=samples_per_slot,
         path_phase_noise=path_phase_noise,
         reference_frequency_hz=reference_frequency_hz,
-        kind="static" if not sampled else motion_sampling,
+        kind=kind,
         components=frozenset(propagation.components),
         max_depth=int(propagation.max_depth),
         grad=str(ad_mode),
@@ -1357,7 +1411,7 @@ def open_session(
     complete = not sampled or cadence == 1 or (motion.world == "frozen_world" and world.loop.structures_move)
     if sampled and motion_sampling == "adaptive":
         return session, _adaptive_traces(session, world)
-    return session, _frame_traces(session, world, path_set_complete=bool(complete))
+    return session, _frame_traces(session, world, path_set_complete=bool(complete), exhaustive=exhaustive)
 
 
 #: Components Channel publishes at discovery and cannot freeze for replay.
@@ -1427,14 +1481,16 @@ def _require_discovery_only(unfrozen: list[str], *, ad_mode: str, still_world: b
         )
 
 
-def _frame_traces(session: Session, world: WorldHalf, *, path_set_complete: bool) -> Iterator[FrameTrace]:
+def _frame_traces(
+    session: Session, world: WorldHalf, *, path_set_complete: bool, exhaustive: bool
+) -> Iterator[FrameTrace]:
     for start in session.times:
         yield FrameTrace(
             time_s=float(start),
             sample_times_s=start + session.offsets,
             observations=world.observations(start, session.offsets),
             path_set_complete=path_set_complete,
-            motion_sampling_exhaustive=True,
+            motion_sampling_exhaustive=exhaustive,
             discovery=world.report,
         )
 
@@ -1705,18 +1761,11 @@ def observation_schedule(session: Session, trace: FrameTrace) -> str:
     so an ADC request on one observes it once per symbol.
     """
 
-    from .synthesis.assembly import (
-        OBSERVATION_ADAPTIVE,
-        OBSERVATION_FAST_TIME,
-        OBSERVATION_FRAME,
-        OBSERVATION_SLOW_TIME,
-    )
+    from .synthesis.assembly import OBSERVATION_ADAPTIVE
 
     if trace.adaptive is not None:
         return OBSERVATION_ADAPTIVE
-    if not session.sampled:
-        return OBSERVATION_FRAME
-    return OBSERVATION_FAST_TIME if session.adc_sampled else OBSERVATION_SLOW_TIME
+    return _schedule("adc", sampled=session.sampled, adc_sampled=session.adc_sampled)
 
 
 def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
@@ -1912,14 +1961,15 @@ class Paths:
 
     ``path_set_complete`` and ``motion_sampling_exhaustive`` are TWO
     statements, and both belong here rather than to the echo: the first says no
-    path birth can have been missed, the second says no observation's transport
-    was interpolated between probes. An adaptive trace of a certifiable world
+    path birth can have been missed, the second says the world was evaluated
+    at every instant the waveform samples. An adaptive trace of a certifiable world
     reports the first without the second, which is exactly the trade it exists
     to make.
     """
 
-    #: ``"static"``, ``"chirp"``, ``"adc"`` or ``"adaptive"``: how often the
-    #: world was resampled inside a frame.
+    #: ``"static"``, ``"chirp"``, ``"adc"``, ``"adaptive"``, ``"symbol"`` or
+    #: ``"pulse"``: the observation schedule that resampled the world inside a
+    #: frame, named by what ran rather than by what was requested.
     kind: str
     #: The reference frequency these rows were composed at, Hz.
     carrier: float

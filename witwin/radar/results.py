@@ -59,8 +59,10 @@ class Result:
     statements, and a consumer that needs to know how much to trust a run
     needs both. The first says no path birth can have been missed - because
     every observation was evaluated, or because the candidate family was
-    certified complete for all time. The second says no observation's transport
-    was interpolated between probes. Adaptive sampling routinely gives the
+    certified complete for all time. The second says the world was evaluated at
+    every instant the waveform puts a sample at: nothing was interpolated
+    between probes, and nothing was held over a chirp, symbol or pulse.
+    Adaptive sampling routinely gives the
     first and not the second, which is exactly the trade it exists to make;
     collapsing them into one flag would report a proven-complete adaptive run
     as if it might have lost a path.
@@ -114,6 +116,8 @@ class Result:
     sample_times_s: tuple[np.ndarray, ...]
     path_set_complete: bool
     motion_sampling_exhaustive: bool
+    #: The observation schedule the run used: ``"static"``, ``"chirp"``,
+    #: ``"adc"``, ``"adaptive"``, ``"symbol"`` (OFDM) or ``"pulse"``.
     motion_sampling: str
     #: The synthesis result's own output domain.
     output_domain: str
