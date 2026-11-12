@@ -26,14 +26,26 @@ def _reaches_dispatcher(tree: ast.Module, package: str) -> bool:
     return any(candidate.startswith(DISPATCHER_PREFIXES) for candidate in import_candidates(tree, package))
 
 
+class _DropTypeCheckingImports(ast.NodeTransformer):
+    """Remove ``if TYPE_CHECKING:`` bodies: an annotation-only import never runs."""
+
+    def visit_If(self, node: ast.If) -> ast.AST | None:
+        test = node.test
+        if (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        ):
+            return None if not node.orelse else ast.If(test=test, body=[ast.Pass()], orelse=node.orelse)
+        return self.generic_visit(node)
+
+
 def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool, bool]:
-    """Internal modules `path` imports, whether it reaches `witwin.channel`, and whether it names the dispatcher."""
+    """Internal modules `path` imports at run time, whether it reaches `witwin.channel`, and whether it names the dispatcher."""
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     package = name if path.name == "__init__.py" else name.rpartition(".")[0]
     internal: set[str] = set()
     imports_channel = False
-    for candidate in import_candidates(tree, package):
+    for candidate in import_candidates(_DropTypeCheckingImports().visit(ast.parse(ast.unparse(tree))), package):
         if candidate == "witwin.channel" or candidate.startswith("witwin.channel."):
             imports_channel = True
         cursor = candidate

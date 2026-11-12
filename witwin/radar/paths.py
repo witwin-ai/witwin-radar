@@ -17,13 +17,19 @@ this package never crosses the Channel boundary either.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 
 from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative
-from .propagation import RadarLegBatch, require_tensor
+from .propagation import FrozenLeg, RadarLegBatch, require_tensor
+
+if TYPE_CHECKING:
+    from .scattering import ScatterResponse
 
 LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
 
@@ -32,21 +38,21 @@ class _PathInterpolation(torch.autograd.Function):
     """First-order native interpolation at a fixed adaptive time partition."""
 
     @staticmethod
-    def forward(values, indices, weights, carrier):
+    def forward(values: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, carrier: float) -> torch.Tensor:
         rows = len(indices) if indices.ndim == 2 else len(values)
         result = values.new_empty((rows, 3))
         _ops().path_interpolate_forward(values, indices, weights, values.new_empty(0), result, carrier)
         return result
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         values, indices, weights, ctx.carrier = inputs
         ctx.save_for_backward(values, indices, weights)
         ctx.save_for_forward(values, indices, weights)
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad):
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
         values, indices, weights = ctx.saved_tensors
         indexed = indices.ndim == 2
         result = values.new_empty((len(indices), 4 * indices.shape[1])) if indexed else torch.empty_like(values)
@@ -58,7 +64,9 @@ class _PathInterpolation(torch.autograd.Function):
         return result, None, None, None
 
     @staticmethod
-    def jvp(ctx, tangent, indices_tangent, weights_tangent, carrier_tangent):
+    def jvp(
+        ctx: Any, tangent: torch.Tensor, indices_tangent: Any, weights_tangent: Any, carrier_tangent: Any
+    ) -> torch.Tensor:
         values, indices, weights = ctx.saved_tensors
         rows = len(indices) if indices.ndim == 2 else len(values)
         result = values.new_empty((rows, 3))
@@ -66,7 +74,9 @@ class _PathInterpolation(torch.autograd.Function):
         return result
 
 
-def interpolate_path_rows(delays, transfers, weights, carrier_hz):
+def interpolate_path_rows(
+    delays: Sequence[torch.Tensor], transfers: Sequence[torch.Tensor], weights: torch.Tensor, carrier_hz: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Transport Channel phasors to the interpolated delay, then blend envelopes.
 
     ``delays`` and ``transfers`` are ``K`` sequences of per-row node samples of
@@ -93,7 +103,7 @@ def interpolate_path_rows(delays, transfers, weights, carrier_hz):
     return _interpolate_packed_rows(torch.stack(columns, dim=1).contiguous(), carrier_hz)
 
 
-def _interpolate_packed_rows(values, carrier_hz):
+def _interpolate_packed_rows(values: torch.Tensor, carrier_hz: float) -> tuple[torch.Tensor, torch.Tensor]:
     """Native interpolation over repeated [delay, real, imaginary, basis] columns.
 
     Used by the adaptive controller's small error probes. Full observation
@@ -105,7 +115,9 @@ def _interpolate_packed_rows(values, carrier_hz):
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
-def _interpolate_indexed_rows(samples, indices, weights, carrier_hz):
+def interpolate_indexed_rows(
+    samples: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, carrier_hz: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Gather compact probe triples inside the interpolation kernel.
 
     ``samples`` stores float64 (delay [s], real C, imaginary C) per probe path;
@@ -117,7 +129,7 @@ def _interpolate_indexed_rows(samples, indices, weights, carrier_hz):
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
-def stable_ids(values, name: str) -> list[int]:
+def stable_ids(values: torch.Tensor | Sequence[int], name: str) -> list[int]:
     """Normalize a stable-ID sequence to a host list of distinct ints."""
 
     if isinstance(values, torch.Tensor):
@@ -133,78 +145,166 @@ def stable_ids(values, name: str) -> list[int]:
     return listed
 
 
-def leg_identity(frozen, name: str) -> tuple[list[int], list[int], list[LegKey]]:
-    """Read one frozen leg's row identity to the host, once.
+@dataclass(frozen=True, slots=True, eq=False)
+class LegIdentity:
+    """One frozen leg's row identity on the host, read in one device copy.
 
-    The key is everything that distinguishes two rows of the SAME leg: which
-    multipath component, how deep, and which primitives and materials it
-    interacted with. It is frame invariant, so the composed order it induces is
-    frame invariant too.
+    ``source`` and ``sink`` are the rows' stable endpoint IDs; ``component``,
+    ``depth``, ``primitive`` (``[rows, width]``) and ``material`` complete the
+    key that distinguishes two rows of the SAME leg. Every column is frame
+    invariant, so the composed order it induces is frame invariant too.
+
+    ``packed`` is the whole identity as one bytes object - the row count and
+    sequence width followed by every column - so two legs have the same
+    identity exactly when their ``packed`` values are equal. It is what an
+    epoch is compared and grouped by; nothing hashes or compares row tuples.
     """
 
-    source = [int(value) for value in frozen.source_id.tolist()]
-    sink = [int(value) for value in frozen.sink_id.tolist()]
-    component = [int(value) for value in frozen.component_id.tolist()]
-    depth = [int(value) for value in frozen.depth.tolist()]
-    primitive = [tuple(int(value) for value in row) for row in frozen.primitive_sequence.tolist()]
-    material = [tuple(int(value) for value in row) for row in frozen.material_sequence.tolist()]
-    rows = len(source)
-    for label, column in (
-        ("sink_id", sink),
-        ("component_id", component),
-        ("depth", depth),
-        ("primitive_sequence", primitive),
-        ("material_sequence", material),
+    source: np.ndarray
+    sink: np.ndarray
+    component: np.ndarray
+    depth: np.ndarray
+    primitive: np.ndarray
+    material: np.ndarray
+    packed: bytes
+
+    @property
+    def row_count(self) -> int:
+        return int(self.source.shape[0])
+
+    def key_columns(self) -> np.ndarray:
+        """``int64[rows, 2 + 2 * width]``: the key as columns, compared left to right.
+
+        Lexicographic order over these columns is the order of the key tuple
+        ``(component, depth, primitive, material)``, because every row of one
+        leg carries sequences of the same width.
+        """
+
+        return np.column_stack((self.component, self.depth, self.primitive, self.material))
+
+    def key(self, row: int) -> LegKey:
+        return (
+            int(self.component[row]),
+            int(self.depth[row]),
+            tuple(int(value) for value in self.primitive[row]),
+            tuple(int(value) for value in self.material[row]),
+        )
+
+
+def read_leg_identity(frozen: FrozenLeg, name: str) -> LegIdentity:
+    """Read one frozen leg's row identity to the host with one device copy.
+
+    The columns are concatenated on the device and copied once, rather than
+    once each. Their shapes are host metadata and are checked before the copy.
+    """
+
+    rows = int(frozen.source_id.shape[0])
+    width = int(frozen.primitive_sequence.shape[1]) if frozen.primitive_sequence.dim() == 2 else -1
+    for label, column, shape in (
+        ("sink_id", frozen.sink_id, (rows,)),
+        ("component_id", frozen.component_id, (rows,)),
+        ("depth", frozen.depth, (rows,)),
+        ("primitive_sequence", frozen.primitive_sequence, (rows, width)),
+        ("material_sequence", frozen.material_sequence, (rows, width)),
     ):
-        if len(column) != rows:
-            raise ValueError(f"{name} leg {label} has {len(column)} rows, expected {rows}")
-    keys: list[LegKey] = [(component[row], depth[row], primitive[row], material[row]) for row in range(rows)]
-    return source, sink, keys
+        if tuple(column.shape) != shape:
+            raise ValueError(f"{name} leg {label} has shape {tuple(column.shape)}, expected {shape}")
+    packed = (
+        torch.cat(
+            (
+                frozen.source_id.to(torch.int64),
+                frozen.sink_id.to(torch.int64),
+                frozen.component_id.to(torch.int64),
+                frozen.depth.to(torch.int64),
+                frozen.primitive_sequence.to(torch.int64).reshape(-1),
+                frozen.material_sequence.to(torch.int64).reshape(-1),
+            )
+        )
+        .cpu()
+        .numpy()
+    )
+    sequence = rows * width
+    return LegIdentity(
+        source=packed[:rows],
+        sink=packed[rows : 2 * rows],
+        component=packed[2 * rows : 3 * rows],
+        depth=packed[3 * rows : 4 * rows],
+        primitive=packed[4 * rows : 4 * rows + sequence].reshape(rows, width),
+        material=packed[4 * rows + sequence :].reshape(rows, width),
+        packed=np.asarray((rows, width), dtype=np.int64).tobytes() + packed.tobytes(),
+    )
 
 
-def group_rows(source: list[int], sink: list[int], keys: list[LegKey], name: str) -> dict[tuple[int, int], list[int]]:
-    """Index a leg's rows by its ``(source_id, sink_id)`` endpoint pair.
+def _dense_rank(columns: np.ndarray) -> np.ndarray:
+    """``int64[rows]``: each row's rank in the lexicographic order of its columns, ties equal."""
 
-    Also enforces that the identity key is UNIQUE inside each endpoint pair. A
-    collision would make the canonical composed order ambiguous and would
-    silently turn the permutation test vacuous, so it is refused here rather
-    than tie-broken on row position - which is exactly the positional
-    dependence this module exists to remove.
+    rows = columns.shape[0]
+    if rows == 0:
+        return np.zeros(0, dtype=np.int64)
+    order = np.lexsort(columns.T[::-1])
+    ordered = columns[order]
+    step = np.ones(rows, dtype=np.int64)
+    step[1:] = np.any(ordered[1:] != ordered[:-1], axis=1)
+    step[0] = 0
+    rank = np.empty(rows, dtype=np.int64)
+    rank[order] = np.cumsum(step)
+    return rank
+
+
+def _require_unique_keys(leg: LegIdentity, key_rank: np.ndarray, name: str) -> None:
+    """Refuse two rows of one endpoint pair that share an identity key.
+
+    A collision would make the canonical composed order ambiguous and would
+    silently turn the permutation test vacuous, so it is refused rather than
+    tie-broken on row position - which is exactly the positional dependence
+    this module exists to remove. The message names the earliest row that
+    repeats a key and the row that first claimed it.
     """
 
-    groups: dict[tuple[int, int], list[int]] = {}
-    seen: dict[tuple[int, int], dict[LegKey, int]] = {}
-    for row, endpoints in enumerate(zip(source, sink, strict=True)):
-        groups.setdefault(endpoints, []).append(row)
-        claimed = seen.setdefault(endpoints, {})
-        if keys[row] in claimed:
-            raise ValueError(
-                f"{name} leg rows {claimed[keys[row]]} and {row} share the "
-                f"identity key {keys[row]} within endpoint pair {endpoints}; "
-                "the composed order would be ambiguous"
-            )
-        claimed[keys[row]] = row
-    return groups
+    if leg.row_count < 2:
+        return
+    columns = np.column_stack((leg.source, leg.sink, key_rank, np.arange(leg.row_count)))
+    order = np.lexsort(columns.T[::-1])
+    ordered = columns[order]
+    repeated = np.all(ordered[1:, :3] == ordered[:-1, :3], axis=1)
+    if not repeated.any():
+        return
+    second = ordered[1:][repeated]
+    row = int(second[:, 3].min())
+    first = ordered[
+        (ordered[:, 0] == leg.source[row]) & (ordered[:, 1] == leg.sink[row]) & (ordered[:, 2] == key_rank[row])
+    ]
+    claimed = int(first[:, 3].min())
+    raise ValueError(
+        f"{name} leg rows {claimed} and {row} share the identity key {leg.key(row)} within endpoint pair "
+        f"{(int(leg.source[row]), int(leg.sink[row]))}; the composed order would be ambiguous"
+    )
 
 
-def sink_major_rank(sources: list[int], sinks: list[int]):
+def _ranks(values: np.ndarray, declared: list[int]) -> np.ndarray:
+    """Each value's position in ``declared``; every value must be declared."""
+
+    ids = np.asarray(declared, dtype=np.int64)
+    order = np.argsort(ids, kind="stable")
+    return order[np.searchsorted(ids[order], values)]
+
+
+def sink_major_rank(sources: list[int], sinks: list[int]) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
     """The sensor-pair index, mirroring the Channel consumer's convention.
 
     Channel computes ``sink_row_index * source_count + source_row_index`` and
     spans ``source_count * sink_count``. Using anything else here would put a
-    second, silently different, virtual-array numbering on the same data.
+    second, silently different, virtual-array numbering on the same data. The
+    returned rule maps arrays of declared source and sink IDs to pair ranks.
     """
 
-    source_rank = {value: rank for rank, value in enumerate(sources)}
-    sink_rank = {value: rank for rank, value in enumerate(sinks)}
-
-    def rank(source: int, sink: int) -> int:
-        return sink_rank[sink] * len(sources) + source_rank[source]
+    def rank(source: np.ndarray, sink: np.ndarray) -> np.ndarray:
+        return _ranks(sink, sinks) * len(sources) + _ranks(source, sources)
 
     return rank
 
 
-def pair_offsets(pair_of_row: list[int], pair_count: int) -> list[int]:
+def pair_offsets(pair_of_row: np.ndarray | Sequence[int], pair_count: int) -> np.ndarray:
     """A half-open partition of composed rows by sensor pair.
 
     Empty segments are legal and expected: the partition spans the FRONT END's
@@ -215,45 +315,37 @@ def pair_offsets(pair_of_row: list[int], pair_count: int) -> list[int]:
     reading its values per frame would be exactly the D2H the fixed-topology
     capability exists to avoid, and clamping turns a malformed table into a
     plausible wrong answer. So the gate lives here, at freeze time, where the
-    table is still a Python list and checking it is free. What is actually
+    table is still on the host and checking it is free. What is actually
     checkable is the input: once every row's pair rank is in range, counting
     them can only produce a valid partition.
     """
 
     if pair_count < 1:
         raise ValueError(f"pair_count must be positive, got {pair_count}")
-    counts = [0] * pair_count
-    for row, pair in enumerate(pair_of_row):
-        if not 0 <= pair < pair_count:
-            raise ValueError(
-                f"composed row {row} claims sensor pair {pair}, which is "
-                f"outside the declared {pair_count} pairs; the offsets table "
-                "would not partition all composed rows"
-            )
-        counts[pair] += 1
-    offsets = [0]
-    for count in counts:
-        offsets.append(offsets[-1] + count)
-    return offsets
+    pair_of_row = np.asarray(pair_of_row, dtype=np.int64)
+    outside = np.flatnonzero((pair_of_row < 0) | (pair_of_row >= pair_count))
+    if outside.size:
+        row = int(outside[0])
+        raise ValueError(
+            f"composed row {row} claims sensor pair {int(pair_of_row[row])}, which is "
+            f"outside the declared {pair_count} pairs; the offsets table "
+            "would not partition all composed rows"
+        )
+    return np.concatenate(([0], np.cumsum(np.bincount(pair_of_row, minlength=pair_count)))).astype(np.int64)
 
 
-def csr(owner_of_row: list[int], owner_count: int) -> tuple[list[int], list[int]]:
+def csr(owner_of_row: np.ndarray, owner_count: int) -> tuple[np.ndarray, np.ndarray]:
     """Group composed rows by an owner index, as a CSR offsets/rows pair.
 
     The VJP needs this: one thread owns one gradient slot and loops its own
     segment, so the reduction needs no atomics and its summation order is fixed
-    by the frozen join. That is what makes a bit-identical gradient comparison
-    across a leg permutation a legitimate assertion rather than a lucky one.
+    by the frozen join. Within one owner the rows stay in composed order, which
+    is what makes a bit-identical gradient comparison across a leg permutation
+    a legitimate assertion rather than a lucky one.
     """
 
-    buckets: list[list[int]] = [[] for _ in range(owner_count)]
-    for composed_row, owner in enumerate(owner_of_row):
-        buckets[owner].append(composed_row)
-    offsets = [0]
-    rows: list[int] = []
-    for bucket in buckets:
-        rows.extend(bucket)
-        offsets.append(len(rows))
+    rows = np.argsort(owner_of_row, kind="stable").astype(np.int64)
+    offsets = np.concatenate(([0], np.cumsum(np.bincount(owner_of_row, minlength=owner_count)))).astype(np.int64)
     return offsets, rows
 
 
@@ -357,8 +449,14 @@ class RadarPathBatch:
         return self.total_delay_s.device
 
 
-def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_count):
-    """Validate the frozen sink-major sensor-pair partition once on the host."""
+def validate_pair_ordering(
+    sensor_pair_index: torch.Tensor | np.ndarray, *, num_tx: int, num_rx: int, sensor_pair_count: int
+) -> None:
+    """Validate a sink-major sensor-pair partition on the host, at freeze time.
+
+    The join validates its ranks while they are still a host array; a device
+    tensor is read back once, which is a freeze-time cost and never a frame's.
+    """
 
     if isinstance(num_tx, bool) or not isinstance(num_tx, int) or num_tx < 1:
         raise ValueError(f"num_tx must be a positive int, got {num_tx!r}")
@@ -370,23 +468,30 @@ def validate_pair_ordering(sensor_pair_index, *, num_tx, num_rx, sensor_pair_cou
             f"the frozen topology spans {sensor_pair_count} sensor pairs but the "
             f"array is {num_tx} x {num_rx} = {expected} pairs"
         )
-    if sensor_pair_index.dtype != torch.int64:
-        raise TypeError(f"sensor_pair_index must be int64, got {sensor_pair_index.dtype}")
-    if sensor_pair_index.dim() != 1:
-        raise ValueError(f"sensor_pair_index must be 1-D, got shape {tuple(sensor_pair_index.shape)}")
-    previous = -1
-    for row, rank in enumerate(sensor_pair_index.tolist()):
-        if rank < 0 or rank >= expected:
-            raise ValueError(
-                f"row {row} names sensor pair {rank}, which is outside the "
-                f"{num_tx} x {num_rx} array's range [0, {expected})"
-            )
-        if rank < previous:
-            raise ValueError(
-                "sensor pair ranks must be non-decreasing so that pair_offsets "
-                f"is a half-open partition; row {row} drops from {previous} to {rank}"
-            )
-        previous = rank
+    if isinstance(sensor_pair_index, torch.Tensor):
+        if sensor_pair_index.dtype != torch.int64:
+            raise TypeError(f"sensor_pair_index must be int64, got {sensor_pair_index.dtype}")
+        if sensor_pair_index.dim() != 1:
+            raise ValueError(f"sensor_pair_index must be 1-D, got shape {tuple(sensor_pair_index.shape)}")
+        ranks = np.asarray(sensor_pair_index.tolist(), dtype=np.int64)
+    else:
+        ranks = np.asarray(sensor_pair_index, dtype=np.int64)
+        if ranks.ndim != 1:
+            raise ValueError(f"sensor_pair_index must be 1-D, got shape {ranks.shape}")
+    outside = np.flatnonzero((ranks < 0) | (ranks >= expected))
+    if outside.size:
+        row = int(outside[0])
+        raise ValueError(
+            f"row {row} names sensor pair {int(ranks[row])}, which is outside the "
+            f"{num_tx} x {num_rx} array's range [0, {expected})"
+        )
+    drops = np.flatnonzero(ranks[1:] < ranks[:-1])
+    if drops.size:
+        row = int(drops[0]) + 1
+        raise ValueError(
+            "sensor pair ranks must be non-decreasing so that pair_offsets "
+            f"is a half-open partition; row {row} drops from {int(ranks[row - 1])} to {int(ranks[row])}"
+        )
 
 
 class _TwoWayJoin(torch.autograd.Function):
@@ -408,21 +513,21 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        tau_in,
-        tau_out,
-        c_in_re,
-        c_in_im,
-        c_out_re,
-        c_out_im,
-        s_re,
-        s_im,
-        row_valid,
-        idx_in,
-        idx_out,
-        idx_s,
-        join,
-        response_family,
-    ):
+        tau_in: torch.Tensor,
+        tau_out: torch.Tensor,
+        c_in_re: torch.Tensor,
+        c_in_im: torch.Tensor,
+        c_out_re: torch.Tensor,
+        c_out_im: torch.Tensor,
+        s_re: torch.Tensor,
+        s_im: torch.Tensor,
+        row_valid: torch.Tensor,
+        idx_in: torch.Tensor,
+        idx_out: torch.Tensor,
+        idx_s: torch.Tensor,
+        join: TwoWayComposer,
+        response_family: tuple[torch.Tensor, torch.Tensor, int],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(idx_in.shape[0])
         tau_rt = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
         c_rt_re = torch.empty_like(tau_rt)
@@ -448,7 +553,7 @@ class _TwoWayJoin(torch.autograd.Function):
         return tau_rt, c_rt_re, c_rt_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         (
             _tau_in,
             _tau_out,
@@ -478,7 +583,9 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_tau_rt, grad_c_rt_re, grad_c_rt_im):
+    def backward(
+        ctx: Any, grad_tau_rt: torch.Tensor, grad_c_rt_re: torch.Tensor, grad_c_rt_im: torch.Tensor
+    ) -> tuple[torch.Tensor | None, ...]:
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         join = ctx.join
         response_offsets, response_rows, response_slots = ctx.response_family
@@ -542,31 +649,31 @@ class _TwoWayJoin(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_in,
-        tan_tau_out,
-        tan_c_in_re,
-        tan_c_in_im,
-        tan_c_out_re,
-        tan_c_out_im,
-        tan_s_re,
-        tan_s_im,
-        tan_row_valid,
-        tan_idx_in,
-        tan_idx_out,
-        tan_idx_s,
-        tan_join,
-        tan_response_family,
-    ):
+        ctx: Any,
+        tan_tau_in: torch.Tensor | None,
+        tan_tau_out: torch.Tensor | None,
+        tan_c_in_re: torch.Tensor | None,
+        tan_c_in_im: torch.Tensor | None,
+        tan_c_out_re: torch.Tensor | None,
+        tan_c_out_im: torch.Tensor | None,
+        tan_s_re: torch.Tensor | None,
+        tan_s_im: torch.Tensor | None,
+        tan_row_valid: Any,
+        tan_idx_in: Any,
+        tan_idx_out: Any,
+        tan_idx_s: Any,
+        tan_join: Any,
+        tan_response_family: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
 
-        def inbound(tangent):
+        def inbound(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
 
-        def outbound(tangent):
+        def outbound(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
 
-        def site(tangent):
+        def site(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
 
         rows = int(idx_in.shape[0])
@@ -638,10 +745,23 @@ class TwoWayComposer:
     # so it refuses anything but a line-of-sight outbound leg; the host int is
     # what lets it refuse without reading a device column.
     outbound_max_depth: int
+    #: One slot's pair partition on the host, as built: ``pair_offsets`` before
+    #: its upload. A slot-major replica keeps the single-slot table, which is
+    #: what an instrument half selecting pair segments slot by slot reads.
+    pair_offsets_host: np.ndarray
 
     @classmethod
     def freeze(
-        cls, inbound, outbound, site_ids, *, radar_source_ids, radar_sink_ids, reference_frequency_hz: float
+        cls,
+        inbound: FrozenLeg,
+        outbound: FrozenLeg,
+        site_ids: torch.Tensor | Sequence[int],
+        *,
+        radar_source_ids: Sequence[int],
+        radar_sink_ids: Sequence[int],
+        reference_frequency_hz: float,
+        inbound_identity: LegIdentity | None = None,
+        outbound_identity: LegIdentity | None = None,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -667,24 +787,22 @@ class TwoWayComposer:
         sinks = stable_ids(radar_sink_ids, "radar_sink_ids")
         sites = stable_ids(site_ids, "site_ids")
         sites.sort()
+        arriving = read_leg_identity(inbound, "inbound") if inbound_identity is None else inbound_identity
+        leaving = read_leg_identity(outbound, "outbound") if outbound_identity is None else outbound_identity
+        inbound_key = _dense_rank(arriving.key_columns())
+        outbound_key = _dense_rank(leaving.key_columns())
+        _require_unique_keys(arriving, inbound_key, "inbound")
+        _require_unique_keys(leaving, outbound_key, "outbound")
 
-        inbound_source, inbound_sink, inbound_keys = leg_identity(inbound, "inbound")
-        outbound_source, outbound_sink, outbound_keys = leg_identity(outbound, "outbound")
-        arriving = group_rows(inbound_source, inbound_sink, inbound_keys, "inbound")
-        leaving = group_rows(outbound_source, outbound_sink, outbound_keys, "outbound")
-        pair_rank = sink_major_rank(sources, sinks)
-
-        # (pair_rank, site_rank, source, site, sink, inbound_row, outbound_row,
-        #  inbound_key, outbound_key)
         # Nothing may fall outside the declared front end. A leg row whose
-        # radar endpoint is not in the declared lists would simply never be
-        # visited below, which is a silent drop rather than an empty segment.
-        stray_sources = sorted(set(inbound_source) - set(sources))
+        # radar endpoint is not in the declared lists would never be joined,
+        # which is a silent drop rather than an empty segment.
+        stray_sources = sorted(set(arriving.source.tolist()) - set(sources))
         if stray_sources:
             raise ValueError(
                 f"inbound leg rows carry radar source IDs {stray_sources} that are not in radar_source_ids {sources}"
             )
-        stray_sinks = sorted(set(outbound_sink) - set(sinks))
+        stray_sinks = sorted(set(leaving.sink.tolist()) - set(sinks))
         if stray_sinks:
             raise ValueError(
                 f"outbound leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}"
@@ -695,84 +813,120 @@ class TwoWayComposer:
         # would hide a wrong stable ID. A site absent for ONE endpoint is not -
         # that is discovery reporting that this particular TX/RX pair sees
         # nothing there, and it is published as an empty pair segment.
-        reachable_in = {endpoints[1] for endpoints in arriving}
-        reachable_out = {endpoints[0] for endpoints in leaving}
+        reachable_in = set(arriving.sink.tolist())
+        reachable_out = set(leaving.source.tolist())
         for site in sites:
             if site not in reachable_in:
                 raise ValueError(f"site {site} has no inbound leg row in the frozen topology")
             if site not in reachable_out:
                 raise ValueError(f"site {site} has no outbound leg row in the frozen topology")
 
-        rows: list[tuple[int, int, int, int, int, int, int, LegKey, LegKey]] = []
-        for site_rank, site in enumerate(sites):
-            for source in sources:
-                inbound_rows = arriving.get((source, site), ())
-                for sink in sinks:
-                    outbound_rows = leaving.get((site, sink), ())
-                    for i in inbound_rows:
-                        for o in outbound_rows:
-                            rows.append(
-                                (pair_rank(source, sink), site_rank, source, site, sink, i, o)
-                                + (inbound_keys[i], outbound_keys[o])
-                            )
+        # Every (inbound, outbound) row pair that meets at one declared site.
+        # Rows that reach an undeclared site are not part of this join.
+        declared = np.asarray(sites, dtype=np.int64)
+        inbound_rows = np.flatnonzero(np.isin(arriving.sink, declared))
+        outbound_rows = np.flatnonzero(np.isin(leaving.source, declared))
+        inbound_site = _ranks(arriving.sink[inbound_rows], sites)
+        outbound_order = outbound_rows[np.argsort(_ranks(leaving.source[outbound_rows], sites), kind="stable")]
+        per_site = np.bincount(_ranks(leaving.source[outbound_rows], sites), minlength=len(sites))
+        first_partner = np.concatenate(([0], np.cumsum(per_site)[:-1]))
+        partners = per_site[inbound_site]
+        total = int(partners.sum())
+        joined_in = np.repeat(inbound_rows, partners)
+        within = np.arange(total) - np.repeat(np.cumsum(partners) - partners, partners)
+        joined_out = outbound_order[np.repeat(first_partner[inbound_site], partners) + within]
+        site_rank = np.repeat(inbound_site, partners)
+        source = arriving.source[joined_in]
+        sink = leaving.sink[joined_out]
+        pair = np.broadcast_to(np.asarray(sink_major_rank(sources, sinks)(source, sink), dtype=np.int64), (total,))
 
-        # The canonical order. Every component is frame invariant, so two
-        # freezes of permuted leg rows produce the SAME composed sequence, not
-        # merely the same composed set.
-        rows.sort(key=lambda row: (row[0], row[1], row[7], row[8]))
-
-        def column(index: int) -> torch.Tensor:
-            return torch.tensor([row[index] for row in rows], dtype=torch.int64, device=device)
+        # The canonical order: pair rank, site rank, inbound key, outbound key.
+        # Every component is frame invariant and the four together are unique,
+        # so two freezes of permuted leg rows produce the SAME composed
+        # sequence, not merely the same composed set.
+        order = np.lexsort((outbound_key[joined_out], inbound_key[joined_in], site_rank, pair))
+        pair, site_rank = pair[order], site_rank[order]
+        joined_in, joined_out = joined_in[order], joined_out[order]
+        source, sink = source[order], sink[order]
 
         pair_count = len(sources) * len(sinks)
-        sensor_pair_index = column(0)
-        validate_pair_ordering(sensor_pair_index, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
-        offsets = pair_offsets([row[0] for row in rows], pair_count)
+        validate_pair_ordering(pair, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
+        offsets = pair_offsets(pair, pair_count)
+        inbound_count = arriving.row_count
+        outbound_count = leaving.row_count
+        by_inbound = csr(joined_in, inbound_count)
+        by_outbound = csr(joined_out, outbound_count)
+        by_response = csr(site_rank, len(sites))
 
-        inbound_count = len(inbound_source)
-        outbound_count = len(outbound_source)
-        by_inbound = csr([row[5] for row in rows], inbound_count)
-        by_outbound = csr([row[6] for row in rows], outbound_count)
-        by_response = csr([row[1] for row in rows], len(sites))
-
-        def table(values: list[int]) -> torch.Tensor:
-            return torch.tensor(values, dtype=torch.int64, device=device)
-
+        # Every integer table of the join crosses to the device in ONE copy and
+        # is published as views of that buffer.
+        tables = (
+            pair,
+            site_rank,
+            source,
+            arriving.sink[joined_in],
+            sink,
+            joined_in,
+            joined_out,
+            offsets,
+            *by_inbound,
+            *by_outbound,
+            *by_response,
+        )
+        uploaded = torch.from_numpy(np.concatenate([np.asarray(table, dtype=np.int64) for table in tables])).to(device)
+        views = torch.split(uploaded, [len(table) for table in tables])
+        (
+            sensor_pair_index,
+            response_slot,
+            radar_source_id,
+            site_id,
+            radar_sink_id,
+            inbound_row,
+            outbound_row,
+            offsets_table,
+            by_inbound_offsets,
+            by_inbound_rows,
+            by_outbound_offsets,
+            by_outbound_rows,
+            by_response_offsets,
+            by_response_rows,
+        ) = views
         return cls(
-            inbound_row=column(5),
-            outbound_row=column(6),
-            response_slot=column(1),
+            inbound_row=inbound_row,
+            outbound_row=outbound_row,
+            response_slot=response_slot,
             topology=RadarPathTopology(
-                radar_source_id=column(2),
-                site_id=column(3),
-                radar_sink_id=column(4),
-                inbound_row=column(5),
-                outbound_row=column(6),
+                radar_source_id=radar_source_id,
+                site_id=site_id,
+                radar_sink_id=radar_sink_id,
+                inbound_row=inbound_row,
+                outbound_row=outbound_row,
             ),
             sensor_pair_index=sensor_pair_index,
-            pair_offsets=table(offsets),
+            pair_offsets=offsets_table,
             sensor_pair_count=pair_count,
             site_count=len(sites),
             inbound_row_count=inbound_count,
             outbound_row_count=outbound_count,
-            by_inbound_offsets=table(by_inbound[0]),
-            by_inbound_rows=table(by_inbound[1]),
-            by_outbound_offsets=table(by_outbound[0]),
-            by_outbound_rows=table(by_outbound[1]),
-            by_response_offsets=table(by_response[0]),
-            by_response_rows=table(by_response[1]),
+            by_inbound_offsets=by_inbound_offsets,
+            by_inbound_rows=by_inbound_rows,
+            by_outbound_offsets=by_outbound_offsets,
+            by_outbound_rows=by_outbound_rows,
+            by_response_offsets=by_response_offsets,
+            by_response_rows=by_response_rows,
             reference_frequency_hz=float(reference_frequency_hz),
-            row_slot=torch.arange(len(rows), dtype=torch.int64, device=device),
-            by_row_offsets=torch.arange(len(rows) + 1, dtype=torch.int64, device=device),
-            by_row_rows=torch.arange(len(rows), dtype=torch.int64, device=device),
-            outbound_max_depth=max((row[8][1] for row in rows), default=0),
+            row_slot=torch.arange(total, dtype=torch.int64, device=device),
+            by_row_offsets=torch.arange(total + 1, dtype=torch.int64, device=device),
+            by_row_rows=torch.arange(total, dtype=torch.int64, device=device),
+            outbound_max_depth=int(leaving.depth[joined_out].max()) if total else 0,
+            pair_offsets_host=offsets,
         )
 
     @property
     def path_count(self) -> int:
         return int(self.inbound_row.shape[0])
 
-    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response) -> RadarPathBatch:
+    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response: ScatterResponse) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
 
         A dead row's payload is exactly zero, not a partial composition. The
@@ -822,7 +976,7 @@ class TwoWayComposer:
             topology=self.topology,
         )
 
-    def _for_slots(self, count: int) -> TwoWayComposer:
+    def for_slots(self, count: int) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
 
         Sites remain shared across slots, including their gradient owners.
@@ -833,10 +987,10 @@ class TwoWayComposer:
         slot = torch.arange(count, device=device, dtype=torch.int64)[:, None]
         rows = self.path_count
 
-        def shifted(table, stride):
+        def shifted(table: torch.Tensor, stride: int) -> torch.Tensor:
             return (table[None, :] + slot * stride).reshape(-1)
 
-        def slot_csr(offsets):
+        def slot_csr(offsets: torch.Tensor) -> torch.Tensor:
             return torch.cat((shifted(offsets[:-1], rows), offsets[-1:] * count))
 
         inbound = shifted(self.inbound_row, self.inbound_row_count)
@@ -899,7 +1053,14 @@ class TwoWayComposer:
                     "to this frozen topology"
                 )
 
-    def _response(self, response, inbound, outbound, flags, device):
+    def _response(
+        self,
+        response: ScatterResponse,
+        inbound: RadarLegBatch,
+        outbound: RadarLegBatch,
+        flags: torch.Tensor,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor, int]]:
         """The response as a real pair, its index, and its gradient family.
 
         Two shapes, one join. A per-SITE response is broadcast across the rows
@@ -931,7 +1092,10 @@ class TwoWayComposer:
                 "a geometry-dependent scatter response varies per path and must "
                 "be evaluated in a native kernel, not composed here"
             )
-        rows_re, rows_im = response.evaluate_rows(self, inbound, outbound, flags)
+        # The whitelist above is what licenses the row entry; the protocol
+        # declares only the per-site one.
+        row_response: Any = response
+        rows_re, rows_im = row_response.evaluate_rows(self, inbound, outbound, flags)
         for name, value in (("real", rows_re), ("imaginary", rows_im)):
             if not isinstance(value, torch.Tensor) or value.numel() != self.path_count:
                 raise ValueError(
@@ -940,7 +1104,7 @@ class TwoWayComposer:
                 )
         return (rows_re, rows_im, self.row_slot, (self.by_row_offsets, self.by_row_rows, self.path_count))
 
-    def _site_response(self, response, device: torch.device) -> torch.Tensor:
+    def _site_response(self, response: ScatterResponse, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.
 
         ``ScatterResponse`` is an extension point, and ``evaluate`` returning
@@ -1004,7 +1168,7 @@ COMPONENT_NAMES: tuple[str, ...] = (TARGET, ENVIRONMENT_CLUTTER, DIRECT_LEAKAGE,
 NO_INTERACTION = -1
 
 
-def _int_set(values: object, name: str) -> frozenset[int]:
+def _int_set(values: Any, name: str) -> frozenset[int]:
     if values is None:
         return frozenset()
     if isinstance(values, torch.Tensor):
@@ -1089,7 +1253,7 @@ class ComponentDeclaration:
         return tuple(matched)
 
 
-def _leg_facts(leg, name: str) -> tuple[list[int], list[frozenset[int]]]:
+def _leg_facts(leg: FrozenLeg, name: str) -> tuple[list[int], list[frozenset[int]]]:
     """One frozen leg's depth and interacted material slots, read once."""
 
     depth = [int(value) for value in leg.depth.tolist()]
@@ -1142,7 +1306,9 @@ class RadarComponentIndex:
         return self.class_id == self.index_of(name)
 
     @classmethod
-    def from_two_way(cls, composer, inbound, outbound, declaration: ComponentDeclaration) -> RadarComponentIndex:
+    def from_two_way(
+        cls, composer: TwoWayComposer, inbound: FrozenLeg, outbound: FrozenLeg, declaration: ComponentDeclaration
+    ) -> RadarComponentIndex:
         """Classify a two-way join's rows from its two frozen leg topologies.
 
         ``composer`` is a :class:`~witwin.radar.paths.TwoWayComposer`

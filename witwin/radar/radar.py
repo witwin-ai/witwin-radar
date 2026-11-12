@@ -47,8 +47,10 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .motion import Motion
     from .paths import RadarPathBatch
-    from .simulation import Motion, Paths, Result
+    from .results import Result
+    from .simulation import Paths
     from .synthesis import SynthesisResult
     from .targets import PointTargets, StructureTargets
 
@@ -1126,7 +1128,7 @@ class Radar:
         ``los`` and ``reflections`` are the propagation request for THIS call
         and do not edit the radar. ``motion`` selects how often the world is
         resampled inside a frame and defaults to
-        :meth:`~witwin.radar.simulation.Motion.auto`. ``grad`` is ``"none"``,
+        :meth:`~witwin.radar.motion.Motion.auto`. ``grad`` is ``"none"``,
         ``"vjp"`` or ``"jvp"``.
 
         The whole assembly lives in :mod:`witwin.radar.simulation` and its
@@ -1170,7 +1172,7 @@ class Radar:
     def _session(self, targets, times, los, reflections, motion, grad, endpoints) -> dict[str, Any]:
         """Turn the public call arguments into what the frame loop takes."""
 
-        from .simulation import Motion
+        from .motion import Motion
         from .targets import as_session_targets
 
         if not isinstance(reflections, int) or isinstance(reflections, bool) or reflections < 0:

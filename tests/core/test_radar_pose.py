@@ -3,7 +3,7 @@
 ``Radar._world_from_local_matrix`` is the one pose frame; ``support.pose``
 applies it to test geometry. The two observational tests go through
 ``Radar.simulate``, which is where a pose actually reaches the world:
-``simulation.bind_radar_world`` publishes ``radar.tx_pos`` and ``radar.rx_pos``
+``binding.bind_radar_world`` publishes ``radar.tx_pos`` and ``radar.rx_pos``
 - the pose-transformed world positions - as the Channel endpoints.
 
 ``Radar.replace`` returns a NEW radar, so the pure-algebra case below also

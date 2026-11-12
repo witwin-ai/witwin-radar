@@ -43,7 +43,7 @@ ENTRY_POINTS: dict[str, str] = {
     "witwin.radar.smpl": "public SMPL authoring facade",
     "witwin.radar.processing": "public signal-processing facade",
     "witwin.radar.scattering": "public scatter-response owner",
-    "witwin.radar.simulation": "public simulation/session result owner",
+    "witwin.radar.binding": "public scene-binding identity owner",
     "witwin.radar.synthesis": "public waveform synthesis facade",
 }
 

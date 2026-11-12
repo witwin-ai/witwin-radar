@@ -1,7 +1,7 @@
 """Completed-CUDA motion-to-ADC measurements, without motion generation or DSP.
 
 An optional frozen source directory provides an independent before-change
-oracle (smpl.py, simulation.py, walk.py). Alternate its execution order each
+oracle (smpl.py, adaptive.py, walk.py). Alternate its execution order each
 round to reduce shared-desktop load bias. Never compare historical timings as
 if they were paired measurements.
 """
@@ -51,14 +51,14 @@ def main():
     config = {**walk.WALK_RADAR, "output_domain": "beat"}
     body, setup_seconds = walk.completed(lambda: walk.WalkingBody(args.motion, args.model_root, args.sites, 10))
     bodies = {"current": body}
-    echoes = {"current": simulation._adaptive_echo}
+    echoes = {"current": simulation.echo_adaptive_frame}
     if args.baseline:
         old_smpl = load_snapshot("witwin.radar._before_smpl", args.baseline / "smpl.py")
-        old_simulation = load_snapshot("witwin.radar._before_simulation", args.baseline / "simulation.py")
+        old_adaptive = load_snapshot("witwin.radar._before_adaptive", args.baseline / "adaptive.py")
         old_walk = load_snapshot("_before_walk", args.baseline / "walk.py")
         old_walk.SMPLBody = old_smpl.SMPLBody
         bodies["baseline"] = old_walk.WalkingBody(args.motion, args.model_root, args.sites, 10)
-        echoes["baseline"] = old_simulation._adaptive_echo
+        echoes["baseline"] = old_adaptive.echo_adaptive_frame
     sessions = {name: walk.make_session(body, config) for name, body in bodies.items()}
     rows = []
     errors = []
@@ -78,6 +78,7 @@ def main():
             for p in (
                 Path("witwin/radar/smpl.py"),
                 Path("witwin/radar/simulation.py"),
+                Path("witwin/radar/adaptive.py"),
                 Path("witwin/radar/paths.py"),
                 Path("tools/benchmark_smpl_walk.py"),
             )
@@ -91,7 +92,7 @@ def main():
     (args.output / "environment.json").write_text(json.dumps(record, indent=2))
 
     def run(name, instant):
-        with patch.object(simulation, "_adaptive_echo", echoes[name]):
+        with patch.object(simulation, "echo_adaptive_frame", echoes[name]):
             return walk.completed(lambda: walk.simulate(*sessions[name], instant))
 
     record["first_call_ms"] = {name: run(name, 0.0)[1] * 1000 for name in bodies}
@@ -158,7 +159,7 @@ def main():
         for index in range(args.frames):
             frames, timings = {}, {}
             for name in variants if index % 2 else list(reversed(variants)):
-                with patch.object(simulation, "_adaptive_echo", echoes[name]):
+                with patch.object(simulation, "echo_adaptive_frame", echoes[name]):
                     frames[name], timings[name] = walk.completed(lambda name=name: next(iterators[name]))
             frame, seconds = frames["current"], timings["current"]
             assert bool(torch.isfinite(frame.cube).all()) and float(frame.cube.abs().max()) > 0

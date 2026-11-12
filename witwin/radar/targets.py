@@ -26,9 +26,9 @@ from typing import Any
 
 import torch
 
+from .binding import ScatterSitePolicy
 from .propagation import Kinematics
 from .scattering import AspectScatterResponse, ScalarRcsResponse, rcs_amplitude
-from .simulation import ScatterSitePolicy
 
 __all__ = ["Aspect", "PointTargets", "StructureTargets"]
 

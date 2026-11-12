@@ -264,8 +264,8 @@ def profile_frame(body, radar, scene, targets, output):
             (channel_module, "compile_scene", "compile_scene"),
             (adapter, "freeze", "channel_discovery"),
             (adapter, "reevaluate_slots", "channel_replay"),
-            (simulation, "_adaptive_trace", "adaptive_trace"),
-            (simulation, "_adaptive_echo", "adaptive_echo"),
+            (simulation, "trace_adaptive_frame", "adaptive_trace"),
+            (simulation, "echo_adaptive_frame", "adaptive_echo"),
         ):
             stack.enter_context(patch.object(owner, method, wrapper(name, getattr(owner, method))))
         result, wall = completed(lambda: simulate(radar, scene, targets, 2.3))

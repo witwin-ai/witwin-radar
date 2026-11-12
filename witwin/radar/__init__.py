@@ -8,7 +8,7 @@ the radar's four verbs. Products go to :mod:`witwin.radar.processing`.
 
 Advanced records stay in their owner modules and are imported from there:
 ``SensorEndpointIds`` and ``StableIdAllocator`` in
-:mod:`witwin.radar.simulation`, ``RadarPathBatch`` in
+:mod:`witwin.radar.binding`, ``RadarPathBatch`` in
 :mod:`witwin.radar.paths`, the synthesis specs in
 :mod:`witwin.radar.synthesis`, the scatter responses in
 :mod:`witwin.radar.scattering`.
@@ -16,9 +16,11 @@ Advanced records stay in their owner modules and are imported from there:
 
 from . import processing
 from .frontend import Adc, Agc, Compression, Iq, Noise
+from .motion import Motion
 from .radar import Fmcw, Leakage, Ofdm, Pulsed, Radar
+from .results import Frame, Result
 from .sensors import Coupling, Pattern
-from .simulation import Frame, Motion, Paths, Result
+from .simulation import Paths
 from .targets import Aspect, PointTargets, StructureTargets
 
 __all__ = [

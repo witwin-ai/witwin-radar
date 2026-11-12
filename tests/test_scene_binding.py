@@ -30,7 +30,7 @@ from support import multi_endpoint_geometry as geo
 from support import multi_endpoint_world as world
 from support.simulate_fixture import static_scene
 
-from witwin.radar.simulation import (
+from witwin.radar.binding import (
     DEFAULT_RECEIVER_ID_BASE,
     DEFAULT_SITE_ID_BASE,
     DEFAULT_TRANSMITTER_ID_BASE,

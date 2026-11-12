@@ -65,6 +65,7 @@ QUICK_GATES = (
     ),
     Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "examples", "tools", "ci", "scripts")),
     Gate("quick.duplicate-code", ("ci/check_duplicate_code.py",)),
+    Gate("quick.mypy", ("-m", "mypy", "--config-file", "ci/mypy.ini")),
     Gate("quick.native-bindings", ("ci/check_native_bindings.py",)),
     Gate("quick.production-dependencies", ("ci/check_production_dependencies.py",)),
     Gate("quick.oracle-isolation", ("ci/check_test_oracle_isolation.py",)),

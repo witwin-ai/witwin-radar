@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 import torch
 from witwin.core.dynamics import DynamicScene
@@ -243,7 +243,7 @@ class RadarLegBatch:
         stop = start + rows
         base = index * pairs
 
-        def narrow(value):
+        def narrow(value: Any) -> Any:
             return None if value is None else value[start:stop]
 
         return RadarLegBatch(
@@ -323,6 +323,56 @@ class RadarPropagationLegs:
         return self.inbound.device
 
 
+class FrozenLeg(Protocol):
+    """A frozen leg topology as the Radar side reads it.
+
+    :class:`witwin.radar.channel.FrozenLegTopology` is the one production
+    implementation. It is named by protocol here so that the epoch loop and the
+    two-way join can be typed without importing the Channel boundary. The
+    identity columns are the frozen rows' stable labels, on the device;
+    ``row_count`` is the host count discovery already published.
+    """
+
+    @property
+    def source_id(self) -> torch.Tensor: ...
+
+    @property
+    def sink_id(self) -> torch.Tensor: ...
+
+    @property
+    def component_id(self) -> torch.Tensor: ...
+
+    @property
+    def depth(self) -> torch.Tensor: ...
+
+    @property
+    def primitive_sequence(self) -> torch.Tensor: ...
+
+    @property
+    def material_sequence(self) -> torch.Tensor: ...
+
+    @property
+    def row_count(self) -> int: ...
+
+
+class PropagationAdapter(Protocol):
+    """The four calls the epoch loop and the session make on a Channel adapter.
+
+    :class:`witwin.radar.channel.ChannelPropagationAdapter` is the one
+    production implementation; its docstrings are the contract.
+    """
+
+    def freeze(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> Any: ...
+
+    def reevaluate_slots(
+        self, frozen: Any, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, *, slot_count: int, ad_mode: str
+    ) -> RadarLegBatch: ...
+
+    def rediscovery_required(self, frozen: Any, *, revalidate_source: bool = False) -> str | None: ...
+
+    def refreeze(self, compiled_scene: object, *, world_motion: str = "frozen_world") -> None: ...
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class FrozenEpoch:
     """What a caller freezes once per topology epoch.
@@ -343,8 +393,8 @@ class FrozenEpoch:
     belong to.
     """
 
-    adapter: object
-    handles: tuple
+    adapter: PropagationAdapter
+    handles: tuple[FrozenLeg, ...]
     payload: object = None
 
 
@@ -530,6 +580,8 @@ class SceneEpochLoop:
         reason = self._rediscovery_reason(recompiled, mutated, topology_complete)
         if reason is not None:
             self._rediscover(snapshot)
+        if self._frozen is None:
+            raise RuntimeError("the epoch loop has no frozen topology after its first frame")
         return EpochFrame(
             time_s=float(time_s),
             snapshot=snapshot,
@@ -623,9 +675,12 @@ class SceneEpochLoop:
         declaration.
         """
 
-        adapter = self._frozen.adapter
+        frozen = self._frozen
+        if frozen is None:
+            return FIRST_FRAME
+        adapter = frozen.adapter
         ignore_geometry = self._world_motion == "fixed_winner_replay"
-        for handle in self._frozen.handles:
+        for handle in frozen.handles:
             self.poll_count += 1
             moved = adapter.rediscovery_required(handle)
             if moved is None:
@@ -710,7 +765,7 @@ class Kinematics:
 
 
 def endpoint_kinematics(
-    snapshot_or_states, antenna_ids: Sequence[int] | None = None, *, device: str | torch.device = "cuda"
+    snapshot_or_states: object, antenna_ids: Sequence[int] | None = None, *, device: str | torch.device = "cuda"
 ) -> Kinematics:
     """The positions of an ordered set of Core endpoint states.
 
@@ -727,7 +782,7 @@ def endpoint_kinematics(
     endpoint's ``rotation`` is orientation and does not move its phase centre.
     """
 
-    states = getattr(snapshot_or_states, "endpoints", snapshot_or_states)
+    states: Any = getattr(snapshot_or_states, "endpoints", snapshot_or_states)
     ordered = list(states)
     if antenna_ids is not None:
         by_id = {int(state.antenna.antenna_id): state for state in ordered}
@@ -754,7 +809,9 @@ __all__ = [
     "EndpointRole",
     "EpochFrame",
     "FrozenEpoch",
+    "FrozenLeg",
     "Kinematics",
+    "PropagationAdapter",
     "RadarEndpointSpec",
     "RadarLegBatch",
     "RadarPropagationLegs",
