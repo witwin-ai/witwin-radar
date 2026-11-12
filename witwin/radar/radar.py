@@ -24,6 +24,7 @@ derivation of the internal block specs those consumers are handed.
 
 from __future__ import annotations
 
+import cmath
 import json
 import math
 import os
@@ -33,11 +34,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
-from .frontend import Adc, Agc, FrontendChain, FrontendSpec, Iq, Noise
-from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, require_host_floats, resolve_device
-from .sensors import Pattern, SensorArraySpec, watts_from_dbm
+from .frontend import Adc, Agc, Compression, FrontendChain, FrontendSpec, Iq, Noise
+from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, resolve_device
+from .sensors import Coupling, Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
-    PULSE_NORMALIZATION_UNIT_ENERGY,
+    PULSE_NORMALIZATION_UNIT_AMPLITUDE,
     SUBCARRIER_ORIGIN_F_REF_AT_N0,
     FmcwSpec,
     OfdmSpec,
@@ -122,12 +123,6 @@ class Fmcw:
 
         return float(self.idle) + float(self.ramp_end)
 
-    @property
-    def bandwidth(self) -> float:
-        """The sampling bandwidth a thermal-noise stage integrates over, Hz."""
-
-        return float(self.sample_rate)
-
     @classmethod
     def from_ti(
         cls,
@@ -204,13 +199,18 @@ class Ofdm:
 
     @property
     def bandwidth(self) -> float:
-        """The occupied band a thermal-noise stage integrates over, Hz."""
+        """``N_sc * df``, the occupied band, Hz."""
 
         return float(self.subcarrier_spacing) * int(self.num_subcarriers)
 
     @property
     def sample_rate(self) -> float:
-        """The symbol grid's sample rate, Hz."""
+        """The symbol grid's complex sample rate ``N_sc * df``, Hz.
+
+        A CFR bin is one output of a unitary ``N_sc``-point transform of time
+        samples at this rate, so its thermal variance is ``k T_sys`` times this
+        rate: the receive chain's per-sample noise contract holds bin by bin.
+        """
 
         return self.bandwidth
 
@@ -256,7 +256,7 @@ class Pulsed:
     #: The largest ``d(tau)/dt`` the matched filter must tolerate,
     #: dimensionless.
     max_expected_delay_rate: float = 0.0
-    pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
+    pulse_normalization: str = PULSE_NORMALIZATION_UNIT_AMPLITUDE
 
     def __post_init__(self) -> None:
         _positive("Pulsed.pulse_width", self.pulse_width)
@@ -302,10 +302,15 @@ Waveform = Fmcw | Ofdm | Pulsed
 
 @dataclass(frozen=True, slots=True)
 class SensorConfig:
-    """The array and its element pattern."""
+    """The array and its transmit and receive element patterns."""
 
     array: SensorArraySpec
     pattern: Pattern
+    rx_pattern: Pattern | None = None
+
+    @property
+    def receive_pattern(self) -> Pattern:
+        return self.pattern if self.rx_pattern is None else self.rx_pattern
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +483,19 @@ def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
 # ---------------------------------------------------------------------------
 
 
+def _pair_table(name: str, value) -> float | tuple[tuple[float, ...], ...]:
+    """A scalar, or a ``[num_tx][num_rx]`` table, of finite host floats."""
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and value:
+        table = tuple(tuple(float(entry) for entry in row) for row in value)
+        if len({len(row) for row in table}) != 1 or not table[0]:
+            raise ValueError(f"Leakage.{name} must be a scalar or a rectangular [num_tx][num_rx] table")
+        return table
+    raise ValueError(f"Leakage.{name} must be a float or a [num_tx][num_rx] table, got {value!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class Leakage:
     """Transmit-to-receive antenna coupling: the echo that never left the board.
@@ -498,29 +516,82 @@ class Leakage:
     coupled amplitude is ``sqrt(P_tx) * 10^(-isolation_db/20)`` in the sqrt(W)
     the synthesis families publish. ``delay_s`` is the coupling path's own
     round-trip delay, which sets the beat tone and therefore which bin the
-    skirt radiates from.
+    skirt radiates from. ``phase`` is the coupling coefficient's argument at
+    the reference frequency, rad, in Channel's phasor convention.
 
-    This is one more path row, not a new physics owner: it is synthesized by the
-    same waveform kernel the scene is, with the same phase law, so nothing here
-    can drift from the echo it sits on top of.
+    Each of the three is either one number for every transmitter-receiver pair
+    or a ``[num_tx][num_rx]`` table, because a board's coupling is a measured
+    property of each pair: neighbouring elements couple more strongly than
+    distant ones.
+
+    This is one more path row per pair, not a new physics owner: it is
+    synthesized by the same waveform kernel the scene is, with the same phase
+    law, so nothing here can drift from the echo it sits on top of. That holds
+    for every waveform: FMCW de-chirps it into a near-range tone, OFDM sees it
+    as a short-delay CFR term, and a pulsed receiver sees it only where its
+    range gate is open while the pulse is still being transmitted.
     """
 
-    #: Transmit-to-receive isolation, dB. Larger is better isolated.
-    isolation_db: float
-    #: Coupling path delay, s.
-    delay_s: float
+    #: Transmit-to-receive isolation, dB, scalar or ``[num_tx][num_rx]``.
+    isolation_db: Any
+    #: Coupling path delay, s, scalar or ``[num_tx][num_rx]``.
+    delay_s: Any
+    #: Coupling phase at the reference frequency, rad, scalar or table.
+    phase: Any = 0.0
 
     def __post_init__(self) -> None:
-        require_host_floats("Leakage", _LEAKAGE_REASON, isolation_db=self.isolation_db, delay_s=self.delay_s)
-        if not self.isolation_db > 0.0:
-            raise ValueError(f"isolation_db must be positive, got {self.isolation_db}")
-        if self.delay_s < 0.0:
-            raise ValueError(f"delay_s must not be negative, got {self.delay_s}")
+        refuse_derivative(
+            "Leakage", _LEAKAGE_REASON, isolation_db=self.isolation_db, delay_s=self.delay_s, phase=self.phase
+        )
+        for name in ("isolation_db", "delay_s", "phase"):
+            object.__setattr__(self, name, _pair_table(name, getattr(self, name)))
+        for value in self._flat("isolation_db"):
+            if not math.isfinite(value) or not value > 0.0:
+                raise ValueError(f"isolation_db must be positive, got {value}")
+        for value in self._flat("delay_s"):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"delay_s must not be negative, got {value}")
+        for value in self._flat("phase"):
+            if not math.isfinite(value):
+                raise ValueError(f"phase must be finite, got {value}")
+
+    def _flat(self, name: str) -> tuple[float, ...]:
+        value = getattr(self, name)
+        return (value,) if isinstance(value, float) else tuple(entry for row in value for entry in row)
 
     def amplitude(self, power_dbm: float) -> float:
-        """Coupled amplitude in sqrt(W), from the declared transmit power."""
+        """Coupled amplitude in sqrt(W) of a scalar isolation, from the transmit power."""
 
+        if not isinstance(self.isolation_db, float):
+            raise ValueError("a per-pair isolation has one amplitude per pair; use pair_rows")
         return math.sqrt(watts_from_dbm(power_dbm)) * 10.0 ** (-float(self.isolation_db) / 20.0)
+
+    def pair_rows(self, *, num_tx: int, num_rx: int, power_dbm: float) -> tuple[list[float], list[complex]]:
+        """Delay and complex coupling coefficient per sensor pair, in pair-rank order.
+
+        Pair rank is sink major (``pair = rx * num_tx + tx``), the partition the
+        synthesis families group rows by. A table is indexed ``[tx][rx]``.
+        """
+
+        def entry(name: str, tx: int, rx: int) -> float:
+            value = getattr(self, name)
+            if isinstance(value, float):
+                return value
+            if len(value) != num_tx or len(value[0]) != num_rx:
+                raise ValueError(
+                    f"Leakage.{name} is a {len(value)} x {len(value[0])} table but the array is {num_tx} x {num_rx}"
+                )
+            return value[tx][rx]
+
+        root_power = math.sqrt(watts_from_dbm(power_dbm))
+        delays: list[float] = []
+        weights: list[complex] = []
+        for rx in range(num_rx):
+            for tx in range(num_tx):
+                magnitude = root_power * 10.0 ** (-entry("isolation_db", tx, rx) / 20.0)
+                delays.append(entry("delay_s", tx, rx))
+                weights.append(magnitude * cmath.exp(1j * entry("phase", tx, rx)))
+        return delays, weights
 
 
 @dataclass(frozen=True)
@@ -559,9 +630,13 @@ class Radar:
     #: Transmit power, dBm.
     power: float
     antenna_unit: str = "m"
-    #: The element pattern. Isotropic by default: an unchosen dipole attenuates
-    #: every off-boresight return by a number nobody asked for.
+    #: The element pattern, with its absolute peak gain (``Pattern.gain``,
+    #: dBi). Isotropic at 0 dBi by default: an unchosen dipole attenuates every
+    #: off-boresight return by a number nobody asked for. It is the transmit
+    #: element's, and the receive element's unless ``rx_pattern`` is given.
     pattern: Pattern = field(default_factory=Pattern.isotropic)
+    #: The receive element pattern. ``None`` is the same as ``pattern``.
+    rx_pattern: Pattern | None = None
     #: Thermal and oscillator noise. ``None`` is an ideal receiver.
     noise: Noise | None = None
     #: Low-noise amplifier voltage gain, dB. ``None`` is no LNA stage.
@@ -574,6 +649,13 @@ class Radar:
     #: Transmit-to-receive antenna coupling. ``None`` is perfect isolation,
     #: which is what a scene-only dataset assumes whether it says so or not.
     leakage: Leakage | None = None
+    #: Receiver gain compression after the LNA. ``None`` is a linear receiver.
+    compression: Compression | None = None
+    #: Baseband DC offset at the mixer output, V: one complex value for every
+    #: receiver or one per receiver. ``None`` is no offset.
+    dc_offset: Any = None
+    #: Mutual coupling between array elements. ``None`` is an uncoupled array.
+    coupling: Coupling | None = None
     #: Receive port reference impedance, ohm.
     impedance: float = 50.0
     #: The Philox base seed every receiver stage derives its own stream from.
@@ -615,6 +697,8 @@ class Radar:
             raise ValueError(f"Radar.seed must be a non-negative int, got {self.seed!r}")
         if not isinstance(self.pattern, Pattern):
             raise TypeError(f"Radar.pattern must be a Pattern, got {type(self.pattern).__name__}")
+        if self.rx_pattern is not None and not isinstance(self.rx_pattern, Pattern):
+            raise TypeError(f"Radar.rx_pattern must be a Pattern, got {type(self.rx_pattern).__name__}")
 
         set_(self, "device", resolve_device(self.device, owner="Radar"))
         set_(self, "tx", _elements(self.tx, name="Radar.tx"))
@@ -637,7 +721,7 @@ class Radar:
             "system_config",
             RadarSystemConfig(
                 waveform=self.waveform,
-                sensors=SensorConfig(array=array, pattern=self.pattern),
+                sensors=SensorConfig(array=array, pattern=self.pattern, rx_pattern=self.rx_pattern),
                 propagation=PropagationConfig(reference_frequency_hz=float(self.carrier)),
                 frontend=self._build_frontend_spec(),
             ),
@@ -654,9 +738,26 @@ class Radar:
         two waveform-dependent numbers possibly unset and leaves resolved, so
         nothing downstream of here ever has to infer a bandwidth - inferring it
         in three places is how those three quietly disagree.
+
+        The noise contract is one rule for every waveform (R-ADR-029): samples
+        are physical amplitudes in sqrt(W) and the default noise bandwidth is
+        the waveform's complex SAMPLE RATE, which is the equivalent noise
+        bandwidth of a white complex sample stream. A pulsed radar's sweep
+        ``bandwidth`` is a property of the transmitted pulse, not of the
+        receiver's sampling, and is deliberately not used here.
         """
 
-        if self.noise is None and self.lna_gain is None and self.agc is None and self.adc is None:
+        stages = (
+            self.noise,
+            self.lna_gain,
+            self.agc,
+            self.adc,
+            self.iq,
+            self.compression,
+            self.dc_offset,
+            self.coupling,
+        )
+        if all(stage is None for stage in stages):
             return None
         if self.noise is not None and not isinstance(self.noise, Noise):
             raise TypeError(f"Radar.noise must be a Noise, got {type(self.noise).__name__}")
@@ -664,18 +765,68 @@ class Radar:
             raise TypeError(f"Radar.agc must be an Agc, got {type(self.agc).__name__}")
         if self.adc is not None and not isinstance(self.adc, Adc):
             raise TypeError(f"Radar.adc must be an Adc, got {type(self.adc).__name__}")
+        if self.compression is not None and not isinstance(self.compression, Compression):
+            raise TypeError(f"Radar.compression must be a Compression, got {type(self.compression).__name__}")
+        if self.coupling is not None:
+            if not isinstance(self.coupling, Coupling):
+                raise TypeError(f"Radar.coupling must be a Coupling, got {type(self.coupling).__name__}")
+            self.coupling.require_array(len(self.tx), len(self.rx))
         noise = self.noise
         if noise is not None:
-            noise = noise.resolved(bandwidth=self.waveform.bandwidth, sample_rate=self.waveform.sample_rate)
+            rate = float(self.waveform.sample_rate)
+            noise = noise.resolved(bandwidth=rate, sample_rate=rate)
+        timeline = self._receive_timeline()
+        baseband = self.dc_offset is not None or (noise is not None and noise.flicker_corner is not None)
+        if baseband and self.waveform.kind == WAVEFORM_OFDM:
+            raise NotImplementedError(
+                "a DC offset and baseband flicker are time-domain impairments, and the OFDM cube is a "
+                "frequency-domain CFR; mapping them onto subcarriers needs the symbol's own transform"
+            )
         return FrontendSpec(
             noise=noise,
             lna=None if self.lna_gain is None else float(self.lna_gain),
             iq=self.iq,
-            agc=self.agc,
+            agc=None if self.agc is None else self.agc.resolved(block_period=timeline[0]),
             adc=self.adc,
             impedance=float(self.impedance),
             seed=int(self.seed),
+            compression=self.compression,
+            dc_offset=self._dc_offsets(),
+            tx_coupling=None if self.coupling is None else self.coupling.tx,
+            rx_coupling=None if self.coupling is None else self.coupling.rx,
+            timeline=timeline,
         )
+
+    def _receive_timeline(self) -> tuple[float, float, float]:
+        """``(slow_period_s, fast_start_s, fast_period_s)`` of one frame's cube.
+
+        The slow period is one slow-time index: a whole TDM cycle of
+        ``num_tx`` chirps for FMCW, a symbol (prefix included) for OFDM and a
+        PRI for a pulsed radar. It is the time-dynamic AGC's block and the
+        baseband flicker's clock.
+        """
+
+        waveform = self.waveform
+        if waveform.kind == WAVEFORM_FMCW:
+            return (waveform.chirp_period * len(self.tx), float(waveform.adc_start), 1.0 / float(waveform.sample_rate))
+        if waveform.kind == WAVEFORM_OFDM:
+            symbol = 1.0 / float(waveform.subcarrier_spacing) + float(waveform.cyclic_prefix)
+            return (symbol, 0.0, 1.0 / float(waveform.sample_rate))
+        return (float(waveform.pri), float(waveform.range_gate_start), 1.0 / float(waveform.sample_rate))
+
+    def _dc_offsets(self) -> tuple[complex, ...] | None:
+        if self.dc_offset is None:
+            return None
+        refuse_derivative("Radar.dc_offset", _BASEBAND_REASON, dc_offset=self.dc_offset)
+        values = self.dc_offset
+        if isinstance(values, (int, float, complex)) and not isinstance(values, bool):
+            values = (values,) * len(self.rx)
+        offsets = tuple(complex(value) for value in values)
+        if len(offsets) != len(self.rx):
+            raise ValueError(f"Radar.dc_offset holds {len(offsets)} values but the array has {len(self.rx)} receivers")
+        if not all(math.isfinite(value.real) and math.isfinite(value.imag) for value in offsets):
+            raise ValueError("Radar.dc_offset must be finite")
+        return offsets
 
     def _build_frontend_chain(self):
         if self.system_config.frontend is None:
@@ -818,12 +969,14 @@ class Radar:
 
     # -- instrument half ---------------------------------------------------
 
-    def _apply_signal_models(self, signal: torch.Tensor, *, phase_in_signal: bool = False) -> torch.Tensor:
-        """Run the receive chain, if one is configured."""
+    def _apply_signal_models(
+        self, signal: torch.Tensor, *, phase_in_signal: bool = False, frame_time_s: float = 0.0
+    ) -> torch.Tensor:
+        """Run the receive chain, if one is configured, keyed by the frame's instant."""
 
         if self.frontend is None:
             return signal
-        return self.frontend.apply(signal, phase_in_signal=phase_in_signal).signal
+        return self.frontend.apply(signal, phase_in_signal=phase_in_signal, frame_time_s=frame_time_s).signal
 
     def _synthesize(self, paths: RadarPathBatch, *, slow_time_mode, spec=None) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.
@@ -859,41 +1012,44 @@ class Radar:
         """The coupled transmit signal, synthesized by the waveform's own kernel.
 
         Zero when no coupling is declared, which is the default. One row per
-        sensor pair carries the coupling delay and the coupled amplitude, and the
-        same ``synthesize_fmcw_rows`` that produced the echo produces this, so
-        the phase law has one owner rather than a second copy in Torch.
-
-        One isolation figure describes every pair: a per-pair coupling table is a
-        measured property of a board, and inventing a spread here would put a
-        number nobody declared into the near bins.
+        sensor pair carries that pair's coupling delay and complex coupling
+        coefficient, and the same row entry that produced the echo produces
+        this, so the phase law has one owner rather than a second copy in
+        Torch. The coefficient is in Channel's convention; FMCW consumes the
+        conjugated beat weight like every other row.
         """
 
         if self.leakage is None:
             return cube.new_zeros(())
-        if self.system_config.kind != WAVEFORM_FMCW:
-            raise NotImplementedError(
-                "antenna coupling is modelled for FMCW, whose de-chirp turns it "
-                f"into a near-range tone; {self.system_config.kind} would need its "
-                "own statement of what the coupled signal becomes"
-            )
-        from .synthesis.fmcw import synthesize_fmcw_rows
-
         device = cube.device
         rows = int(sensor_pair_count)
-        delay = torch.full((rows,), float(self.leakage.delay_s), dtype=torch.float32, device=device)
-        amplitude = self.leakage.amplitude(self.power)
-        weight = torch.full((rows,), amplitude, dtype=torch.complex64, device=device)
+        delays, weights = self.leakage.pair_rows(num_tx=len(self.tx), num_rx=len(self.rx), power_dbm=self.power)
+        if len(delays) != rows:
+            raise ValueError(f"leakage describes {len(delays)} sensor pairs but this cube has {rows}")
+        delay = torch.tensor(delays, dtype=torch.float32, device=device)
+        weight = torch.tensor(weights, dtype=torch.complex64, device=device)
         offsets = torch.arange(rows + 1, dtype=torch.int64, device=device)
-        return synthesize_fmcw_rows(
-            delay,
-            None,
-            weight,
-            offsets,
-            spec,
-            segment_tx_index=pair_tx_index(
-                num_tx=len(self.tx), num_rx=len(self.rx), sensor_pair_count=rows, device=device
-            ),
-        )
+        kind = self.system_config.kind
+        if kind == WAVEFORM_FMCW:
+            from .synthesis.fmcw import synthesize_fmcw_rows
+
+            return synthesize_fmcw_rows(
+                delay,
+                None,
+                weight.conj(),
+                offsets,
+                spec,
+                segment_tx_index=pair_tx_index(
+                    num_tx=len(self.tx), num_rx=len(self.rx), sensor_pair_count=rows, device=device
+                ),
+            )
+        if kind == WAVEFORM_OFDM:
+            from .synthesis.ofdm import synthesize_cfr_rows
+
+            return synthesize_cfr_rows(delay, None, weight, offsets, spec)
+        from .synthesis.pulsed import synthesize_echo_rows
+
+        return synthesize_echo_rows(delay, None, weight, offsets, spec)
 
     # -- entry points ------------------------------------------------------
 
@@ -1050,6 +1206,8 @@ class Radar:
 # ---------------------------------------------------------------------------
 
 _LEAKAGE_REASON = "antenna coupling is a measured board property, not a quantity a scene differentiates through"
+
+_BASEBAND_REASON = "a DC offset is a measured property of the receiver, not a quantity a scene differentiates through"
 
 _FLAT_REQUIRED = (
     "num_tx",

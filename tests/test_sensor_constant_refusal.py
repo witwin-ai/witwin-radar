@@ -1,6 +1,6 @@
 """The sensor-weight frozen constants refuse a derivative instead of returning None.
 
-``SensorWeightGeometry`` declares velocity, fixed-length and pattern-frame tensors as frozen inputs; the five resident pattern tables are frozen with the plan. A marked frozen tensor must be refused before native dispatch.
+``SensorWeightGeometry`` declares velocity, fixed-length and pattern-frame tensors as frozen inputs; the two packed element patterns are frozen with the plan. A marked frozen tensor must be refused before native dispatch.
 
 The refusal is at CONSTRUCTION - before ``validate``, before a plan, before
 any launch - and it is ``witwin.radar.policy.refuse_derivative``'s wording with
@@ -63,8 +63,7 @@ def _geometry_fields() -> dict:
 
 def _plan(tables=None) -> SensorWeightPlan:
     return SensorWeightPlan(
-        pattern_kind=0,
-        tables=tuple(torch.zeros(4, dtype=torch.float32) for _ in range(5)) if tables is None else tables,
+        tables=tuple(torch.zeros(12, dtype=torch.float32) for _ in range(2)) if tables is None else tables,
         c0=299792458.0,
     )
 
@@ -166,7 +165,7 @@ def test_a_velocity_refusal_names_the_reason_a_velocity_is_never_a_leaf():
         assert "tangent direction" in message
 
 
-@pytest.mark.parametrize("index", range(5))
+@pytest.mark.parametrize("index", range(2))
 def test_a_marked_pattern_table_is_refused(index):
     """The tables are a resident lookup, not a differentiable input.
 
@@ -177,7 +176,7 @@ def test_a_marked_pattern_table_is_refused(index):
     has no slot for it.
     """
 
-    tables = [torch.zeros(4, dtype=torch.float32) for _ in range(5)]
+    tables = [torch.zeros(12, dtype=torch.float32) for _ in range(2)]
     tables[index] = tables[index].clone().requires_grad_(True)
     with pytest.raises(RuntimeError) as excinfo:
         _plan(tuple(tables))

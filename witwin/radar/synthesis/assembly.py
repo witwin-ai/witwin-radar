@@ -499,12 +499,14 @@ PULSE_KIND_RECT = "rect"
 PULSE_KIND_LFM = "lfm"
 PULSE_KINDS = frozenset({PULSE_KIND_RECT, PULSE_KIND_LFM})
 
-#: ``integral |p(t)|^2 dt = 1``. Named as an explicit field on the spec rather
-#: than left as a constant inside a kernel, because it is what makes the
-#: matched-filter peak exactly ``C_rt`` with no ``N``-dependent factor, and
-#: therefore what makes the cross-waveform amplitude invariant assertable
-#: without waveform-specific bookkeeping.
-PULSE_NORMALIZATION_UNIT_ENERGY = "unit_energy"
+#: ``|p(t)| = 1`` inside the pulse: the envelope is dimensionless, so a received
+#: sample is ``C_rt`` in sqrt(W) at the receive port and ``|y|^2`` is the power
+#: the antenna delivers while the echo is present. That is the noise contract
+#: every waveform shares (R-ADR-029): physical-amplitude samples and a thermal
+#: stage that adds ``k T_sys f_s`` per complex sample. The matched-filter peak
+#: is still exactly ``C_rt`` because the REPLICA, not the pulse, carries the
+#: ``1 / T_p`` that makes the filter unit-gain (:attr:`PulsedSpec.replica_amplitude`).
+PULSE_NORMALIZATION_UNIT_AMPLITUDE = "unit_amplitude"
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,9 +542,10 @@ class PulsedSpec:
     ``bandwidth_hz`` is the LFM sweep for ``pulse_kind = "lfm"`` and ``1 / T_p``
     for ``pulse_kind = "rect"``, which is the rectangular pulse's own
     matched-filter bandwidth. It is a declared field rather than an inferred one
-    because it sets the range cell, the range-migration bound, and the
-    receiver's noise bandwidth, and inferring it differently in three places is
-    how those three quietly disagree.
+    because it sets the range cell and the range-migration bound, and inferring
+    it differently in two places is how those two quietly disagree. It is NOT
+    the receiver's noise bandwidth: the samples are complex at ``1 / T_s`` and
+    the thermal stage integrates over that sample rate, like every waveform.
 
     **The pulse support is half-open**, ``0 <= u < T_p``, and that is a contract
     rather than an accident of writing the comparison one way. A closed support
@@ -553,7 +556,7 @@ class PulsedSpec:
     it costs about 0.2 percent of the peak magnitude and biases the estimated
     delay by nearly two thousandths of a sample, at one delay in every ``M_p``.
     Half-open makes the sampled pulse exactly :attr:`pulse_sample_count` samples
-    long at EVERY delay, and it leaves the continuous unit-energy integral
+    long at EVERY delay, and it leaves the continuous matched-filter integral
     unchanged because a single point has measure zero.
 
     ``max_expected_delay_rate`` is a CONFIGURED bound on ``|d(tau_rt)/dt|`` - the
@@ -584,7 +587,7 @@ class PulsedSpec:
     max_expected_delay_rate: float
     carrier_hz: float = 0.0
     carrier_rate_hz: float = 0.0
-    pulse_normalization: str = PULSE_NORMALIZATION_UNIT_ENERGY
+    pulse_normalization: str = PULSE_NORMALIZATION_UNIT_AMPLITUDE
 
     def __post_init__(self) -> None:
         require_host_floats(
@@ -632,13 +635,13 @@ class PulsedSpec:
                 "fractional delay. A sampled or tabulated pulse is a different "
                 "design and needs its own decision"
             )
-        if self.pulse_normalization != PULSE_NORMALIZATION_UNIT_ENERGY:
+        if self.pulse_normalization != PULSE_NORMALIZATION_UNIT_AMPLITUDE:
             raise ValueError(
                 "pulse_normalization must be "
-                f"{PULSE_NORMALIZATION_UNIT_ENERGY!r}; unit ENERGY is what makes "
-                "the matched-filter peak exactly C_rt with no N-dependent "
-                "factor. A unit-amplitude pulse would put a T_p / T_s factor in "
-                "the peak and force every amplitude comparison to carry it"
+                f"{PULSE_NORMALIZATION_UNIT_AMPLITUDE!r}; a unit-amplitude envelope is "
+                "what keeps every published sample in sqrt(W), so the thermal stage's "
+                "k T_sys f_s per sample is the right noise for it. A unit-energy pulse "
+                "publishes sqrt(W / s) and overstates the SNR by f_s / (B T_p)"
             )
         require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
 
@@ -656,21 +659,38 @@ class PulsedSpec:
 
     @property
     def pulse_amplitude(self) -> float:
-        """``1 / sqrt(T_p)``, the unit-energy envelope height.
+        """``1``, the dimensionless unit-amplitude envelope height.
 
         Both kinds share it: the LFM differs from the rectangle only by a phase,
         and a phase does not change ``|p|``. Passed to the kernel as a scalar so
         that the normalisation lives on this spec rather than inside the kernel.
+        With it a sample inside the pulse is ``C_rt`` in sqrt(W), the unit the
+        receive chain's thermal stage is written in.
         """
 
-        return 1.0 / math.sqrt(self.pulse_width_s)
+        return 1.0
+
+    @property
+    def replica_amplitude(self) -> float:
+        """``1 / T_p`` [1/s], the matched-filter replica height.
+
+        The correlation ``sum_m y[m] conj(r[m]) T_s`` against a replica of this
+        height returns ``C_rt * M_p T_s / T_p``, exactly ``C_rt`` when the pulse
+        is commensurate with the grid: a UNIT-GAIN filter, so the published
+        range profile follows the processing amplitude convention (peak equals
+        the row's coefficient) while the synthesised samples stay physical. The
+        filter's output noise is then ``k T_sys / T_p``, and the per-pulse SNR is
+        the textbook ``E / N0 = P_r T_p / (k T_sys)``.
+        """
+
+        return 1.0 / self.pulse_width_s
 
     @property
     def pulse_sample_count(self) -> int:
         """How many fast-time samples the pulse spans, rounded to the grid.
 
         Used by the matched-filter replica, not by the kernel: the kernel never
-        discretises the pulse. The discrete replica has EXACTLY unit energy when
+        discretises the pulse. The discrete replica has EXACTLY unit gain when
         ``T_p`` is a whole number of samples, which is what
         :attr:`pulse_grid_is_commensurate` reports.
         """
@@ -681,10 +701,10 @@ class PulsedSpec:
     def pulse_grid_is_commensurate(self) -> bool:
         """Whether ``T_p`` is an exact whole number of sample periods.
 
-        When it is, the sampled replica's discrete energy
-        ``sum_m |p[m]|^2 T_s`` is exactly 1 and the matched-filter peak is
-        exactly ``C_rt``. When it is not, the replica's energy is
-        ``round(T_p / T_s) * T_s / T_p`` and the peak carries that same factor -
+        When it is, the sampled replica's discrete gain ``sum_m |r[m]| T_s`` is
+        exactly 1 and the matched-filter peak is exactly ``C_rt``. When it is
+        not, the gain is ``round(T_p / T_s) * T_s / T_p`` and the peak carries
+        that same factor -
         a property of the DISCRETE replica, not of the kernel, which is why it is
         reported rather than silently corrected.
         """

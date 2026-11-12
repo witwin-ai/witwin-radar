@@ -12,7 +12,8 @@
 //   y[l][p][m]  = sum_{k in segment p} C[k] * p(u)
 //                 * exp(+j * 2 * pi * cycles_k(l))
 //
-// with the two analytic unit-energy pulses, `A = pulse_amplitude = 1/sqrt(T_p)`:
+// with the two analytic unit-amplitude pulses, `A = pulse_amplitude = 1`, so a
+// sample inside the pulse is C[k] in sqrt(W) at the receive port (R-ADR-029):
 //
 //   rect: p(u) = A                                   for 0 <= u < T_p, else 0
 //   lfm : p(u) = A * exp(+j * pi * B * u^2 / T_p)     for 0 <= u < T_p, else 0
@@ -26,7 +27,7 @@
 // and biases the estimated delay by nearly two thousandths of a sample, at one
 // delay in every five hundred. Half-open makes the sampled pulse exactly
 // `round(T_p / T_s)` samples long at EVERY delay, and it leaves the continuous
-// unit-energy integral unchanged because a single point has measure zero.
+// matched-filter integral unchanged because a single point has measure zero.
 //
 // THE POINT OF THIS FILE: `u` is CONTINUOUS. The pulse is evaluated at the exact
 // fractional delay from its analytic form and is never snapped to the nearest

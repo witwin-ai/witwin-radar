@@ -25,19 +25,20 @@ def quantize(signal: torch.Tensor, *, bits: int, full_scale: float) -> torch.Ten
     expression the kernel is pinned against. The two things that matter and that
     a rewrite loses:
 
-    * the level count is ``2^b`` and the step is ``2 FS / (2^b - 1)``, so the
-      grid has a code at exactly ``-FS`` and one at exactly ``+FS``;
+    * the level count is ``2^b`` and the step is ``2 FS / 2^b``, with the
+      two's-complement codes ``-2^(b-1) ... 2^(b-1) - 1``: zero is a code, the
+      bottom code is exactly ``-FS`` and the top one is ``FS - step``;
     * rounding is half-to-EVEN, which is what ``torch.round`` and ``rintf`` both
       do. Half-away-from-zero would bias every code boundary by half a step in
       the same direction, which shows up as a DC offset rather than as noise.
     """
 
     levels = 2 ** int(bits)
-    step = (2.0 * float(full_scale)) / (levels - 1)
+    step = (2.0 * float(full_scale)) / levels
 
     def _one(component: torch.Tensor) -> torch.Tensor:
-        clipped = torch.clamp(component, min=-full_scale, max=full_scale)
-        return torch.round((clipped + full_scale) / step) * step - full_scale
+        code = torch.round(component.double() / step).clamp(min=-levels // 2, max=levels // 2 - 1)
+        return (code * step).to(component.dtype)
 
     return torch.complex(_one(signal.real), _one(signal.imag))
 
@@ -80,7 +81,7 @@ def single_sideband_dbc_per_hz(*, innovation_sigma_rad: float, sample_rate_hz: f
 def quantization_variance(*, bits: int, full_scale: float) -> float:
     """``step^2 / 12`` PER COMPONENT, for a busy non-overloaded signal."""
 
-    step = (2.0 * float(full_scale)) / (2 ** int(bits) - 1)
+    step = (2.0 * float(full_scale)) / (2 ** int(bits))
     return step**2 / 12.0
 
 

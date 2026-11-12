@@ -131,16 +131,17 @@ def remove_mean(signal: torch.Tensor, *, dim: int) -> torch.Tensor:
 def pulse_samples(spec: PulsedSpec, device: torch.device | str = "cpu") -> torch.Tensor:
     """The transmitted replica on the ADC grid, as ``complex128[M_p]``.
 
-    ``M_p = round(T_p / T_s)`` samples at ``u = m T_s``, with the analytic
-    amplitude ``1 / sqrt(T_p)`` and the analytic phase: the same function the
-    pulsed synthesis kernel evaluates at a continuous fractional delay. In
+    ``M_p = round(T_p / T_s)`` samples at ``u = m T_s``, with the amplitude
+    ``spec.replica_amplitude = 1 / T_p`` and the analytic phase: the function
+    the pulsed synthesis kernel evaluates at a continuous fractional delay,
+    scaled so that the correlation is a unit-gain filter. In
     float64 because it is a per-frame constant of a few hundred elements whose
     accuracy sets the accuracy of every delay estimate downstream.
 
-    Discrete energy. ``sum_m |p[m]|^2 T_s`` is exactly ``M_p T_s / T_p``, which
+    Discrete gain. ``sum_m |r[m]| T_s`` is exactly ``M_p T_s / T_p``, which
     is 1 when the pulse spans a whole number of samples and is reported by
     ``spec.pulse_grid_is_commensurate`` when it does not. The replica is NOT
-    renormalised to force the discrete energy to 1: doing so would make this
+    renormalised to force the discrete gain to 1: doing so would make this
     sequence a different function from the one the kernel evaluates, and the
     matched-filter peak identity - the thing that ties the two together - would
     then be true by construction instead of being a measurement.
@@ -159,7 +160,7 @@ def pulse_samples(spec: PulsedSpec, device: torch.device | str = "cpu") -> torch
         )
     target = torch.device(device)
     u = torch.arange(count, dtype=torch.float64, device=target) * float(spec.sample_period_s)
-    envelope = torch.full((count,), float(spec.pulse_amplitude), dtype=torch.float64, device=target)
+    envelope = torch.full((count,), float(spec.replica_amplitude), dtype=torch.float64, device=target)
     if spec.is_linear_fm:
         cycles = 0.5 * float(spec.bandwidth_hz) * u * u / float(spec.pulse_width_s)
         phase = math.tau * (cycles - torch.floor(cycles))
@@ -184,8 +185,9 @@ def correlate(
       because convolving would put the peak at ``tau + T_p`` and would look
       entirely plausible;
     * the ``T_s`` factor makes the sum approximate the continuous integral, so
-      with the unit-ENERGY pulse the spec pins, an isolated row's peak is
-      exactly its complex coefficient with no sample-count factor.
+      with the unit-amplitude pulse and the ``1 / T_p`` replica the spec pins,
+      an isolated row's peak is exactly its complex coefficient with no
+      sample-count factor.
 
     The window tapers the correlation SPECTRUM, which is the direct analogue of
     what the FMCW and OFDM backends do: in all three the window tapers the input
@@ -229,7 +231,7 @@ PROCESSING_DOPPLER_CONVENTION = "positive_doppler_bin_is_closing"
 #: normalised so that an isolated path row peaks at ``|C_rt|`` times the
 #: window's coherent gain. The three waveforms' native transforms have three
 #: different gains (``N`` for an unnormalised beat FFT, ``1`` for a CIR inverse
-#: transform, ``1`` for a unit-energy matched filter), and publishing all three
+#: transform, ``1`` for a unit-gain matched filter), and publishing all three
 #: would make a cross-waveform amplitude comparison a per-waveform bookkeeping
 #: exercise.
 PROCESSING_AMPLITUDE_CONVENTION = "peak = |C_rt| * window_coherent_gain; transforms are amplitude normalised"

@@ -14,6 +14,7 @@ time here, so a change to the model cannot be absorbed by editing a constant.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -186,3 +187,92 @@ def test_the_imbalance_reaches_the_receive_chain_and_the_quantiser_sees_the_imag
     assert not torch.equal(ideal.signal, imbalanced.signal)
     # The AGC divided by an RMS that now includes the image, so the gain moved.
     assert not torch.equal(ideal.diagnostics.agc_gain, imbalanced.diagnostics.agc_gain)
+
+
+def _array_radar(waveform, leakage) -> Radar:
+    return Radar(
+        carrier=77e9,
+        waveform=waveform,
+        tx=((0.0, 0.0, 0.0), (0.002, 0.0, 0.0)),
+        rx=((0.0, 0.001, 0.0), (0.002, 0.001, 0.0), (0.004, 0.001, 0.0)),
+        power=12.0,
+        position=(0, 0, 0),
+        look_at=(1, 0, 0),
+        leakage=leakage,
+    )
+
+
+#: A per-pair coupling table, indexed [tx][rx]: neighbours couple more strongly.
+ISOLATION_TABLE = ((30.0, 36.0, 42.0), (34.0, 31.0, 37.0))
+DELAY_TABLE = ((1e-10, 2e-10, 3e-10), (1.5e-10, 1.2e-10, 2.5e-10))
+PHASE_TABLE = ((0.0, 0.5, 1.0), (-0.5, 0.25, -1.0))
+
+
+def _expected_coefficients(radar):
+    root = math.sqrt(1e-3 * 10 ** (radar.power / 10))
+    coefficients = {}
+    for tx in range(2):
+        for rx in range(3):
+            magnitude = root * 10 ** (-ISOLATION_TABLE[tx][rx] / 20)
+            coefficients[(tx, rx)] = magnitude * complex(math.cos(PHASE_TABLE[tx][rx]), math.sin(PHASE_TABLE[tx][rx]))
+    return coefficients
+
+
+@pytest.mark.gpu
+def test_per_pair_ofdm_leakage_is_the_declared_cfr_term_of_each_pair():
+    """FE-4: the coupled row of pair (tx, rx) is ``C exp(-j 2 pi n df tau)`` on every symbol."""
+
+    from witwin.radar import Ofdm
+
+    leakage = Leakage(isolation_db=ISOLATION_TABLE, delay_s=DELAY_TABLE, phase=PHASE_TABLE)
+    waveform = Ofdm(
+        subcarrier_spacing=1e6, num_subcarriers=64, cyclic_prefix=1e-7, num_symbols=4, max_expected_delay=5e-8
+    )
+    radar = _array_radar(waveform, leakage)
+    spec = radar.system_config.waveform_spec()
+    empty = torch.zeros((4, 6, 64), dtype=torch.complex64, device=radar.device)
+    cube = radar._leakage_cube(spec, 6, empty).cpu().to(torch.complex128)
+    n = torch.arange(64, dtype=torch.float64)
+    for (tx, rx), coefficient in _expected_coefficients(radar).items():
+        pair = rx * 2 + tx
+        expected = coefficient * torch.exp(-2j * math.pi * n * 1e6 * DELAY_TABLE[tx][rx])
+        for symbol in range(4):
+            torch.testing.assert_close(cube[symbol, pair], expected, rtol=2e-5, atol=1e-9)
+
+
+@pytest.mark.gpu
+def test_per_pair_pulsed_leakage_appears_only_while_the_gate_overlaps_the_pulse():
+    from witwin.radar import Pulsed
+
+    leakage = Leakage(isolation_db=ISOLATION_TABLE, delay_s=0.0, phase=PHASE_TABLE)
+    waveform = Pulsed(
+        pulse_kind="rect",
+        pulse_width=1e-6,
+        bandwidth=1e6,
+        pri=20e-6,
+        num_pulses=2,
+        sample_rate=10e6,
+        num_samples=40,
+        range_gate_start=0.0,
+    )
+    radar = _array_radar(waveform, leakage)
+    spec = radar.system_config.waveform_spec()
+    empty = torch.zeros((2, 6, 40), dtype=torch.complex64, device=radar.device)
+    cube = radar._leakage_cube(spec, 6, empty).cpu().to(torch.complex128)
+    for (tx, rx), coefficient in _expected_coefficients(radar).items():
+        pair = rx * 2 + tx
+        # A unit-amplitude rectangle of 10 samples at zero delay, then silence.
+        torch.testing.assert_close(
+            cube[:, pair, :10], torch.full((2, 10), coefficient, dtype=torch.complex128), rtol=2e-6, atol=0.0
+        )
+        assert float(cube[:, pair, 10:].abs().max()) == 0.0
+
+    gated = _array_radar(replace(waveform, range_gate_start=2e-6), leakage)
+    later = gated._leakage_cube(gated.system_config.waveform_spec(), 6, empty)
+    assert float(later.abs().max()) == 0.0
+
+
+def test_a_leakage_table_of_the_wrong_shape_is_refused_by_name():
+    leakage = Leakage(isolation_db=((30.0, 30.0),), delay_s=0.0)
+    with pytest.raises(ValueError, match="isolation_db is a 1 x 2 table but the array is 2 x 3"):
+        leakage.pair_rows(num_tx=2, num_rx=3, power_dbm=10.0)

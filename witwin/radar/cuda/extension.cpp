@@ -199,43 +199,41 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // Sensor pattern weighting. Channel already owns spreading, transmit power,
   // reference phase, and polarization projection. These operators therefore
   // take only geometry, the incoming complex transfer, a world-to-pattern
-  // frame, and resident antenna-pattern tables.
+  // frame, and the two packed element patterns (transmit and receive, each
+  // with its own peak gain; power or complex field).
   m.def(
       "sensor_weight_forward(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
       "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
       "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
-      "Tensor weight_in_im, Tensor pattern_frame, Tensor pattern_x_axis, "
-      "Tensor pattern_y_axis, Tensor pattern_x_values, Tensor pattern_y_values, "
-      "Tensor pattern_values, Tensor(a!) out_re, Tensor(b!) out_im, "
+      "Tensor weight_in_im, Tensor pattern_frame, Tensor tx_pattern, "
+      "Tensor rx_pattern, Tensor(a!) out_re, Tensor(b!) out_im, "
       "Tensor(c!) tau_rt, Tensor(d!) tau_rate, Tensor(e!) pattern_gain, "
-      "int num_paths, int num_tx, int num_rx, int pattern_kind, float c0) -> ()");
+      "int num_paths, int num_tx, int num_rx, float c0) -> ()");
   m.def(
       "sensor_weight_backward(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
       "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
       "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
-      "Tensor weight_in_im, Tensor pattern_frame, Tensor pattern_x_axis, "
-      "Tensor pattern_y_axis, Tensor pattern_x_values, Tensor pattern_y_values, "
-      "Tensor pattern_values, Tensor grad_out_re, Tensor grad_out_im, "
+      "Tensor weight_in_im, Tensor pattern_frame, Tensor tx_pattern, "
+      "Tensor rx_pattern, Tensor grad_out_re, Tensor grad_out_im, "
       "Tensor grad_tau_rt, Tensor grad_tau_rate, Tensor(a!) grad_tx_pos, "
       "Tensor(b!) grad_rx_pos, Tensor(c!) grad_site_in, Tensor(d!) grad_site_out, "
       "Tensor(e!) grad_intensity, Tensor(f!) grad_weight_re, "
       "Tensor(g!) grad_weight_im, Tensor(h!) tx_row_scratch, "
       "Tensor(i!) rx_row_scratch, int num_paths, int num_tx, int num_rx, "
-      "int pattern_kind, float c0) -> ()");
+      "float c0) -> ()");
   m.def(
       "sensor_weight_jvp(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
       "Tensor site_velocity, Tensor fixed_length_m, Tensor tx_index, "
       "Tensor rx_index, Tensor row_kind, Tensor intensity, Tensor weight_in_re, "
-      "Tensor weight_in_im, Tensor pattern_frame, Tensor pattern_x_axis, "
-      "Tensor pattern_y_axis, Tensor pattern_x_values, Tensor pattern_y_values, "
-      "Tensor pattern_values, Tensor tan_tx_pos, Tensor tan_rx_pos, "
+      "Tensor weight_in_im, Tensor pattern_frame, Tensor tx_pattern, "
+      "Tensor rx_pattern, Tensor tan_tx_pos, Tensor tan_rx_pos, "
       "Tensor tan_site_in, Tensor tan_site_out, Tensor tan_intensity, "
       "Tensor tan_weight_re, Tensor tan_weight_im, Tensor(a!) tan_out_re, "
       "Tensor(b!) tan_out_im, Tensor(c!) tan_tau_rt, Tensor(d!) tan_tau_rate, "
-      "int num_paths, int num_tx, int num_rx, int pattern_kind, float c0) -> ()");
+      "int num_paths, int num_tx, int num_rx, float c0) -> ()");
   // Receiver frontend. Three families, ONE fixed order, and the order
   // lives in the Python runtime rather than in a caller:
   //
@@ -270,7 +268,52 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // decision this file does not make. Its Python owner raises on a grad-enabled or
   // forward-dual input rather than silently detaching. This is the one
   // deliberate exception to R-ADR-004's three-per-family rule. See R-ADR-004.
-  m.def("oscillator_phase_forward(Tensor times, Tensor delays, Tensor(a!) phase, float diffusion, float sign, int seed_base, int block_size) -> ()");
+  m.def(
+      "oscillator_phase_forward(Tensor times, Tensor delays, Tensor(a!) phase, "
+      "Tensor(b!) invalid, float diffusion, float flicker_scale, "
+      "float floor_sigma, float floor_cell_rate, float sign, int seed_base, "
+      "int block_size) -> ()");
+  // `frontend_compress` is the memoryless receiver compression (polynomial
+  // AM/AM with AM/PM, held past saturation); its backward and jvp are the
+  // analytic 2x2 Jacobian. `frontend_baseband_forward` writes the
+  // per-receiver DC offset plus the 1/f flicker process, which the Python owner
+  // ADDS to the signal; that addition carries the identity derivative, so the
+  // family ships no companion. `frontend_agc_dynamic` is the
+  // per-block first-order AGC loop with its adjoint and tangent scans.
+  m.def(
+      "frontend_compress_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, float scale, float c5, float k_pm, float u_sat, "
+      "int block_size) -> ()");
+  m.def(
+      "frontend_compress_backward(Tensor x_re, Tensor x_im, Tensor grad_out_re, "
+      "Tensor grad_out_im, Tensor(a!) grad_x_re, Tensor(b!) grad_x_im, "
+      "float scale, float c5, float k_pm, float u_sat, int block_size) -> ()");
+  m.def(
+      "frontend_compress_jvp(Tensor x_re, Tensor x_im, Tensor tan_x_re, "
+      "Tensor tan_x_im, Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, "
+      "float scale, float c5, float k_pm, float u_sat, int block_size) -> ()");
+  m.def(
+      "frontend_baseband_forward(Tensor(a!) out_re, "
+      "Tensor(b!) out_im, Tensor times, Tensor dc_re, Tensor dc_im, "
+      "int num_outer, int num_run, int num_rx, float flicker_level, "
+      "int levels, int seed_base, int block_size) -> ()");
+  m.def(
+      "frontend_agc_dynamic_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
+      "Tensor(b!) out_im, Tensor(c!) gain, Tensor(d!) rms, Tensor(e!) free_mask, "
+      "int dim0, int num_groups, int num_blocks, int dim2, float target_rms, "
+      "float min_gain, float max_gain, float beta, int block_size) -> ()");
+  m.def(
+      "frontend_agc_dynamic_backward(Tensor x_re, Tensor x_im, Tensor gain, "
+      "Tensor rms, Tensor free_mask, Tensor grad_out_re, Tensor grad_out_im, "
+      "Tensor(a!) grad_x_re, Tensor(b!) grad_x_im, Tensor(c!) scratch, "
+      "int dim0, int num_groups, int num_blocks, int dim2, float beta, "
+      "int block_size) -> ()");
+  m.def(
+      "frontend_agc_dynamic_jvp(Tensor x_re, Tensor x_im, Tensor gain, "
+      "Tensor rms, Tensor free_mask, Tensor tan_x_re, Tensor tan_x_im, "
+      "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, Tensor(c!) scratch, "
+      "int dim0, int num_groups, int num_blocks, int dim2, float beta, "
+      "int block_size) -> ()");
   m.def(
       "frontend_noise_forward(Tensor x_re, Tensor x_im, Tensor(a!) out_re, "
       "Tensor(b!) out_im, Tensor phase_rad, int num_outer, int num_phase, "

@@ -526,7 +526,7 @@ def test_a_finite_difference_across_a_rectangular_edge_disagrees_and_should():
         return float(cube[0, 0, 50].abs() ** 2)
 
     step = 0.25 * SAMPLE_PERIOD_S
-    assert edge_sample(-step) == pytest.approx(1.0 / RECT_SPEC.pulse_width_s, rel=1e-12)
+    assert edge_sample(-step) == pytest.approx(RECT_SPEC.pulse_amplitude**2, rel=1e-12)
     assert edge_sample(step) == 0.0
     quotient = (edge_sample(step) - edge_sample(-step)) / (2.0 * step)
     assert abs(quotient) > 1.0e6

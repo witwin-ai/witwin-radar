@@ -181,7 +181,7 @@ def test_the_quantizer_matches_the_reference_grid_and_clips_symmetrically():
     reference = quantize(signal, bits=adc.bits, full_scale=adc.full_scale)
 
     def _code(values: torch.Tensor) -> torch.Tensor:
-        return torch.round((values + adc.full_scale) / adc.step)
+        return torch.round(values.double() / adc.step)
 
     assert torch.equal(_code(output.signal.real), _code(reference.real))
     assert torch.equal(_code(output.signal.imag), _code(reference.imag))
@@ -189,26 +189,60 @@ def test_the_quantizer_matches_the_reference_grid_and_clips_symmetrically():
     # fused-multiply-add reason above.
     assert torch.allclose(output.signal, reference, rtol=0.0, atol=2e-7)
 
-    below = int((codes < -adc.full_scale).sum())
-    above = int((codes > adc.full_scale).sum())
+    # The no-overload range of a two's-complement mid-tread grid is
+    # [-FS - step/2, FS - step/2): beyond it the code saturates.
+    below = int((codes < -adc.full_scale - adc.step / 2).sum())
+    above = int((codes >= adc.full_scale - adc.step / 2).sum())
     assert below > 0 and above > 0
     # One count per COMPONENT, and the imaginary part is the negation of the
     # real one, so every out-of-range sample contributes exactly twice.
     assert int(output.diagnostics.clipped_components.item()) == 2 * (below + above)
-    # The extreme codes land on full scale to within one unit in the last
-    # place, again because the reconstruction is a fused multiply-add. The
-    # statement being made is that nothing escapes the grid, not that the top
-    # code is bit-exactly 1.0.
-    ulp = adc.full_scale * 1e-6
-    assert float(output.signal.real.max()) <= adc.full_scale + ulp
-    assert float(output.signal.real.min()) >= -adc.full_scale - ulp
+    # The extreme codes are the two's-complement ends: exactly -FS at the
+    # bottom and FS - step at the top. Nothing escapes the grid.
+    assert float(output.signal.real.max()) == pytest.approx(adc.full_scale - adc.step, abs=1e-7)
+    assert float(output.signal.real.min()) == pytest.approx(-adc.full_scale, abs=1e-7)
+
+
+def test_a_zero_input_reads_exactly_zero_on_both_components():
+    """M1-3 / FE-3: the documented mid-tread grid has a zero code.
+
+    An idle channel must read zero, not +/- step/2 of DC on I and Q; and an
+    input inside half a step of zero must land on that code too.
+    """
+
+    for bits in (2, 3, 8, 12, 24):
+        adc = Adc(bits=bits, full_scale=1.0)
+        signal = (
+            torch.complex(
+                torch.tensor([0.0, 0.49 * adc.step, -0.49 * adc.step, 0.0]),
+                torch.tensor([0.0, -0.49 * adc.step, 0.0, 0.49 * adc.step]),
+            )
+            .to(torch.complex64)
+            .cuda()
+        )
+        output = FrontendChain(FrontendSpec(impedance=1.0, adc=adc)).apply(signal)
+        assert torch.equal(output.signal, torch.zeros_like(signal)), bits
+        assert int(output.diagnostics.clipped_components.item()) == 0
+
+
+def test_a_one_bit_mid_tread_converter_is_refused_by_name():
+    with pytest.raises(ValueError, match="one-bit mid-tread"):
+        Adc(bits=1, full_scale=1.0)
 
 
 def test_the_full_scale_sine_sqnr_matches_the_textbook_figure():
+    """``6.02 b + 1.76`` dB for a sine at the grid's no-overload full scale.
+
+    The two's-complement mid-tread grid saturates above ``FS - step / 2``, so
+    that is the largest sine that is quantised rather than clipped; it is
+    ``2^-b`` below ``FS``, which moves the textbook figure by 0.008 dB here.
+    """
+
     adc = Adc(bits=10, full_scale=1.0)
     count = 1 << 16
+    amplitude = adc.full_scale - adc.step / 2
     phase = 2 * math.pi * 97 * torch.arange(count, dtype=torch.float64) / count
-    signal = torch.complex(phase.cos().float(), phase.sin().float()).to(torch.complex64).cuda()
+    signal = torch.complex(amplitude * phase.cos().float(), amplitude * phase.sin().float()).to(torch.complex64).cuda()
     output = FrontendChain(FrontendSpec(impedance=1.0, adc=adc)).apply(signal).signal
     error_power = float(((output.real - signal.real).double() ** 2).mean())
     signal_power = float((signal.real.double() ** 2).mean())

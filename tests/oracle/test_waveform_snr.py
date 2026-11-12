@@ -37,11 +37,6 @@ POWER_DBM = 10.0
 #: normalisation slip worth catching (a factor of two is 3 dB).
 TOLERANCE_DB = 0.5
 
-_FE1 = (
-    "FE-1: pulsed samples are C/sqrt(T_p) (unit-energy pulse) but thermal noise is kT*B_chirp on a cube treated as "
-    "sqrt(W), so the pulsed SNR is optimistic by f_s/(B*T_p) (+54 dB at 20 MHz, 10 us, 50 MS/s)"
-)
-
 
 def _waveforms():
     from witwin.radar import Fmcw, Ofdm, Pulsed
@@ -89,8 +84,7 @@ def _waveforms():
 
 def _cases():
     for name in ("fmcw-beat", "fmcw-spectrum", "ofdm", "pulsed"):
-        marks = [pytest.mark.xfail(strict=True, reason=_FE1)] if name == "pulsed" else []
-        yield pytest.param(name, marks=marks, id=name)
+        yield pytest.param(name, id=name)
 
 
 def measured_and_expected_snr(name: str) -> tuple[float, float]:
