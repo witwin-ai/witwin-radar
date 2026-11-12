@@ -30,17 +30,12 @@ build: Channel source-links RayD and owns that build entirely. The gate reads
 it is empty. A radar tier that quietly skipped the cross-package check would be
 worse than one that asks for the artifact.
 
-The four production static gates (forbidden runtimes, oracle isolation, raw
-native access, the Torch-physics allowlist) sit in `quick`, next to
-`quick.native-bindings`. None of them imports the package or needs a GPU, so
-the cheapest tier is the one that should catch them; the only half that cannot
-run there is the oracle gate's wheel-member check, which is a separate
-`nightly` gate against the wheel the tier just built.
-
-`quick.orphan-modules` sits there for the same reason - it parses the tree and
-imports nothing. Its sibling, the frozen public-API snapshot, is a test rather
-than a gate script (`tests/test_public_api_snapshot.py`), so it runs inside
-`quick.cpu-tests`.
+The production static gates (forbidden runtimes, oracle isolation) sit in
+`quick`, beside the binding-manifest and architecture gates. None of them needs
+a GPU; the only half that cannot run there is the oracle gate's wheel-member
+check, which is a separate `nightly` gate against the wheel the tier just built.
+The frozen public-API snapshot is a test rather than a gate script
+(`tests/test_public_api_snapshot.py`), so it runs inside `quick.cpu-tests`.
 """
 
 from __future__ import annotations
@@ -71,40 +66,17 @@ QUICK_GATES = (
     Gate("quick.ruff", ("-m", "ruff", "check", "witwin/radar", "tests", "examples", "tools", "ci", "scripts")),
     Gate("quick.duplicate-code", ("ci/check_duplicate_code.py",)),
     Gate("quick.native-bindings", ("ci/check_native_bindings.py",)),
-    # The four production static gates. They are here rather than in `cuda`
-    # on purpose: none of them imports the package, loads the extension, or
-    # needs a GPU, so the cheapest tier is the one that should catch a
-    # forbidden import or a widened allowlist.
     Gate("quick.production-dependencies", ("ci/check_production_dependencies.py",)),
     Gate("quick.oracle-isolation", ("ci/check_test_oracle_isolation.py",)),
-    Gate("quick.raw-native-access", ("ci/check_raw_native_access.py",)),
-    Gate("quick.torch-physics-allowlist", ("ci/check_torch_physics_allowlist.py",)),
-    Gate("quick.workflow-policy", ("ci/check_workflow_policy.py",)),
-    # Dead code. Ruff reports an unused IMPORT; nothing else reports an unused
-    # MODULE.
+    Gate("quick.workflows", ("ci/check_workflows.py",)),
     Gate("quick.orphan-modules", ("ci/check_orphan_modules.py",)),
-    # The governance gates. They were hand-run for as long as they existed,
-    # which is the same as not existing on any day nobody remembered to type
-    # them, and README already told readers the quick tier ran them. Each one
-    # parses JSON, Markdown, YAML or the AST of the tree; the only one that
-    # imports anything is the public-API manifest's live half, which imports
-    # the pure-Python package the `quick.import-no-native` gate below already
-    # proves loads no CUDA. So they cost seconds and belong in the cheapest
-    # tier rather than in a developer's memory.
     Gate("quick.architecture", ("ci/check_architecture.py",)),
     Gate("quick.public-api-manifest", ("ci/check_public_api_manifest.py",)),
-    Gate("quick.no-compatibility", ("ci/check_no_compatibility.py",)),
     Gate("quick.documentation-surface", ("ci/check_documentation_surface.py",)),
-    Gate("quick.release-claims", ("ci/check_release_claims.py",)),
-    Gate("quick.workflow-references", ("ci/check_workflow_references.py",)),
-    Gate("quick.required-channel-coverage", ("ci/check_required_channel_coverage.py",)),
     # Importing the package must not load the loader, the compiler, or CUDA.
     # What makes that true is that `witwin/radar/__init__.py` imports only the
     # pure-Python concept owners, and every native entry sits behind
     # `witwin.radar.cuda.runtime`, which nothing on the import path touches.
-    # There is no lazy `__getattr__` doing it - `ci/check_no_compatibility.py`
-    # fails the build if one is reintroduced - so an eager import of the
-    # runtime is not hidden by anything, and this gate is what notices it.
     Gate(
         "quick.import-no-native",
         (

@@ -257,7 +257,7 @@ is not self-evidently fresh.
 The load-time presence check names one operator per family and gates every load
 route, so a stale binary fails at load instead of deep inside a kernel call.
 Adding a family without updating the check is caught by
-`tests/test_native_binding_manifest.py::test_the_load_check_covers_every_operator_family`;
+`tests/test_native_binding_manifest.py::test_the_load_check_covers_every_native_translation_unit`;
 routing around the check is caught by
 `tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
 

@@ -253,8 +253,7 @@ python -m examples.rgbd_range_doppler --input path/to/depths.npz
 pytest tests/
 pytest tests/ --gpu
 python ci/run_ci_tier.py quick
-python ci/check_required_channel_coverage.py
-python ci/check_workflow_references.py
+python ci/check_workflows.py
 ```
 
 The commands above define how to obtain evidence; they are not themselves evidence that a GPU job, wheel load, or remote workflow has run.

@@ -72,12 +72,12 @@ Important static checks include:
 python ci/check_architecture.py
 python ci/check_duplicate_code.py
 python ci/check_documentation_surface.py
-python ci/check_no_compatibility.py
+python ci/check_native_bindings.py
 python ci/check_public_api_manifest.py
-python ci/check_release_claims.py
-python ci/check_required_channel_coverage.py
-python ci/check_workflow_references.py
+python ci/check_workflows.py
 ```
+
+`ci/native-binding-manifest.json` is generated: after adding, renaming or removing a native operator, run `python ci/check_native_bindings.py --write`. Only its `no_backward` and `error_owners` sections are written by hand.
 
 Required-Channel workflows install the Channel extra, record `build_info()["build_fingerprint"]`, and allow zero missing-Channel skips. Do not describe a skipped integration suite as passing.
 

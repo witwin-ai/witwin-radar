@@ -172,3 +172,9 @@ def test_the_distribution_depends_on_no_removed_toolchain() -> None:
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     for token in ("drjit", "slangtorch"):
         assert token not in text, token
+
+
+def test_the_snapshot_file_is_the_generator_output_verbatim() -> None:
+    """Regenerating must be a no-op, so a diff is always a real surface change."""
+
+    assert SNAPSHOT.read_text(encoding="utf-8") == json.dumps(build_snapshot(), indent=2) + "\n"

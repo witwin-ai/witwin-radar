@@ -13,10 +13,8 @@ existed only inside `tests/support/multi_endpoint_world.py`:
 1. **The compile crossing.** `compile_fixture_scene` (`:127-134`) and
    `compile_snapshot` (`:210-223`) were the only callers of
    `witwin.channel.scene.compile` anywhere. No Radar production module could
-   call it: `tests/test_import_boundary.py:390`
-   (`test_only_the_adapter_crosses_the_channel_boundary`) pins
-   `ChannelPropagationAdapter` as the sole Radar module allowed to name
-   `witwin.channel`, and `propagation/epochs.py:336-345` takes `compile_scene`
+   call it: `ci/check_architecture.py` pins `witwin/radar/channel.py` as the
+   sole Radar module allowed to import `witwin.channel`, and `propagation/epochs.py:336-345` takes `compile_scene`
    as a *callable argument* precisely so that it is not a second crossing.
 2. **The endpoint specs.** `endpoint_batch` (`:226-262`) turned
    `(stable_id, position)` pairs into a `RadarEndpointSpec`. Nothing in

@@ -10,11 +10,24 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from _ast_scan import import_candidates, module_name
+from _ast_scan import dotted, import_candidates, module_name
+
+#: The dispatcher and the JIT compiler. R-ADR-019: only the loader that validates
+#: a binary's identity before ``torch.ops.load_library`` may name either in code.
+DISPATCHER_PREFIXES = ("torch.ops", "torch.utils.cpp_extension")
 
 
-def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool]:
-    """Internal modules `path` imports, and whether it reaches `witwin.channel`."""
+def _reaches_dispatcher(tree: ast.Module, package: str) -> bool:
+    """Whether executable code names ``torch.ops`` or imports ``torch.utils.cpp_extension``."""
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and dotted(node).startswith(DISPATCHER_PREFIXES):
+            return True
+    return any(candidate.startswith(DISPATCHER_PREFIXES) for candidate in import_candidates(tree, package))
+
+
+def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool, bool]:
+    """Internal modules `path` imports, whether it reaches `witwin.channel`, and whether it names the dispatcher."""
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     package = name if path.name == "__init__.py" else name.rpartition(".")[0]
@@ -29,7 +42,7 @@ def _edges(path: Path, name: str, known: set[str]) -> tuple[set[str], bool]:
                 internal.add(cursor)
                 break
             cursor = cursor.rpartition(".")[0]
-    return internal, imports_channel
+    return internal, imports_channel, _reaches_dispatcher(tree, package)
 
 
 def _cycles(graph: dict[str, set[str]]) -> list[tuple[str, ...]]:
@@ -143,14 +156,23 @@ def audit(repo: Path) -> list[str]:
 
     graph: dict[str, set[str]] = {}
     channel_importers = []
+    dispatcher_owners = []
     for name, path in paths.items():
-        edges, imports_channel = _edges(path, name, known)
+        edges, imports_channel, reaches_dispatcher = _edges(path, name, known)
         graph[name] = edges
         if imports_channel:
             channel_importers.append(name)
+        if reaches_dispatcher:
+            dispatcher_owners.append(name)
     expected = [manifest["channel_importer"]]
     if sorted(channel_importers) != expected:
         errors.append(f"Channel executable importers differ: expected {expected}, got {sorted(channel_importers)}")
+    expected = [manifest["dispatcher_owner"]]
+    if sorted(dispatcher_owners) != expected:
+        errors.append(
+            f"modules naming torch.ops or torch.utils.cpp_extension differ: expected {expected}, "
+            f"got {sorted(dispatcher_owners)}; every other module reaches native operators through the loader"
+        )
     for cycle in _cycles(graph):
         errors.append("internal import cycle: " + " -> ".join((*cycle, cycle[0])))
     return errors

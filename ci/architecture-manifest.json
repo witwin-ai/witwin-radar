@@ -2,6 +2,7 @@
   "schema_version": 1,
   "package": "witwin.radar",
   "channel_importer": "witwin.radar.channel",
+  "dispatcher_owner": "witwin.radar.cuda.runtime",
   "target_modules": [
     "witwin.radar",
     "witwin.radar.channel",

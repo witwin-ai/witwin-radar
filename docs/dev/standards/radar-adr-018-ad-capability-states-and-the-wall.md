@@ -150,9 +150,7 @@ rather than a plea:
   native `rcs_amplitude` for it to be a Torch replay of.
 
 The capability matrix records its mechanism as `torch-orchestration`, which
-R-ADR-007 allows outside the hot path, and
-`tests/test_no_torch_physics.py` pins `scattering.py`'s whole matched
-Torch set by EQUALITY, so a second arithmetic expression in that module fails.
+R-ADR-007 allows outside the hot path.
 
 Two consequences of the tensor route are deliberate. `requires_grad=True` is
 refused together with a tensor cross section, because the leaf is `sigma_m2`

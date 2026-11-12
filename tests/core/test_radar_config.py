@@ -272,3 +272,18 @@ class TestRadarConstruction:
         radar = Radar.from_dict(standard_config)
         assert radar == Radar.from_dict(standard_config)
         assert "pad_factor" not in inspect.signature(Radar.__init__).parameters
+
+
+class _UnownedWaveform:
+    """The smallest thing that can name a waveform kind with no owner."""
+
+    kind = "chirp_sequence_from_the_future"
+
+
+def test_an_unknown_waveform_kind_is_refused_at_construction():
+    """The stored discriminator is validated where it is stored, not at dispatch."""
+
+    from witwin.radar.radar import RadarSystemConfig
+
+    with pytest.raises(ValueError, match="waveform.kind must be one of"):
+        RadarSystemConfig(waveform=_UnownedWaveform(), sensors=None, propagation=None)

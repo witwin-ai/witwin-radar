@@ -65,7 +65,7 @@ The job's REMOTE execution is a named deferral (D1 in
 `docs/dev/plans/phase10-deferred-release-matrix.md`) under the Phase-10 owner
 directive, which makes the workflow configuration the deliverable and defers
 hosted-runner runs. It was validated locally: the YAML parses, its embedded
-Python programs parse, and `ci/check_workflow_policy.py` asserts the job's
+Python programs parse, and `ci/check_workflows.py` asserts the job's
 presence and is proven to fail when it is removed.
 
 So the Phase-4 closing sentence - "until both land, no claim about
@@ -90,11 +90,11 @@ chain.
 
 - `ci/coexistence_smoke.py` scenario H (the `witwin-radar[channel]` dependency
   closure resolves no ray-tracing distribution), Phase 10
-- `ci/check_workflow_policy.py` (the consumer job is present, and the gate is
+- `ci/check_workflows.py` (the consumer job is present, and the gate is
   proven to fail when it is deleted), Phase 10
 - `tests/test_wheel_packaging.py` (the `channel` extra exists and pins
   the versioned range), Phase 10
 - `tests/test_module_contracts.py::test_propagation_package_does_not_import_the_channel_adapter`
 - `tests/test_import_boundary.py::test_the_propagation_package_alone_does_not_require_channel`
 - `tests/test_import_boundary.py::test_synthesis_scattering_and_paths_do_not_require_channel`
-- `tests/test_native_binding_manifest.py::test_the_load_check_covers_every_operator_family`
+- `tests/test_native_binding_manifest.py::test_the_load_check_covers_every_native_translation_unit`

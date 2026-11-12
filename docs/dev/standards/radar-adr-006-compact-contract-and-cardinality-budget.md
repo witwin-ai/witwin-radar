@@ -127,7 +127,6 @@ exist.
 - `tests/test_channel_adapter.py::test_freeze_is_never_called_per_frame` (a
   counting monkeypatch: two preparations total across five frames)
 - `tests/test_single_site_end_to_end.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
-- `tests/test_import_boundary.py::test_no_hot_path_host_observation_in_the_new_modules`
 - `tests/test_single_site_end_to_end.py::test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients`
 - `tests/test_channel_adapter.py::test_jvp_publishes_delay_rate_and_refuses_to_invent_one`
 

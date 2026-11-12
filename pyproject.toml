@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "witwin>=0.4.0,<0.5",
     "numpy>=1.24",
-    "torch>=2.10",
+    "torch==2.10.0",
     "scipy>=1.10",
 ]
 
@@ -38,7 +38,7 @@ dev = [
     "coverage>=7.0",
     "pytest>=8.0",
     "ruff>=0.15",
-    # ci/check_workflow_policy.py PARSES the workflow YAML rather than grepping
+    # ci/check_workflows.py PARSES the workflow YAML rather than grepping
     # it, so a comment mentioning the right architecture string cannot satisfy a
     # policy check. The `quick` tier runs that gate, so its parser belongs in
     # the extra the tier is installed from.
