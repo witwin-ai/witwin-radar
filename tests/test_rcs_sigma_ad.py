@@ -275,18 +275,17 @@ def test_marking_the_derived_amplitude_as_well_is_refused():
     assert "from_values" in str(excinfo.value)
 
 
-def test_a_non_scalar_cross_section_is_refused():
-    """One complex number per target, broadcast across that target's rows.
+def test_a_matrix_cross_section_is_refused():
+    """One complex number per site: a scalar or a per-site vector, never a matrix.
 
     A per-row cross section is an aspect-dependent response and has its own
-    owner (``AspectScatterResponse``); accepting a vector here would silently
-    broadcast the first element or fail deep inside the join.
+    owner (``AspectScatterResponse``).
     """
 
-    vector = torch.tensor([1.0, 2.0], dtype=torch.float32, device="cuda")
+    matrix = torch.ones(2, 2, dtype=torch.float32, device="cuda")
     with pytest.raises(ValueError) as excinfo:
-        ScalarRcsResponse.from_rcs(vector, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
-    assert "0-dim" in str(excinfo.value)
+        ScalarRcsResponse.from_rcs(matrix, reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ)
+    assert "1-dim per-site" in str(excinfo.value)
 
 
 def test_the_host_float_route_keeps_its_negative_refusal():

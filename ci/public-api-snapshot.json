@@ -99,7 +99,7 @@
           "name": "PointTargets",
           "kind": "class",
           "target": "witwin.radar.targets.PointTargets",
-          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'float' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None, scattering: 'ScatteringMatrix | None' = None) -> None"
+          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'Any' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None, scattering: 'ScatteringMatrix | None' = None) -> None"
         },
         {
           "name": "Pulsed",
@@ -129,7 +129,7 @@
           "name": "StructureTargets",
           "kind": "class",
           "target": "witwin.radar.targets.StructureTargets",
-          "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'float' = 0.0, ids: 'tuple[int, ...] | None' = None) -> None"
+          "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'Any' = 0.0, ids: 'tuple[int, ...] | None' = None) -> None"
         },
         {
           "name": "processing",

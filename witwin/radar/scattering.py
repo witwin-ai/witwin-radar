@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -55,8 +56,8 @@ class ScatterResponse(Protocol):
     :class:`ScatteringMatrixResponse` is that interface.
     """
 
-    def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
-        """Return ``complex64[row_count]``."""
+    def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
+        """Return ``complex64[site_count]``, one value per site in the join's site order."""
         ...
 
     @property
@@ -105,8 +106,14 @@ NATIVE_ROW_RESPONSE_OWNERS = frozenset({"witwin.radar.scattering.AspectScatterRe
 #
 # Omitting the ``4 pi / lam^2`` factor is a level error of ``lam^2 / (4 pi)``,
 # which at 77 GHz is a factor of 6.6e5, or 58 dB.
-def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float | torch.Tensor:
+def rcs_amplitude(
+    sigma_m2: float | Sequence[float] | torch.Tensor, wavelength_m: float
+) -> float | list[float] | torch.Tensor:
     """``sqrt(4 pi sigma) / lambda``, the dimensionless target strength.
+
+    One value, or one per site: a 1-dim tensor or a host sequence gives the
+    per-site strengths of a :class:`ScalarRcsResponse` that is still isotropic
+    at every site.
 
     Dimensionless is the whole content of the normalisation. ``S`` carries no
     propagation phase and no spreading - both belong to Channel transport, once
@@ -149,13 +156,18 @@ def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float 
     if not wavelength_m > 0.0:
         raise ValueError("wavelength_m must be positive")
     if isinstance(sigma_m2, torch.Tensor):
-        if sigma_m2.ndim != 0:
+        if sigma_m2.ndim > 1:
             raise ValueError(
-                "a tensor sigma_m2 must be a 0-dim scalar, got rank "
-                f"{sigma_m2.ndim}; ScalarRcsResponse is one complex number per "
-                "target, broadcast across that target's rows"
+                "a tensor sigma_m2 must be a 0-dim scalar or a 1-dim per-site vector, got rank "
+                f"{sigma_m2.ndim}; ScalarRcsResponse is one complex number per site, broadcast across that "
+                "site's rows"
             )
         return torch.sqrt(4.0 * math.pi * sigma_m2) / float(wavelength_m)
+    if not isinstance(sigma_m2, (int, float)):
+        values = [float(value) for value in sigma_m2]
+        if any(value < 0.0 for value in values):
+            raise ValueError("sigma_m2 is a radar cross section in square metres and cannot be negative")
+        return [math.sqrt(4.0 * math.pi * value) / float(wavelength_m) for value in values]
     if sigma_m2 < 0.0:
         raise ValueError("sigma_m2 is a radar cross section in square metres and cannot be negative")
     return math.sqrt(4.0 * math.pi * float(sigma_m2)) / float(wavelength_m)
@@ -165,7 +177,12 @@ def rcs_amplitude(sigma_m2: float | torch.Tensor, wavelength_m: float) -> float 
 class ScalarRcsResponse:
     """Complex target response ``S = amplitude * exp(-j * phase_rad)``.
 
-    Both members are 0-dim tensors and both may carry gradients.
+    Each member is a 0-dim tensor, one value shared by every site, or a 1-dim
+    tensor with one value per site in ascending stable-ID order, the join's own
+    site slot order. The two may differ in rank: a shared phase with per-site
+    strengths is the common case. Both may carry gradients. The response stays
+    isotropic at every site; what a vector adds is that two targets of
+    different size need no aspect law to say so.
 
     The phase parameter is here on purpose. An amplitude-only response would
     still pass every magnitude test with the Channel-to-beat conjugation
@@ -184,17 +201,37 @@ class ScalarRcsResponse:
             value = getattr(self, name)
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"{name} must be a torch.Tensor")
-            if value.ndim != 0:
-                raise ValueError(f"{name} must be a 0-dim tensor, got rank {value.ndim}")
+            if value.ndim > 1:
+                raise ValueError(f"{name} must be a 0-dim tensor or a 1-dim per-site tensor, got rank {value.ndim}")
             if value.dtype != torch.float32:
                 raise TypeError(f"{name} must use torch.float32, got {value.dtype}")
+        if self.amplitude.ndim == 1 and self.phase_rad.ndim == 1 and self.amplitude.shape != self.phase_rad.shape:
+            raise ValueError(
+                f"per-site amplitude {tuple(self.amplitude.shape)} and phase_rad {tuple(self.phase_rad.shape)} "
+                "must name the same sites"
+            )
+
+    @property
+    def site_count(self) -> int | None:
+        """The number of sites a per-site member names, or ``None`` when both are shared."""
+
+        for value in (self.amplitude, self.phase_rad):
+            if value.ndim == 1:
+                return int(value.shape[0])
+        return None
 
     @classmethod
     def from_values(
-        cls, amplitude: float, phase_rad: float, *, device: torch.device | str = "cpu", requires_grad: bool = False
+        cls,
+        amplitude: float | Sequence[float],
+        phase_rad: float | Sequence[float],
+        *,
+        device: torch.device | str = "cpu",
+        requires_grad: bool = False,
     ) -> ScalarRcsResponse:
-        def parameter(value: float) -> torch.Tensor:
-            tensor = torch.tensor(float(value), dtype=torch.float32, device=device)
+        def parameter(value: float | Sequence[float]) -> torch.Tensor:
+            host = float(value) if isinstance(value, (int, float)) else [float(entry) for entry in value]
+            tensor = torch.tensor(host, dtype=torch.float32, device=device)
             return tensor.requires_grad_(requires_grad)
 
         return cls(amplitude=parameter(amplitude), phase_rad=parameter(phase_rad))
@@ -202,10 +239,10 @@ class ScalarRcsResponse:
     @classmethod
     def from_rcs(
         cls,
-        sigma_m2: float | torch.Tensor,
+        sigma_m2: float | Sequence[float] | torch.Tensor,
         *,
         reference_frequency_hz: float,
-        phase_rad: float = 0.0,
+        phase_rad: float | Sequence[float] = 0.0,
         device: torch.device | str = "cpu",
         requires_grad: bool = False,
     ) -> ScalarRcsResponse:
@@ -249,16 +286,18 @@ class ScalarRcsResponse:
                 "sqrt(4 pi sigma) / lambda - or use from_values to author the "
                 "dimensionless strength as its own leaf."
             )
-        return cls(
-            amplitude=amplitude, phase_rad=torch.tensor(float(phase_rad), dtype=torch.float32, device=amplitude.device)
-        )
+        phase = float(phase_rad) if isinstance(phase_rad, (int, float)) else [float(value) for value in phase_rad]
+        return cls(amplitude=amplitude, phase_rad=torch.tensor(phase, dtype=torch.float32, device=amplitude.device))
 
     @property
     def is_geometry_dependent(self) -> bool:
         return False
 
-    def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
-        """Broadcast the response across ``row_count`` composed rows.
+    def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
+        """One complex value per site: a shared value broadcast, or the per-site vector.
+
+        A per-site member that names a different number of sites than the join
+        froze is refused here rather than gathered past its end.
 
         ``device`` is honoured, not decorative. The composer passes the device
         its composed rows live on; a CPU-authored response left where it was
@@ -267,11 +306,16 @@ class ScalarRcsResponse:
         a response whose parameters carry gradients keeps them across the move.
         """
 
-        if row_count < 0:
-            raise ValueError("row_count must be non-negative")
+        if site_count < 0:
+            raise ValueError("site_count must be non-negative")
+        declared = self.site_count
+        if declared is not None and declared != site_count:
+            raise ValueError(
+                f"this response carries {declared} per-site values but the join was frozen against {site_count} sites"
+            )
         amplitude = self.amplitude.to(device=device, dtype=torch.complex64)
         phase = self.phase_rad.to(device=device, dtype=torch.complex64)
-        return (amplitude * torch.exp(-1j * phase)).expand(row_count)
+        return (amplitude * torch.exp(-1j * phase)).expand(site_count)
 
 
 #: The site-local polarization basis a scattering matrix is authored in.
@@ -702,7 +746,7 @@ class AspectScatterResponse:
     def is_geometry_dependent(self) -> bool:
         return True
 
-    def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
+    def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
         """Refused: this response has no per-site value to broadcast.
 
         The ``ScatterResponse`` protocol's ``evaluate`` returns one value per
