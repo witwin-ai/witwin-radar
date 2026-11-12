@@ -335,21 +335,48 @@ def test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient(spike, occl
     assert float(gradient[1].abs().max()) > 0.0
 
 
-def test_a_fresh_freeze_at_the_occluded_geometry_refuses_instead(spike, occluded):
-    """The alternative, and it is a refusal rather than a smaller answer.
+def test_a_fresh_freeze_at_the_occluded_geometry_composes_the_site_to_zero(spike, occluded):
+    """M1-1 / MP-2: a fresh discovery at the occluded geometry composes, without ``SITE_P``.
 
-    A frozen replay under-reports with a complete published answer; a fresh
-    discovery at the same geometry cannot even be composed, because the join
-    refuses a declared site with no outbound row. Both are acceptable Phase-9
-    behaviours and they are the ONLY two: a stale answer is neither.
+    A frozen replay under-reports with dead rows; a fresh discovery at the same
+    geometry finds no path to ``SITE_P`` at all, and the join publishes it as a
+    site with no composed row - it contributes exactly zero - rather than
+    refusing it. ``SITE_P`` is still a declared site the legs were discovered
+    for, so it is not an unknown stable ID. The surviving rows are exactly the
+    frozen replay's live ones, in the same order.
     """
 
-    with pytest.raises(ValueError, match="no outbound leg row"):
-        drv.MultiEndpointSpike(
-            compiled=spike.compiled,
-            sites=tuple(
-                (stable_id, tuple(occluded["sites"][row].tolist())) for row, stable_id in enumerate(spike.site_ids)
-            ),
+    fresh = drv.MultiEndpointSpike(
+        compiled=spike.compiled,
+        sites=tuple(
+            (stable_id, tuple(occluded["sites"][row].tolist())) for row, stable_id in enumerate(spike.site_ids)
+        ),
+    )
+    assert fresh.composer.site_count == len(spike.site_ids)
+    fresh_composed = mx.replay(fresh, occluded)
+    fresh_keys = drv.composed_keys(fresh, fresh_composed)
+    assert {key[1] for key in fresh_keys} == {geo.SITE_Q_STABLE_ID}
+    frozen_composed = mx.replay(spike, occluded)
+    live = frozen_composed.row_valid.tolist()
+    assert fresh_keys == [
+        key for key, alive in zip(drv.composed_keys(spike, frozen_composed), live, strict=True) if alive
+    ]
+
+
+def test_an_unknown_site_id_is_still_refused(spike):
+    """The other half of the rule: a site no leg was discovered for is a wrong stable ID."""
+
+    from witwin.radar.paths import TwoWayComposer
+
+    with pytest.raises(ValueError, match="not endpoints either leg was discovered for"):
+        TwoWayComposer.freeze(
+            spike.inbound,
+            spike.outbound,
+            torch.tensor([*spike.site_ids, 999], dtype=torch.int64, device="cuda"),
+            radar_source_ids=list(spike.transmitter_ids),
+            radar_sink_ids=list(spike.receiver_ids),
+            reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+            leg_site_ids=list(spike.site_ids),
         )
 
 

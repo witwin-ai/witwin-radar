@@ -34,11 +34,6 @@ TIMEOUT_S = 180
 
 NAMED_REFUSALS = ("ValueError", "TypeError", "NotImplementedError")
 
-_MP2 = (
-    "MP-2: a declared site with no path at some discovery makes the two-way join raise ValueError instead of "
-    "contributing zero, so a target walking behind an occluder stops the run"
-)
-
 
 def _channel_version() -> tuple[int, ...]:
     from importlib.metadata import PackageNotFoundError, version
@@ -106,7 +101,7 @@ def _check_on_wall(record):
 #: case -> (what a correct result must satisfy, words a refusal must contain, and the strict-xfail
 #: reason, or ``(reason, condition)`` for a failure only some Channel releases have, or None).
 CASES = {
-    "occluded_mid_sequence": (_check_occluded, (), _MP2),
+    "occluded_mid_sequence": (_check_occluded, (), None),
     "site_on_wall": (_check_on_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
     "site_near_wall": (_check_near_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
     "site_at_element": (lambda record: False, ("coincid", "zero distance", "element", "endpoint", "distance"), None),

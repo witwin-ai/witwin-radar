@@ -615,6 +615,10 @@ class WorldHalf:
                 direct=direct,
                 direct_identity=through,
                 max_round_trips=request.max_round_trips,
+                # Both legs were discovered for exactly these site endpoints,
+                # so a site with no row is occluded at this instant rather
+                # than undeclared, and contributes zero.
+                leg_site_ids=binding.site_ids,
             )
             pattern = RoundTripPatternStage.freeze(
                 self.radar,

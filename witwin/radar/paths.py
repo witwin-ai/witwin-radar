@@ -910,6 +910,7 @@ class TwoWayComposer:
         direct: FrozenLeg | None = None,
         direct_identity: LegIdentity | None = None,
         max_round_trips: int | None = None,
+        leg_site_ids: Sequence[int] | None = None,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -925,9 +926,17 @@ class TwoWayComposer:
 
         ``site_ids`` may be a SUBSET of the sites the legs actually reach: a
         caller composing two of five discovered targets is doing something
-        legitimate. What is refused is the reverse - a declared site with no
-        row at all in one of the legs - because that is a wrong stable ID, and
-        dropping it silently is how a join produces a plausible empty answer.
+        legitimate.
+
+        ``leg_site_ids`` names the site endpoints both legs were DISCOVERED
+        for: the inbound leg's sinks and the outbound leg's sources. A declared
+        site in that set with no row in a leg is a site discovery found no path
+        to at this instant (a target behind an occluder); it owns no composed
+        row and contributes exactly zero. A declared site outside it is a
+        wrong stable ID and is refused, because dropping it silently is how a
+        join produces a plausible empty answer. Without ``leg_site_ids`` the
+        rows are the only evidence of which sites the legs were asked about,
+        so a declared site with no row in a leg is refused as unknown.
 
         ``direct`` is the optional third leg, transmitter straight to receiver.
         Each of its rows becomes one site-less composed row in its sensor
@@ -966,18 +975,28 @@ class TwoWayComposer:
                 f"outbound leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}"
             )
 
-        # A site absent from a leg ENTIRELY is a caller error: the site list is
-        # the declaration of what this join is about, and silently dropping one
-        # would hide a wrong stable ID. A site absent for ONE endpoint is not -
-        # that is discovery reporting that this particular TX/RX pair sees
-        # nothing there, and it is published as an empty pair segment.
-        reachable_in = set(arriving.sink.tolist())
-        reachable_out = set(leaving.source.tolist())
-        for site in sites:
-            if site not in reachable_in:
-                raise ValueError(f"site {site} has no inbound leg row in the frozen topology")
-            if site not in reachable_out:
-                raise ValueError(f"site {site} has no outbound leg row in the frozen topology")
+        # A declared site the legs were never asked about is a caller error:
+        # the site list is the declaration of what this join is about, and
+        # silently dropping one would hide a wrong stable ID. A site the legs
+        # WERE asked about and found no path to is not - that is discovery
+        # reporting an occluded site, and it composes to no row at all, exactly
+        # as a sensor pair that sees nothing composes to an empty segment.
+        if leg_site_ids is None:
+            reachable_in = set(arriving.sink.tolist())
+            reachable_out = set(leaving.source.tolist())
+            for site in sites:
+                if site not in reachable_in:
+                    raise ValueError(f"site {site} has no inbound leg row in the frozen topology")
+                if site not in reachable_out:
+                    raise ValueError(f"site {site} has no outbound leg row in the frozen topology")
+        else:
+            discovered = set(stable_ids(leg_site_ids, "leg_site_ids"))
+            unknown = sorted(set(sites) - discovered)
+            if unknown:
+                raise ValueError(
+                    f"sites {unknown} are not endpoints either leg was discovered for ({sorted(discovered)}); "
+                    "a declared site must name a site endpoint of both legs"
+                )
 
         # Every (inbound, outbound) row pair that meets at one declared site.
         # Rows that reach an undeclared site are not part of this join.

@@ -196,6 +196,9 @@ class MultiEndpointSpike:
             radar_source_ids=list(self.transmitter_ids if declared_source_ids is None else declared_source_ids),
             radar_sink_ids=list(self.receiver_ids if declared_sink_ids is None else declared_sink_ids),
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
+            # Both legs were discovered for exactly the batch's site IDs, as a
+            # session's binding is.
+            leg_site_ids=list(self.site_ids),
         )
 
     # -- endpoint batches ---------------------------------------------------
