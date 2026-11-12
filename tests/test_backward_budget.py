@@ -477,9 +477,9 @@ def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(p
 def test_the_channel_reevaluate_publishes_its_ad_launches_and_tape_bytes(pipeline):
     """ADR-043's accounting, read where Radar receives it.
 
-    ``PropagationDiagnostics`` gained ``ad_companion_launches`` and
-    ``ad_tape_bytes`` at ``CONTRACT_VERSION`` 6 specifically so this ledger
-    could exist. Pinned by exact value at a pinned fixture: an inexact
+    ``PropagationDiagnostics`` publishes ``ad_companion_launches`` and
+    ``ad_tape_bytes`` (consumer ``CONTRACT_VERSION`` 6 and later) so this
+    ledger can exist. Pinned by exact value at a pinned fixture: an inexact
     assertion here would accept a companion that started launching twice.
     """
 
