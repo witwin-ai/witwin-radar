@@ -169,7 +169,7 @@ def test_channel_is_an_optional_extra_and_never_a_required_dependency():
     required = data["project"]["dependencies"]
     assert not any("channel" in entry for entry in required), required
     extras = data["project"]["optional-dependencies"]
-    assert extras["channel"] == ["witwin-channel>=0.5.0,<0.6"]
+    assert extras["channel"] == ["witwin-channel>=0.5.0,<0.6; python_version >= '3.10' and python_version < '3.14'"]
     for entry in required + [item for value in extras.values() for item in value]:
         assert "rayd" not in entry.lower(), entry
 

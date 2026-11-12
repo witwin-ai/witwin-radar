@@ -505,3 +505,36 @@ def test_the_packaged_record_validates_against_this_checkout(packaged_binary):
     assert info["build_type"] in runtime.BUILD_TYPES
     assert info["torch_target_version"] == runtime.TORCH_TARGET_VERSION
     assert info["source_fingerprint"].startswith(runtime.source_fingerprint())
+
+
+@pytest.mark.parametrize(
+    ("capability", "architectures", "runs"),
+    [
+        ((8, 6), ["86"], True),
+        ((8, 6), ["80"], True),  # same major, lower minor: binary compatible
+        ((8, 0), ["86"], False),  # SASS never runs on a lower minor
+        ((9, 0), ["86"], False),  # nor on another major
+        ((12, 0), ["70", "120+PTX"], True),
+        ((12, 1), ["100+PTX"], True),  # PTX is compiled forward by the driver
+        ((8, 6), ["120+PTX"], False),  # but never backward
+        ((8, 7), ["70", "75", "80", "86", "87", "89", "90", "100", "101", "120+PTX"], True),
+    ],
+)
+def test_the_architecture_rule_is_cuda_binary_compatibility(capability, architectures, runs):
+    assert runtime.device_runs_architectures(capability, architectures) is runs
+
+
+@pytest.mark.gpu
+def test_a_binary_built_for_another_architecture_is_refused_before_loading(tmp_path, packaged_binary):
+    import torch
+
+    major, minor = torch.cuda.get_device_capability()
+    foreign = "50" if major != 5 else "70"
+    cuda_dir = _copy_cuda_tree(tmp_path)
+    _rewrite_record(_prebuilt_in(cuda_dir), cuda_architectures=[foreign])
+
+    result = _run_driver(cuda_dir, {})
+    assert result["ok"] is False, result
+    assert result["type"] == "RadarExtensionABIError", result
+    assert f"sm_{major}{minor}" in result["message"]
+    assert f"TORCH_CUDA_ARCH_LIST including {major}.{minor}" in result["message"]

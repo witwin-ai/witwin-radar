@@ -175,3 +175,22 @@ def test_a_library_missing_a_required_operator_is_refused(monkeypatch):
     monkeypatch.setattr(torch.ops, "_radar_native", Empty())
     with pytest.raises(ImportError, match="stale"):
         runtime._require_operators(pathlib.Path("fake.pyd"))
+
+
+def test_every_fingerprinted_source_is_checked_out_with_lf_endings():
+    """The source fingerprint hashes raw bytes, so a CRLF checkout would refuse every binary built elsewhere."""
+
+    import shutil
+    import subprocess
+
+    from witwin.radar.cuda import runtime
+
+    if shutil.which("git") is None or not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
+    sources = [*runtime.extension_sources(), *sorted(runtime.source_root().glob("*.cuh"))]
+    relative = [pathlib.Path(path).resolve().relative_to(REPO_ROOT).as_posix() for path in sources]
+    completed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-attr", "eol", "--", *relative], capture_output=True, text=True, check=True
+    )
+    attributes = dict(line.split(": eol: ") for line in completed.stdout.splitlines())
+    assert attributes == dict.fromkeys(relative, "lf")

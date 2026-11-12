@@ -205,6 +205,51 @@ def normalize_cuda_architectures(raw: str) -> list[str]:
     return entries
 
 
+def device_runs_architectures(capability: tuple[int, int], architectures: Sequence[str]) -> bool:
+    """Whether a device of compute capability ``capability`` can run a binary built for ``architectures``.
+
+    ``architectures`` uses the normalized spelling of :func:`normalize_cuda_architectures`. SASS for ``sm_XY``
+    runs on a device of the same major version and a minor version of at least ``Y`` (CUDA binary compatibility);
+    PTX for ``compute_XY`` is compiled by the driver for any device of capability ``XY`` or higher.
+    """
+
+    major, minor = capability
+    for entry in architectures:
+        number = entry.removesuffix("+PTX")
+        if not number.isdigit():
+            continue
+        built_major, built_minor = divmod(int(number), 10)
+        if built_major == major and built_minor <= minor:
+            return True
+        if entry.endswith("+PTX") and (built_major, built_minor) <= (major, minor):
+            return True
+    return False
+
+
+def _require_device_architecture(library_path: Path, info: Mapping[str, object]) -> None:
+    """Refuse, before loading, a binary that cannot run on the current CUDA device.
+
+    Without this the first kernel launch fails with the driver's "no kernel image is available" deep inside an
+    operator. Only the current device is checked: kernels launch on the device of their input tensors, and a
+    process that moves work to another device of a different architecture gets the driver's error there.
+    Without a CUDA device there is nothing to check, and no native operator can run either.
+    """
+
+    if not torch.cuda.is_available():
+        return
+    device = torch.cuda.current_device()
+    capability = torch.cuda.get_device_capability(device)
+    architectures = [str(entry) for entry in info["cuda_architectures"]]
+    if not device_runs_architectures(capability, architectures):
+        major, minor = capability
+        raise RadarExtensionABIError(
+            f"{library_path} was built for CUDA architectures {architectures}, which cannot run on CUDA device "
+            f"{device} ({torch.cuda.get_device_name(device)}, sm_{major}{minor}). Rebuild it with "
+            f"TORCH_CUDA_ARCH_LIST including {major}.{minor} (`python scripts/build_radar_cuda_prebuilt.py`), or "
+            "install a release wheel, whose architecture list covers it."
+        )
+
+
 def _run(command: Sequence[str], *, env_overrides: Mapping[str, str] | None = None) -> str:
     env = None
     if env_overrides:
@@ -731,6 +776,7 @@ def _load_validated_extension(
     """
 
     info = validate_identity(library_path, extension_sources(), expected_fingerprint=expected_fingerprint)
+    _require_device_architecture(library_path, info)
     torch.ops.load_library(str(library_path))
     return _require_operators(library_path, list(info["operator_symbols"]), origin=origin, info=info)
 

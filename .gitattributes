@@ -1,0 +1,13 @@
+# Normalize text to LF in the repository, and check every text file out as LF too.
+#
+# The native loader keys a packaged binary to a SHA-256 over the RAW BYTES of the
+# sources it was built from (witwin/radar/cuda/runtime.py, source_digest). A
+# checkout that rewrote line endings - core.autocrlf=true on Windows - produced
+# different bytes, so a binary built anywhere else was refused against it. Pinning
+# eol=lf makes the bytes, and therefore the fingerprint, the same on every checkout,
+# whatever the local git configuration.
+* text=auto eol=lf
+
+*.npz binary
+*.pyd binary
+*.so binary
