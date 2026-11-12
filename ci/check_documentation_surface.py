@@ -103,6 +103,50 @@ def _audit_symbol_owner_tables(repo: Path, manifest: dict) -> list[str]:
     return errors
 
 
+ROOT_EXPORT_MARKER = "exports the whole happy path"
+NUMBER_WORDS = {
+    word: value
+    for value, word in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+        "seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four".split()
+    )
+}
+
+
+def _audit_root_exports(repo: Path, manifest: dict) -> list[str]:
+    """A living sentence that lists the root exports lists exactly ``ci/public-api-manifest.json``'s root.
+
+    The sentence is the one containing ``ROOT_EXPORT_MARKER``. Its backticked names must equal the root
+    exports, and a count written next to them must equal their number.
+    """
+
+    if not manifest.get("root_export_lists"):
+        return []
+    public = json.loads((repo / "ci" / "public-api-manifest.json").read_text(encoding="utf-8"))
+    exported = set(public["modules"]["witwin.radar"])
+    errors: list[str] = []
+    for relative in manifest.get("root_export_lists", ()):
+        lines = [
+            line for line in (repo / relative).read_text(encoding="utf-8").splitlines() if ROOT_EXPORT_MARKER in line
+        ]
+        if len(lines) != 1:
+            errors.append(
+                f"{relative} must state the root exports in exactly one line containing {ROOT_EXPORT_MARKER!r}"
+            )
+            continue
+        listed = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", lines[0]))
+        if listed != exported:
+            errors.append(
+                f"{relative} lists root exports {sorted(listed)}; the package exports {sorted(exported)} "
+                f"(missing {sorted(exported - listed)}, extra {sorted(listed - exported)})"
+            )
+        for word in re.findall(r"\b([a-z-]+|\d+) names\b", lines[0].lower()):
+            count = int(word) if word.isdigit() else NUMBER_WORDS.get(word)
+            if count is not None and count != len(exported):
+                errors.append(f"{relative} says {word} names; the package root exports {len(exported)}")
+    return errors
+
+
 def _living_documents(repo: Path, manifest: dict, errors: list[str]) -> list[str]:
     """Expand the ``living`` list, resolving a trailing-slash entry to its Markdown files.
 
@@ -170,6 +214,7 @@ def audit(repo: Path) -> list[str]:
             errors.append(f"{relative} names missing current path {claimed!r}")
 
     errors.extend(_audit_symbol_owner_tables(repo, manifest))
+    errors.extend(_audit_root_exports(repo, manifest))
 
     prefixes = tuple(manifest["historical_prefixes"])
     overlap = [

@@ -71,5 +71,9 @@
       "columns": 9,
       "owner_column": 1
     }
+  ],
+  "root_export_lists": [
+    "README.md",
+    "FEATURE_LIST.md"
   ]
 }

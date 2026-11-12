@@ -128,3 +128,24 @@ def test_the_documentation_gate_checks_tracked_paths_and_skips_build_products(tm
     manifest = {"living": ["README.md"], "historical_prefixes": [], "retired_living_tokens": []}
     (tmp_path / "ci" / "documentation-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     assert check_documentation_surface.audit(tmp_path) == ["README.md names missing current path 'docs/missing.md'"]
+
+
+def test_the_documentation_gate_checks_the_listed_root_exports_against_the_package(tmp_path: Path):
+    (tmp_path / "ci").mkdir()
+    shutil.copy2(REPO_ROOT / "ci" / "public-api-manifest.json", tmp_path / "ci" / "public-api-manifest.json")
+    exports = sorted(json.loads((tmp_path / "ci" / "public-api-manifest.json").read_text())["modules"]["witwin.radar"])
+    stale = [name for name in exports if name not in {"Iq", "Leakage"}]
+    (tmp_path / "README.md").write_text(
+        f"The root exports the whole happy path in sixteen names: {', '.join(f'`{name}`' for name in stale)}.\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "living": ["README.md"],
+        "historical_prefixes": [],
+        "retired_living_tokens": [],
+        "root_export_lists": ["README.md"],
+    }
+    (tmp_path / "ci" / "documentation-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    errors = check_documentation_surface.audit(tmp_path)
+    assert any("missing ['Iq', 'Leakage']" in error for error in errors), errors
+    assert any(f"says sixteen names; the package root exports {len(exports)}" in error for error in errors), errors

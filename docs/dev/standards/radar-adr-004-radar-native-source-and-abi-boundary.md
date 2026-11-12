@@ -258,8 +258,8 @@ The load-time presence check names one operator per family and gates every load
 route, so a stale binary fails at load instead of deep inside a kernel call.
 Adding a family without updating the check is caught by
 `tests/test_native_binding_manifest.py::test_the_load_check_covers_every_native_translation_unit`;
-routing around the check is caught by
-`tests/test_native_binding_manifest.py::test_every_load_route_validates_the_required_operators`.
+a library missing a required operator is refused by
+`tests/test_native_binding_manifest.py::test_a_library_missing_a_required_operator_is_refused`.
 
 ## Alternatives rejected
 
@@ -282,7 +282,6 @@ Rejected: one extra `double` on three operators buys both.
 
 - `tests/test_fmcw_beat_kernel.py::test_production_carrier_placement_carries_the_same_doppler`
 - `tests/test_fmcw_beat_kernel.py::test_the_two_carrier_homes_cannot_both_be_used`
-- `tests/test_fmcw_beat_kernel.py::test_matches_the_dirichlet_path_when_carrier_is_the_carrier`
 - `tests/test_fmcw_beat_kernel.py::test_tau_is_the_round_trip_delay_and_is_never_doubled`
 - `tests/test_fmcw_beat_kernel.py::test_conjugation_is_the_only_channel_to_beat_conversion`
 - `tests/test_fmcw_beat_ad.py` (VJP and JVP against the float64 oracle)

@@ -128,7 +128,6 @@ exist.
   counting monkeypatch: two preparations total across five frames)
 - `tests/test_single_site_end_to_end.py::test_per_frame_host_traffic_is_two_copies_and_two_synchronizations`
 - `tests/test_single_site_end_to_end.py::test_a_dead_row_contributes_exactly_zero_to_loss_and_gradients`
-- `tests/test_channel_adapter.py::test_jvp_publishes_delay_rate_and_refuses_to_invent_one`
 
 ## Amendment (Phase 7): a frame of slow-time slots costs one frame
 

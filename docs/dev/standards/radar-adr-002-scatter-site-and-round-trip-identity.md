@@ -1,6 +1,12 @@
 # R-ADR-002: Scatter-site, leg, and round-trip identity
 
-Status: Accepted (Phase 4), amended (Phase 5)
+Status: Accepted (Phase 4), amended (Phase 5); partly superseded (R-ADR-026, 2026-11-12)
+
+> **Superseded in part.** The identity rules below - site ids, leg rows, the frozen-topology check - are current.
+> The join features this record describes for direct rows and delay rate are not: there is no `join_mode`, no
+> `site_id = -1` / `outbound_row = -1` direct-row sentinel and no published round-trip delay rate in the current
+> composer (audit finding MP-16, `radar_development_plan.md` section 3.5). Read those sections as the history of
+> a deleted mechanism; `witwin/radar/paths.py` is the current owner.
 
 ## Context
 
