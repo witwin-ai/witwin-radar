@@ -66,7 +66,7 @@ _PREBUILT_PREFIX = "witwin/radar/cuda/prebuilt/"
 _NATIVE_SUFFIXES = (".pyd", ".so")
 _DSO_SUFFIXES = frozenset({".dll", ".dylib", ".pyd", ".so"})
 
-#: The nine translation units ``runtime.extension_sources()`` compiles, by NAME.
+#: The translation units ``runtime.extension_sources()`` compiles, by NAME.
 #: ``runtime.source_digest`` hashes ``path.name`` plus content, so the wheel's
 #: copies reproduce the digest without knowing where they were built.
 _SOURCE_MEMBERS = (
@@ -75,6 +75,7 @@ _SOURCE_MEMBERS = (
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
     "witwin/radar/cuda/sensor_weight.cu",
