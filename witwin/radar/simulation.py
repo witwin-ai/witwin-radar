@@ -20,6 +20,7 @@ adaptive route, through the radar's own waveform dispatch, and
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterator, Sequence
@@ -79,6 +80,22 @@ def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class SlotBatch:
+    """The slot-major rows one grouped replay composed, shared by its instants.
+
+    ``composed`` holds ``slots`` copies of one join's rows, slot major: row
+    ``g * rows + r`` is join row ``r`` at slot ``g`` and pair ``g * pairs + p``
+    is slot ``g``'s pair ``p``. ``offsets`` is ONE slot's pair partition on the
+    host, which is what lets the instrument half select sensor-pair segments
+    without reading the device.
+    """
+
+    composed: RadarPathBatch
+    offsets: np.ndarray
+    slots: int
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class EvaluatedObservation:
     """One evaluated instant, as the frame loop and the adaptive controller read it.
 
@@ -94,6 +111,9 @@ class EvaluatedObservation:
     legs: Callable[[], RadarPropagationLegs]
     composed: RadarPathBatch
     identity: Hashable
+    #: The grouped replay this instant is slot ``slot`` of.
+    batch: SlotBatch
+    slot: int
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -108,12 +128,22 @@ class _PendingObservation:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Observation:
-    """One published instant: the world it saw and the rows it composed."""
+    """One published instant: the world it saw and the rows it composed.
+
+    ``legs`` is narrowed out of the grouped replay only when read, which on
+    the fused route is once a frame.
+    """
 
     time_s: float
     epoch_frame: EpochFrame
-    legs: RadarPropagationLegs
+    legs_of: Callable[[], RadarPropagationLegs]
     composed: RadarPathBatch
+    batch: SlotBatch | None = None
+    slot: int = 0
+
+    @property
+    def legs(self) -> RadarPropagationLegs:
+        return self.legs_of()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -121,8 +151,9 @@ class FrameTrace:
     """One frame's composed rows, before any instrument stage has run.
 
     ``observations`` is an ITERATOR on the fused route and is drained exactly
-    once, in order, so the route never holds more than one observation;
-    :func:`trace_scene` materialises it into a tuple instead.
+    once, in order, so the route holds at most one replay group of
+    ``Motion.batch_observations`` instants; :func:`trace_scene` materialises
+    it into a tuple instead.
 
     An adaptive frame yields a single observation, the one that closed it,
     because its rows live in ``adaptive`` rather than one batch per instant.
@@ -221,6 +252,10 @@ class Session:
     #: The last unsampled frame's waveform result, keyed by the rows it was
     #: synthesized from; see :class:`_HeldSynthesis`.
     held: _HeldSynthesis = field(default_factory=lambda: _HeldSynthesis())
+    #: Device routing tables of the slot-batch synthesis, keyed by the host
+    #: tables they were uploaded from. A frame's batches repeat the same
+    #: routing every frame, so each table crosses to the device once.
+    routing: _Bounded[bytes, torch.Tensor] = field(default_factory=lambda: _Bounded(ROUTING_CACHE))
 
     def specs_for(self, radar: Radar) -> InstrumentSpecs:
         """The spec triple ``radar`` would work from on this session's schedule.
@@ -311,6 +346,9 @@ def _stacked(specs: Sequence[RadarEndpointSpec]) -> RadarEndpointSpec:
 #: than left to grow with every group size and epoch a run produces.
 SLOT_TABLE_CACHE = 4
 
+#: How many slot-batch routing tables a session keeps on the device.
+ROUTING_CACHE = 64
+
 K = TypeVar("K")
 V = TypeVar("V")
 
@@ -357,6 +395,10 @@ def _present(value: torch.Tensor | None, name: str) -> torch.Tensor:
     return value
 
 
+def _constant_legs(legs: RadarPropagationLegs) -> RadarPropagationLegs:
+    return legs
+
+
 def _slot_legs(replay: RadarPropagationLegs, index: int) -> RadarPropagationLegs:
     """One slot of a slot-major replay, narrowed only when a caller reads it."""
 
@@ -394,6 +436,7 @@ class WorldHalf:
         cadence: int | None,
         world_motion: str,
         still_world: bool = False,
+        batch_observations: int = 1,
     ) -> None:
         from .channel import compile_scene
 
@@ -424,6 +467,7 @@ class WorldHalf:
         #: derivative holds them: a shared graph would sum every frame's
         #: cotangent before the replay's backward rather than after it.
         self.still_world = still_world
+        self.batch_observations = batch_observations
         self._still: Observation | None = None
         self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
             SLOT_TABLE_CACHE
@@ -572,7 +616,7 @@ class WorldHalf:
             if self.loop.structures_move:
                 self._replay([pending], results)
             else:
-                groups.setdefault(pending.identity, []).append(pending)
+                groups.setdefault(_round_trip(frame.frozen).identity, []).append(pending)
         for group in groups.values():
             self._replay(group, results)
         return [results[time_s] for time_s in query_times]
@@ -624,9 +668,16 @@ class WorldHalf:
                 legs=lambda: replay,
                 composed=paths,
                 identity=identity,
+                batch=SlotBatch(composed=paths, offsets=round_trip.composer.pair_offsets_host, slots=1),
+                slot=0,
             )
             return
         batched = self._compose_slots(group, replay, transmitters, receivers)
+        shared = SlotBatch(
+            composed=batched,
+            offsets=_round_trip(group[0].epoch_frame.frozen).composer.pair_offsets_host,
+            slots=len(group),
+        )
         batched_valid = _present(batched.row_valid, "row_valid")
         valid_rows = batched_valid.reshape(len(group), -1).cpu().numpy() if self.motion_sampling == "adaptive" else None
         for slot, entry in enumerate(group):
@@ -656,6 +707,8 @@ class WorldHalf:
                 legs=partial(_slot_legs, replay, slot),
                 composed=paths,
                 identity=identity,
+                batch=shared,
+                slot=slot,
             )
 
     def _compose_slots(
@@ -690,8 +743,9 @@ class WorldHalf:
     def observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
         """One frame's evaluated observations, in schedule order.
 
-        A generator rather than a list: the fused route drops each observation
-        once it has been synthesized, so nothing scales with the
+        A generator rather than a list: the fused route drops each replay group
+        once it has been synthesized, so its retention is bounded by
+        ``Motion.batch_observations`` rather than by the
         ``chirps * transmitters * samples`` observations an ADC-refreshed frame
         has. :func:`trace_scene` materialises the same generator and pays that
         cost deliberately.
@@ -702,6 +756,26 @@ class WorldHalf:
         topology.
         """
 
+        if self.still_world:
+            yield from self._still_observations(start, offsets)
+            return
+        # A frame's instants are evaluated in groups of ``batch_observations``:
+        # topology-identical instants of a group share one slot-major replay
+        # and one composition, and the group is the largest unit of rows the
+        # route holds at once.
+        for begin in range(0, len(offsets), self.batch_observations):
+            times = [float(start + offset) for offset in offsets[begin : begin + self.batch_observations]]
+            for record in self.evaluate(times):
+                yield Observation(
+                    time_s=record.time_s,
+                    epoch_frame=record.epoch_frame,
+                    legs_of=record.legs,
+                    composed=record.composed,
+                    batch=record.batch,
+                    slot=record.slot,
+                )
+
+    def _still_observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
         for offset in offsets:
             time_s = float(start + offset)
             held = self._still
@@ -714,9 +788,14 @@ class WorldHalf:
             else:
                 record = self.evaluate([time_s])[0]
             observation = Observation(
-                time_s=time_s, epoch_frame=record.epoch_frame, legs=record.legs(), composed=record.composed
+                time_s=time_s,
+                epoch_frame=record.epoch_frame,
+                legs_of=partial(_constant_legs, record.legs()),
+                composed=record.composed,
+                batch=record.batch,
+                slot=record.slot,
             )
-            if self.still_world and not _carries_derivative(observation.composed):
+            if not _carries_derivative(observation.composed):
                 self._still = observation
             yield observation
 
@@ -901,6 +980,7 @@ def open_session(
         cadence=cadence,
         world_motion=motion.world,
         still_world=not sampled and cadence is None,
+        batch_observations=int(motion.batch_observations),
     )
     session = Session(
         radar=radar,
@@ -955,7 +1035,7 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
         if not isinstance(last, EvaluatedObservation):
             raise TypeError("the adaptive controller returns the session's evaluated observations")
         closing = Observation(
-            time_s=float(actual_times[-1]), epoch_frame=last.epoch_frame, legs=last.legs(), composed=last.composed
+            time_s=float(actual_times[-1]), epoch_frame=last.epoch_frame, legs_of=last.legs, composed=last.composed
         )
         yield FrameTrace(
             time_s=float(start),
@@ -972,6 +1052,134 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
 # ---------------------------------------------------------------------------
 # The instrument half
 # ---------------------------------------------------------------------------
+
+
+def _uploaded(session: Session, table: np.ndarray, device: torch.device) -> torch.Tensor:
+    """``table`` as an int64 device tensor, uploaded once per distinct content."""
+
+    host = np.ascontiguousarray(table, dtype=np.int64)
+    key = hashlib.sha256(str(device).encode() + host.tobytes()).digest()
+    cached = session.routing.get(key)
+    if cached is None:
+        cached = torch.from_numpy(host).to(device)
+        session.routing.put(key, cached)
+    return cached
+
+
+def _batches_slots(session: Session) -> bool:
+    """Whether a sampled frame is synthesized one slot batch at a time.
+
+    Every refreshed FMCW frame is, unless something acts on the rows between
+    replay and synthesis (oscillator phase noise) or adds rows of its own (a
+    declared coupling); those keep one launch per observation.
+    """
+
+    from .synthesis.assembly import FmcwSpec
+
+    radar = session.radar
+    return (
+        session.sampled
+        and isinstance(session.specs.working, FmcwSpec)
+        and not session.path_phase_noise
+        and radar.leakage is None
+    )
+
+
+def _echo_slot_batches(
+    session: Session, working: FmcwSpec, observations: Iterator[Observation] | tuple[Observation, ...]
+) -> tuple[torch.Tensor, EpochFrame, Observation]:
+    """Synthesize a sampled FMCW frame from its slot batches, active pairs only.
+
+    An observation sits in one TDM slot and is heard by one transmitter's
+    ``num_rx`` pairs; the frame cube reads nothing else from it. Each slot
+    batch is therefore synthesized as ONE launch over just those pair
+    segments - per ADC sample index on the ADC route, because the sample
+    instant is a launch parameter - and the frame cube gathers the results.
+    Every segment sums the same rows in the same order as a per-observation
+    launch would, so the cube is the same to the bit. Returns the
+    ``[chirp, pair, sample]`` cube, the opening epoch frame and the closing
+    observation.
+    """
+
+    from .synthesis import SynthesisPathBatch
+    from .synthesis.assembly import FmcwSpec, require_compatible
+    from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_rows
+
+    single = session.specs.single
+    assert isinstance(single, FmcwSpec)
+    array = session.array
+    num_tx, num_rx = array.num_tx, array.num_rx
+    pairs = num_tx * num_rx
+    samples = session.samples_per_slot
+    values: list[torch.Tensor] = []
+    targets: list[np.ndarray] = []
+    opened: EpochFrame | None = None
+    closing: Observation | None = None
+    pending: list[tuple[int, Observation]] = []
+
+    def flush() -> None:
+        batch = pending[0][1].batch
+        assert batch is not None
+        composed = batch.composed
+        # The waveform specs satisfy the protocol at run time; their fields are
+        # frozen, which a protocol of plain attributes cannot express.
+        checked: Any = single
+        require_compatible(SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=session.mode), checked)
+        rows_per_slot = composed.path_count // batch.slots
+        index = np.asarray([entry[0] for entry in pending], dtype=np.int64)
+        slot_in_batch = np.asarray([entry[1].slot for entry in pending], dtype=np.int64)
+        sample = index % samples
+        for value in np.unique(sample):
+            chosen = sample == value
+            frame_slot = index[chosen] // samples
+            # Sink-major ranks: the slot's transmitter ``t`` is heard on pairs
+            # ``t + num_tx * r``, one per receiver ``r``.
+            pair = ((frame_slot % num_tx)[:, None] + num_tx * np.arange(num_rx)).ravel()
+            owner = np.repeat(slot_in_batch[chosen], num_rx)
+            begin = owner * rows_per_slot + batch.offsets[pair]
+            counts = batch.offsets[pair + 1] - batch.offsets[pair]
+            prefix = np.cumsum(counts) - counts
+            rows = np.repeat(begin - prefix, counts) + np.arange(int(counts.sum()))
+            segment_offsets = np.concatenate(([0], np.cumsum(counts)))
+            routing = _uploaded(session, np.concatenate((rows, segment_offsets, pair % num_tx)), composed.device)
+            row_index, offsets, transmitter = torch.split(routing, [len(rows), len(segment_offsets), len(pair)])
+            transfer = channel_phasor_to_beat_weight(composed.complex_transfer_ref.index_select(0, row_index))
+            if composed.row_valid is not None:
+                valid = composed.row_valid.index_select(0, row_index)
+                transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
+            spec = single
+            if session.adc_sampled:
+                spec = replace(single, t_start_s=working.t_start_s + int(value) * working.sample_period_s)
+            out = synthesize_fmcw_rows(
+                composed.total_delay_s.index_select(0, row_index),
+                None,
+                transfer,
+                offsets,
+                spec,
+                segment_tx_index=transmitter.to(torch.int32),
+            )
+            values.append(out.reshape(len(pair), spec.num_samples))
+            chirp = np.repeat(frame_slot // num_tx, num_rx)
+            targets.append(((chirp * pairs + pair) * samples + value) * spec.num_samples)
+        pending.clear()
+
+    for position, observation in enumerate(observations):
+        if opened is None:
+            opened = observation.epoch_frame
+        closing = observation
+        if pending and observation.batch is not pending[0][1].batch:
+            flush()
+        pending.append((position, observation))
+    if opened is None or closing is None:
+        raise ValueError("a frame trace must carry at least one observation")
+    flush()
+    destination = np.concatenate(targets)
+    order = np.argsort(destination, kind="stable")
+    if not np.array_equal(destination[order], np.arange(len(destination)) * single.num_samples):
+        raise ValueError("a sampled frame's observations must cover every chirp, pair and sample exactly once")
+    gather = _uploaded(session, order, values[0].device)
+    cube = torch.cat(values).index_select(0, gather)
+    return cube.reshape(working.num_chirps, pairs, working.num_samples), opened, closing
 
 
 def _finish_frame(
@@ -1041,6 +1249,19 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         assert trace.stats is not None
         trace.stats["synthesis_batches"] = batches
         synthesis = SynthesisResult.from_fmcw(cube, replace(working, output_domain="beat"))
+    elif _batches_slots(session):
+        assert isinstance(working, FmcwSpec)
+        cube, opened, closing = _echo_slot_batches(session, working, trace.observations)
+        published = closing.composed
+        if session.adc_sampled:
+            if working.output_domain == "spectrum":
+                from .processing.range_doppler import fmcw_range_fft
+
+                cube = fmcw_range_fft(cube)
+            synthesis = SynthesisResult.from_fmcw(cube, working)
+        else:
+            assert isinstance(session.specs.single, FmcwSpec)
+            synthesis = SynthesisResult.from_fmcw(cube, session.specs.single)
     else:
         slot_cubes: list[torch.Tensor] = []
         single = session.specs.single
@@ -1145,7 +1366,7 @@ class Paths:
     ``chirps * transmitters * samples`` instants, so a modest scene costs tens
     of megabytes per frame and a rich one costs gigabytes.
     :meth:`~witwin.radar.Radar.simulate` never pays that: it drops each
-    observation as it synthesizes. Trace a frame at a time if the sequence is
+    replay group as it synthesizes. Trace a frame at a time if the sequence is
     long.
 
     ``path_set_complete`` and ``motion_sampling_exhaustive`` are TWO

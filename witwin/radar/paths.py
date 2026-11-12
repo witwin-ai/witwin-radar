@@ -744,6 +744,10 @@ class TwoWayComposer:
     # so it refuses anything but a line-of-sight outbound leg; the host int is
     # what lets it refuse without reading a device column.
     outbound_max_depth: int
+    #: One slot's pair partition on the host, as built: ``pair_offsets`` before
+    #: its upload. A slot-major replica keeps the single-slot table, which is
+    #: what an instrument half selecting pair segments slot by slot reads.
+    pair_offsets_host: np.ndarray
 
     @classmethod
     def freeze(
@@ -914,6 +918,7 @@ class TwoWayComposer:
             by_row_offsets=torch.arange(total + 1, dtype=torch.int64, device=device),
             by_row_rows=torch.arange(total, dtype=torch.int64, device=device),
             outbound_max_depth=int(leaving.depth[joined_out].max()) if total else 0,
+            pair_offsets_host=offsets,
         )
 
     @property

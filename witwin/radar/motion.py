@@ -86,7 +86,9 @@ class Motion:
     #: Adaptive: the discovery budget. Exhausting it raises rather than
     #: returning an unchecked cube.
     max_evaluations: int = 8192
-    #: Adaptive: observations per batched replay, and per synthesis batch.
+    #: Observations per batched replay: the largest group of instants a
+    #: session replays, composes and synthesizes together, and therefore the
+    #: most rows the fused route holds at once.
     batch_observations: int = 256
     #: Topology rediscovery cadence in frames. ``None`` rediscovers at every
     #: observation, which is the only cadence that cannot miss a path birth.
