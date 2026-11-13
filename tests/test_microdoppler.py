@@ -406,7 +406,11 @@ def test_microdoppler_analysis_is_torch_only():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
-    assert imported == {"dataclasses", "display", "math", "signal", "torch"}, sorted(imported)
+    # ``synthesis.assembly`` names the pulsed spec; ``signal`` already imports it,
+    # so it adds no coupling. Nothing native is reachable from either.
+    assert imported == {"dataclasses", "display", "math", "signal", "synthesis.assembly", "torch", "typing"}, sorted(
+        imported
+    )
 
     # And no analysis vocabulary leaked into the native side. COMMENTS are
     # stripped first, deliberately: ``pulsed_echo.cu`` names
