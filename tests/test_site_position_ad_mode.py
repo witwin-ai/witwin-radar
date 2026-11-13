@@ -15,9 +15,12 @@ positions (refused when the session's site policy is built, before even the
 scene compile), a ``PointTargets`` trajectory's output and a ``MeshTargets``
 structure's world vertices (both refused when the frame resolves them, after
 Channel's compile and before anything reads them), plus a ``StructureTargets``
-anchor through the same policy. The instrument is calibrated against the same
-call in the mode that carries the derivative, so a count of zero is not a
-vacuous one.
+anchor through the same policy. The same rule covers the other leg endpoints a
+Core snapshot places - the radar elements read through ``SensorEndpointIds`` -
+and the scene leaves a wall-bounce row reads. A ``positions`` tensor beside a
+trajectory is never read at all, so a derivative on it is refused in every mode.
+The instrument is calibrated against the same call in the mode that carries the
+derivative, so a count of zero is not a vacuous one.
 """
 
 from __future__ import annotations
@@ -207,6 +210,25 @@ def _mode(marked: str) -> str:
     return "vjp" if marked == "gradient" else "jvp"
 
 
+@pytest.mark.parametrize("marked", ["gradient", "tangent"])
+def test_a_marked_positions_tensor_beside_a_trajectory_is_refused_in_every_mode(marked):
+    """With a trajectory, ``positions`` only sets the count: the legs never read it, so it has no derivative."""
+
+    from witwin.radar import PointTargets
+
+    base = torch.tensor(POSITIONS)
+    with fwad.dual_level():
+        with pytest.raises(RuntimeError, match=r"PointTargets\.positions carries a .* a trajectory is given") as raised:
+            PointTargets(positions=_marked(base, marked), rcs=1.0, trajectory=lambda t: base)
+    message = str(raised.value)
+    assert "only sets the target count" in message
+    assert "trajectory's outputs are what differentiate" in message
+    assert "in any ad_mode" in message
+    # The same tensor detached, or host triples, is the declaration that works.
+    assert PointTargets(positions=base, rcs=1.0, trajectory=lambda t: base).positions is base
+    PointTargets(positions=POSITIONS, rcs=1.0, trajectory=lambda t: base)
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("route", ["static", "trajectory"])
 def test_a_network_refuses_a_marked_target_position_too(monkeypatch, route):
@@ -253,6 +275,76 @@ def test_the_matching_mode_still_carries_a_mesh_vertex_derivative(monkeypatch, m
         rows = _mesh_rows(_marked(_plate_vertices(), marked), _mode(marked))
         assert _carried(rows, marked)
     assert work.calls["facet_geometry"] >= 1 and work.calls["discover"] >= 2 and work.calls["join"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Core sensor endpoints: SensorEndpointIds places the radar's elements
+# ---------------------------------------------------------------------------
+
+ENDPOINT_IDS = ((77110, 77111), (77112, 77113))
+
+
+def _endpoint_cube(offset: torch.Tensor, route: str, ad_mode: str) -> torch.Tensor:
+    """The fixture radar with its elements read from Core endpoints displaced by ``offset``.
+
+    ``"position"`` displaces the authored antenna positions; ``"trajectory"`` puts the
+    offset in each endpoint's ``LinearTrajectory`` origin, the snapshot's rigid motion.
+    """
+
+    from dataclasses import replace
+
+    from support.simulate_fixture import fixture_radar, point_targets
+    from witwin.core.dynamics import DynamicScene, LinearTrajectory
+    from witwin.core.scene import AntennaState, Scene
+
+    from witwin.radar.binding import SensorEndpointIds
+
+    radar = fixture_radar()
+    radar = radar.replace(waveform=replace(radar.waveform, chirps_per_frame=1, samples_per_chirp=2))
+    elements = torch.cat([radar.tx_pos, radar.rx_pos]).cpu()
+    ids = [*ENDPOINT_IDS[0], *ENDPOINT_IDS[1]]
+    shift = offset if route == "position" else torch.zeros(3)
+    endpoints = [AntennaState(ids[i], "tx" if i < 2 else "rx", point + shift) for i, point in enumerate(elements)]
+    trajectories = (
+        {}
+        if route == "position"
+        else {stable_id: LinearTrajectory(origin=offset, velocity=(0.3, 0.0, 0.0)) for stable_id in ids}
+    )
+    dynamic = DynamicScene(Scene(structures=(), endpoints=endpoints), endpoint_trajectories=trajectories)
+    targets = point_targets(torch.tensor([[2.0, 0.0, 0.0]], device=radar.device))
+    return radar.simulate(
+        dynamic, targets, endpoints=SensorEndpointIds(*ENDPOINT_IDS), times=(0.0,), los=True, reflections=0,
+        ad_mode=ad_mode,
+    ).cube  # fmt: skip
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(("marked", "ad_mode", "wanted"), MISMATCHES)
+@pytest.mark.parametrize("route", ["position", "trajectory"])
+def test_marked_core_sensor_endpoints_are_refused_before_any_discovery(monkeypatch, route, marked, ad_mode, wanted):
+    """Under ``none`` a marked antenna position came back with no derivative; a marked endpoint trajectory
+    came back with the join's part alone, the legs' missing."""
+
+    pytest.importorskip("witwin.channel")
+    work = _Work(monkeypatch)
+    with fwad.dual_level():
+        offset = _marked(torch.zeros(3), marked)
+        with pytest.raises(RuntimeError, match=r"Core transmitter endpoint position tensor .* carries a") as raised:
+            _endpoint_cube(offset, route, ad_mode)
+    assert f"pass ad_mode={wanted!r} (got ad_mode={ad_mode!r})" in str(raised.value)
+    assert work.calls["discover"] == 0 and work.calls["join"] == 0
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("marked", ["gradient", "tangent"])
+@pytest.mark.parametrize("route", ["position", "trajectory"])
+def test_the_matching_mode_carries_a_core_sensor_endpoint_derivative(monkeypatch, route, marked):
+    pytest.importorskip("witwin.channel")
+    work = _Work(monkeypatch)
+    with fwad.dual_level():
+        cube = _endpoint_cube(_marked(torch.zeros(3), marked), route, _mode(marked))
+        assert _carried(cube, marked)
+    assert work.calls["discover"] >= 2 and work.calls["join"] >= 1
 
 
 # ---------------------------------------------------------------------------

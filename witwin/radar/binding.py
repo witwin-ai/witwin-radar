@@ -552,6 +552,7 @@ def bind_radar_world(
     polarization: Sequence[float] = DEFAULT_POLARIZATION,
     sensor_endpoints: SensorEndpointIds | None = None,
     rx_polarization: Sequence[float] | None = None,
+    ad_mode: str | None = None,
 ) -> RadarWorldBinding:
     """Turn one ``Radar`` plus one ``SceneSnapshot`` into endpoint specs.
 
@@ -571,6 +572,12 @@ def bind_radar_world(
     It runs once per topology epoch, and once per observation when the sites or
     the sensor endpoints move with the snapshot. It allocates IDs, builds three
     small constant tensors, and copies nothing back to the host.
+
+    ``ad_mode`` is the verb's. Core sensor endpoints become the element
+    positions both legs start or end at, so one carrying a derivative that mode
+    does not carry is refused here, each time they are read
+    (:func:`witwin.radar.policy.require_leg_ad_mode`). ``None`` is a binding no
+    leg replays, which checks nothing.
     """
 
     transmitter_positions = _array_positions(radar, "tx_pos")
@@ -583,6 +590,14 @@ def bind_radar_world(
         rx = endpoint_kinematics(snapshot, sensor_endpoints.receivers, device=device)
         if tx.positions_m.shape != transmitter_positions.shape or rx.positions_m.shape != receiver_positions.shape:
             raise ValueError("sensor endpoint counts must match the radar array")
+        if ad_mode is not None:
+            for role, kinematics in (("transmitter", tx), ("receiver", rx)):
+                require_leg_ad_mode(
+                    f"the Core {role} endpoint position tensor (SensorEndpointIds)",
+                    kinematics.positions_m,
+                    ad_mode,
+                    moves=f"moves every {role} element, an endpoint of the legs",
+                )
         transmitter_positions, receiver_positions = tx.positions_m, rx.positions_m
     if receiver_positions.device != device:
         raise ValueError(

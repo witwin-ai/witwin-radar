@@ -27,7 +27,7 @@ from typing import Any, ClassVar, cast
 import torch
 
 from .binding import ScatterSitePolicy
-from .policy import require_real
+from .policy import _carries_derivative, require_real
 from .propagation import Kinematics
 from .scattering import (
     AspectScatterResponse,
@@ -293,6 +293,17 @@ class PointTargets:
             raise TypeError("PointTargets.fluctuation must be a Fluctuation")
         if self.trajectory is not None and not callable(self.trajectory):
             raise TypeError("PointTargets.trajectory must be callable as trajectory(time) -> (S, 3) positions")
+        carrier = None if self.trajectory is None else _carries_derivative(self.positions)
+        if carrier is not None:
+            # With a trajectory the legs read trajectory(t) at every instant and
+            # never this tensor, so a derivative on it has nothing to reach.
+            raise RuntimeError(
+                f"PointTargets.positions carries {carrier}, but a trajectory is given: positions then only sets the "
+                "target count and the order of the material points, and the legs read the trajectory's output at "
+                "every instant, never this tensor, so its derivative does not exist in any ad_mode. The "
+                "trajectory's outputs are what differentiate: make the tensors it closes over the leaves, and pass "
+                "positions detached (for example positions=trajectory(0.0).detach()) or as host triples."
+            )
         if self.aspect is not None and not isinstance(self.aspect, Aspect):
             raise TypeError(f"PointTargets.aspect must be an Aspect, got {type(self.aspect).__name__}")
         for name in ("rcs", "amplitude", "phase"):

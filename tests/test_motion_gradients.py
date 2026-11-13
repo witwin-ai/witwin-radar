@@ -46,7 +46,7 @@ def _loss(radar, scene, origin, velocity, motion, grad, *, weights):
 
     result = radar.simulate(
         scene,
-        PointTargets(positions=trajectory(0.0), rcs=1.0, trajectory=trajectory),
+        PointTargets(positions=trajectory(0.0).detach(), rcs=1.0, trajectory=trajectory),
         times=(0.0,),
         los=True,
         reflections=0,

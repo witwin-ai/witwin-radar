@@ -742,6 +742,7 @@ class WorldHalf:
             polarization=self.polarization,
             rx_polarization=self.rx_polarization,
             sensor_endpoints=self.sensor_endpoints,
+            ad_mode=self.ad_mode,
         )
         if self.pose is None:
             return binding

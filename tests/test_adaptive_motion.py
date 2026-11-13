@@ -378,7 +378,11 @@ def test_batched_multi_site_reflections_keep_site_gradients_and_topology_probes(
 
     def solve(point, motion, mode):
         return radar.simulate(
-            scene, point_targets(point, trajectory=lambda t: point + t * 0.7), times=(0.0,), motion=motion, ad_mode=mode
+            scene,
+            point_targets(point.detach(), trajectory=lambda t: point + t * 0.7),
+            times=(0.0,),
+            motion=motion,
+            ad_mode=mode,
         )
 
     exact = solve(origin, Motion.adc(), "none")

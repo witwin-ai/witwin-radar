@@ -88,7 +88,7 @@ def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
         velocity = torch.tensor([[0.5, 0.2, 0.0]], device=origin.device)
         return radar.simulate(
             static_scene(),
-            point_targets(origin, trajectory=lambda t: origin + t * velocity),
+            point_targets(origin.detach(), trajectory=lambda t: origin + t * velocity),
             times=(0.0,),
             los=True,
             reflections=0,
