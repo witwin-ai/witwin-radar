@@ -93,14 +93,19 @@ class Fixture:
             site_facets=long(self.site_facets),
             facet_site=long(self.facet_site),
             facet_material=long(np.zeros(len(self.corners), dtype=np.int64)),
-            material_params=single(self.material_params),
             layer_offsets=long(self.layer_offsets),
-            layers=single(self.layers),
             wavenumber=self.k,
             seed=self.seed,
             # The inbound legs' last points are far up-range, never at a site.
             origin_in=single(-100.0 * self.k_in),
+            max_layers=int(np.diff(self.layer_offsets).max()),
         )
+
+    def material_tables(self):
+        def single(values):
+            return torch.as_tensor(np.ascontiguousarray(values), dtype=torch.float32, device=DEVICE)
+
+        return single(self.material_params).reshape(-1), single(self.layers).reshape(-1)
 
     def tables(self):
         from witwin.radar.scattering import _BackwardTables
@@ -117,7 +122,7 @@ class Fixture:
         sites = torch.as_tensor(self.sites, dtype=torch.float64, device=DEVICE)
         return [single(self.k_in), single(self.k_out), single(self.corners), sites]
 
-    def evaluate(self, k_in, k_out, corners, sites, valid=None):
+    def evaluate(self, k_in, k_out, corners, sites, valid=None, materials=None):
         """``complex128[4, 4]`` rows of [HH, HV, VH, VV] (as float pairs from the kernel), and the up axes."""
 
         from witwin.radar.scattering import _FacetResponse
@@ -126,11 +131,14 @@ class Fixture:
             return torch.as_tensor(values, dtype=torch.int64, device=DEVICE)
 
         flags = torch.ones(4, dtype=torch.int32, device=DEVICE) if valid is None else valid
+        material_params, layers = self.material_tables() if materials is None else materials
         return _FacetResponse.apply(
             k_in,
             k_out,
             corners,
             sites,
+            material_params,
+            layers,
             long(self.idx_in),
             long(self.idx_out),
             long(self.idx_site),

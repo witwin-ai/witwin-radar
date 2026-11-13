@@ -135,7 +135,9 @@ def _facets(sites: int):
     )
     corner_leaf = torch.tensor(corners, dtype=torch.float32, device=DEVICE).requires_grad_(True)
     site_leaf = torch.tensor(centroids, dtype=torch.float64, device=DEVICE).requires_grad_(True)
-    frame = FacetFrame(model=model, corners=corner_leaf, sites=site_leaf)
+    frame = FacetFrame(
+        model=model, corners=corner_leaf, sites=site_leaf, material_params=model.material_params, layers=model.layers
+    )
     return FacetScatterResponse(wavenumber_rad_per_m=60.0, frame=frame), [corner_leaf, site_leaf]
 
 
