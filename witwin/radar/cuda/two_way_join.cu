@@ -32,6 +32,16 @@
 //     join fixture are 20 ps apart, about 1e4 float32 ULPs, so float32
 //     alone would also do, and nothing here depends on the difference.
 //
+// Slot stride: a slot-major replay of G instants carries G copies of one join.
+// The index and CSR tables describe ONE slot; row k of the batch is join row
+// k % rows_per_slot of slot g = k / rows_per_slot, and its leg rows are offset
+// by g times the legs' per-slot row counts. Sites are shared across slots
+// (sites_per_slot == 0) or slot-local (sites_per_slot > 0, a per-row
+// response). The VJP walks the per-slot CSR once per slot in slot order, which
+// is the order a replicated slot-major CSR would give, so the batch is the bit
+// for bit equal of a join whose tables were copied per slot. With slots == 1
+// every offset is zero and this is the plain join.
+//
 // Validity itself is computed in Torch, not here, and enters as an int32 mask.
 // It is the conjunction of two gathered per-leg masks: row selection and
 // metadata, which the architecture explicitly leaves to the Python boundary.
@@ -72,6 +82,19 @@ __device__ __forceinline__ Complex load(
   return {static_cast<double>(re[index]), static_cast<double>(im[index])};
 }
 
+// One slot's layout inside a slot-major batch.
+struct SlotStride {
+  int64_t rows;   // composed rows per slot
+  int64_t in;     // inbound leg rows per slot
+  int64_t out;    // outbound leg rows per slot
+  int64_t sites;  // response slots per slot, 0 when shared by every slot
+};
+
+__device__ __forceinline__ int64_t strided(
+    const int64_t* __restrict__ table, const int64_t k, const SlotStride stride, const int64_t per_slot) {
+  return table[k % stride.rows] + (k / stride.rows) * per_slot;
+}
+
 __global__ void two_way_join_forward_kernel(
     const float* __restrict__ tau_in,
     const float* __restrict__ tau_out,
@@ -88,7 +111,8 @@ __global__ void two_way_join_forward_kernel(
     float* __restrict__ tau_rt,
     float* __restrict__ c_rt_re,
     float* __restrict__ c_rt_im,
-    const int num_rows) {
+    const int num_rows,
+    const SlotStride stride) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) {
     return;
@@ -99,9 +123,9 @@ __global__ void two_way_join_forward_kernel(
     c_rt_im[k] = 0.0f;
     return;
   }
-  const int64_t i = idx_in[k];
-  const int64_t o = idx_out[k];
-  const int64_t s = idx_s[k];
+  const int64_t i = strided(idx_in, k, stride, stride.in);
+  const int64_t o = strided(idx_out, k, stride, stride.out);
+  const int64_t s = strided(idx_s, k, stride, stride.sites);
   tau_rt[k] = static_cast<float>(
       static_cast<double>(tau_in[i]) + static_cast<double>(tau_out[o]));
   const Complex product = mul(
@@ -133,7 +157,8 @@ __global__ void two_way_join_jvp_kernel(
     float* __restrict__ tan_tau_rt,
     float* __restrict__ tan_c_rt_re,
     float* __restrict__ tan_c_rt_im,
-    const int num_rows) {
+    const int num_rows,
+    const SlotStride stride) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) {
     return;
@@ -144,9 +169,9 @@ __global__ void two_way_join_jvp_kernel(
     tan_c_rt_im[k] = 0.0f;
     return;
   }
-  const int64_t i = idx_in[k];
-  const int64_t o = idx_out[k];
-  const int64_t s = idx_s[k];
+  const int64_t i = strided(idx_in, k, stride, stride.in);
+  const int64_t o = strided(idx_out, k, stride, stride.out);
+  const int64_t s = strided(idx_s, k, stride, stride.sites);
   tan_tau_rt[k] = static_cast<float>(
       static_cast<double>(tan_tau_in[i]) + static_cast<double>(tan_tau_out[o]));
 
@@ -198,7 +223,9 @@ __global__ void two_way_join_backward_kernel(
     float* __restrict__ grad_s_im,
     const int num_in,
     const int num_out,
-    const int num_sites) {
+    const int num_sites,
+    const int64_t num_slots,
+    const SlotStride stride) {
   const int thread = blockIdx.x * blockDim.x + threadIdx.x;
   const int total = num_in + num_out + num_sites;
   if (thread >= total) {
@@ -207,32 +234,43 @@ __global__ void two_way_join_backward_kernel(
 
   int family;
   int slot;
+  int64_t per_slot;
   const int64_t* offsets;
   const int64_t* segment_rows;
   if (thread < num_in) {
     family = 0;
     slot = thread;
+    per_slot = stride.in;
     offsets = by_in_offsets;
     segment_rows = by_in_rows;
   } else if (thread < num_in + num_out) {
     family = 1;
     slot = thread - num_in;
+    per_slot = stride.out;
     offsets = by_out_offsets;
     segment_rows = by_out_rows;
   } else {
     family = 2;
     slot = thread - num_in - num_out;
+    per_slot = stride.sites;
     offsets = by_s_offsets;
     segment_rows = by_s_rows;
   }
+  // A slot-local owner reads its own slot's segment; a shared site reads its
+  // segment once per slot, in slot order.
+  const bool shared = per_slot == 0;
+  const int64_t owner = shared ? slot : slot % per_slot;
+  const int64_t first_slot = shared ? 0 : slot / per_slot;
+  const int64_t last_slot = shared ? num_slots : first_slot + 1;
 
   double d_tau = 0.0;
   double d_re = 0.0;
   double d_im = 0.0;
-  const int64_t begin = offsets[slot];
-  const int64_t end = offsets[slot + 1];
+  const int64_t begin = offsets[owner];
+  const int64_t end = offsets[owner + 1];
+  for (int64_t g = first_slot; g < last_slot; ++g)
   for (int64_t entry = begin; entry < end; ++entry) {
-    const int64_t k = segment_rows[entry];
+    const int64_t k = segment_rows[entry] + g * stride.rows;
     if (row_valid[k] == 0) {
       continue;
     }
@@ -240,18 +278,17 @@ __global__ void two_way_join_backward_kernel(
     const double g_im = static_cast<double>(grad_c_rt_im[k]);
     // The cofactor: the product of everything this slot did NOT contribute.
     Complex cofactor;
+    const int64_t i = strided(idx_in, k, stride, stride.in);
+    const int64_t o = strided(idx_out, k, stride, stride.out);
+    const int64_t s = strided(idx_s, k, stride, stride.sites);
     if (family == 0) {
-      cofactor = mul(
-          load(c_out_re, c_out_im, idx_out[k]), load(s_re, s_im, idx_s[k]));
+      cofactor = mul(load(c_out_re, c_out_im, o), load(s_re, s_im, s));
       d_tau += static_cast<double>(grad_tau_rt[k]);
     } else if (family == 1) {
-      cofactor = mul(
-          load(s_re, s_im, idx_s[k]), load(c_in_re, c_in_im, idx_in[k]));
+      cofactor = mul(load(s_re, s_im, s), load(c_in_re, c_in_im, i));
       d_tau += static_cast<double>(grad_tau_rt[k]);
     } else {
-      cofactor = mul(
-          load(c_out_re, c_out_im, idx_out[k]),
-          load(c_in_re, c_in_im, idx_in[k]));
+      cofactor = mul(load(c_out_re, c_out_im, o), load(c_in_re, c_in_im, i));
     }
     // Real-pair backpropagation through z = w * cofactor, the same split the
     // beat kernel uses: no complex tensor ever crosses the autograd boundary,
@@ -292,6 +329,18 @@ void check_pair(
   check_float_len(im, expected, name);
 }
 
+// The per-slot layout of a slot-major batch, checked against the totals.
+SlotStride slot_stride(
+    int64_t rows, int64_t legs_in, int64_t legs_out, int64_t sites, int64_t slots, int64_t slot_local_sites) {
+  STD_TORCH_CHECK(slots >= 1, "slots must be positive.");
+  STD_TORCH_CHECK(
+      rows % slots == 0 && legs_in % slots == 0 && legs_out % slots == 0,
+      "a slot-major join carries the same rows and legs in every slot.");
+  STD_TORCH_CHECK(
+      slot_local_sites == 0 || sites % slots == 0, "slot-local responses must hold the same count in every slot.");
+  return {rows / slots, legs_in / slots, legs_out / slots, slot_local_sites == 0 ? 0 : sites / slots};
+}
+
 }  // namespace
 
 void two_way_join_forward_cuda(
@@ -310,7 +359,9 @@ void two_way_join_forward_cuda(
     torch::stable::Tensor& tau_rt,
     torch::stable::Tensor& c_rt_re,
     torch::stable::Tensor& c_rt_im,
-    int64_t num_rows) {
+    int64_t num_rows,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_cuda_float(tau_in, "tau_in");
   check_cuda_float(tau_out, "tau_out");
@@ -321,9 +372,12 @@ void two_way_join_forward_cuda(
   STD_TORCH_CHECK(
       row_valid.numel() == static_cast<int64_t>(rows),
       "row_valid must hold one flag per composed row.");
-  check_index(idx_in, rows, "idx_in");
-  check_index(idx_out, rows, "idx_out");
-  check_index(idx_s, rows, "idx_s");
+  const SlotStride stride =
+      slot_stride(rows, tau_in.numel(), tau_out.numel(), s_re.numel(), slots, slot_local_sites);
+  const int slot_rows = static_cast<int>(stride.rows);
+  check_index(idx_in, slot_rows, "idx_in");
+  check_index(idx_out, slot_rows, "idx_out");
+  check_index(idx_s, slot_rows, "idx_s");
   check_float_len(tau_rt, rows, "tau_rt");
   check_pair(c_rt_re, c_rt_im, rows, "c_rt");
 
@@ -349,7 +403,8 @@ void two_way_join_forward_cuda(
       tau_rt.mutable_data_ptr<float>(),
       c_rt_re.mutable_data_ptr<float>(),
       c_rt_im.mutable_data_ptr<float>(),
-      rows);
+      rows,
+      stride);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -375,7 +430,9 @@ void two_way_join_jvp_cuda(
     torch::stable::Tensor& tan_tau_rt,
     torch::stable::Tensor& tan_c_rt_re,
     torch::stable::Tensor& tan_c_rt_im,
-    int64_t num_rows) {
+    int64_t num_rows,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_pair(c_in_re, c_in_im, c_in_re.numel(), "c_in");
   check_pair(c_out_re, c_out_im, c_out_re.numel(), "c_out");
@@ -395,9 +452,12 @@ void two_way_join_jvp_cuda(
   STD_TORCH_CHECK(
       row_valid.numel() == static_cast<int64_t>(rows),
       "row_valid must hold one flag per composed row.");
-  check_index(idx_in, rows, "idx_in");
-  check_index(idx_out, rows, "idx_out");
-  check_index(idx_s, rows, "idx_s");
+  const SlotStride stride =
+      slot_stride(rows, c_in_re.numel(), c_out_re.numel(), s_re.numel(), slots, slot_local_sites);
+  const int slot_rows = static_cast<int>(stride.rows);
+  check_index(idx_in, slot_rows, "idx_in");
+  check_index(idx_out, slot_rows, "idx_out");
+  check_index(idx_s, slot_rows, "idx_s");
   check_float_len(tan_tau_rt, rows, "tan_tau_rt");
   check_pair(tan_c_rt_re, tan_c_rt_im, rows, "tan_c_rt");
 
@@ -429,7 +489,8 @@ void two_way_join_jvp_cuda(
       tan_tau_rt.mutable_data_ptr<float>(),
       tan_c_rt_re.mutable_data_ptr<float>(),
       tan_c_rt_im.mutable_data_ptr<float>(),
-      rows);
+      rows,
+      stride);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -464,7 +525,9 @@ void two_way_join_backward_cuda(
     int64_t num_rows,
     int64_t num_in,
     int64_t num_out,
-    int64_t num_sites) {
+    int64_t num_sites,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   const int legs_in = checked_int(num_in, "num_in");
   const int legs_out = checked_int(num_out, "num_out");
@@ -476,25 +539,26 @@ void two_way_join_backward_cuda(
   STD_TORCH_CHECK(
       row_valid.numel() == static_cast<int64_t>(rows),
       "row_valid must hold one flag per composed row.");
-  check_index(idx_in, rows, "idx_in");
-  check_index(idx_out, rows, "idx_out");
-  check_index(idx_s, rows, "idx_s");
+  const SlotStride stride = slot_stride(rows, legs_in, legs_out, sites, slots, slot_local_sites);
+  const int slot_rows = static_cast<int>(stride.rows);
+  check_index(idx_in, slot_rows, "idx_in");
+  check_index(idx_out, slot_rows, "idx_out");
+  check_index(idx_s, slot_rows, "idx_s");
   check_cuda_long(by_in_offsets, "by_in_offsets");
   check_cuda_long(by_in_rows, "by_in_rows");
   check_cuda_long(by_out_offsets, "by_out_offsets");
   check_cuda_long(by_out_rows, "by_out_rows");
   check_cuda_long(by_s_offsets, "by_s_offsets");
   check_cuda_long(by_s_rows, "by_s_rows");
+  // The CSR tables describe one slot; a shared site's owns one entry.
+  const int64_t site_owners = stride.sites == 0 ? sites : stride.sites;
   STD_TORCH_CHECK(
-      by_in_offsets.numel() == static_cast<int64_t>(legs_in) + 1 &&
-          by_out_offsets.numel() == static_cast<int64_t>(legs_out) + 1 &&
-          by_s_offsets.numel() == static_cast<int64_t>(sites) + 1,
-      "each CSR offsets table must hold one entry per owner plus one.");
+      by_in_offsets.numel() == stride.in + 1 && by_out_offsets.numel() == stride.out + 1 &&
+          by_s_offsets.numel() == site_owners + 1,
+      "each CSR offsets table must hold one entry per owner of one slot plus one.");
   STD_TORCH_CHECK(
-      by_in_rows.numel() == static_cast<int64_t>(rows) &&
-          by_out_rows.numel() == static_cast<int64_t>(rows) &&
-          by_s_rows.numel() == static_cast<int64_t>(rows),
-      "each CSR row table must permute every composed row exactly once.");
+      by_in_rows.numel() == stride.rows && by_out_rows.numel() == stride.rows && by_s_rows.numel() == stride.rows,
+      "each CSR row table must permute every composed row of one slot exactly once.");
   check_float_len(grad_tau_rt, rows, "grad_tau_rt");
   check_pair(grad_c_rt_re, grad_c_rt_im, rows, "grad_c_rt");
   check_float_len(grad_tau_in, legs_in, "grad_tau_in");
@@ -540,7 +604,9 @@ void two_way_join_backward_cuda(
       grad_s_im.mutable_data_ptr<float>(),
       legs_in,
       legs_out,
-      sites);
+      sites,
+      slots,
+      stride);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

@@ -373,7 +373,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor c_in_im, Tensor c_out_re, Tensor c_out_im, Tensor s_re, "
       "Tensor s_im, Tensor row_valid, Tensor idx_in, Tensor idx_out, "
       "Tensor idx_s, Tensor(a!) tau_rt, Tensor(b!) c_rt_re, "
-      "Tensor(c!) c_rt_im, int num_rows) -> ()");
+      "Tensor(c!) c_rt_im, int num_rows, int slots, int slot_local_sites) -> ()");
   m.def(
       "two_way_join_backward(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
       "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
@@ -384,7 +384,8 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor(b!) grad_tau_out, Tensor(c!) grad_c_in_re, "
       "Tensor(d!) grad_c_in_im, Tensor(e!) grad_c_out_re, "
       "Tensor(f!) grad_c_out_im, Tensor(g!) grad_s_re, Tensor(h!) grad_s_im, "
-      "int num_rows, int num_in, int num_out, int num_sites) -> ()");
+      "int num_rows, int num_in, int num_out, int num_sites, int slots, "
+      "int slot_local_sites) -> ()");
   m.def(
       "two_way_join_jvp(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
       "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
@@ -392,7 +393,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor tan_tau_out, Tensor tan_c_in_re, Tensor tan_c_in_im, "
       "Tensor tan_c_out_re, Tensor tan_c_out_im, Tensor tan_s_re, "
       "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_c_rt_re, "
-      "Tensor(c!) tan_c_rt_im, int num_rows) -> ()");
+      "Tensor(c!) tan_c_rt_im, int num_rows, int slots, int slot_local_sites) -> ()");
 
   // Aspect-dependent scatter response, evaluated per COMPOSED row from the
   // direction basis the two legs publish. TwoWayComposer.compose refuses to

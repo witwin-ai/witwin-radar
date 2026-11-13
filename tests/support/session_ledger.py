@@ -19,7 +19,7 @@ budgets:
   from a separate profiled pass so the profiler cannot perturb the counts
   above.
 * ``trips``: Python-level per-observation work: world advances
-  (``SceneEpochLoop.frame``), composed batches (``TwoWayComposer.compose``)
+  (``SceneEpochLoop.frame``), composed batches (``TwoWayComposer.compose`` and ``compose_slots``)
   and join builds (``TwoWayComposer.freeze``).
 
 Every count is an exact integer for a fixed fixture. Wall time is not measured
@@ -40,6 +40,7 @@ CHANNEL_ENTRIES = ("evaluate", "prepare_fixed_topology", "reevaluate", "replicat
 TRIP_HOOKS = (
     ("witwin.radar.propagation", "SceneEpochLoop", "frame"),
     ("witwin.radar.paths", "TwoWayComposer", "compose"),
+    ("witwin.radar.paths", "TwoWayComposer", "compose_slots"),
     ("witwin.radar.paths", "TwoWayComposer", "freeze"),
 )
 

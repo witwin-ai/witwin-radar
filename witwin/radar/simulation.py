@@ -35,11 +35,12 @@ from witwin.core.dynamics import DynamicScene
 from .adaptive import AdaptiveTable, echo_adaptive_frame, trace_adaptive_frame
 from .binding import SITE_SOURCE_EXPLICIT, RadarWorldBinding, ScatterSitePolicy, SensorEndpointIds, bind_radar_world
 from .motion import Motion
+from .paths import RadarPathBatch, SlotRows
 from .propagation import EpochFrame, FrozenEpoch, RadarEndpointSpec, RadarPropagationLegs, SceneEpochLoop
 from .results import Result, SceneFrame, assemble
 
 if TYPE_CHECKING:
-    from .paths import RadarPathBatch, TwoWayComposer
+    from .paths import TwoWayComposer
     from .radar import PropagationConfig, Radar
     from .scattering import ScatterResponse
     from .sensors import Pattern, RoundTripPatternStage, SensorArraySpec
@@ -83,14 +84,13 @@ def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
 class SlotBatch:
     """The slot-major rows one grouped replay composed, shared by its instants.
 
-    ``composed`` holds ``slots`` copies of one join's rows, slot major: row
-    ``g * rows + r`` is join row ``r`` at slot ``g`` and pair ``g * pairs + p``
-    is slot ``g``'s pair ``p``. ``offsets`` is ONE slot's pair partition on the
+    ``rows`` holds ``slots`` copies of one join's composed rows, slot major:
+    row ``g * rows_per_slot + r`` is join row ``r`` at slot ``g``. ``offsets`` is ONE slot's pair partition on the
     host, which is what lets the instrument half select sensor-pair segments
     without reading the device.
     """
 
-    composed: RadarPathBatch
+    rows: SlotRows
     offsets: np.ndarray
     slots: int
 
@@ -668,31 +668,42 @@ class WorldHalf:
                 legs=lambda: replay,
                 composed=paths,
                 identity=identity,
-                batch=SlotBatch(composed=paths, offsets=round_trip.composer.pair_offsets_host, slots=1),
+                batch=SlotBatch(
+                    rows=SlotRows(
+                        total_delay_s=paths.total_delay_s,
+                        complex_transfer_ref=paths.complex_transfer_ref,
+                        row_valid=paths.row_valid,
+                        slots=1,
+                        rows_per_slot=paths.path_count,
+                        weight_includes_antenna_pattern=paths.weight_includes_antenna_pattern,
+                    ),
+                    offsets=round_trip.composer.pair_offsets_host,
+                    slots=1,
+                ),
                 slot=0,
             )
             return
         batched = self._compose_slots(group, replay, transmitters, receivers)
         shared = SlotBatch(
-            composed=batched,
-            offsets=_round_trip(group[0].epoch_frame.frozen).composer.pair_offsets_host,
-            slots=len(group),
+            rows=batched, offsets=_round_trip(group[0].epoch_frame.frozen).composer.pair_offsets_host, slots=len(group)
         )
         batched_valid = _present(batched.row_valid, "row_valid")
         valid_rows = batched_valid.reshape(len(group), -1).cpu().numpy() if self.motion_sampling == "adaptive" else None
         for slot, entry in enumerate(group):
             composer = _round_trip(entry.epoch_frame.frozen).composer
             selection = slice(slot * composer.path_count, (slot + 1) * composer.path_count)
-            paths = replace(
-                batched,
+            paths = RadarPathBatch(
                 sensor_pair_count=composer.sensor_pair_count,
                 path_count=composer.path_count,
                 sensor_pair_index=composer.sensor_pair_index,
                 pair_offsets=composer.pair_offsets,
-                topology=composer.topology,
                 total_delay_s=batched.total_delay_s[selection],
+                delay_rate=None,
                 complex_transfer_ref=batched.complex_transfer_ref[selection],
+                reference_frequency_hz=composer.reference_frequency_hz,
                 row_valid=batched_valid[selection],
+                topology=composer.topology,
+                weight_includes_antenna_pattern=batched.weight_includes_antenna_pattern,
             )
             identity = entry.identity
             if valid_rows is not None:
@@ -717,18 +728,31 @@ class WorldHalf:
         replay: RadarPropagationLegs,
         transmitters: RadarEndpointSpec,
         receivers: RadarEndpointSpec,
-    ) -> RadarPathBatch:
-        """Compose and pattern-weight a slot-major replay with the slot tables."""
+    ) -> SlotRows:
+        """Compose and pattern-weight a slot-major replay.
+
+        A per-site response under a unit-gain pattern is composed by the join
+        striding its single-slot tables across the slots, and the pattern stage
+        is the identity. A geometry-dependent response or a directional
+        pattern still needs per-row tables for every slot, which are built once
+        per identity and group size and kept in a bounded cache.
+        """
 
         round_trip = _round_trip(group[0].epoch_frame.frozen)
-        key = (round_trip.identity, len(group))
+        slots = len(group)
+        if not self.response.is_geometry_dependent and round_trip.pattern.plan.is_identity:
+            rows = round_trip.composer.compose_slots(replay.inbound, replay.outbound, self.response, slots)
+            # The stage's identity: isotropic elements at 0 dBi publish the
+            # weight unchanged and record that the pattern was applied.
+            return replace(rows, weight_includes_antenna_pattern=True)
+        key = (round_trip.identity, slots)
         tables = self._slot_tables.get(key)
         if tables is None:
-            tables = (round_trip.composer.for_slots(len(group)), round_trip.pattern.for_slots(len(group)))
+            tables = (round_trip.composer.for_slots(slots), round_trip.pattern.for_slots(slots))
             self._slot_tables.put(key, tables)
         composer, pattern = tables
         batched = composer.compose(replay.inbound, replay.outbound, self.response)
-        return pattern.apply(
+        weighted = pattern.apply(
             batched,
             tx_pos=transmitters.positions_m,
             rx_pos=receivers.positions_m,
@@ -738,6 +762,14 @@ class WorldHalf:
             rx_targets_m=_present(replay.outbound.arrival_origin_m, "arrival_origin_m").index_select(
                 0, batched.topology.outbound_row
             ),
+        )
+        return SlotRows(
+            total_delay_s=weighted.total_delay_s,
+            complex_transfer_ref=weighted.complex_transfer_ref,
+            row_valid=weighted.row_valid,
+            slots=slots,
+            rows_per_slot=round_trip.composer.path_count,
+            weight_includes_antenna_pattern=weighted.weight_includes_antenna_pattern,
         )
 
     def observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
@@ -1120,12 +1152,14 @@ def _echo_slot_batches(
     def flush() -> None:
         batch = pending[0][1].batch
         assert batch is not None
-        composed = batch.composed
-        # The waveform specs satisfy the protocol at run time; their fields are
+        composed = batch.rows
+        # The provenance of every slot is the first instant's; the waveform
+        # specs satisfy the protocol at run time, though their fields are
         # frozen, which a protocol of plain attributes cannot express.
         checked: Any = single
-        require_compatible(SynthesisPathBatch.from_radar_paths(composed, slow_time_mode=session.mode), checked)
-        rows_per_slot = composed.path_count // batch.slots
+        first = pending[0][1].composed
+        require_compatible(SynthesisPathBatch.from_radar_paths(first, slow_time_mode=session.mode), checked)
+        rows_per_slot = composed.rows_per_slot
         index = np.asarray([entry[0] for entry in pending], dtype=np.int64)
         slot_in_batch = np.asarray([entry[1].slot for entry in pending], dtype=np.int64)
         sample = index % samples
@@ -1146,7 +1180,7 @@ def _echo_slot_batches(
             # bit through the int64 upload.
             starts = working.t_start_s + np.repeat(sample, num_rx).astype(np.float64) * working.sample_period_s
             tables.append(starts.view(np.int64))
-        routing = _uploaded(session, np.concatenate(tables), composed.device)
+        routing = _uploaded(session, np.concatenate(tables), composed.total_delay_s.device)
         parts = torch.split(routing, [len(table) for table in tables])
         row_index, offsets, transmitter = parts[0], parts[1], parts[2]
         transfer = channel_phasor_to_beat_weight(composed.complex_transfer_ref.index_select(0, row_index))

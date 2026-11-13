@@ -22,6 +22,8 @@
   group in one launch over only the active transmitter's sensor pairs; on the ADC route each segment carries its own
   ADC instant through a new per-segment window start on the native beat family.
   `Motion.batch_observations` now bounds these groups for every kind, and therefore the rows a fused run holds at once.
+- A slot-batched replay is composed by the native join striding one slot's tables across the slots, instead of
+  copying every routing table per slot, whenever the response is per site and the antenna pattern is isotropic.
 
 All of these produce the same bits as the session they replace.
 

@@ -87,10 +87,15 @@ rather than writing into a preallocated cube.
   the capture set listed in the session report.
 - Per-frame counts are pinned in `tests/test_session_budget.py` and only move
   down.
+- The native join takes a slot stride: a slot-major replay is composed with
+  ONE slot's routing and CSR tables plus a slot count, and the VJP walks the
+  per-slot CSR once per slot in slot order, which is the order the replicated
+  tables held, so the strided join is bit-identical to them. The session
+  composes every per-site response under the unit-gain pattern this way.
 - Not done here: replaying only the active transmitter's inbound rows needs a
-  Channel replay of a row subset, and a slot stride in the join and
-  sensor-weight kernels (instead of the replicated `for_slots` tables) needs
-  native work in both families.
+  Channel replay of a row subset; a directional pattern or a geometry-dependent
+  response still uses per-slot tables (`for_slots`, in a bounded cache) until
+  the sensor-weight and aspect-response kernels take the same stride.
 
 ## Verification
 

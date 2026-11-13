@@ -494,6 +494,42 @@ def validate_pair_ordering(
         )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class ResponseFamily:
+    """How the response is indexed and who owns its gradient.
+
+    ``offsets`` and ``rows`` are the CSR of ONE slot; ``owners`` is how many
+    response values there are in total. A per-site response is shared by every
+    slot (``slot_local`` false); a per-row response has one value per composed
+    row of every slot. ``slots`` is the slot count of the batch the join is
+    composing: its index and CSR tables describe one slot, and the native join
+    strides them across the rest.
+    """
+
+    offsets: torch.Tensor
+    rows: torch.Tensor
+    owners: int
+    slots: int = 1
+    slot_local: bool = False
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SlotRows:
+    """``slots`` copies of one join's composed rows, slot major.
+
+    Row ``g * rows_per_slot + r`` is join row ``r`` at slot ``g``. Only the
+    payload is batched: the join's identity, pair partition and routing tables
+    are the single-slot ones and are not copied per slot.
+    """
+
+    total_delay_s: torch.Tensor
+    complex_transfer_ref: torch.Tensor
+    row_valid: torch.Tensor | None
+    slots: int
+    rows_per_slot: int
+    weight_includes_antenna_pattern: bool = False
+
+
 class _TwoWayJoin(torch.autograd.Function):
     """Autograd bridge for the three native join operators.
 
@@ -526,9 +562,9 @@ class _TwoWayJoin(torch.autograd.Function):
         idx_out: torch.Tensor,
         idx_s: torch.Tensor,
         join: TwoWayComposer,
-        response_family: tuple[torch.Tensor, torch.Tensor, int],
+        response_family: ResponseFamily,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         tau_rt = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
         c_rt_re = torch.empty_like(tau_rt)
         c_rt_im = torch.empty_like(tau_rt)
@@ -549,6 +585,8 @@ class _TwoWayJoin(torch.autograd.Function):
             c_rt_re,
             c_rt_im,
             rows,
+            response_family.slots,
+            int(response_family.slot_local),
         )
         return tau_rt, c_rt_re, c_rt_im
 
@@ -588,7 +626,7 @@ class _TwoWayJoin(torch.autograd.Function):
     ) -> tuple[torch.Tensor | None, ...]:
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
         join = ctx.join
-        response_offsets, response_rows, response_slots = ctx.response_family
+        family = ctx.response_family
         grad_tau_in = torch.empty_like(c_in_re)
         grad_c_in_re = torch.empty_like(c_in_re)
         grad_c_in_im = torch.empty_like(c_in_re)
@@ -612,8 +650,8 @@ class _TwoWayJoin(torch.autograd.Function):
             join.by_inbound_rows,
             join.by_outbound_offsets,
             join.by_outbound_rows,
-            response_offsets,
-            response_rows,
+            family.offsets,
+            family.rows,
             grad_tau_rt.contiguous(),
             grad_c_rt_re.contiguous(),
             grad_c_rt_im.contiguous(),
@@ -625,10 +663,12 @@ class _TwoWayJoin(torch.autograd.Function):
             grad_c_out_im,
             grad_s_re,
             grad_s_im,
-            int(idx_in.shape[0]),
-            join.inbound_row_count,
-            join.outbound_row_count,
-            response_slots,
+            int(row_valid.shape[0]),
+            int(c_in_re.shape[0]),
+            int(c_out_re.shape[0]),
+            family.owners,
+            family.slots,
+            int(family.slot_local),
         )
         return (
             grad_tau_in,
@@ -665,6 +705,7 @@ class _TwoWayJoin(torch.autograd.Function):
         tan_join: Any,
         tan_response_family: Any,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        family = ctx.response_family
         (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
 
         def inbound(tangent: torch.Tensor | None) -> torch.Tensor:
@@ -676,7 +717,7 @@ class _TwoWayJoin(torch.autograd.Function):
         def site(tangent: torch.Tensor | None) -> torch.Tensor:
             return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
 
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         tan_tau_rt = torch.empty(rows, dtype=torch.float32, device=c_in_re.device)
         tan_c_rt_re = torch.empty_like(tan_tau_rt)
         tan_c_rt_im = torch.empty_like(tan_tau_rt)
@@ -703,6 +744,8 @@ class _TwoWayJoin(torch.autograd.Function):
             tan_c_rt_re,
             tan_c_rt_im,
             rows,
+            family.slots,
+            int(family.slot_local),
         )
         return tan_tau_rt, tan_c_rt_re, tan_c_rt_im
 
@@ -976,6 +1019,79 @@ class TwoWayComposer:
             topology=self.topology,
         )
 
+    def compose_slots(
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, response: ScatterResponse, slots: int
+    ) -> SlotRows:
+        """Compose a slot-major replay of ``slots`` instants with this one join.
+
+        The legs carry ``slots`` copies of the frozen rows; the native join
+        strides this join's single-slot tables across them, so no per-slot
+        copy of a routing table is built. The result is the bit for bit equal
+        of composing with :meth:`for_slots` tables. A per-site response is
+        shared by every slot; a geometry-dependent response is evaluated per
+        composed row and takes :meth:`for_slots` instead.
+        """
+
+        if response.is_geometry_dependent:
+            raise ValueError("a geometry-dependent response is evaluated per composed row; compose it with for_slots")
+        for name, batch, expected in (
+            ("inbound", inbound, self.inbound_row_count * slots),
+            ("outbound", outbound, self.outbound_row_count * slots),
+        ):
+            if batch.leg_count != expected:
+                raise ValueError(
+                    f"{name} leg carries {batch.leg_count} rows but {slots} slots of this join need {expected}"
+                )
+        rows = self.path_count * slots
+        device = inbound.delay_s.device
+        row_valid = self._slot_validity(inbound, outbound, slots, device)
+        flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
+        value = self._site_response(response, device)
+        tau_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
+            inbound.delay_s.contiguous(),
+            outbound.delay_s.contiguous(),
+            inbound.coefficient.real.contiguous(),
+            inbound.coefficient.imag.contiguous(),
+            outbound.coefficient.real.contiguous(),
+            outbound.coefficient.imag.contiguous(),
+            value.real.contiguous(),
+            value.imag.contiguous(),
+            flags,
+            self.inbound_row,
+            self.outbound_row,
+            self.response_slot,
+            self,
+            ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots),
+        )
+        return SlotRows(
+            total_delay_s=tau_rt,
+            complex_transfer_ref=torch.complex(transfer_re, transfer_im),
+            row_valid=row_valid,
+            slots=slots,
+            rows_per_slot=self.path_count,
+        )
+
+    def _slot_validity(
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, slots: int, device: torch.device
+    ) -> torch.Tensor | None:
+        """Row validity of every slot, gathered through the single-slot tables."""
+
+        if inbound.row_valid is None and outbound.row_valid is None:
+            return None
+        rows = self.path_count * slots
+        ones = torch.ones(rows, dtype=torch.bool, device=device)
+        valid_in = (
+            ones
+            if inbound.row_valid is None
+            else inbound.row_valid.view(slots, -1).index_select(1, self.inbound_row).reshape(-1)
+        )
+        valid_out = (
+            ones
+            if outbound.row_valid is None
+            else outbound.row_valid.view(slots, -1).index_select(1, self.outbound_row).reshape(-1)
+        )
+        return valid_in & valid_out
+
     def for_slots(self, count: int) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
 
@@ -1060,7 +1176,7 @@ class TwoWayComposer:
         outbound: RadarLegBatch,
         flags: torch.Tensor,
         device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor, int]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, ResponseFamily]:
         """The response as a real pair, its index, and its gradient family.
 
         Two shapes, one join. A per-SITE response is broadcast across the rows
@@ -1085,7 +1201,7 @@ class TwoWayComposer:
                 value.real.contiguous(),
                 value.imag.contiguous(),
                 self.response_slot,
-                (self.by_response_offsets, self.by_response_rows, self.site_count),
+                ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count),
             )
         if getattr(response, "native_row_owner", None) not in NATIVE_ROW_RESPONSE_OWNERS:
             raise NotImplementedError(
@@ -1102,7 +1218,7 @@ class TwoWayComposer:
                     f"a row-evaluated scatter response must publish one {name} "
                     f"value per composed row; this join has {self.path_count}"
                 )
-        return (rows_re, rows_im, self.row_slot, (self.by_row_offsets, self.by_row_rows, self.path_count))
+        return (rows_re, rows_im, self.row_slot, ResponseFamily(self.by_row_offsets, self.by_row_rows, self.path_count))
 
     def _site_response(self, response: ScatterResponse, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.
