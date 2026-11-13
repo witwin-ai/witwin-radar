@@ -1,6 +1,11 @@
 #include <torch/csrc/stable/library.h>
 
 STABLE_TORCH_LIBRARY(_radar_native, m) {
+  // Back-projection imaging (processing_imaging.cu): linear in the samples, so
+  // the jvp is the forward map of the tangent and the backward its adjoint.
+  m.def("backprojection_forward(Tensor samples, Tensor tx, Tensor rx, Tensor pixels, Tensor(a!) image, int groups, float range_origin_m, float range_bin_m, float inverse_speed_s_per_m, float carrier_hz, float curvature_hz_per_s, float phase_sign, float scale) -> ()");
+  m.def("backprojection_backward(Tensor grad_image, Tensor tx, Tensor rx, Tensor pixels, Tensor(a!) grad_samples, int groups, float range_origin_m, float range_bin_m, float inverse_speed_s_per_m, float carrier_hz, float curvature_hz_per_s, float phase_sign, float scale) -> ()");
+  m.def("backprojection_jvp(Tensor tangent_samples, Tensor tx, Tensor rx, Tensor pixels, Tensor(a!) tangent_image, int groups, float range_origin_m, float range_bin_m, float inverse_speed_s_per_m, float carrier_hz, float curvature_hz_per_s, float phase_sign, float scale) -> ()");
   m.def("cfar_order_statistic_forward(Tensor padded, Tensor offsets, Tensor rank, Tensor(a!) level, int window_height, int window_width) -> ()");
   m.def("dbscan_labels_forward(Tensor features, Tensor(a!) parent, Tensor(b!) core, float eps, int min_points) -> ()");
   m.def("fmcw_adaptive_forward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");

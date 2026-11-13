@@ -125,6 +125,7 @@ _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
     "witwin/radar/cuda/ofdm_time.cu",
+    "witwin/radar/cuda/processing_imaging.cu",
     "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
