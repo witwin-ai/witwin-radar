@@ -125,6 +125,9 @@ def _select(batch, keep: torch.Tensor):
         pair_offsets=offsets.contiguous(),
         total_delay_s=batch.total_delay_s[index].contiguous(),
         delay_rate=(None if batch.delay_rate is None else batch.delay_rate[index].contiguous()),
+        total_delay_residual_s=(
+            None if batch.total_delay_residual_s is None else batch.total_delay_residual_s[index].contiguous()
+        ),
         complex_transfer_ref=batch.complex_transfer_ref[index].contiguous(),
         topology=reduced_topology,
         row_valid=(None if batch.row_valid is None else batch.row_valid[index].contiguous()),
@@ -514,6 +517,9 @@ def _reindex(batch, order: torch.Tensor):
         sensor_pair_index=batch.sensor_pair_index[order].contiguous(),
         total_delay_s=batch.total_delay_s[order].contiguous(),
         delay_rate=(None if batch.delay_rate is None else batch.delay_rate[order].contiguous()),
+        total_delay_residual_s=(
+            None if batch.total_delay_residual_s is None else batch.total_delay_residual_s[order].contiguous()
+        ),
         complex_transfer_ref=batch.complex_transfer_ref[order].contiguous(),
         topology=RadarPathTopology(
             radar_source_id=topology.radar_source_id[order].contiguous(),

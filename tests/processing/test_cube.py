@@ -89,6 +89,9 @@ def _select(batch, keep):
         pair_offsets=offsets.contiguous(),
         total_delay_s=batch.total_delay_s[index].contiguous(),
         delay_rate=(None if batch.delay_rate is None else batch.delay_rate[index].contiguous()),
+        total_delay_residual_s=(
+            None if batch.total_delay_residual_s is None else batch.total_delay_residual_s[index].contiguous()
+        ),
         complex_transfer_ref=batch.complex_transfer_ref[index].contiguous(),
         topology=RadarPathTopology(
             radar_source_id=topology.radar_source_id[index].contiguous(),
