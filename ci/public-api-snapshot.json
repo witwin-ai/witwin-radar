@@ -42,6 +42,12 @@
           "signature": "(tx: 'tuple[tuple[complex, ...], ...] | None' = None, rx: 'tuple[tuple[complex, ...], ...] | None' = None) -> None"
         },
         {
+          "name": "Fluctuation",
+          "kind": "class",
+          "target": "witwin.radar.targets.Fluctuation",
+          "signature": "(swerling: 'int', coherent_interval: 'float', seed: 'int' = 0) -> None"
+        },
+        {
           "name": "Fmcw",
           "kind": "class",
           "target": "witwin.radar.radar.Fmcw",
@@ -105,7 +111,7 @@
           "name": "PointTargets",
           "kind": "class",
           "target": "witwin.radar.targets.PointTargets",
-          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'Any' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None, scattering: 'ScatteringMatrix | None' = None) -> None"
+          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'Any' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None, scattering: 'ScatteringMatrix | None' = None, fluctuation: 'Fluctuation | None' = None) -> None"
         },
         {
           "name": "Pulsed",
@@ -118,6 +124,12 @@
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
           "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', rx_polarization: 'Any' = None, device: 'Any' = 'cuda') -> None"
+        },
+        {
+          "name": "RcsTable",
+          "kind": "class",
+          "target": "witwin.radar.targets.RcsTable",
+          "signature": "(axis: 'Any', rcs_m2: 'Any', frequencies_hz: 'Any' = None, phase_rad: 'Any' = 0.0) -> None"
         },
         {
           "name": "Result",
@@ -135,7 +147,7 @@
           "name": "StructureTargets",
           "kind": "class",
           "target": "witwin.radar.targets.StructureTargets",
-          "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'Any' = 0.0, ids: 'tuple[int, ...] | None' = None) -> None"
+          "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'Any' = 0.0, ids: 'tuple[int, ...] | None' = None, fluctuation: 'Fluctuation | None' = None) -> None"
         },
         {
           "name": "processing",
@@ -607,6 +619,12 @@
           "signature": "(wavenumber_rad_per_m: 'float', polarization: 'tuple[float, float, float]', seed: 'int' = 0, frame: 'object | None' = None) -> None"
         },
         {
+          "name": "FluctuatingResponse",
+          "kind": "class",
+          "target": "witwin.radar.scattering.FluctuatingResponse",
+          "signature": "(base: 'Any', degrees: 'int', per_observation: 'bool', coherent_interval_s: 'float', seed: 'int' = 0, factor: 'torch.Tensor | None' = None) -> None"
+        },
+        {
           "name": "SCATTERING_MATRIX_LAYOUT",
           "kind": "value",
           "target": "<tuple> SCATTERING_MATRIX_LAYOUT"
@@ -633,6 +651,12 @@
           "kind": "class",
           "target": "witwin.radar.scattering.ScatteringMatrixResponse",
           "signature": "(matrix: 'torch.Tensor', up: 'torch.Tensor') -> None"
+        },
+        {
+          "name": "TableScatterResponse",
+          "kind": "class",
+          "target": "witwin.radar.scattering.TableScatterResponse",
+          "signature": "(axis: 'torch.Tensor', table_re: 'torch.Tensor', table_im: 'torch.Tensor') -> None"
         }
       ]
     },

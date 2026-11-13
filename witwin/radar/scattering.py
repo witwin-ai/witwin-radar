@@ -88,7 +88,12 @@ class ScatterResponse(Protocol):
 #: base class: a subclass of the native response can override ``evaluate_rows``
 #: with a Torch expression and would inherit the permission with it.
 NATIVE_ROW_RESPONSE_OWNERS = frozenset(
-    {"witwin.radar.scattering.AspectScatterResponse", "witwin.radar.scattering.FacetScatterResponse"}
+    {
+        "witwin.radar.scattering.AspectScatterResponse",
+        "witwin.radar.scattering.FacetScatterResponse",
+        "witwin.radar.scattering.FluctuatingResponse",
+        "witwin.radar.scattering.TableScatterResponse",
+    }
 )
 
 
@@ -1067,6 +1072,241 @@ class FacetScatterResponse:
         )
 
 
+class _TableResponse(torch.autograd.Function):
+    """Autograd bridge for the tabulated response; the table takes no derivative."""
+
+    @staticmethod
+    def forward(dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im, tables):
+        rows = int(idx_in.shape[0])
+        s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
+        s_im = torch.empty_like(s_re)
+        _ops().scatter_response_table_forward(
+            dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, s_re, s_im, rows
+        )
+        return s_re, s_im
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im, tables) = inputs
+        ctx.tables = tables
+        saved = (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im)
+        ctx.save_for_backward(*saved)
+        ctx.save_for_forward(*saved)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad_re, grad_im):
+        (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im) = ctx.saved_tensors
+        tables = ctx.tables
+        grads = [torch.empty_like(value) for value in (dir_in, dir_out, axis)]
+        _ops().scatter_response_table_backward(
+            dir_in,
+            dir_out,
+            idx_in,
+            idx_out,
+            idx_site,
+            axis,
+            table_re,
+            table_im,
+            row_valid,
+            tables.by_in_offsets,
+            tables.by_in_rows,
+            tables.by_out_offsets,
+            tables.by_out_rows,
+            tables.by_site_offsets,
+            tables.by_site_rows,
+            grad_re.contiguous(),
+            grad_im.contiguous(),
+            *grads,
+            int(idx_in.shape[0]),
+        )
+        return (*grads, None, None, None, None, None, None, None)
+
+    @staticmethod
+    def jvp(ctx, tan_dir_in, tan_dir_out, tan_axis, *_):
+        (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im) = ctx.saved_tensors
+
+        def tangent(value, like):
+            return torch.zeros_like(like) if value is None else value.contiguous()
+
+        rows = int(idx_in.shape[0])
+        tan_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
+        tan_im = torch.empty_like(tan_re)
+        _ops().scatter_response_table_jvp(
+            dir_in,
+            dir_out,
+            idx_in,
+            idx_out,
+            idx_site,
+            axis,
+            table_re,
+            table_im,
+            row_valid,
+            tangent(tan_dir_in, dir_in),
+            tangent(tan_dir_out, dir_out),
+            tangent(tan_axis, axis),
+            tan_re,
+            tan_im,
+            rows,
+        )
+        return tan_re, tan_im
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TableScatterResponse:
+    """A tabulated response ``S(theta)`` per composed row (R-ADR-045).
+
+    ``theta`` is the bistatic aspect angle between a site's unit ``axis`` and
+    the bisector of its two leg directions; ``table_re``/``table_im`` sample
+    ``S = sqrt(4 pi sigma) / lambda exp(-j phi)`` at the carrier uniformly on
+    ``[0, pi]``, in the Channel phasor convention. The table is host data; the
+    axis and the leg directions carry derivatives. Like
+    :class:`AspectScatterResponse`, the unit-norm check of ``axis`` is the one
+    construction-time device read.
+    """
+
+    axis: torch.Tensor
+    table_re: torch.Tensor
+    table_im: torch.Tensor
+
+    native_row_owner = "witwin.radar.scattering.TableScatterResponse"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.axis, torch.Tensor) or self.axis.ndim != 2 or self.axis.shape[1] != 3:
+            raise ValueError("axis must be an (S, 3) tensor")
+        sites = int(self.axis.shape[0])
+        _require_parameter("axis", self.axis, sites=sites, width=3)
+        entries = int(self.table_re.shape[0]) if isinstance(self.table_re, torch.Tensor) else 0
+        if entries < 2:
+            raise ValueError("the response table needs at least two aspect samples")
+        _require_parameter("table_re", self.table_re, sites=entries, width=None)
+        _require_parameter("table_im", self.table_im, sites=entries, width=None)
+        if self.table_re.requires_grad or self.table_im.requires_grad:
+            raise ValueError("a tabulated response is host data and takes no derivative; differentiate the axis")
+        norm = torch.linalg.vector_norm(self.axis.detach(), dim=1)
+        if not bool(torch.all((norm - 1.0).abs() < 1.0e-5)):
+            raise ValueError("axis must hold unit vectors")
+
+    @property
+    def site_count(self) -> int:
+        return int(self.axis.shape[0])
+
+    @property
+    def is_geometry_dependent(self) -> bool:
+        return True
+
+    def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
+        """Refused: a tabulated response is a function of each row's aspect."""
+
+        raise NotImplementedError(
+            "TableScatterResponse is evaluated per composed row by scatter_response_table_forward; "
+            "TwoWayComposer.compose dispatches evaluate_rows and there is no per-site value"
+        )
+
+    def evaluate_rows(self, composer, inbound, outbound, row_valid):
+        if self.site_count != composer.site_count:
+            raise ValueError(
+                f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
+            )
+        dir_in, dir_out = _departure_directions(composer, inbound, outbound)
+        tables = _BackwardTables(
+            by_in_offsets=composer.by_inbound_offsets,
+            by_in_rows=composer.by_inbound_rows,
+            by_out_offsets=composer.by_outbound_offsets,
+            by_out_rows=composer.by_outbound_rows,
+            by_site_offsets=composer.by_response_offsets,
+            by_site_rows=composer.by_response_rows,
+        )
+        return _TableResponse.apply(
+            dir_in,
+            dir_out,
+            self.axis,
+            composer.inbound_row,
+            composer.outbound_row,
+            composer.response_slot,
+            row_valid,
+            self.table_re,
+            self.table_im,
+            tables,
+        )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FluctuatingResponse:
+    """A response whose sites' power fluctuates by Swerling draws (R-ADR-045).
+
+    ``degrees`` is 2 (Swerling I, II) or 4 (III, IV); ``per_observation``
+    redraws at every observation instant (II, IV) instead of once per
+    ``coherent_interval_s`` (I, III). The session binds it to each observation
+    with :meth:`bind_observation`, which draws the per-site amplitude factor
+    ``sqrt(X)`` natively from a key of the seed and the instant (or the
+    interval's start), mixed the way the frontend mixes its frame keys. The
+    factor multiplies the base response's per-site or per-row value: one
+    tensor product, through which the base response keeps its derivatives.
+    """
+
+    base: Any
+    degrees: int
+    per_observation: bool
+    coherent_interval_s: float
+    seed: int = 0
+    factor: torch.Tensor | None = None
+
+    native_row_owner = "witwin.radar.scattering.FluctuatingResponse"
+    #: Read by the session: every observation is bound on its own, never slot batched.
+    varies_per_observation = True
+
+    @property
+    def is_geometry_dependent(self) -> bool:
+        return bool(self.base.is_geometry_dependent)
+
+    def key(self, time_s: float) -> int:
+        """The draw key of the observation at ``time_s``."""
+
+        from .frontend import frame_seed
+
+        if self.per_observation:
+            return frame_seed(self.seed, float(time_s))
+        interval = math.floor(float(time_s) / self.coherent_interval_s)
+        return frame_seed(self.seed, interval * self.coherent_interval_s)
+
+    def bind_observation(self, binding: Any, time_s: float) -> FluctuatingResponse:
+        bind = getattr(self.base, "bind_observation", None)
+        base = self.base if bind is None else bind(binding, time_s)
+        factor = torch.empty(int(binding.site_count), dtype=torch.float32, device=binding.device)
+        _ops().fluctuation_factor_forward(factor, self.key(time_s), self.degrees)
+        return FluctuatingResponse(
+            base=base,
+            degrees=self.degrees,
+            per_observation=self.per_observation,
+            coherent_interval_s=self.coherent_interval_s,
+            seed=self.seed,
+            factor=factor,
+        )
+
+    def _factor(self) -> torch.Tensor:
+        if self.factor is None:
+            raise ValueError("a fluctuating response must be bound to an observation before it is evaluated")
+        return self.factor
+
+    @property
+    def matrix_width(self) -> int:
+        return int(getattr(self.base, "matrix_width", 1))
+
+    def site_up(self, site_count: int, device: torch.device) -> torch.Tensor:
+        return self.base.site_up(site_count, device)
+
+    def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
+        value = self.base.evaluate(site_count, device)
+        factor = self._factor().to(device=device)
+        return value * (factor if value.ndim == 1 else factor[:, None])
+
+    def evaluate_rows(self, composer, inbound, outbound, row_valid):
+        rows_re, rows_im = self.base.evaluate_rows(composer, inbound, outbound, row_valid)
+        factor = self._factor().index_select(0, composer.response_slot)
+        return rows_re * factor, rows_im * factor
+
+
 def _require_direction(leg, rows: int, name: str) -> torch.Tensor:
     direction = leg.field_direction
     if int(direction.shape[0]) != rows:
@@ -1081,7 +1321,9 @@ __all__ = [
     "SITE_BASIS",
     "AspectScatterResponse",
     "FacetScatterResponse",
+    "FluctuatingResponse",
     "ScalarRcsResponse",
     "ScatterResponse",
     "ScatteringMatrixResponse",
+    "TableScatterResponse",
 ]

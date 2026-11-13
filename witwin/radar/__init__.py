@@ -3,8 +3,9 @@
 The whole happy path is here, in the order a caller meets it: build a
 :class:`Radar` out of its waveform, its antennas and its receive chain; say
 what it is looking at with :class:`PointTargets`, :class:`StructureTargets` or
-:class:`MeshTargets`; choose how often the world is resampled with
-:class:`Motion`; then call one of the radar's four verbs. Products go to :mod:`witwin.radar.processing`.
+:class:`MeshTargets`, with an :class:`RcsTable` cross section or a
+:class:`Fluctuation` where one applies; choose how often the world is
+resampled with :class:`Motion`; then call one of the radar's four verbs. Products go to :mod:`witwin.radar.processing`.
 
 Advanced records stay in their owner modules and are imported from there:
 ``SensorEndpointIds`` and ``StableIdAllocator`` in
@@ -21,7 +22,7 @@ from .radar import Chirp, Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .results import Frame, Result
 from .sensors import Coupling, Pattern
 from .simulation import Paths
-from .targets import Aspect, MeshTargets, PointTargets, ScatteringMatrix, StructureTargets
+from .targets import Aspect, Fluctuation, MeshTargets, PointTargets, RcsTable, ScatteringMatrix, StructureTargets
 
 __all__ = [
     "Adc",
@@ -30,6 +31,7 @@ __all__ = [
     "Chirp",
     "Compression",
     "Coupling",
+    "Fluctuation",
     "Fmcw",
     "Frame",
     "Iq",
@@ -43,6 +45,7 @@ __all__ = [
     "PointTargets",
     "Pulsed",
     "Radar",
+    "RcsTable",
     "Result",
     "ScatteringMatrix",
     "StructureTargets",

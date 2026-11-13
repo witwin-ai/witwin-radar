@@ -505,12 +505,13 @@ def _precise(spec: RadarEndpointSpec) -> torch.Tensor:
 
 
 def _bound(response: ScatterResponse, binding: RadarWorldBinding, time_s: float) -> ScatterResponse:
-    """The response at one observation: bound to its facets, for a mesh target.
+    """The response at one observation: bound to its facets and its fluctuation draw, if it has either.
 
     A response with ``bind_observation`` depends on the observation - a mesh
-    target's facet frame - and is bound here; every other response is the
-    session's own. A slot batch binds its first observation, which is exact
-    because only a world whose structures do not move is slot batched.
+    target's facet frame, a Swerling draw - and is bound here; every other
+    response is the session's own. A slot batch binds its first observation,
+    which is exact because only a world whose structures do not move is slot
+    batched and a response that varies per observation is never batched.
     """
 
     bind = getattr(response, "bind_observation", None)
@@ -882,7 +883,7 @@ class WorldHalf:
             if positions is not None and frame.rediscovered:
                 self._reference = positions[time_s]
             pending = self._pending(time_s, frame)
-            if self.loop.structures_move:
+            if self.loop.structures_move or getattr(self.response, "varies_per_observation", False):
                 self._replay([pending], results)
             else:
                 groups.setdefault(_round_trip(frame.frozen).identity, []).append(pending)
@@ -1678,7 +1679,9 @@ def open_session(
         displacement_m = None
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
-    still_world = not sampled and cadence is None and period_s is None
+    still_world = (
+        not sampled and cadence is None and period_s is None and not getattr(response, "varies_per_observation", False)
+    )
     band_offsets = _subcarrier_offsets(working) if wideband else None
     unfrozen = (frozenset(components) | direct_components) & UNFREEZABLE_COMPONENTS
     if unfrozen:

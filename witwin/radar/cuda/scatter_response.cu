@@ -61,6 +61,7 @@
 
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
+#include "scatter_jets.cuh"
 
 #include <cstdint>
 
@@ -678,6 +679,296 @@ void scatter_direction_forward_cuda(const torch::stable::Tensor& a, const torch:
 void scatter_direction_derivative_cuda(const torch::stable::Tensor& a, const torch::stable::Tensor& b,
     const torch::stable::Tensor& v, torch::stable::Tensor out) { scatter_direction_launch<true>(a, b, v, out); }
 
+// ---------------------------------------------------------------------------
+// Tabulated response: S(theta) interpolated per composed row.
+// ---------------------------------------------------------------------------
+//
+// theta is the bistatic aspect angle between the site's unit axis and the
+// bisector b = u_in + u_out of the two leg directions at the site (u_in = -dir_in
+// toward the wave's source, u_out = dir_out toward the receiver side); it is
+// the monostatic aspect when the two coincide. The table holds the complex
+// response S = sqrt(4 pi sigma)/lambda exp(-j phi) at theta_i = i pi / (A - 1),
+// already reduced to the carrier on the host, and is interpolated linearly in
+// theta. A row with b = 0 (exact forward scatter) reads the table at theta = 0
+// with zero derivative; so does a row on the axis (theta = 0 or pi), where
+// d theta / d cos theta is singular and the derivative is the one-sided limit
+// of a measure-zero set. The table takes no derivative.
+
+namespace table_response {
+
+using namespace radar_jets;
+
+template <int N>
+__device__ __forceinline__ C<N> row(
+    const V3<N>& dir_in, const V3<N>& dir_out, const V3<N>& axis, const float* __restrict__ table_re,
+    const float* __restrict__ table_im, int entries) {
+  const V3<N> bisector = dir_out - dir_in;
+  const J<N> length2 = dot(bisector, bisector);
+  if (!(length2.v > 1.0e-24)) {
+    return cconst<N>(table_re[0], table_im[0]);
+  }
+  J<N> cosine = dot(axis, bisector) / jsqrt(length2);
+  double theta;
+  double slope;
+  if (1.0 - cosine.v * cosine.v < 1.0e-12) {
+    theta = cosine.v > 0.0 ? 0.0 : kJetPi;
+    slope = 0.0;
+  } else {
+    theta = acos(cosine.v);
+    slope = -1.0 / sqrt(1.0 - cosine.v * cosine.v);
+  }
+  const J<N> angle = lift(cosine, theta, slope);
+  const double step = kJetPi / static_cast<double>(entries - 1);
+  int index = static_cast<int>(floor(theta / step));
+  index = index < 0 ? 0 : (index > entries - 2 ? entries - 2 : index);
+  const J<N> t = (angle - jconst<N>(index * step)) * (1.0 / step);
+  const C<N> low = cconst<N>(table_re[index], table_im[index]);
+  const C<N> high = cconst<N>(table_re[index + 1], table_im[index + 1]);
+  return low + (high - low) * t;
+}
+
+}  // namespace table_response
+
+__global__ void scatter_response_table_forward_kernel(
+    const float* dir_in, const float* dir_out, const int64_t* idx_in, const int64_t* idx_out,
+    const int64_t* idx_site, const float* axis, const float* table_re, const float* table_im,
+    const int32_t* row_valid, float* s_re, float* s_im, int entries, int num_rows) {
+  using namespace radar_jets;
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k >= num_rows) return;
+  if (row_valid[k] == 0) {
+    s_re[k] = 0.0f;
+    s_im[k] = 0.0f;
+    return;
+  }
+  const C<0> value = table_response::row<0>(
+      jload<0>(dir_in, idx_in[k]), jload<0>(dir_out, idx_out[k]), jload<0>(axis, idx_site[k]), table_re, table_im,
+      entries);
+  s_re[k] = static_cast<float>(value.re.v);
+  s_im[k] = static_cast<float>(value.im.v);
+}
+
+__global__ void scatter_response_table_jvp_kernel(
+    const float* dir_in, const float* dir_out, const int64_t* idx_in, const int64_t* idx_out,
+    const int64_t* idx_site, const float* axis, const float* table_re, const float* table_im,
+    const int32_t* row_valid, const float* tan_dir_in, const float* tan_dir_out, const float* tan_axis,
+    float* tan_re, float* tan_im, int entries, int num_rows) {
+  using namespace radar_jets;
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k >= num_rows) return;
+  if (row_valid[k] == 0) {
+    tan_re[k] = 0.0f;
+    tan_im[k] = 0.0f;
+    return;
+  }
+  V3<1> din = jload<1>(dir_in, idx_in[k]);
+  V3<1> dout = jload<1>(dir_out, idx_out[k]);
+  V3<1> u = jload<1>(axis, idx_site[k]);
+  jtangent(din, tan_dir_in, idx_in[k]);
+  jtangent(dout, tan_dir_out, idx_out[k]);
+  jtangent(u, tan_axis, idx_site[k]);
+  const C<1> value = table_response::row<1>(din, dout, u, table_re, table_im, entries);
+  tan_re[k] = static_cast<float>(value.re.d[0]);
+  tan_im[k] = static_cast<float>(value.im.d[0]);
+}
+
+// One owner slot per thread over inbound leg rows, outbound leg rows and
+// sites, each reduced in the join's frozen CSR order.
+__global__ void scatter_response_table_backward_kernel(
+    const float* dir_in, const float* dir_out, const int64_t* idx_in, const int64_t* idx_out,
+    const int64_t* idx_site, const float* axis, const float* table_re, const float* table_im,
+    const int32_t* row_valid, const int64_t* by_in_offsets, const int64_t* by_in_rows,
+    const int64_t* by_out_offsets, const int64_t* by_out_rows, const int64_t* by_site_offsets,
+    const int64_t* by_site_rows, const float* grad_re, const float* grad_im, float* grad_dir_in,
+    float* grad_dir_out, float* grad_axis, int entries, int num_in, int num_out, int num_sites) {
+  using namespace radar_jets;
+  const int thread = blockIdx.x * blockDim.x + threadIdx.x;
+  if (thread >= num_in + num_out + num_sites) return;
+  int family;
+  int slot;
+  const int64_t* offsets;
+  const int64_t* members;
+  if (thread < num_in) {
+    family = 0, slot = thread, offsets = by_in_offsets, members = by_in_rows;
+  } else if (thread < num_in + num_out) {
+    family = 1, slot = thread - num_in, offsets = by_out_offsets, members = by_out_rows;
+  } else {
+    family = 2, slot = thread - num_in - num_out, offsets = by_site_offsets, members = by_site_rows;
+  }
+  double g[3] = {0.0, 0.0, 0.0};
+  for (int64_t entry = offsets[slot]; entry < offsets[slot + 1]; ++entry) {
+    const int64_t k = members[entry];
+    if (row_valid[k] == 0) continue;
+    V3<3> din = jload<3>(dir_in, idx_in[k]);
+    V3<3> dout = jload<3>(dir_out, idx_out[k]);
+    V3<3> u = jload<3>(axis, idx_site[k]);
+    if (family == 0) jseed(din, 0);
+    if (family == 1) jseed(dout, 0);
+    if (family == 2) jseed(u, 0);
+    const C<3> value = table_response::row<3>(din, dout, u, table_re, table_im, entries);
+    for (int lane = 0; lane < 3; ++lane) {
+      g[lane] += static_cast<double>(grad_re[k]) * value.re.d[lane] + static_cast<double>(grad_im[k]) * value.im.d[lane];
+    }
+  }
+  float* out = family == 0 ? grad_dir_in : (family == 1 ? grad_dir_out : grad_axis);
+  for (int lane = 0; lane < 3; ++lane) out[static_cast<int64_t>(slot) * 3 + lane] = static_cast<float>(g[lane]);
+}
+
+void check_table_inputs(
+    const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out, const torch::stable::Tensor& idx_in,
+    const torch::stable::Tensor& idx_out, const torch::stable::Tensor& idx_site, const torch::stable::Tensor& axis,
+    const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
+    const torch::stable::Tensor& row_valid, int rows) {
+  check_cuda_float(dir_in, "dir_in");
+  check_cuda_float(dir_out, "dir_out");
+  STD_TORCH_CHECK(
+      dir_in.numel() % 3 == 0 && dir_out.numel() % 3 == 0, "dir_in and dir_out must hold three values per leg row.");
+  check_index(idx_in, rows, "idx_in");
+  check_index(idx_out, rows, "idx_out");
+  check_index(idx_site, rows, "idx_site");
+  check_cuda_float(axis, "axis");
+  STD_TORCH_CHECK(axis.numel() % 3 == 0, "axis must hold three values per site.");
+  check_cuda_float(table_re, "table_re");
+  check_cuda_float(table_im, "table_im");
+  STD_TORCH_CHECK(
+      table_re.numel() >= 2 && table_re.numel() == table_im.numel(),
+      "the response table must hold at least two complex entries.");
+  check_cuda_int(row_valid, "row_valid");
+  STD_TORCH_CHECK(row_valid.numel() == rows, "row_valid must hold one flag per composed row.");
+}
+
+void scatter_response_table_forward_cuda(
+    const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out, const torch::stable::Tensor& idx_in,
+    const torch::stable::Tensor& idx_out, const torch::stable::Tensor& idx_site, const torch::stable::Tensor& axis,
+    const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
+    const torch::stable::Tensor& row_valid, torch::stable::Tensor s_re, torch::stable::Tensor s_im, int64_t num_rows) {
+  const int rows = checked_int(num_rows, "num_rows");
+  check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
+  check_len(s_re, rows, "s_re");
+  check_len(s_im, rows, "s_im");
+  if (rows == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(s_re.get_device_index());
+  scatter_response_table_forward_kernel<<<linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(s_re)>>>(
+      dir_in.const_data_ptr<float>(), dir_out.const_data_ptr<float>(), idx_in.const_data_ptr<int64_t>(),
+      idx_out.const_data_ptr<int64_t>(), idx_site.const_data_ptr<int64_t>(), axis.const_data_ptr<float>(),
+      table_re.const_data_ptr<float>(), table_im.const_data_ptr<float>(), row_valid.const_data_ptr<int32_t>(),
+      s_re.mutable_data_ptr<float>(), s_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), rows);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void scatter_response_table_jvp_cuda(
+    const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out, const torch::stable::Tensor& idx_in,
+    const torch::stable::Tensor& idx_out, const torch::stable::Tensor& idx_site, const torch::stable::Tensor& axis,
+    const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
+    const torch::stable::Tensor& row_valid, const torch::stable::Tensor& tan_dir_in,
+    const torch::stable::Tensor& tan_dir_out, const torch::stable::Tensor& tan_axis, torch::stable::Tensor tan_re,
+    torch::stable::Tensor tan_im, int64_t num_rows) {
+  const int rows = checked_int(num_rows, "num_rows");
+  check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
+  check_vec3(tan_dir_in, dir_in.numel() / 3, "tan_dir_in");
+  check_vec3(tan_dir_out, dir_out.numel() / 3, "tan_dir_out");
+  check_vec3(tan_axis, axis.numel() / 3, "tan_axis");
+  check_len(tan_re, rows, "tan_re");
+  check_len(tan_im, rows, "tan_im");
+  if (rows == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(tan_re.get_device_index());
+  scatter_response_table_jvp_kernel<<<linear_grid(rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(tan_re)>>>(
+      dir_in.const_data_ptr<float>(), dir_out.const_data_ptr<float>(), idx_in.const_data_ptr<int64_t>(),
+      idx_out.const_data_ptr<int64_t>(), idx_site.const_data_ptr<int64_t>(), axis.const_data_ptr<float>(),
+      table_re.const_data_ptr<float>(), table_im.const_data_ptr<float>(), row_valid.const_data_ptr<int32_t>(),
+      tan_dir_in.const_data_ptr<float>(), tan_dir_out.const_data_ptr<float>(), tan_axis.const_data_ptr<float>(),
+      tan_re.mutable_data_ptr<float>(), tan_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), rows);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void scatter_response_table_backward_cuda(
+    const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out, const torch::stable::Tensor& idx_in,
+    const torch::stable::Tensor& idx_out, const torch::stable::Tensor& idx_site, const torch::stable::Tensor& axis,
+    const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
+    const torch::stable::Tensor& row_valid, const torch::stable::Tensor& by_in_offsets,
+    const torch::stable::Tensor& by_in_rows, const torch::stable::Tensor& by_out_offsets,
+    const torch::stable::Tensor& by_out_rows, const torch::stable::Tensor& by_site_offsets,
+    const torch::stable::Tensor& by_site_rows, const torch::stable::Tensor& grad_re,
+    const torch::stable::Tensor& grad_im, torch::stable::Tensor grad_dir_in, torch::stable::Tensor grad_dir_out,
+    torch::stable::Tensor grad_axis, int64_t num_rows) {
+  const int rows = checked_int(num_rows, "num_rows");
+  check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
+  const int legs_in = checked_int(dir_in.numel() / 3, "num_in");
+  const int legs_out = checked_int(dir_out.numel() / 3, "num_out");
+  const int sites = checked_int(axis.numel() / 3, "num_sites");
+  check_cuda_long(by_in_offsets, "by_in_offsets");
+  check_cuda_long(by_in_rows, "by_in_rows");
+  check_cuda_long(by_out_offsets, "by_out_offsets");
+  check_cuda_long(by_out_rows, "by_out_rows");
+  check_cuda_long(by_site_offsets, "by_site_offsets");
+  check_cuda_long(by_site_rows, "by_site_rows");
+  STD_TORCH_CHECK(
+      by_in_offsets.numel() == legs_in + 1 && by_out_offsets.numel() == legs_out + 1 &&
+          by_site_offsets.numel() == sites + 1,
+      "each CSR offsets table must hold one entry per owner plus one.");
+  STD_TORCH_CHECK(
+      by_in_rows.numel() == rows && by_out_rows.numel() == rows && by_site_rows.numel() == rows,
+      "each CSR row table must permute every composed row exactly once.");
+  check_len(grad_re, rows, "grad_re");
+  check_len(grad_im, rows, "grad_im");
+  check_vec3(grad_dir_in, legs_in, "grad_dir_in");
+  check_vec3(grad_dir_out, legs_out, "grad_dir_out");
+  check_vec3(grad_axis, sites, "grad_axis");
+  const int total = legs_in + legs_out + sites;
+  if (total == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(grad_axis.get_device_index());
+  scatter_response_table_backward_kernel<<<linear_grid(total), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_axis)>>>(
+      dir_in.const_data_ptr<float>(), dir_out.const_data_ptr<float>(), idx_in.const_data_ptr<int64_t>(),
+      idx_out.const_data_ptr<int64_t>(), idx_site.const_data_ptr<int64_t>(), axis.const_data_ptr<float>(),
+      table_re.const_data_ptr<float>(), table_im.const_data_ptr<float>(), row_valid.const_data_ptr<int32_t>(),
+      by_in_offsets.const_data_ptr<int64_t>(), by_in_rows.const_data_ptr<int64_t>(),
+      by_out_offsets.const_data_ptr<int64_t>(), by_out_rows.const_data_ptr<int64_t>(),
+      by_site_offsets.const_data_ptr<int64_t>(), by_site_rows.const_data_ptr<int64_t>(), grad_re.const_data_ptr<float>(),
+      grad_im.const_data_ptr<float>(), grad_dir_in.mutable_data_ptr<float>(), grad_dir_out.mutable_data_ptr<float>(),
+      grad_axis.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), legs_in, legs_out, sites);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------
+// Swerling fluctuation: one amplitude factor per site.
+// ---------------------------------------------------------------------------
+//
+// out[s] = sqrt(X_s) with E[X] = 1: X ~ Exp(1) (chi-square, 2 degrees of
+// freedom; Swerling I and II) when degrees == 2, X ~ Gamma(2, 1/2) (chi-square,
+// 4 degrees of freedom; Swerling III and IV) when degrees == 4. The uniforms
+// are splitmix64 of (key, site, draw), so the factor is a pure function of the
+// key the host derives from the seed and the instant (or the coherent
+// interval) and of the site. The factor has no differentiable input.
+
+__device__ __forceinline__ double fluctuation_uniform(uint64_t key, int64_t site, int draw) {
+  uint64_t z = key + 0x9E3779B97F4A7C15ULL * (static_cast<uint64_t>(site) * 2ULL + static_cast<uint64_t>(draw) + 1ULL);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  z = z ^ (z >> 31);
+  // (0, 1]: never zero, so the logarithm is finite.
+  return (static_cast<double>(z >> 11) + 1.0) * (1.0 / 9007199254740992.0);
+}
+
+__global__ void fluctuation_factor_kernel(float* out, uint64_t key, int degrees, int sites) {
+  const int s = blockIdx.x * blockDim.x + threadIdx.x;
+  if (s >= sites) return;
+  double power = -log(fluctuation_uniform(key, s, 0));
+  if (degrees == 4) power = 0.5 * (power - log(fluctuation_uniform(key, s, 1)));
+  out[s] = static_cast<float>(sqrt(power));
+}
+
+void fluctuation_factor_forward_cuda(torch::stable::Tensor out, int64_t key, int64_t degrees) {
+  check_cuda_float(out, "out");
+  STD_TORCH_CHECK(degrees == 2 || degrees == 4, "degrees must be 2 (Swerling I, II) or 4 (Swerling III, IV).");
+  STD_TORCH_CHECK(key >= 0, "key must be non-negative.");
+  const int sites = checked_int(out.numel(), "sites");
+  if (sites == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(out.get_device_index());
+  fluctuation_factor_kernel<<<linear_grid(sites), dim3(kBlock, 1, 1), 0, current_cuda_stream(out)>>>(
+      out.mutable_data_ptr<float>(), static_cast<uint64_t>(key), static_cast<int>(degrees), sites);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("scatter_direction_forward", TORCH_BOX(&scatter_direction_forward_cuda));
   m.impl("scatter_direction_backward", TORCH_BOX(&scatter_direction_derivative_cuda));
@@ -691,4 +982,8 @@ STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl(
       "scatter_response_aspect_backward",
       TORCH_BOX(&scatter_response_aspect_backward_cuda));
+  m.impl("scatter_response_table_forward", TORCH_BOX(&scatter_response_table_forward_cuda));
+  m.impl("scatter_response_table_jvp", TORCH_BOX(&scatter_response_table_jvp_cuda));
+  m.impl("scatter_response_table_backward", TORCH_BOX(&scatter_response_table_backward_cuda));
+  m.impl("fluctuation_factor_forward", TORCH_BOX(&fluctuation_factor_forward_cuda));
 }

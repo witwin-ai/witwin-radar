@@ -44,6 +44,7 @@
       "Chirp": "witwin.radar.radar.Chirp",
       "Compression": "witwin.radar.frontend.Compression",
       "Coupling": "witwin.radar.sensors.Coupling",
+      "Fluctuation": "witwin.radar.targets.Fluctuation",
       "Fmcw": "witwin.radar.radar.Fmcw",
       "Frame": "witwin.radar.results.Frame",
       "Iq": "witwin.radar.frontend.Iq",
@@ -57,6 +58,7 @@
       "PointTargets": "witwin.radar.targets.PointTargets",
       "Pulsed": "witwin.radar.radar.Pulsed",
       "Radar": "witwin.radar.radar.Radar",
+      "RcsTable": "witwin.radar.targets.RcsTable",
       "Result": "witwin.radar.results.Result",
       "ScatteringMatrix": "witwin.radar.targets.ScatteringMatrix",
       "StructureTargets": "witwin.radar.targets.StructureTargets",
@@ -146,9 +148,11 @@
       "SCATTERING_MATRIX_LAYOUT": "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
       "SITE_BASIS": "witwin.radar.scattering.SITE_BASIS",
       "FacetScatterResponse": "witwin.radar.scattering.FacetScatterResponse",
+      "FluctuatingResponse": "witwin.radar.scattering.FluctuatingResponse",
       "ScalarRcsResponse": "witwin.radar.scattering.ScalarRcsResponse",
       "ScatterResponse": "witwin.radar.scattering.ScatterResponse",
-      "ScatteringMatrixResponse": "witwin.radar.scattering.ScatteringMatrixResponse"
+      "ScatteringMatrixResponse": "witwin.radar.scattering.ScatteringMatrixResponse",
+      "TableScatterResponse": "witwin.radar.scattering.TableScatterResponse"
     },
     "witwin.radar.smpl": {
       "SMPLBody": "witwin.radar.smpl.SMPLBody",

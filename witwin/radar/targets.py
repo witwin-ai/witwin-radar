@@ -30,12 +30,14 @@ from .propagation import Kinematics
 from .scattering import (
     AspectScatterResponse,
     FacetScatterResponse,
+    FluctuatingResponse,
     ScalarRcsResponse,
     ScatteringMatrixResponse,
+    TableScatterResponse,
     rcs_amplitude,
 )
 
-__all__ = ["Aspect", "MeshTargets", "PointTargets", "ScatteringMatrix", "StructureTargets"]
+__all__ = ["Aspect", "Fluctuation", "MeshTargets", "PointTargets", "RcsTable", "ScatteringMatrix", "StructureTargets"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +116,100 @@ class Aspect:
 
 
 @dataclass(frozen=True, slots=True)
+class RcsTable:
+    """A tabulated cross section, ``sigma(theta, f)``, as a target's ``rcs``.
+
+    ``theta`` is the aspect angle between the target's ``axis`` and the
+    bisector of the directions from the target to the transmitter and to the
+    receiver (the monostatic aspect when the two coincide), sampled uniformly
+    on ``[0, pi]`` by the table's last axis. ``rcs_m2`` is ``(A,)`` for one
+    frequency or ``(F, A)`` at ``frequencies_hz``; ``phase_rad`` (same shape,
+    or a scalar) is the scattering phase. The table is reduced to the radar's
+    carrier once, by linear interpolation of the complex amplitude
+    ``sqrt(4 pi sigma) / lambda exp(-j phase)`` in frequency, and evaluated per
+    composed row by linear interpolation in ``theta`` (R-ADR-045). It is host
+    data and takes no derivative; the aspect it is read at does.
+    """
+
+    #: One unit axis per target, world frame, shape ``(S, 3)``.
+    axis: Any
+    #: Cross section, m^2, ``(A,)`` or ``(F, A)``, ``A >= 2`` aspect samples on ``[0, pi]``.
+    rcs_m2: Any
+    #: The frequencies of the table's rows, Hz, ascending; required with an ``(F, A)`` table.
+    frequencies_hz: Any = None
+    #: Scattering phase, rad, broadcast against ``rcs_m2``.
+    phase_rad: Any = 0.0
+
+    def __post_init__(self) -> None:
+        import numpy as np
+
+        table = np.asarray(self.rcs_m2, dtype=np.float64)
+        if table.ndim not in (1, 2) or table.shape[-1] < 2:
+            raise ValueError("RcsTable.rcs_m2 must be (A,) or (F, A) with at least two aspect samples")
+        if np.any(table < 0.0) or not np.all(np.isfinite(table)):
+            raise ValueError("RcsTable.rcs_m2 is a cross section in square metres and must be finite and non-negative")
+        if (table.ndim == 2) != (self.frequencies_hz is not None):
+            raise ValueError("RcsTable.frequencies_hz is required with, and only with, an (F, A) table")
+        if table.ndim == 2:
+            frequencies = np.asarray(self.frequencies_hz, dtype=np.float64)
+            if frequencies.shape != (table.shape[0],) or np.any(np.diff(frequencies) <= 0.0):
+                raise ValueError("RcsTable.frequencies_hz must be ascending, one per table row")
+        np.broadcast_to(np.asarray(self.phase_rad, dtype=np.float64), table.shape)
+
+    def amplitude_at(self, carrier_hz: float, wavelength_m: float):
+        """The complex amplitude table at the carrier, ``(A,)`` complex128 on the host."""
+
+        import numpy as np
+
+        table = np.asarray(self.rcs_m2, dtype=np.float64)
+        phase = np.broadcast_to(np.asarray(self.phase_rad, dtype=np.float64), table.shape)
+        amplitude = np.sqrt(4.0 * math.pi * table) / float(wavelength_m) * np.exp(-1j * phase)
+        if table.ndim == 1:
+            return amplitude
+        frequencies = np.asarray(self.frequencies_hz, dtype=np.float64)
+        carrier = float(carrier_hz)
+        if not frequencies[0] <= carrier <= frequencies[-1]:
+            raise ValueError(
+                f"the carrier {carrier} Hz is outside the table's frequencies [{frequencies[0]}, {frequencies[-1]}] "
+                "Hz; a tabulated cross section is not extrapolated"
+            )
+        upper = int(min(np.searchsorted(frequencies, carrier, side="right"), len(frequencies) - 1))
+        lower = max(upper - 1, 0)
+        span = frequencies[upper] - frequencies[lower]
+        weight = 0.0 if span == 0.0 else (carrier - frequencies[lower]) / span
+        return (1.0 - weight) * amplitude[lower] + weight * amplitude[upper]
+
+
+@dataclass(frozen=True, slots=True)
+class Fluctuation:
+    """Swerling fluctuation of every target's cross section (R-ADR-045).
+
+    Each site's power is multiplied by an independent draw ``X`` with
+    ``E[X] = 1``: exponential (chi-square with 2 degrees of freedom) for
+    Swerling I and II, chi-square with 4 degrees of freedom for III and IV.
+    Swerling I and III hold one draw for every observation inside one
+    ``coherent_interval`` (a scan) and redraw at each interval boundary; II and
+    IV redraw at every observation instant (pulse to pulse). A draw is a pure
+    function of ``seed``, the interval's start (or the instant) and the site,
+    keyed like the frontend's noise, so every verb sees the same realisation.
+    The phase is not fluctuated.
+    """
+
+    swerling: int
+    #: The decorrelation interval of Swerling I and III, s.
+    coherent_interval: float
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.swerling not in (1, 2, 3, 4) or type(self.swerling) is not int:
+            raise ValueError(f"Fluctuation.swerling must be 1, 2, 3 or 4, got {self.swerling!r}")
+        if not float(self.coherent_interval) > 0.0:
+            raise ValueError("Fluctuation.coherent_interval must be positive")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("Fluctuation.seed must be a non-negative int")
+
+
+@dataclass(frozen=True, slots=True)
 class PointTargets:
     """Scatterers at world positions the caller names, with their cross section.
 
@@ -155,6 +251,8 @@ class PointTargets:
     aspect: Aspect | None = None
     #: Polarimetric scattering. ``None`` scatters as the identity dyadic.
     scattering: ScatteringMatrix | None = None
+    #: Swerling fluctuation of the cross section; ``None`` holds it fixed.
+    fluctuation: Fluctuation | None = None
 
     def __post_init__(self) -> None:
         _require_one_strength("PointTargets", rcs=self.rcs, amplitude=self.amplitude)
@@ -165,12 +263,19 @@ class PointTargets:
                 "PointTargets.scattering and PointTargets.aspect cannot be combined: the aspect lobe is a "
                 "per-row scalar and the scattering matrix a per-site 2x2, and no response composes both"
             )
+        if isinstance(self.rcs, RcsTable) and self.scattering is not None:
+            raise NotImplementedError("an RcsTable is a scalar aspect law; it does not compose with a ScatteringMatrix")
+        if isinstance(self.rcs, RcsTable) and self.aspect is not None:
+            raise ValueError("an RcsTable is its own aspect law; give a table or an Aspect, not both")
+        if self.fluctuation is not None and not isinstance(self.fluctuation, Fluctuation):
+            raise TypeError("PointTargets.fluctuation must be a Fluctuation")
         if self.trajectory is not None and not callable(self.trajectory):
             raise TypeError("PointTargets.trajectory must be callable as trajectory(time) -> (S, 3) positions")
         if self.aspect is not None and not isinstance(self.aspect, Aspect):
             raise TypeError(f"PointTargets.aspect must be an Aspect, got {type(self.aspect).__name__}")
         for name in ("rcs", "amplitude", "phase"):
-            _require_per_target_length(f"PointTargets.{name}", getattr(self, name), self.count)
+            if not isinstance(getattr(self, name), RcsTable):
+                _require_per_target_length(f"PointTargets.{name}", getattr(self, name), self.count)
 
     @property
     def count(self) -> int:
@@ -205,9 +310,15 @@ class StructureTargets:
     phase: Any = 0.0
     #: Stable world IDs, one per selected structure. ``None`` allocates them.
     ids: tuple[int, ...] | None = None
+    #: Swerling fluctuation of the cross section; ``None`` holds it fixed.
+    fluctuation: Fluctuation | None = None
 
     def __post_init__(self) -> None:
         _require_one_strength("StructureTargets", rcs=self.rcs, amplitude=self.amplitude)
+        if isinstance(self.rcs, RcsTable):
+            raise ValueError("an RcsTable needs a per-target axis; use PointTargets for a tabulated cross section")
+        if self.fluctuation is not None and not isinstance(self.fluctuation, Fluctuation):
+            raise TypeError("StructureTargets.fluctuation must be a Fluctuation")
         count = None if self.structure_ids is None else len(self.structure_ids)
         for name in ("rcs", "amplitude", "phase"):
             _require_per_target_length(f"StructureTargets.{name}", getattr(self, name), count)
@@ -379,6 +490,15 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
         )
 
     order = _join_order(targets.ids, device=radar.device)
+    if isinstance(targets.rcs, RcsTable):
+        table = targets.rcs.amplitude_at(float(radar.carrier), radar.wavelength)
+        axis = _axis_tensor(targets.rcs.axis, count=targets.count, device=radar.device)
+        response: Any = TableScatterResponse(
+            axis=(axis if order is None else axis.index_select(0, order)).contiguous(),
+            table_re=torch.tensor(table.real, dtype=torch.float32, device=radar.device),
+            table_im=torch.tensor(table.imag, dtype=torch.float32, device=radar.device),
+        )
+        return policy, _fluctuated(response, targets.fluctuation)
     phase = _per_site_tensor(targets.phase, order=order, device=radar.device)
     if isinstance(targets.rcs, torch.Tensor):
         # The tensor law keeps a cross-section leaf's tape.
@@ -415,10 +535,27 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
             aspect_phase_rate_rad_per_s=float(aspect.phase_rate),
         )
         if timed:
+            if targets.fluctuation is not None:
+                raise NotImplementedError(
+                    "a Fluctuation on a target whose Aspect axis is a function of time is not composed: the "
+                    "time-resolved aspect response is rebuilt per replay group and the draw is bound per observation"
+                )
             return policy, TimedAspectResponse(
                 base=response, axis=aspect.axis, count=count, device=radar.device, order=order
             )
-    return policy, response
+    return policy, _fluctuated(response, targets.fluctuation)
+
+
+def _fluctuated(response: Any, fluctuation: Fluctuation | None) -> Any:
+    if fluctuation is None:
+        return response
+    return FluctuatingResponse(
+        base=response,
+        degrees=2 if fluctuation.swerling in (1, 2) else 4,
+        per_observation=fluctuation.swerling in (2, 4),
+        coherent_interval_s=float(fluctuation.coherent_interval),
+        seed=fluctuation.seed,
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
