@@ -87,8 +87,6 @@ def capabilities() -> dict[str, Any]:
     from .radar import FMCW_SAMPLINGS, PROPAGATION_COMPONENTS, WAVEFORM_KINDS, Radar
     from .sensors import PATTERN_KINDS, PATTERN_QUANTITIES, Coupling, Pattern
     from .smpl import SMPLBody
-    from .targets import PointTargets
-    from .targets import __all__ as target_records
     from .synthesis.assembly import (
         FMCW_OUTPUT_DOMAINS,
         MIMO_SCHEMES,
@@ -96,6 +94,8 @@ def capabilities() -> dict[str, Any]:
         OFDM_OUTPUT_DOMAINS,
         PULSE_KINDS,
     )
+    from .targets import PointTargets
+    from .targets import __all__ as target_records
 
     return {
         "schema_version": SCHEMA_VERSION,
