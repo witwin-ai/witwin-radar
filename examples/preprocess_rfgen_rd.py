@@ -1,12 +1,12 @@
 """
-Preprocess an RFGen RGBD recording into a single .npz file.
+Preprocess an RFGen RGBD recording into the .npz that rgbd_range_doppler reads.
 
-``--input-dir`` is REQUIRED and names the RFGen_RD recording folder. It has no
-default because the only default that ever worked was one author's absolute
-path; a script that silently reads somebody else's machine is worse than one
-that asks. The expected layout inside it:
+``--input-dir`` names the RFGen_RD recording folder. The expected layout inside
+it:
     - bin_depths_short_resized.npy : depth frames in meters, shape (T, H, W)
     - color.mp4                    : optional RGB preview video
+
+Reading the video needs OpenCV (``cv2``); ``--rgb-mode skip`` does not.
 
 The output .npz contains:
     - depths : float32, shape (T, H, W), meters
@@ -14,6 +14,10 @@ The output .npz contains:
     - rgb    : uint8,   shape (T, H, W, 3), optional, resized to depth shape
     - fps    : float32
     - frame_indices : int32, original source frame ids after trimming
+
+Usage:
+    python -m examples.preprocess_rfgen_rd --input-dir path/to/recording
+    python -m examples.rgbd_range_doppler --input output/rfgen_rgbd_sequence.npz
 """
 
 from __future__ import annotations
@@ -21,7 +25,6 @@ from __future__ import annotations
 import argparse
 import pathlib
 
-import cv2
 import numpy as np
 
 
@@ -57,6 +60,13 @@ def _load_depths(path: pathlib.Path) -> np.ndarray:
 
 
 def _read_video_frames(path: pathlib.Path, *, limit: int | None, start_frame: int, size: tuple[int, int]) -> np.ndarray:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise ImportError(
+            "Reading the RGB preview video requires OpenCV (cv2); pass --rgb-mode skip without it."
+        ) from exc
+
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {path}")

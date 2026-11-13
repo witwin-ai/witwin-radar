@@ -11,13 +11,15 @@ solve publishes BOTH the direct round trip and the two single-bounce round trips
 that go via the wall, so the range profile has a target peak and a multipath
 peak whose positions are known in closed form. The example checks them.
 
-Two numbers are asserted rather than printed, because both are exactly
-predictable and a wrong pipeline still produces a plausible picture:
+What is asserted, because each is exactly predictable and a wrong pipeline
+still produces a plausible picture:
 
 * the strongest composed transport equals the free-space radar equation
   ``sqrt(P_tx) * (lambda / 4 pi R) * (sqrt(4 pi sigma) / lambda) *
   (lambda / 4 pi R)`` for this range and cross section;
-* the range-profile peak sits within one range bin of the true 3 m.
+* the range-profile peak sits within one range bin of the true 3 m, and the
+  wall's image source puts a second peak at 5 m;
+* the point cloud holds the three round trips (3, 5 and 7 m) at zero velocity.
 
 Two conventions are worth reading before copying this file:
 
@@ -26,7 +28,7 @@ Two conventions are worth reading before copying this file:
   transmitted field onto a world-frame vector, and a vector parallel to the
   boresight radiates nothing; ``Radar.polarization`` therefore defaults to
   ``"up"``, the pose's own up axis, which is transverse whichever way the radar
-  is pointed. A world vector is still accepted, and one parallel to the
+  is pointed. A world vector is also accepted, and one parallel to the
   boresight is refused rather than publishing a cube of exact zeros.
 * the receive chain is made of fields on the radar - here one ``Noise`` stage.
   ``Radar.from_dict`` reads the flat FMCW mapping and takes every other field as
@@ -199,17 +201,15 @@ def main() -> None:
     )
     print(f"  |C_rt| = {measured:.6e} vs radar equation {predicted:.6e}  OK")
 
-    # The result carries the metadata every processing stage reads, so a
-    # frame is a cube and its axes together. Assembling that pairing by hand
-    # was how a cube could end up described by a different array than the one
-    # it came from.
+    # A frame is one frame's cube together with the metadata every processing
+    # stage reads (``result.axes``), built from the array that produced it.
     frame = result.frame(0)
     axes = frame.axes
     geometry = frame.array()
-    # No fast-time window here: this waveform's ``output`` is ``"spectrum"``, so
-    # the cube arrives already transformed and a window applied after the
-    # transform would weight bins rather than samples. The Doppler stage still
-    # takes one, because slow time has not been transformed yet.
+    # ``range_doppler()`` is rectangular on both axes unless told otherwise.
+    # Slow time takes a Hann window here for lower Doppler sidelobes. Fast time
+    # stays rectangular: this waveform's ``output`` is ``"spectrum"``, so the
+    # cube is already range-transformed and the range stage refuses a taper.
     rd = frame.range_doppler(window="hann")
     combined = rd.data.reshape(geometry.sensor_pair_count, *rd.data.shape[-2:]).sum(dim=0)
     range_response = combined.abs().amax(dim=0)
@@ -234,8 +234,20 @@ def main() -> None:
     )
     print(f"  Multipath peak near {multipath_range_m:.4f} m  OK")
 
-    cloud = frame.points(pfa=1e-4, guard_cells=(2, 4), training_cells=(4, 8), max_points=64)
+    # The range transform is rectangular (see above), so the target's range
+    # sidelobes run along its Doppler row 20-45 dB down; a false-alarm rate of
+    # 1e-6 keeps the CA-CFAR threshold above them. Detections are grouped to
+    # one point per peak. The cloud is in the radar processing frame: x right,
+    # y along the boresight, z up.
+    cloud = frame.points(pfa=1e-6, guard_cells=(2, 4), training_cells=(4, 8), max_points=64)
     print(f"  Point cloud: {len(cloud)} points")
+    detected = sorted(float(value) for value in cloud.range_m)
+    for expected_m in (true_range_m, multipath_range_m, 2.0 * multipath_range_m - true_range_m):
+        assert any(abs(value - expected_m) <= axes.range_bin_m for value in detected), (
+            f"no detection at {expected_m:.3f} m; the cloud has {detected}"
+        )
+    assert bool((cloud.velocity_mps.abs() < axes.velocity_bin_mps).all()), "a still world produced a moving point"
+    print(f"    at {', '.join(f'{value:.3f}' for value in detected)} m, all at zero velocity  OK")
     print("PASSED")
 
 
