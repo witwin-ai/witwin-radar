@@ -1,6 +1,11 @@
 # Radar Pipeline Guide
 
-This is the current scene-to-product route after the breaking concept-axis consolidation. There is one production orchestration path and no legacy fallback path.
+This is the full contract of the scene-to-product route. There is one production orchestration path and no legacy fallback path.
+
+The user guides in [`docs/user/`](user/) teach the same material with runnable examples:
+[Quickstart](user/quickstart.md), [Conventions](user/conventions.md) (frames, units, signs, phasors),
+[Motion](user/motion.md), [Targets](user/targets.md), [Multipath](user/multipath.md) and
+[Waveforms](user/waveforms.md). This guide states what they rely on.
 
 The pipeline has two halves and four verbs. `Radar.trace(scene, targets, times=...)` runs the world
 half - sampling the Core world at the waveform's observation instants, compiling or reusing the
@@ -41,9 +46,12 @@ yielded frame costs more than stacking, not less. Those four members belong to t
 only to it; a radar retains nothing from a run, so the record that answers "which frame is this"
 is the one the call returned. Generator arguments are validated when iteration starts.
 
-Dynamic FMCW can select `motion=Motion.adaptive(...)`, with `Motion` imported from
-`witwin.radar`. Controls are `phase_error`, `relative_amplitude_error`,
-`max_interval`, `nodes`, `max_evaluations`, and `batch_observations`.
+Dynamic FMCW on one uniform TDM ramp runs `motion=Motion.adaptive(...)`, with `Motion` imported
+from `witwin.radar`; it is what the default `Motion.auto()` resolves to for such a session when
+anything moves (section 4). Controls are `phase_error`, `relative_amplitude_error`,
+`max_interval`, `nodes`, `max_evaluations`, `batch_observations`, and the declared motion bounds
+`motion_bandwidth` (Hz) and `max_acceleration` (m/s^2), each of which caps the probe spacing.
+Every accepted interval is also checked at one jittered instant off the probe grid.
 `nodes` is the number of sampled instants one accepted interval interpolates
 through, so the default 2 is the linear rule and 5 is a quartic; each interval probes a grid of
 `2 * (nodes - 1) + 1` instants and tests the error at the ones between the nodes, which at the
@@ -67,9 +75,12 @@ instant was evaluated or because the candidate family was certified complete for
 time. The second is true only when no observation's transport was interpolated. An
 adaptive run in a certifiable world therefore reports completeness without
 exhaustiveness. Probe spacing is not a proof that a shorter occlusion or oscillation was
-absent in a world that cannot be certified. Use `Motion.adc()`, which is what the default
-`Motion.auto()` resolves to for a moving world, for exhaustive comparison; `Motion.chirp()` is an
-explicit stop-and-hop approximation.
+absent in a world that cannot be certified. `Result.semantics` publishes both statements in
+Channel's result-semantics keys (`complete`, plus Radar's `exhaustive`). Use `Motion.adc()`, the
+named exhaustive reference, for exhaustive comparison; `Motion.chirp()` is an explicit
+stop-and-hop approximation. Adaptive sampling is refused for OFDM and pulsed waveforms, for an FMCW
+chirp sequence, start offset, ramp phase error, DDM and BPM, for a Swerling II or IV fluctuation,
+and in a `Network`; `Paths.select` refuses an adaptive trace.
 
 An empty authored world with LOS-only propagation and all endpoint pairs already present permits
 topology reuse. Source mutations, retired handles and version changes still invalidate it. Worlds
@@ -101,7 +112,7 @@ Only `witwin/radar/channel.py` imports Channel in production. The boundary publi
 
 ## 2. Configure a radar
 
-`Radar` is one flat immutable record in SI units: the carrier, the waveform, the two antenna layouts and the transmit power are required, and the pattern, the four receive stages, the port impedance, the seed, the pose and the device have defaults. Internally it derives four conceptual blocks — waveform, sensors, propagation, frontend. There is no processing block: `frame_per_second`, `num_doppler_bins`, `num_range_bins` and `num_angle_bins` are not part of the format and the loader refuses them like any other unknown key.
+`Radar` is one flat immutable record in SI units (the exceptions, such as `power` in dBm, are listed in [Conventions](user/conventions.md#units)): the carrier (`reference_frequency_hz`), the waveform, the two antenna layouts and the transmit power are required, and the pattern, the four receive stages, the port impedance, the seed, the pose and the device have defaults. Internally it derives four conceptual blocks — waveform, sensors, propagation, frontend. There is no processing block: `frame_per_second`, `num_doppler_bins`, `num_range_bins` and `num_angle_bins` are not part of the format and the loader refuses them like any other unknown key.
 
 `Radar.from_dict(...)` accepts the flat configuration used by examples and config files, in the vendor units it is written in — slope in MHz/µs, sample rate in kSPS, the three timings in microseconds, power in dBm, element positions in half wavelengths. This is the only place those units are read; every other field is a keyword override in SI names, so a receive chain and a pose attach in the same call. Any key the record does not consume is refused.
 
@@ -109,7 +120,7 @@ A radar is never edited in place. `Radar.replace(position=..., look_at=...)` ret
 
 Two defaults are physical choices rather than conveniences:
 
-- The element pattern is `Pattern.isotropic()`. The previous default was an unchosen half-wave dipole cut, which attenuated every off-boresight return by a number the caller never asked for. `Pattern.dipole()` restores it, and `Pattern.separable(...)` and `Pattern.table(...)` take a measured cut or map.
+- The element pattern is `Pattern.isotropic()` at 0 dBi: an unchosen dipole would attenuate every off-boresight return by a number the caller never asked for. `Pattern.dipole()` is the half-wave dipole cut, and `Pattern.separable(...)` and `Pattern.table(...)` take a measured cut or map (angles in degrees, `Pattern.gain` in dBi). Cross-polar (Jones) element patterns are not modelled.
 - `Radar.polarization` is `"up"`: the pose's own up axis, and therefore transverse to the boresight whichever way the radar points. A world vector is still accepted, and one parallel to the boresight is refused at construction instead of publishing a cube of zeros. `"right"` is the other derived alias. `Radar.rx_polarization` (default: the same) sets the receive elements' polarization, so a cross-polar channel is one radar.
 
 ### What "isotropic" means
@@ -117,7 +128,7 @@ Two defaults are physical choices rather than conveniences:
 Radar, not Channel, owns the element pattern and the polarization (R-ADR-041). Channel launches each leg from a short dipole along the element's polarization `p` and returns the unprojected field vector at the site (`complex3_transport`); the join divides the dipole magnitude `|P_perp(d) p|` out again, so what reaches the pattern stage is a unit co-polar field times the free-space transport.
 
 - An **isotropic element** (`Pattern.isotropic()`) radiates the same power in every direction, polarized along `p` projected transverse to the direction and normalised. The off-plane radar equation holds at every angle (`tests/oracle/test_radar_equation.py`). On the element's own polarization axis the polarization is undefined (no tangent field can be non-zero everywhere on a sphere); the echo there is zero.
-- `Pattern.dipole()` applies the dipole's `sin` pattern exactly once. Before 0.5.0 Channel's unnormalised projection applied it at both ends of each leg, so even an isotropic element lost `sin^4` in amplitude off the polarization plane (-5.0 dB at 30 degrees) and `Pattern.dipole()` counted the E-plane cut twice.
+- `Pattern.dipole()` applies the dipole's `sin` pattern exactly once per element.
 - An **isotropic scatterer** (the default `PointTargets` response) is a polarization-preserving point: it re-radiates `s` times the incident field, `s = sqrt(4 pi rcs) / wavelength`, and the receiver reads the component it is polarized along. Co-polar echoes follow the radar equation in every direction and the cross-polar echo is zero. `PointTargets(scattering=ScatteringMatrix(...))` gives a target a 2x2 matrix (HH, HV, VH, VV; receive first) in its local backscatter-aligned basis `h = up x k / |up x k|`, `v = h x k`; `ScatteringMatrix.sphere()` reproduces the isotropic scatterer on a monostatic geometry and `ScatteringMatrix.dihedral()` returns HH and VV 180 degrees apart.
 
 The FMCW output domain is `Fmcw.output` on the typed record and `output_domain` in the flat mapping:
@@ -129,16 +140,18 @@ The default is spectrum. The beat route is an opt-in output domain, not a fallba
 
 ## 3. Build the world and scatter model
 
-Pass a `witwin.core.Scene` or `DynamicScene` to `Radar.simulate(...)`. World geometry should remain in authored world coordinates; a caller must not silently recenter geometry that is already positioned.
+Pass a `witwin.core.Scene` or `DynamicScene` to `Radar.simulate(...)`. World geometry stays in authored world coordinates: build every `witwin.core.Mesh` authored in world coordinates with `recenter=False`, because Core's default `recenter=True` moves a mesh to its bounding-box centre with nothing raised. Channel's importers (`witwin.channel.importers`) and ITU-R P.2040 presets (`witwin.channel.presets`) return plain Core structures and materials ([Multipath](user/multipath.md#setup-a-wall-from-an-obj-file-and-an-itu-r-material)). The default pose looks along world -z with +y up; a +Z-up scene states its pose ([Conventions](user/conventions.md#y-up-default-z-up-scenes)).
 
 Where the scatterers are and how strongly they scatter are one statement, so they are one record, passed as the required positional `targets` argument:
 
 - `PointTargets(positions=..., rcs=...)` names world positions outright. `trajectory` moves the same ordered material points, `ids` fixes stable world identity, `aspect=Aspect(...)` makes the strength depend on the geometry of each round trip instead of being isotropic, and `scattering=ScatteringMatrix(...)` makes it polarimetric. Positions and trajectories may be float64: Channel receives them rounded to float32, and the round-trip path length - hence the carrier phase - is recomputed from the float64 positions (R-ADR-040), so sub-micrometre motion survives at any range. That holds exactly for line-of-sight rows. A reflected row goes through Channel's float32 interaction point: its error along the surface costs nothing (the specular length is stationary there), but its error across the surface remains, so a reflected leg's length carries up to `(cos theta_i + cos theta_r) ulp32(x) / 2`, with `x` the interaction point's coordinate along the surface normal - about 0.5 um (0.8 mrad of carrier phase at 77 GHz) for a wall 4 m away at normal incidence, growing linearly with the wall's distance from the origin. 0.5.0 accepts this; it goes away when Channel publishes float64 interaction points.
+- `PointTargets` also takes a per-target `rcs`, `amplitude` and `phase`, a tabulated cross section `rcs=RcsTable(...)` (R-ADR-045) and a Swerling `fluctuation=Fluctuation(...)`. A target without `trajectory` is static and has zero Doppler.
 - `StructureTargets(rcs=..., structure_ids=...)` puts one scatterer at each world anchor Core publishes for a moving structure.
+- `MeshTargets(structure_ids=..., cluster_size=..., max_sites=...)` makes every facet of the selected structures a physical-optics scatterer of the structure's own Core material, including its layer stack and front-surface roughness (R-ADR-042 to R-ADR-044). A multi-bounce target needs `reflections` at least the number of bounces before the facet (1 for a dihedral, 2 for a trihedral). With Channel 0.6.0 very finely meshed faces that are not axis-aligned can lose their reflection rows while discovery still reports complete; see [Targets](user/targets.md#known-limitations-of-mesh-targets).
 
 A target declares its strength as `rcs` in m², or as the dimensionless `amplitude` for a caller who holds the strength itself — exactly one of the two, because they are the same quantity on either side of `amplitude = sqrt(4 pi rcs) / wavelength` and accepting both would leave which one wins undefined. Neither is defaulted: target reflectivity is a physical choice. The device and the carrier are not fields of a target record; the radar supplies them when the session starts.
 
-There is no default target set, and Radar derives no scatterer from geometry — no surface sample, no centroid, no bounding-box centre. Every one of those is a geometry algorithm and belongs to Channel's native geometry owner; `docs/dev/standards/radar-adr-020-scene-binding-and-site-policy.md` records the deferral and names what closing it would need.
+There is no default target set. Radar places no scatterer by sampling geometry: a point is declared (`PointTargets`), read from Core's anchor (`StructureTargets`), or is a mesh facet extracted natively (`MeshTargets`, R-ADR-042).
 
 ## 4. Execute the simulation session
 
@@ -159,9 +172,9 @@ A radar holds no run state, so there is nothing for a call to clear and nothing 
 
 The returned `Result.cube` has axes `[frame, TX, RX, slow, fast]`, and `Result.axis_names` is the tuple that names them. Its metadata also includes frame times, waveform kind, phasor/time convention, reference frequency, epoch information, and last-frame typed diagnostics. `Result.axes` is a different member: it is the processing metadata record, and section 6 states what it carries.
 
-`motion` selects how often the world is resampled inside a frame and defaults to `Motion.auto()`, which resolves to per-ADC sampling when anything in the session moves — a structure trajectory or deformation, an endpoint trajectory, a target trajectory — or when the receiver carries oscillator phase noise, which needs ADC-time observations to place its delayed phase difference. Otherwise it resolves to one observation per frame. `Motion.static()` asks for that single observation explicitly and is refused by name for a world that moves within a frame, because it would publish no Doppler at all.
+`motion` selects how often the world is resampled inside a frame and defaults to `Motion.auto()`. A session moves when anything in it moves — a structure trajectory or deformation, an endpoint trajectory, a target trajectory, an ego-motion `pose=`, an `Aspect` axis that is a function of time — or when the receiver carries oscillator phase noise, which needs observation instants to place its delayed phase difference. A moving FMCW session on one uniform TDM ramp with no declared discovery cadence resolves to `Motion.adaptive()` with its default tolerances; any other moving session (OFDM, pulsed, an FMCW chirp sequence, start offset or ramp phase error, DDM or BPM, a declared cadence) and every moving `Network` resolves to `Motion.adc()`, the exhaustive reference. A still session resolves to one observation per frame. `Motion.static()` asks for that single observation explicitly and is refused by name for a world that moves within a frame, because it would publish no Doppler at all. `Result.motion_sampling` names the route that ran (`static`, `adaptive`, `adc`, `chirp`, `symbol`, `pulse`) and `Result.observation_schedule` the synthesis owner's name for it (`frame`, `adaptive`, `fast_time`, `slow_time`). [Motion](user/motion.md) compares the routes' cost and accuracy.
 
-Dynamic FMCW therefore evaluates the world at
+Under `Motion.adc()` dynamic FMCW evaluates the world at
 `frame_time + (chirp*num_tx+tx)*chirp_period + adc_start + sample*sample_period`.
 The result records `sample_times` and `motion_sampling`; diagnostics describe
 the last observation. This handles moving reflectors as well as moving sites,
@@ -170,8 +183,10 @@ quasistatic Channel model at each observation, not relativistic retarded-time
 moving-boundary propagation.
 
 For a faster declared stop-and-hop approximation, select `motion=Motion.chirp()`.
-Its geometry/weight is frozen within each chirp. OFDM refreshes per symbol and
-pulsed simulation per pulse; those remain block-frozen models.
+Its geometry/weight is frozen within each chirp, symbol or pulse. Under
+`Motion.adc()` a pulsed radar is observed at every gate sample and a time-domain
+OFDM radar at every sample; an OFDM CFR radar, which has no fast-time grid of its
+own, is observed once per symbol.
 A custom site trajectory is a plain callable, `trajectory(time)`, returning the same
 ordered material points at that instant as an `(S, 3)` tensor in metres. It publishes
 positions only: a site velocity is never differenced into physics, because the delay
@@ -181,12 +196,18 @@ cannot move an authored point.
 Parameter JVPs differentiate the trajectory; they never become physical velocity.
 Low-level synthesis `delay_rate` explicitly means physical `d(tau)/dt`.
 
-Full discovery runs at each dynamic observation by default. An explicitly longer
-`Motion.<kind>(rediscover_every_frames=n)` trades completeness for speed and publishes
-`path_set_complete=False` unless structure motion already forces discovery.
+Full discovery runs at each dynamic observation by default. `Motion.auto/adc/chirp` accept at
+most one discovery cadence - `rediscover_every_frames`, `rediscover_every_chirps`,
+`rediscover_every_seconds` or `rediscover_on_displacement` - which replays the frozen topology
+between discoveries, trades completeness for speed and publishes `path_set_complete=False`
+unless structure motion already forces discovery; `Result.birth_lag_bound` publishes the lag
+each frame actually incurred and `Result.events` each frame's path births and deaths.
+Adaptive sampling owns its discovery cadence and takes none.
 Visibility changes are real discontinuities: no smoothing or velocity clipping
 is applied across them. Complete means complete within the requested supported
 Channel components and discovery policy, not all conceivable propagation physics.
+`Result.transmission_dropped_rows` counts the source-sink pairs a discovery left
+without a transmission path because they cross more walls than the depth bound.
 `path_set_complete` also requires Channel's own discovery to be provably complete;
 `discovery="rays"` (or `"auto"` past its image-tree budget) clears it, and
 `Result.discovery_complete` publishes that half separately.
@@ -247,7 +268,7 @@ pattern pair; FMCW and sampled waveforms do not hear each other.
 
 The native spectrum kernel evaluates stationary rows as Dirichlet contributions. A nonzero physical delay rate makes fast-time phase quadratic, so moving rows use an exact finite DFT sum in native CUDA. The common phase owner is `cuda/fmcw_phase.cuh`; backward and JVP differentiate that same continuous-delay equation. ADC-refreshed scenes evaluate propagation and native beat synthesis at each observation, then call the processing-owned normalized range transform.
 
-The fast axis of the result is `range`, and its length is the configured FMCW sample/bin count.
+The fast axis of the result is `range_bin`, and its length is the configured FMCW sample/bin count.
 
 ### Explicit beat route
 
@@ -255,18 +276,21 @@ With `output_domain="beat"`, the native beat kernel evaluates time-domain ADC sa
 
 Both domains preserve the same TDM slow-time timing and compact sensor-pair ordering.
 
+The ramp may be a TI-style chirp `sequence` of `Chirp` profiles, carry a transmitted `phase_error`, and be sampled by a real (`sampling="real"`) receiver (R-ADR-047); `mimo="ddm"` and `mimo="bpm"` fire every transmitter on every chirp and publish one transmit channel, which `processing.demultiplex` (`Frame.virtual_cube()`) separates (R-ADR-048). OFDM (`cfr` or `time` output, modulated symbols and pilots) and pulsed radars (rect, LFM and the coded `pmcw`, `fsk`, `stepped_frequency` and `arbitrary` members, R-ADR-046) are covered in [Waveforms](user/waveforms.md), with what each waveform supports and refuses.
+
 ## 6. Processing without domain guessing
 
 The processing seam is a record, not an assembly step. `Result.axes` is the `ProcessingAxes` every processing stage reads - the SI range and velocity axes, their bin sizes, the phasor convention, the Doppler sign, the wavelength and the array layout - and it is built once, by the echo, from the declared waveform spec and the array that produced the cube. `Result.frame(i)` returns the `Frame` that pairs one frame's cube with that record; the cube is indexed, not copied.
 
-The pairing is what the seam adds. A caller used to assemble it from a re-viewed synthesis result, the radar's waveform spec and the array, which meant it could be assembled against a different array than the cube came from, with nothing to say so.
+The pairing is what the seam adds: a cube cannot be processed against a different array than the one that produced it.
 
-`Frame` computes nothing. `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` delegate to `witwin.radar.processing` and add no arithmetic of their own, so every DSP stage still has exactly one owner. Two of its defaults are contracts rather than conveniences:
+`Frame` computes nothing. `processing_cube()`, `virtual_cube()`, `range_profile()`, `range_doppler()`, `range_angle(...)`, `array()`, `points()`, `aperture(...)` and `image(...)` delegate to `witwin.radar.processing` and add no arithmetic of their own, so every DSP stage still has exactly one owner. `virtual_cube()`, `range_angle`, `points` and `image` demultiplex a DDM or BPM cube first. Its window defaults are contracts rather than conveniences:
 
 - `range_profile` defaults to a rectangular window. The FMCW spectrum output domain has already run the range transform, so a fast-time taper there would be applied to the wrong domain and the stage refuses it; pass a taper only when the radar declares the beat output domain.
-- `range_doppler` tapers the slow axis with Hann by default, because the slow axis is never pre-transformed. Its `range_window` keeps the rectangular default for the reason above.
+- `range_doppler` is rectangular on both axes by default, like `processing.range_doppler_map`; pass `window="hann"` for Doppler sidelobe control. Its `range_window` keeps the rectangular default for the reason above.
+- `points` tapers the slow axis with Hann by default, because a detector over a rectangular Doppler transform reports the sidelobes of every strong target as targets.
 
-`points()` runs range-Doppler, combines the sensor pairs coherently - the complex boresight sum `combine_coherent`, then its magnitude - so that one threshold applies to one map across the virtual array, applies CA-CFAR and returns a point cloud. It is named for the product rather than for the stage because the detector, angle-estimator and beamformer names are fenced out of every module outside the processing package, by name and with no allowance list, and a facade is not a reason to blunt that fence.
+`points()` runs range-Doppler, combines the sensor pairs coherently - the complex boresight sum `combine_coherent`, then its magnitude - so that one threshold applies to one map across the virtual array, applies CA-CFAR and returns a point cloud in the processing frame (x right, y boresight, z up; `PointCloud.to_world(radar)` maps it into the world, and its radial velocity is positive closing). It is named for the product rather than for the stage because the detector, angle-estimator and beamformer names are fenced out of every module outside the processing package, by name and with no allowance list, and a facade is not a reason to blunt that fence.
 
 What `Frame` does not do is widen the surface. It offers one detection route, not a detector menu: a caller who wants a different detector takes `range_doppler()` and calls one from `witwin.radar.processing` on it. The typed products themselves - range profiles, Range-Doppler maps, detections, point clouds - gain no methods, because R-ADR-017 keeps that surface functional.
 

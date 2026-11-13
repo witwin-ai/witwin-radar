@@ -1,7 +1,7 @@
 """MUSIC imaging of two point targets with a 20 x 20 UPA.
 
     witwin.core.Scene  ->  Radar.simulate  ->  Result
-                       ->  witwin.radar.processing.range_doppler
+                       ->  Frame.range_profile
                        ->  witwin.radar.processing.music_image
 
 The world is two point targets at the same range, half a metre either side of
@@ -21,13 +21,16 @@ a real thermal-noise front end at a 10 dB noise figure, declared as a ``Noise``
 field of the radar: ``Radar.from_dict`` reads the flat FMCW mapping and takes
 every other field as a keyword override, so the chain arrives in the same call.
 
-Note also that this example's two targets carry no trajectory and its receiver
-declares no oscillator phase noise, so the default ``Motion.auto()`` resolves to
-ONE observation per frame: the eight chirps of one frame are identical snapshots
-and the covariance is decorrelated by the spatial smoothing rather than by slow
-time. That is this fixture's property, not a limit of ``Radar.simulate`` - a
-session with anything moving in it resolves to per-ADC sampling and does carry
-intra-frame Doppler.
+The two targets carry no trajectory and the receiver declares no oscillator
+phase noise, so the default ``Motion.auto()`` resolves to static sampling, ONE
+observation per frame: the eight chirps of one frame are identical snapshots
+apart from the receiver noise, and the covariance is decorrelated by the spatial
+smoothing rather than by slow time. Give a target a ``trajectory=`` and
+``Motion.auto()`` resolves to adaptive sampling, which carries the within-frame
+Doppler (see ``examples/moving_target.py``).
+
+What is asserted: the cube's shape, and that MUSIC places the two lobes within
+two pixels of the targets' true azimuths, +/-9.46 degrees.
 
 Usage:
     python -m examples.music_imaging

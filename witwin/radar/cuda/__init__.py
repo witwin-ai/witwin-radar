@@ -8,9 +8,10 @@ actually execute native work.
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 
-def native_ops():
+def native_ops() -> Any:
     """Return the validated native operator table, loading it on first use.
 
     ``runtime.build_extension`` caches the loaded library for the process, so

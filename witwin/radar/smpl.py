@@ -27,14 +27,14 @@ class _Arr(np.ndarray):
     """A NumPy array with chumpy's ``.r`` accessor, which ``SMPL_Layer`` reads."""
 
     @property
-    def r(self):
+    def r(self) -> np.ndarray:
         return np.asarray(self)
 
 
 class _ChRecon:
     """Stands in for any pickled chumpy object and keeps its first array payload."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._data = np.array([])
         for value in args:
             if isinstance(value, np.ndarray):
@@ -44,7 +44,7 @@ class _ChRecon:
                 self._data = value._data
                 return
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: Any) -> None:
         if isinstance(state, dict):
             for value in state.values():
                 if isinstance(value, np.ndarray):
@@ -63,13 +63,13 @@ class _ChRecon:
 
 
 class _Unpickler(pickle.Unpickler):
-    def find_class(self, module, name):
+    def find_class(self, module: str, name: str) -> Any:
         if module.startswith("chumpy"):
             return _ChRecon
         return super().find_class(module, name)
 
 
-def _load_model(fname_or_dict):
+def _load_model(fname_or_dict: Any) -> dict[str, Any]:
     """smplpytorch's ``ready_arguments`` without chumpy: the same keys, plain arrays."""
 
     import cv2
@@ -130,13 +130,13 @@ def _default_smpl_model_root() -> str:
     return str(Path(__file__).resolve().parents[2] / "models" / "smpl_models")
 
 
-def _to_vertex_tensor(value, *, device: str) -> torch.Tensor:
+def _to_vertex_tensor(value: Any, *, device: str) -> torch.Tensor:
     if isinstance(value, torch.Tensor):
         return value.to(device=device, dtype=torch.float32)
     return torch.as_tensor(value, device=device, dtype=torch.float32)
 
 
-def _get_smpl_layer(*, gender: str, model_root: str, device: str):
+def _get_smpl_layer(*, gender: str, model_root: str, device: str) -> Any:
     key = (str(gender), str(model_root), str(device))
     layer = _SMPL_LAYER_CACHE.get(key)
     if layer is None:
@@ -168,7 +168,7 @@ def _axis_angle_matrices(rvecs: torch.Tensor) -> torch.Tensor:
     return eye + sin * skew + (1.0 - cos) * (skew @ skew)
 
 
-def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor) -> torch.Tensor:
+def _fast_smpl_forward(layer: Any, pose: torch.Tensor, betas: torch.Tensor) -> torch.Tensor:
     """Vectorized SMPL linear blend skinning: ``(V, 3)`` vertices centred on joint 0.
 
     ``tests/test_smpl_pose_refusal.py`` pins this against ``SMPL_Layer.forward``.
@@ -240,15 +240,15 @@ class SMPLBody(GeometryBase):
 
     def __init__(
         self,
-        pose,
-        shape,
+        pose: Any,
+        shape: Any,
         *,
-        position=(0.0, 0.0, 0.0),
+        position: Any = (0.0, 0.0, 0.0),
         gender: str = "male",
         model_root: str | None = None,
-        rotation=None,
-        device=None,
-    ):
+        rotation: Any = None,
+        device: Any = None,
+    ) -> None:
         super().__init__(position=position, rotation=rotation, device=device)
         tensor_device = str(self.position.device)
         self.pose = _to_vertex_tensor(pose, device=tensor_device).reshape(-1)
@@ -256,7 +256,7 @@ class SMPLBody(GeometryBase):
         self.gender = str(gender)
         self.model_root = _default_smpl_model_root() if model_root is None else str(model_root)
 
-    def updated(self, **changes) -> SMPLBody:
+    def updated(self, **changes: Any) -> SMPLBody:
         updated = SMPLBody(
             pose=changes.pop("pose", self.pose),
             shape=changes.pop("shape", self.shape),
@@ -271,16 +271,16 @@ class SMPLBody(GeometryBase):
             raise TypeError(f"Unsupported SMPLBody updates: {unsupported}")
         return updated
 
-    def _evaluate(self, *, device: str):
+    def _evaluate(self, *, device: str) -> tuple[torch.Tensor, torch.Tensor]:
         layer = _get_smpl_layer(gender=self.gender, model_root=self.model_root, device=device)
         pose = self.pose.to(device=device, dtype=torch.float32)
         shape = self.shape.to(device=device, dtype=torch.float32)
         vertices = self._transform_mesh_verts(_fast_smpl_forward(layer, pose, shape))
-        # Own the returned topology, just as the previous host-to-device copy
-        # did: a caller mutating its mesh must not corrupt the cached model.
+        # The returned topology is a copy: a caller mutating its mesh must not
+        # corrupt the cached model.
         return vertices.contiguous(), layer.th_faces.clone()
 
-    def to_mesh(self, segments=16, *, device=None):
+    def to_mesh(self, segments: int = 16, *, device: Any = None) -> tuple[torch.Tensor, torch.Tensor]:
         del segments
         resolved_device = str(resolve_device(device or self.position.device, owner="SMPLBody"))
         return self._evaluate(device=resolved_device)
@@ -311,7 +311,7 @@ class SmplPoseDeformation:
     builds a mesh that satisfies that by construction.
     """
 
-    def __init__(self, body: SMPLBody, *, pose_rate, reference_time_s: float = 0.0, device=None) -> None:
+    def __init__(self, body: SMPLBody, *, pose_rate: Any, reference_time_s: float = 0.0, device: Any = None) -> None:
         if not isinstance(body, SMPLBody):
             raise TypeError(f"body must be an SMPLBody, got {type(body).__name__}")
         # A gradient on the pose or the shape is carried into every state this
@@ -369,7 +369,7 @@ class SmplPoseDeformation:
     def vertices_at(self, time_s: float) -> torch.Tensor:
         return self._vertices(self.pose_at(time_s))
 
-    def at(self, time_s: float):
+    def at(self, time_s: float) -> DeformationState:
         """The ``witwin.core`` deformation descriptor at ``time_s``."""
 
         return DeformationState(vertices=self.vertices_at(time_s))
@@ -389,7 +389,7 @@ class SmplPoseDeformation:
                 )
             return tangent.clone().contiguous()
 
-    def rest_mesh(self, **mesh_kwargs):
+    def rest_mesh(self, **mesh_kwargs: Any) -> Mesh:
         """The authored rest ``Mesh`` a ``Structure`` carries.
 
         ``recenter=False`` is mandatory and is not a default:
@@ -425,7 +425,7 @@ class SmplPoseDeformation:
         cluster_size: float | None = None,
         max_sites: int | None = None,
         seed: int = 0,
-        **mesh_kwargs,
+        **mesh_kwargs: Any,
     ) -> tuple[Any, Any]:
         """The posed body as a scattering mesh: ``(DynamicScene, MeshTargets)``.
 

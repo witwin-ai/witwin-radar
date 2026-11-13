@@ -3,7 +3,7 @@
 This is the ONLY Radar module that imports ``witwin.channel``, and it names
 exactly two things from it: the solver-neutral consumer facade
 ``witwin.channel.propagation.consumer`` and the scene compile facade
-``witwin.channel.scene.compile``. The second one arrived with the production
+``witwin.channel.scene.compile``. The second one serves the production
 scene-driven entry (R-ADR-020): compiling a Core world is a Channel lifecycle
 operation, so it belongs to the module that already owns this boundary rather
 than to a second allowlisted crossing. It is a MODULE function
@@ -52,7 +52,7 @@ from typing import Any
 import torch
 from witwin.channel.propagation import consumer
 
-from .propagation import CompiledWorld, RadarEndpointSpec, RadarLegBatch, require_endpoint_role
+from .propagation import CompiledWorld, EndpointRole, RadarEndpointSpec, RadarLegBatch, require_endpoint_role
 
 #: Components whose path is the straight source-to-sink segment. Free-space
 #: propagation along it is undefined for coincident endpoints, so a leg that
@@ -147,7 +147,7 @@ class FrozenLegTopology:
     interaction_positions_m: torch.Tensor | None = field(default=None, repr=False)
 
     @property
-    def prepared(self) -> object:
+    def prepared(self) -> Any:
         """Channel's replay partition of these rows, prepared on first use.
 
         ``prepare_fixed_topology`` synchronizes, so it runs at most once per
@@ -196,7 +196,7 @@ class FrozenLegTopology:
         return int(self.prepared.prepare_synchronizations)
 
 
-def _endpoint_batch(spec: RadarEndpointSpec, role: str) -> consumer.EndpointBatch:
+def _endpoint_batch(spec: RadarEndpointSpec, role: EndpointRole) -> consumer.EndpointBatch:
     """Build a consumer endpoint batch, preserving gradient state exactly."""
 
     require_endpoint_role(spec, role)
@@ -805,7 +805,7 @@ def _require_field_response(capabilities: object, components: frozenset[str], *,
     and cannot carry a scattering matrix.
     """
 
-    responses = getattr(capabilities, "fixed_topology_responses", frozenset())
+    responses: frozenset[str] = getattr(capabilities, "fixed_topology_responses", frozenset())
     if replay and FIELD_RESPONSE not in responses:
         raise NotImplementedError(
             f"this Channel cannot replay {FIELD_RESPONSE} under a fixed topology (it replays {sorted(responses)}); "

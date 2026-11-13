@@ -22,7 +22,7 @@ import math
 import numbers
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import torch
 
@@ -168,7 +168,7 @@ class RcsTable:
                 raise ValueError("RcsTable.frequencies must be ascending, one per table row")
         np.broadcast_to(np.asarray(self.phase, dtype=np.float64), table.shape)
 
-    def amplitude_at(self, carrier_hz: float, wavelength_m: float):
+    def amplitude_at(self, carrier_hz: float, wavelength_m: float) -> Any:
         """The complex amplitude table at the carrier, ``(A,)`` complex128 on the host."""
 
         import numpy as np
@@ -185,7 +185,7 @@ class RcsTable:
                 f"the carrier {carrier} Hz is outside the table's frequencies [{frequencies[0]}, {frequencies[-1]}] "
                 "Hz; a tabulated cross section is not extrapolated"
             )
-        upper = int(min(np.searchsorted(frequencies, carrier, side="right"), len(frequencies) - 1))
+        upper = int(min(cast(int, np.searchsorted(frequencies, carrier, side="right")), len(frequencies) - 1))
         lower = max(upper - 1, 0)
         span = frequencies[upper] - frequencies[lower]
         weight = 0.0 if span == 0.0 else (carrier - frequencies[lower]) / span
@@ -525,7 +525,7 @@ def _require_per_target_length(name: str, value: Any, count: int | None) -> None
         raise ValueError(f"{name} names {length} targets but the record declares {count}")
 
 
-def _per_site_tensor(value: Any, *, order: torch.Tensor | None, device) -> torch.Tensor:
+def _per_site_tensor(value: Any, *, order: torch.Tensor | None, device: Any) -> torch.Tensor:
     """A shared value as a 0-dim tensor, or a per-target vector in the join's site order.
 
     The join orders sites by ascending stable ID. Caller IDs need not be
@@ -545,7 +545,7 @@ def _per_site_tensor(value: Any, *, order: torch.Tensor | None, device) -> torch
     return tensor
 
 
-def _join_order(ids: tuple[int, ...] | None, *, device) -> torch.Tensor | None:
+def _join_order(ids: tuple[int, ...] | None, *, device: Any) -> torch.Tensor | None:
     """The permutation from declaration order to ascending stable ID; ``None`` when they agree."""
 
     if ids is None or list(ids) == sorted(ids):
@@ -574,7 +574,7 @@ class _PositionTrajectory:
         return Kinematics(positions_m=positions)
 
 
-def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *, radar) -> tuple[Any, Any]:
+def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *, radar: Any) -> tuple[Any, Any]:
     """Split a target record into the site policy and the scatter response.
 
     The two halves go to two different owners - the binding places the sites,
@@ -593,7 +593,9 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
             cluster_size_m=targets.cluster_size,
             max_sites=targets.max_sites,
         )
-        response = FacetScatterResponse(wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength), seed=targets.seed)
+        response: Any = FacetScatterResponse(
+            wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength), seed=targets.seed
+        )
         return ScatterSitePolicy.from_facets(facets), response
     if isinstance(targets, PointTargets):
         positions = targets.positions
@@ -617,8 +619,9 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
     order = _join_order(targets.ids, device=radar.device)
     if isinstance(targets.rcs, RcsTable):
         table = targets.rcs.amplitude_at(float(radar.reference_frequency_hz), radar.wavelength)
-        axis = _axis_tensor(targets.rcs.axis, count=targets.count, device=radar.device)
-        response: Any = TableScatterResponse(
+        # An RcsTable is refused on every record but PointTargets.
+        axis = _axis_tensor(targets.rcs.axis, count=cast(PointTargets, targets).count, device=radar.device)
+        response = TableScatterResponse(
             axis=(axis if order is None else axis.index_select(0, order)).contiguous(),
             table_re=torch.tensor(table.real, dtype=torch.float32, device=radar.device),
             table_im=torch.tensor(table.imag, dtype=torch.float32, device=radar.device),
@@ -641,14 +644,14 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
             raise ValueError("a scattering matrix takes one strength and one phase shared by every target")
         factors = torch.tensor(scattering.values(), dtype=torch.complex64, device=radar.device)
         rotation = torch.exp(-1j * phase.to(torch.complex64))
-        response: Any = ScatteringMatrixResponse(
+        response = ScatteringMatrixResponse(
             matrix=(factors * rotation * amplitude).to(torch.complex64),
             up=torch.tensor(scattering.up, dtype=torch.float32, device=radar.device),
         )
     elif aspect is None:
         response = ScalarRcsResponse(amplitude=amplitude, phase_rad=phase)
     else:
-        count = targets.count
+        count = cast(PointTargets, targets).count
         timed = callable(aspect.axis)
         axis = _axis_tensor(aspect.axis(0.0) if timed else aspect.axis, count=count, device=radar.device)
         response = AspectScatterResponse(
@@ -714,17 +717,17 @@ class TimedAspectResponse:
         axes = [_axis_tensor(self.axis(float(time_s)), count=self.count, device=self.device) for time_s in times]
         if self.order is not None:
             axes = [axis.index_select(0, self.order) for axis in axes]
-        axes = torch.cat(axes)
+        joined = torch.cat(axes)
         slots = len(times)
         return replace(
             self.base,
-            axis=axes.contiguous(),
+            axis=joined.contiguous(),
             amplitude=self.base.amplitude.repeat(slots),
             phase_rad=self.base.phase_rad.repeat(slots),
         )
 
 
-def _axis_tensor(axis: Any, *, count: int, device) -> torch.Tensor:
+def _axis_tensor(axis: Any, *, count: int, device: Any) -> torch.Tensor:
     tensor = (
         axis
         if isinstance(axis, torch.Tensor)

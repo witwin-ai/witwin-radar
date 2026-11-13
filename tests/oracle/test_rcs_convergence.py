@@ -148,3 +148,26 @@ def test_the_coherent_return_carries_the_physical_optics_phase(shape, level, fro
     coherent = _coherent_sum(_mesh_rows(*generate(level), reflections=reflections))
     residual = coherent * cmath.exp(1j * WAVENUMBER * 2.0 * front_m)
     assert abs(math.remainder(cmath.phase(residual) - expected_rad, 2.0 * math.pi)) < 0.1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Channel 0.6.0 request: reflection discovery returns no rows off the 45-degree faces of a dihedral meshed "
+        "with 52 or more cells per edge (10,816 faces and up; 50 per edge works) and still reports complete=True, "
+        "in discovery='auto' and 'exhaustive' alike"
+    ),
+)
+def test_a_finely_meshed_dihedral_keeps_its_double_bounce():
+    """The dihedral of the convergence test at 64 cells per edge (16,384 faces).
+
+    Its return is the double bounce, which arrives through the inbound legs'
+    reflection rows. Channel's own discovery finds none of them at this mesh
+    level (a plain source-sink request off the same mesh reproduces it without
+    Radar), so the composed return falls to the single-bounce facets, about
+    43 dB below the analytic cross section. A Channel fix flips this test.
+    """
+
+    generate, analytic, reflections, _ = SHAPES["dihedral"]
+    error_db = ref.db(_rcs(_coherent_sum(_mesh_rows(*generate(64), reflections=reflections))) / analytic)
+    assert abs(error_db) <= TOLERANCE_DB, f"dihedral at 64 cells per edge: {error_db:+.2f} dB"

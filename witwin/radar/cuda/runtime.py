@@ -35,6 +35,7 @@ import sysconfig
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import torch
 
@@ -240,7 +241,7 @@ def _require_device_architecture(library_path: Path, info: Mapping[str, object])
         return
     device = torch.cuda.current_device()
     capability = torch.cuda.get_device_capability(device)
-    architectures = [str(entry) for entry in info["cuda_architectures"]]
+    architectures = [str(entry) for entry in cast("Iterable[object]", info["cuda_architectures"])]
     if not device_runs_architectures(capability, architectures):
         major, minor = capability
         raise RadarExtensionABIError(
@@ -362,10 +363,10 @@ def validate_identity(
     if info["build_type"] not in BUILD_TYPES:
         raise RadarExtensionABIError(f"{binary_path} reports an unknown build_type {info['build_type']!r}")
 
-    architectures = info["cuda_architectures"]
+    architectures = cast("list[object]", info["cuda_architectures"])
     if not architectures or not all(isinstance(entry, str) and entry for entry in architectures):
         raise RadarExtensionABIError(f"{binary_path} must record a non-empty list of CUDA architectures")
-    symbols = info["operator_symbols"]
+    symbols = cast("list[str]", info["operator_symbols"])
     if not symbols or not all(isinstance(entry, str) and entry for entry in symbols):
         raise RadarExtensionABIError(f"{binary_path} must record a non-empty list of operator symbols")
     if list(symbols) != sorted(symbols) or len(set(symbols)) != len(symbols):
@@ -731,7 +732,7 @@ class _StableOpsModule:
             "native_build": dict(self._info) if self._info is not None else None,
         }
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         return getattr(torch.ops._radar_native, name)
 
 
@@ -804,7 +805,7 @@ def _load_validated_extension(
     info = validate_identity(library_path, extension_sources(), expected_fingerprint=expected_fingerprint)
     _require_device_architecture(library_path, info)
     torch.ops.load_library(str(library_path))
-    return _require_operators(library_path, list(info["operator_symbols"]), origin=origin, info=info)
+    return _require_operators(library_path, list(cast("list[str]", info["operator_symbols"])), origin=origin, info=info)
 
 
 def _developer_override_config() -> tuple[Path, str] | None:
@@ -854,10 +855,10 @@ def _developer_override_config() -> tuple[Path, str] | None:
 # far away from the cause -- as unrelated CUDA tests failing partway through a
 # long session. Caching the module makes the second and later calls free and
 # side-effect free.
-_LOADED_MODULE = None
+_LOADED_MODULE: _StableOpsModule | None = None
 
 
-def build_extension(*, verbose: bool = False):
+def build_extension(*, verbose: bool = False) -> _StableOpsModule:
     global _LOADED_MODULE
     if _LOADED_MODULE is not None:
         return _LOADED_MODULE
@@ -888,7 +889,7 @@ def default_build_directory() -> Path:
     return Path(tempfile.gettempdir()) / EXTENSION_NAME / f"stable_abi_v1_{source_fingerprint()}"
 
 
-def _build_extension(*, verbose: bool = False):
+def _build_extension(*, verbose: bool = False) -> _StableOpsModule:
     """Resolve exactly one load source, or fail naming what would fix it.
 
     Order, and the reason for it:
@@ -935,7 +936,7 @@ def _build_extension(*, verbose: bool = False):
     )
 
 
-def _jit_build_extension(*, verbose: bool = False):
+def _jit_build_extension(*, verbose: bool = False) -> _StableOpsModule:
     """Compile from source. Reachable only from the build script.
 
     ``torch.utils.cpp_extension`` is imported HERE and not at module scope, so

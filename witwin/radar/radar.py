@@ -32,9 +32,9 @@ import dataclasses
 import json
 import math
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import torch
 
@@ -56,11 +56,12 @@ from .synthesis.assembly import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .binding import SensorEndpointIds
     from .motion import Motion
     from .paths import RadarPathBatch
     from .results import Result
     from .simulation import Paths
-    from .synthesis import SynthesisResult
+    from .synthesis import SlowTimeMode, SynthesisResult
     from .targets import MeshTargets, PointTargets, StructureTargets
 
 WAVEFORM_FMCW = "fmcw"
@@ -312,7 +313,7 @@ class Fmcw:
     def _profile(self, chirp: Chirp) -> tuple[float, float, float, float, float]:
         """``(slope, start offset, idle, ADC start, ramp end)`` with this ramp's values filling the gaps."""
 
-        def pick(value, default):
+        def pick(value: float | None, default: float) -> float:
             return float(default if value is None else value)
 
         return (
@@ -494,7 +495,13 @@ class Pulsed:
 
     @classmethod
     def pmcw(
-        cls, code, *, chip_rate: float, repetitions: int, sample_rate: float, max_expected_delay_rate: float = 0.0
+        cls,
+        code: Iterable[complex],
+        *,
+        chip_rate: float,
+        repetitions: int,
+        sample_rate: float,
+        max_expected_delay_rate: float = 0.0,
     ) -> Pulsed:
         """A phase code transmitted continuously, one code period per slow-time sample.
 
@@ -530,7 +537,7 @@ class Pulsed:
     @classmethod
     def fsk(
         cls,
-        frequencies,
+        frequencies: Iterable[float],
         *,
         chip_width: float,
         pri: float,
@@ -601,7 +608,7 @@ class Pulsed:
     @classmethod
     def arbitrary(
         cls,
-        samples,
+        samples: Iterable[complex],
         *,
         rate: float,
         pri: float,
@@ -769,7 +776,7 @@ class RadarSystemConfig:
     def kind(self) -> str:
         return self.waveform.kind
 
-    def waveform_spec(self, *, carrier_hz: float = 0.0):
+    def waveform_spec(self, *, carrier_hz: float = 0.0) -> Any:
         """The SI synthesis spec for whichever waveform this configuration is.
 
         ``__post_init__`` already refused any kind outside ``WAVEFORM_KINDS``,
@@ -779,12 +786,14 @@ class RadarSystemConfig:
         array = self.sensors.array
         reference = self.propagation.reference_frequency_hz
         if self.waveform.kind == WAVEFORM_FMCW:
-            return self.waveform.to_spec(
+            return cast(Fmcw, self.waveform).to_spec(
                 reference_frequency_hz=reference, num_tx=array.num_tx, num_rx=array.num_rx, offset=carrier_hz
             )
         return self.waveform.to_spec(reference_frequency_hz=reference, offset=carrier_hz)
 
-    def with_propagation(self, *, components=None, max_depth: int | None = None) -> RadarSystemConfig:
+    def with_propagation(
+        self, *, components: Iterable[str] | None = None, max_depth: int | None = None
+    ) -> RadarSystemConfig:
         """A copy whose propagation block carries these two knobs.
 
         A per-solve request returns a new configuration rather than mutating
@@ -878,7 +887,7 @@ def _probe_spec(owner: str, build: Any) -> None:
         raise ValueError(f"{owner}: {error}") from None
 
 
-def vec3_tensor(value, *, name: str) -> torch.Tensor:
+def vec3_tensor(value: Any, *, name: str) -> torch.Tensor:
     """Coerce a pose vector to a CPU float32 tensor of shape (3,).
 
     A tensor keeps its tape: the radar's pose is a leaf (R-ADR-052), and every
@@ -895,7 +904,7 @@ def vec3_tensor(value, *, name: str) -> torch.Tensor:
     return tensor
 
 
-def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
+def _elements(value: Any, *, name: str) -> tuple[tuple[float, float, float], ...]:
     if isinstance(value, torch.Tensor):
         rows = value.detach().to(device="cpu", dtype=torch.float32).tolist()
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
@@ -910,7 +919,9 @@ def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
             row = row.detach().to(device="cpu", dtype=torch.float32).tolist()
         if not isinstance(row, Sequence) or len(row) != 3:
             raise ValueError(f"{name}[{index}] must be a 3-element position")
-        out.append(tuple(_finite(f"{name}[{index}][{axis}]", row[axis]) for axis in range(3)))
+        out.append(
+            cast(tuple[float, float, float], tuple(_finite(f"{name}[{index}][{axis}]", row[axis]) for axis in range(3)))
+        )
     return tuple(out)
 
 
@@ -919,7 +930,7 @@ def _elements(value, *, name: str) -> tuple[tuple[float, float, float], ...]:
 # ---------------------------------------------------------------------------
 
 
-def _pair_table(name: str, value) -> float | tuple[tuple[float, ...], ...]:
+def _pair_table(name: str, value: Any) -> float | tuple[tuple[float, ...], ...]:
     """A scalar, or a ``[num_tx][num_rx]`` table, of finite host floats."""
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1174,8 +1185,8 @@ class Radar:
         array = SensorArraySpec(
             num_tx=len(self.tx),
             num_rx=len(self.rx),
-            tx_loc=tuple(tuple(v * scale for v in row) for row in self.tx),
-            rx_loc=tuple(tuple(v * scale for v in row) for row in self.rx),
+            tx_loc=tuple(cast(tuple[float, float, float], tuple(v * scale for v in row)) for row in self.tx),
+            rx_loc=tuple(cast(tuple[float, float, float], tuple(v * scale for v in row)) for row in self.rx),
             reference_frequency_hz=float(self.reference_frequency_hz),
         )
 
@@ -1275,14 +1286,17 @@ class Radar:
 
         waveform = self.waveform
         if waveform.kind == WAVEFORM_FMCW:
-            spec = waveform.to_spec(
+            fmcw = cast(Fmcw, waveform)
+            spec = fmcw.to_spec(
                 reference_frequency_hz=float(self.reference_frequency_hz), num_tx=len(self.tx), num_rx=len(self.rx)
             )
-            return (spec.slot_period_s, float(waveform.adc_start), 1.0 / float(waveform.sample_rate))
+            return (spec.slot_period_s, float(fmcw.adc_start), 1.0 / float(fmcw.sample_rate))
         if waveform.kind == WAVEFORM_OFDM:
-            symbol = 1.0 / float(waveform.subcarrier_spacing) + float(waveform.cyclic_prefix)
-            return (symbol, 0.0, 1.0 / float(waveform.sample_rate))
-        return (float(waveform.pri), float(waveform.range_gate_start), 1.0 / float(waveform.sample_rate))
+            ofdm = cast(Ofdm, waveform)
+            symbol = 1.0 / float(ofdm.subcarrier_spacing) + float(ofdm.cyclic_prefix)
+            return (symbol, 0.0, 1.0 / float(ofdm.sample_rate))
+        pulsed = cast(Pulsed, waveform)
+        return (float(pulsed.pri), float(pulsed.range_gate_start), 1.0 / float(pulsed.sample_rate))
 
     def _dc_offsets(self) -> tuple[complex, ...] | None:
         if self.dc_offset is None:
@@ -1298,7 +1312,7 @@ class Radar:
             raise ValueError("Radar.dc_offset must be finite")
         return offsets
 
-    def _build_frontend_chain(self):
+    def _build_frontend_chain(self) -> FrontendChain | None:
         if self.system_config.frontend is None:
             return None
         return FrontendChain(self.system_config.frontend)
@@ -1432,7 +1446,7 @@ class Radar:
                     f"ad_mode={ad_mode!r})."
                 )
 
-    def _transmit_amplitude_scale(self, *, device) -> torch.Tensor | None:
+    def _transmit_amplitude_scale(self, *, device: torch.device) -> torch.Tensor | None:
         """``sqrt(P / P_host)`` as a 0-dim tensor when ``power`` is a leaf, else ``None``.
 
         Channel launches the transmit leg with the HOST power (endpoint powers
@@ -1476,7 +1490,7 @@ class Radar:
 
         return watts_from_dbm(_host_scalar(self.power))
 
-    def waveform_spec(self, *, offset: float = 0.0):
+    def waveform_spec(self, *, offset: float = 0.0) -> Any:
         """The SI synthesis spec this radar's waveform and array describe."""
 
         return self.system_config.waveform_spec(carrier_hz=offset)
@@ -1541,7 +1555,9 @@ class Radar:
 
     # -- pose transforms, shared by every consumer -------------------------
 
-    def _world_from_local_matrix(self, *, device, dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    def _world_from_local_matrix(
+        self, *, device: torch.device | str, dtype: torch.dtype
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         position = vec3_tensor(self.position, name="Radar.position").to(device=device, dtype=dtype)
         look_at = vec3_tensor(self.look_at, name="Radar.look_at").to(device=device, dtype=dtype)
         up = vec3_tensor(self.up, name="Radar.up").to(device=device, dtype=dtype)
@@ -1564,7 +1580,13 @@ class Radar:
             return signal
         return self.frontend.apply(signal, phase_in_signal=phase_in_signal, frame_time_s=frame_time_s).signal
 
-    def _synthesize(self, paths: RadarPathBatch, *, slow_time_mode, spec=None) -> SynthesisResult:
+    def _synthesize(
+        self,
+        paths: RadarPathBatch,
+        *,
+        slow_time_mode: SlowTimeMode,
+        spec: FmcwSpec | OfdmSpec | PulsedSpec | None = None,
+    ) -> SynthesisResult:
         """Synthesize one frame with whichever waveform this radar declares.
 
         Dispatch is a dict lookup on the STORED ``waveform.kind``. It is not a
@@ -1583,7 +1605,7 @@ class Radar:
         from .synthesis.ofdm import synthesize_ofdm
         from .synthesis.pulsed import synthesize_pulsed
 
-        owners = {
+        owners: dict[str, tuple[Callable[..., torch.Tensor], Callable[..., SynthesisResult]]] = {
             WAVEFORM_FMCW: (synthesize_fmcw, SynthesisResult.from_fmcw),
             WAVEFORM_OFDM: (synthesize_ofdm, SynthesisResult.from_ofdm),
             WAVEFORM_PULSED: (synthesize_pulsed, SynthesisResult.from_pulsed),
@@ -1594,7 +1616,7 @@ class Radar:
         cube = synthesize(batch, spec)
         return build_result(cube + self._leakage_cube(spec, batch.sensor_pair_count, cube), spec)
 
-    def _leakage_cube(self, spec, sensor_pair_count: int, cube: torch.Tensor):
+    def _leakage_cube(self, spec: Any, sensor_pair_count: int, cube: torch.Tensor) -> torch.Tensor:
         """The coupled transmit signal, synthesized by the waveform's own kernel.
 
         Zero when no coupling is declared, which is the default. One row per
@@ -1647,10 +1669,10 @@ class Radar:
 
     def trace(
         self,
-        scene,
+        scene: Any,
         targets: PointTargets | StructureTargets | MeshTargets,
         *,
-        times,
+        times: Any,
         los: bool = True,
         reflections: int = 1,
         transmission: bool = False,
@@ -1663,8 +1685,8 @@ class Radar:
         wideband: bool = False,
         motion: Motion | None = None,
         ad_mode: str = "none",
-        endpoints=None,
-        pose=None,
+        endpoints: SensorEndpointIds | None = None,
+        pose: Callable[[float], Any] | None = None,
     ) -> Paths:
         """Compose this radar's round trips over a Core world and keep them.
 
@@ -1728,10 +1750,10 @@ class Radar:
 
     def simulate(
         self,
-        scene,
+        scene: Any,
         targets: PointTargets | StructureTargets | MeshTargets,
         *,
-        times,
+        times: Any,
         los: bool = True,
         reflections: int = 1,
         transmission: bool = False,
@@ -1744,8 +1766,8 @@ class Radar:
         wideband: bool = False,
         motion: Motion | None = None,
         ad_mode: str = "none",
-        endpoints=None,
-        pose=None,
+        endpoints: SensorEndpointIds | None = None,
+        pose: Callable[[float], Any] | None = None,
     ) -> Result:
         """Simulate this radar over a Core world and return the frame cubes.
 
@@ -1818,10 +1840,10 @@ class Radar:
 
     def stream(
         self,
-        scene,
+        scene: Any,
         targets: PointTargets | StructureTargets | MeshTargets,
         *,
-        times,
+        times: Any,
         los: bool = True,
         reflections: int = 1,
         transmission: bool = False,
@@ -1834,8 +1856,8 @@ class Radar:
         wideband: bool = False,
         motion: Motion | None = None,
         ad_mode: str = "none",
-        endpoints=None,
-        pose=None,
+        endpoints: SensorEndpointIds | None = None,
+        pose: Callable[[float], Any] | None = None,
     ) -> Iterator[Result]:
         """Simulate the same session as :meth:`simulate`, one frame at a time.
 
@@ -1876,13 +1898,13 @@ class Radar:
 
     def _session(
         self,
-        targets,
-        times,
-        los,
-        reflections,
-        motion,
-        ad_mode,
-        endpoints,
+        targets: PointTargets | StructureTargets | MeshTargets,
+        times: Any,
+        los: bool,
+        reflections: int,
+        motion: Motion | None,
+        ad_mode: str,
+        endpoints: SensorEndpointIds | None,
         *,
         transmission: bool = False,
         diffraction: bool = False,
@@ -1892,7 +1914,7 @@ class Radar:
         max_paths: int | None = None,
         max_round_trips: int | None = None,
         wideband: bool = False,
-        pose=None,
+        pose: Callable[[float], Any] | None = None,
     ) -> dict[str, Any]:
         """Turn the public call arguments into what the frame loop takes."""
 
@@ -2122,7 +2144,7 @@ def _pattern_from_dict(config: Mapping[str, Any]) -> Pattern:
     if quantity not in ("power", "field"):
         raise ValueError(f"antenna_pattern quantity must be 'power' or 'field', got {quantity!r}")
     if kind == "separable":
-        build = Pattern.field_separable if is_field else Pattern.separable
+        build: Callable[..., Pattern] = Pattern.field_separable if is_field else Pattern.separable
         x_values, y_values = _decode(config["x_values"]), _decode(config["y_values"])
         return build(config["x_angles_deg"], x_values, config["y_angles_deg"], y_values, gain=gain)
     if kind == "map":
@@ -2285,7 +2307,7 @@ def config_schema() -> dict[str, Any]:
         properties[key] = entry
     waveform_variants = []
     for kind, cls in _waveform_classes().items():
-        names = {entry.name: {} for entry in dataclasses.fields(cls) if entry.init}
+        names: dict[str, dict[str, Any]] = {entry.name: {} for entry in dataclasses.fields(cls) if entry.init}
         names["kind"] = {"const": kind}
         waveform_variants.append({"properties": names, "required": ["kind"], "additionalProperties": False})
     properties["waveform"]["oneOf"] = waveform_variants

@@ -7,9 +7,9 @@ pixels are back-projected into radar scene coordinates (X lateral, Y height,
 Z negative range) and become the SCATTER SITES of one ``Radar.simulate`` call
 per output frame:
 
-    depth frame  ->  PointTargets(positions=points, rcs=...)
-                 ->  Radar.simulate(scene, targets, times=(t,), ...)
-                 ->  witwin.radar.processing.range_doppler
+    depth frames  ->  PointTargets(positions=points, rcs=..., trajectory=...)
+                  ->  Radar.simulate(scene, targets, times=(t,), ...)
+                  ->  Frame.range_profile  ->  processing.range_doppler_map
 
 The ``Scene`` carries no structures. A depth sample is a point scatterer, not
 geometry, so the only rows the solve publishes are the direct round trips from
@@ -18,8 +18,7 @@ mesh here would add multipath rows that nothing in this example is set up to
 interpret.
 
 Site count is the cost driver: every site is a Channel endpoint in both legs, so
-``--max-points`` bounds how many depth samples one frame contributes. The
-default of 4096 runs in a fraction of a second on a modern GPU.
+``--max-points`` bounds how many depth samples one frame contributes.
 
 The radar looks along ``-z`` (the depth camera forward axis) and says nothing
 about polarization. Channel projects the transmitted field onto a world-frame
@@ -27,25 +26,24 @@ vector, and ``Radar.polarization`` defaults to ``"up"`` - the pose's own up
 axis, transverse to the boresight whichever way the radar points - so no vector
 has to be written down and none can be silently parallel to the boresight.
 
-INTRA-FRAME DOPPLER, stated because it changes what the second axis of these
-maps means. THIS EXAMPLE'S FIXTURE has no intra-frame Doppler: each frame hands
-``Radar.simulate`` a fresh ``PointTargets`` set with no trajectory on it and no
-receiver phase noise, so the default ``Motion.auto()`` resolves to ONE
-observation per frame, the 128 chirps of that frame are identical, and every
-return lands in the zero-Doppler bin. That is a property of the depth-sequence
-fixture, not of the entry point: give the session something that moves - a
-target or structure trajectory, an endpoint trajectory, oscillator phase noise -
-and ``Motion.auto()`` resolves to per-ADC sampling and the within-frame
-slow-time walk is modelled. Frame-to-frame motion is modelled either way, since
-each output frame re-samples the depth sequence at its own instant. Two
-consequences follow FOR THIS FIXTURE: the velocity axis of every map below is a
-zero-Doppler line, and ``--static-clutter-removal`` defaults to OFF because
-subtracting the slow-time mean of identical chirps subtracts the entire signal.
+DOPPLER. Each output frame keeps the depth samples that are valid at both ends
+of the frame and gives them a ``trajectory=``: their positions interpolated
+linearly between neighbouring source frames, at any instant inside the radar
+frame. The scene therefore moves within the frame, ``Motion.auto()`` resolves to
+adaptive sampling, and a moving surface lands in its own Doppler bins. With
+``--no-intra-frame-motion`` every site is frozen at the frame's start instant,
+``Motion.auto()`` resolves to static sampling (one observation per frame), the
+chirps of one frame are identical and every return lands in the zero-Doppler
+bin; frame-to-frame motion is then visible only as a change of range.
+``--static-clutter-removal`` subtracts the slow-time mean per range bin, which
+removes the zero-Doppler return of the static background (and, with frozen
+sites, the whole signal).
 
 Usage:
     python -m examples.rgbd_range_doppler --input path/to/depths.npy
     python -m examples.rgbd_range_doppler --input path/to/rgbd_sequence.npz
     python -m examples.rgbd_range_doppler --input path/to/recording.mkv
+    python -m examples.rgbd_range_doppler --synthetic
 
 Input formats:
     .npy depth:      (T, H, W), depth in meters or millimeters
@@ -53,20 +51,22 @@ Input formats:
     .npz:            depth key such as "depths", optional pointcloud/mask keys
     .mkv:            Azure Kinect playback, requires pykinect_azure
 
-No depth sequence ships with this repository. ``--input`` is required and the
+No depth sequence ships with this repository. ``--input`` names one and the
 example fails loudly if the file is missing; ``examples/preprocess_rfgen_rd.py``
-converts an RFGen recording into the ``.npz`` layout above.
+converts an RFGen recording into the ``.npz`` layout above. ``--synthetic``
+instead builds a small depth sequence in memory - a wall at 4 m and a
+person-sized block in front of it walking towards the camera at 1.2 m/s - and
+checks that the block's Doppler peak is within two velocity bins of 1.2 m/s.
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import math
 import pathlib
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -388,16 +388,56 @@ def _depth_to_points(depth_samples: torch.Tensor, rays: torch.Tensor) -> torch.T
     return rays.unsqueeze(0) * depth_samples.unsqueeze(-1)
 
 
-def build_site_sampler(sequence: RGBDSequence, *, args: argparse.Namespace | Mapping[str, Any], device: str):
-    """Return ``(sample_sites, total_time, num_frames, source_fps)``.
+#: The synthetic sequence: a wall and a block walking towards the camera.
+SYNTHETIC_WALL_M = 4.0
+SYNTHETIC_START_M = 3.0
+SYNTHETIC_SPEED_MPS = 1.2
 
-    ``sample_sites(t)`` publishes the world positions of every valid depth
-    sample at time ``t``, linearly interpolated between the two neighbouring
-    source frames, as one contiguous float32 ``(S, 3)`` tensor on ``device``.
-    That tensor is exactly what ``PointTargets.positions`` consumes, and it is
+
+def synthetic_sequence(*, frames: int = 12, height: int = 48, width: int = 64, fps: float = 30.0) -> RGBDSequence:
+    """A depth sequence with no file behind it, in metres.
+
+    Every pixel sees a wall at ``SYNTHETIC_WALL_M`` except a block in the
+    middle of the image (a quarter of the width, half the height), whose depth
+    starts at ``SYNTHETIC_START_M`` and shrinks at ``SYNTHETIC_SPEED_MPS``.
+    """
+
+    depths = np.full((frames, height, width), SYNTHETIC_WALL_M, dtype=np.float32)
+    rows = slice(height // 4, 3 * height // 4)
+    cols = slice(3 * width // 8, 5 * width // 8)
+    for index in range(frames):
+        depths[index, rows, cols] = SYNTHETIC_START_M - SYNTHETIC_SPEED_MPS * index / fps
+    return RGBDSequence(depths=depths, pointclouds=None, masks=None, fps=fps)
+
+
+@dataclass(frozen=True)
+class SiteSampler:
+    """The depth samples of a sequence as scatter sites at any instant.
+
+    ``sites(t)`` is the world positions of every valid depth sample at time
+    ``t`` (s), linearly interpolated between the two neighbouring source
+    frames, as one contiguous float32 ``(S, 3)`` tensor on the device. That
+    tensor is exactly what ``PointTargets.positions`` consumes, and it is
     handed over untouched, so a caller that marks it as an autograd leaf keeps
     the graph all the way into both propagation legs.
+
+    ``frame_targets(start, end, rcs)`` is a ``PointTargets`` for one radar
+    frame: the samples valid at both ``start`` and ``end``, with a trajectory
+    that follows the same interpolation inside the frame. Its site count is
+    fixed for the frame, as a trajectory requires.
     """
+
+    sites: Callable[[float], torch.Tensor]
+    frame_targets: Callable[[float, float, float], Any]
+    total_time: float
+    source_frames: int
+    source_fps: float
+
+
+def build_site_sampler(
+    sequence: RGBDSequence, *, args: argparse.Namespace | Mapping[str, Any], device: str
+) -> SiteSampler:
+    """The :class:`SiteSampler` of ``sequence`` under the sampling options in ``args``."""
 
     depths_np = _prepare_depths(sequence.depths, args)
     pcs_np = _prepare_pointclouds(sequence.pointclouds, args)
@@ -472,7 +512,9 @@ def build_site_sampler(sequence: RGBDSequence, *, args: argparse.Namespace | Map
     depth_min = float(_arg(args, "depth_min"))
     depth_max = float(_arg(args, "depth_max"))
 
-    def sample_sites(time: float) -> torch.Tensor:
+    def interpolate(time: float) -> tuple[torch.Tensor, torch.Tensor]:
+        """Every sampled point at ``time`` and whether it is a valid site, ``(S, 3)`` and ``(S,)``."""
+
         clamped_time = min(max(float(time), 0.0), total_time)
         position = clamped_time * source_fps
         i0 = min(int(math.floor(position)), num_frames - 1)
@@ -512,9 +554,25 @@ def build_site_sampler(sequence: RGBDSequence, *, args: argparse.Namespace | Map
             mask0 = sampled_masks[0 if sampled_masks.shape[0] == 1 else i0]
             mask1 = sampled_masks[0 if sampled_masks.shape[0] == 1 else i1]
             valid = valid & (mask0 | mask1)
-        return points[valid].to(torch.float32).contiguous()
+        return points.to(torch.float32), valid
 
-    return sample_sites, total_time, num_frames, source_fps
+    def sites(time: float) -> torch.Tensor:
+        points, valid = interpolate(time)
+        return points[valid].contiguous()
+
+    def frame_targets(start: float, end: float, rcs: float):
+        from witwin.radar import PointTargets
+
+        keep = interpolate(start)[1] & interpolate(end)[1]
+
+        def trajectory(time: float) -> torch.Tensor:
+            return interpolate(time)[0][keep].contiguous()
+
+        return PointTargets(positions=trajectory(start), rcs=rcs, trajectory=trajectory)
+
+    return SiteSampler(
+        sites=sites, frame_targets=frame_targets, total_time=total_time, source_frames=num_frames, source_fps=source_fps
+    )
 
 
 def save_rd_png(
@@ -568,18 +626,28 @@ def build_scene():
     )
 
 
-def generate_range_doppler(args: argparse.Namespace) -> None:
-    from witwin.radar import PointTargets, Radar
-    from witwin.radar.processing import range_doppler_map
+def generate_range_doppler(args: argparse.Namespace) -> np.ndarray:
+    """Simulate the output frames, save their maps, and return the stack ``[frames, Doppler, range]`` in dB."""
 
-    input_path = pathlib.Path(args.input).expanduser().resolve()
-    if not input_path.exists():
-        raise FileNotFoundError(
-            f"No depth sequence at {input_path}. This repository ships no RGBD "
-            "asset; export a (T, H, W) depth array to .npy/.npz, or run "
-            "examples/preprocess_rfgen_rd.py on a recording, and pass it with "
-            "--input."
-        )
+    from witwin.radar import PointTargets, Radar
+    from witwin.radar.processing import range_doppler_map, remove_static_clutter
+
+    if args.synthetic:
+        input_label = "synthetic sequence (wall and walking block)"
+        sequence = synthetic_sequence()
+    else:
+        input_path = pathlib.Path(args.input).expanduser().resolve()
+        if not input_path.exists():
+            raise FileNotFoundError(
+                f"No depth sequence at {input_path}. This repository ships no RGBD "
+                "asset; export a (T, H, W) depth array to .npy/.npz, or run "
+                "examples/preprocess_rfgen_rd.py on a recording, and pass it with "
+                "--input (or run with --synthetic)."
+            )
+        input_label = str(input_path)
+        sequence = load_rgbd_sequence(input_path, args)
+        if args.mask is not None:
+            sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
     output_dir = pathlib.Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -595,29 +663,24 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             "The propagation solve runs entirely in native CUDA kernels and has no CPU path; --device cuda is required."
         )
 
-    sequence = load_rgbd_sequence(input_path, args)
-    if args.mask is not None:
-        sequence.masks = load_mask(pathlib.Path(args.mask).expanduser().resolve(), args)
     radar = Radar.from_dict(config, device=device, position=(0.0, 0.0, 0.0), look_at=(0.0, 0.0, -1.0))
-    sample_sites, total_time, source_frames, source_fps = build_site_sampler(sequence, args=args, device=radar.device)
+    sampler = build_site_sampler(sequence, args=args, device=radar.device)
     scene = build_scene()
 
-    # The waveform's timings are SI seconds, so the chirp period is read off it
-    # directly rather than scaled out of the microseconds the file format quotes.
-    chirp_period = radar.waveform.chirp_period
-    radar_valid_time = chirp_period * radar.num_tx * max(0, radar.waveform.chirps_per_frame - 1)
-    start_time = args.start_frame / source_fps
-    remaining_time = total_time - start_time
-    max_output_frames = max(0, int(math.floor((remaining_time - radar_valid_time) * OUTPUT_FRAME_RATE_HZ)) + 1)
+    # One radar frame lasts chirps x transmitters x chirp period (TDM), in s.
+    frame_duration = radar.waveform.chirp_period * radar.num_tx * radar.waveform.chirps_per_frame
+    start_time = args.start_frame / sampler.source_fps
+    remaining_time = sampler.total_time - start_time
+    max_output_frames = max(0, int(math.floor((remaining_time - frame_duration) * OUTPUT_FRAME_RATE_HZ)) + 1)
     if max_output_frames <= 0:
         raise ValueError(
             "Input sequence is too short for one radar frame. "
-            f"Need more than {radar_valid_time:.4f}s after --start-frame; got {remaining_time:.4f}s."
+            f"Need more than {frame_duration:.4f}s after --start-frame; got {remaining_time:.4f}s."
         )
     num_frames = min(args.num_frames, max_output_frames) if args.num_frames > 0 else max_output_frames
 
-    print(f"Input: {input_path}")
-    print(f"Source frames: {source_frames} at {source_fps:.3f} fps")
+    print(f"Input: {input_label}")
+    print(f"Source frames: {sampler.source_frames} at {sampler.source_fps:.3f} fps")
     print(f"Radar: device={radar.device} start_frame={args.start_frame} output_frames={num_frames}")
 
     rd_maps = []
@@ -626,32 +689,33 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
     velocities = None
     for frame_idx in range(num_frames):
         t0 = start_time + frame_idx / OUTPUT_FRAME_RATE_HZ
-        positions = sample_sites(t0)
-        if int(positions.shape[0]) == 0:
+        if args.intra_frame_motion:
+            targets = sampler.frame_targets(t0, t0 + frame_duration, float(args.site_rcs))
+        else:
+            targets = PointTargets(positions=sampler.sites(t0), rcs=float(args.site_rcs))
+        if int(targets.positions.shape[0]) == 0:
             raise ValueError(
                 f"Frame {frame_idx} at t={t0:.4f}s has no valid depth samples "
                 "inside [--depth-min, --depth-max]; a solve needs at least one "
                 "scatter site."
             )
-        # One simulate call per output frame. The site positions come from THIS
+        # One simulate call per output frame. The site set comes from THIS
         # frame's depth samples, so each call re-declares the world; the epoch
         # loop compiles once per call and discovers one topology.
-        result = radar.simulate(
-            scene, PointTargets(positions=positions, rcs=float(args.site_rcs)), times=(t0,), los=True, reflections=0
-        )
+        result = radar.simulate(scene, targets, times=(t0,), los=True, reflections=0)
         if axes is None:
             axes = result.axes
-            half = axes.range_bin_count // 2
-            ranges = axes.range_m[:half].detach().cpu().numpy()
+            # A complex (IQ) receiver resolves the whole published range axis; a
+            # real one folds its upper half onto the lower and reads only that.
+            shown = axes.range_bin_count // 2 if radar.waveform.sampling == "real" else axes.range_bin_count
+            ranges = axes.range_m[:shown].detach().cpu().numpy()
             velocities = axes.velocity_mps.detach().cpu().numpy()
 
-        # The cube is already a range spectrum, so no fast-time window applies.
+        # The cube is already a range spectrum, so the range stage stays
+        # rectangular; the Hann window below tapers slow time only.
         profile = result.frame(0).range_profile()
         if args.static_clutter_removal:
-            # Static clutter removal is a SLOW-TIME mean subtraction. The range
-            # stage owns the fast-time DC removal (``remove_dc=``); the
-            # slow-time one has no exported owner, so it is spelled out here.
-            profile = dataclasses.replace(profile, data=profile.data - profile.data.mean(dim=-2, keepdim=True))
+            profile = remove_static_clutter(profile, method="mean")
         rd = range_doppler_map(profile, window="hann")
         cell = rd.data[int(args.tx), int(args.rx)]
         rd_db = (20.0 * torch.log10(cell.abs() + DECIBEL_FLOOR)).detach().cpu().numpy()
@@ -668,7 +732,10 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
             vmin=args.db_min,
             vmax=args.db_max,
         )
-        print(f"[{frame_idx + 1:03d}/{num_frames:03d}] saved {png_path}")
+        print(
+            f"[{frame_idx + 1:03d}/{num_frames:03d}] {int(targets.positions.shape[0])} sites, "
+            f"{result.motion_sampling} sampling, saved {png_path.name}"
+        )
 
     rd_stack = np.stack(rd_maps, axis=0)
     np.save(output_dir / "rd_maps_db.npy", rd_stack)
@@ -679,12 +746,25 @@ def generate_range_doppler(args: argparse.Namespace) -> None:
         tx=np.asarray(args.tx),
         rx=np.asarray(args.rx),
     )
-    print(f"Saved RD stack: {output_dir / 'rd_maps_db.npy'}  shape={rd_stack.shape}")
+    print(f"Saved RD stack to {output_dir}: rd_maps_db.npy {rd_stack.shape}, rd_axes.npz")
+
+    if args.synthetic and args.intra_frame_motion:
+        # The block is the only moving surface: its Doppler is the strongest
+        # cell off the zero-velocity row, averaged over the frames.
+        moving = np.abs(velocities) > axes.velocity_bin_mps
+        power = (10.0 ** (rd_stack / 10.0)).mean(axis=0)[moving]
+        doppler_bin, _ = np.unravel_index(int(power.argmax()), power.shape)
+        block_mps = float(velocities[moving][doppler_bin])
+        assert abs(block_mps - SYNTHETIC_SPEED_MPS) <= 2 * axes.velocity_bin_mps, block_mps
+        print(f"Block Doppler: {block_mps:+.3f} m/s (walking at {SYNTHETIC_SPEED_MPS:+.3f} m/s)  OK")
+    return rd_stack
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="Path to .npy, .npz, or Azure Kinect .mkv input.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input", help="Path to .npy, .npz, or Azure Kinect .mkv input.")
+    source.add_argument("--synthetic", action="store_true", help="Use a small generated depth sequence instead.")
     parser.add_argument("--output-dir", default="output/rgbd_range_doppler", help="Directory for PNGs and .npy output.")
     parser.add_argument("--config", default=None, help="Optional radar config JSON. Defaults to TI1843-like config.")
     parser.add_argument("--device", default="cuda", help="Torch device. The native propagation solve requires cuda.")
@@ -730,16 +810,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tx", type=int, default=0, help="TX index used for RD visualization.")
     parser.add_argument("--rx", type=int, default=0, help="RX index used for RD visualization.")
     parser.add_argument(
+        "--intra-frame-motion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Move the sites within each radar frame (Doppler); off freezes them at the frame's start.",
+    )
+    parser.add_argument(
         "--static-clutter-removal",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help=(
-            "Subtract the slow-time mean before the Doppler FFT. OFF by default: "
-            "this example's targets carry no trajectory, so Motion.auto() resolves "
-            "to one observation per frame, every chirp of one frame is identical "
-            "and the slow-time mean is the WHOLE signal. See the intra-frame "
-            "Doppler note in this module's docstring."
-        ),
+        help="Subtract the slow-time mean per range bin before the Doppler FFT (removes zero Doppler).",
     )
     parser.add_argument("--db-min", type=float, default=None, help="PNG color lower bound in dB.")
     parser.add_argument("--db-max", type=float, default=None, help="PNG color upper bound in dB.")

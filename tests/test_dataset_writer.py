@@ -111,5 +111,5 @@ def test_an_existing_dataset_needs_overwrite_and_a_foreign_directory_is_never_cl
     with pytest.raises(FileExistsError, match="holds no dataset"):
         write_dataset(tmp_path / "other", radar, episodes, overwrite=True)
     assert (tmp_path / "other" / "keep.txt").read_text() == "keep"
-    with pytest.raises(ValueError, match="grad must be 'none'"):
+    with pytest.raises(ValueError, match="ad_mode must be 'none'"):
         write_dataset(tmp_path / "graded", radar, episodes, ad_mode="vjp")

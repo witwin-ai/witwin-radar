@@ -899,7 +899,7 @@ def echo_adaptive_frame(
                 ).reshape(stop - begin, receivers)
             )
             begin = stop
-    # Each slot now carries its own transmitter's receivers, so the gather
+    # Each slot carries its own transmitter's receivers, so the gather
     # reads a pair by its receiver rank ``pair // num_tx`` in the slot its
     # transmitter rank ``pair % num_tx`` selects.
     all_slots = torch.cat(values).reshape(-1, spec.num_samples, receivers).transpose(1, 2)

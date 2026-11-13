@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 
@@ -108,21 +109,20 @@ class DetectionFrame:
     def as_fixed_size(self, size: int, *, generator: torch.Generator | None = None) -> torch.Tensor:
         """``[size, 6]`` in :data:`POINT_CLOUD_COLUMNS` order.
 
-        The fixed-shape batch a learned consumer wants, replacing ``reg_data``'s
-        ``numpy`` / ``np.random`` path. Three cases, all on the input device and
-        all in torch:
+        The fixed-shape batch a learned consumer wants. Three cases, all on the
+        input device and all in torch:
 
         * no detections: exact zeros, so a consumer sees an empty frame rather
           than a random one;
         * fewer than ``size``: every detection is placed once at a random slot
           and the remaining slots are filled by sampling detections with
-          replacement, which is what ``reg_data`` did;
+          replacement;
         * more than ``size``: ``size`` detections are sampled without
           replacement.
 
-        ``generator`` is an explicit argument. ``reg_data`` drew from the global
-        ``numpy`` random state, so two runs of the same simulation produced
-        different batches and nothing said so.
+        ``generator`` is the source of randomness, so the same generator state
+        gives the same batch; ``None`` draws from torch's default generator on
+        the input device. ``numpy`` random state is never read.
         """
 
         if type(size) is not int or size < 1:
@@ -372,11 +372,14 @@ class KalmanTracker:
         self.gate = float(gate)
         self.initial_velocity_std_mps = float(initial_velocity_std_mps)
         self.max_misses = max_misses
-        self._state: torch.Tensor | None = None
-        self._covariance: torch.Tensor | None = None
-        self._ids: torch.Tensor | None = None
-        self._hits: torch.Tensor | None = None
-        self._misses: torch.Tensor | None = None
+        # The five track tensors are None until the first push sets all of them
+        # together; ``tracks`` tests ``_state is None`` and every other reader
+        # runs inside or after a push, so they are typed as set.
+        self._state: torch.Tensor = cast(torch.Tensor, None)
+        self._covariance: torch.Tensor = cast(torch.Tensor, None)
+        self._ids: torch.Tensor = cast(torch.Tensor, None)
+        self._hits: torch.Tensor = cast(torch.Tensor, None)
+        self._misses: torch.Tensor = cast(torch.Tensor, None)
         self._time_s: float | None = None
         self._next_id = 0
 

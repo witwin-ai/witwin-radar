@@ -32,7 +32,9 @@ own design rather than something a detector may choose.
 """
 
 import functools
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -42,6 +44,10 @@ from ..display import compact_repr
 from ..policy import refuse_derivative
 from .angle import AOA_ROUTES, ArrayGeometry, require_separated, tdm_compensate
 from .range_doppler import RangeDopplerMap
+from .signal import ProcessingAxes
+
+if TYPE_CHECKING:
+    from ..radar import Radar
 
 #: Why no detector here has a derivative. Written once and quoted by all four
 #: entries, so the four cannot drift into four explanations of one decision.
@@ -179,7 +185,7 @@ class _Ring:
         return torch.argwhere(keep.reshape(-1)).reshape(-1)
 
 
-def _ring(guard_cells, training_cells, *, rank: int) -> _Ring:
+def _ring(guard_cells: Any, training_cells: Any, *, rank: int) -> _Ring:
     if rank == 2:
         gd, gr = (int(value) for value in guard_cells)
         td, tr = (int(value) for value in training_cells)
@@ -211,7 +217,7 @@ def _half_counts(ring: _Ring, ranges: int) -> tuple[torch.Tensor, torch.Tensor]:
     return inside @ ring.column_counts(-1), inside @ ring.column_counts(1)
 
 
-def _bisect(probability, target: float, size: int) -> torch.Tensor:
+def _bisect(probability: Callable[[torch.Tensor], torch.Tensor], target: float, size: int) -> torch.Tensor:
     """The ``alpha >= 0`` at which a DECREASING false-alarm law equals ``target``.
 
     ``probability`` maps a ``[size]`` float64 tensor of scale constants to
@@ -287,7 +293,7 @@ def cfar_false_alarm_probability(
     return _two_half_law(kind, n_lag, n_lead)(a)
 
 
-def _two_half_law(kind: str, n_lag: torch.Tensor, n_lead: torch.Tensor):
+def _two_half_law(kind: str, n_lag: torch.Tensor, n_lead: torch.Tensor) -> Callable[[torch.Tensor], torch.Tensor]:
     """The GO/SO false-alarm law for fixed half counts, as a function of ``alpha``.
 
     Everything that does not depend on ``alpha`` - the ``lgamma`` coefficients
@@ -375,7 +381,9 @@ def _threshold_constants(
 
 
 @functools.lru_cache(maxsize=128)
-def _constants_on(kind, ranges, ring, pfa, rank_fraction, device, dtype):
+def _constants_on(
+    kind: str, ranges: int, ring: _Ring, pfa: float, rank_fraction: float, device: torch.device, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """:func:`_threshold_constants` placed on ``device`` once per configuration.
 
     Cached so a detector called every frame uploads its ``[R]`` constants once
@@ -385,7 +393,10 @@ def _constants_on(kind, ranges, ring, pfa, rank_fraction, device, dtype):
     alpha, lag, lead = _threshold_constants(kind, ranges, ring, pfa, rank_fraction)
     if kind == "os":
         return alpha.to(device=device, dtype=dtype), lag.to(device=device, dtype=torch.int64), None
-    return tuple(value.to(device=device, dtype=dtype) for value in (alpha, lag, lead))
+    return cast(
+        "tuple[torch.Tensor, torch.Tensor, torch.Tensor]",
+        tuple(value.to(device=device, dtype=dtype) for value in (alpha, lag, lead)),
+    )
 
 
 def _pad_window(flat: torch.Tensor, ring: _Ring, *, range_fill: float) -> torch.Tensor:
@@ -437,14 +448,20 @@ def _half_sums(flat: torch.Tensor, ring: _Ring) -> tuple[torch.Tensor, torch.Ten
     return sums[0], sums[1]
 
 
-def _mean_level_cfar(name: str, kind: str, rd_map, guard_cells, training_cells, pfa: float, rank: int) -> Detections:
+def _mean_level_cfar(
+    name: str, kind: str, rd_map: torch.Tensor, guard_cells: Any, training_cells: Any, pfa: float, rank: int
+) -> Detections:
     refuse_derivative(f"witwin.radar.processing.detection.{name}", _CFAR_REASON, rd_map=rd_map)
     pfa = _require_pfa(pfa)
     ring = _ring(guard_cells, training_cells, rank=rank)
     power = _power(rd_map)
     flat, leading = _as_batch(power if rank == 2 else power.unsqueeze(-2), 2)
     ranges = int(flat.shape[-1])
-    alpha, lag_weight, lead_weight = _constants_on(kind, ranges, ring, pfa, 0.0, flat.device, flat.dtype)
+    # A mean-level kind carries both half weights; only ``os`` leaves the third None.
+    alpha, lag_weight, lead_weight = cast(
+        "tuple[torch.Tensor, torch.Tensor, torch.Tensor]",
+        _constants_on(kind, ranges, ring, pfa, 0.0, flat.device, flat.dtype),
+    )
     lag, lead = _half_sums(flat, ring)
     if kind == "ca":
         level = (lag + lead) * lag_weight
@@ -457,7 +474,7 @@ def _mean_level_cfar(name: str, kind: str, rd_map, guard_cells, training_cells, 
     return Detections(mask=power > threshold, threshold=threshold)
 
 
-def _require_pfa(pfa) -> float:
+def _require_pfa(pfa: float) -> float:
     value = float(pfa)
     if not 0.0 < value < 1.0:
         raise ValueError(f"pfa must be a probability in (0, 1), got {pfa!r}")
@@ -620,7 +637,7 @@ def _order_statistic(flat: torch.Tensor, ring: _Ring, rank_index: torch.Tensor) 
 
 
 for _detector in (ca_cfar, go_cfar, so_cfar, ca_cfar_1d, os_cfar):
-    _detector.__doc__ += _SQUARE_LAW
+    _detector.__doc__ = cast(str, _detector.__doc__) + _SQUARE_LAW
 
 
 def group_peaks(detections: Detections, rd_map: torch.Tensor, *, neighbourhood: tuple[int, int] = (3, 3)) -> Detections:
@@ -774,7 +791,7 @@ class PointCloud:
             frame=self.frame,
         )
 
-    def to_world(self, radar) -> "PointCloud":
+    def to_world(self, radar: "Radar") -> "PointCloud":
         """This radar-frame cloud in the world, through ``radar``'s pose.
 
         ``radar`` is the :class:`witwin.radar.Radar` whose array produced the
@@ -804,7 +821,7 @@ class PointCloud:
         )
 
 
-def range_gate_mask(axes, gate_m: tuple[float, float] | None) -> torch.Tensor | None:
+def range_gate_mask(axes: ProcessingAxes, gate_m: tuple[float, float] | None) -> torch.Tensor | None:
     """``[R]`` bool: which range bins a gate in METRES admits.
 
     ``None`` admits everything. The gate is half open, ``lo <= r < hi``, so two
@@ -944,8 +961,8 @@ def _keep_strongest(mask: torch.Tensor, energy: torch.Tensor, max_points: int) -
     Guarded again even though :func:`point_cloud` already refused at its entry
     and is this function's only caller. Defence in depth is the right shape for
     a wall: a future second caller inherits the refusal instead of quietly
-    reopening the hole, and the ``topk`` here is the peak selection the plan
-    names by that name.
+    reopening the hole, and the ``topk`` here is the thinning step the refusal
+    reason names.
     """
 
     refuse_derivative("witwin.radar.processing.detection._keep_strongest", _SELECTION_REASON, energy=energy)
@@ -1113,7 +1130,7 @@ def _connected_core_labels(adjacency: torch.Tensor, core: torch.Tensor) -> torch
     raise RuntimeError("label propagation did not converge; this is a defect, not an input error")
 
 
-def combine_incoherent(cubes) -> torch.Tensor:
+def combine_incoherent(cubes: Iterable[torch.Tensor]) -> torch.Tensor:
     """``sum_j |cube_j|^2``: the power sum of independently exported components.
 
     Returns a REAL tensor. That is the point of the operation and it is not a
@@ -1157,7 +1174,8 @@ def combine_incoherent(cubes) -> torch.Tensor:
             raise ValueError(f"cube {index} is on {cube.device} but cube 0 is on {listed[0].device}")
         power = cube.real * cube.real + cube.imag * cube.imag if cube.is_complex() else cube * cube
         total = power if total is None else total + power
-    return total
+    # ``listed`` is non-empty, so the loop assigned ``total`` at least once.
+    return cast(torch.Tensor, total)
 
 
 def combine_coherent(cube: torch.Tensor) -> torch.Tensor:

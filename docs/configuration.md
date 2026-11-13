@@ -3,7 +3,9 @@
 This page covers everything that moves a radar or its output in or out of a
 Python process: the flat configuration format, TI mmWave profiles and board
 presets, saved results, datasets with ground-truth labels, raw ADC captures in
-the DCA1000 layout, and the installation self-check.
+the DCA1000 layout, and the installation self-check. The user guide
+[Datasets and tools](user/datasets-and-tools.md) walks through each with a
+runnable example.
 
 ## The flat configuration
 
@@ -81,9 +83,10 @@ with optional `quantity` (`"power"`, or `"field"` for complex values) and
 `witwin.radar.config.read_ti_cfg(path_or_text)` reads a TI mmWave SDK `.cfg`
 profile (`channelCfg`, `adcCfg`, `profileCfg`, `chirpCfg`, `frameCfg`,
 `bpmCfg`; other commands are processing or GUI settings and are ignored) into a
-`TiConfig`. `TiConfig.to_radar(tx=..., rx=..., power=12.0, **overrides)` builds
-the radar once the board's element positions are given, indexed by channel
-number; the `.cfg` names channels, not positions.
+`TiConfig`. `TiConfig.to_radar(tx=..., rx=..., antenna_unit="half_wavelength",
+power=12.0, **overrides)` builds the radar once the board's element positions
+are given, indexed by channel number; the `.cfg` names channels, not positions.
+An advanced-frame profile (`dfeDataOutputMode 3`, `advFrameCfg`) is refused.
 
 * Under TDM each chirp slot enables one transmitter, and the radar's
   transmitters are those in SLOT order: a loop firing TX0, TX2, TX1 becomes
@@ -100,7 +103,9 @@ number; the `.cfg` names channels, not positions.
 3 TX x 4 RX layout (receivers half a wavelength apart, TX0 and TX2 two
 wavelengths apart, TX1 midway and half a wavelength up: an 8-element azimuth
 row and a 4-element elevated row) and a representative 256-sample, 64-loop TDM
-profile; they are not TI's demo profiles.
+profile; they are not TI's demo profiles. The `.cfg` reading and the board
+layouts were written from TI's documentation and have not been checked
+against hardware.
 
 ## Saving results
 
@@ -113,7 +118,8 @@ reads it back; the cube and the processing axes come back bit for bit.
 
 Each `.pt` file holds plain tensors only and is read with
 `torch.load(weights_only=True)`; no Radar, Channel or Core object is pickled.
-The closing frame's world state (`last_snapshot`, `last_compiled_scene`,
+Saving over an existing result needs `overwrite=True`. `Paths` cannot be saved:
+it holds the live session. The closing frame's world state (`last_snapshot`, `last_compiled_scene`,
 `last_propagation`, `last_radar_paths`) and the path events are not saved; a
 loaded result carries `None` and `()` there. `metadata.json` is written last.
 
@@ -122,8 +128,9 @@ loaded result carries `None` and `()` there. `metadata.json` is written last.
 `witwin.radar.labels.ground_truth(radar, scene, targets, times=...)` returns
 `TargetLabels`: per frame and per target, the world and radar-frame position,
 range, closing-positive radial velocity, azimuth, elevation, monostatic cross
-section and target ID, computed from the simulated geometry at each frame
-instant (`GroundTruth.at(t)` for one instant). The radar frame is the point
+section and target ID (`world_position_m`, `position_m`, `range_m`,
+`radial_velocity_mps`, `azimuth_rad`, `elevation_rad`, `rcs_m2`,
+`target_id`), computed from the simulated geometry at each frame instant (`GroundTruth.at(t)` for one instant). The radar frame is the point
 cloud's (`x` right, `y` boresight, `z` up). A `MeshTargets` structure reports
 its area-weighted facet centroid, its area and its facet range extent, and NaN
 for the cross section. `site_id` / `site_target` map a composed row's site to
@@ -137,7 +144,9 @@ interaction depth, float64 delay, Doppler and amplitude.
 seed=...), ...], **stream_options)` streams every episode frame by frame and
 writes one saved result per episode, each frame file also carrying its labels,
 plus `root/dataset.json` (the radar's `to_dict`, the options and the episode
-index). `load_episode(root / name)` returns `(Result, TargetLabels)`.
+index). An episode's seed is `radar.replace(seed=...)`; `ad_mode` other than
+`"none"` is refused. `load_episode(root / name)` returns
+`(Result, TargetLabels)` and `read_dataset(root)` the index.
 
 ## Raw ADC captures (DCA1000)
 

@@ -13,7 +13,7 @@ exactly one Python owner, this module.
 **This module publishes the matched-filter INPUT.** The received pulse train is
 the physics; correlating it against the transmitted replica is signal
 processing, and it lives in :mod:`witwin.radar.processing.range_doppler` under the
-plan's Torch/FFT exception. The split is not cosmetic: a filter fuses a
+processing Torch/FFT exception (cuFFT through ``torch.fft``). The split is not cosmetic: a filter fuses a
 modelling choice - which replica, which window, how much oversampling - into
 whatever it is part of, and those choices belong to a processing chain that a
 user may replace, not to a propagation model that they may not.
@@ -48,6 +48,7 @@ every pair and there is no per-segment time offset to carry.
 from __future__ import annotations
 
 import functools
+from typing import Any
 
 import torch
 
@@ -118,7 +119,17 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native pulsed operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec):
+    def forward(
+        tau_rt: torch.Tensor,
+        tau_lo: torch.Tensor,
+        tau_rate: torch.Tensor,
+        weight_re: torch.Tensor,
+        weight_im: torch.Tensor,
+        offsets: torch.Tensor,
+        segment: torch.Tensor,
+        schedule: torch.Tensor,
+        spec: PulsedSpec,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -143,7 +154,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         return out_re, out_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, torch.Tensor]) -> None:
         (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
@@ -152,7 +163,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im):
+    def backward(ctx: Any, grad_out_re: torch.Tensor, grad_out_im: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, schedule = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
@@ -182,17 +193,17 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_rt,
-        tan_tau_lo,
-        tan_tau_rate,
-        tan_weight_re,
-        tan_weight_im,
-        tan_offsets,
-        tan_segment,
-        tan_schedule,
-        tan_spec,
-    ):
+        ctx: Any,
+        tan_tau_rt: Any,
+        tan_tau_lo: Any,
+        tan_tau_rate: Any,
+        tan_weight_re: Any,
+        tan_weight_im: Any,
+        tan_offsets: Any,
+        tan_segment: Any,
+        tan_schedule: Any,
+        tan_spec: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, schedule = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
@@ -248,7 +259,7 @@ def synthesize_echo_rows(
 
     ``total_delay_residual_s`` is the composed rows' non-differentiable delay
     residual (R-ADR-040), read as ``tau = total_delay_s + residual`` in
-    float64; ``None`` reads the float32 delay alone, bit for bit as before.
+    float64; ``None`` reads the float32 delay alone.
 
     ``transfer_ref`` is the coefficient AS CHANNEL PUBLISHES IT - the entry
     performs no conjugation, because the pulsed product stays in that

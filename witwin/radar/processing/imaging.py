@@ -56,7 +56,9 @@ own coordinates at the reference instant.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -66,6 +68,12 @@ from ..policy import first_order_only, refuse_derivative
 from ..synthesis.assembly import SPEED_OF_LIGHT_M_PER_S, FmcwSpec, OfdmSpec, PulsedSpec
 from .range_doppler import RangeProfile
 from .signal import ProcessingAxes, _doppler_sign_from_phasor, _require_complex
+
+if TYPE_CHECKING:
+    from ..radar import Radar
+
+#: The verbs' ego-motion, ``pose(t) -> (rotation, translation)``.
+_Pose = Callable[[float], tuple[Any, Any]]
 
 #: The frames an aperture and an image are stated in: the world, or the body
 #: frame of a turning target at its reference instant.
@@ -128,7 +136,7 @@ class Aperture:
         if not (math.isfinite(self.carrier_hz) and math.isfinite(self.curvature_hz_per_s)):
             raise ValueError("the phase law's carrier and curvature must be finite")
 
-    def to(self, device) -> "Aperture":
+    def to(self, device: torch.device | str) -> "Aperture":
         """The same aperture with its tensors on ``device``, so an image loop copies no geometry."""
 
         target = torch.device(device)
@@ -149,7 +157,9 @@ class Aperture:
         return _doppler_sign_from_phasor(self.phasor)
 
     @classmethod
-    def from_radar(cls, radar, *, time_s: float = 0.0, velocity_mps=None, pose=None) -> "Aperture":
+    def from_radar(
+        cls, radar: "Radar", *, time_s: float = 0.0, velocity_mps: Any = None, pose: Any = None
+    ) -> "Aperture":
         """The aperture one frame of ``radar`` sweeps, starting at frame time ``time_s``.
 
         The sample instants come from the waveform: FMCW slot ``chirp * num_tx +
@@ -200,7 +210,7 @@ class Aperture:
         )
 
 
-def _waveform_name(spec) -> str:
+def _waveform_name(spec: FmcwSpec | OfdmSpec | PulsedSpec) -> str:
     if isinstance(spec, FmcwSpec):
         return "fmcw"
     if isinstance(spec, OfdmSpec):
@@ -208,7 +218,7 @@ def _waveform_name(spec) -> str:
     return "pulsed"
 
 
-def _sample_instants_and_law(spec, num_tx: int) -> tuple[torch.Tensor, float, float]:
+def _sample_instants_and_law(spec: FmcwSpec | OfdmSpec | PulsedSpec, num_tx: int) -> tuple[torch.Tensor, float, float]:
     """``[C, num_tx]`` sample instants from the frame start (s), and the phase law ``(f, a)``."""
 
     reference = float(spec.reference_frequency_hz)
@@ -239,7 +249,9 @@ def _sample_instants_and_law(spec, num_tx: int) -> tuple[torch.Tensor, float, fl
     raise TypeError(f"no imaging phase law for a {type(spec).__name__}")
 
 
-def _posed(radar, pose, times: torch.Tensor, tx_m: torch.Tensor, rx_m: torch.Tensor):
+def _posed(
+    radar: "Radar", pose: _Pose, times: torch.Tensor, tx_m: torch.Tensor, rx_m: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     """``p0 + R(t) (x - p0) + T(t)`` at each distinct instant of ``times``."""
 
     distinct, inverse = torch.unique(times, return_inverse=True)
@@ -271,7 +283,12 @@ def _rodrigues(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
 
 
 def isar_aperture(
-    aperture: Aperture, *, center_m, angular_velocity_rad_s=None, rotation=None, reference_time_s: float = 0.0
+    aperture: Aperture,
+    *,
+    center_m: Any,
+    angular_velocity_rad_s: Any = None,
+    rotation: Any = None,
+    reference_time_s: float = 0.0,
 ) -> Aperture:
     """The same aperture seen from the body frame of a turning target.
 
@@ -366,7 +383,14 @@ class _Backprojection(torch.autograd.Function):
     """The native family. Complex samples cross the boundary as real views."""
 
     @staticmethod
-    def forward(samples, tx, rx, pixels, groups, law):
+    def forward(
+        samples: torch.Tensor,
+        tx: torch.Tensor,
+        rx: torch.Tensor,
+        pixels: torch.Tensor,
+        groups: int,
+        law: tuple[float, ...],
+    ) -> torch.Tensor:
         batch = int(samples.shape[0])
         image = torch.empty((batch, groups, int(pixels.shape[0])), dtype=samples.dtype, device=samples.device)
         _ops().backprojection_forward(
@@ -381,7 +405,7 @@ class _Backprojection(torch.autograd.Function):
         return image
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         samples, tx, rx, pixels, ctx.groups, ctx.law = inputs
         ctx.shape, ctx.dtype = tuple(samples.shape), samples.dtype
         ctx.save_for_backward(tx, rx, pixels)
@@ -389,7 +413,7 @@ class _Backprojection(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_image):
+    def backward(ctx: Any, grad_image: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None, None]:
         tx, rx, pixels = ctx.saved_tensors
         grad = torch.zeros(ctx.shape, dtype=ctx.dtype, device=grad_image.device)
         _ops().backprojection_backward(
@@ -404,7 +428,7 @@ class _Backprojection(torch.autograd.Function):
         return grad, None, None, None, None, None
 
     @staticmethod
-    def jvp(ctx, tangent, *_):
+    def jvp(ctx: Any, tangent: torch.Tensor, *_: Any) -> torch.Tensor:
         tx, rx, pixels = ctx.saved_tensors
         out = torch.empty((ctx.shape[0], ctx.groups, int(pixels.shape[0])), dtype=ctx.dtype, device=tangent.device)
         _ops().backprojection_jvp(
@@ -419,7 +443,9 @@ class _Backprojection(torch.autograd.Function):
         return out
 
 
-def _backproject_torch(samples, tx, rx, pixels, groups: int, law: tuple[float, ...]) -> torch.Tensor:
+def _backproject_torch(
+    samples: torch.Tensor, tx: torch.Tensor, rx: torch.Tensor, pixels: torch.Tensor, groups: int, law: tuple[float, ...]
+) -> torch.Tensor:
     """The same equation as the native family, in Torch primitives: ``[B, V, C, R] -> [B, groups, P]``."""
 
     origin, bin_m, inverse_speed, carrier, curvature, sign, scale = law
@@ -482,7 +508,9 @@ def _require_aperture(profile: RangeProfile, aperture: Aperture) -> torch.Tensor
     return data.reshape(-1, aperture.element_count, aperture.slow_count, int(data.shape[-1]))
 
 
-def _backproject(samples, aperture: Aperture, pixels, axes: ProcessingAxes, groups: int) -> torch.Tensor:
+def _backproject(
+    samples: torch.Tensor, aperture: Aperture, pixels: torch.Tensor, axes: ProcessingAxes, groups: int
+) -> torch.Tensor:
     """``[B, V, C, R]`` samples -> ``[B, groups, P]``, on the samples' device."""
 
     device = samples.device
