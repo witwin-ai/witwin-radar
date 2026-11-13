@@ -654,11 +654,12 @@ class WorldHalf:
         self.motion_sampling = motion_sampling
         self.ad_mode = ad_mode
         self.reference_frequency_hz = propagation.reference_frequency_hz
+        self._compile_scene = compile_scene
         self.loop = SceneEpochLoop(
             dynamic,
             reference_frequency_hz=self.reference_frequency_hz,
             bind=self.bind,
-            compile_scene=compile_scene,
+            compile_scene=self._compile,
             motion_event_period_frames=cadence,
             motion_event_period_s=period_s,
             world_motion=world_motion,
@@ -703,6 +704,29 @@ class WorldHalf:
         self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
             SLOT_TABLE_CACHE
         )
+
+    def _compile(self, snapshot: object, *, reference_frequency_hz: float) -> CompiledWorld:
+        """Compile one snapshot, then admit the scene leaves the legs will read.
+
+        A wall's vertices and a material's fields enter every reflected,
+        transmitted or diffracted row, and Channel's replay carries their
+        derivative only in the AD mode the verb asks for; under ``"none"`` the
+        rows are discovery's and carry none. A marked scene leaf in a mode
+        that does not carry it is therefore refused here, after Channel's
+        compile and before any discovery reads the compiled scene. A request
+        of line-of-sight rows alone reads no wall or material smoothly (a wall
+        only occludes, a discrete decision), so it admits any scene leaf.
+        """
+
+        from .channel import scene_leaves
+
+        compiled = self._compile_scene(snapshot, reference_frequency_hz=reference_frequency_hz)
+        if (self.propagation.components | self.request.direct_components) - {"los"}:
+            for name, value in scene_leaves(compiled):
+                require_leg_ad_mode(
+                    f"the compiled scene's {name}", value, self.ad_mode, moves="enters every row that meets a wall"
+                )
+        return compiled
 
     def _bind_world(self, snapshot: object, time_s: float | None = None) -> RadarWorldBinding:
         """Bind the radar to ``snapshot``; ``time_s`` is the instant a pose is read at.

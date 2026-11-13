@@ -207,6 +207,25 @@ def _mode(marked: str) -> str:
     return "vjp" if marked == "gradient" else "jvp"
 
 
+@pytest.mark.gpu
+@pytest.mark.parametrize("route", ["static", "trajectory"])
+def test_a_network_refuses_a_marked_target_position_too(monkeypatch, route):
+    """Each radar of a network builds its site policy through the same session, so the rule holds there."""
+
+    pytest.importorskip("witwin.channel")
+    from test_network import _radars
+    from witwin.core import Scene
+
+    from witwin.radar import Network
+
+    work = _Work(monkeypatch)
+    build = _static if route == "static" else _walking
+    targets = build(torch.tensor(POSITIONS, device="cuda", requires_grad=True))
+    with pytest.raises(RuntimeError, match=r"PointTargets\.(positions|trajectory) carries a gradient"):
+        Network(_radars()).simulate(Scene(), targets, times=(0.0,), reflections=0)
+    assert work.calls["discover"] == 0 and work.calls["join"] == 0
+
+
 # ---------------------------------------------------------------------------
 # MeshTargets: the world vertices place every facet site
 # ---------------------------------------------------------------------------
@@ -234,6 +253,82 @@ def test_the_matching_mode_still_carries_a_mesh_vertex_derivative(monkeypatch, m
         rows = _mesh_rows(_marked(_plate_vertices(), marked), _mode(marked))
         assert _carried(rows, marked)
     assert work.calls["facet_geometry"] >= 1 and work.calls["discover"] >= 2 and work.calls["join"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Scene leaves: a wall's vertices and material enter every row that meets it
+# ---------------------------------------------------------------------------
+
+#: A conducting wall in the plane y = 2 m, facing the radar at the origin and a
+#: target at (5, 0, 0), so the session has a wall-bounce row on each leg.
+WALL = ((-5.0, 2.0, -5.0), (15.0, 2.0, -5.0), (15.0, 2.0, 5.0), (-5.0, 2.0, 5.0))
+
+
+def _wall_rows(vertices: torch.Tensor, ad_mode: str, *, reflections: int = 1, eps_r=None) -> torch.Tensor:
+    from support import oracle_scenes as sc
+    from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
+
+    from witwin.radar import PointTargets
+
+    material = PhysicalMaterial.perfect_conductor() if eps_r is None else PhysicalMaterial(eps_r=eps_r, sigma_e=0.01)
+    mesh = Mesh(
+        vertices=vertices,
+        faces=torch.tensor([[0, 2, 1], [0, 3, 2]]),
+        recenter=False,
+        fill_mode="surface",
+        topology_diagnostics=False,
+    )
+    wall = Structure(geometry=mesh, material=material, structure_id=1, material_id=1, assignment_id=1, surface_id=1)
+    targets = PointTargets(positions=torch.tensor([[5.0, 0.0, 0.0]], device="cuda"), rcs=1.0)
+    scene = Scene(structures=(wall,), endpoints=[])
+    return sc.radar().trace(scene, targets, times=(0.0,), reflections=reflections, ad_mode=ad_mode).rows()
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(("marked", "ad_mode", "wanted"), MISMATCHES)
+def test_marked_wall_vertices_are_refused_before_any_discovery(monkeypatch, marked, ad_mode, wanted):
+    """Under ``none`` a wall-vertex leaf came back with no derivative at all, every row being discovery's."""
+
+    pytest.importorskip("witwin.channel")
+    work = _Work(monkeypatch)
+    with fwad.dual_level():
+        vertices = _marked(torch.tensor(WALL), marked)
+        with pytest.raises(RuntimeError, match=r"compiled scene's structures\[0\]\.vertices carries a") as raised:
+            _wall_rows(vertices, ad_mode)
+    assert f"pass ad_mode={wanted!r} (got ad_mode={ad_mode!r})" in str(raised.value)
+    assert work.calls["compile"] == 1 and work.calls["discover"] == 0 and work.calls["join"] == 0
+
+
+@pytest.mark.gpu
+def test_a_marked_wall_material_under_none_is_refused_too():
+    pytest.importorskip("witwin.channel")
+    eps_r = torch.tensor(4.0, requires_grad=True)
+    with pytest.raises(RuntimeError, match=r"compiled scene's materials\.eps_r carries a gradient.*'vjp'"):
+        _wall_rows(torch.tensor(WALL), "none", eps_r=eps_r)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("marked", ["gradient", "tangent"])
+def test_the_matching_mode_carries_the_wall_derivative_into_the_bounce_rows(monkeypatch, marked):
+    pytest.importorskip("witwin.channel")
+    work = _Work(monkeypatch)
+    with fwad.dual_level():
+        rows = _wall_rows(_marked(torch.tensor(WALL), marked), _mode(marked))
+        # One transmitter, one site, one receiver: every round trip past the
+        # first meets the wall on at least one leg.
+        assert rows.path_count > 1, "the fixture must hold a wall-bounce row"
+        assert _carried(rows.complex_transfer_ref, marked)
+    assert work.calls["discover"] >= 2 and work.calls["join"] >= 1
+
+
+@pytest.mark.gpu
+def test_line_of_sight_rows_alone_admit_a_wall_leaf():
+    """A wall only occludes a line-of-sight row - a discrete decision - so no derivative is dropped there."""
+
+    pytest.importorskip("witwin.channel")
+    vertices = torch.tensor(WALL, requires_grad=True)
+    rows = _wall_rows(vertices, "none", reflections=0)
+    assert rows.complex_transfer_ref.shape[0] > 0 and not rows.complex_transfer_ref.requires_grad
 
 
 # ---------------------------------------------------------------------------

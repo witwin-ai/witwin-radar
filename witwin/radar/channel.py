@@ -46,7 +46,7 @@ published as a host int, so nothing here calls ``.item()``, ``.cpu()``,
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 import torch
@@ -254,6 +254,29 @@ def compile_scene(scene_or_snapshot: object, *, reference_frequency_hz: float) -
     compiled = channel_compile(scene_or_snapshot, reference_frequency_hz=reference_frequency_hz)
     require_reference_frequency(compiled, reference_frequency_hz)
     return compiled
+
+
+def scene_leaves(compiled_scene: object) -> list[tuple[str, torch.Tensor]]:
+    """Every tensor of a compiled scene a caller can mark: structure vertices and material tables.
+
+    Channel's compile passes a Core leaf through untouched, so a marked mesh
+    vertex, rigid-motion or deformation parameter reaches the compiled
+    structure's vertices and a marked material field reaches the material
+    table. Host attribute reads only: no device work and no synchronization.
+    """
+
+    named: list[tuple[str, torch.Tensor]] = []
+    for index, structure in enumerate(getattr(compiled_scene, "structures", ())):
+        vertices = getattr(structure, "vertices", None)
+        if isinstance(vertices, torch.Tensor):
+            named.append((f"structures[{index}].vertices", vertices))
+    materials = getattr(compiled_scene, "materials", None)
+    if materials is not None and is_dataclass(materials):
+        for entry in fields(materials):
+            value = getattr(materials, entry.name)
+            if isinstance(value, torch.Tensor):
+                named.append((f"materials.{entry.name}", value))
+    return named
 
 
 def consumer_capabilities() -> dict[str, object]:
@@ -835,4 +858,10 @@ def _per_slot_count(name: str, stacked: int, slot_count: int) -> int:
     return stacked // slot_count
 
 
-__all__ = ["ChannelPropagationAdapter", "FrozenLegTopology", "compile_scene", "require_reference_frequency"]
+__all__ = [
+    "ChannelPropagationAdapter",
+    "FrozenLegTopology",
+    "compile_scene",
+    "require_reference_frequency",
+    "scene_leaves",
+]
