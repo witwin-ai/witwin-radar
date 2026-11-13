@@ -60,8 +60,9 @@ class AdaptiveTable:
     evaluated itself appears as K copies of itself with the first weight one,
     the same exact answer on a rectangular table without a degenerate basis.
 
-    ``starts[i]`` is where evaluated observation ``i``'s rows begin in
-    ``delays``; ``bounds`` says where each sensor pair's block begins inside
+    ``delays`` is the float64 round-trip delay [s] (R-ADR-040), so the
+    carrier transport between nodes is exact. ``starts[i]`` is where evaluated
+    observation ``i``'s rows begin in ``delays``; ``bounds`` says where each sensor pair's block begins inside
     one such observation and holds ONE ROW PER EVALUATED OBSERVATION, reached
     through ``rank[i]``. Both are indexed by a node, never by the observation
     being interpolated, because only an evaluated observation owns rows.
@@ -351,6 +352,9 @@ class _Controller:
         self.max_evaluations = int(motion.max_evaluations)
         self.batch_observations = int(motion.batch_observations)
         self.node_count = int(motion.nodes)
+        #: Relative resolution of the delays the error test compares, set by
+        #: each refinement round from the batches it reads.
+        self.delay_resolution = 2.0**-23
         self.cache: dict[int, ProbeRecord] = {}
         self.pair_tables: dict[int, list[int]] = {}
         self.partitions: list[tuple[int, int, list[int]]] = []
@@ -463,7 +467,7 @@ class _Controller:
         tolerance measured with one rule and spent by another bounds nothing.
         """
 
-        from .paths import interpolate_path_rows
+        from .paths import float64_delay, interpolate_path_rows
 
         cache, times = self.cache, self.times
         tested = {
@@ -488,20 +492,31 @@ class _Controller:
             np.asarray([[times[index] for index in group] for *_, group in queries]),
         )
         device = node_paths[0][0].total_delay_s.device
+        # Delays are compared in float64 (R-ADR-040): a float32 delay is
+        # quantized to 2 pi f_c ulp32(tau) of carrier phase, which exceeds the
+        # default tolerance beyond about 70 m and would make acceptance a
+        # matter of rounding luck.
         delay, transfer = interpolate_path_rows(
-            [torch.cat([value.total_delay_s for value in column]) for column in node_paths],
+            [torch.cat([float64_delay(value) for value in column]) for column in node_paths],
             [torch.cat([value.complex_transfer_ref for value in column]) for column in node_paths],
             torch.as_tensor(np.repeat(basis, counts, axis=0), device=device),
             self.carrier_hz,
+            float64_delay=True,
         )
         observed = torch.cat([value.complex_transfer_ref for value in actual])
+        # Relative resolution of the compared delays: the float32 pair of a
+        # composed batch carries tau to ~2^-46 tau; a bare float32 delay to its
+        # ulp, at most 2^-23 tau.
+        self.delay_resolution = (
+            2.0**-46 if all(value.total_delay_residual_s is not None for value in actual) else 2.0**-23
+        )
         # One synchronization per refinement round. These detached columns
         # drive host decisions only; production rows retain their AD tape.
         columns = (
             torch.stack(
                 [
-                    delay.double(),
-                    torch.cat([value.total_delay_s for value in actual]).double(),
+                    delay,
+                    torch.cat([float64_delay(value) for value in actual]),
                     transfer.real.double(),
                     transfer.imag.double(),
                     observed.real.double(),
@@ -547,16 +562,24 @@ class _Controller:
                 + (spec.num_samples - 1) * spec.sample_period_s
                 + float(np.max(np.maximum(np.abs(predicted_delay[live]), np.abs(observed_delay[live])), initial=0))
             )
+            # The quantization allowance: what the representation alone can
+            # contribute. Two delays at the batch's delay resolution, and two
+            # complex64 phases (each within 2^-23.5 rad of exact).
+            delay_allowance = (
+                2 * np.pi * carrier_hz * 2.0 * self.delay_resolution * float(np.max(np.abs(observed_delay[live])))
+            )
+            phase_allowance = 2.0**-22
             phase_error = max(
                 phase_error,
-                float(np.max(2 * np.pi * carrier_hz * np.abs(d[live]), initial=0)),
+                float(np.max(2 * np.pi * carrier_hz * np.abs(d[live]), initial=0)) - delay_allowance,
                 float(
                     np.max(
                         np.abs(np.angle(predicted[phase_live] * observed[phase_live].conj()))
                         + 2 * np.pi * waveform_frequency * np.abs(d[phase_live]),
                         initial=0,
                     )
-                ),
+                )
+                - phase_allowance,
             )
             amplitude_error = max(
                 amplitude_error,
@@ -609,11 +632,13 @@ class _Controller:
         counts and empty sensor pairs remain explicit.
         """
 
+        from .paths import float64_delay
+
         times, cache, spec, node_count = self.times, self.cache, self.spec, self.node_count
         ordered = sorted(cache)
         records = [cache[index].composed for index in ordered]
         device = records[0].total_delay_s.device
-        delays = torch.cat([record.total_delay_s for record in records])
+        delays = torch.cat([float64_delay(record) for record in records])
         transfers = torch.cat([record.complex_transfer_ref for record in records])
         validity = torch.cat([_validity(record) for record in records])
         starts = np.zeros(len(times), dtype=np.int64)

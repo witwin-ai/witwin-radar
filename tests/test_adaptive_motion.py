@@ -306,6 +306,7 @@ def test_short_lived_topology_event_is_refined_without_blending_path_identities(
                 complex_transfer_ref=torch.ones(count, device="cuda", dtype=torch.complex64),
                 row_valid=torch.ones(count, device="cuda", dtype=torch.bool),
                 pair_offsets=torch.tensor([0, count], device="cuda", dtype=torch.int64),
+                total_delay_residual_s=None,
             )
             records.append(
                 SimpleNamespace(
