@@ -365,7 +365,12 @@ class _Backprojection(torch.autograd.Function):
         batch = int(samples.shape[0])
         image = torch.empty((batch, groups, int(pixels.shape[0])), dtype=samples.dtype, device=samples.device)
         _ops().backprojection_forward(
-            torch.view_as_real(samples.resolve_conj().contiguous()), tx, rx, pixels, torch.view_as_real(image), groups,
+            torch.view_as_real(samples.resolve_conj().contiguous()),
+            tx,
+            rx,
+            pixels,
+            torch.view_as_real(image),
+            groups,
             *law,
         )
         return image
@@ -383,8 +388,13 @@ class _Backprojection(torch.autograd.Function):
         tx, rx, pixels = ctx.saved_tensors
         grad = torch.zeros(ctx.shape, dtype=ctx.dtype, device=grad_image.device)
         _ops().backprojection_backward(
-            torch.view_as_real(grad_image.resolve_conj().contiguous()), tx, rx, pixels, torch.view_as_real(grad),
-            ctx.groups, *ctx.law,
+            torch.view_as_real(grad_image.resolve_conj().contiguous()),
+            tx,
+            rx,
+            pixels,
+            torch.view_as_real(grad),
+            ctx.groups,
+            *ctx.law,
         )
         return grad, None, None, None, None, None
 
@@ -393,8 +403,13 @@ class _Backprojection(torch.autograd.Function):
         tx, rx, pixels = ctx.saved_tensors
         out = torch.empty((ctx.shape[0], ctx.groups, int(pixels.shape[0])), dtype=ctx.dtype, device=tangent.device)
         _ops().backprojection_jvp(
-            torch.view_as_real(tangent.resolve_conj().contiguous()), tx, rx, pixels, torch.view_as_real(out),
-            ctx.groups, *ctx.law,
+            torch.view_as_real(tangent.resolve_conj().contiguous()),
+            tx,
+            rx,
+            pixels,
+            torch.view_as_real(out),
+            ctx.groups,
+            *ctx.law,
         )
         return out
 
@@ -514,4 +529,3 @@ def element_responses(profile: RangeProfile, aperture: Aperture, point_m: torch.
     point = torch.as_tensor(point_m, dtype=torch.float64).reshape(1, 3)
     response = _backproject(samples, aperture, point, profile.axes, groups=aperture.element_count)
     return response.reshape(*profile.data.shape[:-2])
-

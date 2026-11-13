@@ -112,9 +112,15 @@ def test_a_round_trip_delay_bias_is_measured_and_moves_the_range_axis():
     assert before < 0.5 and after >= 0.97, (before, after)
     with pytest.raises(RuntimeError, match="not differentiable"):
         estimate_range_calibration(
-            type(profile)(data=profile.data.clone().requires_grad_(True), axes=profile.axes, window=profile.window,
-                          window_coherent_gain=profile.window_coherent_gain),
-            aperture, reflector, search_m=0.15,
+            type(profile)(
+                data=profile.data.clone().requires_grad_(True),
+                axes=profile.axes,
+                window=profile.window,
+                window_coherent_gain=profile.window_coherent_gain,
+            ),
+            aperture,
+            reflector,
+            search_m=0.15,
         )
     with pytest.raises(ValueError, match="runs off the range axis"):
         estimate_range_calibration(profile, aperture, reflector, search_m=100.0)
@@ -135,7 +141,9 @@ def test_leakage_and_static_clutter_cancel_against_a_reference_frame():
     # The same on range profiles, with a leading batch of two frames, against an averaged reference.
     profiles = _profile(frame)
     batch = type(profiles)(
-        data=torch.stack((profiles.data, profiles.data)), axes=profiles.axes, window=profiles.window,
+        data=torch.stack((profiles.data, profiles.data)),
+        axes=profiles.axes,
+        window=profiles.window,
         window_coherent_gain=profiles.window_coherent_gain,
     )
     background = average_background([_profile(reference), _profile(reference)])
@@ -207,8 +215,9 @@ def test_a_simulated_array_with_port_errors_and_leakage_is_calibrated_to_the_ide
 
     def frame(radar, positions):
         stacked = torch.stack(positions).to(torch.float32).cuda()
-        result = radar.simulate(empty_world(), PointTargets(positions=stacked, rcs=1.0), times=(0.0,), los=True,
-                                reflections=0)
+        result = radar.simulate(
+            empty_world(), PointTargets(positions=stacked, rcs=1.0), times=(0.0,), los=True, reflections=0
+        )
         return result.frame(0).processing_cube()
 
     def profile(cube):

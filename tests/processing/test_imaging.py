@@ -326,7 +326,9 @@ def test_the_image_keeps_a_leading_batch_and_differentiates_through_the_cpu_rout
     cube = _fmcw_cube(radar, [(0.8 * forward, 1.0)])
     profile = _profile(cube)
     stacked = type(profile)(
-        data=torch.stack((profile.data, 2 * profile.data)), axes=profile.axes, window=profile.window,
+        data=torch.stack((profile.data, 2 * profile.data)),
+        axes=profile.axes,
+        window=profile.window,
         window_coherent_gain=profile.window_coherent_gain,
     )
     aperture = Aperture.from_radar(radar)
@@ -387,7 +389,9 @@ def _random_problem(dtype, seed=0):
     generator = torch.Generator().manual_seed(seed)
     noise = torch.randn(profile.data.shape, dtype=torch.complex128, generator=generator) * 0.1
     profile = type(profile)(
-        data=(profile.data + noise).to(dtype), axes=profile.axes, window=profile.window,
+        data=(profile.data + noise).to(dtype),
+        axes=profile.axes,
+        window=profile.window,
         window_coherent_gain=profile.window_coherent_gain,
     )
     aperture = Aperture.from_radar(radar, velocity_mps=4.0 * right)
@@ -398,7 +402,9 @@ def _random_problem(dtype, seed=0):
 
 def _on_cuda(profile):
     return type(profile)(
-        data=profile.data.cuda(), axes=profile.axes, window=profile.window,
+        data=profile.data.cuda(),
+        axes=profile.axes,
+        window=profile.window,
         window_coherent_gain=profile.window_coherent_gain,
     )
 
@@ -426,8 +432,13 @@ def test_the_native_vjp_and_jvp_are_the_cpu_routes_derivatives_and_match_finite_
     tangent = torch.randn(profile.data.shape, dtype=torch.complex128, generator=generator)
 
     def image(data):
-        return backproject(type(profile)(data=data, axes=profile.axes, window=profile.window,
-                                         window_coherent_gain=profile.window_coherent_gain), aperture, pixels).data
+        return backproject(
+            type(profile)(
+                data=data, axes=profile.axes, window=profile.window, window_coherent_gain=profile.window_coherent_gain
+            ),
+            aperture,
+            pixels,
+        ).data
 
     host_samples = profile.data.clone().requires_grad_(True)
     (host_grad,) = torch.autograd.grad(image(host_samples), host_samples, cotangent)
@@ -450,7 +461,11 @@ def test_the_native_vjp_and_jvp_are_the_cpu_routes_derivatives_and_match_finite_
 
     samples = profile.data.cuda().reshape(1, 6, 6, -1).requires_grad_(True)
     out = _Backprojection.apply(
-        samples, aperture.tx_m.cuda(), aperture.rx_m.cuda(), pixels.reshape(-1, 3).cuda(), 1,
+        samples,
+        aperture.tx_m.cuda(),
+        aperture.rx_m.cuda(),
+        pixels.reshape(-1, 3).cuda(),
+        1,
         (0.0, profile.axes.range_bin_m, 1 / C0, aperture.carrier_hz, aperture.curvature_hz_per_s, 1.0, 1 / 36),
     )
     with pytest.raises(NotImplementedError, match="first-order only"):
@@ -514,7 +529,7 @@ def _peak_level(profile, radar, point, aperture) -> float:
 
     half_path = 0.5 * ((point - aperture.tx_m).norm(dim=-1) + (point - aperture.rx_m).norm(dim=-1))
     centre = int(round(float(half_path.mean()) / profile.axes.range_bin_m))
-    window = profile.data[..., centre - 3 * PAD : centre + 3 * PAD + 1].abs()
+    window = profile.data[..., centre - PAD : centre + PAD + 1].abs()
     return float(window.amax(dim=-1).mean())
 
 
@@ -608,7 +623,9 @@ def test_a_simulated_turning_target_images_in_its_body_frame():
     cross_resolution = radar.wavelength / (2.0 * turn)
     lowest = spec.reference_frequency_hz + spec.slope_hz_per_s * spec.t_start_s
     range_resolution = C0 / (2.0 * (_bandwidth(radar) + lowest * (1.0 - math.cos(0.5 * turn))))
-    width_r, width_x = _check_focus(profile, radar, aperture, center, range_resolution, cross_resolution, right, forward)
+    width_r, width_x = _check_focus(
+        profile, radar, aperture, center, range_resolution, cross_resolution, right, forward
+    )
     _check_focus(profile, radar, aperture, body[1], range_resolution, 1.3 * cross_resolution, right, forward)
     assert width_x == pytest.approx(0.886 * cross_resolution, rel=0.06)
     assert width_r == pytest.approx(0.886 * range_resolution, rel=0.06)

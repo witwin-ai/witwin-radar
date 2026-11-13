@@ -182,7 +182,8 @@ def estimate_range_calibration(
     ranges = int(samples.shape[-1])
     point = torch.as_tensor(reflector_m, dtype=torch.float64).reshape(1, 1, 3)
     half_path = 0.5 * (
-        torch.linalg.vector_norm(point - aperture.tx_m, dim=-1) + torch.linalg.vector_norm(point - aperture.rx_m, dim=-1)
+        torch.linalg.vector_norm(point - aperture.tx_m, dim=-1)
+        + torch.linalg.vector_norm(point - aperture.rx_m, dim=-1)
     )  # [C, V]
     expected = ((half_path - float(axes.range_origin_m)) / bin_m).transpose(0, 1).to(samples.device)  # [V, C]
     centre = torch.round(expected).to(torch.int64)
