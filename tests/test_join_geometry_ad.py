@@ -328,3 +328,186 @@ def test_without_launch_polarization_the_factor_is_one():
         ]
         expected.append(float(factors[0] * factors[1]))
     assert torch.allclose(ratio.double(), torch.tensor(expected, dtype=torch.float64), rtol=1e-5, atol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# The site-less leg: the join's fourth row family (R-ADR-041)
+# ---------------------------------------------------------------------------
+
+RECEIVE_POLARIZATION = (0.1, 0.9, 0.3)
+SITE_LESS = ("field", "source", "site", "points", "length")
+
+
+def _direct_case(seed: int = 21):
+    """A composer with a site-less leg and the three legs' states and leaves."""
+
+    composer = TwoWayComposer.freeze(
+        fx.frozen_leg(fx.leg_rows(SOURCES, SITES, COMPONENTS), device="cuda"),
+        fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, COMPONENTS), device="cuda"),
+        torch.tensor(SITES, dtype=torch.int64, device="cuda"),
+        radar_source_ids=SOURCES,
+        radar_sink_ids=SINKS,
+        reference_frequency_hz=FREQUENCY_HZ,
+        direct=fx.frozen_leg(fx.leg_rows(SOURCES, SINKS, COMPONENTS), device="cuda"),
+    )
+    states = [
+        _leg_state(composer.inbound_row_count, seed=seed, polarization=POLARIZATION[0]),
+        _leg_state(composer.outbound_row_count, seed=seed + 1, polarization=POLARIZATION[1]),
+        _leg_state(composer.direct_row_count, seed=seed + 2, polarization=POLARIZATION[0]),
+    ]
+    generator = torch.Generator().manual_seed(seed + 3)
+    receive = torch.tensor(RECEIVE_POLARIZATION, dtype=torch.float64)
+    states[2]["sink_polarization"] = (
+        receive + 0.1 * torch.rand(composer.direct_row_count, 3, generator=generator)
+    ).float()
+    leaves = [{name: _cuda_leaf(value) for name, value in state.items() if name not in CONSTANT} for state in states]
+    s_leaf = _cuda_leaf(torch.complex(torch.rand(composer.site_count), torch.rand(composer.site_count)).cfloat())
+    return composer, states, leaves, s_leaf
+
+
+def _direct_batch(state, leaves):
+    batch = _batch(state, leaves)
+    from dataclasses import replace
+
+    return replace(batch, sink_polarization=state["sink_polarization"].to("cuda"))
+
+
+def _composed(composer, states, leaves, response):
+    return composer.compose(
+        _batch(states[0], leaves[0]), _batch(states[1], leaves[1]), response, _direct_batch(states[2], leaves[2])
+    )
+
+
+def _direct_reference(composer, states, leaves, s_leaf):
+    """The float64 reference of every composed row, site rows and site-less rows, in composed order."""
+
+    from reference.two_way_torch import last_segment_factor_f64, site_less_reference
+
+    copies = [{name: value.detach().cpu().to(torch.complex128 if value.is_complex() else torch.float64)
+               for name, value in leg.items()} for leg in leaves]  # fmt: skip
+    for leg in copies:
+        for value in leg.values():
+            value.requires_grad_(True)
+    s64 = s_leaf.detach().cpu().to(torch.complex128).requires_grad_(True)
+    depth = [state["depth"] for state in states]
+    lengths = [
+        leg_length_f64(leg["source"], leg["points"], d, leg["site"]) for leg, d in zip(copies, depth, strict=True)
+    ]
+    first = [
+        element_factor_f64(leg["source"], leg["points"], d, leg["site"], state["polarization"].double())
+        for leg, d, state in zip(copies, depth, states, strict=True)
+    ]
+    k64 = 2.0 * math.pi * FREQUENCY_HZ / SPEED_OF_LIGHT_M_PER_S
+    k32 = channel_wave_number(FREQUENCY_HZ)
+    tau_site, value_site = geometric_join_reference(
+        field_in=copies[0]["field"],
+        field_out=copies[1]["field"],
+        length_in=lengths[0],
+        length_out=lengths[1],
+        channel_length_in=copies[0]["length"],
+        channel_length_out=copies[1]["length"],
+        factor_in=first[0],
+        factor_out=first[1],
+        matrix=s64,
+        k_in=None,
+        k_out=None,
+        up=None,
+        idx_in=composer.inbound_row.cpu(),
+        idx_out=composer.outbound_row.cpu(),
+        idx_s=composer.response_slot.cpu(),
+        k64=k64,
+        k32=k32,
+        speed_of_light=SPEED_OF_LIGHT_M_PER_S,
+    )
+    sink_polarization = states[2]["sink_polarization"].double()
+    tau_direct, value_direct = site_less_reference(
+        field=copies[2]["field"],
+        length=lengths[2],
+        channel_length=copies[2]["length"],
+        factor_source=first[2],
+        factor_sink=last_segment_factor_f64(
+            copies[2]["source"], copies[2]["points"], depth[2], copies[2]["site"], sink_polarization
+        ),
+        sink_polarization=sink_polarization,
+        k64=k64,
+        k32=k32,
+        speed_of_light=SPEED_OF_LIGHT_M_PER_S,
+    )
+    merge = composer.merge.cpu()
+    tau = torch.cat((tau_site, tau_direct)).index_select(0, merge)
+    value = torch.cat((value_site, value_direct)).index_select(0, merge)
+    return tau, value, copies, s64
+
+
+def test_site_less_rows_are_composed_in_the_same_launch_at_their_frozen_positions():
+    composer, states, leaves, s_leaf = _direct_case()
+    assert composer.direct_row_count > 0 and composer.merge is not None
+    composed = _composed(composer, states, leaves, fx_response(s_leaf))
+    tau, value, _, _ = _direct_reference(composer, states, leaves, s_leaf)
+    produced_tau = composed.total_delay_s.double().cpu() + composed.total_delay_residual_s.double().cpu()
+    assert float(((produced_tau - tau.detach()) / tau.detach()).abs().max()) < 1e-13
+    produced = composed.complex_transfer_ref.cpu().to(torch.complex128)
+    assert float((produced - value.detach()).abs().max()) < 2e-6 * float(value.detach().abs().max())
+
+
+def test_site_less_rows_match_float64_autograd_in_reverse_mode():
+    composer, states, leaves, s_leaf = _direct_case()
+    composed = _composed(composer, states, leaves, fx_response(s_leaf))
+    w = _weights(composer.path_count)
+    loss = (
+        (w[0].cuda().float() * composed.complex_transfer_ref.real).sum()
+        + (w[1].cuda().float() * composed.complex_transfer_ref.imag).sum()
+        + (w[2].cuda().float() * composed.total_delay_s).sum() * 1e9
+    )
+    loss.backward()
+    tau, value, copies, _ = _direct_reference(composer, states, leaves, s_leaf)
+    ((w[0] * value.real).sum() + (w[1] * value.imag).sum() + (w[2] * tau).sum() * 1e9).backward()
+    for leg, copy in zip(leaves, copies, strict=True):
+        for name in SITE_LESS:
+            expected = copy[name].grad
+            scale = float(expected.abs().max())
+            assert scale > 0.0, name
+            produced = leg[name].grad.cpu().to(expected.dtype)
+            assert float((produced - expected).abs().max()) < 2e-4 * scale, name
+
+
+def test_site_less_rows_satisfy_the_adjoint_identity_in_forward_mode():
+    import torch.autograd.forward_ad as forward_ad
+
+    composer, states, leaves, s_leaf = _direct_case(seed=33)
+    generator = torch.Generator().manual_seed(5)
+
+    def tangent(value):
+        if value.is_complex():
+            pair = torch.rand(2, *value.shape, generator=generator) - 0.5
+            return torch.complex(pair[0], pair[1]).to(value.device, value.dtype)
+        return (torch.rand(value.shape, generator=generator, dtype=torch.float64) - 0.5).to(value.device, value.dtype)
+
+    tangents = [{name: tangent(value) for name, value in leg.items()} for leg in leaves]
+    w = _weights(composer.path_count).cuda()
+    with forward_ad.dual_level():
+        duals = [
+            {name: forward_ad.make_dual(value.detach(), tangents[index][name]) for name, value in leg.items()}
+            for index, leg in enumerate(leaves)
+        ]
+        composed = _composed(composer, states, duals, fx_response(s_leaf.detach()))
+        out = forward_ad.unpack_dual(composed.complex_transfer_ref).tangent.to(torch.complex128)
+        out_tau = forward_ad.unpack_dual(composed.total_delay_s).tangent.double()
+    forward_value = float((w[0] * out.real).sum() + (w[1] * out.imag).sum() + (w[2] * out_tau).sum() * 1e9)
+    composed = _composed(composer, states, leaves, fx_response(s_leaf.detach()))
+    (
+        (w[0].float() * composed.complex_transfer_ref.real).sum()
+        + (w[1].float() * composed.complex_transfer_ref.imag).sum()
+        + (w[2].float() * composed.total_delay_s).sum() * 1e9
+    ).backward()
+    reverse_value = 0.0
+    for leg, tangent_set in zip(leaves, tangents, strict=True):
+        for name, value in leg.items():
+            if value.grad is None:
+                continue
+            t = tangent_set[name]
+            if value.is_complex():
+                reverse_value += float((value.grad.real.double() * t.real + value.grad.imag.double() * t.imag).sum())
+            else:
+                reverse_value += float((value.grad.double() * t.double()).sum())
+    assert abs(forward_value - reverse_value) <= 1e-4 * max(abs(forward_value), abs(reverse_value))

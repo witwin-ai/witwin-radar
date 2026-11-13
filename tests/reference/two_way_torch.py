@@ -158,10 +158,52 @@ def geometric_join_reference(
     return l64 / speed_of_light, value
 
 
+def last_segment_factor_f64(source, points, depth, sink, p):
+    """``1 / |P_perp(d) p|`` with ``d`` the unit LAST-segment direction, into the sink."""
+
+    last = torch.stack(
+        [
+            points[row, int(depth[row]) - 1] if int(depth[row]) > 0 else source[row]
+            for row in range(int(source.shape[0]))
+        ]
+    )
+    d = sink - last
+    d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True)
+    p = p.expand_as(d)
+    along = (d * p).sum(-1)
+    return 1.0 / torch.sqrt((p * p).sum(-1) - along * along)
+
+
+def site_less_reference(
+    *,
+    field: torch.Tensor,
+    length: torch.Tensor,
+    channel_length: torch.Tensor,
+    factor_source: torch.Tensor,
+    factor_sink: torch.Tensor,
+    sink_polarization: torch.Tensor,
+    k64: float,
+    k32: float,
+    speed_of_light: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(tau, V)`` of a site-less row: ``V = a_t a_r (p_r . E) exp(j psi)``, ``tau = L64 / c``.
+
+    The transmitter's field at the receiver read along the receiver's
+    polarization (no conjugate), with the transmit element's factor on the
+    leg's first segment and the receive element's on its last.
+    """
+
+    v0 = (field * sink_polarization).sum(dim=1)
+    psi = -(k64 * length - k32 * channel_length)
+    return length / speed_of_light, v0 * factor_source * factor_sink * torch.exp(1j * psi)
+
+
 __all__ = [
     "PerSiteResponse",
     "element_factor_f64",
     "geometric_join_reference",
+    "last_segment_factor_f64",
+    "site_less_reference",
     "join_reference",
     "leg_length_f64",
     "site_basis_f64",

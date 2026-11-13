@@ -99,7 +99,8 @@ def leg_batch(
     ``site`` (float32 or float64), ``points`` ``[rows, W, 3]``, ``depth`` and
     ``length`` - which switches the join to the float64 path length; with
     ``polarization`` (``[rows, 3]``, each row's launch polarization) the join
-    also applies the element factor.
+    also applies the element factor. A site-less leg also carries
+    ``sink_polarization``, the receiver's polarization it is read along.
     """
 
     from witwin.radar.propagation import RadarLegBatch
@@ -145,6 +146,7 @@ def _geometry_members(geometry: dict) -> dict:
         "interaction_positions_m": geometry["points"],
         "path_length_m": geometry["length"],
         "source_polarization": geometry.get("polarization"),
+        "sink_polarization": geometry.get("sink_polarization"),
     }
     if site.dtype == torch.float64:
         members["arrival_target_m"] = site.float()
