@@ -38,12 +38,17 @@ claim is checked against an independent oracle in `tests/oracle/` (R-ADR-032). U
 - A propagation input that carries a derivative now needs the `ad_mode` that carries it, and is refused before any
   discovery otherwise: a gradient needs `ad_mode="vjp"`, a forward tangent `ad_mode="jvp"`. This covers target
   positions (a `PointTargets.positions` tensor, a `trajectory`'s output, a `StructureTargets` anchor, a `MeshTargets`
-  structure's vertices) and, when anything beyond line-of-sight rows is requested, a scene's mesh vertices and
-  material fields. Under the default `ad_mode="none"` such a leaf used to come back with no derivative, or with only
+  structure's vertices), Core sensor endpoints read through `SensorEndpointIds` (an antenna position or an endpoint
+  trajectory) and, when anything beyond line-of-sight rows is requested, a scene's mesh vertices and material
+  fields. Under the default `ad_mode="none"` such a leaf used to come back with no derivative, or with only
   the join's and the facet response's part and the propagation legs' part missing; a gradient under `"jvp"` or a
   tangent under `"vjp"` likewise. Migration: pass `ad_mode="vjp"` (or `"jvp"`) when differentiating, or `.detach()`
   the input to simulate without the derivative. Radar-side leaves (cross sections, patterns, power, LNA gain,
   coupling) still differentiate under `"none"`.
+- `PointTargets(positions=..., trajectory=...)` refuses a `positions` tensor that carries a gradient or a tangent, in
+  every `ad_mode`: with a trajectory, `positions` only sets the target count and is never read, so its derivative
+  does not exist (it used to be silently absent). The trajectory's outputs differentiate. Migration: make the
+  tensors the trajectory closes over the leaves and pass `positions=trajectory(0.0).detach()` or host triples.
 - An FMCW ADC window that ends after the chirp period (`adc_start + (samples_per_chirp - 1) / sample_rate >=
   idle + ramp_end`) is refused at construction; it sampled the next chirp. Lengthen `ramp_end` or shorten the window.
 - `Radar(...)` builds its synthesis spec at construction, so array-dependent waveform rules (BPM needs a

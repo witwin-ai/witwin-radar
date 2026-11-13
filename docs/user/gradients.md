@@ -53,7 +53,7 @@ for record, leaves in capabilities()["ad_leaves"].items():
 
 | Record | Leaf | Notes |
 |---|---|---|
-| `PointTargets` | `positions`, `rcs`, `amplitude`, `phase`, and tensors a `trajectory` closes over | positions and trajectories need `ad_mode` |
+| `PointTargets` | `positions`, `rcs`, `amplitude`, `phase`, and tensors a `trajectory` closes over | positions and trajectories need `ad_mode`; beside a `trajectory`, `positions` only sets the count and must not carry a derivative |
 | `Radar` | `position`, `look_at`, `up` | need `ad_mode`, and a world-vector `polarization` |
 | `Radar` | `power` (dBm), `lna_gain` (dB) | 0-dim tensors |
 | `Pattern` | `x_gain`, `y_gain`, `gain_table` (the table values), `gain` (dBi) | float tensors for power, complex for field; angle axes stay host floats |
@@ -301,10 +301,13 @@ for name, attempt in attempts.items():
   `seed`); pattern angle axes. They raise on a tensor that carries a gradient
   or a forward tangent.
 * **A derivative the propagation legs would drop**: a target position,
-  trajectory, `MeshTargets` vertex or radar-pose leaf - and, with reflections,
+  trajectory, `MeshTargets` vertex, radar-pose leaf or Core sensor endpoint
+  (`endpoints=SensorEndpointIds(...)`) - and, with reflections,
   transmission or diffraction, a wall vertex or material leaf - under an
   `ad_mode` that does not carry it (`"none"`, a gradient under `"jvp"`, a
-  tangent under `"vjp"`). Pass the matching mode, or detach the input.
+  tangent under `"vjp"`). Pass the matching mode, or detach the input. A
+  `positions` tensor beside a `trajectory` is never read, so a derivative on
+  it is refused in every mode.
 * **Polarization**: a polarization leaf, an `"up"`/`"right"` polarization with
   a pose leaf, and a `pose=` rotation leaf. Channel treats an endpoint
   polarization as a constant.

@@ -215,10 +215,14 @@ for build in (
 - `Radar.from_dict` refuses a mapping that declares the waveform twice (a `waveform` block next to TI-style FMCW
   keys); a non-FMCW radar is now written as `{"waveform": {"kind": "ofdm", ...}}`.
 - A scatter site on an array element is refused by name.
-- A target position, a `MeshTargets` vertex or (with reflections, transmission or diffraction requested) a scene
-  vertex or material field that carries a gradient or a forward tangent is refused unless the verb's `ad_mode` carries
-  it: `"vjp"` for a gradient, `"jvp"` for a tangent. Under the default `"none"` such an input used to come back with
-  no derivative or a partial one. Pass the mode, or `.detach()` the input.
+- A target position, a `MeshTargets` vertex, a Core sensor endpoint read through `SensorEndpointIds` or (with
+  reflections, transmission or diffraction requested) a scene vertex or material field that carries a gradient or a
+  forward tangent is refused unless the verb's `ad_mode` carries it: `"vjp"` for a gradient, `"jvp"` for a tangent.
+  Under the default `"none"` such an input used to come back with no derivative or a partial one. Pass the mode, or
+  `.detach()` the input.
+- Beside a `trajectory`, `PointTargets.positions` only sets the target count and is never read, so a `positions`
+  tensor carrying a derivative is refused: pass `positions=trajectory(0.0).detach()` and differentiate through the
+  tensors the trajectory closes over.
 
 ### Results
 

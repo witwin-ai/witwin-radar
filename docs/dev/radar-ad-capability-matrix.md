@@ -136,7 +136,10 @@ same rule as the pose rows above. A site position is admitted where it is
 formed: a `PointTargets` tensor when the session's site policy is built, before
 any compile; a trajectory's output, a structure anchor and a mesh target's world
 vertices when the frame resolves them, before the facet operator or any
-discovery. Scene leaves are admitted on each compiled scene, before any
+discovery. Core sensor endpoints read through `SensorEndpointIds` are element
+positions, admitted in `bind_radar_world` each time they are read. A
+`PointTargets.positions` tensor beside a trajectory only sets the count and is
+never read, so a derivative on it is refused in every mode. Scene leaves are admitted on each compiled scene, before any
 discovery, unless the request is line-of-sight rows alone, which read a wall
 only through occlusion. Radar-side leaves (cross section, patterns, power, LNA
 gain, coupling) are unaffected and differentiate under `none`.
@@ -147,6 +150,8 @@ gain, coupling) are unaffected and differentiate under `none`.
 | sites/trajectory | a PointTargets trajectory's output under a mode that does not carry it | both | REF | host-declaration | witwin/radar/policy.py::require_leg_ad_mode | tests/test_site_position_ad_mode.py::test_a_marked_point_target_trajectory_is_refused_before_any_discovery, tests/test_site_position_ad_mode.py::test_every_site_source_refuses_a_derivative_its_mode_does_not_carry | refusal |
 | sites/structure_anchor | a StructureTargets anchor under a mode that does not carry it | both | REF | host-declaration | witwin/radar/policy.py::require_leg_ad_mode | tests/test_site_position_ad_mode.py::test_every_site_source_refuses_a_derivative_its_mode_does_not_carry | refusal |
 | sites/facets | MeshTargets world vertices under a mode that does not carry them | both | REF | host-declaration | witwin/radar/facets.py::FacetSites.resolve | tests/test_site_position_ad_mode.py::test_marked_mesh_target_vertices_are_refused_before_the_facet_operator | refusal |
+| sites/trajectory | a PointTargets.positions leaf beside a trajectory, which only sets the count and is never read | both | REF | host-declaration | witwin/radar/targets.py::PointTargets.__post_init__ | tests/test_site_position_ad_mode.py::test_a_marked_positions_tensor_beside_a_trajectory_is_refused_in_every_mode | refusal |
+| elements/sensor_endpoints | Core endpoint positions read through SensorEndpointIds (antenna position or endpoint trajectory) under a mode that does not carry them | both | REF | host-declaration | witwin/radar/binding.py::bind_radar_world | tests/test_site_position_ad_mode.py::test_marked_core_sensor_endpoints_are_refused_before_any_discovery | refusal |
 | scene/compiled | wall vertices and material tables under a mode that does not carry them, with a non-line-of-sight component | both | REF | host-declaration | witwin/radar/simulation.py::WorldHalf._compile | tests/test_site_position_ad_mode.py::test_marked_wall_vertices_are_refused_before_any_discovery, tests/test_site_position_ad_mode.py::test_a_marked_wall_material_under_none_is_refused_too | refusal |
 
 ## Synthesis, frontend and sensor cells
