@@ -22,7 +22,7 @@ witwin-radar-doctor
   installs on 3.10-3.14, but on 3.14 the extra installs nothing, so scene-driven simulation needs 3.10-3.13.
 - Channel picks its ray-tracing backend when it compiles a scene: OptiX where the driver provides it, otherwise a
   pure-CUDA tracer. `witwin-channel-doctor` reports which one a machine gets.
-- Linux and Windows are supported. Building from source: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- Linux (wheels target `manylinux_2_28_x86_64`) and Windows x86_64 are supported. Building from source: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Quickstart
 

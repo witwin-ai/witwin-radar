@@ -90,7 +90,7 @@ def write_dataset(
     """
 
     if options.get("ad_mode", "none") != "none" or any(e.options.get("ad_mode", "none") != "none" for e in episodes):
-        raise ValueError("a dataset is written without a derivative; grad must be 'none'")
+        raise ValueError("a dataset is written without a derivative; ad_mode must be 'none'")
     names = [episode.name or f"episode_{index:05d}" for index, episode in enumerate(episodes)]
     if len(set(names)) != len(names):
         raise ValueError(f"episode names must be unique, got {names}")
