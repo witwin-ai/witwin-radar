@@ -7,6 +7,7 @@ facade delegates every product to :mod:`witwin.radar.processing`.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import reduce
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from .display import describe_value, summary_repr
 from .propagation import DiscoveryReport
 
 if TYPE_CHECKING:
@@ -104,12 +106,13 @@ class Result:
     rediscovery_reasons: tuple[str | None, ...]
     compile_count: int
     discovery_count: int
-    #: The closing frame's Core ``SceneSnapshot``.
+    #: The closing frame's Core ``SceneSnapshot``. ``None`` on a loaded result:
+    #: the four ``last_*`` members are live world state and are not saved.
     last_snapshot: object
     #: The closing frame's Channel ``CompiledScene``.
     last_compiled_scene: object
-    last_propagation: RadarPropagationLegs
-    last_radar_paths: RadarPathBatch
+    last_propagation: RadarPropagationLegs | None
+    last_radar_paths: RadarPathBatch | None
     #: Every observation instant of every frame, ``float64[observations]``
     #: per frame. An ADC-refreshed frame schedules one per chirp,
     #: transmitter and sample, so this is an array rather than a tuple of
@@ -150,9 +153,48 @@ class Result:
                     "same sequence"
                 )
 
+    def __repr__(self) -> str:
+        return summary_repr(
+            "Result",
+            kind=self.kind,
+            cube=self.cube,
+            axis_names=self.axis_names,
+            output_domain=self.output_domain,
+            motion_sampling=self.motion_sampling,
+            times_s=self.times_s,
+            path_set_complete=self.path_set_complete,
+            motion_sampling_exhaustive=self.motion_sampling_exhaustive,
+        )
+
     @property
     def frame_count(self) -> int:
         return int(self.cube.shape[0])
+
+    def save(self, path: str | os.PathLike[str], *, overwrite: bool = False) -> None:
+        """Write this result to the directory ``path`` (:mod:`witwin.radar.storage` is the format).
+
+        Tensors are saved as plain tensors and everything else as JSON; no
+        Radar, Channel or Core object is pickled. The closing frame's world
+        state and the path events are not saved. A non-empty ``path`` is
+        refused unless ``overwrite`` and it holds a saved result.
+        """
+
+        from .storage import save_result
+
+        save_result(self, path, overwrite=overwrite)
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str], *, device: torch.device | str = "cpu") -> Result:
+        """Read a result :meth:`save` wrote, its tensors on ``device``.
+
+        The loaded result's ``last_*`` members are ``None`` and its ``events``
+        are empty; every other member equals the saved one, the cube and the
+        axes bit for bit.
+        """
+
+        from .storage import load_result_fields
+
+        return cls(**load_result_fields(path, device=device))
 
     @property
     def birth_lag_bound_s(self) -> tuple[float, ...]:
@@ -288,6 +330,12 @@ class Frame:
     #: The rank-3 synthesis view, for a stage that wants the waveform's own
     #: ``(slow, sensor_pair, fast)`` layout.
     synthesis: SynthesisResult
+
+    def __repr__(self) -> str:
+        return (
+            f"Frame(index={self.index}, time_s={describe_value(self.time_s)}, cube={describe_value(self.cube)}, "
+            f"waveform={self.axes.waveform!r}, output_domain={self.axes.output_domain!r})"
+        )
 
     def processing_cube(self) -> ProcessingCube:
         """The cube and its axes as the typed record every stage takes."""

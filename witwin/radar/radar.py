@@ -25,6 +25,7 @@ derivation of the internal block specs those consumers are handed.
 from __future__ import annotations
 
 import cmath
+import dataclasses
 import json
 import math
 import os
@@ -1271,13 +1272,17 @@ class Radar:
 
     @classmethod
     def from_dict(cls, config: Mapping[str, Any], **overrides: Any) -> Radar:
-        """Build from the flat FMCW configuration file format.
+        """Build from the flat configuration format (its JSON Schema is :func:`config_schema`).
 
-        This is the only place vendor units are read: ``slope`` in MHz/us,
-        ``sample_rate`` in kSPS, the three timings in microseconds, ``power`` in
-        dBm, and ``tx_loc``/``rx_loc`` in half wavelengths. Keyword overrides
-        are applied afterwards and use the SI field names, so a caller attaches
-        a receive chain or a pose without editing the mapping.
+        The waveform is either the TI-style FMCW keys - the only place vendor
+        units are read: ``slope`` in MHz/us, ``sample_rate`` in kSPS, the three
+        timings in microseconds - or a ``waveform`` block of the waveform
+        record's SI fields. ``fc`` is in Hz, ``power`` in dBm and
+        ``tx_loc``/``rx_loc`` in ``antenna_unit`` (half wavelengths unless the
+        mapping says ``"m"``); every other radar field is a key of its own
+        name, a receive-chain record as a block of its fields and a complex
+        number as ``{"re": x, "im": y}``. Keyword overrides are applied
+        afterwards and use the SI field names; ``device`` is always a keyword.
         """
 
         return _radar_from_flat_config(config, overrides)
@@ -1286,6 +1291,25 @@ class Radar:
     def from_json(cls, path: str | os.PathLike[str], **overrides: Any) -> Radar:
         with open(path, encoding="utf-8") as handle:
             return cls.from_dict(json.load(handle), **overrides)
+
+    def to_dict(self) -> dict[str, Any]:
+        """This radar as the flat configuration :meth:`from_dict` reads, JSON-ready.
+
+        The waveform is written as the SI ``waveform`` block, because SI values
+        round-trip exactly and vendor units do not, and fields at their default
+        are left out. ``Radar.from_dict(radar.to_dict(), device=radar.device)``
+        equals ``radar``. The device is not written: it is where a radar runs,
+        not what it is. A pose given as a tensor is written as its values.
+        """
+
+        return _radar_to_flat_config(self)
+
+    def to_json(self, path: str | os.PathLike[str]) -> None:
+        """Write :meth:`to_dict` to ``path`` as JSON; :meth:`from_json` reads it back."""
+
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2)
+            handle.write("\n")
 
     # -- pose transforms, shared by every consumer -------------------------
 
@@ -1686,36 +1710,245 @@ _LEAKAGE_REASON = "antenna coupling is a measured board property, not a quantity
 
 _BASEBAND_REASON = "a DC offset is a measured property of the receiver, not a quantity a scene differentiates through"
 
-_FLAT_REQUIRED = (
-    "num_tx",
-    "num_rx",
-    "fc",
+#: The value of the optional ``format`` key :meth:`Radar.to_dict` writes.
+CONFIG_FORMAT = "witwin.radar.config/1"
+
+#: The TI-style FMCW keys, in vendor units: the hand-written way to declare the waveform.
+TI_WAVEFORM_KEYS = (
     "slope",
-    "adc_samples",
-    "adc_start_time",
     "sample_rate",
+    "adc_samples",
+    "chirp_per_frame",
+    "adc_start_time",
     "idle_time",
     "ramp_end_time",
-    "chirp_per_frame",
-    "power",
-    "tx_loc",
-    "rx_loc",
 )
 
-_FLAT_OPTIONAL = ("antenna_pattern", "output_domain")
+_REQUIRED = ("num_tx", "num_rx", "fc", "power", "tx_loc", "rx_loc")
+
+#: Receive-chain and coupling records, each a block of its own field names.
+_RECORD_BLOCKS: dict[str, type] = {
+    "noise": Noise,
+    "agc": Agc,
+    "adc": Adc,
+    "iq": Iq,
+    "compression": Compression,
+    "coupling": Coupling,
+}
+
+#: Radar fields written as plain values (numbers, strings, vectors, complex numbers).
+_PLAIN_FIELDS = (
+    "antenna_unit",
+    "lna_gain",
+    "dc_offset",
+    "impedance",
+    "seed",
+    "position",
+    "look_at",
+    "up",
+    "polarization",
+    "rx_polarization",
+)
+
+#: One row per top-level key: (key, JSON Schema type, unit, meaning). :func:`config_schema` is
+#: generated from it, and the reader refuses any key not here.
+CONFIG_FIELDS: tuple[tuple[str, Any, str, str], ...] = (
+    ("format", "string", "", f"optional format tag; {CONFIG_FORMAT!r} when written by Radar.to_dict"),
+    ("num_tx", "integer", "", "transmit element count; must equal len(tx_loc)"),
+    ("num_rx", "integer", "", "receive element count; must equal len(rx_loc)"),
+    ("fc", "number", "Hz", "carrier (reference frequency)"),
+    ("power", "number", "dBm", "transmit power"),
+    (
+        "tx_loc",
+        "array",
+        "antenna_unit",
+        "transmit element positions, [x, y, z] each, radar-local (right, up, -boresight)",
+    ),
+    ("rx_loc", "array", "antenna_unit", "receive element positions, as tx_loc"),
+    ("antenna_unit", "string", "", "'half_wavelength' (default) or 'm'"),
+    ("slope", "number", "MHz/us", "TI-style FMCW: ramp slope"),
+    ("sample_rate", "number", "ksps", "TI-style FMCW: ADC sample rate"),
+    ("adc_samples", "integer", "", "TI-style FMCW: samples per chirp"),
+    ("chirp_per_frame", "integer", "", "TI-style FMCW: chirps per frame per transmitter"),
+    ("adc_start_time", "number", "us", "TI-style FMCW: ramp start to first ADC sample"),
+    ("idle_time", "number", "us", "TI-style FMCW: idle time between ramps"),
+    ("ramp_end_time", "number", "us", "TI-style FMCW: ramp end time"),
+    ("output_domain", "string", "", "TI-style FMCW: 'spectrum' (default) or 'beat'"),
+    ("waveform", "object", "SI", "{'kind': 'fmcw'|'ofdm'|'pulsed', <the waveform record's fields>}"),
+    ("antenna_pattern", "object", "deg, dBi", "transmit (and default receive) element pattern"),
+    ("rx_antenna_pattern", "object", "deg, dBi", "receive element pattern; absent is antenna_pattern"),
+    ("noise", "object", "SI", "Noise record fields"),
+    ("lna_gain", "number", "dB", "LNA voltage gain"),
+    ("agc", "object", "SI", "Agc record fields"),
+    ("adc", "object", "SI", "Adc record fields"),
+    ("iq", "object", "dB, deg", "Iq record fields"),
+    ("leakage", "object", "dB, s, rad", "Leakage record fields; scalars or [num_tx][num_rx] tables"),
+    ("compression", "object", "dBm, deg", "Compression record fields"),
+    ("dc_offset", ["number", "object", "array"], "V", "one complex value or one per receiver"),
+    ("coupling", "object", "", "Coupling record: tx and/or rx complex matrices"),
+    ("impedance", "number", "ohm", "receive port reference impedance"),
+    ("seed", "integer", "", "receive-chain base seed"),
+    ("position", "array", "m", "radar origin, world frame"),
+    ("look_at", "array", "m", "boresight target point, world frame"),
+    ("up", "array", "", "world up vector completing the pose"),
+    ("polarization", ["string", "array"], "", "'up', 'right' or a world vector"),
+    ("rx_polarization", ["string", "array", "null"], "", "receive polarization; absent is polarization"),
+)
+
+_KNOWN_KEYS = frozenset(row[0] for row in CONFIG_FIELDS)
+
+
+# Value codec: JSON lists and {"re", "im"} objects <-> tuples and complex numbers.
+
+
+def _encode(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.requires_grad:
+            raise ValueError("a configuration value carrying a gradient is scene state, not configuration")
+        return _encode(value.detach().cpu().tolist())
+    if isinstance(value, complex):
+        return {"re": float(value.real), "im": float(value.imag)}
+    if isinstance(value, (tuple, list)):
+        return [_encode(entry) for entry in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float, str)):
+        return value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _record_to_dict(value)
+    raise TypeError(f"{type(value).__name__} has no configuration form")
+
+
+def _decode(value: Any) -> Any:
+    if isinstance(value, Mapping) and set(value) == {"re", "im"}:
+        return complex(float(value["re"]), float(value["im"]))
+    if isinstance(value, list):
+        return tuple(_decode(entry) for entry in value)
+    return value
+
+
+def _record_to_dict(record: Any) -> dict[str, Any]:
+    """Every init field of a frozen record whose value differs from its default."""
+
+    out: dict[str, Any] = {}
+    for entry in dataclasses.fields(record):
+        if not entry.init:
+            continue
+        value = getattr(record, entry.name)
+        if entry.default is not dataclasses.MISSING and value == entry.default:
+            continue
+        out[entry.name] = _encode(value)
+    return out
+
+
+def _record_from_dict(cls: type, block: Any, *, key: str) -> Any:
+    if not isinstance(block, Mapping):
+        raise ValueError(f"{key} must be a mapping of {cls.__name__} fields, got {block!r}")
+    names = {entry.name for entry in dataclasses.fields(cls) if entry.init}
+    unknown = sorted(set(block) - names)
+    if unknown:
+        raise ValueError(f"{key} has unsupported keys: {', '.join(unknown)}; {cls.__name__} has {sorted(names)}")
+    return cls(**{name: _decode(value) for name, value in block.items()})
+
+
+def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
+    out: dict[str, Any] = {"kind": pattern.kind, "x_angles_deg": list(pattern.x_angles)}
+    out["y_angles_deg"] = list(pattern.y_angles)
+    if pattern.kind == "separable":
+        out["x_values"] = _encode(pattern.x_gain)
+        out["y_values"] = _encode(pattern.y_gain)
+    else:
+        out["values"] = _encode(pattern.gain_table)
+    if pattern.quantity != "power":
+        out["quantity"] = pattern.quantity
+    if pattern.gain != 0.0:
+        out["gain"] = float(pattern.gain)
+    return out
+
+
+def _pattern_from_dict(config: Mapping[str, Any]) -> Pattern:
+    """Read an element-pattern block: ``kind``, the angle axes in degrees, the values, ``quantity`` and ``gain``."""
+
+    if not isinstance(config, Mapping):
+        raise ValueError(f"an antenna pattern must be a mapping, got {config!r}")
+    kind = config.get("kind")
+    if kind is None:
+        kind = "map" if "values" in config else "separable"
+    quantity = config.get("quantity", "power")
+    gain = float(config.get("gain", 0.0))
+    is_field = quantity == "field"
+    if quantity not in ("power", "field"):
+        raise ValueError(f"antenna_pattern quantity must be 'power' or 'field', got {quantity!r}")
+    if kind == "separable":
+        build = Pattern.field_separable if is_field else Pattern.separable
+        x_values, y_values = _decode(config["x_values"]), _decode(config["y_values"])
+        return build(config["x_angles_deg"], x_values, config["y_angles_deg"], y_values, gain=gain)
+    if kind == "map":
+        build = Pattern.field_table if is_field else Pattern.table
+        return build(config["x_angles_deg"], config["y_angles_deg"], _decode(config["values"]), gain=gain)
+    raise ValueError(f"antenna_pattern kind must be 'separable' or 'map', got {kind!r}")
+
+
+def _waveform_classes() -> dict[str, type]:
+    return {WAVEFORM_FMCW: Fmcw, WAVEFORM_OFDM: Ofdm, WAVEFORM_PULSED: Pulsed}
+
+
+def _waveform_to_dict(waveform: Any) -> dict[str, Any]:
+    return {"kind": waveform.kind, **_record_to_dict(waveform)}
+
+
+def _waveform_from_dict(block: Any) -> Any:
+    if not isinstance(block, Mapping) or "kind" not in block:
+        raise ValueError(f"waveform must be a mapping with a 'kind' of fmcw, ofdm or pulsed, got {block!r}")
+    classes = _waveform_classes()
+    kind = block["kind"]
+    if kind not in classes:
+        raise ValueError(f"waveform kind must be one of {sorted(classes)}, got {kind!r}")
+    fields = {key: value for key, value in block.items() if key != "kind"}
+    sequence = fields.pop("sequence", None)
+    waveform = _record_from_dict(classes[kind], fields, key=f"waveform ({kind})")
+    if sequence is not None:
+        if kind != "fmcw":
+            raise ValueError("waveform.sequence is a list of FMCW Chirp profiles; only an fmcw waveform has one")
+        chirps = tuple(_record_from_dict(Chirp, entry, key="waveform.sequence[]") for entry in sequence)
+        waveform = dataclasses.replace(waveform, sequence=chirps)
+    return waveform
+
+
+def _ti_waveform(config: Mapping[str, Any]) -> Fmcw:
+    return Fmcw.from_ti(
+        slope_mhz_per_us=_finite("slope", config["slope"]),
+        sample_rate_ksps=_positive("sample_rate", config["sample_rate"]),
+        samples_per_chirp=_positive_int("adc_samples", config["adc_samples"]),
+        chirps_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"]),
+        adc_start_us=_finite("adc_start_time", config["adc_start_time"]),
+        idle_us=_non_negative("idle_time", config["idle_time"]),
+        ramp_end_us=_positive("ramp_end_time", config["ramp_end_time"]),
+        output=str(config.get("output_domain", "spectrum")),
+    )
 
 
 def _radar_from_flat_config(config: Mapping[str, Any], overrides: Mapping[str, Any]) -> Radar:
-    missing = [key for key in _FLAT_REQUIRED if key not in config]
-    if missing:
-        raise ValueError(f"Radar config is missing required keys: {', '.join(missing)}")
-    unknown = sorted(set(config) - set(_FLAT_REQUIRED) - set(_FLAT_OPTIONAL))
+    """Build a radar from the flat configuration; ``overrides`` are SI :class:`Radar` fields applied last."""
+
+    if not isinstance(config, Mapping):
+        raise TypeError(f"a radar configuration is a mapping, got {type(config).__name__}")
+    unknown = sorted(set(config) - _KNOWN_KEYS)
     if unknown:
         raise ValueError(
-            f"Radar config has unsupported keys: {', '.join(unknown)}. The flat mapping is the FMCW file format "
-            f"and accepts only {', '.join(sorted(set(_FLAT_REQUIRED) | set(_FLAT_OPTIONAL)))}; a receive chain, a "
-            "pose and a non-FMCW waveform are keyword overrides on Radar.from_dict."
+            f"Radar config has unsupported keys: {', '.join(unknown)}. The flat configuration accepts "
+            f"{', '.join(sorted(_KNOWN_KEYS))}; see witwin.radar.config.config_schema(). A device is a keyword."
         )
+    ti_keys = [key for key in (*TI_WAVEFORM_KEYS, "output_domain") if key in config]
+    if "waveform" in config and ti_keys:
+        raise ValueError(
+            f"the waveform is declared twice: a 'waveform' block and the TI-style FMCW keys {ti_keys}. "
+            "Give one: the TI-style keys in vendor units, or the waveform block in SI units"
+        )
+    required = _REQUIRED if "waveform" in config else (*_REQUIRED, *TI_WAVEFORM_KEYS)
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise ValueError(f"Radar config is missing required keys: {', '.join(missing)}")
+    if config.get("format", CONFIG_FORMAT) != CONFIG_FORMAT:
+        raise ValueError(f"Radar config format {config['format']!r} is not {CONFIG_FORMAT!r}")
 
     num_tx = _positive_int("num_tx", config["num_tx"])
     num_rx = _positive_int("num_rx", config["num_rx"])
@@ -1726,41 +1959,102 @@ def _radar_from_flat_config(config: Mapping[str, Any], overrides: Mapping[str, A
     if len(rx) != num_rx:
         raise ValueError(f"rx_loc holds {len(rx)} entries but num_rx is {num_rx}")
 
-    waveform = Fmcw.from_ti(
-        slope_mhz_per_us=_finite("slope", config["slope"]),
-        sample_rate_ksps=_positive("sample_rate", config["sample_rate"]),
-        samples_per_chirp=_positive_int("adc_samples", config["adc_samples"]),
-        chirps_per_frame=_positive_int("chirp_per_frame", config["chirp_per_frame"]),
-        adc_start_us=_finite("adc_start_time", config["adc_start_time"]),
-        idle_us=_non_negative("idle_time", config["idle_time"]),
-        ramp_end_us=_positive("ramp_end_time", config["ramp_end_time"]),
-        output=str(config.get("output_domain", "spectrum")),
-    )
     fields: dict[str, Any] = {
         "carrier": _positive("fc", config["fc"]),
-        "waveform": waveform,
+        "waveform": _waveform_from_dict(config["waveform"]) if "waveform" in config else _ti_waveform(config),
         "tx": tx,
         "rx": rx,
         "antenna_unit": "half_wavelength",
         "power": _finite("power", config["power"]),
     }
     if config.get("antenna_pattern") is not None:
-        fields["pattern"] = _pattern_from_mapping(config["antenna_pattern"])
+        fields["pattern"] = _pattern_from_dict(config["antenna_pattern"])
+    if config.get("rx_antenna_pattern") is not None:
+        fields["rx_pattern"] = _pattern_from_dict(config["rx_antenna_pattern"])
+    for key, cls in _RECORD_BLOCKS.items():
+        if config.get(key) is not None:
+            fields[key] = _record_from_dict(cls, config[key], key=key)
+    if config.get("leakage") is not None:
+        fields["leakage"] = _record_from_dict(Leakage, config["leakage"], key="leakage")
+    for key in _PLAIN_FIELDS:
+        if key in config:
+            fields[key] = _decode(config[key])
     fields.update(overrides)
     return Radar(**fields)
 
 
-def _pattern_from_mapping(config: Mapping[str, Any]) -> Pattern:
-    """Read the ``antenna_pattern`` block of the flat file format."""
+def _radar_to_flat_config(radar: Radar) -> dict[str, Any]:
+    """The flat configuration of ``radar``: JSON-ready, SI waveform block, defaults omitted."""
 
-    kind = config.get("kind")
-    if kind is None:
-        kind = "map" if "values" in config else "separable"
-    if kind == "separable":
-        return Pattern.separable(config["x_angles_deg"], config["x_values"], config["y_angles_deg"], config["y_values"])
-    if kind == "map":
-        return Pattern.table(config["x_angles_deg"], config["y_angles_deg"], config["values"])
-    raise ValueError(f"antenna_pattern kind must be 'separable' or 'map', got {kind!r}")
+    defaults = {entry.name: entry for entry in dataclasses.fields(Radar)}
+    out: dict[str, Any] = {
+        "format": CONFIG_FORMAT,
+        "num_tx": radar.num_tx,
+        "num_rx": radar.num_rx,
+        "fc": float(radar.carrier),
+        "power": float(radar.power),
+        "antenna_unit": radar.antenna_unit,
+        "tx_loc": _encode(radar.tx),
+        "rx_loc": _encode(radar.rx),
+        "waveform": _waveform_to_dict(radar.waveform),
+    }
+    if radar.pattern != Pattern.isotropic():
+        out["antenna_pattern"] = _pattern_to_dict(radar.pattern)
+    if radar.rx_pattern is not None:
+        out["rx_antenna_pattern"] = _pattern_to_dict(radar.rx_pattern)
+    for key in (*_RECORD_BLOCKS, "leakage"):
+        record = getattr(radar, key)
+        if record is not None:
+            out[key] = _record_to_dict(record)
+    for key in _PLAIN_FIELDS:
+        value = getattr(radar, key)
+        default = defaults[key].default
+        if key == "antenna_unit" or (default is not dataclasses.MISSING and _same(value, default)):
+            continue
+        out[key] = _encode(value)
+    return out
 
 
-__all__ = ["Chirp", "Fmcw", "Ofdm", "Pulsed", "Radar"]
+def _same(value: Any, default: Any) -> bool:
+    if isinstance(value, torch.Tensor) or isinstance(default, torch.Tensor):
+        return False
+    try:
+        return bool(_encode(value) == _encode(default))
+    except TypeError:
+        return False
+
+
+def config_schema() -> dict[str, Any]:
+    """The JSON Schema (draft 2020-12) of the flat configuration, generated from :data:`CONFIG_FIELDS`.
+
+    The receive-chain and waveform blocks list their record's field names, so a
+    field added to a record appears here without an edit.
+    """
+
+    properties: dict[str, Any] = {}
+    for key, kind, unit, meaning in CONFIG_FIELDS:
+        entry: dict[str, Any] = {"type": kind, "description": meaning + (f" [{unit}]" if unit else "")}
+        cls = Leakage if key == "leakage" else _RECORD_BLOCKS.get(key)
+        if cls is not None:
+            entry["properties"] = {entry.name: {} for entry in dataclasses.fields(cls) if entry.init}
+            entry["additionalProperties"] = False
+        properties[key] = entry
+    waveform_variants = []
+    for kind, cls in _waveform_classes().items():
+        names = {entry.name: {} for entry in dataclasses.fields(cls) if entry.init}
+        names["kind"] = {"const": kind}
+        waveform_variants.append({"properties": names, "required": ["kind"], "additionalProperties": False})
+    properties["waveform"]["oneOf"] = waveform_variants
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": CONFIG_FORMAT,
+        "title": "witwin-radar flat configuration",
+        "type": "object",
+        "properties": properties,
+        "required": list(_REQUIRED),
+        "oneOf": [{"required": ["waveform"]}, {"required": list(TI_WAVEFORM_KEYS)}],
+        "additionalProperties": False,
+    }
+
+
+__all__ = ["Chirp", "Fmcw", "Ofdm", "Pulsed", "Radar", "config_schema"]

@@ -65,6 +65,7 @@ from dataclasses import dataclass, field, replace
 
 import torch
 
+from ..display import compact_repr
 from ..policy import refuse_derivative
 from .range_doppler import RangeDopplerMap, RangeProfile
 from .signal import ProcessingAxes, ProcessingCube, _require_complex, real_dtype_of
@@ -79,6 +80,8 @@ class BeamCube:
     index means nothing without it, and because a detector that reports an angle
     has to read the same grid the former steered with.
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     axes: ProcessingAxes
@@ -119,6 +122,8 @@ class ArrayGeometry:
     declared offsets on the host at construction, so no estimator reads an
     element position back from the device to decide what it may do.
     """
+
+    __repr__ = compact_repr
 
     element_positions_m: torch.Tensor
     num_tx: int
@@ -1096,6 +1101,8 @@ class RangeAngleMap:
     and on a range bin reads ``|C|^2`` times the squared coherent gains.
     Differentiable in the map.
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     axes: ProcessingAxes

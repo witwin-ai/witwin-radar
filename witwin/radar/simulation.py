@@ -41,6 +41,7 @@ from .binding import (
     bind_radar_world,
     with_site_positions,
 )
+from .display import summary_repr
 from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
@@ -2418,11 +2419,43 @@ class Paths:
     _session: Session
     _frames: tuple[FrameTrace, ...]
 
+    def __repr__(self) -> str:
+        return summary_repr(
+            "Paths",
+            kind=self.kind,
+            carrier=self.carrier,
+            frames=self.frame_count,
+            observations=self.observation_count,
+            rows=self.row_count,
+            times=self.times,
+            path_set_complete=self.path_set_complete,
+        )
+
     @property
     def frame_count(self) -> int:
         """Frames these rows cover."""
 
         return len(self._frames)
+
+    def observation_times(self, frame: int = 0) -> np.ndarray:
+        """``float64[observations]``: the instant of each observation :meth:`rows` indexes, s.
+
+        An adaptive frame retains one observation, the one that closed it.
+        """
+
+        return np.asarray([record.time_s for record in _retained(self._frames[frame])], dtype=np.float64)
+
+    def row_identity(self, frame: int = 0, observation: int = -1) -> np.ndarray:
+        """Each composed row's identity, ``int64[rows, 7]`` on the host; no device read.
+
+        Columns: radar source ID, site ID (``NO_SITE`` for a site-less row),
+        radar sink ID, the inbound and outbound legs' Channel component IDs, and
+        the inbound and outbound legs' interaction counts. Row ``i`` is row
+        ``i`` of ``rows(frame, observation)``.
+        """
+
+        record = _retained(self._frames[frame])[observation]
+        return _round_trip(record.epoch_frame.frozen).composer.identity_host
 
     @property
     def birth_lag_bound_s(self) -> tuple[float, ...]:

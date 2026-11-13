@@ -38,6 +38,7 @@ import torch
 import torch.nn.functional as F
 
 from ..cuda import native_ops as _ops
+from ..display import compact_repr
 from ..policy import refuse_derivative
 from .angle import AOA_ROUTES, ArrayGeometry, tdm_compensate
 from .range_doppler import RangeDopplerMap
@@ -60,6 +61,8 @@ class Detections:
     the level it beat is not reproducible, and because the point-cloud stage
     reports an energy relative to it.
     """
+
+    __repr__ = compact_repr
 
     mask: torch.Tensor
     threshold: torch.Tensor
@@ -711,6 +714,8 @@ class PointCloud:
     distance from the radar.
     """
 
+    __repr__ = compact_repr
+
     xyz: torch.Tensor
     velocity_mps: torch.Tensor
     energy: torch.Tensor
@@ -974,6 +979,8 @@ class PointClusters:
     ``velocity_mps`` the mean member radial velocity and ``size`` the member
     count, all indexed by label.
     """
+
+    __repr__ = compact_repr
 
     labels: torch.Tensor
     centroid: torch.Tensor

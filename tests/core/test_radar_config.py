@@ -77,13 +77,18 @@ class TestRadarConfigSchema:
 
         That is the worst shape the swallow had: the one key a caller reaches
         for to choose a waveform, dropped, with a full simulation returned in
-        the wrong waveform. The flat form is the FMCW file format; a non-FMCW
-        radar is a ``waveform=`` keyword override, and this pins that the
-        refusal says so instead of the result implying otherwise.
+        the wrong waveform. A ``waveform`` block declares the waveform in SI
+        units and the TI-style keys declare it in vendor units; a mapping
+        carrying both declares it twice, and a bare kind name declares nothing,
+        so both are refused by name.
         """
 
-        with pytest.raises(ValueError, match="unsupported keys: waveform"):
+        with pytest.raises(ValueError, match="the waveform is declared twice"):
             Radar.from_dict({**STANDARD_CONFIG, "waveform": "ofdm"}, device="cpu")
+        ti_keys = ("slope", "sample_rate", "adc_samples", "chirp_per_frame", "adc_start_time", "idle_time")
+        bare = {key: value for key, value in STANDARD_CONFIG.items() if key not in (*ti_keys, "ramp_end_time")}
+        with pytest.raises(ValueError, match="waveform must be a mapping with a 'kind'"):
+            Radar.from_dict({**bare, "waveform": "ofdm"}, device="cpu")
 
     def test_a_frontend_block_is_refused_instead_of_dropped(self):
         """The receive chain is attached as keyword overrides, not authored here."""
