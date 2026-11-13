@@ -11,12 +11,20 @@
 // carrier=fc and carrier_rate=0. Round-trip delay is never doubled here.
 // Channel owns spreading; Radar owns scattering and sensor weighting.
 //
-// `segment_t_start` (float64 [s], one per segment, or empty) gives each segment
-// its own ADC window start in place of the uniform `t_start`, so segments that
-// are different ADC instants of a refreshed frame share one launch. The phase
-// is the same expression with that start, so a segment's sum is the same value
-// a launch with that uniform start would produce. The start is schedule data
-// and carries no derivative.
+// Three optional float64 tables, each empty for the uniform ramp (R-ADR-047):
+//
+//   slot_table    [num_slots, 4]: per TDM slot (chirp * num_tx + tx) the ramp
+//                 start in the frame [s], slope [Hz/s], start offset f0 [Hz] and
+//                 ADC start [s]: a chirp sequence with per-chirp parameters.
+//   segment_table [num_segments, 3]: per segment the ADC window start [s],
+//                 slope and start offset, overriding the slot's. Segments that
+//                 are different ADC instants of a refreshed frame share one
+//                 launch; a segment's sum is the value a launch with those
+//                 uniform parameters would produce.
+//   chirp_poly    [n]: the transmitted ramp's phase error E(t) = sum_i
+//                 poly[i] t^(i+2) cycles (fmcw_phase.cuh owns it).
+//
+// The tables are schedule and waveform data and carry no derivative.
 //
 // Beat samples are unnormalized coherent sums over the weighted path rows.
 // The model holds weights and delay rate fixed. Curved trajectories, moving
@@ -43,6 +51,45 @@
 
 namespace {
 
+// The optional per-chirp tables a launch reads; null pointers are the uniform ramp.
+struct ChirpTables {
+  const double* slot_table;
+  int num_slots;
+  const double* segment_table;
+  const double* poly;
+  int poly_len;
+};
+
+// The ramp one (chirp, segment) cell sees: slot time, slope, start offset and
+// ADC window start. Without tables it is exactly the uniform expression.
+struct ChirpProfile {
+  double t_slot;
+  double slope;
+  double offset;
+  double window_start;
+};
+
+__device__ __forceinline__ ChirpProfile chirp_profile(
+    const ChirpTables& tables, int chirp, int tx, int num_tx, int segment,
+    double chirp_period_s, double slope, double t_start) {
+  ChirpProfile profile;
+  if (tables.slot_table == nullptr) {
+    profile = {slot_time(chirp, tx, num_tx, chirp_period_s), slope, 0.0, t_start};
+  } else {
+    int64_t slot = static_cast<int64_t>(chirp) * num_tx + tx;
+    slot = slot >= tables.num_slots ? tables.num_slots - 1 : slot;
+    const double* row = tables.slot_table + 4 * slot;
+    profile = {row[0], row[1], row[2], row[3]};
+  }
+  if (tables.segment_table != nullptr) {
+    const double* row = tables.segment_table + 3 * static_cast<int64_t>(segment);
+    profile.window_start = row[0];
+    profile.slope = row[1];
+    profile.offset = row[2];
+  }
+  return profile;
+}
+
 struct BeatPhase {
   float sin_phi;
   float cos_phi;
@@ -65,6 +112,19 @@ __device__ __forceinline__ BeatPhase beat_phase(
   return {sin_phi, cos_phi, terms.d_tau, terms.d_rate};
 }
 
+// The same phase on a profiled chirp (start offset and transmit phase error).
+__device__ __forceinline__ BeatPhase profile_phase(
+    const double tau0, const double rate, const ChirpProfile& profile, const double t_m,
+    const double carrier_hz, const double carrier_rate_hz, const ChirpTables& tables) {
+  const auto terms = fmcw_profile_terms(
+      tau0, rate, profile.t_slot, profile.window_start + t_m, profile.slope, carrier_hz, carrier_rate_hz,
+      profile.offset, tables.poly, tables.poly_len);
+  const double frac = terms.cycles - floor(terms.cycles);
+  float sin_phi, cos_phi;
+  sincosf(static_cast<float>(kTwoPiD * frac), &sin_phi, &cos_phi);
+  return {sin_phi, cos_phi, terms.d_tau, terms.d_rate};
+}
+
 __global__ void fmcw_beat_forward_kernel(
     const float* __restrict__ tau_rt,
     const float* __restrict__ tau_rate,
@@ -72,7 +132,7 @@ __global__ void fmcw_beat_forward_kernel(
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
     const int32_t* __restrict__ segment_tx_index,
-    const double* __restrict__ segment_t_start,
+    const ChirpTables tables,
     float* __restrict__ out_re,
     float* __restrict__ out_im,
     const int num_paths,
@@ -94,21 +154,17 @@ __global__ void fmcw_beat_forward_kernel(
 
   const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
-  const double t_slot = slot_time(
-      chirp,
-      clamped_tx_index(segment_tx_index, segment, num_tx),
-      num_tx,
-      chirp_period_s);
+  const ChirpProfile profile = chirp_profile(
+      tables, chirp, clamped_tx_index(segment_tx_index, segment, num_tx), num_tx, segment, chirp_period_s, slope,
+      t_start);
   const double t_m = static_cast<double>(sample) * sample_period_s;
-  const double window_start = segment_t_start == nullptr ? t_start : segment_t_start[segment];
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
-    const BeatPhase phase = beat_phase(
-        tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, window_start);
+    const BeatPhase phase = profile_phase(tau, rate, profile, t_m, carrier_hz, carrier_rate_hz, tables);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     acc_re += w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -129,7 +185,7 @@ __global__ void fmcw_beat_jvp_kernel(
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
     const int32_t* __restrict__ segment_tx_index,
-    const double* __restrict__ segment_t_start,
+    const ChirpTables tables,
     const float* __restrict__ tan_tau_rt,
     const float* __restrict__ tan_tau_rate,
     const float* __restrict__ tan_weight_re,
@@ -155,21 +211,17 @@ __global__ void fmcw_beat_jvp_kernel(
 
   const SegmentBounds bounds = segment_bounds(path_offsets, segment, num_paths);
 
-  const double t_slot = slot_time(
-      chirp,
-      clamped_tx_index(segment_tx_index, segment, num_tx),
-      num_tx,
-      chirp_period_s);
+  const ChirpProfile profile = chirp_profile(
+      tables, chirp, clamped_tx_index(segment_tx_index, segment, num_tx), num_tx, segment, chirp_period_s, slope,
+      t_start);
   const double t_m = static_cast<double>(sample) * sample_period_s;
-  const double window_start = segment_t_start == nullptr ? t_start : segment_t_start[segment];
 
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double tau = static_cast<double>(tau_rt[k]);
     const double rate = static_cast<double>(tau_rate[k]);
-    const BeatPhase phase = beat_phase(
-        tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, window_start);
+    const BeatPhase phase = profile_phase(tau, rate, profile, t_m, carrier_hz, carrier_rate_hz, tables);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -201,7 +253,7 @@ __global__ void fmcw_beat_backward_kernel(
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_segment,
     const int32_t* __restrict__ segment_tx_index,
-    const double* __restrict__ segment_t_start,
+    const ChirpTables tables,
     const float* __restrict__ grad_out_re,
     const float* __restrict__ grad_out_im,
     float* __restrict__ grad_tau_rt,
@@ -237,7 +289,6 @@ __global__ void fmcw_beat_backward_kernel(
   const float w_im = weight_im[k];
   const int tx_index = clamped_tx_index(
       segment_tx_index, static_cast<int>(segment), num_tx);
-  const double window_start = segment_t_start == nullptr ? t_start : segment_t_start[segment];
 
   double d_tau_rt = 0.0;
   double d_tau_rate = 0.0;
@@ -245,14 +296,14 @@ __global__ void fmcw_beat_backward_kernel(
   double d_w_im = 0.0;
 
   for (int chirp = 0; chirp < num_chirps; ++chirp) {
-    const double t_slot = slot_time(chirp, tx_index, num_tx, chirp_period_s);
+    const ChirpProfile profile = chirp_profile(
+        tables, chirp, tx_index, num_tx, static_cast<int>(segment), chirp_period_s, slope, t_start);
     const double tau = base_tau;
     const int64_t row_base =
         (static_cast<int64_t>(chirp) * num_segments + segment) * num_samples;
     for (int sample = 0; sample < num_samples; ++sample) {
       const double t_m = static_cast<double>(sample) * sample_period_s;
-      const BeatPhase phase = beat_phase(
-          tau, rate, t_slot, t_m, slope, carrier_hz, carrier_rate_hz, window_start);
+      const BeatPhase phase = profile_phase(tau, rate, profile, t_m, carrier_hz, carrier_rate_hz, tables);
       const float g_re = grad_out_re[row_base + sample];
       const float g_im = grad_out_im[row_base + sample];
       const float re = w_re * phase.cos_phi - w_im * phase.sin_phi;
@@ -280,22 +331,45 @@ __global__ void fmcw_beat_backward_kernel(
 
 namespace {
 
-// The optional per-segment window starts: empty means the uniform start.
-const double* segment_starts(const torch::stable::Tensor& starts, int segments, const torch::stable::Tensor& like) {
-  if (starts.numel() == 0) {
-    return nullptr;
+void check_double_table(const torch::stable::Tensor& table, const torch::stable::Tensor& like, const char* name) {
+  STD_TORCH_CHECK(table.is_cuda(), name, " must be a CUDA tensor.");
+  STD_TORCH_CHECK(table.scalar_type() == torch::headeronly::ScalarType::Double, name, " must have dtype torch.float64.");
+  STD_TORCH_CHECK(table.is_contiguous(), name, " must be contiguous.");
+  STD_TORCH_CHECK(table.get_device_index() == like.get_device_index(), name, " must share the paths' device.");
+}
+
+// The three optional tables, validated by shape (never by value: that would be
+// a device read per launch). Empty means the uniform ramp.
+ChirpTables chirp_tables(
+    const torch::stable::Tensor& slot_table,
+    const torch::stable::Tensor& segment_table,
+    const torch::stable::Tensor& chirp_poly,
+    int segments,
+    int slots,
+    const torch::stable::Tensor& like) {
+  ChirpTables tables{nullptr, 0, nullptr, nullptr, 0};
+  check_double_table(slot_table, like, "slot_table");
+  check_double_table(segment_table, like, "segment_table");
+  check_double_table(chirp_poly, like, "chirp_poly");
+  if (slot_table.numel() != 0) {
+    STD_TORCH_CHECK(
+        slot_table.dim() == 2 && slot_table.size(1) == 4 && slot_table.size(0) == slots,
+        "slot_table must be empty or have shape (num_chirps * num_tx, 4).");
+    tables.slot_table = slot_table.const_data_ptr<double>();
+    tables.num_slots = slots;
   }
-  STD_TORCH_CHECK(starts.is_cuda(), "segment_t_start must be a CUDA tensor.");
-  STD_TORCH_CHECK(
-      starts.scalar_type() == torch::headeronly::ScalarType::Double,
-      "segment_t_start must have dtype torch.float64.");
-  STD_TORCH_CHECK(starts.is_contiguous(), "segment_t_start must be contiguous.");
-  STD_TORCH_CHECK(
-      starts.numel() == static_cast<int64_t>(segments),
-      "segment_t_start must be empty or hold one start per segment.");
-  STD_TORCH_CHECK(
-      starts.get_device_index() == like.get_device_index(), "segment_t_start must share the paths' device.");
-  return starts.const_data_ptr<double>();
+  if (segment_table.numel() != 0) {
+    STD_TORCH_CHECK(
+        segment_table.dim() == 2 && segment_table.size(1) == 3 && segment_table.size(0) == segments,
+        "segment_table must be empty or have shape (num_segments, 3).");
+    tables.segment_table = segment_table.const_data_ptr<double>();
+  }
+  if (chirp_poly.numel() != 0) {
+    STD_TORCH_CHECK(chirp_poly.dim() == 1, "chirp_poly must be one-dimensional.");
+    tables.poly = chirp_poly.const_data_ptr<double>();
+    tables.poly_len = checked_int(chirp_poly.numel(), "chirp_poly length");
+  }
+  return tables;
 }
 
 }  // namespace
@@ -307,7 +381,9 @@ void fmcw_beat_forward_cuda(
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
     const torch::stable::Tensor& segment_tx_index,
-    const torch::stable::Tensor& segment_t_start,
+    const torch::stable::Tensor& slot_table,
+    const torch::stable::Tensor& segment_table,
+    const torch::stable::Tensor& chirp_poly,
     torch::stable::Tensor& out_re,
     torch::stable::Tensor& out_im,
     int64_t num_paths,
@@ -351,7 +427,7 @@ void fmcw_beat_forward_cuda(
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
       segment_tx_index.const_data_ptr<int32_t>(),
-      segment_starts(segment_t_start, segments, tau_rt),
+      chirp_tables(slot_table, segment_table, chirp_poly, segments, chirps * transmitters, tau_rt),
       out_re.mutable_data_ptr<float>(),
       out_im.mutable_data_ptr<float>(),
       paths,
@@ -374,7 +450,9 @@ void fmcw_beat_jvp_cuda(
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
     const torch::stable::Tensor& segment_tx_index,
-    const torch::stable::Tensor& segment_t_start,
+    const torch::stable::Tensor& slot_table,
+    const torch::stable::Tensor& segment_table,
+    const torch::stable::Tensor& chirp_poly,
     const torch::stable::Tensor& tan_tau_rt,
     const torch::stable::Tensor& tan_tau_rate,
     const torch::stable::Tensor& tan_weight_re,
@@ -432,7 +510,7 @@ void fmcw_beat_jvp_cuda(
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
       segment_tx_index.const_data_ptr<int32_t>(),
-      segment_starts(segment_t_start, segments, tau_rt),
+      chirp_tables(slot_table, segment_table, chirp_poly, segments, chirps * transmitters, tau_rt),
       tan_tau_rt.const_data_ptr<float>(),
       tan_tau_rate.const_data_ptr<float>(),
       tan_weight_re.const_data_ptr<float>(),
@@ -459,7 +537,9 @@ void fmcw_beat_backward_cuda(
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_segment,
     const torch::stable::Tensor& segment_tx_index,
-    const torch::stable::Tensor& segment_t_start,
+    const torch::stable::Tensor& slot_table,
+    const torch::stable::Tensor& segment_table,
+    const torch::stable::Tensor& chirp_poly,
     const torch::stable::Tensor& grad_out_re,
     const torch::stable::Tensor& grad_out_im,
     torch::stable::Tensor& grad_tau_rt,
@@ -521,7 +601,7 @@ void fmcw_beat_backward_cuda(
       weight_im.const_data_ptr<float>(),
       path_segment.const_data_ptr<int64_t>(),
       segment_tx_index.const_data_ptr<int32_t>(),
-      segment_starts(segment_t_start, segments, tau_rt),
+      chirp_tables(slot_table, segment_table, chirp_poly, segments, chirps * transmitters, tau_rt),
       grad_out_re.const_data_ptr<float>(),
       grad_out_im.const_data_ptr<float>(),
       grad_tau_rt.mutable_data_ptr<float>(),

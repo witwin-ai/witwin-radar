@@ -67,13 +67,17 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // cell is its TDM slot, (chirp * num_tx + segment_tx_index[segment]) *
   // chirp_period_s, not the chirp index. They are kernel ARGUMENTS rather than
   // a second pass, so TDM costs no extra launch. `num_tx = 1` with a zero table
-  // reduces the slot to the chirp index exactly. `segment_t_start` (float64,
-  // empty or one per segment) replaces the uniform ADC window start per
-  // segment, so one launch covers many ADC instants of a refreshed frame.
+  // reduces the slot to the chirp index exactly. Three float64 tables, each
+  // empty for the uniform ramp (R-ADR-047): `slot_table` [slots, 4] gives each
+  // TDM slot its own ramp start, slope, start offset and ADC start (a chirp
+  // sequence); `segment_table` [segments, 3] gives each segment its own ADC
+  // window start, slope and start offset, so one launch covers many ADC
+  // instants of a refreshed frame; `chirp_poly` holds the transmitted ramp's
+  // polynomial phase error.
   m.def(
       "fmcw_beat_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
-      "Tensor segment_t_start, Tensor(a!) out_re, "
+      "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
       "int num_chirps, "
       "int num_samples, float sample_period_s, float chirp_period_s, "
@@ -82,7 +86,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def(
       "fmcw_beat_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
-      "Tensor segment_t_start, Tensor grad_out_re, "
+      "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_samples, "
@@ -91,7 +95,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def(
       "fmcw_beat_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
-      "Tensor segment_t_start, Tensor tan_tau_rt, "
+      "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
       "int num_segments, int num_tx, int num_chirps, int num_samples, "
@@ -147,56 +151,69 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "int weight_columns, float subcarrier_spacing_hz, float symbol_period_s, "
       "float carrier_hz, float carrier_rate_hz) -> ()");
 
-  // Pulsed echo train over the (pulse, fast-time sample) grid. What
-  // this family emits is the matched-filter INPUT: the received complex
-  // baseband pulse train. The matched filter itself is a correlation and lives
-  // in DSP glue, because synthesis owns the received waveform and processing
-  // owns the filter.
-  //
-  // The pulse is evaluated at the exact FRACTIONAL delay from its analytic
-  // form, never snapped to a sample. `pulse_kind` selects between the two
-  // analytic unit-energy shapes - 0 rectangular, 1 linear FM - and
-  // `pulse_amplitude` is 1/sqrt(pulse_width_s), passed in so the unit-ENERGY
-  // normalisation lives on the Python spec rather than inside the kernel. That
-  // normalisation is what makes the matched-filter peak exactly C_rt with no
-  // sample-count factor.
-  //
-  // The train is published in the CHANNEL phasor convention exp(-j k d), like
-  // the OFDM CFR cube and unlike the conjugated FMCW beat cube: there is no
-  // de-chirping here, so there is nothing to conjugate.
-  //
-  // carrier_hz / carrier_rate_hz are the same two carrier homes as in the other
-  // two families and exactly one may be nonzero. Dropping the rate term is
-  // worse here than anywhere else: the envelope carries no carrier, so what
-  // survives is only the LFM's own phase moving with the drifting envelope
-  // position, and for a rectangular pulse or at the pulse's leading edge that
-  // is EXACTLY ZERO - the Doppler disappears completely. See R-ADR-004.
+  // Time-domain OFDM: the received post-prefix samples of a modulated symbol
+  // stream (`symbols`, float32 [table symbols, N, 2]), so intra-symbol motion
+  // produces inter-carrier interference and a long echo inter-symbol
+  // interference. `segment_table` (float64, empty or [segments, 2]: window
+  // start within the symbol s, symbol index) places each segment on its own
+  // instant. The backward writes per-(path, symbol) partial sums the caller
+  // reduces. R-ADR-046.
+  m.def(
+      "ofdm_time_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
+      "Tensor symbols, Tensor segment_table, Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, "
+      "int num_segments, int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
+      "float cyclic_prefix_s, float carrier_hz, float carrier_rate_hz) -> ()");
+  m.def(
+      "ofdm_time_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_segment, "
+      "Tensor symbols, Tensor segment_table, Tensor grad_re, Tensor grad_im, Tensor(a!) partial, int num_paths, "
+      "int num_segments, int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
+      "float cyclic_prefix_s, float carrier_hz, float carrier_rate_hz) -> ()");
+  m.def(
+      "ofdm_time_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
+      "Tensor symbols, Tensor segment_table, Tensor tan_tau_rt, Tensor tan_tau_rate, Tensor tan_weight_re, "
+      "Tensor tan_weight_im, Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, int num_segments, "
+      "int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
+      "float cyclic_prefix_s, float carrier_hz, float carrier_rate_hz) -> ()");
+
+  // Pulsed echo train over the (pulse, fast-time sample) grid: the received
+  // complex baseband, i.e. the matched-filter INPUT, in the CHANNEL phasor
+  // convention. `pulse_kind` is 0 rect, 1 LFM, 2 coded; a coded pulse reads
+  // `chips` (float64 [num_chips, 3]: |a|, arg(a) / 2pi, chip frequency Hz) and
+  // every other kind takes an empty table. `periodic` extends one code period
+  // periodically (a continuous code). `frequency_step_hz` is the stepped
+  // carrier offset of pulse l. `segment_table` (float64, empty or
+  // [num_segments, 2]: gate start s, carrier offset Hz) replaces the uniform
+  // gate start and the stepped offset per segment, so one launch covers many
+  // fast-time instants of a refreshed frame. The two carrier homes follow
+  // R-ADR-004; the coded and stepped families are R-ADR-046.
   m.def(
       "pulsed_echo_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
-      "Tensor(b!) out_im, int num_paths, int num_segments, int num_pulses, "
+      "Tensor weight_im, Tensor path_offsets, Tensor chips, Tensor segment_table, "
+      "Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, int num_segments, int num_pulses, "
       "int num_samples, float sample_period_s, float pri_s, "
       "float range_gate_start_s, int pulse_kind, float pulse_width_s, "
       "float bandwidth_hz, float pulse_amplitude, float carrier_hz, "
-      "float carrier_rate_hz) -> ()");
+      "float carrier_rate_hz, float frequency_step_hz, int periodic) -> ()");
   m.def(
       "pulsed_echo_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
+      "Tensor weight_im, Tensor path_segment, Tensor chips, Tensor segment_table, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
       "int num_segments, int num_pulses, int num_samples, "
       "float sample_period_s, float pri_s, float range_gate_start_s, "
       "int pulse_kind, float pulse_width_s, float bandwidth_hz, "
-      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz) -> ()");
+      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz, "
+      "float frequency_step_hz, int periodic) -> ()");
   m.def(
       "pulsed_echo_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
-      "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
+      "Tensor weight_im, Tensor path_offsets, Tensor chips, Tensor segment_table, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
       "int num_segments, int num_pulses, int num_samples, "
       "float sample_period_s, float pri_s, float range_gate_start_s, "
       "int pulse_kind, float pulse_width_s, float bandwidth_hz, "
-      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz) -> ()");
+      "float pulse_amplitude, float carrier_hz, float carrier_rate_hz, "
+      "float frequency_step_hz, int periodic) -> ()");
 
   // Sensor pattern weighting. Channel already owns spreading, transmit power,
   // reference phase, and polarization projection. These operators therefore
