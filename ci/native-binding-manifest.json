@@ -15,6 +15,7 @@
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
     "witwin/radar/cuda/ofdm_time.cu",
+    "witwin/radar/cuda/path_events.cu",
     "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
@@ -26,7 +27,8 @@
     "dbscan_labels": "Cluster labels are discrete; witwin/radar/processing/detection.py refuses a differentiable point cloud before this operator runs.",
     "frontend_baseband": "The kernel writes the additive DC offset and flicker term; witwin/radar/frontend.py adds it to the signal, so the identity derivative is carried by that addition and the family needs no companion.",
     "frontend_quantize": "The ADC sits below the R-ADR-018 differentiability wall: quantization is a discrete choice, and witwin/radar/frontend.py refuses a differentiable input before this operator runs.",
-    "oscillator_phase": "Oscillator phase (white-FM, flicker-FM and floor regions) is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs."
+    "oscillator_phase": "Oscillator phase (white-FM, flicker-FM and floor regions) is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs.",
+    "path_events": "An event is a discrete change of a row's existence and has no derivative; witwin/radar/events.py passes detached payloads and the log is published as host diagnostics, never into a differentiable result."
   },
   "error_owners": [
     {
@@ -409,6 +411,16 @@
       "python_owner": "witwin/radar/frontend.py",
       "python_callers": [
         "Noise.phase_difference"
+      ]
+    },
+    {
+      "symbol": "path_events_forward",
+      "ad_group": "path_events",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/path_events.cu",
+      "python_owner": "witwin/radar/events.py",
+      "python_callers": [
+        "PathEvents._launch"
       ]
     },
     {
