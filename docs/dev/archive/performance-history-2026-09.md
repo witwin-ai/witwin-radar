@@ -1,10 +1,56 @@
 # Radar performance history, 2026-09-16 to 2026-09-19
 
-> **Historical record.** Moved out of `PERFORMANCE.md` on 2026-11-12. These
+> **Historical record.** Moved out of `PERFORMANCE.md` on 2026-11-12 (the fused CUDA section on 2026-11-13). These
 > sections describe superseded revisions, include tables that were retracted
 > (see "Retraction and corrected measurement"), and name run directories under
 > `output/` that were never committed and no longer exist; they are not current
 > evidence. Current conclusions are in `PERFORMANCE.md`.
+
+## Motion sequence to complete ADC: fused CUDA (2026-09-19, moved out of PERFORMANCE.md for 0.5.0)
+
+The current adaptive FMCW route fuses compact probe interpolation and dechirped
+ADC synthesis in CUDA. It retains the same float32 boundaries, double phase
+evaluation, serial path accumulation, fixed observation schedule and first-order
+VJP/JVP. It does not generate RF transmit/receive chirps. Dirichlet remains the
+constant-delay direct-spectrum route; dynamic ADC synthesis is a different
+output/model contract, not a replacement of Dirichlet.
+
+The full SMPL benchmark remains 128 material sites, 3 TX x 4 RX, 128 chirps x
+256 samples, unchanged adaptive tolerances, and 300 frames over a 30 s walk
+within 15 m. Beat output includes every complex ADC sample; diffusion, setup,
+file output and all DSP remain outside timing. Other desktop GPU applications
+remain running. The control is the **previously optimized implementation**,
+interleaved with the new implementation at every frame of this same run.
+
+| Completed-CUDA measurement | Previous optimized control | Fused CUDA |
+| --- | ---: | ---: |
+| Full 300-frame simulation | 39.143 s | **14.275 s** |
+| Median frame | 127.96 ms | **45.18 ms** |
+| P95 frame | 153.83 ms | **67.01 ms** |
+| Throughput over the full sequence | 7.66 frames/s | **21.02 frames/s** |
+| Synthesis batches per frame | 49 | **2** |
+| Maximum incremental Torch allocation, paired single frames | 151.33 MiB | **34.33 MiB** |
+
+The incremental sequence speedup is **2.74x**. Maximum ADC relative L2 difference
+is **zero** across all 300 paired frames; adaptive probe counts match throughout.
+All 15 paired standalone frames are bit-identical. The small exhaustive ADC
+oracle remains at **0.2323%** adaptive error. Neither motion fidelity nor
+sampling tolerance was reduced. This fixture now exceeds its 10 Hz target;
+this is not a throughput guarantee for denser sites, multipath or phase noise.
+
+Nsight Systems correlates the echo's CUDA launches with its NVTX range:
+**2,371 -> 27 kernels**, **79.80 -> 12.44 ms** cumulative device kernel time in
+one instrumented frame. The removed gather alone cost 48.23 ms. These profiler
+numbers are separate from clean sequence timings. Synchronized stage timing
+places the world half at 60.26 ms, including 15.86 ms SMPL and 11.80 ms Channel;
+echo is 13.40 ms. World sampling and propagation now dominate that frame.
+
+Oscillator phase noise retains separate interpolation and synthesis because a
+receiver effect intervenes. The native boundary is **ABI 10**, with 41 operators
+and a locally rebuilt developer binary. Both paired variants use that binary;
+this comparison isolates compact fusion versus the previous expanded route,
+not independently loaded historical DLLs. See the
+[CUDA fusion report](docs/dev/audit/radar-adc-cuda-fusion-2026-09-19.md).
 
 ## Validation recorded with the fused CUDA measurement (2026-09-19)
 
