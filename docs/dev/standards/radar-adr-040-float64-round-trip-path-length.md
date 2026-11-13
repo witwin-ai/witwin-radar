@@ -73,8 +73,9 @@ Precision of the inputs:
   stationary only along the edge, so its error perpendicular to the edge
   enters at first order. Channel 0.6 freezes `{los, reflection}` only; a
   discovery-direct transmission or diffraction row inherits these bounds.
-  Closing the reflection residual needs the hit plane or the interaction
-  point in float64 from Channel (a Channel request, in the transport report).
+  0.5.0 accepts and documents this residual (owner decision); closing it
+  needs float64 interaction points from Channel, which is filed as a Channel
+  request.
 
 Native: everything above is inside the one join launch (forward, VJP, JVP),
 templated on the site precision. The VJP owns the geometry gradients by leg
