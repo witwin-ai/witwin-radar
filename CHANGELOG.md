@@ -337,6 +337,9 @@ claim is checked against an independent oracle in `tests/oracle/` (R-ADR-032). U
   included. CFAR padding wraps along Doppler and truncates (with re-solved constants) along range.
 - **Angles.** Estimation no longer assumes a half-wavelength TI layout: 1x8, 2x4 and one-wavelength arrays give
   correct angles on the `fft2` and `scan` routes.
+- A coded-pulse replica (`processing.pulse_samples`, used by the matched filter) sampled at a multiple of the chip
+  rate put about a fifth of its samples on the previous chip, because `m T_s / T_c` rounded just below an integer in
+  float64; the range profile of a PMCW, FSK or arbitrary pulse carried sidelobes next to its peak.
 - All frames of a `simulate`/`stream`/`echo` call shared one thermal noise realisation.
 - A zero ADC input read `+/- step/2` on I and Q.
 - An invalid oscillator query raised a device-side assert that left the CUDA context unusable; it raises

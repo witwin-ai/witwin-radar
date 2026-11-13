@@ -233,7 +233,7 @@ class Motion:
         on world time and on motion; ``rediscover_every_frames`` once per
         frame or less often. Each trades completeness for discoveries, so the
         run reports ``path_set_complete=False`` and publishes the birth lag it
-        actually incurred in ``Result.birth_lag_bound_s``.
+        actually incurred in ``Result.birth_lag_bound``.
         """
 
         return cls(

@@ -486,3 +486,25 @@ def test_the_negative_lag_tail_does_not_wrap_onto_the_gate():
     # Everything beyond the peak plus one pulse width is structurally zero.
     beyond = z[100 + spec.pulse_sample_count + 2 :]
     assert float(beyond.max()) < 1e-9 * float(z.max())
+
+
+@pytest.mark.parametrize("samples_per_chip", [1, 2, 3])
+def test_a_coded_replica_holds_each_chip_for_its_own_samples(samples_per_chip):
+    """Sample ``m`` of a PMCW replica carries chip ``floor(m T_s / T_c)`` of the code.
+
+    With the sample rate an integer multiple of the chip rate, ``m T_s / T_c``
+    is an integer at every chip boundary; computed as ``(m T_s) / T_c`` in
+    float64 it can land just below it and read the previous chip. The replica's
+    sign sequence is compared with the code itself, the independent oracle.
+    """
+
+    from witwin.radar import Pulsed
+
+    code = Pulsed.m_sequence(7)
+    chip_rate = 500e6
+    waveform = Pulsed.pmcw(code, chip_rate=chip_rate, repetitions=4, sample_rate=samples_per_chip * chip_rate)
+    replica = pulse_samples(waveform.to_spec(reference_frequency_hz=77e9))
+    held = torch.repeat_interleave(torch.tensor(code, dtype=torch.float64), samples_per_chip)
+    count = min(int(replica.shape[0]), int(held.shape[0]))
+    signs = torch.sign(replica.real[:count])
+    assert torch.equal(signs, torch.sign(held[:count]))

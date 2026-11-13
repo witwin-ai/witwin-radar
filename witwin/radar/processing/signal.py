@@ -173,9 +173,14 @@ def pulse_samples(spec: PulsedSpec, device: torch.device | str = "cpu") -> torch
     elif spec.is_coded:
         # The chip a replica sample falls in, and that chip's phase and
         # frequency: the same piecewise envelope the kernel holds per chip.
+        # The index is ``floor(m T_s / T_c)`` with a sample on a chip boundary
+        # belonging to the chip that starts there; the guard of 1e-9 chip keeps
+        # the float64 product ``m (T_s / T_c)`` from landing just below an
+        # integer when the sample rate is a multiple of the chip rate.
         table = torch.tensor(spec.chip_table(), dtype=torch.float64, device=target)
         width = float(spec.chip_width_s)
-        chip = torch.clamp(torch.floor(u / width).to(torch.int64), 0, int(table.shape[0]) - 1)
+        position = torch.arange(count, dtype=torch.float64, device=target) * (float(spec.sample_period_s) / width)
+        chip = torch.clamp(torch.floor(position + 1e-9).to(torch.int64), 0, int(table.shape[0]) - 1)
         entry = table.index_select(0, chip)
         envelope = envelope * entry[:, 0]
         cycles = entry[:, 1] + entry[:, 2] * (u - chip.to(torch.float64) * width)
