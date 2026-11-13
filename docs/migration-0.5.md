@@ -226,12 +226,8 @@ for build in (
 
 ### Channel 0.6 behaviour you may notice
 
-- A reflection with a segment shorter than 1e-5 of the scene diagonal is not reported, so a target within about
-  0.1 mm of a wall loses its wall bounce; a specular point past a face's edge by more than a few float roundings is
-  not reported.
+- A reflection whose specular point lies past a face's edge by more than a few float roundings is not reported.
 - A scene edited in place after it was compiled is refused at the next replay ("the compiled scene is stale").
-- A forward-mode tangent on mesh vertices is refused by Channel's compile. Take vertex (and SMPL pose and shape)
-  derivatives with `ad_mode="vjp"`.
 
 ### For code that calls internals
 

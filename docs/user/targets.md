@@ -313,8 +313,6 @@ assert merged.numel() <= 16 and abs(db(merged.sum() / exact.sum())) < 0.2
   facet -> wall -> receiver ghost is not composed (its reciprocal
   transmitter -> wall -> facet is).
 - There is no default material: the facet's material is its structure's.
-- A site on or within a fraction of a millimetre of a conductor can lose its
-  wall reflection (a Channel limitation).
 
 ## Polarization and element patterns: limitations
 
@@ -356,7 +354,7 @@ adds the body to `scene` as one Core structure with `recenter=False`, deformed
 over time by the pose and `pose_rate`, and returns `(DynamicScene, MeshTargets)`.
 The body's 13,776 faces make `max_sites` or `cluster_size` the practical
 choice. `material` is required. The pose, shape, position and rotation are
-reverse-mode leaves (`ad_mode="vjp"`); a forward tangent is refused.
+leaves in reverse mode (`ad_mode="vjp"`) and forward mode (`ad_mode="jvp"`).
 
 See also: [Motion](motion.md), [Multipath](multipath.md),
 [Conventions](conventions.md).

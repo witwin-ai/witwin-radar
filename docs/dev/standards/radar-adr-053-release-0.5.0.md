@@ -59,18 +59,17 @@ milestones. The changelog fragments each work item wrote (one file per item in a
 
 Listed for users in `CHANGELOG.md` ("Known limitations"). In short: co-polar element patterns only (no Jones
 transport from Channel's fixed-topology replay); a float32 residual on reflection-row phase; Channel 0.6.0's
-short-segment rule near walls and its missing reflection rows off finely meshed tilted faces (pinned as a strict
+missing reflection rows off finely meshed tilted faces (pinned as a strict
 xfail in `tests/oracle/test_rcs_convergence.py`); FMCW wideband refused; back-projection is the only imaging route;
-`Paths` has no saved form; the compression parameters are not leaves; forward-mode mesh-vertex derivatives refused by
-Channel's compile; networks have no adaptive route; profiled budget columns keep a 0.5 % margin; SMPL tested only on
+`Paths` has no saved form; the compression parameters are not leaves; networks have no adaptive route; profiled budget columns keep a 0.5 % margin; SMPL tested only on
 a synthetic rig; the DCA1000 layouts and TI presets written from documentation, not validated on hardware.
 
 ## Requests to Channel
 
 Each would lift a limitation above, and none is worked around with a Radar-side fallback: a polarimetric (Jones)
 fixed-topology transport for reflection rows; float64 interaction points (or float64 endpoints) for reflection rows;
-short segments for endpoint-adjacent bounces; reflection discovery off finely meshed tilted faces (and a `complete`
-flag that is false when candidates were dropped); a primal-only finite-vertex check at compile; the structure ID of
+reflection discovery off finely meshed tilted faces (and a `complete`
+flag that is false when candidates were dropped); the structure ID of
 each interaction in the consumer topology; several source/sink groups (or a pair mask) per request and slot-batched
 discovery.
 

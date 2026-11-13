@@ -149,8 +149,6 @@ claim is checked against an independent oracle in `tests/oracle/` (R-ADR-032). U
 - `witwin-radar` requires `torch==2.10.0` instead of `torch>=2.10`: the loader only ever accepted a packaged binary
   on the exact Torch it was built against. Install Torch 2.10.0, or build the native library for your Torch with
   `python scripts/build_radar_cuda_prebuilt.py` from a source checkout.
-- A forward-mode tangent on mesh vertices is not available: Channel 0.6 refuses to compile a mesh whose vertices
-  carry a forward-AD dual. Take vertex derivatives in reverse mode (`ad_mode="vjp"`).
 - `ci/native-binding-manifest.json` is generated (schema 3). After changing a native operator, run
   `python ci/check_native_bindings.py --write`.
 
@@ -393,8 +391,8 @@ from a contended desktop GPU.
 ### Changed
 
 - Reflection rows follow Channel 0.6's path-validity rules: a reflection whose specular point lies past the edge of a
-  face by more than a few float roundings is not reported, and a reflection with a segment shorter than 1e-5 of the
-  scene diagonal is not reported, so a scatter site within that distance of a wall loses that wall's reflection.
+  face by more than a few float roundings is not reported. A scatter site on or near a wall keeps that wall's
+  reflection, and discovery and replay agree near a wall.
 - A scene edited in place after it was compiled is refused by Channel at the next replay ("the compiled scene is
   stale"); Radar's motion-event tick still detects the edit and recompiles when a motion-event period is declared.
 - Channel 0.6 picks its ray-tracing backend when it compiles a scene and uses a pure-CUDA tracer where OptiX is
@@ -403,7 +401,7 @@ from a contended desktop GPU.
   `rediscover_every_chirps` are refused for a network, as are the link configurations R-ADR-051 lists.
 - Refused with a named reason, before any work: a pose leaf with an `"up"`/`"right"` polarization, a polarization
   leaf, a pose trajectory's rotation leaf, a pose leaf under an `ad_mode` that does not carry it, a roughness rms
-  leaf at exactly zero, and an SMPL pose/shape/transform forward tangent.
+  leaf at exactly zero.
 - The default radar pose (`look_at=(0, 0, -1)`, `up=(0, 1, 0)`, a Y-up world) is unchanged and documented: in a
   Channel/Core Z-up scene it looks at the floor, so state the pose there.
 - `Result.last_snapshot` and `last_compiled_scene` are typed (`SceneSnapshot | None`, `CompiledWorld | None`).
@@ -428,9 +426,6 @@ from a contended desktop GPU.
   point comes from Channel in float32, leaving a residual of `(cos theta_i + cos theta_r) ulp32(x) / 2` (about 0.5 um,
   0.8 mrad of carrier phase, for a wall 4 m away). Transmission rows are float64 to second order, diffraction rows to
   first order across the edge.
-- **Sites near walls.** Channel 0.6 drops a reflection with a segment shorter than 1e-5 of the scene diagonal, so a
-  target within about 0.1 mm of a wall loses its wall bounce (up to 32 dB too strong); discovery and replay can
-  disagree near a wall. Both are strict expected failures in `tests/oracle/`.
 - **Finely meshed tilted faces.** With Channel 0.6.0, reflection discovery can return no rows off a finely meshed
   face that is not axis-aligned, while the result still reports `complete=True` (`"auto"` and `"exhaustive"` alike):
   a 5 cm PEC dihedral at 10 m with its faces at 45 degrees loses its double bounce (-43 dB) at 52 or more cells per
@@ -443,8 +438,7 @@ from a contended desktop GPU.
   FMCW profile from `Fmcw(output="beat")` with zero padding; aperture and pixel positions are not differentiable.
 - **Saved results only.** `Result.save` / `Result.load` exist; `Paths` has no saved form (it holds the session).
 - **Gradients not carried.** The receiver compression parameters (`Compression.iip3`, `p1db`, `am_pm`) are not
-  leaves; polarizations are not leaves; forward-mode derivatives of mesh vertices (and so of SMPL pose and shape)
-  are refused by Channel 0.6's compile.
+  leaves; polarizations are not leaves.
 - **Multi-radar.** A network resolves a moving scene to `Motion.adc()` (no adaptive sampling); DDM/BPM and
   multi-profile links, emitters with directional elements, phase noise on a receiving radar and wideband are refused.
 - **Budget pins.** The profiler-derived kernel and copy counts in the session budget tests keep a 0.5 % margin,
@@ -453,9 +447,8 @@ from a contended desktop GPU.
   are not shipped. The DCA1000 capture layouts and the TI board presets were written from TI's documentation and
   have not been checked against hardware or a real capture.
 - **Requests to Channel** that would lift limitations above: a polarimetric (Jones) fixed-topology transport for
-  reflection rows; float64 interaction points (or float64 endpoints) for reflection rows; short segments for
-  endpoint-adjacent bounces; reflection discovery off finely meshed tilted faces; a primal-only finite-vertex check at
-  compile (forward-mode vertex derivatives); the structure ID of each interaction in the consumer topology; several
+  reflection rows; float64 interaction points (or float64 endpoints) for reflection rows; reflection discovery off
+  finely meshed tilted faces; the structure ID of each interaction in the consumer topology; several
   source/sink groups (or a pair mask) per `PropagationRequest` and slot-batched discovery.
 
 [Unreleased]: https://github.com/witwin-ai/witwin-radar/compare/witwin-radar-v0.5.0...HEAD

@@ -53,8 +53,8 @@ for record, leaves in capabilities()["ad_leaves"].items():
 | `Pattern` | `x_gain`, `y_gain`, `gain_table` (the table values), `gain` (dBi) | float tensors for power, complex for field; angle axes stay host floats |
 | `Coupling` | `tx`, `rx` | complex tensor matrices |
 | Core `PhysicalMaterial` on a `MeshTargets` structure | `eps_r`, `sigma_e`, `thickness_m`, `mu_r`, roughness `rms_height_m` | need `ad_mode` |
-| Core `Mesh` vertices (walls and `MeshTargets`) | vertex tensor | reverse mode only |
-| `witwin.radar.smpl.SMPLBody` | `pose`, `shape`, `position`, `rotation` | reverse mode only |
+| Core `Mesh` vertices (walls and `MeshTargets`) | vertex tensor | reverse and forward mode |
+| `witwin.radar.smpl.SMPLBody` | `pose`, `shape`, `position`, `rotation` | reverse and forward mode |
 
 The setup used below is a small version of the quickstart radar (four chirps,
 beat output):
@@ -150,15 +150,14 @@ print(f"fitted: range {-z.item():.4f} m (true 3.0000), rcs {log_rcs.exp().item()
 assert abs(z.item() + 3.0) < 2e-3 and abs(log_rcs.exp().item() / 2.0 - 1.0) < 0.1
 ```
 
-## Mesh vertices (reverse mode only)
+## Mesh vertices
 
 A Core `Mesh` whose vertices require a gradient carries it through the facet
 geometry, the facet response and Channel's replay, for a `MeshTargets`
 structure and for walls alike. Author meshes in world coordinates with
 `recenter=False`; the Core default moves the mesh to its bounding-box centre.
-Channel 0.6 refuses a forward-mode tangent on mesh vertices at compile (its
-finite-vertex check has no forward-mode formula), so vertices are a
-reverse-mode leaf only.
+Vertices are a leaf in both modes: a gradient with `ad_mode="vjp"`, a forward
+tangent with `ad_mode="jvp"`.
 
 ```python
 corners = torch.tensor([[-0.05, -0.05, -2.0], [0.05, -0.05, -2.0], [0.05, 0.05, -2.0], [-0.05, 0.05, -2.0]],
@@ -177,13 +176,16 @@ vertices = corners.clone().requires_grad_(True)
 e = energy(radar.simulate(plate_scene(vertices), MeshTargets(), times=(0.0,), reflections=0, ad_mode="vjp"))
 (d_vertices,) = torch.autograd.grad(e, vertices)
 print("d energy / d vertex z:", [f"{v:.2e}" for v in d_vertices[:, 2].tolist()])
+```
 
-try:
-    with fwAD.dual_level():
-        dual = fwAD.make_dual(corners, torch.ones_like(corners))
-        radar.simulate(plate_scene(dual), MeshTargets(), times=(0.0,), reflections=0, ad_mode="jvp")
-except NotImplementedError as error:
-    print("forward mode on vertices:", str(error)[:80])
+Forward mode on the same vertices, moving the whole plate along `+z`:
+
+```python no-run
+with fwAD.dual_level():
+    dual = fwAD.make_dual(corners, torch.tensor([0.0, 0.0, 1.0], device="cuda").expand_as(corners))
+    cube = radar.simulate(plate_scene(dual), MeshTargets(), times=(0.0,), reflections=0, ad_mode="jvp").cube
+    tangent = fwAD.unpack_dual(cube).tangent
+print("d cube / d plate z:", tuple(tangent.shape), f"max |.| = {float(tangent.abs().max()):.3e}")
 ```
 
 The same plate with a dielectric whose permittivity is a leaf:
@@ -198,7 +200,7 @@ print(f"d energy / d eps_r = {float(d_eps):.3e}")
 ```
 
 An SMPL body is a mesh target whose vertices are a differentiable function of
-the pose, shape and body transform, so those are reverse-mode leaves too. It
+the pose, shape and body transform, so those are leaves too, in both modes. It
 needs the SMPL model files, so this block is not run here:
 
 ```python no-run
@@ -293,8 +295,6 @@ for name, attempt in attempts.items():
 * **Transmission and diffraction** exist only at their discovery instant and
   cannot be frozen for the replay a derivative goes through: run them with
   `ad_mode="none"`.
-* **Forward mode on mesh vertices** (and therefore on SMPL pose and shape) is
-  refused by Channel 0.6 at compile.
 * A roughness leaf at exactly zero (the model's one-sided edge), a transmit
   power leaf inside a `Network`, and second-order derivatives.
 
