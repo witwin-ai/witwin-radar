@@ -516,7 +516,7 @@
           "name": "average_background",
           "kind": "function",
           "target": "witwin.radar.processing.calibration.average_background",
-          "signature": "(references: collections.abc.Sequence)"
+          "signature": "(references: collections.abc.Sequence[~_Product]) -> ~_Product"
         },
         {
           "name": "azimuth_directions",
@@ -570,7 +570,7 @@
           "name": "combine_incoherent",
           "kind": "function",
           "target": "witwin.radar.processing.detection.combine_incoherent",
-          "signature": "(cubes) -> torch.Tensor"
+          "signature": "(cubes: collections.abc.Iterable[torch.Tensor]) -> torch.Tensor"
         },
         {
           "name": "conventional_steering",
@@ -594,13 +594,13 @@
           "name": "estimate_array_calibration",
           "kind": "function",
           "target": "witwin.radar.processing.calibration.estimate_array_calibration",
-          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m, *, reference: tuple[int, int] = (0, 0)) -> witwin.radar.processing.calibration.ArrayCalibration"
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m: Any, *, reference: tuple[int, int] = (0, 0)) -> witwin.radar.processing.calibration.ArrayCalibration"
         },
         {
           "name": "estimate_range_calibration",
           "kind": "function",
           "target": "witwin.radar.processing.calibration.estimate_range_calibration",
-          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m, *, search_m: float) -> witwin.radar.processing.calibration.RangeCalibration"
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m: Any, *, search_m: float) -> witwin.radar.processing.calibration.RangeCalibration"
         },
         {
           "name": "fft2_aoa",
@@ -630,19 +630,19 @@
           "name": "isar_aperture",
           "kind": "function",
           "target": "witwin.radar.processing.imaging.isar_aperture",
-          "signature": "(aperture: witwin.radar.processing.imaging.Aperture, *, center_m, angular_velocity_rad_s=None, rotation=None, reference_time_s: float = 0.0) -> witwin.radar.processing.imaging.Aperture"
+          "signature": "(aperture: witwin.radar.processing.imaging.Aperture, *, center_m: Any, angular_velocity_rad_s: Any = None, rotation: Any = None, reference_time_s: float = 0.0) -> witwin.radar.processing.imaging.Aperture"
         },
         {
           "name": "lag_axis",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.lag_axis",
-          "signature": "(spec, *, oversample: int = 1, device: torch.device | str = 'cpu')"
+          "signature": "(spec: witwin.radar.synthesis.assembly.PulsedSpec, *, oversample: int = 1, device: torch.device | str = 'cpu') -> torch.Tensor"
         },
         {
           "name": "matched_filter",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.matched_filter",
-          "signature": "(signal: torch.Tensor, spec, *, oversample: int = 1) -> torch.Tensor"
+          "signature": "(signal: torch.Tensor, spec: witwin.radar.synthesis.assembly.PulsedSpec, *, oversample: int = 1) -> torch.Tensor"
         },
         {
           "name": "microdoppler_spectrogram",
@@ -750,13 +750,13 @@
           "name": "stepped_frequency_profile",
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.stepped_frequency_profile",
-          "signature": "(signal: torch.Tensor, spec) -> tuple[torch.Tensor, torch.Tensor]"
+          "signature": "(signal: torch.Tensor, spec: witwin.radar.synthesis.assembly.PulsedSpec) -> tuple[torch.Tensor, torch.Tensor]"
         },
         {
           "name": "subtract_background",
           "kind": "function",
           "target": "witwin.radar.processing.calibration.subtract_background",
-          "signature": "(product, background)"
+          "signature": "(product: ~_Product, background: ~_Product) -> ~_Product"
         },
         {
           "name": "tdm_compensate",
@@ -852,13 +852,13 @@
           "name": "SMPLBody",
           "kind": "class",
           "target": "witwin.radar.smpl.SMPLBody",
-          "signature": "(pose, shape, *, position=(0.0, 0.0, 0.0), gender: 'str' = 'male', model_root: 'str | None' = None, rotation=None, device=None)"
+          "signature": "(pose: 'Any', shape: 'Any', *, position: 'Any' = (0.0, 0.0, 0.0), gender: 'str' = 'male', model_root: 'str | None' = None, rotation: 'Any' = None, device: 'Any' = None) -> 'None'"
         },
         {
           "name": "SmplPoseDeformation",
           "kind": "class",
           "target": "witwin.radar.smpl.SmplPoseDeformation",
-          "signature": "(body: 'SMPLBody', *, pose_rate, reference_time_s: 'float' = 0.0, device=None) -> 'None'"
+          "signature": "(body: 'SMPLBody', *, pose_rate: 'Any', reference_time_s: 'float' = 0.0, device: 'Any' = None) -> 'None'"
         }
       ]
     },
@@ -1026,12 +1026,12 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Result'"
+          "signature": "(self, scene: 'Any', targets: 'PointTargets | StructureTargets | MeshTargets', *, times: 'Any', los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints: 'SensorEndpointIds | None' = None, pose: 'Callable[[float], Any] | None' = None) -> 'Result'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Iterator[Result]'"
+          "signature": "(self, scene: 'Any', targets: 'PointTargets | StructureTargets | MeshTargets', *, times: 'Any', los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints: 'SensorEndpointIds | None' = None, pose: 'Callable[[float], Any] | None' = None) -> 'Iterator[Result]'"
         },
         {
           "name": "to",
@@ -1051,7 +1051,7 @@
         {
           "name": "trace",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Paths'"
+          "signature": "(self, scene: 'Any', targets: 'PointTargets | StructureTargets | MeshTargets', *, times: 'Any', los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints: 'SensorEndpointIds | None' = None, pose: 'Callable[[float], Any] | None' = None) -> 'Paths'"
         },
         {
           "name": "up",
@@ -1060,7 +1060,7 @@
         {
           "name": "waveform_spec",
           "kind": "function",
-          "signature": "(self, *, offset: 'float' = 0.0)"
+          "signature": "(self, *, offset: 'float' = 0.0) -> 'Any'"
         },
         {
           "name": "wavelength",
