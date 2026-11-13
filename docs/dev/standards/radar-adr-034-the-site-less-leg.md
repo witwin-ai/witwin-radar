@@ -44,7 +44,9 @@ the join kernels are untouched; `sensor_pair_index`, `pair_offsets` and `topolog
 `RadarPathTopology` marks a site-less row with `site_id == NO_SITE (-1)`, `inbound_row == outbound_row == -1` and a
 new `direct_row` column (`None` when no third leg was composed). `TwoWayComposer.segment_targets` gives the pattern
 stage each row's first and last segment ends from whichever leg owns it. `for_slots` replicates `merge` and the
-optional columns with whole-block shifts.
+optional columns with whole-block shifts. `compose_slots` (the strided slot route) interleaves the site-less rows
+per slot through the single-slot `merge` over a `[slots, site rows | direct rows]` view, so it builds no per-slot
+table either.
 
 A run without the third leg builds no `merge`, gathers nothing and is bit-identical to the previous composer.
 
@@ -53,7 +55,9 @@ A run without the third leg builds no `merge`, gathers nothing and is bit-identi
 Default-on would add a row to every scene with geometry and a coupling row to every separated array, moving every
 existing baseline, and would refuse every co-located fixture with `coupling`. A physically complete simulator
 includes environment returns; the decision here is that a caller opts in per call, and that the default may flip in a
-later release once baselines are regenerated deliberately. No baseline moved.
+later release once baselines are regenerated deliberately (owner decision for 0.5.0: off). No baseline moved. To
+turn them on, pass `environment=True` and, for separated elements, `coupling=True` to `trace`, `simulate` or
+`stream`; `docs/pipeline_guide.md` section 4 shows the calls.
 
 ### 4. The component taxonomy has a production owner
 

@@ -35,7 +35,12 @@ one pattern stage serves every column; the site-less leg is banded the same way.
 
 `SynthesisPathBatch` carries the band; `synthesize_ofdm` checks that its grid is the spec's subcarrier grid and hands
 the `[K, N]` weight to the CFR kernel, which then applies only the slow-time change of each column's phase.
-`require_compatible` refuses a band for FMCW and pulsed specs rather than silently using its reference column.
+`require_compatible` refuses a band for FMCW and pulsed specs rather than silently using its reference column. The
+time-domain OFDM family (a modulated stream or a time output) synthesizes each row as one tap, so `wideband=True` is
+refused by name for it at session open, and `synthesize_ofdm` refuses a banded batch on that route as a backstop.
+On a slot-batched replay the band follows the join's route: a strided join (per-site response, unit-gain pattern)
+composes the `F * slots` frequency-and-time slots with its single-slot tables in one launch, and the result rides
+on `SlotRows.complex_transfer_band`; a per-row join uses its group tables replicated per column.
 
 Cost: one replay of `(1 + F)` launches per bucket per leg instead of one, and `F` times the composed rows for the
 join and pattern launches. Off by default.

@@ -20,7 +20,8 @@
   Channel cannot freeze them; other routes refuse them by name.
 - `environment=True` adds site-less transmitter-to-receiver rows for the scene's own returns (a wall facing the radar
   echoes at `2d/c`); `coupling=True` adds the elements' straight-segment coupling and is refused for co-located
-  transmit and receive elements. Both are off by default.
+  transmit and receive elements. Both are off by default in 0.5.0; pass `environment=True` (and `coupling=True` for
+  separated elements) to `trace`, `simulate` or `stream` to turn them on.
 - `Paths.component_index()` classifies composed rows as target, environment clutter, direct leakage or
   multi-interaction, and `Paths.select(name)` keeps one class, so `radar.echo(paths.select("environment_clutter"))`
   synthesizes the clutter alone.
@@ -28,7 +29,8 @@
   one discovery's rows (Channel refuses on overflow); `max_round_trips=` bounds one sensor pair's composed rows and is
   refused by name, naming the pair, before the join is built.
 - `wideband=True` for OFDM: each subcarrier's transport is evaluated by Channel (spreading, material and layer response
-  across the band) instead of shifting the reference coefficient. Refused for FMCW and pulsed radars.
+  across the band) instead of shifting the reference coefficient. Refused for FMCW, pulsed and time-domain (modulated
+  or time-output) OFDM radars.
 
 ## Fixed
 

@@ -394,15 +394,16 @@ def test_m3_6_direct_rows_survive_the_slot_batched_and_replayed_routes(monkeypat
 # ---------------------------------------------------------------------------
 
 
-def _ofdm(subcarriers: int = 64, spacing: float = 10e6):
+def _ofdm(subcarriers: int = 64, spacing: float = 10e6, *, symbols: int = 1, **fields):
     from witwin.radar import Ofdm
 
     return Ofdm(
         subcarrier_spacing=spacing,
         num_subcarriers=subcarriers,
         cyclic_prefix=2e-7,
-        num_symbols=1,
+        num_symbols=symbols,
         max_expected_delay=1e-7,
+        **fields,
     )
 
 
@@ -475,3 +476,33 @@ def test_m3_8_wideband_is_refused_for_fmcw_by_name():
     radar = sc.radar(sc.beat_fmcw(samples=4))
     with pytest.raises(NotImplementedError, match="R-ADR-015"):
         radar.simulate(_side_wall_scene(), _targets([[6.0, 0.3, 0.0]]), times=(0.0,), wideband=True)
+
+
+def test_m3_8_a_slot_batched_moving_scene_carries_the_band_through_slot_rows():
+    """Per-symbol observations of a moving target compose as one strided slot group, band included."""
+
+    from witwin.radar import Motion, PointTargets
+
+    def trajectory(time_s):
+        return torch.tensor([[2.0 + 50.0 * float(time_s), 0.5, 0.3]], dtype=torch.float32, device="cuda")
+
+    def targets():
+        return PointTargets(positions=trajectory(0.0), rcs=1.0, trajectory=trajectory)
+
+    radar = sc.radar(_ofdm(subcarriers=16, symbols=4))
+    scene = _wall(4.0, material=_slab())
+    arguments = {"times": (0.0,), "environment": True, "motion": Motion.chirp()}
+    wide = radar.trace(scene, targets(), wideband=True, **arguments)
+    narrow = radar.trace(scene, targets(), **arguments)
+    for observation in range(4):
+        rows = wide.rows(observation=observation)
+        assert rows.complex_transfer_band is not None
+        assert torch.equal(rows.complex_transfer_band[:, 0], rows.complex_transfer_ref)
+        assert torch.equal(rows.complex_transfer_ref, narrow.rows(observation=observation).complex_transfer_ref)
+    assert torch.allclose(radar.echo(wide).cube[..., 0], radar.echo(narrow).cube[..., 0], rtol=1e-5, atol=0.0)
+
+
+def test_m3_8_wideband_is_refused_for_time_domain_ofdm_by_name():
+    radar = sc.radar(_ofdm(subcarriers=16, output="time"))
+    with pytest.raises(NotImplementedError, match="time-domain"):
+        radar.simulate(_wall(4.0, material=_slab()), _targets([[2.0, 0.5, 0.3]]), times=(0.0,), wideband=True)
