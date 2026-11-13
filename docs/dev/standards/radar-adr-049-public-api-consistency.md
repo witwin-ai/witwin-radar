@@ -152,3 +152,68 @@ pins were re-measured with this harness; they were stale, the old slack had
 absorbed later merges' extra launches (`adc_point_per_frame` kernels 845 ->
 862, `adc_point_per_chirp` 1589 -> 1630, `adc_structure` 12106 -> 12202, no
 exact counter moved).
+
+### 6. Names: one rule, stated once (M5-6, U-8)
+
+The module docstring of `radar.py` declared "no field name carries a unit
+suffix" while `Leakage.isolation_db/delay_s`, `Iq.gain_db/phase_deg`,
+`Result.times_s` and `Result.reference_frequency_hz` carried one and `Paths`
+said `times`/`carrier` for the same two quantities. Owner decision 5 fixes the
+direction: public names align with Channel where they name the same quantity;
+the short verb keywords `los=`/`reflections=` stay. The rule, applied once to
+the whole public surface (root exports, their fields, the verbs' keywords and
+the members `Result`, `Frame` and `Paths` publish):
+
+1. **A quantity Channel also publishes, in Channel's unit, takes Channel's
+   name verbatim**, unit suffix included: `reference_frequency_hz` (was
+   `Radar.carrier`, `Paths.carrier`; `Result` already used it), `ad_mode`
+   (was the verbs' `grad=` and `Paths.grad`; same vocabulary `"none"`,
+   `"vjp"`, `"jvp"`), `power_w` (was `Radar.transmit_power_watts`).
+2. **Every other public name carries no unit suffix**; its unit is on its
+   docstring row. Renamed: `Leakage.isolation` (dB) and `Leakage.delay` (s);
+   `Iq.gain` (dB) and `Iq.phase` (**rad**, was degrees: every other phase in
+   Radar is in radians, so the unit changes with the name, and a caller gets a
+   `TypeError` on the old keyword rather than a silent 57x error);
+   `Result.times`, `Result.sample_times` (the names `Paths` already used),
+   `Result.birth_lag_bound` / `Paths.birth_lag_bound`, `Frame.time`;
+   `RcsTable.rcs`, `.frequencies`, `.phase`; `MeshTargets.cluster_size`; the
+   waveform records' `to_spec(reference_frequency_hz=)` and
+   `Fmcw.max_velocity(reference_frequency_hz=)` take rule 1's name.
+3. **Not renamed, by scope.** Radar's transmit power stays `power` in dBm:
+   Channel's `power_w` is the same quantity in a different unit, so it is not
+   Channel's name (rule 1), and the watt value is published as `power_w`.
+   `Emitter.power` follows `Radar.power`. `Network.carrier_offsets` and
+   `Emitter.carrier_offset` name an offset Channel does not publish. The
+   processing package (`range_m`, `velocity_mps`, `Aperture.times_s`, ...)
+   is frozen by R-ADR-017 and its names are its contract; the ground-truth
+   labels match it (`rcs_m2`, `range_m`). Equation-owning internal records and
+   helpers (`FmcwSpec.sample_period_s`, `RadarPathBatch.total_delay_s`,
+   `Noise.noise_power_watts`, `Iq.image_rejection_db`, `PathEvents.time_s`,
+   `SceneFrame`) keep the unit in the identifier, as R-ADR-021 requires of an
+   equation owner. The flat configuration keys (`fc`, `power`, TI-style) are a
+   file format, not field names. `Fmcw.from_ti` names its vendor units on
+   purpose.
+
+**World frame.** Channel and Core document +Z up; `Radar` defaults to
+`look_at=(0, 0, -1)`, `up=(0, 1, 0)`, a Y-up world, so in a Z-up scene the
+default radar looks at the floor. The default is **kept** and documented on
+the two fields: changing a default re-aims every existing script and test
+without an error, which is the one kind of break this pass avoids (every
+rename here fails loudly at the old name). A Z-up scene states its pose.
+
+**Window defaults.** `Frame.range_doppler` defaulted to a Hann slow-time
+window and `processing.range_doppler_map` to rectangular. Both are now
+rectangular: a facade applies no taper the stage it names would not.
+`Frame.range_angle` follows. `Frame.points` keeps `window="hann"` on purpose
+(a detector over a rectangular Doppler transform reports sidelobes as
+targets) and its docstring says so.
+
+**`Fmcw` derived quantities** (M5-6): `sweep_bandwidth` (`|S| N / f_s`, Hz),
+`range_resolution` (`c / 2B`), `max_range` (`f_s c / 2|S|`, the complex
+receiver's unambiguous range) as properties, and
+`max_velocity(reference_frequency_hz=, num_tx=)` (`lambda / 4 T_slot`) as a
+method because the carrier and the transmitter count are the radar's. There
+is no `Fmcw.bandwidth`; U-8's "returns the sample rate" refers to a property
+that no longer exists.
+
+No aliases: the old names raise. R-ADR-050 holds the migration table.
