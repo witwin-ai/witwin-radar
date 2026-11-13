@@ -24,6 +24,7 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from ..display import compact_repr
 from ..sensors import SensorArraySpec
 from ..synthesis.assembly import (
     BEAT_PHASOR,
@@ -339,6 +340,8 @@ class ProcessingAxes:
     :func:`~witwin.radar.processing.range_doppler.range_doppler_map` is the one
     place it is applied.
     """
+
+    __repr__ = compact_repr
 
     waveform: str
     output_domain: str
@@ -728,6 +731,8 @@ class ProcessingCube:
     before the waveform kernel launches, so its contribution to the cube is a
     literal zero and no downstream stage has anything to mask.
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     axes: ProcessingAxes

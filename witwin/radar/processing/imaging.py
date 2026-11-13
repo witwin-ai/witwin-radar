@@ -61,6 +61,7 @@ from dataclasses import dataclass, replace
 import torch
 
 from ..cuda import native_ops as _ops
+from ..display import compact_repr
 from ..policy import first_order_only, refuse_derivative
 from ..synthesis.assembly import SPEED_OF_LIGHT_M_PER_S, FmcwSpec, OfdmSpec, PulsedSpec
 from .range_doppler import RangeProfile
@@ -87,6 +88,8 @@ class Aperture:
     convention (its sign ``s`` is derived from it, as the Doppler sign is), and
     ``waveform`` / ``reference_frequency_hz`` are checked against the profile.
     """
+
+    __repr__ = compact_repr
 
     tx_m: torch.Tensor
     rx_m: torch.Tensor
@@ -323,6 +326,8 @@ class SarImage:
     amplitude. ``frame`` is the aperture's (``"world"``, or the turning
     target's ``"body"`` frame).
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     pixels_m: torch.Tensor

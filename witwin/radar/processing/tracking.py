@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from ..display import compact_repr
 from ..policy import refuse_derivative
 from .detection import POINT_CLOUD_COLUMNS, PointCloud
 
@@ -60,6 +61,8 @@ class DetectionFrame:
     The fields are exactly what a constant-velocity tracker needs and nothing
     more: where, how fast along the line of sight, how strong, and when.
     """
+
+    __repr__ = compact_repr
 
     time_s: float
     xyz: torch.Tensor
@@ -306,6 +309,8 @@ class TrackState:
     counts the frames a track was updated in and ``misses`` the consecutive
     frames it was not.
     """
+
+    __repr__ = compact_repr
 
     ids: torch.Tensor
     position: torch.Tensor

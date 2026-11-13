@@ -33,6 +33,7 @@ from typing import ClassVar, Protocol, runtime_checkable
 import numpy as np
 import torch
 
+from ..display import compact_repr
 from ..paths import RadarComponentIndex, RadarPathBatch, RadarPathTopology
 from ..policy import SPEED_OF_LIGHT_M_PER_S, require_host_floats
 
@@ -1457,6 +1458,8 @@ FAST_AXIS_BY_OUTPUT_DOMAIN = {
 @dataclass(frozen=True, slots=True)
 class SynthesisResult:
     """One synthesis product with waveform, phasor, axes, and domain as data."""
+
+    __repr__ = compact_repr
 
     cube: torch.Tensor
     kind: str
