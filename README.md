@@ -1,41 +1,114 @@
 # WiTwin Radar
 
-WiTwin Radar is a GPU-accelerated, differentiable radar simulator. A simulation consumes a `witwin.core` world and one-way propagation from `witwin.channel`, composes round trips, applies scattering and sensor/frontend effects, synthesizes radar waveforms, and produces typed signal-processing products.
+WiTwin Radar is a GPU-accelerated, differentiable radar simulator. You describe a world with `witwin.core` (meshes,
+materials, moving structures), say where the scatterers are and how a radar is built, and Radar returns the cube the
+radar would record: FMCW, OFDM or pulsed, MIMO, through a modelled receive chain, with typed signal-processing
+products (range-Doppler maps, detections, point clouds, tracks, images) on top. One-way propagation comes from
+`witwin.channel`; Radar composes round trips, scatters off point, structure and physical-optics mesh targets, applies
+antennas and the receiver, and synthesizes the waveform in native CUDA. Gradients flow back to target positions,
+trajectories, cross sections, mesh vertices, antenna patterns, the radar's pose and gains.
 
-The repository uses a breaking, concept-axis architecture. Compatibility modules and deprecated aliases are intentionally not retained.
-
-For dynamic FMCW, `Radar.simulate(..., motion=Motion.adaptive(...))`
-uses phase-controlled temporal interpolation and batched propagation. Import `Motion` from
-`witwin.radar`. Per-ADC sampling remains the exhaustive reference and is what the default
-`Motion.auto()` resolves to whenever anything moves; adaptive topology
-probes cannot certify arbitrarily brief events between observations. Receiver effects operate on beat samples
-before the requested range transform, and shared oscillator noise uses actual timestamps and path delays.
-Adaptive replay reuses a complete LOS topology in an empty world and batches propagation, joins,
-antenna weighting and ADC synthesis. The measured 128-sample × 1024-chirp rotor scene takes
-270.99 ms per frame on RTX 5080 at the default interpolation order, or 174.28 ms at
-`nodes=5` ([the 2026-09-17 comparison](docs/dev/audit/radar-matlab-comparison-2026-09-17.md));
-see [performance evidence and limits](PERFORMANCE.md).
-Dynamic FMCW simulation refreshes the scene at each ADC observation by default, including TDM timing. `Motion.chirp()` selects the faster stop-and-hop approximation. See `docs/pipeline_guide.md` for trajectories, path completeness, and typed micro-Doppler timestamps.
-
-## Installation and runtime
+## Install
 
 ```bash
-pip install witwin-radar[channel]
+pip install "witwin-radar[channel]"
+witwin-radar-doctor
 ```
 
-CUDA is required for propagation and native waveform synthesis. CPU construction and PyTorch signal-processing workflows remain useful without a GPU. Linux and Windows are supported.
+- Simulation needs an NVIDIA GPU with CUDA. The wheels ship one native library built for `torch==2.10.0` (CUDA 12.8);
+  `witwin-radar-doctor` checks Torch, the native library and Channel and runs a GPU smoke test, with a fix for each
+  problem it finds.
+- The `channel` extra installs `witwin-channel` 0.6 on CPython 3.10-3.13, the versions Channel publishes. Radar
+  installs on 3.10-3.14, but on 3.14 the extra installs nothing, so scene-driven simulation needs 3.10-3.13.
+- Channel picks its ray-tracing backend when it compiles a scene: OptiX where the driver provides it, otherwise a
+  pure-CUDA tracer. `witwin-channel-doctor` reports which one a machine gets.
+- Linux and Windows are supported. Building from source: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-The `channel` extra installs `witwin-channel` 0.6 on CPython 3.10-3.13, the versions Channel publishes; on 3.14 it installs nothing, so scene-driven simulation needs 3.10-3.13. Channel chooses its ray-tracing backend when it compiles a scene: OptiX where the driver provides it, otherwise a slower pure-CUDA tracer. `witwin-channel-doctor` reports which one a machine gets and why.
+## Quickstart
 
-Release policy is explicit and conservative:
+One FMCW radar, one target 3 m away walking toward it at 1 m/s, one Range-Doppler map:
 
-- CPython 3.10-3.14;
-- Linux wheels target `manylinux_2_28_x86_64`;
-- one packaged `_radar_native` library plus its identity sidecars;
-- exact Torch/CUDA/ABI runtime identity;
-- no JIT fallback and no success-by-loader-refusal path.
+```python
+import torch
+from witwin.core import Scene
+from witwin.radar import Fmcw, PointTargets, Radar
 
-The release build matrix currently uses Torch 2.10 with CUDA 12.8 for each supported Python version. A different Torch or CUDA identity requires a separately built and validated artifact.
+chirp = Fmcw(slope=60e12, sample_rate=4.4e6, samples_per_chirp=256, chirps_per_frame=64,
+             adc_start=6e-6, idle=7e-6, ramp_end=65e-6)
+radar = Radar(reference_frequency_hz=77e9, waveform=chirp, power=15.0, antenna_unit="half_wavelength",
+              tx=((0.0, 0.0, 0.0),), rx=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)))
+# One 1 m^2 target 3 m down the boresight (-z), closing at 1 m/s.
+targets = PointTargets(positions=[(0.0, 0.0, -3.0)], rcs=1.0,
+                       trajectory=lambda t: torch.tensor([[0.0, 0.0, -3.0 + t]], device="cuda"))
+result = radar.simulate(Scene(), targets, times=(0.0,))
+power = result.frame(0).range_doppler().data.abs().square().sum(dim=(0, 1))  # [Doppler, range]
+doppler, rng = divmod(int(power.argmax()), power.shape[1])
+axes = result.axes
+print(f"range {axes.range_m[rng]:.2f} m, velocity {axes.velocity_mps[doppler]:+.2f} m/s")
+```
+
+It prints `range 3.01 m, velocity +0.84 m/s`: the nearest range bin, and the Doppler bin nearest 1 m/s (bins are
+0.42 m/s wide for 64 chirps). Positive velocity means closing. The radar sits at the origin looking down `-z` with
+`+y` up, its default pose. The [quickstart guide](docs/user/quickstart.md) walks through it line by line and adds a
+wall, multipath and a point cloud.
+
+## Where to go next
+
+| Guide | What it covers |
+|---|---|
+| [Quickstart](docs/user/quickstart.md) | Install, the first map, a wall, the four verbs |
+| [Conventions and units](docs/user/conventions.md) | Frames, the default pose against Channel's Z-up world, velocity sign, phasors, units |
+| [Choosing `Motion`](docs/user/motion.md) | Adaptive (the default for moving FMCW), `adc`, `chirp`, discovery cadences, path events |
+| [Targets](docs/user/targets.md) | Point, structure and mesh (physical optics) targets, materials, roughness, fluctuation, SMPL bodies |
+| [Multipath and environment](docs/user/multipath.md) | Reflections, transmission, diffraction, clutter, scene authoring with Channel's importers and presets |
+| [Waveforms and MIMO](docs/user/waveforms.md) | FMCW, chirp sequences, DDM/BPM, OFDM, pulsed and coded pulses |
+| [Receive chain](docs/user/receive-chain.md) | Patterns, coupling, leakage, LNA, compression, noise, IQ, AGC, ADC |
+| [Multi-radar networks](docs/user/networks.md) | Several radars, bistatic links, interference, emitters |
+| [Processing cookbook](docs/user/processing.md) | Range-Doppler, CFAR, angles, point clouds, tracking, imaging, calibration |
+| [Gradients and inverse design](docs/user/gradients.md) | `ad_mode`, the differentiable leaves, an inverse-design loop |
+| [Datasets and tools](docs/user/datasets-and-tools.md) | Doctor, save/load, labels, the dataset writer, TI configs, DCA1000 |
+| [Troubleshooting](docs/user/troubleshooting.md) | Common errors and what they mean |
+
+Upgrading from 0.4: [`docs/migration-0.5.md`](docs/migration-0.5.md). What changed: [`CHANGELOG.md`](CHANGELOG.md).
+What is supported, feature by feature: [`FEATURE_LIST.md`](FEATURE_LIST.md); at run time, `witwin.radar.capabilities()`.
+The full pipeline contract: [`docs/pipeline_guide.md`](docs/pipeline_guide.md); the flat configuration format:
+[`docs/configuration.md`](docs/configuration.md). Performance evidence and limits: [`PERFORMANCE.md`](PERFORMANCE.md).
+
+## Examples
+
+```bash
+python -m examples.single_point          # a target and a wall: the radar equation and the multipath range, checked
+python -m examples.moving_target         # moving targets, adaptive motion against the exhaustive reference
+python -m examples.walking_human         # a walking body and its micro-Doppler spectrogram
+python -m examples.music_imaging         # MUSIC angle imaging
+python -m examples.rgbd_range_doppler --input path/to/depths.npz
+```
+
+All scene-driven examples need CUDA and Channel.
+
+## The API in one screen
+
+`Radar` is one flat immutable record in SI units (exceptions: `power` in dBm, gains in dB/dBi). A sub-record appears
+only where a field has variants (the waveform, the antenna pattern, the motion sampling) or where several numbers are
+coupled (`Noise`, `Agc`, `Adc`). `Radar.replace(...)` and `Radar.to(device)` return a new radar; `Radar.from_dict` /
+`to_dict` read and write the flat configuration format, including TI-style FMCW keys.
+
+The radar has four verbs, two halves and their fusion:
+
+- `radar.trace(scene, targets, times=...)` runs the world half (world sampling, Channel discovery and replay,
+  round-trip composition, scattering, antenna weighting) and returns `Paths`;
+- `radar.echo(paths)` runs the instrument half (waveform synthesis, the receive chain, the output domain, the
+  processing axes) and returns a `Result`;
+- `radar.simulate(...)` fuses the two and stacks every frame; `radar.stream(...)` yields one frame at a time.
+
+`radar.echo(radar.trace(...))` is bit-identical to `radar.simulate(...)`. The world-facing verbs take the
+propagation request (`los=`, `reflections=`, `transmission=`, `diffraction=`, `environment=`), the in-frame sampling
+(`motion=`) and the differentiation mode (`ad_mode=`, Channel's name). A `Result` holds the cube
+`[frame, TX, RX, slow, fast]` with its `axis_names` and the `ProcessingAxes` every processing stage reads;
+`result.frame(i)` is a `Frame` whose methods (`range_profile`, `range_doppler`, `range_angle`, `points`, `image`, ...)
+are facades over `witwin.radar.processing`.
+
+The root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Chirp`, `Compression`, `Coupling`, `Emitter`, `Fluctuation`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `MeshTargets`, `Motion`, `Network`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `RcsTable`, `Result`, `ScatteringMatrix`, `StructureTargets`, `capabilities` and `processing`. Advanced records stay importable from their owner modules.
 
 ## Architecture
 
@@ -43,102 +116,21 @@ The release build matrix currently uses Torch 2.10 with CUDA 12.8 for each suppo
 witwin.core Scene/DynamicScene
         |
         v
-Radar simulation session -> Channel propagation -> round-trip path composition
-        |                                      |
-        +-> scattering -> sensor/frontend -----+
-                                               v
-                       FMCW / OFDM / pulsed synthesis
-                                               v
-                          typed processing products
+Radar session -> Channel one-way legs -> round-trip composition (native join)
+        |                                     |
+        +-> scattering -> antennas ----------+
+                                              v
+                      FMCW / OFDM / pulsed synthesis -> receive chain
+                                              v
+                                typed processing products
 ```
 
-Production ownership is intentionally shallow:
-
-- `witwin/radar/radar.py` — the flat `Radar` record, its waveforms, its pose, and the flat-configuration loader;
-- `witwin/radar/targets.py` — the target vocabulary: positions, cross section or strength, trajectory, and identity;
-- `witwin/radar/simulation.py` — scene-session execution; `motion.py`, `binding.py`, `adaptive.py` and `results.py` hold the sampling record, the scene binding, adaptive motion control, and the published results;
-- `witwin/radar/channel.py` — the only production Channel importer;
-- `witwin/radar/propagation.py` and `witwin/radar/paths.py` — propagation policy and round-trip composition;
-- `witwin/radar/scattering.py`, `sensors.py`, and `frontend.py` — radar physics around the path;
-- `witwin/radar/synthesis/` — native waveform synthesis;
-- `witwin/radar/processing/` — range, Doppler, angle, detection, and tracking products;
-- `witwin/radar/cuda/` — the native runtime and kernels.
-
-## FMCW: spectrum first
-
-FMCW synthesis directly generates the Dirichlet range spectrum in native CUDA by default. The default is `output_domain="spectrum"` in both the typed FMCW spec and the flat radar configuration. Set `output_domain="beat"` only when a caller explicitly needs a synthesized time-domain beat signal.
-
-The result carries named axes and an output-domain field. Downstream processing uses that metadata, so it does not apply an extra range FFT to a spectrum or omit the FFT for beat samples.
-
-## Main API
-
-`Radar` is one flat immutable record in SI units. A sub-record appears only where a field has variants (the waveform, the antenna pattern, the motion sampling) or where several numbers are coupled (`Noise`, `Agc`, `Adc`); the array, the pose and the one-number receive stages are fields.
-
-```python
-from witwin.radar import Motion, Noise, PointTargets, Radar
-
-radar = Radar.from_dict(CONFIG, noise=Noise(figure=10.0), seed=20260727, look_at=(0.0, 0.0, -3.0))
-targets = PointTargets(positions=[(0.0, 0.0, -3.0)], rcs=1.0)
-result = radar.simulate(scene, targets, times=(0.0, 0.1, 0.2), los=True, reflections=1, motion=Motion.auto())
-```
-
-`Radar.from_dict` reads the flat FMCW configuration format examples and config files use, in its vendor units, and is the only place those units are read. Every other field is a keyword override in SI, so a receive chain and a pose attach in the same call. `Radar.from_json` loads the same mapping from a file. Keys outside the format are refused by name rather than stored.
-
-The radar has four verbs, and they are two halves and their fusion:
-
-- `radar.trace(scene, targets, times=...)` runs the world half — world sampling, Channel epochs, round-trip composition, scattering and antenna weighting — and returns a `Paths`;
-- `radar.echo(paths)` runs the instrument half — waveform synthesis, the receive chain, the output domain and the processing axes — and returns a `Result`;
-- `radar.simulate(...)` fuses the two and stacks every frame;
-- `radar.stream(...)` fuses them and yields one frame at a time, so a sequence too long to hold as a stacked cube is still producible.
-
-All four share one session loop and one synthesis route, so `radar.echo(radar.trace(...))` is bit-identical to `radar.simulate(...)`, asserted with `torch.equal` across every motion kind, both FMCW output domains, with and without a receive chain, and with oscillator phase noise.
-
-The split buys reuse and costs retention. One trace can be echoed by several receive chains, seeds or output domains without re-solving the world, and a radar the rows do not describe is refused by name — including a phase-noise receiver against paths traced without ADC instants. Against that, a `Paths` holds every evaluated observation's rows, roughly twenty bytes per live row summed over every evaluated observation of every frame, so an ADC-refreshed sequence is expensive. `simulate` never pays that: a frame's observations stay a generator it drains one at a time. An adaptive trace retains its accepted partition rather than its schedule, so its retained row count is the probes and not the observations.
-
-`Radar.simulate(...)` accepts a Core scene, a required `PointTargets`, `StructureTargets` or `MeshTargets` record that says where the scatterers are and how strongly they scatter, the frame times, the propagation request as `los` and `reflections`, the in-frame resampling as `motion`, and the differentiation mode as `ad_mode` (Channel's name for it). `Radar.trace(...)` takes the same arguments. `simulate` and `echo` both return `Result`, whose cube is organized as `[frame, TX, RX, slow, fast]`, whose `axis_names` names those axes, and whose `axes` is the `ProcessingAxes` record every processing stage reads, built once from the waveform spec and the array that produced the cube.
-
-`Radar.stream(...)` runs the same session and yields each frame as its own one-frame `Result`. Use it when the sequence is longer than the stacked cube can be held in device memory; the frames are bit-exact against `simulate` and peak allocation no longer scales with the frame count.
-
-A radar is never edited in place: `Radar.replace(...)` and `Radar.to(device)` return a new one, and a radar retains nothing from a run, so a result is the only thing that can say which frame a diagnostic describes.
-
-The root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Chirp`, `Compression`, `Coupling`, `Emitter`, `Fluctuation`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `MeshTargets`, `Motion`, `Network`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `RcsTable`, `Result`, `ScatteringMatrix`, `StructureTargets`, `capabilities` and `processing`. Advanced records stay importable from their owner modules.
-
-Signal processing is exported through `witwin.radar.processing`; typed products include processing cubes, range profiles, Range-Doppler maps, beam cubes, detections, and point clouds. `result.frame(i)` returns the `Frame` that pairs one frame's cube with that metadata; its `processing_cube()`, `range_profile()`, `range_doppler()`, `array()` and `points()` are facades over that package and compute nothing themselves.
-
-See `docs/pipeline_guide.md` for the full contract and `examples/single_point.py` for a maintained end-to-end example.
-
-## Tests and governance
-
-```bash
-pytest tests/
-pytest tests/ --gpu
-python ci/run_ci_tier.py quick
-```
-
-The quick tier includes canonical Ruff formatting/lint, exact-clone detection, architectural, public-surface, documentation, release-claim, workflow-reference, and compatibility-removal gates. Required-Channel workflows install the Channel extra, record its build fingerprint, and permit zero skips caused by a missing Channel runtime.
-
-No benchmark, GPU result, wheel load, or remote workflow is claimed as executed merely because its command exists. Current performance evidence and outstanding measurements are documented in `PERFORMANCE.md`.
-
-## Examples
-
-```bash
-python -m examples.single_point
-python -m examples.music_imaging
-python -m examples.rgbd_range_doppler --input path/to/depths.npz
-```
-
-All maintained scene-driven examples require CUDA and Channel.
-
-## Documentation
-
-- Pipeline: `docs/pipeline_guide.md`
-- Development standard: `docs/dev/standards/radar-adr-021-code-layout-comments-and-mathematical-ownership.md`
-- Governance and gates: `docs/dev/standards/radar-adr-026-generated-governance-and-trimmed-gates.md`
-- Release deferrals: `docs/dev/release-deferrals.md`
-- History (finished plans, phase records, superseded measurements): `docs/dev/archive/README.md`
-- AD capability matrix: `docs/dev/radar-ad-capability-matrix.md`
-- AD tape/budget ledger: `docs/dev/ad-tape-and-budget-ledger.md`
+There is one native backend (`witwin/radar/cuda/`), with no CPU or Torch fallback for simulation; Channel is reached
+only through `witwin/radar/channel.py`. Module ownership and the development rules are in [`AGENTS.md`](AGENTS.md);
+how to build, test and contribute is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License and citation
 
-WiTwin Radar uses the WiTwin dual-license model. See the [WiTwin licensing page](https://witwin.ai/license). The simulator is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis); cite the RF-Genesis SenSys 2023 paper when that prior work is relevant.
+WiTwin Radar uses the WiTwin dual-license model. See the [WiTwin licensing page](https://witwin.ai/license). The
+simulator is derived from [RF-Genesis](https://github.com/Asixa/RF-Genesis); cite the RF-Genesis SenSys 2023 paper
+when that prior work is relevant.
