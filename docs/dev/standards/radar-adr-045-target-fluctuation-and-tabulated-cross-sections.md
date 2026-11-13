@@ -57,7 +57,11 @@ bistatic aspect `theta = acos(axis . b / |b|)`, `b = u_in + u_out` the
 bisector of the leg directions at the site (the monostatic aspect when the
 two coincide), and interpolates the table linearly in `theta`. Its VJP and JVP
 are exact jets over the leg directions and the axis (one owner slot per thread,
-the join's frozen CSR, no atomics). The table is host data and takes no
+the join's frozen CSR, no atomics). On a slot-major batch it strides one slot's
+tables over every slot, like the aspect and facet families, bit-identically to
+per-slot table copies. The site's departure bearing is the outbound leg's last
+segment reversed (the outbound leg runs from the receiver to the site,
+R-ADR-039). The table is host data and takes no
 derivative; a requires-grad table is refused. On the axis (`theta = 0, pi`),
 where `d theta / d cos theta` is singular, and for exact forward scatter
 (`b = 0`), the derivative is the zero one-sided limit.

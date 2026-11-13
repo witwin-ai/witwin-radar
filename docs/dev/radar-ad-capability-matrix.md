@@ -192,8 +192,8 @@ compiled scene; the facet families themselves carry it.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| scatter/facet_response | leg directions, facet corners, site positions | vjp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | fd |
-| scatter/facet_response | leg directions, facet corners, site positions | jvp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | adjoint |
+| scatter/facet_response | leg directions, facet corners, float64 site positions (2x2 matrix per row) | vjp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | fd |
+| scatter/facet_response | leg directions, facet corners, float64 site positions (2x2 matrix per row) | jvp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | adjoint |
 | facets/facet_geometry | world vertices | both | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_facet_scatter_kernel.py::test_facet_geometry_and_its_two_companions | adjoint |
 | mesh/trace | authored mesh vertices to the composed rows | vjp | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_mesh_targets.py::test_the_vertex_gradient_matches_finite_differences | fd |
 | scatter/table_response | leg directions, table axis | both | SUP | native-companion | witwin/radar/scattering.py::_TableResponse | tests/test_target_fluctuation_and_tables.py::test_the_table_operator_matches_finite_differences_and_its_adjoint | fd |

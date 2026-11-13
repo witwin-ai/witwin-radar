@@ -47,38 +47,39 @@ matrix per layer with phase thickness `delta = k_z d`, each scaled by
 `exp(Im delta)` so a thick lossy layer cannot overflow (`r` is invariant to the
 scale), vacuum outside and behind. Both coefficients are in the tangential-field
 convention those admittances define, so they are equal at normal incidence;
-`r_TM` is the negative of the textbook magnetic-field TM coefficient. Its slope in `cos theta` is carried by a one-lane
-jet and chained into the facet's derivative.
+`r_TM` is the negative of the textbook magnetic-field TM coefficient. Their
+slopes in `cos theta` are carried by a one-lane jet and chained into the
+facet's derivative.
 
-### 3. The co-polar scalar
+### 3. TE and TM on the facet's own basis
 
-Until the site carries a 2x2 scattering matrix (M4-4), a facet returns one
-co-polar number:
+A facet returns a 2x2 scattering matrix (R-ADR-042). The incident field is
+split on the facet's TE direction `te = (n x k_i)/|n x k_i|` and TM direction
+`tm = te x k_i`; each part induces the physical-optics current of a conductor
+weighted by its own coefficient,
 
 ```
-Gamma = w r_TE + (1 - w) r_TM,    w = (p . s)^2 / |p_perp|^2
+G = -(r_TE R te te^T + r_TM R tm tm^T)
 ```
 
-with `p` the radar's world polarization, `s = n x u_in` the normal of the plane
-of incidence and `p_perp` the part of `p` transverse to `u_in`. Both terms are
-tangential-field coefficients, equal at normal incidence (where `w` is
-undefined and set to `1/2`), and both `-1` on a conductor. The angle is the
-incidence angle on the facet, `cos theta_i = n . u_in`: the tangent-plane
-(Kirchhoff) approximation, in which each facet reflects the incident wave as its
-own infinite plane would. At a bistatic specular point that is half the
-bistatic angle; a monostatic return from a tilted facet reads the coefficient at
-the tilt, although the facet's PO term there is a sidelobe rather than a
-stationary point.
-
-When the transport task's 2x2 site matrix exists, `r_TE` and `r_TM` become its
-diagonal in the facet's TE/TM basis and `w` disappears; the stack is unchanged.
+so a conductor (`r_TE = r_TM = -1`) is the vector PO dyadic `R`, and the
+matrix the join receives is `G` projected onto its site bases. At normal
+incidence `te` is undefined and the two coefficients are equal; any transverse
+pair serves. The angle is the incidence angle on the facet,
+`cos theta_i = -n . k_i`: the tangent-plane (Kirchhoff) approximation, in which
+each facet reflects the incident wave as its own infinite plane would. At a
+bistatic specular point that is half the bistatic angle; a monostatic return
+from a tilted facet reads the coefficients at the tilt, although the facet's PO
+term there is a sidelobe rather than a stationary point. The radar's
+polarization enters only through the legs' fields, so no polarization weight is
+part of the law.
 
 ## Evidence
 
-* `tests/test_facet_scatter_kernel.py`: the kernel's response for a
-  20 mm dielectric layer equals a brute-force PO integral times the independent
-  Airy coefficient (`tests/reference/radar_oracles.py`) with the same weight, to
-  `2e-4`.
+* `tests/test_facet_scatter_kernel.py`: the kernel's matrix for a 20 mm
+  dielectric layer equals a brute-force vector PO integral with the independent
+  Airy TE and TM coefficients (`tests/reference/radar_oracles.py`), projected on
+  the join's bases, to `2e-4` of the row's largest element.
 * `tests/test_mesh_targets.py::test_metal_and_dielectric_plates_differ_by_the_slab_coefficient`
   (the M4-3 acceptance): a broadside plate of each MAT-3 material over the same
   plate in PEC is `-Gamma(normal incidence)` of the Airy formula, to 0.01 dB and
@@ -87,3 +88,6 @@ diagonal in the facet's TE/TM basis and `w` disappears; the stack is unchanged.
   at 35 degrees incidence, TE and TM, a plate at the bistatic specular point
   over the same plate in PEC equals Channel's own coefficient for that material
   read from a MAT-3 wall bounce, to `2e-3` in magnitude and 10 mrad in phase.
+  Read through the unprojected legs, a TM wall bounce carries the incident unit
+  field's normal component `sin(theta_i)` and comes back with `-r_TM` in the
+  tangential convention; the test divides that out.
