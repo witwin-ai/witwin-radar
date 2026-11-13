@@ -342,8 +342,9 @@ class MeshTargets:
     ``max_sites`` picks the finest such cell that keeps the site count within
     the budget; a merged site keeps every facet's own term and phase, valid
     while the cell is well inside the far field of the radar
-    (``k D^2 / (8 R)`` small for a cell of extent ``D`` at range ``R``), and
-    is occluded as one point.
+    (``k D^2 / (8 R)`` small for a cell of extent ``D`` at range ``R``) and
+    small against the surface's curvature, and is occluded as one point, at
+    the member facet nearest the cell's mean.
     """
 
     #: Which structures scatter. ``None`` takes every structure in the scene.

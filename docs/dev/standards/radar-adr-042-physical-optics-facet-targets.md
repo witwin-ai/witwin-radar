@@ -97,7 +97,12 @@ phase of its front point and a broadside PEC plate `-j 4 pi A / lambda^2`.
 * **Sites and clusters.** A merged site (`cluster_size_m`, `max_sites`) keeps
   every facet's own term and phase, which is exact while the cluster of extent
   `D` is in the far field of both legs, `k D^2 / (8 R) << 1`. The cluster is
-  occluded as one point: its centroid's leg validity gates all its facets.
+  occluded as one point: the site sits at the centroid of its anchor facet (the
+  member nearest the members' mean, so the site stays on the surface; the mean
+  itself lies inside a closed curved body, where every leg is occluded) and that
+  point's leg validity gates all its facets. Facets of one cell that face away
+  from each other are only partly lit, so a cell should be small against the
+  surface's radius of curvature as well.
 * **Occlusion.** By the legs: a facet whose site has no valid line of sight
   (hidden by the rest of the mesh or the world) contributes nothing. The join
   accepts such a site as an empty contribution for a mesh target. A facet is in

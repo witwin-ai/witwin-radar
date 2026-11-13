@@ -230,6 +230,22 @@ def test_a_site_budget_merges_facets_within_the_far_field_of_the_cluster(budget)
     assert abs(cmath.phase(merged / exact)) < 0.05
 
 
+@pytest.mark.parametrize("budget", [2048, 512])
+def test_a_site_budget_on_a_curved_body_keeps_its_sites_on_the_surface(budget):
+    """A merged site of a sphere sits on its anchor facet, so its legs are not occluded by the sphere."""
+
+    from witwin.radar import MeshTargets
+
+    vertices, faces = sc.sphere_mesh(96, radius_m=0.05, range_m=RANGE_M)
+    scene = sc.mesh_scene(vertices, faces, material=_material(None))
+    radar = sc.radar()
+    exact = _coherent(radar, scene, MeshTargets())
+    rows = radar.trace(scene, MeshTargets(max_sites=budget), times=(0.0,), reflections=0).rows()
+    assert rows.path_count < budget
+    merged = complex(rows.complex_transfer_ref.to(torch.complex128).sum())
+    assert abs(ref.db(abs(merged / exact) ** 2)) < 0.5
+
+
 def test_the_vertex_gradient_matches_finite_differences():
     """Reverse mode from the cube back to the authored mesh vertices, through legs and facets."""
 

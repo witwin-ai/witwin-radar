@@ -311,7 +311,8 @@ def test_facet_geometry_and_its_two_companions():
     host = vertices.cpu().numpy()
     np.testing.assert_array_equal(corners.cpu().numpy(), host[faces].reshape(3, 9))
     centroid = host[faces].mean(axis=1)
-    np.testing.assert_allclose(sites.cpu().numpy(), [centroid[0], centroid[1:].mean(axis=0)], rtol=1e-6)
+    # Each site sits at its anchor, the first of its members.
+    np.testing.assert_allclose(sites.cpu().numpy(), [centroid[0], centroid[1]], rtol=1e-6)
 
     leaf = vertices.clone().requires_grad_(True)
     tangent = torch.randn_like(vertices)

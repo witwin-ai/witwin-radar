@@ -3,8 +3,12 @@
 // Two operator families.
 //
 // facet_geometry gathers one frame's facet corners from the deformed world
-// vertices and places each scatter site at the mean of its member facets'
-// centroids. Both outputs are linear in the vertices, so the forward-mode
+// vertices and places each scatter site at the centroid of its anchor facet,
+// the first of its members (the host orders each site's facets so that the
+// anchor is the member nearest their mean, which keeps the site ON the
+// surface: a mean of a curved patch's centroids lies inside a closed body,
+// where every leg to it is occluded). Both outputs are linear in the
+// vertices, so the forward-mode
 // companion is the forward operator applied to the vertex tangent and the
 // reverse companion is its transpose, reduced per vertex through a frozen
 // vertex-incidence CSR: one thread owns one vertex, no atomics.
@@ -530,9 +534,10 @@ __global__ void facet_response_backward_kernel(
 // Facet geometry.
 // ---------------------------------------------------------------------------
 
-// Threads [0, F): corners of facet t. Threads [F, F + S): site s, the mean of
-// its member facets' centroids. Linear in the vertices, so this kernel run on
-// a vertex tangent is the forward-mode companion.
+// Threads [0, F): corners of facet t. Threads [F, F + S): site s, the
+// centroid of its anchor facet site_facets[site_offsets[s]]. Linear in the
+// vertices, so this kernel run on a vertex tangent is the forward-mode
+// companion.
 __global__ void facet_geometry_kernel(
     const float* __restrict__ vertices, const int64_t* __restrict__ faces,
     const int64_t* __restrict__ site_offsets, const int64_t* __restrict__ site_facets,
@@ -549,18 +554,13 @@ __global__ void facet_geometry_kernel(
   }
   const int s = thread - num_facets;
   if (s >= num_sites) return;
-  const int64_t begin = site_offsets[s];
-  const int64_t end = site_offsets[s + 1];
+  const int64_t anchor = site_facets[site_offsets[s]];
   double sum[3] = {0.0, 0.0, 0.0};
-  for (int64_t entry = begin; entry < end; ++entry) {
-    const int64_t f = site_facets[entry];
-    for (int corner = 0; corner < 3; ++corner) {
-      const int64_t vertex = faces[f * 3 + corner];
-      for (int axis = 0; axis < 3; ++axis) sum[axis] += vertices[vertex * 3 + axis];
-    }
+  for (int corner = 0; corner < 3; ++corner) {
+    const int64_t vertex = faces[anchor * 3 + corner];
+    for (int axis = 0; axis < 3; ++axis) sum[axis] += vertices[vertex * 3 + axis];
   }
-  const double weight = end > begin ? 1.0 / (3.0 * static_cast<double>(end - begin)) : 0.0;
-  for (int axis = 0; axis < 3; ++axis) sites[static_cast<int64_t>(s) * 3 + axis] = static_cast<float>(sum[axis] * weight);
+  for (int axis = 0; axis < 3; ++axis) sites[static_cast<int64_t>(s) * 3 + axis] = static_cast<float>(sum[axis] / 3.0);
 }
 
 // One thread per vertex: the transpose of facet_geometry_kernel, reduced over
@@ -568,8 +568,8 @@ __global__ void facet_geometry_kernel(
 __global__ void facet_geometry_backward_kernel(
     const int64_t* __restrict__ vertex_offsets, const int64_t* __restrict__ vertex_entries,
     const int64_t* __restrict__ facet_site, const int64_t* __restrict__ site_offsets,
-    const float* __restrict__ grad_corners, const float* __restrict__ grad_sites,
-    float* __restrict__ grad_vertices, int num_vertices) {
+    const int64_t* __restrict__ site_facets, const float* __restrict__ grad_corners,
+    const float* __restrict__ grad_sites, float* __restrict__ grad_vertices, int num_vertices) {
   const int vertex = blockIdx.x * blockDim.x + threadIdx.x;
   if (vertex >= num_vertices) return;
   double g[3] = {0.0, 0.0, 0.0};
@@ -578,7 +578,7 @@ __global__ void facet_geometry_backward_kernel(
     const int64_t f = incidence / 3;
     const int64_t corner = incidence % 3;
     const int64_t s = facet_site[f];
-    const double weight = 1.0 / (3.0 * static_cast<double>(site_offsets[s + 1] - site_offsets[s]));
+    const double weight = site_facets[site_offsets[s]] == f ? 1.0 / 3.0 : 0.0;
     for (int axis = 0; axis < 3; ++axis) {
       g[axis] += grad_corners[f * 9 + corner * 3 + axis] + weight * grad_sites[s * 3 + axis];
     }
@@ -699,14 +699,15 @@ void facet_geometry_forward_cuda(
 void facet_geometry_backward_cuda(
     const torch::stable::Tensor& vertex_offsets, const torch::stable::Tensor& vertex_entries,
     const torch::stable::Tensor& facet_site, const torch::stable::Tensor& site_offsets,
-    const torch::stable::Tensor& grad_corners, const torch::stable::Tensor& grad_sites,
-    torch::stable::Tensor grad_vertices) {
+    const torch::stable::Tensor& site_facets, const torch::stable::Tensor& grad_corners,
+    const torch::stable::Tensor& grad_sites, torch::stable::Tensor grad_vertices) {
   check_cuda_long(vertex_offsets, "vertex_offsets");
   const int vertices = checked_int(vertex_offsets.numel() - 1, "vertices");
   check_cuda_long(facet_site, "facet_site");
   const int64_t facets = facet_site.numel();
   check_long_count(vertex_entries, facets * 3, "vertex_entries");
   check_cuda_long(site_offsets, "site_offsets");
+  check_long_count(site_facets, facets, "site_facets");
   check_count(grad_corners, facets * 9, "grad_corners");
   check_count(grad_sites, (site_offsets.numel() - 1) * 3, "grad_sites");
   check_count(grad_vertices, static_cast<int64_t>(vertices) * 3, "grad_vertices");
@@ -716,7 +717,7 @@ void facet_geometry_backward_cuda(
       linear_grid(vertices), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_vertices)>>>(
       vertex_offsets.const_data_ptr<int64_t>(), vertex_entries.const_data_ptr<int64_t>(),
       facet_site.const_data_ptr<int64_t>(), site_offsets.const_data_ptr<int64_t>(),
-      grad_corners.const_data_ptr<float>(), grad_sites.const_data_ptr<float>(),
+      site_facets.const_data_ptr<int64_t>(), grad_corners.const_data_ptr<float>(), grad_sites.const_data_ptr<float>(),
       grad_vertices.mutable_data_ptr<float>(), vertices);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }

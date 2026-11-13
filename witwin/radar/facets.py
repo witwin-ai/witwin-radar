@@ -114,14 +114,14 @@ class _FacetGeometry(torch.autograd.Function):
         # The operator is linear, so its tape is the topology: the vertex
         # incidence CSR the reverse pass reduces over, the face table the
         # forward-mode pass gathers through.
-        tables = (model.vertex_offsets, model.vertex_entries, model.facet_site, model.site_offsets)
+        tables = (model.vertex_offsets, model.vertex_entries, model.facet_site, model.site_offsets, model.site_facets)
         ctx.save_for_backward(*tables)
         ctx.save_for_forward(model.faces, model.site_offsets, model.site_facets)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_corners, grad_sites):
-        vertex_offsets, vertex_entries, facet_site, site_offsets = ctx.saved_tensors
+        vertex_offsets, vertex_entries, facet_site, site_offsets, site_facets = ctx.saved_tensors
         grad_vertices = torch.empty(
             (int(vertex_offsets.shape[0]) - 1, 3), dtype=torch.float32, device=grad_corners.device
         )
@@ -130,6 +130,7 @@ class _FacetGeometry(torch.autograd.Function):
             vertex_entries,
             facet_site,
             site_offsets,
+            site_facets,
             grad_corners.contiguous(),
             grad_sites.contiguous(),
             grad_vertices,
@@ -235,7 +236,7 @@ class FacetSites:
         points = np.concatenate(host_vertices, axis=0)
         centroids = points[faces].mean(axis=1)
         site_of = _cluster(centroids, cluster_size_m=self.cluster_size_m, max_sites=self.max_sites)
-        site_facets = np.argsort(site_of, kind="stable")
+        site_facets = _anchored_order(site_of, centroids)
         site_counts = np.bincount(site_of, minlength=int(site_of.max()) + 1)
         site_offsets = np.concatenate(([0], np.cumsum(site_counts)))
         incidence = faces.reshape(-1)
@@ -348,7 +349,7 @@ def _cluster(centroids: np.ndarray, *, cluster_size_m: float | None, max_sites: 
     span = float(np.ptp(centroids, axis=0).max()) if count > 1 else 1.0
     low, high = span * 1e-6, max(span, 1e-9) * 2.0
     best = _cells(centroids, high)
-    for _ in range(48):
+    for _ in range(24):
         middle = math.sqrt(low * high)
         labels = _cells(centroids, middle)
         if int(labels.max()) + 1 <= int(max_sites):  # type: ignore[arg-type]
@@ -358,9 +359,29 @@ def _cluster(centroids: np.ndarray, *, cluster_size_m: float | None, max_sites: 
     return best
 
 
+def _anchored_order(site_of: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+    """Facets grouped by site, each site's anchor first: the member nearest the members' mean.
+
+    The site is placed at its anchor's centroid. A mean of a curved patch's
+    centroids lies inside a closed body, where every leg to it would be
+    occluded; the anchor keeps the site on the surface.
+    """
+
+    counts = np.bincount(site_of)
+    means = np.zeros((counts.shape[0], 3))
+    np.add.at(means, site_of, centroids)
+    means /= counts[:, None]
+    distance = np.linalg.norm(centroids - means[site_of], axis=1)
+    # Grouped by site, nearest first within a site; ties keep face order.
+    return np.lexsort((np.arange(site_of.shape[0]), distance, site_of))
+
+
 def _cells(centroids: np.ndarray, size: float) -> np.ndarray:
-    keys = np.floor(centroids / size).astype(np.int64)
-    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    cells = np.floor(centroids / size).astype(np.int64)
+    cells -= cells.min(axis=0)
+    extent = cells.max(axis=0) + 1
+    keys = (cells[:, 0] * extent[1] + cells[:, 1]) * extent[2] + cells[:, 2]
+    _, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
     order = np.argsort(np.argsort(first, kind="stable"), kind="stable")
     return order[inverse.reshape(-1)].astype(np.int64)
 

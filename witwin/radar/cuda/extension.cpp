@@ -21,15 +21,15 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def("path_interpolate_backward(Tensor x, Tensor indices, Tensor weights, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("path_interpolate_jvp(Tensor x, Tensor indices, Tensor weights, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   // Physical-optics facets (facet_scatter.cu). facet_geometry gathers one
-  // frame's facet corners and places each site at the mean of its member
-  // facets' centroids; it is linear, so its JVP is itself on the tangent.
+  // frame's facet corners and places each site at its anchor facet's
+  // centroid; it is linear, so its JVP is itself on the tangent.
   // facet_response is one complex factor per composed row: the coherent sum of
   // the site's facets' PO terms with the material's co-polar reflection, the
   // coherent roughness factor and a Lambertian diffuse term. The material table,
   // wavenumber, polarization and seed take no derivative.
   m.def("facet_geometry_forward(Tensor vertices, Tensor faces, Tensor site_offsets, Tensor site_facets, Tensor(a!) corners, Tensor(b!) sites) -> ()");
   m.def("facet_geometry_jvp(Tensor tan_vertices, Tensor faces, Tensor site_offsets, Tensor site_facets, Tensor(a!) tan_corners, Tensor(b!) tan_sites) -> ()");
-  m.def("facet_geometry_backward(Tensor vertex_offsets, Tensor vertex_entries, Tensor facet_site, Tensor site_offsets, Tensor grad_corners, Tensor grad_sites, Tensor(a!) grad_vertices) -> ()");
+  m.def("facet_geometry_backward(Tensor vertex_offsets, Tensor vertex_entries, Tensor facet_site, Tensor site_offsets, Tensor site_facets, Tensor grad_corners, Tensor grad_sites, Tensor(a!) grad_vertices) -> ()");
   m.def("facet_response_forward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor(a!) s_re, Tensor(b!) s_im, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
   m.def("facet_response_jvp(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_corners, Tensor tan_sites, Tensor(a!) tan_s_re, Tensor(b!) tan_s_im, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
   m.def("facet_response_backward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, Tensor facet_site, Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, Tensor(b!) grad_dir_out, Tensor(c!) grad_corners, Tensor(d!) grad_sites, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
