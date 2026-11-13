@@ -78,7 +78,9 @@ The `witwin.radar.processing` facade exports typed products and algorithms for:
 - phase-comparison and FFT AoA;
 - conventional, MVDR, and MUSIC beamforming/imaging;
 - CA-CFAR and OS-CFAR detection;
-- point-cloud generation and nearest-neighbour association.
+- point-cloud generation and nearest-neighbour association;
+- SAR and ISAR imaging by time-domain back-projection (`Aperture`, `isar_aperture`, `backproject`; one native launch per image on CUDA, differentiable with respect to the samples, R-ADR-054);
+- calibration against a known scene: per-channel gain and phase from a reflector, round-trip delay bias, and background subtraction of leakage and static clutter.
 
 The processing layer consumes named-axis metadata. For FMCW spectrum input, range-profile construction is an identity-domain conversion rather than another FFT; explicit beat input takes the FFT route.
 
