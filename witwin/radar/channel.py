@@ -220,6 +220,9 @@ def _detached(spec: RadarEndpointSpec) -> RadarEndpointSpec:
         positions_m=spec.positions_m.detach(),
         polarizations=spec.polarizations.detach(),
         powers_w=None if spec.powers_w is None else spec.powers_w.detach(),
+        # The float64 site the discovered rows' path length is computed from
+        # (R-ADR-040); dropping it here would hand the join the float32 site.
+        precise_positions_m=None if spec.precise_positions_m is None else spec.precise_positions_m.detach(),
     )
 
 
