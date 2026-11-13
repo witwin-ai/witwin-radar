@@ -94,6 +94,35 @@ def _carries_derivative(value: object) -> str | None:
     return None
 
 
+def require_leg_ad_mode(leaf: str, value: object, ad_mode: str, *, moves: str) -> None:
+    """Refuse a leg endpoint leaf whose derivative ``ad_mode`` would not carry.
+
+    A leaf that moves an endpoint of the propagation legs - a radar element, a
+    scatter site - reaches the cube through Channel's fixed-topology replay,
+    which publishes the endpoint-position derivative only in the AD mode the
+    verb asks for: ``"vjp"`` for a gradient and ``"jvp"`` for a forward
+    tangent. Under ``"none"`` the legs are discovery's detached rows, and in
+    the other mode they carry the other kind, so what reached the caller would
+    be the Radar-side stages' part alone (the join, the pattern, a facet's
+    response) - a silently partial derivative, or none. It is refused instead.
+
+    ``leaf`` names the input, ``moves`` says which endpoints it moves. Host
+    metadata only (``requires_grad`` and the forward-AD unpack): no device
+    work and no synchronization, so it may run once per frame.
+    """
+
+    carrier = _carries_derivative(value)
+    if carrier is None:
+        return
+    wanted = "vjp" if carrier == "a gradient" else "jvp"
+    if ad_mode != wanted:
+        raise RuntimeError(
+            f"{leaf} carries {carrier}, which {moves}, and the legs carry that derivative only when the verb asks "
+            f"Channel for it: pass ad_mode={wanted!r} (got ad_mode={ad_mode!r}), or detach it to simulate without "
+            "the derivative."
+        )
+
+
 def refuse_derivative(stage: str, reason: str, **tensors: object) -> None:
     """Refuse a differentiable input to a stage below the wall, at its entry.
 

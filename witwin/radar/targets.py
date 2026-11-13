@@ -574,7 +574,9 @@ class _PositionTrajectory:
         return Kinematics(positions_m=positions)
 
 
-def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *, radar: Any) -> tuple[Any, Any]:
+def as_session_targets(
+    targets: PointTargets | StructureTargets | MeshTargets, *, radar: Any, ad_mode: str | None
+) -> tuple[Any, Any]:
     """Split a target record into the site policy and the scatter response.
 
     The two halves go to two different owners - the binding places the sites,
@@ -582,6 +584,10 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
     one place that knows they came from one caller statement. The carrier and
     the device are taken from ``radar`` here, which is why neither is a field
     of a target record.
+
+    ``ad_mode`` is the verb's, handed to the site policy, which refuses a site
+    position carrying a derivative the legs will not carry in it; ``None`` is
+    a reader that replays no leg (ground-truth labels).
     """
 
     if isinstance(targets, MeshTargets):
@@ -596,7 +602,7 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
         response: Any = FacetScatterResponse(
             wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength), seed=targets.seed
         )
-        return ScatterSitePolicy.from_facets(facets), response
+        return ScatterSitePolicy.from_facets(facets, ad_mode=ad_mode), response
     if isinstance(targets, PointTargets):
         positions = targets.positions
         if not isinstance(positions, torch.Tensor):
@@ -607,9 +613,12 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
             positions,
             stable_ids=targets.ids,
             trajectory=None if targets.trajectory is None else _PositionTrajectory(targets.trajectory),
+            ad_mode=ad_mode,
         )
     elif isinstance(targets, StructureTargets):
-        policy = ScatterSitePolicy.structure_anchor(structure_ids=targets.structure_ids, stable_ids=targets.ids)
+        policy = ScatterSitePolicy.structure_anchor(
+            structure_ids=targets.structure_ids, stable_ids=targets.ids, ad_mode=ad_mode
+        )
     else:
         raise TypeError(
             f"targets must be PointTargets, StructureTargets or MeshTargets, got {type(targets).__name__}; where the "

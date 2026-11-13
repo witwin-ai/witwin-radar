@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
 
+from .policy import require_leg_ad_mode
 from .propagation import Kinematics, RadarEndpointSpec, endpoint_kinematics
 
 if TYPE_CHECKING:
@@ -174,6 +175,15 @@ class ScatterSitePolicy:
     ``power_w`` is the outbound-leg excitation and defaults to
     :data:`SITE_EXCITATION_POWER_W`. Changing it is almost always wrong; read
     that constant's note first.
+
+    ``ad_mode`` is the AD mode the legs are replayed in. A site position moves
+    an endpoint of both legs, so one carrying a derivative that mode does not
+    carry is refused (:func:`witwin.radar.policy.require_leg_ad_mode`): a
+    declared tensor when the policy is built, before any work; a trajectory's
+    positions, a structure anchor and a mesh target's world vertices each time
+    they are resolved, before the frame launches anything that reads them.
+    ``None`` is a policy no leg replays (ground-truth labels, a network's
+    second radar binding positions already admitted), which checks nothing.
     """
 
     source: str
@@ -184,6 +194,8 @@ class ScatterSitePolicy:
     trajectory: SiteTrajectory | None = None
     #: The facet source of a mesh target (:class:`witwin.radar.facets.FacetSites`).
     facets: Any = None
+    #: The AD mode the legs replay these sites in; ``None`` checks nothing.
+    ad_mode: str | None = None
 
     def __post_init__(self) -> None:
         if self.trajectory is not None and not callable(getattr(self.trajectory, "at", None)):
@@ -213,6 +225,13 @@ class ScatterSitePolicy:
             raise ValueError("a facets site policy, and only that policy, carries a facet source")
         if not float(self.power_w) > 0.0:
             raise ValueError("power_w must be positive")
+        self._admit("PointTargets.positions", self.positions_m)
+
+    def _admit(self, leaf: str, positions: object) -> None:
+        """Refuse site positions carrying a derivative the legs will not carry in this policy's AD mode."""
+
+        if self.ad_mode is not None:
+            require_leg_ad_mode(leaf, positions, self.ad_mode, moves="moves a scatter site, an endpoint of both legs")
 
     @classmethod
     def explicit(
@@ -222,6 +241,7 @@ class ScatterSitePolicy:
         stable_ids: tuple[int, ...] | None = None,
         power_w: float = SITE_EXCITATION_POWER_W,
         trajectory: SiteTrajectory | None = None,
+        ad_mode: str | None = None,
     ) -> ScatterSitePolicy:
         return cls(
             source=SITE_SOURCE_EXPLICIT,
@@ -229,6 +249,7 @@ class ScatterSitePolicy:
             stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
             power_w=power_w,
             trajectory=trajectory,
+            ad_mode=ad_mode,
         )
 
     @classmethod
@@ -238,6 +259,7 @@ class ScatterSitePolicy:
         structure_ids: tuple[int, ...] | None = None,
         stable_ids: tuple[int, ...] | None = None,
         power_w: float = SITE_EXCITATION_POWER_W,
+        ad_mode: str | None = None,
     ) -> ScatterSitePolicy:
         """Sites at the world anchors Core publishes for moving structures.
 
@@ -252,19 +274,23 @@ class ScatterSitePolicy:
             structure_ids=(None if structure_ids is None else tuple(int(value) for value in structure_ids)),
             stable_ids=None if stable_ids is None else tuple(int(v) for v in stable_ids),
             power_w=power_w,
+            ad_mode=ad_mode,
         )
 
     @classmethod
-    def from_facets(cls, facets: Any, *, power_w: float = SITE_EXCITATION_POWER_W) -> ScatterSitePolicy:
+    def from_facets(
+        cls, facets: Any, *, power_w: float = SITE_EXCITATION_POWER_W, ad_mode: str | None = None
+    ) -> ScatterSitePolicy:
         """Sites at a mesh target's facets, placed per snapshot by the native facet operator."""
 
-        return cls(source=SITE_SOURCE_FACETS, facets=facets, power_w=power_w)
+        return cls(source=SITE_SOURCE_FACETS, facets=facets, power_w=power_w, ad_mode=ad_mode)
 
     def resolve_frame(self, snapshot: Any, *, device: torch.device) -> tuple[torch.Tensor, Any]:
         """The site positions, and the facet frame they came from when this is a mesh target."""
 
         if self.source == SITE_SOURCE_FACETS:
-            frame = self.facets.resolve(snapshot, device=device)
+            # The world vertices are admitted inside, before the facet operator reads them.
+            frame = self.facets.resolve(snapshot, device=device, admit=self._admit)
             return frame.sites, frame
         return self.resolve(snapshot, device=device), None
 
@@ -280,11 +306,14 @@ class ScatterSitePolicy:
                 if not isinstance(sample, Kinematics):
                     raise TypeError("site trajectory.at(time_s) must return Kinematics")
                 positions = _site_positions(sample.positions_m, device=device)
+                self._admit("the output of PointTargets.trajectory", positions)
                 if positions.shape != _site_positions(self.positions_m, device=device).shape:
                     raise ValueError("a site trajectory must preserve material-point count and ordering")
                 return positions
             return _site_positions(self.positions_m, device=device)
-        return _structure_anchor_positions(snapshot, self.structure_ids, device=device)
+        anchors = _structure_anchor_positions(snapshot, self.structure_ids, device=device)
+        self._admit("a StructureTargets anchor (a structure's rigid-motion translation)", anchors)
+        return anchors
 
 
 def _site_positions(positions: SitePositions | None, *, device: torch.device) -> torch.Tensor:

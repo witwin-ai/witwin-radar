@@ -39,7 +39,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import torch
 
 from .frontend import Adc, Agc, Compression, FrontendChain, FrontendSpec, Iq, Noise
-from .policy import SPEED_OF_LIGHT_M_PER_S, _carries_derivative, refuse_derivative, require_real, resolve_device
+from .policy import (
+    SPEED_OF_LIGHT_M_PER_S,
+    _carries_derivative,
+    refuse_derivative,
+    require_leg_ad_mode,
+    require_real,
+    resolve_device,
+)
 from .sensors import Coupling, Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     FMCW_OUTPUT_DOMAINS,
@@ -1435,16 +1442,7 @@ class Radar:
         """
 
         for name in POSE_LEAVES:
-            carrier = _carries_derivative(getattr(self, name))
-            if carrier is None:
-                continue
-            wanted = "vjp" if carrier == "a gradient" else "jvp"
-            if ad_mode != wanted:
-                raise RuntimeError(
-                    f"Radar.{name} carries {carrier}, which moves every element position, and the legs carry "
-                    f"that derivative only when the verb asks Channel for it: pass ad_mode={wanted!r} (got "
-                    f"ad_mode={ad_mode!r})."
-                )
+            require_leg_ad_mode(f"Radar.{name}", getattr(self, name), ad_mode, moves="moves every element position")
 
     def _transmit_amplitude_scale(self, *, device: torch.device) -> torch.Tensor | None:
         """``sqrt(P / P_host)`` as a 0-dim tensor when ``power`` is a leaf, else ``None``.
@@ -1936,7 +1934,7 @@ class Radar:
             raise ValueError(f"max_round_trips must be a positive int or None, got {max_round_trips!r}")
         requested = (bool(los), reflections > 0, transmission, diffraction)
         components = {name for name, wanted in zip(PROPAGATION_COMPONENTS, requested, strict=True) if wanted}
-        sites, response = as_session_targets(targets, radar=self)
+        sites, response = as_session_targets(targets, radar=self, ad_mode=ad_mode)
         resolved = Motion.auto() if motion is None else motion
         return {
             "times": times,

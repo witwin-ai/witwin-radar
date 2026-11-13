@@ -52,8 +52,7 @@ from .display import summary_repr
 from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
-from .policy import _carries_derivative as _carries_value_derivative
-from .policy import refuse_derivative
+from .policy import refuse_derivative, require_leg_ad_mode
 from .propagation import (
     CompiledWorld,
     DiscoveryReport,
@@ -507,13 +506,9 @@ def pose_at(
         "delivered whole. The translation is a leaf; keep the rotation a host value.",
         rotation=rotation,
     )
-    carrier = _carries_value_derivative(translation)
-    if carrier is not None and ad_mode != ("vjp" if carrier == "a gradient" else "jvp"):
-        raise RuntimeError(
-            f"the radar pose trajectory's translation carries {carrier}, which moves every element "
-            "position, and the legs carry that derivative only in the matching AD mode: pass "
-            f"ad_mode={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got ad_mode={ad_mode!r})."
-        )
+    require_leg_ad_mode(
+        "the radar pose trajectory's translation", translation, ad_mode, moves="moves every element position"
+    )
     rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
     translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
     if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):

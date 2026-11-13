@@ -298,13 +298,13 @@ def mesh_budget_counts() -> dict[str, dict[str, dict[str, object]]]:
     from support.session_ledger import SessionLedger, profiled_copies
 
     from witwin.radar import MeshTargets, Motion, PointTargets
+    from witwin.radar.binding import ScatterSitePolicy
     from witwin.radar.facets import FacetSites
 
     scene = _plate_scene(_material(None), n=4)
     radar = sc.radar(sc.beat_fmcw(chirps=4))
-    frame = FacetSites(structure_ids=None, carrier_hz=sc.CARRIER_HZ, cluster_size_m=None, max_sites=None).resolve(
-        scene.snapshot(0.0), device=radar.device
-    )
+    facets = FacetSites(structure_ids=None, carrier_hz=sc.CARRIER_HZ, cluster_size_m=None, max_sites=None)
+    _, frame = ScatterSitePolicy.from_facets(facets).resolve_frame(scene.snapshot(0.0), device=radar.device)
     sites = frame.sites.detach().clone()
 
     def run(targets, frames):

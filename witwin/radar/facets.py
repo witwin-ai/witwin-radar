@@ -33,6 +33,7 @@ native.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -181,7 +182,9 @@ class FacetSites:
         #: The model's material tables on the tape of their leaves, when any is one.
         self._materials: tuple[torch.Tensor, torch.Tensor] | None = None
 
-    def resolve(self, snapshot: Any, *, device: torch.device) -> FacetFrame:
+    def resolve(self, snapshot: Any, *, device: torch.device, admit: Callable[[str, object], None]) -> FacetFrame:
+        """One frame's facets; ``admit(leaf, tensor)`` refuses world vertices whose derivative the legs drop."""
+
         states = _selected_states(snapshot, self.structure_ids)
         key = tuple(
             (
@@ -210,11 +213,14 @@ class FacetSites:
         ):
             return cached[2]
         vertices = [_world_vertices(state, device=device) for state in states]
+        stacked = vertices[0] if len(vertices) == 1 else torch.cat(vertices, dim=0)
+        # The vertices place every facet site, so a derivative they carry moves
+        # leg endpoints; the binding's policy admits it before anything reads them.
+        admit("the MeshTargets world-vertex tensor (mesh, deformation or rigid motion)", stacked)
         model = self._model
         if model is None or model.key != key or model.faces.device != device:
             model = self._build(states, vertices, key=key, device=device)
             self._model = model
-        stacked = vertices[0] if len(vertices) == 1 else torch.cat(vertices, dim=0)
         corners, sites = _FacetGeometry.apply(stacked.contiguous(), model)
         material_params, layers = self._materials or (model.material_params, model.layers)
         frame = FacetFrame(model=model, corners=corners, sites=sites, material_params=material_params, layers=layers)

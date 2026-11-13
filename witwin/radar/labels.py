@@ -183,7 +183,7 @@ class GroundTruth:
         self.pose = pose
         self.velocity_step_s = float(velocity_step_s)
         self.world = scene if isinstance(scene, DynamicScene) else DynamicScene(scene)
-        self.policy, _ = as_session_targets(targets, radar=radar)
+        self.policy, _ = as_session_targets(targets, radar=radar, ad_mode=None)
         self.kind = (
             "mesh"
             if isinstance(targets, MeshTargets)
