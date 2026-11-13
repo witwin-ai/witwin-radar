@@ -42,14 +42,14 @@ import torch
 
 from ..cuda import native_ops as _ops
 from ..policy import first_order_only, refuse_derivative
-from .assembly import OfdmSpec, SynthesisPathBatch, require_ofdm_compatible, segment_of_each_row
+from .assembly import OfdmSpec, SynthesisPathBatch, delay_residual, require_ofdm_compatible, segment_of_each_row
 
 
 class _OfdmCfrSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native CFR operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec, columns):
+    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, spec, columns):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -58,6 +58,7 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
         out_im = torch.empty_like(out_re)
         _ops().ofdm_cfr_forward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -78,17 +79,17 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec, columns) = inputs
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, spec, columns) = inputs
         ctx.spec = spec
         ctx.columns = columns
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets)
+        ctx.save_for_backward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment)
+        ctx.save_for_forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        tau_rt, tau_rate, weight_re, weight_im, segment = ctx.saved_tensors
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
         grad_tau_rate = torch.empty_like(tau_rate)
@@ -96,6 +97,7 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
         grad_weight_im = torch.empty_like(weight_im)
         _ops().ofdm_cfr_backward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -116,13 +118,22 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
             spec.carrier_hz,
             spec.carrier_rate_hz,
         )
-        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
+        return (grad_tau_rt, None, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
 
     @staticmethod
     def jvp(
-        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_spec, tan_columns
+        ctx,
+        tan_tau_rt,
+        tan_tau_lo,
+        tan_tau_rate,
+        tan_weight_re,
+        tan_weight_im,
+        tan_offsets,
+        tan_segment,
+        tan_spec,
+        tan_columns,
     ):
-        tau_rt, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         zero_weight = torch.zeros_like(weight_re)
@@ -136,6 +147,7 @@ class _OfdmCfrSynthesis(torch.autograd.Function):
         tan_out_im = torch.empty_like(tan_out_re)
         _ops().ofdm_cfr_jvp(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -165,6 +177,8 @@ def synthesize_cfr_rows(
     transfer_ref: torch.Tensor,
     pair_offsets: torch.Tensor,
     spec: OfdmSpec,
+    *,
+    total_delay_residual_s: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize a CFR cube from Channel-convention transfer coefficients.
 
@@ -196,6 +210,10 @@ def synthesize_cfr_rows(
     :func:`synthesize_ofdm`, which asks the batch first; use this one only
     where the caller owns the single-count rule itself. R-ADR-010 records the
     split.
+
+    ``total_delay_residual_s`` is the composed rows' non-differentiable delay
+    residual (R-ADR-040), read as ``tau = total_delay_s + residual`` in
+    float64; ``None`` reads the float32 delay alone, bit for bit as before.
 
     Returns ``complex64[num_symbols, num_segments, num_subcarriers]``.
     """
@@ -235,6 +253,7 @@ def synthesize_cfr_rows(
     # boundary, never the complex tensor.
     out_re, out_im = _OfdmCfrSynthesis.apply(
         total_delay_s.contiguous(),
+        delay_residual(total_delay_s, total_delay_residual_s),
         rate.contiguous(),
         transfer_ref.real.contiguous(),
         transfer_ref.imag.contiguous(),
@@ -258,7 +277,7 @@ class _OfdmTimeSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native time-domain OFDM operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec):
+    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec):
         out_re = torch.empty(
             (spec.num_symbols, int(offsets.shape[0]) - 1, spec.samples_per_symbol),
             dtype=torch.float32,
@@ -267,6 +286,7 @@ class _OfdmTimeSynthesis(torch.autograd.Function):
         out_im = torch.empty_like(out_re)
         _ops().ofdm_time_forward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -283,21 +303,22 @@ class _OfdmTimeSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec) = inputs
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, symbols, schedule)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, symbols, schedule)
+        ctx.save_for_backward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, symbols, schedule)
+        ctx.save_for_forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, symbols, schedule)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_re, grad_im):
-        tau_rt, tau_rate, weight_re, weight_im, segment, symbols, schedule = ctx.saved_tensors
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, symbols, schedule = ctx.saved_tensors
         spec = ctx.spec
         paths = int(tau_rt.shape[0])
         partial = torch.zeros((paths, spec.num_symbols, 4), dtype=torch.float64, device=tau_rt.device)
         _ops().ofdm_time_backward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -314,11 +335,11 @@ class _OfdmTimeSynthesis(torch.autograd.Function):
         # One reduction over the symbol axis of the kernel's per-(path, symbol)
         # partial sums, in a fixed order.
         total = partial.sum(dim=1).to(torch.float32)
-        return (total[:, 0], total[:, 1], total[:, 2], total[:, 3], None, None, None, None, None)
+        return (total[:, 0], None, total[:, 1], total[:, 2], total[:, 3], None, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, t_tau, t_rate, t_re, t_im, t_offsets, t_segment, t_symbols, t_schedule, t_spec):
-        tau_rt, tau_rate, weight_re, weight_im, offsets, symbols, schedule = ctx.saved_tensors
+    def jvp(ctx, t_tau, t_lo, t_rate, t_re, t_im, t_offsets, t_segment, t_symbols, t_schedule, t_spec):
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, symbols, schedule = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         out_re = torch.empty(
@@ -327,6 +348,7 @@ class _OfdmTimeSynthesis(torch.autograd.Function):
         out_im = torch.empty_like(out_re)
         _ops().ofdm_time_jvp(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -367,6 +389,7 @@ def synthesize_ofdm_time_rows(
     *,
     symbols: torch.Tensor | None = None,
     segment_schedule: torch.Tensor | None = None,
+    total_delay_residual_s: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """The received post-prefix time samples of a modulated OFDM stream.
 
@@ -381,8 +404,10 @@ def synthesize_ofdm_time_rows(
     frame's table with a one-symbol spec. ``segment_schedule`` is
     ``float64[segments, 2]``: each segment's window start within its symbol [s]
     and its symbol index. Both are waveform and schedule data; a derivative in
-    either is refused. Narrowband weights only. Row-level entry: the
-    provenance rules of :func:`synthesize_ofdm` do not run here.
+    either is refused. ``total_delay_residual_s`` is the composed rows'
+    non-differentiable delay residual (R-ADR-040); ``None`` reads the float32
+    delay alone, bit for bit as before. Narrowband weights only. Row-level
+    entry: the provenance rules of :func:`synthesize_ofdm` do not run here.
     """
 
     if transfer_ref.shape != total_delay_s.shape:
@@ -407,6 +432,7 @@ def synthesize_ofdm_time_rows(
     segment = segment_of_each_row(pair_offsets, int(total_delay_s.shape[0]))
     out_re, out_im = _OfdmTimeSynthesis.apply(
         total_delay_s.contiguous(),
+        delay_residual(total_delay_s, total_delay_residual_s),
         rate.contiguous(),
         transfer_ref.real.contiguous(),
         transfer_ref.imag.contiguous(),
@@ -464,8 +490,22 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
                 "a wideband batch carries one weight per subcarrier and only the OFDM CFR family consumes it; the "
                 "time-domain OFDM family synthesizes each row as one tap and would use the reference column alone"
             )
-        return synthesize_ofdm_time_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
-    return synthesize_cfr_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
+        return synthesize_ofdm_time_rows(
+            batch.total_delay_s,
+            batch.delay_rate,
+            transfer,
+            batch.pair_offsets,
+            spec,
+            total_delay_residual_s=batch.total_delay_residual_s,
+        )
+    return synthesize_cfr_rows(
+        batch.total_delay_s,
+        batch.delay_rate,
+        transfer,
+        batch.pair_offsets,
+        spec,
+        total_delay_residual_s=batch.total_delay_residual_s,
+    )
 
 
 __all__ = ["OfdmSpec", "symbol_tensor", "synthesize_cfr_rows", "synthesize_ofdm", "synthesize_ofdm_time_rows"]

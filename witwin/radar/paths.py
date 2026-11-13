@@ -137,17 +137,25 @@ def _interpolate_packed_rows(
 
 
 def interpolate_indexed_rows(
-    samples: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, carrier_hz: float
+    samples: torch.Tensor,
+    indices: torch.Tensor,
+    weights: torch.Tensor,
+    carrier_hz: float,
+    *,
+    float64_delay: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Gather compact probe triples inside the interpolation kernel.
 
     ``samples`` stores float64 (delay [s], real C, imaginary C) per probe path;
     ``indices`` and the fixed Lagrange ``weights`` are [observations*paths, K].
     The same native transport equation handles both indexed and packed rows.
+    ``float64_delay`` keeps the interpolated delay in the kernel's float64, for
+    a consumer that synthesizes from it in float64 (R-ADR-040).
     """
     refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
     result = _PathInterpolation.apply(samples, indices, weights, carrier_hz)
-    return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
+    delay = result[:, 0] if float64_delay else result[:, 0].float()
+    return delay, torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
 def float64_delay(batch: RadarPathBatch) -> torch.Tensor:

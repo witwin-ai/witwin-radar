@@ -36,6 +36,7 @@ from .assembly import (
     FMCW_OUTPUT_SPECTRUM,
     FmcwSpec,
     SynthesisPathBatch,
+    delay_residual,
     pair_tx_index,
     require_compatible,
     segment_of_each_row,
@@ -112,7 +113,7 @@ class _FmcwSynthesis(torch.autograd.Function):
     """Autograd bridge for the selected native FMCW output domain."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec):
+    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -123,6 +124,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         delay = () if spectrum else (tau_rate,)
         _forward_op(spec.output_domain)(
             tau_rt,
+            tau_lo,
             *delay,
             weight_re,
             weight_im,
@@ -147,16 +149,16 @@ class _FmcwSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec) = inputs
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, tx_index, starts)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index, starts)
+        ctx.save_for_backward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, tx_index, starts)
+        ctx.save_for_forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, tx_index, starts)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        (tau_rt, tau_rate, weight_re, weight_im, segment, tx_index, starts) = ctx.saved_tensors
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
         grad_tau_rt = torch.empty_like(tau_rt)
@@ -168,6 +170,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         grad_weight_im = torch.empty_like(weight_im)
         _backward_op(spec.output_domain)(
             tau_rt,
+            tau_lo,
             *(() if spectrum else (tau_rate,)),
             weight_re,
             weight_im,
@@ -192,12 +195,13 @@ class _FmcwSynthesis(torch.autograd.Function):
             spec.carrier_rate_hz,
             spec.t_start_s,
         )
-        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None, None)
+        return (grad_tau_rt, None, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None, None)
 
     @staticmethod
     def jvp(
         ctx,
         tan_tau_rt,
+        tan_tau_lo,
         tan_tau_rate,
         tan_weight_re,
         tan_weight_im,
@@ -207,7 +211,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         tan_starts,
         tan_spec,
     ):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, tx_index, starts) = ctx.saved_tensors
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -221,6 +225,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
         _jvp_op(spec.output_domain)(
             tau_rt,
+            tau_lo,
             *(() if spectrum else (tau_rate,)),
             weight_re,
             weight_im,
@@ -307,6 +312,7 @@ class _AdaptiveObservationSpec:
     interpolation_carrier: float
     begin: int
     stop: int
+    precise_delay: bool = False
 
     def native_args(self):
         spec = self.waveform
@@ -318,6 +324,7 @@ class _AdaptiveObservationSpec:
             self.interpolation_carrier,
             spec.slope_hz_per_s,
             spec.carrier_hz,
+            int(self.precise_delay),
         )
 
     def output_shape(self, bounds):
@@ -369,16 +376,20 @@ class _AdaptiveFmcw(torch.autograd.Function):
         return result
 
 
-def synthesize_adaptive_fmcw(samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop):
+def synthesize_adaptive_fmcw(
+    samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop, *, precise_delay=False
+):
     """Direct complete ADC values from compact adaptive probe rows.
 
     All routing and timestamps are discrete metadata. Samples retain native
-    VJP/JVP; interpolation's float32 boundary and serial path sum are retained.
+    VJP/JVP; interpolation's float32 boundary and serial path sum are retained,
+    except that ``precise_delay`` keeps the interpolated delay in float64 for
+    probes that carry the join's float64 delay (R-ADR-040).
     A row-dependent receiver effect must be applied before using observation
     synthesis instead; this operator does not absorb oscillator phase noise.
     """
     refuse_derivative("adaptive observation schedule", "partition and ADC times are fixed", basis=basis, clock=clock)
-    plan = _AdaptiveObservationSpec(spec, carrier_hz, begin, stop)
+    plan = _AdaptiveObservationSpec(spec, carrier_hz, begin, stop, bool(precise_delay))
     result = _AdaptiveFmcw.apply(samples, validity, starts, basis, bounds, owners, clock, plan)
     return torch.complex(result[:, 0].float(), result[:, 1].float())
 
@@ -393,6 +404,7 @@ def synthesize_fmcw_rows(
     segment_tx_index: torch.Tensor | None = None,
     segment_t_start_s: torch.Tensor | None = None,
     segment_schedule: torch.Tensor | None = None,
+    total_delay_residual_s: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize the configured FMCW output from conjugated Channel weights.
 
@@ -418,6 +430,12 @@ def synthesize_fmcw_rows(
     a chirp sequence, ``float64[segments, 3]``: each segment's window start [s],
     slope [Hz/s] and start offset [Hz]
     (:func:`~witwin.radar.synthesis.assembly.refreshed_schedule`).
+
+    ``total_delay_residual_s`` is the composed rows' float32 delay residual
+    (R-ADR-040): the kernels read ``tau = total_delay_s + residual`` in
+    float64, so the bandwidth term ``2 pi B tau`` is not quantized to the
+    float32 ulp of the delay. It carries no derivative; ``None`` reads the
+    float32 delay alone, bit for bit as before.
 
     Under DDM and BPM every transmitter fires every chirp, so the slow-time
     coordinate of every segment is its chirp and ``segment_tx_index`` is not
@@ -505,6 +523,7 @@ def synthesize_fmcw_rows(
     # boundary, never the complex tensor.
     out_re, out_im = _FmcwSynthesis.apply(
         total_delay_s.contiguous(),
+        delay_residual(total_delay_s, total_delay_residual_s),
         rate.contiguous(),
         beat_weight.real.contiguous(),
         beat_weight.imag.contiguous(),
@@ -566,6 +585,7 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
         segment_tx_index=pair_tx_index(
             num_tx=spec.num_tx, num_rx=spec.num_rx, sensor_pair_count=batch.sensor_pair_count, device=batch.device
         ),
+        total_delay_residual_s=batch.total_delay_residual_s,
     )
 
 

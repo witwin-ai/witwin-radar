@@ -1313,6 +1313,10 @@ class SynthesisPathBatch:
     #: OFDM family consumes it, one column per subcarrier.
     complex_transfer_band: torch.Tensor | None = None
     frequency_offsets_hz: tuple[float, ...] | None = None
+    #: The composed rows' float32 delay residual (R-ADR-040): the delay is
+    #: ``total_delay_s + total_delay_residual_s`` in float64. Non-differentiable;
+    #: ``None`` when the rows carry the float32 delay alone.
+    total_delay_residual_s: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.slow_time_mode, SlowTimeMode):
@@ -1347,6 +1351,10 @@ class SynthesisPathBatch:
         )
         if self.delay_rate is not None:
             _require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows, device=device)
+        if self.total_delay_residual_s is not None:
+            _require_tensor(
+                "total_delay_residual_s", self.total_delay_residual_s, dtype=torch.float32, shape=rows, device=device
+            )
         if self.row_valid is not None:
             _require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows, device=device)
         if self.topology.row_count != self.path_count:
@@ -1398,6 +1406,7 @@ class SynthesisPathBatch:
             row_valid=paths.row_valid,
             complex_transfer_band=paths.complex_transfer_band,
             frequency_offsets_hz=paths.frequency_offsets_hz,
+            total_delay_residual_s=paths.total_delay_residual_s,
             weight_includes_reference_phase=True,
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
@@ -1735,6 +1744,22 @@ def require_pulsed_compatible(batch: SynthesisPathBatch, spec: PulsedSpec) -> No
 #: Radar does not put a second, silently different, virtual-array numbering on
 #: the same data. Quoted by the tests that pin it against that function.
 PAIR_RANK_LAYOUT = "sink_major: pair = rx_rank * num_tx + tx_rank"
+
+
+def delay_residual(total_delay_s: torch.Tensor, residual: torch.Tensor | None) -> torch.Tensor:
+    """The synthesis kernels' ``tau_lo`` input: the residual, detached and contiguous, or an empty tensor.
+
+    The residual of the join's float32 delay pair (R-ADR-040) refines the
+    delay the kernels read to ``tau_hi + tau_lo`` in float64; it carries no
+    derivative, so it never enters the tape. An empty tensor selects the
+    float32 delay alone.
+    """
+
+    if residual is None:
+        return total_delay_s.new_empty(0).detach()
+    if residual.shape != total_delay_s.shape:
+        raise ValueError("total_delay_residual_s and total_delay_s must have the same shape")
+    return residual.detach().contiguous()
 
 
 def segment_of_each_row(pair_offsets: torch.Tensor, path_count: int) -> torch.Tensor:

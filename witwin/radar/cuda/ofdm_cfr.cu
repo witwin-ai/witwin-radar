@@ -107,6 +107,7 @@
 
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
+#include "path_delay.cuh"
 
 #include <cstdint>
 
@@ -164,7 +165,7 @@ __device__ __forceinline__ int64_t weight_index(
 }
 
 __global__ void ofdm_cfr_forward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -196,7 +197,7 @@ __global__ void ofdm_cfr_forward_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = path_delay(tau_rt, tau_lo, k) + drift;
     const CfrPhase phase = cfr_phase(
         tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, wideband);
     const int64_t w = weight_index(k, subcarrier, weight_columns);
@@ -214,7 +215,7 @@ __global__ void ofdm_cfr_forward_kernel(
 }
 
 __global__ void ofdm_cfr_jvp_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -250,7 +251,7 @@ __global__ void ofdm_cfr_jvp_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = path_delay(tau_rt, tau_lo, k) + drift;
     const CfrPhase phase = cfr_phase(
         tau, drift, t_l, f_sub, carrier_hz, carrier_rate_hz, wideband);
     const int64_t w = weight_index(k, subcarrier, weight_columns);
@@ -290,7 +291,7 @@ __global__ void ofdm_cfr_jvp_kernel(
 // wideband nest is subcarrier major. `d_tau_rt` and `d_tau_rate` reduce over the
 // whole grid in both, in whatever order their own nest visits it.
 __global__ void ofdm_cfr_backward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -322,7 +323,7 @@ __global__ void ofdm_cfr_backward_kernel(
   segment = segment >= num_segments ? num_segments - 1 : segment;
 
   const bool wideband = weight_columns > 1;
-  const double base_tau = static_cast<double>(tau_rt[k]);
+  const double base_tau = path_delay(tau_rt, tau_lo, k);
   const double rate = static_cast<double>(tau_rate[k]);
 
   double d_tau_rt = 0.0;
@@ -477,7 +478,7 @@ dim3 subcarrier_grid(
 }  // namespace
 
 void ofdm_cfr_forward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -517,7 +518,7 @@ void ofdm_cfr_forward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -536,7 +537,7 @@ void ofdm_cfr_forward_cuda(
 }
 
 void ofdm_cfr_jvp_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -588,7 +589,7 @@ void ofdm_cfr_jvp_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(tan_out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -611,7 +612,7 @@ void ofdm_cfr_jvp_cuda(
 }
 
 void ofdm_cfr_backward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -667,7 +668,7 @@ void ofdm_cfr_backward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(grad_tau_rt)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),

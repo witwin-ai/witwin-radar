@@ -78,6 +78,7 @@
 
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
+#include "path_delay.cuh"
 
 #include <cstdint>
 
@@ -178,7 +179,7 @@ __device__ __forceinline__ PulseTerm pulse_term(
 }
 
 __global__ void pulsed_echo_forward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -208,7 +209,7 @@ __global__ void pulsed_echo_forward_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = path_delay(tau_rt, tau_lo, k) + drift;
     const PulseTerm term = pulse_term(tau, drift, t_l, t_m - tau, f_l, envelope, carrier_hz, carrier_rate_hz);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
@@ -222,7 +223,7 @@ __global__ void pulsed_echo_forward_kernel(
 }
 
 __global__ void pulsed_echo_jvp_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -256,7 +257,7 @@ __global__ void pulsed_echo_jvp_kernel(
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
     const double drift = static_cast<double>(tau_rate[k]) * t_l;
-    const double tau = static_cast<double>(tau_rt[k]) + drift;
+    const double tau = path_delay(tau_rt, tau_lo, k) + drift;
     const PulseTerm term = pulse_term(tau, drift, t_l, t_m - tau, f_l, envelope, carrier_hz, carrier_rate_hz);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
@@ -282,7 +283,7 @@ __global__ void pulsed_echo_jvp_kernel(
 // path owns exactly one output slot in each gradient array, so the reduction
 // needs no atomics and the summation order is fixed by the loop nest.
 __global__ void pulsed_echo_backward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -313,7 +314,7 @@ __global__ void pulsed_echo_backward_kernel(
   segment = segment >= num_segments ? num_segments - 1 : segment;
   const int seg = static_cast<int>(segment);
 
-  const double base_tau = static_cast<double>(tau_rt[k]);
+  const double base_tau = path_delay(tau_rt, tau_lo, k);
   const double rate = static_cast<double>(tau_rate[k]);
   const float w_re = weight_re[k];
   const float w_im = weight_im[k];
@@ -430,7 +431,7 @@ void check_grid(int segments, int pulses, int samples) {
 }  // namespace
 
 void pulsed_echo_forward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -474,7 +475,7 @@ void pulsed_echo_forward_cuda(
       dim3(kBlock, 1, 1),
       0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -492,7 +493,7 @@ void pulsed_echo_forward_cuda(
 }
 
 void pulsed_echo_jvp_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -541,7 +542,7 @@ void pulsed_echo_jvp_cuda(
       dim3(kBlock, 1, 1),
       0,
       current_cuda_stream(tan_out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -563,7 +564,7 @@ void pulsed_echo_jvp_cuda(
 }
 
 void pulsed_echo_backward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -611,7 +612,7 @@ void pulsed_echo_backward_cuda(
 
   const torch::stable::accelerator::DeviceGuard device_guard(grad_tau_rt.get_device_index());
   pulsed_echo_backward_kernel<<<linear_grid(paths), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_tau_rt)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),

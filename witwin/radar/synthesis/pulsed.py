@@ -59,6 +59,7 @@ from .assembly import (
     PULSE_KIND_RECT,
     PulsedSpec,
     SynthesisPathBatch,
+    delay_residual,
     require_pulsed_compatible,
     segment_of_each_row,
 )
@@ -115,7 +116,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native pulsed operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec):
+    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -124,6 +125,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         out_im = torch.empty_like(out_re)
         _ops().pulsed_echo_forward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -140,16 +142,16 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec) = inputs
+        (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, schedule)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, schedule)
+        ctx.save_for_backward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, schedule)
+        ctx.save_for_forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, schedule)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        tau_rt, tau_rate, weight_re, weight_im, segment, schedule = ctx.saved_tensors
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, schedule = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
         grad_tau_rate = torch.empty_like(tau_rate)
@@ -157,6 +159,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         grad_weight_im = torch.empty_like(weight_im)
         _ops().pulsed_echo_backward(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -173,13 +176,22 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             ctx.num_segments,
             *_kernel_arguments(spec),
         )
-        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
+        return (grad_tau_rt, None, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
 
     @staticmethod
     def jvp(
-        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_schedule, tan_spec
+        ctx,
+        tan_tau_rt,
+        tan_tau_lo,
+        tan_tau_rate,
+        tan_weight_re,
+        tan_weight_im,
+        tan_offsets,
+        tan_segment,
+        tan_schedule,
+        tan_spec,
     ):
-        tau_rt, tau_rate, weight_re, weight_im, offsets, schedule = ctx.saved_tensors
+        tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, schedule = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -192,6 +204,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
         tan_out_im = torch.empty_like(tan_out_re)
         _ops().pulsed_echo_jvp(
             tau_rt,
+            tau_lo,
             tau_rate,
             weight_re,
             weight_im,
@@ -219,6 +232,7 @@ def synthesize_echo_rows(
     spec: PulsedSpec,
     *,
     segment_schedule: torch.Tensor | None = None,
+    total_delay_residual_s: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize a pulse train from Channel-convention transfer coefficients.
 
@@ -229,6 +243,10 @@ def synthesize_echo_rows(
     refreshed frame (each segment's value is the one a launch with that gate
     start and offset would produce). Schedule data: a derivative in it is
     refused.
+
+    ``total_delay_residual_s`` is the composed rows' non-differentiable delay
+    residual (R-ADR-040), read as ``tau = total_delay_s + residual`` in
+    float64; ``None`` reads the float32 delay alone, bit for bit as before.
 
     ``transfer_ref`` is the coefficient AS CHANNEL PUBLISHES IT - the entry
     performs no conjugation, because the pulsed product stays in that
@@ -273,6 +291,7 @@ def synthesize_echo_rows(
     # boundary, never the complex tensor.
     out_re, out_im = _PulsedEchoSynthesis.apply(
         total_delay_s.contiguous(),
+        delay_residual(total_delay_s, total_delay_residual_s),
         rate.contiguous(),
         transfer_ref.real.contiguous(),
         transfer_ref.imag.contiguous(),
@@ -309,7 +328,14 @@ def synthesize_pulsed(batch: SynthesisPathBatch, spec: PulsedSpec) -> torch.Tens
     transfer = batch.complex_transfer_ref
     if batch.row_valid is not None:
         transfer = torch.where(batch.row_valid, transfer, torch.zeros_like(transfer))
-    return synthesize_echo_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
+    return synthesize_echo_rows(
+        batch.total_delay_s,
+        batch.delay_rate,
+        transfer,
+        batch.pair_offsets,
+        spec,
+        total_delay_residual_s=batch.total_delay_residual_s,
+    )
 
 
 __all__ = ["PulsedSpec", "synthesize_echo_rows", "synthesize_pulsed"]

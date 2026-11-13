@@ -60,6 +60,7 @@
 
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
+#include "path_delay.cuh"
 
 #include <cmath>
 #include <cstdint>
@@ -191,7 +192,7 @@ __device__ __forceinline__ RowTerm row_term(
 }
 
 __global__ void ofdm_time_forward_kernel(
-    const float* __restrict__ tau_rt, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
     const float* __restrict__ weight_im, const int64_t* __restrict__ path_offsets, float* __restrict__ out_re,
     float* __restrict__ out_im, const int num_paths, const int num_segments, const Grid grid, const double carrier_hz,
     const double carrier_rate_hz) {
@@ -205,7 +206,7 @@ __global__ void ofdm_time_forward_kernel(
   const SampleTime when = sample_time(grid, symbol, segment, i);
   float acc_re = 0.0f, acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const RowTerm term = row_term(grid, when, tau_rt[k], tau_rate[k], carrier_hz, carrier_rate_hz);
+    const RowTerm term = row_term(grid, when, path_delay(tau_rt, tau_lo, k), tau_rate[k], carrier_hz, carrier_rate_hz);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     acc_re += w_re * term.e_re - w_im * term.e_im;
@@ -217,7 +218,7 @@ __global__ void ofdm_time_forward_kernel(
 }
 
 __global__ void ofdm_time_jvp_kernel(
-    const float* __restrict__ tau_rt, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
     const float* __restrict__ weight_im, const int64_t* __restrict__ path_offsets,
     const float* __restrict__ tan_tau_rt, const float* __restrict__ tan_tau_rate,
     const float* __restrict__ tan_weight_re, const float* __restrict__ tan_weight_im, float* __restrict__ out_re,
@@ -233,7 +234,7 @@ __global__ void ofdm_time_jvp_kernel(
   const SampleTime when = sample_time(grid, symbol, segment, i);
   float acc_re = 0.0f, acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const RowTerm term = row_term(grid, when, tau_rt[k], tau_rate[k], carrier_hz, carrier_rate_hz);
+    const RowTerm term = row_term(grid, when, path_delay(tau_rt, tau_lo, k), tau_rate[k], carrier_hz, carrier_rate_hz);
     const float w_re = weight_re[k];
     const float w_im = weight_im[k];
     const float a = tan_tau_rt[k];
@@ -254,7 +255,7 @@ __global__ void ofdm_time_jvp_kernel(
 // and reduce in shared memory in a fixed order, so the partial sums are
 // deterministic; the caller sums the symbol axis.
 __global__ void ofdm_time_backward_kernel(
-    const float* __restrict__ tau_rt, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo, const float* __restrict__ tau_rate, const float* __restrict__ weight_re,
     const float* __restrict__ weight_im, const int64_t* __restrict__ path_segment,
     const float* __restrict__ grad_re, const float* __restrict__ grad_im, double* __restrict__ partial,
     const int num_paths, const int num_segments, const int num_symbols, const Grid grid, const double carrier_hz,
@@ -269,7 +270,7 @@ __global__ void ofdm_time_backward_kernel(
   double d_rt = 0.0, d_rr = 0.0, d_wr = 0.0, d_wi = 0.0;
   for (int i = threadIdx.x; i < grid.num_samples; i += blockDim.x) {
     const SampleTime when = sample_time(grid, symbol, static_cast<int>(segment), i);
-    const RowTerm term = row_term(grid, when, tau_rt[k], tau_rate[k], carrier_hz, carrier_rate_hz);
+    const RowTerm term = row_term(grid, when, path_delay(tau_rt, tau_lo, k), tau_rate[k], carrier_hz, carrier_rate_hz);
     const int64_t index = (static_cast<int64_t>(symbol) * num_segments + segment) * grid.num_samples + i;
     const double g_re = grad_re[index];
     const double g_im = grad_im[index];
@@ -353,7 +354,7 @@ void check_out(const torch::stable::Tensor& re, const torch::stable::Tensor& im,
 }  // namespace
 
 void ofdm_time_forward_cuda(
-    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_rate,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo, const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re, const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets, const torch::stable::Tensor& symbols,
     const torch::stable::Tensor& segment_table, torch::stable::Tensor& out_re, torch::stable::Tensor& out_im,
@@ -373,14 +374,14 @@ void ofdm_time_forward_cuda(
   ofdm_time_forward_kernel<<<
       sample_grid(grid.num_samples, segments, out_symbols, kBlock), dim3(kBlock, 1, 1), 0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(), path_offsets.const_data_ptr<int64_t>(), out_re.mutable_data_ptr<float>(),
       out_im.mutable_data_ptr<float>(), paths, segments, grid, carrier_hz, carrier_rate_hz);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void ofdm_time_jvp_cuda(
-    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_rate,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo, const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re, const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets, const torch::stable::Tensor& symbols,
     const torch::stable::Tensor& segment_table, const torch::stable::Tensor& tan_tau_rt,
@@ -403,7 +404,7 @@ void ofdm_time_jvp_cuda(
   ofdm_time_jvp_kernel<<<
       sample_grid(grid.num_samples, segments, out_symbols, kBlock), dim3(kBlock, 1, 1), 0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(), path_offsets.const_data_ptr<int64_t>(), tan_tau_rt.const_data_ptr<float>(),
       tan_tau_rate.const_data_ptr<float>(), tan_weight_re.const_data_ptr<float>(),
       tan_weight_im.const_data_ptr<float>(), out_re.mutable_data_ptr<float>(), out_im.mutable_data_ptr<float>(), paths,
@@ -412,7 +413,7 @@ void ofdm_time_jvp_cuda(
 }
 
 void ofdm_time_backward_cuda(
-    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_rate,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo, const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re, const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_segment, const torch::stable::Tensor& symbols,
     const torch::stable::Tensor& segment_table, const torch::stable::Tensor& grad_re,
@@ -437,7 +438,7 @@ void ofdm_time_backward_cuda(
   }
   const torch::stable::accelerator::DeviceGuard device_guard(partial.get_device_index());
   ofdm_time_backward_kernel<<<dim3(paths, out_symbols, 1), dim3(kBlock, 1, 1), 0, current_cuda_stream(partial)>>>(
-      tau_rt.const_data_ptr<float>(), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt), tau_rate.const_data_ptr<float>(), weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(), path_segment.const_data_ptr<int64_t>(), grad_re.const_data_ptr<float>(),
       grad_im.const_data_ptr<float>(), partial.mutable_data_ptr<double>(), paths, segments, out_symbols, grid,
       carrier_hz, carrier_rate_hz);

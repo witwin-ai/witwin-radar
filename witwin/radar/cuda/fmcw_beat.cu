@@ -43,6 +43,7 @@
 
 #include <cuda_runtime.h>
 #include "fmcw_phase.cuh"
+#include "path_delay.cuh"
 #include "fmcw_tdm.cuh"
 #include "path_interpolation.cuh"
 
@@ -126,7 +127,7 @@ __device__ __forceinline__ BeatPhase profile_phase(
 }
 
 __global__ void fmcw_beat_forward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -162,7 +163,7 @@ __global__ void fmcw_beat_forward_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const double tau = static_cast<double>(tau_rt[k]);
+    const double tau = path_delay(tau_rt, tau_lo, k);
     const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = profile_phase(tau, rate, profile, t_m, carrier_hz, carrier_rate_hz, tables);
     const float w_re = weight_re[k];
@@ -179,7 +180,7 @@ __global__ void fmcw_beat_forward_kernel(
 }
 
 __global__ void fmcw_beat_jvp_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -219,7 +220,7 @@ __global__ void fmcw_beat_jvp_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const double tau = static_cast<double>(tau_rt[k]);
+    const double tau = path_delay(tau_rt, tau_lo, k);
     const double rate = static_cast<double>(tau_rate[k]);
     const BeatPhase phase = profile_phase(tau, rate, profile, t_m, carrier_hz, carrier_rate_hz, tables);
     const float w_re = weight_re[k];
@@ -247,7 +248,7 @@ __global__ void fmcw_beat_jvp_kernel(
 // exactly one output slot in each gradient array, so the reduction needs no
 // atomics and the summation order is fixed by the loop nest.
 __global__ void fmcw_beat_backward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ tau_rate,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
@@ -283,7 +284,7 @@ __global__ void fmcw_beat_backward_kernel(
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;
 
-  const double base_tau = static_cast<double>(tau_rt[k]);
+  const double base_tau = path_delay(tau_rt, tau_lo, k);
   const double rate = static_cast<double>(tau_rate[k]);
   const float w_re = weight_re[k];
   const float w_im = weight_im[k];
@@ -375,7 +376,7 @@ ChirpTables chirp_tables(
 }  // namespace
 
 void fmcw_beat_forward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -421,7 +422,7 @@ void fmcw_beat_forward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -444,7 +445,7 @@ void fmcw_beat_forward_cuda(
 }
 
 void fmcw_beat_jvp_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -504,7 +505,7 @@ void fmcw_beat_jvp_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(tan_out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -531,7 +532,7 @@ void fmcw_beat_jvp_cuda(
 }
 
 void fmcw_beat_backward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& tau_rate,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
@@ -595,7 +596,7 @@ void fmcw_beat_backward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(grad_tau_rt)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       tau_rate.const_data_ptr<float>(),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
@@ -735,13 +736,21 @@ __device__ __forceinline__ double float_round(double value) {
   return static_cast<double>(static_cast<float>(value));
 }
 
+// The interpolated delay the beat phase reads. Probes that carry the join's
+// float64 delay (R-ADR-040, precise_delay = 1) keep it in float64, so the
+// bandwidth term 2 pi B tau is not quantized to the float32 ulp of the delay;
+// probes that carry a float32 delay keep the float32 boundary bit for bit.
+__device__ __forceinline__ double delay_round(double value, int precise_delay) {
+  return precise_delay ? value : float_round(value);
+}
+
 template<int Mode>
 __global__ void fmcw_adaptive_kernel(const double* samples, const int32_t* valid,
     const int64_t* starts, const double* basis, const int64_t* bounds,
     const int64_t* owners, const double* clock, const double* vector, double* out,
     int64_t sample_count, int64_t nodes, int64_t bound_rows, int64_t pairs,
     int64_t begin, int64_t end, int64_t num_tx, int64_t num_samples,
-    double interpolation_carrier, double slope, double carrier) {
+    double interpolation_carrier, double slope, double carrier, int precise_delay) {
   const int64_t receiver_count=pairs/num_tx;
   const int64_t segment=static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
   if(segment>=(end-begin)*receiver_count) return;
@@ -761,7 +770,7 @@ __global__ void fmcw_adaptive_kernel(const double* samples, const int32_t* valid
       // are zeroed after interpolation, before phase evaluation.
       const double wr=alive ? float_round(interpolated.re) : 0;
       const double wi=alive ? -float_round(interpolated.im) : 0;
-      const auto value=observation_value(float_round(interpolated.tau),wr,wi,clock[observation],slope,carrier);
+      const auto value=observation_value(delay_round(interpolated.tau,precise_delay),wr,wi,clock[observation],slope,carrier);
       if constexpr(Mode==0) {
         // Serial path order and double accumulation match CSR synthesis.
         re+=value.re; im+=value.im;
@@ -810,7 +819,7 @@ void fmcw_adaptive_run(const torch::stable::Tensor& samples, const torch::stable
     const torch::stable::Tensor& bounds, const torch::stable::Tensor& owners,
     const torch::stable::Tensor& clock, const torch::stable::Tensor& vector,
     torch::stable::Tensor& out, int64_t begin, int64_t end, int64_t num_tx,
-    int64_t num_samples, double interpolation_carrier, double slope, double carrier) {
+    int64_t num_samples, double interpolation_carrier, double slope, double carrier, int64_t precise_delay) {
   const torch::stable::Tensor* payloads[5]={&samples,&basis,&clock,&vector,&out};
   for(const auto* t : payloads) {
     STD_TORCH_CHECK(t->is_cuda() && t->is_contiguous() &&
@@ -843,13 +852,15 @@ void fmcw_adaptive_run(const torch::stable::Tensor& samples, const torch::stable
     "adaptive FMCW vector shape");
   STD_TORCH_CHECK(std::isfinite(interpolation_carrier) && interpolation_carrier>0 &&
     std::isfinite(slope) && std::isfinite(carrier), "adaptive FMCW phase constants");
+  STD_TORCH_CHECK(precise_delay==0 || precise_delay==1, "adaptive FMCW precise_delay is 0 or 1");
   const torch::stable::accelerator::DeviceGuard guard(samples.get_device_index());
   if(segments) {
     fmcw_adaptive_kernel<Mode><<<(segments+255)/256,256,0,current_cuda_stream(samples)>>>(
       samples.const_data_ptr<double>(),valid.const_data_ptr<int32_t>(),starts.const_data_ptr<int64_t>(),
       basis.const_data_ptr<double>(),bounds.const_data_ptr<int64_t>(),owners.const_data_ptr<int64_t>(),
       clock.const_data_ptr<double>(),vector.const_data_ptr<double>(),out.mutable_data_ptr<double>(),
-      samples.size(0),nodes,bounds.size(0),pairs,begin,end,num_tx,num_samples,interpolation_carrier,slope,carrier);
+      samples.size(0),nodes,bounds.size(0),pairs,begin,end,num_tx,num_samples,interpolation_carrier,slope,carrier,
+      static_cast<int>(precise_delay));
     STD_CUDA_KERNEL_LAUNCH_CHECK();
   }
 }

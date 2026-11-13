@@ -84,6 +84,9 @@ class AdaptiveTable:
     node_count: int
     observation_count: int
     pairs: int
+    #: Whether every evaluated row carried the join's float64 delay pair, so
+    #: ``delays`` resolves the delay beyond float32 and synthesis reads it so.
+    float64_delays: bool = False
 
     @property
     def row_count(self) -> int:
@@ -683,6 +686,7 @@ class _Controller:
             node_count=node_count,
             observation_count=len(times),
             pairs=pairs,
+            float64_delays=all(record.total_delay_residual_s is not None for record in records),
         )
 
     def close(self) -> None:
@@ -808,6 +812,7 @@ def echo_adaptive_frame(
                     carrier_hz,
                     begin,
                     stop,
+                    precise_delay=table.float64_delays,
                 ).reshape(stop - begin, receivers)
             )
             begin = stop
@@ -843,7 +848,9 @@ def echo_adaptive_frame(
             local_row = segment_prefix[segment] + torch.arange(total, device=device) - offsets[segment]
             observation = begin + segment // receivers
             node_rows = node_starts[observation] + local_row[:, None]
-            delay, transfer = interpolate_indexed_rows(samples, node_rows, basis[observation], carrier_hz)
+            delay, transfer = interpolate_indexed_rows(
+                samples, node_rows, basis[observation], carrier_hz, float64_delay=table.float64_delays
+            )
             transfer = torch.where(validity[node_rows[:, 0]], transfer, torch.zeros_like(transfer))
             transfer = frontend._apply_path_phase_rows(delay, transfer, clock[observation])
             adc_time = adc_clock[observation]

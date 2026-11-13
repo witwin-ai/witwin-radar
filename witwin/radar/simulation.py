@@ -1989,6 +1989,11 @@ def _echo_slot_batches(
             valid = composed.row_valid.index_select(0, row_index)
             transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
         delay = composed.total_delay_s.index_select(0, row_index)
+        residual = (
+            None
+            if composed.total_delay_residual_s is None
+            else composed.total_delay_residual_s.index_select(0, row_index)
+        )
         if fmcw:
             assert isinstance(single, FmcwSpec)
             out = synthesize_fmcw_rows(
@@ -1999,6 +2004,7 @@ def _echo_slot_batches(
                 single,
                 segment_tx_index=transmitter.to(torch.int32),
                 segment_schedule=parts[3].view(torch.float64).reshape(-1, 3) if scheduled else None,
+                total_delay_residual_s=residual,
             )
         elif isinstance(working, OfdmSpec):
             assert isinstance(single, OfdmSpec)
@@ -2010,11 +2016,18 @@ def _echo_slot_batches(
                 single,
                 symbols=symbol_tensor(working, composed.total_delay_s.device),
                 segment_schedule=parts[3].view(torch.float64).reshape(-1, 2),
+                total_delay_residual_s=residual,
             )
         else:
             assert isinstance(single, PulsedSpec)
             out = synthesize_echo_rows(
-                delay, None, transfer, offsets, single, segment_schedule=parts[3].view(torch.float64).reshape(-1, 2)
+                delay,
+                None,
+                transfer,
+                offsets,
+                single,
+                segment_schedule=parts[3].view(torch.float64).reshape(-1, 2),
+                total_delay_residual_s=residual,
             )
         values.append(out.reshape(len(pair), width))
         slow = np.repeat(frame_slot // slots_per_slow, heard)

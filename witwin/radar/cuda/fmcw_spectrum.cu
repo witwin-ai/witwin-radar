@@ -37,6 +37,7 @@
 
 #include <cuda_runtime.h>
 #include "fmcw_phase.cuh"
+#include "path_delay.cuh"
 #include "fmcw_tdm.cuh"
 
 #include <cstdint>
@@ -88,7 +89,7 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
     const double slope,
     const double carrier_hz,
     const double carrier_rate_hz,
-    const double t_start, const bool derivatives) {
+    const double t_start, const bool derivatives, const bool precise = false) {
   if (derivatives) {
     double re=0., im=0., tr=0., ti=0.;
     for (int m=0; m<num_bins; ++m) {
@@ -107,8 +108,20 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
   // derivatives == false, so the derivative slot is never read.
   const double base_cycles =
       fmcw_phase_terms(tau, 0.0, t_slot, t_start, slope, carrier_hz, carrier_rate_hz).cycles;
-  const Complex phase = cexp_cycles(base_cycles);
   const double k0 = slope * tau * sample_period_s * num_bins;
+  if (precise) {
+    // A float64 delay (R-ADR-040) is carried through a float64 Dirichlet
+    // argument: in float32 the argument alone is quantized to N ulp32(x), the
+    // same order as the float32 delay it would otherwise refine.
+    const double xd = kTwoPiD * (static_cast<double>(bin) - k0) / num_bins;
+    const double nd = 0.5 * static_cast<double>(num_bins - 1);
+    const double sh = sin(0.5 * xd);
+    const double scale = fabs(sh) < 1.0e-12 ? 2.0 * nd + 1.0 : sin((nd + 0.5) * xd) / sh;
+    const Complex rotation = cexp_cycles(base_cycles - nd * xd / kTwoPiD);
+    const double unit = scale / num_bins;
+    return {{static_cast<float>(unit * rotation.re), static_cast<float>(unit * rotation.im)}, {0.0f, 0.0f}};
+  }
+  const Complex phase = cexp_cycles(base_cycles);
   const float x = static_cast<float>(
       kTwoPiD * (static_cast<double>(bin) - k0) / num_bins);
   const float n = 0.5f * static_cast<float>(num_bins - 1);
@@ -120,7 +133,7 @@ __device__ __forceinline__ SpectrumResponse spectrum_response(
   return {value, {0.0f, 0.0f}};
 }
 __global__ void fmcw_spectrum_forward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
@@ -150,10 +163,10 @@ __global__ void fmcw_spectrum_forward_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const double tau = static_cast<double>(tau_rt[k]);
+    const double tau = path_delay(tau_rt, tau_lo, k);
     const SpectrumResponse response = spectrum_response(
         tau, t_slot, bin, num_bins, sample_period_s, slope,
-        carrier_hz, carrier_rate_hz, t_start, false);
+        carrier_hz, carrier_rate_hz, t_start, false, tau_lo != nullptr);
     const float wr = weight_re[k];
     const float wi = weight_im[k];
     acc_re += wr * response.value.re - wi * response.value.im;
@@ -165,7 +178,7 @@ __global__ void fmcw_spectrum_forward_kernel(
   out_im[out_idx] = acc_im;
 }
 __global__ void fmcw_spectrum_jvp_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_offsets,
@@ -198,7 +211,7 @@ __global__ void fmcw_spectrum_jvp_kernel(
   float acc_re = 0.0f;
   float acc_im = 0.0f;
   for (int64_t k = bounds.start; k < bounds.end; ++k) {
-    const double tau = static_cast<double>(tau_rt[k]);
+    const double tau = path_delay(tau_rt, tau_lo, k);
     const SpectrumResponse response = spectrum_response(
         tau, t_slot, bin, num_bins, sample_period_s, slope,
         carrier_hz, carrier_rate_hz, t_start, true);
@@ -222,7 +235,7 @@ __global__ void fmcw_spectrum_jvp_kernel(
 // exactly one output slot in each gradient array, so the reduction needs no
 // atomics and the summation order is fixed by the loop nest.
 __global__ void fmcw_spectrum_backward_kernel(
-    const float* __restrict__ tau_rt,
+    const float* __restrict__ tau_rt, const float* __restrict__ tau_lo,
     const float* __restrict__ weight_re,
     const float* __restrict__ weight_im,
     const int64_t* __restrict__ path_segment,
@@ -250,7 +263,7 @@ __global__ void fmcw_spectrum_backward_kernel(
   int64_t segment = path_segment[k];
   segment = segment < 0 ? 0 : segment;
   segment = segment >= num_segments ? num_segments - 1 : segment;
-  const double base_tau = static_cast<double>(tau_rt[k]);
+  const double base_tau = path_delay(tau_rt, tau_lo, k);
   const float wr = weight_re[k];
   const float wi = weight_im[k];
   const int tx = clamped_tx_index(
@@ -287,7 +300,7 @@ __global__ void fmcw_spectrum_backward_kernel(
 }  // namespace
 
 void fmcw_spectrum_forward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
@@ -329,7 +342,7 @@ void fmcw_spectrum_forward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
@@ -350,7 +363,7 @@ void fmcw_spectrum_forward_cuda(
 }
 
 void fmcw_spectrum_jvp_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_offsets,
@@ -404,7 +417,7 @@ void fmcw_spectrum_jvp_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(tan_out_re)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_offsets.const_data_ptr<int64_t>(),
@@ -428,7 +441,7 @@ void fmcw_spectrum_jvp_cuda(
 }
 
 void fmcw_spectrum_backward_cuda(
-    const torch::stable::Tensor& tau_rt,
+    const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
     const torch::stable::Tensor& weight_re,
     const torch::stable::Tensor& weight_im,
     const torch::stable::Tensor& path_segment,
@@ -486,7 +499,7 @@ void fmcw_spectrum_backward_cuda(
       dim3(block_size, 1, 1),
       0,
       current_cuda_stream(grad_tau_rt)>>>(
-      tau_rt.const_data_ptr<float>(),
+      tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
       weight_re.const_data_ptr<float>(),
       weight_im.const_data_ptr<float>(),
       path_segment.const_data_ptr<int64_t>(),

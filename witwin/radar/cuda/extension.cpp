@@ -3,9 +3,9 @@
 STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def("cfar_order_statistic_forward(Tensor padded, Tensor offsets, Tensor rank, Tensor(a!) level, int window_height, int window_width) -> ()");
   m.def("dbscan_labels_forward(Tensor features, Tensor(a!) parent, Tensor(b!) core, float eps, int min_points) -> ()");
-  m.def("fmcw_adaptive_forward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");
-  m.def("fmcw_adaptive_backward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");
-  m.def("fmcw_adaptive_jvp(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier) -> ()");
+  m.def("fmcw_adaptive_forward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier, int precise_delay) -> ()");
+  m.def("fmcw_adaptive_backward(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier, int precise_delay) -> ()");
+  m.def("fmcw_adaptive_jvp(Tensor samples, Tensor valid, Tensor starts, Tensor basis, Tensor bounds, Tensor owners, Tensor clock, Tensor vector, Tensor(a!) output, int begin, int end, int num_tx, int num_samples, float interpolation_carrier, float slope, float carrier, int precise_delay) -> ()");
   m.def("fmcw_observation_forward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
   m.def("fmcw_observation_backward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
   m.def("fmcw_observation_jvp(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
@@ -23,7 +23,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // closed form here, and the cheap route to its spectrum is the beat family
   // plus the processing range transform.
   m.def(
-      "fmcw_spectrum_forward(Tensor tau_rt, Tensor weight_re, "
+      "fmcw_spectrum_forward(Tensor tau_rt, Tensor tau_lo, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
@@ -32,7 +32,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float slope_hz_per_s, float carrier_hz, float carrier_rate_hz, "
       "float t_start_s) -> ()");
   m.def(
-      "fmcw_spectrum_backward(Tensor tau_rt, Tensor weight_re, "
+      "fmcw_spectrum_backward(Tensor tau_rt, Tensor tau_lo, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
       "Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, "
@@ -41,7 +41,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
   m.def(
-      "fmcw_spectrum_jvp(Tensor tau_rt, Tensor weight_re, "
+      "fmcw_spectrum_jvp(Tensor tau_rt, Tensor tau_lo, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor tan_tau_rt, "
       "Tensor tan_weight_re, Tensor tan_weight_im, "
@@ -78,7 +78,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // instants of a refreshed frame; `chirp_poly` holds the transmitted ramp's
   // polynomial phase error.
   m.def(
-      "fmcw_beat_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_beat_forward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_tx, "
@@ -87,7 +87,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float slope_hz_per_s, float carrier_hz, float carrier_rate_hz, "
       "float t_start_s) -> ()");
   m.def(
-      "fmcw_beat_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_beat_backward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor segment_tx_index, "
       "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
@@ -96,7 +96,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
   m.def(
-      "fmcw_beat_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "fmcw_beat_jvp(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor segment_tx_index, "
       "Tensor slot_table, Tensor segment_table, Tensor chirp_poly, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
@@ -132,13 +132,13 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // a factor of 1e4 at the top of a 64 x 120 kHz band at 77 GHz, and infinite
   // at n = 0. See R-ADR-004.
   m.def(
-      "ofdm_cfr_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "ofdm_cfr_forward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor(a!) out_re, "
       "Tensor(b!) out_im, int num_paths, int num_segments, int num_symbols, "
       "int num_subcarriers, int weight_columns, float subcarrier_spacing_hz, "
       "float symbol_period_s, float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
-      "ofdm_cfr_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "ofdm_cfr_backward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
@@ -146,7 +146,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "int weight_columns, float subcarrier_spacing_hz, float symbol_period_s, "
       "float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
-      "ofdm_cfr_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "ofdm_cfr_jvp(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
@@ -162,17 +162,17 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // instant. The backward writes per-(path, symbol) partial sums the caller
   // reduces. R-ADR-046.
   m.def(
-      "ofdm_time_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
+      "ofdm_time_forward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
       "Tensor symbols, Tensor segment_table, Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, "
       "int num_segments, int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
       "float cyclic_prefix_s, float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
-      "ofdm_time_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_segment, "
+      "ofdm_time_backward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_segment, "
       "Tensor symbols, Tensor segment_table, Tensor grad_re, Tensor grad_im, Tensor(a!) partial, int num_paths, "
       "int num_segments, int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
       "float cyclic_prefix_s, float carrier_hz, float carrier_rate_hz) -> ()");
   m.def(
-      "ofdm_time_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
+      "ofdm_time_jvp(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, Tensor weight_im, Tensor path_offsets, "
       "Tensor symbols, Tensor segment_table, Tensor tan_tau_rt, Tensor tan_tau_rate, Tensor tan_weight_re, "
       "Tensor tan_weight_im, Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, int num_segments, "
       "int num_symbols, int num_subcarriers, int num_samples, float subcarrier_spacing_hz, "
@@ -190,7 +190,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // fast-time instants of a refreshed frame. The two carrier homes follow
   // R-ADR-004; the coded and stepped families are R-ADR-046.
   m.def(
-      "pulsed_echo_forward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "pulsed_echo_forward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor chips, Tensor segment_table, "
       "Tensor(a!) out_re, Tensor(b!) out_im, int num_paths, int num_segments, int num_pulses, "
       "int num_samples, float sample_period_s, float pri_s, "
@@ -198,7 +198,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float bandwidth_hz, float pulse_amplitude, float carrier_hz, "
       "float carrier_rate_hz, float frequency_step_hz, int periodic) -> ()");
   m.def(
-      "pulsed_echo_backward(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "pulsed_echo_backward(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_segment, Tensor chips, Tensor segment_table, Tensor grad_out_re, "
       "Tensor grad_out_im, Tensor(a!) grad_tau_rt, Tensor(b!) grad_tau_rate, "
       "Tensor(c!) grad_weight_re, Tensor(d!) grad_weight_im, int num_paths, "
@@ -208,7 +208,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float pulse_amplitude, float carrier_hz, float carrier_rate_hz, "
       "float frequency_step_hz, int periodic) -> ()");
   m.def(
-      "pulsed_echo_jvp(Tensor tau_rt, Tensor tau_rate, Tensor weight_re, "
+      "pulsed_echo_jvp(Tensor tau_rt, Tensor tau_lo, Tensor tau_rate, Tensor weight_re, "
       "Tensor weight_im, Tensor path_offsets, Tensor chips, Tensor segment_table, Tensor tan_tau_rt, "
       "Tensor tan_tau_rate, Tensor tan_weight_re, Tensor tan_weight_im, "
       "Tensor(a!) tan_out_re, Tensor(b!) tan_out_im, int num_paths, "
