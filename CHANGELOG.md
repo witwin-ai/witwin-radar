@@ -35,6 +35,15 @@ claim is checked against an independent oracle in `tests/oracle/` (R-ADR-032). U
   (`Fmcw.mimo`, `Fmcw.output`, `Fmcw.sampling`, `Ofdm.modulation`, `Ofdm.output`, `Pulsed.pulse_kind`,
   `Motion.world`); positions that are not `(S, 3)`; a negative host `rcs`; repeated or miscounted `ids`; an
   `Aspect`/`RcsTable` axis without one row per target. These inputs failed later, or produced NaN cubes, before.
+- A propagation input that carries a derivative now needs the `ad_mode` that carries it, and is refused before any
+  discovery otherwise: a gradient needs `ad_mode="vjp"`, a forward tangent `ad_mode="jvp"`. This covers target
+  positions (a `PointTargets.positions` tensor, a `trajectory`'s output, a `StructureTargets` anchor, a `MeshTargets`
+  structure's vertices) and, when anything beyond line-of-sight rows is requested, a scene's mesh vertices and
+  material fields. Under the default `ad_mode="none"` such a leaf used to come back with no derivative, or with only
+  the join's and the facet response's part and the propagation legs' part missing; a gradient under `"jvp"` or a
+  tangent under `"vjp"` likewise. Migration: pass `ad_mode="vjp"` (or `"jvp"`) when differentiating, or `.detach()`
+  the input to simulate without the derivative. Radar-side leaves (cross sections, patterns, power, LNA gain,
+  coupling) still differentiate under `"none"`.
 - An FMCW ADC window that ends after the chirp period (`adc_start + (samples_per_chirp - 1) / sample_rate >=
   idle + ramp_end`) is refused at construction; it sampled the next chirp. Lengthen `ramp_end` or shorten the window.
 - `Radar(...)` builds its synthesis spec at construction, so array-dependent waveform rules (BPM needs a
@@ -400,8 +409,8 @@ from a contended desktop GPU.
 - `Motion.auto()` in a network resolves to `Motion.adc()` when anything moves; adaptive motion and
   `rediscover_every_chirps` are refused for a network, as are the link configurations R-ADR-051 lists.
 - Refused with a named reason, before any work: a pose leaf with an `"up"`/`"right"` polarization, a polarization
-  leaf, a pose trajectory's rotation leaf, a pose leaf under an `ad_mode` that does not carry it, a roughness rms
-  leaf at exactly zero.
+  leaf, a pose trajectory's rotation leaf, a pose leaf, a target position or a scene leaf under an `ad_mode` that
+  does not carry it, a roughness rms leaf at exactly zero.
 - The default radar pose (`look_at=(0, 0, -1)`, `up=(0, 1, 0)`, a Y-up world) is unchanged and documented: in a
   Channel/Core Z-up scene it looks at the floor, so state the pose there.
 - `Result.last_snapshot` and `last_compiled_scene` are typed (`SceneSnapshot | None`, `CompiledWorld | None`).

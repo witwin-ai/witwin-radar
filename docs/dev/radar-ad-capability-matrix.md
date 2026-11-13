@@ -124,6 +124,31 @@ derivative is then complete.
 | radar/pose | a pose trajectory's rotation | both | REF | host-declaration | witwin/radar/simulation.py::WorldHalf._rotation_at | tests/test_radar_pose_leaves.py::test_a_pose_trajectory_rotation_leaf_is_refused | refusal |
 | radar/pose | a pose leaf under a grad mode that does not carry it | both | REF | host-declaration | witwin/radar/radar.py::Radar._require_pose_ad_mode | tests/test_radar_pose_leaves.py::test_a_pose_leaf_in_the_wrong_ad_mode_is_refused_before_any_work | refusal |
 
+### Leg endpoints and scene leaves under the verb's `ad_mode` (`witwin/radar/policy.py`)
+
+A scatter-site position is an endpoint of both legs, and a wall's vertices and
+material enter every row that meets the wall. Channel's fixed-topology replay
+carries those derivatives only in the mode the verb asks for (`vjp` for a
+gradient, `jvp` for a forward tangent); under `none` every row is discovery's
+and carries none, so a marked input came back with no derivative or with the
+Radar-side stages' part alone. `policy.require_leg_ad_mode` refuses it, the
+same rule as the pose rows above. A site position is admitted where it is
+formed: a `PointTargets` tensor when the session's site policy is built, before
+any compile; a trajectory's output, a structure anchor and a mesh target's world
+vertices when the frame resolves them, before the facet operator or any
+discovery. Scene leaves are admitted on each compiled scene, before any
+discovery, unless the request is line-of-sight rows alone, which read a wall
+only through occlusion. Radar-side leaves (cross section, patterns, power, LNA
+gain, coupling) are unaffected and differentiate under `none`.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| sites/explicit | PointTargets.positions under none, a gradient under jvp or a tangent under vjp | both | REF | host-declaration | witwin/radar/policy.py::require_leg_ad_mode | tests/test_site_position_ad_mode.py::test_a_marked_point_target_position_is_refused_before_any_work, tests/test_site_position_ad_mode.py::test_every_site_source_refuses_a_derivative_its_mode_does_not_carry | refusal |
+| sites/trajectory | a PointTargets trajectory's output under a mode that does not carry it | both | REF | host-declaration | witwin/radar/policy.py::require_leg_ad_mode | tests/test_site_position_ad_mode.py::test_a_marked_point_target_trajectory_is_refused_before_any_discovery, tests/test_site_position_ad_mode.py::test_every_site_source_refuses_a_derivative_its_mode_does_not_carry | refusal |
+| sites/structure_anchor | a StructureTargets anchor under a mode that does not carry it | both | REF | host-declaration | witwin/radar/policy.py::require_leg_ad_mode | tests/test_site_position_ad_mode.py::test_every_site_source_refuses_a_derivative_its_mode_does_not_carry | refusal |
+| sites/facets | MeshTargets world vertices under a mode that does not carry them | both | REF | host-declaration | witwin/radar/facets.py::FacetSites.resolve | tests/test_site_position_ad_mode.py::test_marked_mesh_target_vertices_are_refused_before_the_facet_operator | refusal |
+| scene/compiled | wall vertices and material tables under a mode that does not carry them, with a non-line-of-sight component | both | REF | host-declaration | witwin/radar/simulation.py::WorldHalf._compile | tests/test_site_position_ad_mode.py::test_marked_wall_vertices_are_refused_before_any_discovery, tests/test_site_position_ad_mode.py::test_a_marked_wall_material_under_none_is_refused_too | refusal |
+
 ## Synthesis, frontend and sensor cells
 
 ### The host-float rule (`witwin/radar/policy.py`)

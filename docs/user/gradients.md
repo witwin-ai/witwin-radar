@@ -21,9 +21,15 @@ an error that says why; nothing is silently detached.
 | `"jvp"` | forward mode | `torch.autograd.forward_ad` tangents |
 
 The mode matters for every leaf that moves geometry Channel traces: target
-positions and trajectories, mesh vertices and materials, and the radar pose.
-With `ad_mode="none"` a target-position leaf is not differentiated (the cube
-carries no graph from it), and a radar-pose leaf is refused by name. Only
+positions and trajectories, `MeshTargets` vertices, the radar pose, and - when
+reflections, transmission or diffraction are requested - a wall's vertices and
+materials. Such a leaf needs the mode that carries it: a gradient needs
+`ad_mode="vjp"`, a forward tangent `ad_mode="jvp"`. In any other mode
+(including the default `"none"`) it is refused by name before any work, because
+the propagation legs would publish no derivative for it and the result would
+carry none, or only the Radar-side part of it. Detach the input to simulate
+without the derivative. Line-of-sight rows alone read a wall only through
+occlusion, a discrete decision, so they admit a wall leaf in any mode. Only
 first-order derivatives are supported; a gradient of a gradient is refused.
 
 ## Which inputs are leaves
@@ -53,7 +59,7 @@ for record, leaves in capabilities()["ad_leaves"].items():
 | `Pattern` | `x_gain`, `y_gain`, `gain_table` (the table values), `gain` (dBi) | float tensors for power, complex for field; angle axes stay host floats |
 | `Coupling` | `tx`, `rx` | complex tensor matrices |
 | Core `PhysicalMaterial` on a `MeshTargets` structure | `eps_r`, `sigma_e`, `thickness_m`, `mu_r`, roughness `rms_height_m` | need `ad_mode` |
-| Core `Mesh` vertices (walls and `MeshTargets`) | vertex tensor | reverse and forward mode |
+| Core `Mesh` vertices (walls and `MeshTargets`) | vertex tensor | need `ad_mode`; reverse and forward mode |
 | `witwin.radar.smpl.SMPLBody` | `pose`, `shape`, `position`, `rotation` | reverse mode only |
 
 The setup used below is a small version of the quickstart radar (four chirps,
@@ -272,6 +278,8 @@ attempts = {
     "pose leaf under ad_mode='none'": lambda: radar.replace(
         position=torch.zeros(3, device="cuda", requires_grad=True), polarization=(0.0, 1.0, 0.0)).simulate(
         scene, off_axis, times=(0.0,)),
+    "target position leaf under ad_mode='none'": lambda: radar.simulate(
+        scene, PointTargets(positions=positions, rcs=1.0), times=(0.0,)),
     "polarization leaf": lambda: radar.replace(polarization=torch.tensor([0.0, 1.0, 0.0], requires_grad=True)),
     "transmission with ad_mode='vjp'": lambda: radar.simulate(
         scene, PointTargets(positions=positions, rcs=1.0), times=(0.0,), transmission=True, ad_mode="vjp"),
@@ -292,6 +300,11 @@ for name, attempt in attempts.items():
   noise figure, AGC and ADC settings, `Compression` parameters, `impedance`,
   `seed`); pattern angle axes. They raise on a tensor that carries a gradient
   or a forward tangent.
+* **A derivative the propagation legs would drop**: a target position,
+  trajectory, `MeshTargets` vertex or radar-pose leaf - and, with reflections,
+  transmission or diffraction, a wall vertex or material leaf - under an
+  `ad_mode` that does not carry it (`"none"`, a gradient under `"jvp"`, a
+  tangent under `"vjp"`). Pass the matching mode, or detach the input.
 * **Polarization**: a polarization leaf, an `"up"`/`"right"` polarization with
   a pose leaf, and a `pose=` rotation leaf. Channel treats an endpoint
   polarization as a constant.
