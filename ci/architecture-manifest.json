@@ -11,6 +11,7 @@
     "witwin.radar.cuda",
     "witwin.radar.cuda.runtime",
     "witwin.radar.deployment",
+    "witwin.radar.events",
     "witwin.radar.frontend",
     "witwin.radar.motion",
     "witwin.radar.paths",
@@ -41,6 +42,7 @@
     "witwin.radar.channel",
     "witwin.radar.simulation",
     "witwin.radar.adaptive",
+    "witwin.radar.events",
     "witwin.radar.binding",
     "witwin.radar.paths",
     "witwin.radar.scattering",
@@ -82,7 +84,8 @@
     "detection_processing": "witwin.radar.processing.detection",
     "tracking_processing": "witwin.radar.processing.tracking",
     "native_runtime": "witwin.radar.cuda.runtime",
-    "target_declaration": "witwin.radar.targets"
+    "target_declaration": "witwin.radar.targets",
+    "path_events": "witwin.radar.events"
   },
   "public_facades": [
     "witwin.radar",
@@ -98,6 +101,7 @@
     "witwin.radar.channel",
     "witwin.radar.cuda",
     "witwin.radar.cuda.runtime",
+    "witwin.radar.events",
     "witwin.radar.frontend",
     "witwin.radar.motion",
     "witwin.radar.paths",

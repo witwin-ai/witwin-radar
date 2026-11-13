@@ -9,6 +9,9 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   m.def("fmcw_observation_forward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
   m.def("fmcw_observation_backward(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
   m.def("fmcw_observation_jvp(Tensor x, Tensor offsets, Tensor segment, Tensor vector, Tensor(a!) output, float slope, float carrier) -> ()");
+  // Path births and deaths between consecutive observations; discrete, so it
+  // has no derivative companion (see path_events.cu).
+  m.def("path_events_forward(Tensor prev_valid, Tensor prev_transfer, Tensor cur_valid, Tensor cur_transfer, Tensor before, Tensor after, Tensor(a!) event_code, Tensor(b!) event_amplitude, Tensor(c!) counter, int base) -> ()");
   m.def("path_interpolate_forward(Tensor x, Tensor indices, Tensor weights, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("path_interpolate_backward(Tensor x, Tensor indices, Tensor weights, Tensor vector, Tensor(a!) output, float carrier) -> ()");
   m.def("path_interpolate_jvp(Tensor x, Tensor indices, Tensor weights, Tensor vector, Tensor(a!) output, float carrier) -> ()");

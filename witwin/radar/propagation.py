@@ -615,6 +615,9 @@ class DiscoveryReport:
 FIRST_FRAME = "first_frame"
 STRUCTURE_MOTION = "structure_motion"
 MOTION_EVENT_CADENCE = "motion_event_cadence"
+#: A declared displacement cadence came due: something moved far enough since
+#: the last discovery.
+DISPLACEMENT = "displacement"
 
 #: The authored world was mutated in place behind the compiled scene.
 #:
@@ -680,6 +683,7 @@ class SceneEpochLoop:
         compile_scene: Callable[..., object],
         motion_event_period_frames: int | None = None,
         world_motion: str = "frozen_world",
+        motion_event_period_s: float | None = None,
     ) -> None:
         if not isinstance(dynamic_scene, DynamicScene):
             raise TypeError(
@@ -696,7 +700,12 @@ class SceneEpochLoop:
         self._dynamic = dynamic_scene
         self._reference_frequency_hz = float(reference_frequency_hz)
         self._bind = bind
+        if motion_event_period_s is not None and not motion_event_period_s > 0:
+            raise ValueError(f"motion_event_period_s must be positive or None, got {motion_event_period_s!r}")
         self._period = motion_event_period_frames
+        self._period_s = motion_event_period_s
+        self._time_s: float | None = None
+        self._last_discovery_time: float | None = None
         self._world_motion = str(world_motion)
         self._compile_scene = compile_scene
         self._structures_move = bool(dynamic_scene.structure_trajectories or dynamic_scene.structure_deformations)
@@ -744,16 +753,21 @@ class SceneEpochLoop:
     def frame_count(self) -> int:
         return self._frame_index + 1
 
-    def frame(self, time_s: float, *, topology_complete: bool = False) -> EpochFrame:
+    def frame(self, time_s: float, *, topology_complete: bool = False, displaced: bool = False) -> EpochFrame:
         """Advance the world to ``time_s`` and return this frame's epoch state.
 
         Everything expensive that this frame needs has happened by the time
         this returns. The caller's remaining work is one batched
         ``reevaluate_slots`` per leg and one composition, and neither of them
         discovers, prepares or compiles.
+
+        ``displaced`` is the caller's displacement cadence coming due; it
+        rediscovers as :data:`DISPLACEMENT` unless something with a stronger
+        reason already does.
         """
 
         self._frame_index += 1
+        self._time_s = float(time_s)
         snapshot = self._dynamic.at(time_s)
         mutated = self._revalidate_source()
         recompiled = self._recompile(snapshot, force=mutated)
@@ -761,6 +775,8 @@ class SceneEpochLoop:
         # Cartesian LOS family in an empty world). This suppresses only the
         # motion cadence, never source mutation, retirement or version checks.
         reason = self._rediscovery_reason(recompiled, mutated, topology_complete)
+        if reason is None and displaced and not topology_complete:
+            reason = DISPLACEMENT
         if reason is not None:
             self._rediscover(snapshot)
         if self._frozen is None:
@@ -806,7 +822,18 @@ class SceneEpochLoop:
         return False
 
     def _motion_event_due(self) -> bool:
-        return self._period is not None and (self._frame_index - self._last_discovery_frame >= self._period)
+        """The frame cadence, or the time cadence, has come round since the last discovery.
+
+        The time cadence compares world time with a relative tolerance of
+        ``1e-9`` of the period, so a schedule whose instants land exactly on
+        the period's multiples is due at them rather than one instant late.
+        """
+
+        if self._period is not None and self._frame_index - self._last_discovery_frame >= self._period:
+            return True
+        if self._period_s is None or self._last_discovery_time is None or self._time_s is None:
+            return False
+        return self._time_s - self._last_discovery_time >= self._period_s * (1.0 - 1e-9)
 
     def _recompile(self, snapshot: object, *, force: bool = False) -> bool:
         """Compile this snapshot, or keep the one already built.
@@ -887,6 +914,7 @@ class SceneEpochLoop:
         self._frozen = frozen
         self._epoch += 1
         self._last_discovery_frame = self._frame_index
+        self._last_discovery_time = self._time_s
         self.discovery_count += 1
 
     def _compile(self, snapshot: object) -> object:

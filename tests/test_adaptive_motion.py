@@ -141,14 +141,98 @@ def test_the_probe_grid_bound_is_enforced_even_for_a_certified_family():
     assert resolved["topology_proved_complete"]
     assert resolved["accepted_intervals"] > 1
 
-    # A bound wider than the frame is the aliasing case, and it is the caller's
-    # declaration that produces it rather than something the controller does
-    # behind their back. The sampled test still reports success, which is
-    # exactly why the bound cannot be inferred.
+    # M2-7 / D-8: a bound wider than the frame puts the whole motion at the
+    # zeros of the nested grid, where every grid test measures nothing. The
+    # jittered verification instant is off that grid, sees the oscillation and
+    # refuses the interval, so the run refines instead of accepting an
+    # interpolant that misses the whole motion.
     aliased, aliased_error = adaptive(4 * span)
-    assert aliased["accepted_intervals"] == 1
-    assert aliased["max_tested_phase_error_rad"] <= 0.02
-    assert aliased_error > 0.5, (aliased_error, aliased)
+    assert aliased["verification_refinements"] > 0, aliased
+    assert aliased["accepted_intervals"] > 1
+    assert aliased_error < 0.05, (aliased_error, aliased)
+
+    # A declared bandwidth sets the spacing itself: four probes per period.
+    declared = radar.simulate(
+        scene, **kwargs, motion=Motion.adaptive(max_interval=4 * span, motion_bandwidth=hidden_hz)
+    )
+    stats = declared.adaptive_diagnostics[0]
+    assert stats["max_interval_s"] == pytest.approx(1.0 / (2.0 * hidden_hz))
+    assert float((declared.cube - exact.cube).abs().norm() / exact.cube.abs().norm()) < 0.05
+
+
+def test_a_declared_acceleration_caps_the_probe_spacing():
+    """``max_acceleration`` bounds the linear interpolant's phase error, so it bounds the interval."""
+
+    from witwin.radar.adaptive import probe_spacing_cap
+
+    motion = Motion.adaptive(max_interval=1.0, max_acceleration=400.0)
+    cap = probe_spacing_cap(motion, 77e9)
+    # pi f_c a h^2 / (2 c) at the cap is exactly the phase tolerance.
+    assert math.pi * 77e9 * 400.0 * cap**2 / (2 * 299_792_458.0) == pytest.approx(motion.phase_error)
+    assert probe_spacing_cap(Motion.adaptive(max_interval=1e-6, max_acceleration=400.0), 77e9) == 1e-6
+
+
+def test_the_verification_instant_is_off_the_nested_grid():
+    from witwin.radar.adaptive import verification_instant
+
+    for left, right in ((0, 3), (0, 8), (5, 13), (100, 1123)):
+        grid = [left + round((right - left) * step / 2) for step in range(3)]
+        index = verification_instant(left, right, grid)
+        assert left < index < right and index not in grid
+        # Off the probe grids of the first refinement levels as well.
+        dyadic = {left + round((right - left) * k / 2**level) for level in range(1, 3) for k in range(2**level + 1)}
+        assert index not in dyadic or right - left < 4
+
+
+def _subdivided_wall(cells: int):
+    """A 4 m square PEC wall at ``x = 4``, as ``2 * cells^2`` coplanar triangles."""
+
+    from support import oracle_scenes as sc
+    from witwin.core import PhysicalMaterial
+
+    edges = np.linspace(-2.0, 2.0, cells + 1)
+    corners = [(4.0, float(y), float(z)) for z in edges for y in edges]
+    faces = []
+    for row in range(cells):
+        for column in range(cells):
+            a = row * (cells + 1) + column
+            b, c, d = a + 1, a + cells + 2, a + cells + 1
+            faces += [(a, b, c), (a, c, d)]
+    return sc.plane_scene(corners=corners, material=PhysicalMaterial.perfect_conductor(), faces=tuple(faces))
+
+
+def test_a_subdivided_wall_needs_no_more_probes_than_an_undivided_one():
+    """M2-6 / D-7 / MP-13: the adaptive identity names the plane, not the triangle.
+
+    The target walks past a flat wall, so the specular point of its wall
+    bounce slides across the wall. On the subdivided wall it crosses many
+    triangle edges; each crossing is one continuous reflection, so the probe
+    count must be the undivided wall's.
+    """
+
+    from support import oracle_scenes as sc
+
+    radar = sc.radar(sc.beat_fmcw(samples=32, chirps=16))
+    radar = radar.replace(waveform=replace(radar.waveform, idle=2e-4))
+
+    def walk(t):
+        return torch.tensor([[2.0, -1.0 + 300.0 * t, 0.3]], dtype=torch.float32, device=radar.device)
+
+    def run(cells):
+        return radar.simulate(
+            _subdivided_wall(cells),
+            point_targets(walk(0.0), trajectory=walk),
+            times=(0.0,),
+            los=True,
+            reflections=1,
+            motion=Motion.adaptive(),
+        )
+
+    whole, divided = run(1), run(4)
+    assert divided.adaptive_diagnostics[0]["evaluations"] == whole.adaptive_diagnostics[0]["evaluations"]
+    assert divided.adaptive_diagnostics[0]["topology_refinements"] == 0
+    error = float((divided.cube - whole.cube).abs().norm() / whole.cube.abs().norm())
+    assert error < 1e-3, error
 
 
 def test_a_higher_interpolation_order_buys_interval_length_under_the_proof():

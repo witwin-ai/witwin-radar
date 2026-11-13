@@ -19,6 +19,7 @@ from .propagation import DiscoveryReport
 if TYPE_CHECKING:
     import numpy as np
 
+    from .events import PathEvents
     from .paths import RadarPathBatch
     from .processing import ArrayGeometry, PointCloud, ProcessingAxes, ProcessingCube, RangeDopplerMap, RangeProfile
     from .propagation import EpochFrame, RadarPropagationLegs
@@ -59,8 +60,10 @@ class Result:
     statements, and a consumer that needs to know how much to trust a run
     needs both. The first says no path birth can have been missed - because
     every observation was evaluated, or because the candidate family was
-    certified complete for all time. The second says no observation's transport
-    was interpolated between probes. Adaptive sampling routinely gives the
+    certified complete for all time. The second says the world was evaluated at
+    every instant the waveform puts a sample at: nothing was interpolated
+    between probes, and nothing was held over a chirp, symbol or pulse.
+    Adaptive sampling routinely gives the
     first and not the second, which is exactly the trade it exists to make;
     collapsing them into one flag would report a proven-complete adaptive run
     as if it might have lost a path.
@@ -114,6 +117,8 @@ class Result:
     sample_times_s: tuple[np.ndarray, ...]
     path_set_complete: bool
     motion_sampling_exhaustive: bool
+    #: The observation schedule the run used: ``"static"``, ``"chirp"``,
+    #: ``"adc"``, ``"adaptive"``, ``"symbol"`` (OFDM) or ``"pulse"``.
     motion_sampling: str
     #: The synthesis result's own output domain.
     output_domain: str
@@ -126,6 +131,8 @@ class Result:
     observation_schedule: str = "frame"
     discovery_complete: bool = True
     transmission_dropped_rows: int = 0
+    #: Each frame's path births and deaths (:class:`~witwin.radar.events.PathEvents`).
+    events: tuple[PathEvents, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axis_names):
@@ -146,6 +153,16 @@ class Result:
     @property
     def frame_count(self) -> int:
         return int(self.cube.shape[0])
+
+    @property
+    def birth_lag_bound_s(self) -> tuple[float, ...]:
+        """Per frame, how late a path birth can have been seen, s.
+
+        The largest gap between topology discoveries each frame relied on; see
+        :attr:`witwin.radar.events.PathEvents.birth_lag_bound_s`.
+        """
+
+        return tuple(frame.birth_lag_bound_s for frame in self.events)
 
     def frame(self, index: int = 0) -> Frame:
         """One frame of this result, with the metadata a processing stage reads.
@@ -203,6 +220,7 @@ class Result:
         motion_sampling: str,
         adaptive_diagnostics: Sequence[dict[str, Any]],
         discovery: DiscoveryReport | None = None,
+        events: Sequence[PathEvents] = (),
     ) -> Result:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
@@ -245,6 +263,7 @@ class Result:
             observation_schedule=synthesis.observation_schedule,
             discovery_complete=True if discovery is None else discovery.complete,
             transmission_dropped_rows=0 if discovery is None else discovery.transmission_dropped_rows,
+            events=tuple(events),
         )
 
 
@@ -384,6 +403,9 @@ class SceneFrame:
     array: SensorArraySpec
     #: What Channel said about the discoveries this frame answered from.
     discovery: DiscoveryReport = DiscoveryReport()
+    #: The frame's path births and deaths. Host bookkeeping plus a few small
+    #: device buffers, so every frame keeps it.
+    events: PathEvents | None = None
 
     def released(self) -> SceneFrame:
         """This frame without the device state only a closing frame publishes."""
@@ -428,6 +450,7 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
         motion_sampling=last.motion_sampling,
         adaptive_diagnostics=[frame.diagnostics for frame in frames if frame.diagnostics is not None],
         discovery=reduce(DiscoveryReport.merged, (frame.discovery for frame in frames)),
+        events=[frame.events for frame in frames if frame.events is not None],
     )
 
 

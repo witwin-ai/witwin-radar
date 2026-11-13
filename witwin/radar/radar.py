@@ -1395,6 +1395,7 @@ class Radar:
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
+        pose=None,
     ) -> Paths:
         """Compose this radar's round trips over a Core world and keep them.
 
@@ -1429,6 +1430,7 @@ class Radar:
             max_paths=max_paths,
             max_round_trips=max_round_trips,
             wideband=wideband,
+            pose=pose,
         )
         return trace_scene(self, scene, **session)
 
@@ -1469,6 +1471,7 @@ class Radar:
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
+        pose=None,
     ) -> Result:
         """Simulate this radar over a Core world and return the frame cubes.
 
@@ -1501,6 +1504,13 @@ class Radar:
         :meth:`~witwin.radar.motion.Motion.auto`. ``grad`` is ``"none"``,
         ``"vjp"`` or ``"jvp"``.
 
+        ``pose`` is the radar's ego-motion, ``pose(t) -> (rotation, translation)``:
+        a ``(3, 3)`` local-to-world rotation composed on the left of the
+        authored orientation, about the radar's authored position, and a
+        ``(3,)`` world translation in metres. The elements' positions, their
+        polarizations and the antenna pattern's orientation all follow it, at
+        every observation instant. ``None`` holds the authored pose.
+
         The whole assembly lives in :mod:`witwin.radar.simulation` and its
         docstring is the contract; this method delegates rather than
         reimplementing so there is one owner of the frame loop.
@@ -1524,6 +1534,7 @@ class Radar:
             max_paths=max_paths,
             max_round_trips=max_round_trips,
             wideband=wideband,
+            pose=pose,
         )
         return simulate_scene(self, scene, **session)
 
@@ -1546,6 +1557,7 @@ class Radar:
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
+        pose=None,
     ) -> Iterator[Result]:
         """Simulate the same session as :meth:`simulate`, one frame at a time.
 
@@ -1576,6 +1588,7 @@ class Radar:
             max_paths=max_paths,
             max_round_trips=max_round_trips,
             wideband=wideband,
+            pose=pose,
         )
         yield from stream_scene(self, scene, **session)
 
@@ -1597,6 +1610,7 @@ class Radar:
         max_paths: int | None = None,
         max_round_trips: int | None = None,
         wideband: bool = False,
+        pose=None,
     ) -> dict[str, Any]:
         """Turn the public call arguments into what the frame loop takes."""
 
@@ -1646,6 +1660,7 @@ class Radar:
             "max_paths": max_paths,
             "max_round_trips": max_round_trips,
             "wideband": wideband,
+            "pose": pose,
         }
 
 

@@ -133,6 +133,15 @@ class FrozenLegTopology:
     epoch: int = 0
     _prepared: list = field(default_factory=list, repr=False)
     slot_topologies: dict = field(default_factory=dict, repr=False)
+    #: Discovery-time geometry, aliased from the consumer's evaluation:
+    #: ``interaction_type`` ``int32[rows, width]`` (Channel's
+    #: ``InteractionType`` flags), and the world-frame interaction normals and
+    #: points ``float32[rows, depth, 3]``. They describe the instant the leg
+    #: was discovered and are read only by a consumer that labels the faces a
+    #: row touches (the adaptive route's coplanar plane groups).
+    interaction_type: torch.Tensor | None = field(default=None, repr=False)
+    interaction_normals: torch.Tensor | None = field(default=None, repr=False)
+    interaction_positions_m: torch.Tensor | None = field(default=None, repr=False)
 
     @property
     def prepared(self) -> object:
@@ -528,6 +537,9 @@ class ChannelPropagationAdapter:
             requested=requested,
             discovered=discovered,
             epoch=self._epoch,
+            interaction_type=topology.interaction_type,
+            interaction_normals=getattr(evaluation.paths.geometry, "interaction_normals", None),
+            interaction_positions_m=getattr(evaluation.paths.geometry, "interaction_positions_m", None),
         )
 
     def reevaluate_slots(
