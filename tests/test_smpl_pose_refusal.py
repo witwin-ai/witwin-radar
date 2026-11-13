@@ -1,28 +1,17 @@
-"""The SMPL deformation bridge refuses a pose derivative instead of severing it.
+"""The SMPL deformation bridge: pose and shape are reverse-mode leaves, tangents are refused.
 
-``SmplPoseDeformation`` publishes two things into the Core world model: a rest
-``Mesh`` that a ``Structure`` carries, and a per-frame ``DeformationState``.
-Both cross the Core/Channel COMPILE boundary. ``rest_mesh`` used to build its
-mesh from ``vertices.detach()``, so a caller could mark the pose, run a whole
-epoch loop, and read ``pose.grad is None`` back with nothing having failed. The
-posing function itself is differentiable Torch and ``velocity_at`` depends on
-that, so the severance was invisible from inside the module too.
+``SmplPoseDeformation`` publishes a rest ``Mesh`` that a ``Structure`` carries
+and a per-frame ``DeformationState``. Both hold the posed vertices as a
+differentiable expression of the pose, the shape and the body transform, so a
+pose or shape gradient reaches every facet and every leg (R-ADR-052). The
+end-to-end finite-difference evidence runs on a synthetic rig through the same
+code path in ``test_smpl_pose_leaves.py``; this file needs the real model
+pickles and skips without them.
 
-Phase 9 replaces the detach with a refusal and names the deferral: plumbing a
-pose derivative into a compiled scene is a Core/Channel design to be accepted,
-not a detach to delete, and a half-working pose gradient is exactly the defect
-class this phase removes.
-
-**What is NOT refused, and why.** ``SMPLBody`` publishes differentiable
-vertices, and its pose gradient reaches them - measured at
-``|d(sum v^2)/d(pose)|_1 = 4695.12`` through ``SMPLBody._evaluate``. That is a
-working capability in a different owner and refusing it would be a removal, so
-this module's refusal is scoped to the deformation bridge. The mesh-vertex
-tests are the supported differentiable-geometry route.
-
-``pose_rate`` gets the same ADR-038 treatment as a velocity: it is a tangent
-DIRECTION, ``velocity_at`` feeds it to ``make_dual``, and ``d(loss)/d(pose_rate)``
-does not exist.
+What is refused: a forward TANGENT on the pose, the shape or the body transform
+(Channel refuses a compile whose vertices carry a dual, and ``velocity_at``
+opens its own forward level over the pose), and ``pose_rate`` as a leaf, which
+under ADR-038 is a tangent direction rather than an input.
 """
 
 from __future__ import annotations
@@ -66,23 +55,18 @@ def _rate() -> torch.Tensor:
 
 
 @pytest.mark.parametrize("marked", ["pose", "shape"])
-def test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge(smpl, marked):
-    """Refused at construction, before a rest mesh or a state can exist."""
+def test_a_pose_or_shape_gradient_reaches_every_published_state(smpl, marked):
+    """The bridge carries the leaf into the rest mesh and every deformation state."""
 
     SMPLBody, SmplPoseDeformation, root = smpl
-    body = SMPLBody(
-        pose=_pose(requires_grad=marked == "pose"),
-        shape=_shape(requires_grad=marked == "shape"),
-        model_root=root,
-        device="cpu",
-    )
-    with pytest.raises(RuntimeError) as raised:
-        SmplPoseDeformation(body, pose_rate=_rate())
-    message = str(raised.value)
-    assert f"body.{marked} carries a gradient" in message
-    # The deferral is named, and so is the route that DOES work today.
-    assert "compile boundary" in message
-    assert "witwin.core.Mesh" in message
+    pose, shape = _pose(requires_grad=marked == "pose"), _shape(requires_grad=marked == "shape")
+    body = SMPLBody(pose=pose, shape=shape, model_root=root, device="cpu")
+    deformation = SmplPoseDeformation(body, pose_rate=_rate())
+    assert deformation.rest_mesh().vertices.requires_grad
+    state = deformation.at(0.01)
+    state.vertices.square().sum().backward()
+    leaf = pose if marked == "pose" else shape
+    assert leaf.grad is not None and float(leaf.grad.abs().sum()) > 0.0
 
 
 def test_a_pose_carrying_a_forward_dual_is_refused_too(smpl):
@@ -100,6 +84,7 @@ def test_a_pose_carrying_a_forward_dual_is_refused_too(smpl):
         with pytest.raises(RuntimeError) as raised:
             SmplPoseDeformation(body, pose_rate=_rate())
     assert "forward tangent" in str(raised.value)
+    assert "grad='vjp'" in str(raised.value)
 
 
 def test_a_pose_rate_that_requires_grad_is_refused_by_adr_038(smpl):
@@ -115,22 +100,22 @@ def test_a_pose_rate_that_requires_grad_is_refused_by_adr_038(smpl):
     assert "tangent" in message
 
 
-def test_a_transform_derivative_is_refused_by_rest_mesh(smpl):
-    """The one the constructor cannot see: a live ``position`` on the body.
+def test_a_transform_tangent_is_refused_by_rest_mesh(smpl):
+    """The one the constructor cannot see: a forward dual on the body's ``position``.
 
     ``_transform_mesh_verts`` applies the body's rotation and position to the
-    posed vertices, so a marked position reaches the rest mesh without the pose
-    or the shape ever being marked. This is the case the detach used to swallow
-    and the reason the check is repeated at the mesh boundary.
+    posed vertices, so a dual position reaches the rest mesh without the pose
+    or the shape ever carrying one. A gradient there is carried; a tangent is
+    refused before Channel's compile would.
     """
 
     SMPLBody, SmplPoseDeformation, root = smpl
-    body = SMPLBody(
-        pose=_pose(), shape=_shape(), position=torch.zeros(3).requires_grad_(True), model_root=root, device="cpu"
-    )
-    deformation = SmplPoseDeformation(body, pose_rate=_rate())
-    with pytest.raises(RuntimeError) as raised:
-        deformation.rest_mesh()
+    with forward_ad.dual_level():
+        position = forward_ad.make_dual(torch.zeros(3), torch.ones(3))
+        body = SMPLBody(pose=_pose(), shape=_shape(), position=position, model_root=root, device="cpu")
+        deformation = SmplPoseDeformation(body, pose_rate=_rate())
+        with pytest.raises(RuntimeError) as raised:
+            deformation.rest_mesh()
     assert "position or rotation" in str(raised.value)
 
 
@@ -140,13 +125,7 @@ def test_a_transform_derivative_is_refused_by_rest_mesh(smpl):
 
 
 def test_the_rest_mesh_of_an_undifferentiated_body_is_unchanged(smpl):
-    """Removing the detach changed no value on the supported route.
-
-    The detach is gone, replaced by the refusal above. On a body that carries no
-    derivative the mesh is byte for byte what it was, and the vertices carry no
-    graph - which is now a fact about the input rather than something the mesh
-    imposed.
-    """
+    """On a body that carries no derivative the mesh is byte for byte the body's, with no graph."""
 
     SMPLBody, SmplPoseDeformation, root = smpl
     body = SMPLBody(pose=_pose(), shape=_shape(), model_root=root, device="cpu")
@@ -160,12 +139,7 @@ def test_the_rest_mesh_of_an_undifferentiated_body_is_unchanged(smpl):
 
 
 def test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate(smpl):
-    """The supported route the refusal message points at, executed.
-
-    ``pose_rate`` cannot be a leaf and IS the tangent direction that produces an
-    exact vertex velocity through the same linear blend skinning the primal
-    uses. Refusing the leaf did not touch it.
-    """
+    """``pose_rate`` cannot be a leaf and IS the tangent direction of the exact vertex velocity."""
 
     SMPLBody, SmplPoseDeformation, root = smpl
     body = SMPLBody(pose=_pose(), shape=_shape(), model_root=root, device="cpu")
@@ -222,13 +196,7 @@ def test_the_fast_lbs_matches_smplpytorch(smpl):
 
 
 def test_the_smpl_body_itself_still_publishes_a_pose_gradient(smpl):
-    """The capability this refusal deliberately does NOT remove.
-
-    ``SMPLBody`` is the deformation's body and a pose gradient through its own
-    vertices is real. Refusing it inside ``SMPLBody`` would be a removal rather
-    than a narrowing, so the scope of the refusal is the bridge, and this pins
-    the boundary of that scope.
-    """
+    """``SMPLBody``'s own vertices carry the pose gradient the bridge forwards."""
 
     SMPLBody, _, root = smpl
     pose = _pose(requires_grad=True)
