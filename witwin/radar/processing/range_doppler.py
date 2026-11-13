@@ -16,7 +16,7 @@ than assumed.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -137,8 +137,36 @@ def matched_filter(signal: torch.Tensor, spec, *, oversample: int = 1) -> torch.
         )
     replica = pulse_samples(spec, device=signal.device)
     return correlate(
-        signal, replica, sample_period_s=float(spec.sample_period_s), oversample=oversample, window=DEFAULT_WINDOW
+        signal,
+        replica,
+        sample_period_s=float(spec.sample_period_s),
+        oversample=oversample,
+        window=DEFAULT_WINDOW,
+        periodic=bool(spec.periodic),
     )
+
+
+def stepped_frequency_profile(signal: torch.Tensor, spec) -> tuple[torch.Tensor, torch.Tensor]:
+    """The synthetic range profile of a stepped-frequency train, and its delay axis.
+
+    ``signal`` is ``[..., L, M]``, the received train of ``L`` pulses whose
+    carrier steps by ``spec.frequency_step_hz``. At a fast-time sample inside
+    the echo, pulse ``l`` holds ``C exp(-j 2 pi l df tau)``, so the inverse
+    transform across the pulse axis, normalised by ``1 / L``, peaks at
+    ``|C|`` in bin ``L df tau`` (mod ``L``). Returns the profile ``[..., L, M]``
+    (synthetic delay bin, fast-time sample) and the delay of each bin,
+    ``k / (L |df|)`` in float64 seconds; the unambiguous delay is ``1 / |df|``.
+    """
+
+    step = float(spec.frequency_step_hz)
+    if step == 0.0:
+        raise ValueError("a train with frequency_step_hz = 0 has no synthetic range profile")
+    count = int(spec.num_pulses)
+    if signal.dim() < 2 or int(signal.shape[-2]) != count:
+        raise ValueError(f"the pulse axis must hold num_pulses={count} pulses, got shape {tuple(signal.shape)}")
+    profile = torch.fft.ifft(signal, dim=-2) if step > 0.0 else torch.fft.fft(signal, dim=-2) / count
+    delays = torch.arange(count, dtype=torch.float64, device=signal.device) / (count * abs(step))
+    return profile, delays
 
 
 def lag_axis(spec, *, oversample: int = 1, device: torch.device | str = "cpu"):
@@ -164,6 +192,36 @@ def _unpack(cube: ProcessingCube):
             f"waveform, domain, or axis contract, got {type(cube).__name__}"
         )
     return cube.data, cube.axes
+
+
+def ofdm_cfr_estimate(samples: torch.Tensor, symbols: torch.Tensor) -> torch.Tensor:
+    """``[..., L, N]`` received post-prefix samples -> the per-subcarrier estimate ``Y / X``.
+
+    The unitary ``N``-point transform of each symbol's samples, divided by the
+    transmitted symbols ``symbols[L, N]``. For a still echo inside the prefix
+    this is exactly the CFR ``C exp(-j 2 pi n df tau)``; a walking delay leaves
+    the inter-carrier interference in it. Division by a constellation point
+    scales that bin's noise by ``1 / |X|^2``.
+    """
+
+    if tuple(samples.shape[-2:]) != tuple(symbols.shape):
+        raise ValueError(
+            f"the samples' trailing (symbol, sample) axes {tuple(samples.shape[-2:])} must match the symbol table "
+            f"{tuple(symbols.shape)}"
+        )
+    return torch.fft.fft(samples, dim=-1, norm="ortho") / symbols.to(device=samples.device, dtype=samples.dtype)
+
+
+def ofdm_demodulate(cube: ProcessingCube) -> ProcessingCube:
+    """A time-domain OFDM cube, demodulated to its CFR estimate, with the matching axes record."""
+
+    if not isinstance(cube, ProcessingCube):
+        raise TypeError(f"ofdm_demodulate takes a ProcessingCube, got {type(cube).__name__}")
+    axes = cube.axes
+    if axes.waveform != "ofdm" or axes.output_domain != "time" or axes.ofdm_symbols is None:
+        raise ValueError("ofdm_demodulate takes a time-domain OFDM cube that carries its symbol table")
+    data = ofdm_cfr_estimate(cube.data, axes.ofdm_symbols)
+    return ProcessingCube(data=data, axes=replace(axes, output_domain="cfr", fast_time_name="subcarrier"))
 
 
 def fmcw_range_fft(samples: torch.Tensor) -> torch.Tensor:
@@ -237,6 +295,11 @@ def range_profile(
                 )
             )
 
+    if record.waveform == "ofdm" and record.output_domain == "time":
+        raise ValueError(
+            "a time-domain OFDM cube is the received samples; demodulate it with ofdm_demodulate (or publish "
+            "Ofdm(output='cfr')) before taking its range profile"
+        )
     if record.waveform == "fmcw":
         if record.output_domain == "spectrum":
             if name != DEFAULT_WINDOW:
@@ -268,8 +331,11 @@ def range_profile(
             sample_period_s=record.matched_filter_sample_period_s,
             oversample=record.range_oversample,
             window=name,
+            periodic=record.matched_filter_periodic,
         )
-        taper_length = int(data.shape[-1]) + int(record.matched_filter_replica.shape[0])
+        taper_length = int(data.shape[-1]) + (
+            0 if record.matched_filter_periodic else int(record.matched_filter_replica.shape[0])
+        )
     else:
         if int(data.shape[-1]) != record.range_bin_count:
             raise ValueError(

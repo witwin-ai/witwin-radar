@@ -24,6 +24,12 @@
           "signature": "(axis: 'Any', exponent: 'float', coherent_interval: 'float', phase_rate: 'float' = 0.0) -> None"
         },
         {
+          "name": "Chirp",
+          "kind": "class",
+          "target": "witwin.radar.radar.Chirp",
+          "signature": "(slope: 'float | None' = None, start_offset: 'float' = 0.0, idle: 'float | None' = None, adc_start: 'float | None' = None, ramp_end: 'float | None' = None) -> None"
+        },
+        {
           "name": "Compression",
           "kind": "class",
           "target": "witwin.radar.frontend.Compression",
@@ -39,7 +45,7 @@
           "name": "Fmcw",
           "kind": "class",
           "target": "witwin.radar.radar.Fmcw",
-          "signature": "(slope: 'float', sample_rate: 'float', samples_per_chirp: 'int', chirps_per_frame: 'int', adc_start: 'float', idle: 'float', ramp_end: 'float', output: 'str' = 'spectrum') -> None"
+          "signature": "(slope: 'float', sample_rate: 'float', samples_per_chirp: 'int', chirps_per_frame: 'int', adc_start: 'float', idle: 'float', ramp_end: 'float', output: 'str' = 'spectrum', sequence: 'tuple[Chirp, ...]' = (), phase_error: 'tuple[float, ...]' = (), sampling: 'str' = 'complex', mimo: 'str' = 'tdm', ddm_bands: 'int' = 0) -> None"
         },
         {
           "name": "Frame",
@@ -75,7 +81,7 @@
           "name": "Ofdm",
           "kind": "class",
           "target": "witwin.radar.radar.Ofdm",
-          "signature": "(subcarrier_spacing: 'float', num_subcarriers: 'int', cyclic_prefix: 'float', num_symbols: 'int', max_expected_delay: 'float', subcarrier_origin: 'str' = 'f_ref_at_n0') -> None"
+          "signature": "(subcarrier_spacing: 'float', num_subcarriers: 'int', cyclic_prefix: 'float', num_symbols: 'int', max_expected_delay: 'float', subcarrier_origin: 'str' = 'f_ref_at_n0', modulation: 'str' = 'ones', pilot_spacing: 'int' = 0, symbol_seed: 'int' = 0, output: 'str' = 'cfr') -> None"
         },
         {
           "name": "Paths",
@@ -99,7 +105,7 @@
           "name": "Pulsed",
           "kind": "class",
           "target": "witwin.radar.radar.Pulsed",
-          "signature": "(pulse_kind: 'str', pulse_width: 'float', bandwidth: 'float', pri: 'float', num_pulses: 'int', sample_rate: 'float', num_samples: 'int', range_gate_start: 'float', max_expected_delay_rate: 'float' = 0.0, pulse_normalization: 'str' = 'unit_amplitude') -> None"
+          "signature": "(pulse_kind: 'str', pulse_width: 'float', bandwidth: 'float', pri: 'float', num_pulses: 'int', sample_rate: 'float', num_samples: 'int', range_gate_start: 'float', max_expected_delay_rate: 'float' = 0.0, pulse_normalization: 'str' = 'unit_amplitude', chips: 'tuple[complex, ...]' = (), chip_frequencies: 'tuple[float, ...]' = (), frequency_step: 'float' = 0.0, periodic: 'bool' = False) -> None"
         },
         {
           "name": "Radar",
@@ -111,7 +117,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]') -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame') -> None"
         },
         {
           "name": "StructureTargets",
@@ -246,7 +252,7 @@
           "name": "ProcessingAxes",
           "kind": "class",
           "target": "witwin.radar.processing.signal.ProcessingAxes",
-          "signature": "(waveform: str, output_domain: str, fast_time_name: str, slow_time_name: str, slow_time_period_s: float, range_bin_count: int, doppler_bin_count: int, range_bin_m: float, range_origin_m: float, max_unambiguous_range_m: float, velocity_bin_mps: float, max_unambiguous_speed_mps: float, wavelength_m: float, reference_frequency_hz: float, phasor: str, doppler_sign: int, num_tx: int, num_rx: int, element_spacing_m: float, tx_loc_half_wavelength: tuple[tuple[float, float, float], ...], rx_loc_half_wavelength: tuple[tuple[float, float, float], ...], range_m: torch.Tensor, velocity_mps: torch.Tensor, range_oversample: int = 1, matched_filter_replica: torch.Tensor | None = None, matched_filter_sample_period_s: float = 0.0) -> None"
+          "signature": "(waveform: str, output_domain: str, fast_time_name: str, slow_time_name: str, slow_time_period_s: float, range_bin_count: int, doppler_bin_count: int, range_bin_m: float, range_origin_m: float, max_unambiguous_range_m: float, velocity_bin_mps: float, max_unambiguous_speed_mps: float, wavelength_m: float, reference_frequency_hz: float, phasor: str, doppler_sign: int, num_tx: int, num_rx: int, element_spacing_m: float, tx_loc_half_wavelength: tuple[tuple[float, float, float], ...], rx_loc_half_wavelength: tuple[tuple[float, float, float], ...], range_m: torch.Tensor, velocity_mps: torch.Tensor, range_oversample: int = 1, matched_filter_replica: torch.Tensor | None = None, matched_filter_sample_period_s: float = 0.0, matched_filter_periodic: bool = False, mimo: str = 'tdm', transmit_code: torch.Tensor | None = None, code_period: int = 1, demultiplexed: bool = False, ofdm_symbols: torch.Tensor | None = None) -> None"
         },
         {
           "name": "ProcessingCube",
@@ -345,6 +351,12 @@
           "signature": "(array: witwin.radar.processing.angle.ArrayGeometry, directions: torch.Tensor, *, normalize: bool = True, dtype: torch.dtype = torch.complex64) -> torch.Tensor"
         },
         {
+          "name": "demultiplex",
+          "kind": "function",
+          "target": "witwin.radar.processing.angle.demultiplex",
+          "signature": "(cube: witwin.radar.processing.signal.ProcessingCube) -> witwin.radar.processing.signal.ProcessingCube"
+        },
+        {
           "name": "fft2_aoa",
           "kind": "function",
           "target": "witwin.radar.processing.angle.fft2_aoa",
@@ -411,6 +423,18 @@
           "signature": "(previous: 'DetectionFrame | None', current: 'DetectionFrame', elapsed_s: 'float', *, gate_m: 'float' = 1.0) -> 'torch.Tensor'"
         },
         {
+          "name": "ofdm_cfr_estimate",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.ofdm_cfr_estimate",
+          "signature": "(samples: torch.Tensor, symbols: torch.Tensor) -> torch.Tensor"
+        },
+        {
+          "name": "ofdm_demodulate",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.ofdm_demodulate",
+          "signature": "(cube: witwin.radar.processing.signal.ProcessingCube) -> witwin.radar.processing.signal.ProcessingCube"
+        },
+        {
           "name": "os_cfar",
           "kind": "function",
           "target": "witwin.radar.processing.detection.os_cfar",
@@ -471,6 +495,12 @@
           "signature": "(rd_map: torch.Tensor, *, guard_cells: tuple[int, int] = (2, 3), training_cells: tuple[int, int] = (4, 6), pfa: float = 0.001) -> witwin.radar.processing.detection.Detections"
         },
         {
+          "name": "stepped_frequency_profile",
+          "kind": "function",
+          "target": "witwin.radar.processing.range_doppler.stepped_frequency_profile",
+          "signature": "(signal: torch.Tensor, spec) -> tuple[torch.Tensor, torch.Tensor]"
+        },
+        {
           "name": "tdm_compensate",
           "kind": "function",
           "target": "witwin.radar.processing.angle.tdm_compensate",
@@ -525,19 +555,19 @@
           "name": "FmcwSpec",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.FmcwSpec",
-          "signature": "(num_samples: int, num_chirps: int, sample_period_s: float, chirp_period_s: float, slope_hz_per_s: float, t_start_s: float, reference_frequency_hz: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, num_tx: int = 1, num_rx: int = 1, output_domain: str = 'spectrum') -> None"
+          "signature": "(num_samples: int, num_chirps: int, sample_period_s: float, chirp_period_s: float, slope_hz_per_s: float, t_start_s: float, reference_frequency_hz: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, num_tx: int = 1, num_rx: int = 1, output_domain: str = 'spectrum', start_offset_hz: float = 0.0, sequence: tuple[tuple[float, float, float, float, float], ...] = (), phase_error_cycles: tuple[float, ...] = (), real_adc: bool = False, mimo: str = 'tdm', ddm_bands: int = 0) -> None"
         },
         {
           "name": "OfdmSpec",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.OfdmSpec",
-          "signature": "(num_subcarriers: int, num_symbols: int, subcarrier_spacing_hz: float, cyclic_prefix_s: float, reference_frequency_hz: float, max_expected_delay_s: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, subcarrier_origin: str = 'f_ref_at_n0') -> None"
+          "signature": "(num_subcarriers: int, num_symbols: int, subcarrier_spacing_hz: float, cyclic_prefix_s: float, reference_frequency_hz: float, max_expected_delay_s: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, subcarrier_origin: str = 'f_ref_at_n0', modulation: str = 'ones', pilot_spacing: int = 0, symbol_seed: int = 0, output_domain: str = 'cfr', num_samples: int = 0) -> None"
         },
         {
           "name": "PulsedSpec",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.PulsedSpec",
-          "signature": "(num_pulses: int, num_samples: int, sample_period_s: float, pri_s: float, range_gate_start_s: float, pulse_kind: str, pulse_width_s: float, bandwidth_hz: float, reference_frequency_hz: float, max_expected_delay_rate: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, pulse_normalization: str = 'unit_amplitude') -> None"
+          "signature": "(num_pulses: int, num_samples: int, sample_period_s: float, pri_s: float, range_gate_start_s: float, pulse_kind: str, pulse_width_s: float, bandwidth_hz: float, reference_frequency_hz: float, max_expected_delay_rate: float, carrier_hz: float = 0.0, carrier_rate_hz: float = 0.0, pulse_normalization: str = 'unit_amplitude', chips: tuple[complex, ...] = (), chip_frequencies_hz: tuple[float, ...] = (), frequency_step_hz: float = 0.0, periodic: bool = False) -> None"
         },
         {
           "name": "SlowTimeMode",
@@ -555,7 +585,7 @@
           "name": "SynthesisResult",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.SynthesisResult",
-          "signature": "(cube: torch.Tensor, kind: str, axes: tuple[str, ...], phasor: str, time_dependence: str, reference_frequency_hz: float, output_domain: str) -> None"
+          "signature": "(cube: torch.Tensor, kind: str, axes: tuple[str, ...], phasor: str, time_dependence: str, reference_frequency_hz: float, output_domain: str, observation_schedule: str = 'frame') -> None"
         },
         {
           "name": "select_component",

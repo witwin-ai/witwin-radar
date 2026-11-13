@@ -40,6 +40,7 @@
       "Adc": "witwin.radar.frontend.Adc",
       "Agc": "witwin.radar.frontend.Agc",
       "Aspect": "witwin.radar.targets.Aspect",
+      "Chirp": "witwin.radar.radar.Chirp",
       "Compression": "witwin.radar.frontend.Compression",
       "Coupling": "witwin.radar.sensors.Coupling",
       "Fmcw": "witwin.radar.radar.Fmcw",
@@ -98,6 +99,7 @@
       "combine_coherent": "witwin.radar.processing.detection.combine_coherent",
       "combine_incoherent": "witwin.radar.processing.detection.combine_incoherent",
       "conventional_steering": "witwin.radar.processing.angle.conventional_steering",
+      "demultiplex": "witwin.radar.processing.angle.demultiplex",
       "fft2_aoa": "witwin.radar.processing.angle.fft2_aoa",
       "go_cfar": "witwin.radar.processing.detection.go_cfar",
       "greedy_assignment": "witwin.radar.processing.tracking.greedy_assignment",
@@ -109,6 +111,8 @@
       "music_spectrum": "witwin.radar.processing.angle.music_spectrum",
       "mvdr_weights": "witwin.radar.processing.angle.mvdr_weights",
       "nearest_neighbour_associator": "witwin.radar.processing.tracking.nearest_neighbour_associator",
+      "ofdm_cfr_estimate": "witwin.radar.processing.range_doppler.ofdm_cfr_estimate",
+      "ofdm_demodulate": "witwin.radar.processing.range_doppler.ofdm_demodulate",
       "os_cfar": "witwin.radar.processing.detection.os_cfar",
       "phase_comparison_aoa": "witwin.radar.processing.angle.phase_comparison_aoa",
       "point_cloud": "witwin.radar.processing.detection.point_cloud",
@@ -119,6 +123,7 @@
       "remove_static_clutter": "witwin.radar.processing.range_doppler.remove_static_clutter",
       "scan_aoa": "witwin.radar.processing.angle.scan_aoa",
       "so_cfar": "witwin.radar.processing.detection.so_cfar",
+      "stepped_frequency_profile": "witwin.radar.processing.range_doppler.stepped_frequency_profile",
       "tdm_compensate": "witwin.radar.processing.angle.tdm_compensate"
     },
     "witwin.radar.scattering": {

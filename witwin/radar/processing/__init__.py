@@ -9,6 +9,7 @@ from .angle import (
     azimuth_directions,
     beam_cube,
     conventional_steering,
+    demultiplex,
     fft2_aoa,
     music_image,
     music_spectrum,
@@ -46,9 +47,12 @@ from .range_doppler import (
     lag_axis,
     matched_filter,
     microdoppler_spectrogram,
+    ofdm_cfr_estimate,
+    ofdm_demodulate,
     range_doppler_map,
     range_profile,
     remove_static_clutter,
+    stepped_frequency_profile,
 )
 from .signal import ProcessingAxes, ProcessingCube, pulse_samples
 from .tracking import (
@@ -92,6 +96,7 @@ __all__ = [
     "combine_coherent",
     "combine_incoherent",
     "conventional_steering",
+    "demultiplex",
     "fft2_aoa",
     "go_cfar",
     "greedy_assignment",
@@ -103,6 +108,8 @@ __all__ = [
     "music_spectrum",
     "mvdr_weights",
     "nearest_neighbour_associator",
+    "ofdm_cfr_estimate",
+    "ofdm_demodulate",
     "os_cfar",
     "phase_comparison_aoa",
     "point_cloud",
@@ -113,5 +120,6 @@ __all__ = [
     "remove_static_clutter",
     "scan_aoa",
     "so_cfar",
+    "stepped_frequency_profile",
     "tdm_compensate",
 ]
