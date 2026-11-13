@@ -29,7 +29,9 @@ The adapter owns four things and nothing else:
   is retired (``world_motion="frozen_world"``) or that the discrete winner set
   is deliberately held fixed while the geometry moves
   (``world_motion="fixed_winner_replay"``);
-* publishing Radar-shaped leg results  -  delay and coefficient.
+* publishing Radar-shaped leg results  -  delay, the unprojected field vector
+  (``complex3_transport``) and the geometry the join's float64 path length is
+  computed from.
 
 It owns no physics. Every number it publishes was produced by a native Channel
 kernel and is passed through by reference.
@@ -317,6 +319,7 @@ class ChannelPropagationAdapter:
             raise ValueError(f"discovery must be one of {sorted(capabilities.discovery_modes)}, got {discovery!r}")
         if max_paths is not None and (type(max_paths) is not int or max_paths < 1):
             raise ValueError(f"max_paths must be a positive int or None, got {max_paths!r}")
+        _require_field_response(capabilities, frozenset(components), replay=replay)
         self._compiled = compiled_scene
         self._reference_frequency_hz = float(reference_frequency_hz)
         self._components = frozenset(components)
@@ -454,12 +457,15 @@ class ChannelPropagationAdapter:
         *,
         rows: bool = True,
         components: frozenset[str] | None = None,
+        element_sinks: bool = False,
     ) -> FrozenLegTopology:
         """Discover one leg's topology and, with ``rows``, keep the rows discovery evaluated.
 
         ``components`` narrows this one leg's request to a subset of the
         adapter's components (a radar's site-less leg asks for its own set);
-        ``None`` requests them all.
+        ``None`` requests them all. ``element_sinks`` says the sinks are radar
+        elements, whose polarization the rows then publish
+        (``sink_polarization``): a receiver reads the field along it.
 
         One Channel ``evaluate``. The replay partition is NOT prepared here: a
         handle prepares it on first replay, so a primal run that rediscovers at
@@ -501,7 +507,10 @@ class ChannelPropagationAdapter:
                 reference_frequency_hz=self._reference_frequency_hz,
                 components=requested,
                 max_depth=self._max_depth,
-                response="scalar_transport",
+                # A discovery that keeps its rows publishes them as a replay
+                # would, so it requests FIELD_RESPONSE; one that only answers
+                # which rows exist takes the cheapest response that does.
+                response=FIELD_RESPONSE if rows else "scalar_transport",
                 topology_mode="discover",
                 ad_mode="none",
                 max_paths=self._max_paths,
@@ -520,6 +529,7 @@ class ChannelPropagationAdapter:
                 row_valid=torch.ones(paths.path_count, dtype=torch.bool, device=paths.pair_index.device),
                 diagnostics=diagnostics,
                 slot_count=1,
+                element_sinks=element_sinks,
             )
         return FrozenLegTopology(
             topology=topology,
@@ -551,6 +561,7 @@ class ChannelPropagationAdapter:
         slot_count: int,
         ad_mode: str,
         frequency_offsets_hz: tuple[float, ...] | None = None,
+        element_sinks: bool = False,
     ) -> RadarLegBatch:
         """Replay a frozen leg over a whole frame, pulse train or symbol block.
 
@@ -576,7 +587,7 @@ class ChannelPropagationAdapter:
 
         ``frequency_offsets_hz`` asks Channel for the same rows at
         ``reference_frequency_hz + offset`` as well, in the same call; the band
-        is published as ``coefficient_band`` ``[rows, F]`` beside the
+        is published as ``field_band`` ``[rows, F, 3]`` beside the
         reference ``coefficient``. Geometry and ``row_valid`` stay the
         reference evaluation's, because they do not depend on frequency.
         """
@@ -584,6 +595,11 @@ class ChannelPropagationAdapter:
         if ad_mode not in consumer.AD_MODES:
             raise NotImplementedError(
                 f"unsupported ad_mode {ad_mode!r}; supported values are {sorted(consumer.AD_MODES)}"
+            )
+        field_ad_modes = dict(self._capabilities.response_ad_modes).get(FIELD_RESPONSE, frozenset())
+        if ad_mode not in field_ad_modes:
+            raise NotImplementedError(
+                f"Channel's {FIELD_RESPONSE} does not support ad_mode {ad_mode!r}; it supports {sorted(field_ad_modes)}"
             )
         if type(slot_count) is not int or slot_count < 1:
             raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
@@ -599,7 +615,7 @@ class ChannelPropagationAdapter:
                 sinks=_endpoint_batch(sinks, "sink"),
                 reference_frequency_hz=self._reference_frequency_hz,
                 topology=topology,
-                response="scalar_transport",
+                response=FIELD_RESPONSE,
                 ad_mode=ad_mode,
                 slot_count=slot_count,
                 world_motion=self._world_motion,
@@ -613,6 +629,7 @@ class ChannelPropagationAdapter:
             row_valid=result.row_valid,
             diagnostics=result.diagnostics,
             slot_count=slot_count,
+            element_sinks=element_sinks,
         )
 
     def _require_current_epoch(self, frozen: FrozenLegTopology) -> None:
@@ -671,6 +688,7 @@ def _leg_batch(
     row_valid: torch.Tensor | None,
     diagnostics: object,
     slot_count: int,
+    element_sinks: bool = False,
 ) -> RadarLegBatch:
     """One consumer path batch in Radar vocabulary, discovered or replayed.
 
@@ -684,8 +702,10 @@ def _leg_batch(
     p: Any = paths
     geometry = p.geometry
     transport = p.transport
-    source_positions = sources.positions_m.index_select(0, p.topology.source_index.long())
-    sink_positions = sinks.positions_m.index_select(0, p.topology.sink_index.long())
+    source_index = p.topology.source_index.long()
+    sink_index = p.topology.sink_index.long()
+    source_positions = sources.positions_m.index_select(0, source_index)
+    sink_positions = sinks.positions_m.index_select(0, sink_index)
     interactions = geometry.interaction_positions_m
     if interactions.shape[1]:
         reflected = (p.topology.depth > 0)[:, None]
@@ -695,7 +715,7 @@ def _leg_batch(
         last = torch.where(reflected, last, source_positions)
     else:
         first, last = sink_positions, source_positions
-    band = getattr(transport, "coefficient_offsets", None)
+    band = getattr(transport, "field_offsets", None)
     return RadarLegBatch(
         leg_count=p.path_count,
         pair_count=p.pair_count,
@@ -711,7 +731,7 @@ def _leg_batch(
         material_sequence=p.topology.material_sequence,
         interaction_type=p.topology.interaction_type,
         delay_s=geometry.delay_s,
-        coefficient=transport.coefficient,
+        field=transport.field,
         # Aliased, like every other payload member: an aspect-dependent
         # scatter response reads this straight out of the consumer's geometry,
         # so copying it would break the zero-copy discipline for the one
@@ -726,9 +746,41 @@ def _leg_batch(
         arrival_target_m=sink_positions,
         interaction_positions_m=interactions,
         path_length_m=geometry.path_length_m,
-        coefficient_band=band,
+        precise_arrival_target_m=(
+            None if sinks.precise_positions_m is None else sinks.precise_positions_m.index_select(0, sink_index)
+        ),
+        source_polarization=sources.polarizations.index_select(0, source_index),
+        sink_polarization=sinks.polarizations.index_select(0, sink_index) if element_sinks else None,
+        field_band=band,
         frequency_offsets_hz=None if band is None else tuple(transport.frequency_offsets_hz),
     )
+
+
+#: The response every replay requests: the complex field vector at the sink,
+#: unprojected (R-ADR-041). Radar applies the element pattern, the element
+#: polarization and the site's scattering matrix itself.
+FIELD_RESPONSE = "complex3_transport"
+
+
+def _require_field_response(capabilities: object, components: frozenset[str], *, replay: bool = True) -> None:
+    """Refuse, by name, a Channel that cannot evaluate the field vector.
+
+    Discovery rows need it for every requested component; a replaying adapter
+    also needs it under a fixed topology. There is no fallback to
+    ``scalar_transport``: a scalar has the receive polarization projected in
+    and cannot carry a scattering matrix.
+    """
+
+    responses = getattr(capabilities, "fixed_topology_responses", frozenset())
+    if replay and FIELD_RESPONSE not in responses:
+        raise NotImplementedError(
+            f"this Channel cannot replay {FIELD_RESPONSE} under a fixed topology (it replays {sorted(responses)}); "
+            "Radar applies element patterns and site scattering to the unprojected field and has no scalar route"
+        )
+    supported = dict(getattr(capabilities, "response_components", ())).get(FIELD_RESPONSE, frozenset())
+    missing = components - supported
+    if missing:
+        raise NotImplementedError(f"Channel's {FIELD_RESPONSE} does not support components {sorted(missing)}")
 
 
 def _per_slot_count(name: str, stacked: int, slot_count: int) -> int:

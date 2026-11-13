@@ -28,9 +28,48 @@ import torch
 
 from .binding import ScatterSitePolicy
 from .propagation import Kinematics
-from .scattering import AspectScatterResponse, ScalarRcsResponse, rcs_amplitude
+from .scattering import AspectScatterResponse, ScalarRcsResponse, ScatteringMatrixResponse, rcs_amplitude
 
-__all__ = ["Aspect", "PointTargets", "StructureTargets"]
+__all__ = ["Aspect", "PointTargets", "ScatteringMatrix", "StructureTargets"]
+
+
+@dataclass(frozen=True, slots=True)
+class ScatteringMatrix:
+    """How a target scatters each polarization, relative to its strength.
+
+    ``hh``, ``hv``, ``vh`` and ``vv`` (receive polarization first) are complex
+    factors on the target's ``sqrt(4 pi rcs) / wavelength`` strength, in the
+    site's local backscatter-alignment basis: for a wave propagating into the
+    site along ``k``, ``h = (up x k)/|up x k|`` and ``v = h x k``. ``up`` is
+    the site axis in world coordinates. Without one a target scatters as the
+    identity dyadic, which on a monostatic geometry is :meth:`sphere`.
+    """
+
+    hh: complex = 1.0
+    hv: complex = 0.0
+    vh: complex = 0.0
+    vv: complex = 1.0
+    up: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+    def __post_init__(self) -> None:
+        up = tuple(float(value) for value in self.up)
+        if len(up) != 3 or not any(up):
+            raise ValueError(f"ScatteringMatrix.up must be a non-zero 3-vector, got {self.up!r}")
+
+    @classmethod
+    def sphere(cls, *, up: tuple[float, float, float] = (0.0, 0.0, 1.0)) -> ScatteringMatrix:
+        """Odd-bounce scattering (sphere, plate, trihedral): ``diag(1, 1)``."""
+
+        return cls(1.0, 0.0, 0.0, 1.0, up=up)
+
+    @classmethod
+    def dihedral(cls, *, up: tuple[float, float, float] = (0.0, 0.0, 1.0)) -> ScatteringMatrix:
+        """Even-bounce scattering with the fold along ``h``: ``diag(1, -1)``."""
+
+        return cls(1.0, 0.0, 0.0, -1.0, up=up)
+
+    def values(self) -> tuple[complex, complex, complex, complex]:
+        return (complex(self.hh), complex(self.hv), complex(self.vh), complex(self.vv))
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +148,18 @@ class PointTargets:
     #: Stable world IDs, one per target. ``None`` allocates them.
     ids: tuple[int, ...] | None = None
     aspect: Aspect | None = None
+    #: Polarimetric scattering. ``None`` scatters as the identity dyadic.
+    scattering: ScatteringMatrix | None = None
 
     def __post_init__(self) -> None:
         _require_one_strength("PointTargets", rcs=self.rcs, amplitude=self.amplitude)
+        if self.scattering is not None and not isinstance(self.scattering, ScatteringMatrix):
+            raise TypeError(f"PointTargets.scattering must be a ScatteringMatrix, got {type(self.scattering).__name__}")
+        if self.scattering is not None and self.aspect is not None:
+            raise NotImplementedError(
+                "PointTargets.scattering and PointTargets.aspect cannot be combined: the aspect lobe is a "
+                "per-row scalar and the scattering matrix a per-site 2x2, and no response composes both"
+            )
         if self.trajectory is not None and not callable(self.trajectory):
             raise TypeError("PointTargets.trajectory must be callable as trajectory(time) -> (S, 3) positions")
         if self.aspect is not None and not isinstance(self.aspect, Aspect):
@@ -220,7 +268,19 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
         )
 
     aspect = targets.aspect if isinstance(targets, PointTargets) else None
-    if aspect is None:
+    scattering = targets.scattering if isinstance(targets, PointTargets) else None
+    if scattering is not None:
+        strength = targets.amplitude if targets.rcs is None else rcs_amplitude(targets.rcs, radar.wavelength)
+        if isinstance(strength, torch.Tensor) and strength.dim() > 0:
+            raise ValueError("a scattering matrix takes one strength shared by every target")
+        factors = torch.tensor(scattering.values(), dtype=torch.complex64, device=radar.device)
+        phase = torch.exp(torch.tensor(-1j * float(targets.phase), dtype=torch.complex64, device=radar.device))
+        scale = strength.to(device=radar.device) if isinstance(strength, torch.Tensor) else float(strength)
+        response: Any = ScatteringMatrixResponse(
+            matrix=(factors * phase * scale).to(torch.complex64),
+            up=torch.tensor(scattering.up, dtype=torch.float32, device=radar.device),
+        )
+    elif aspect is None:
         if targets.rcs is not None:
             response = ScalarRcsResponse.from_rcs(
                 targets.rcs,

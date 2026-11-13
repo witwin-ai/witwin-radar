@@ -24,6 +24,7 @@
       "position",
       "replace",
       "rx_pattern",
+      "rx_polarization",
       "seed",
       "simulate",
       "stream",
@@ -56,6 +57,7 @@
       "Pulsed": "witwin.radar.radar.Pulsed",
       "Radar": "witwin.radar.radar.Radar",
       "Result": "witwin.radar.results.Result",
+      "ScatteringMatrix": "witwin.radar.targets.ScatteringMatrix",
       "StructureTargets": "witwin.radar.targets.StructureTargets",
       "processing": "witwin.radar.processing"
     },
@@ -128,8 +130,11 @@
     },
     "witwin.radar.scattering": {
       "AspectScatterResponse": "witwin.radar.scattering.AspectScatterResponse",
+      "SCATTERING_MATRIX_LAYOUT": "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
+      "SITE_BASIS": "witwin.radar.scattering.SITE_BASIS",
       "ScalarRcsResponse": "witwin.radar.scattering.ScalarRcsResponse",
-      "ScatterResponse": "witwin.radar.scattering.ScatterResponse"
+      "ScatterResponse": "witwin.radar.scattering.ScatterResponse",
+      "ScatteringMatrixResponse": "witwin.radar.scattering.ScatteringMatrixResponse"
     },
     "witwin.radar.smpl": {
       "SMPLBody": "witwin.radar.smpl.SMPLBody",
@@ -182,7 +187,9 @@
     "witwin.radar.processing.AOA_ROUTES",
     "witwin.radar.processing.CFAR_KINDS",
     "witwin.radar.processing.CLUTTER_FILTERS",
-    "witwin.radar.processing.POINT_CLOUD_FRAMES"
+    "witwin.radar.processing.POINT_CLOUD_FRAMES",
+    "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
+    "witwin.radar.scattering.SITE_BASIS"
   ],
   "result_contracts": {
     "witwin.radar.synthesis.SynthesisResult": [

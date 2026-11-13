@@ -140,7 +140,7 @@ def _leg(**overrides) -> RadarLegBatch:
         "material_sequence": torch.zeros((rows, 1), dtype=torch.int32),
         "interaction_type": torch.zeros((rows, 1), dtype=torch.int32),
         "delay_s": torch.zeros(rows, dtype=torch.float32),
-        "coefficient": torch.zeros(rows, dtype=torch.complex64),
+        "field": torch.zeros((rows, 3), dtype=torch.complex64),
         "field_direction": torch.zeros((rows, 3), dtype=torch.float32),
         "row_valid": None,
         "diagnostics": None,
@@ -160,8 +160,8 @@ def test_leg_batch_rejects_inconsistent_rows():
         _leg(pair_offsets=torch.tensor([0, 1, 2], dtype=torch.int64))
     with pytest.raises(ValueError, match="delay_s must have shape"):
         _leg(delay_s=torch.zeros(3, dtype=torch.float32))
-    with pytest.raises(TypeError, match="coefficient must use"):
-        _leg(coefficient=torch.zeros(2, dtype=torch.complex128))
+    with pytest.raises(TypeError, match="field must use"):
+        _leg(field=torch.zeros((2, 3), dtype=torch.complex128))
     with pytest.raises(ValueError, match="leg_count must be a non-negative int"):
         _leg(leg_count=-1)
     with pytest.raises(ValueError, match="pair_count must be a non-negative int"):

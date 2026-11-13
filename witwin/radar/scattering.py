@@ -9,7 +9,7 @@ from typing import Protocol, runtime_checkable
 import torch
 
 from .cuda import native_ops as _ops
-from .policy import SPEED_OF_LIGHT_M_PER_S, first_order_only
+from .policy import SPEED_OF_LIGHT_M_PER_S, first_order_only, refuse_derivative
 
 #: Maximum unmodelled aspect-response phase walk over one coherent interval.
 ASPECT_PHASE_BUDGET_RAD = 0.1
@@ -47,6 +47,12 @@ class ScatterResponse(Protocol):
     ``exp(-j k d)``, because it multiplies transports authored there. The
     conversion to the beat convention happens once, downstream, in the
     synthesis facade.
+
+    A scalar response scatters as ``s`` times the identity dyadic (R-ADR-041).
+    A polarimetric response additionally declares ``matrix_width = 4``,
+    evaluates to ``complex64[rows, 4]`` in :data:`SCATTERING_MATRIX_LAYOUT`
+    order and publishes its sites' up axes through ``site_up``;
+    :class:`ScatteringMatrixResponse` is that interface.
     """
 
     def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
@@ -266,6 +272,124 @@ class ScalarRcsResponse:
         amplitude = self.amplitude.to(device=device, dtype=torch.complex64)
         phase = self.phase_rad.to(device=device, dtype=torch.complex64)
         return (amplitude * torch.exp(-1j * phase)).expand(row_count)
+
+
+#: The site-local polarization basis a scattering matrix is authored in.
+#:
+#: Backscatter alignment (BSA). For a wave propagating INTO the site along the
+#: unit ``k`` and the site's unit up axis ``u``:
+#:
+#:     h = (u x k) / |u x k|        v = h x k
+#:
+#: The incident basis uses the inbound leg's final-segment direction ``k_i``
+#: and the receive basis the outbound leg's ``k_r`` (the outbound leg runs from
+#: the receiver to the site, R-ADR-039), so a monostatic pair shares one basis
+#: and the round-trip voltage is ``V = sum_ab S_ab (H . b_r,a) (b_i,b . E)``.
+#: Where ``u`` is parallel to ``k`` the kernel substitutes ``x`` (or ``y`` when
+#: ``k`` is along ``x``) for ``u``.
+SITE_BASIS = "bsa:h=normalize(up x k),v=h x k"
+
+#: The column order of a scattering matrix: receive index first.
+SCATTERING_MATRIX_LAYOUT = ("HH", "HV", "VH", "VV")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ScatteringMatrixResponse:
+    """A per-site 2x2 scattering matrix in the site's local BSA basis.
+
+    ``matrix`` is ``complex64[sites, 4]`` in :data:`SCATTERING_MATRIX_LAYOUT`
+    order (``HV`` = receive H, transmit V) or ``complex64[4]`` shared by every
+    site; ``up`` is ``float32[sites, 3]`` or ``float32[3]``, each site's up axis
+    in world coordinates (:data:`SITE_BASIS`). Each element is the
+    dimensionless strength :func:`rcs_amplitude` defines, so
+    ``|S_pq|^2 = 4 pi sigma_pq / lambda^2``, authored in the Channel phasor
+    convention.
+
+    This is the interface every polarimetric response produces: the composer
+    reads ``matrix_width == 4``, :meth:`evaluate` and :meth:`site_up`. The
+    scalar responses are its special cases - a ``ScalarRcsResponse`` of
+    strength ``s`` scatters as ``s`` times the identity dyadic, which on any
+    monostatic geometry equals the matrix ``diag(s, s)`` here.
+
+    ``matrix`` may carry gradients; ``up`` is a frame declaration and is
+    refused as a derivative input.
+    """
+
+    matrix: torch.Tensor
+    up: torch.Tensor
+
+    matrix_width = 4
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.matrix, torch.Tensor) or self.matrix.dtype != torch.complex64:
+            raise TypeError("matrix must be a complex64 torch.Tensor")
+        if self.matrix.shape[-1:] != (4,) or self.matrix.ndim not in (1, 2):
+            raise ValueError(f"matrix must have shape (4,) or (sites, 4), got {tuple(self.matrix.shape)}")
+        if not isinstance(self.up, torch.Tensor) or self.up.dtype != torch.float32:
+            raise TypeError("up must be a float32 torch.Tensor")
+        if self.up.shape[-1:] != (3,) or self.up.ndim not in (1, 2):
+            raise ValueError(f"up must have shape (3,) or (sites, 3), got {tuple(self.up.shape)}")
+        refuse_derivative("site polarization basis", "the site's up axis is a frame declaration", up=self.up)
+
+    @classmethod
+    def from_values(
+        cls,
+        hh: complex,
+        hv: complex,
+        vh: complex,
+        vv: complex,
+        *,
+        up: tuple[float, float, float] = (0.0, 0.0, 1.0),
+        device: torch.device | str = "cpu",
+        requires_grad: bool = False,
+    ) -> ScatteringMatrixResponse:
+        """One matrix of dimensionless strengths, shared by every site."""
+
+        matrix = torch.tensor([hh, hv, vh, vv], dtype=torch.complex64, device=device).requires_grad_(requires_grad)
+        return cls(matrix=matrix, up=torch.tensor(up, dtype=torch.float32, device=device))
+
+    @classmethod
+    def from_rcs(
+        cls,
+        sigma_m2: float,
+        *,
+        reference_frequency_hz: float,
+        kind: str = "sphere",
+        up: tuple[float, float, float] = (0.0, 0.0, 1.0),
+        device: torch.device | str = "cpu",
+    ) -> ScatteringMatrixResponse:
+        """A canonical scatterer of cross section ``sigma_m2`` in every channel it lights.
+
+        ``kind="sphere"`` (and any odd-bounce scatterer: plate, trihedral) is
+        ``diag(a, a)``; ``kind="dihedral"`` (even bounce, fold along h) is
+        ``diag(a, -a)``, so its HH and VV differ by 180 degrees. ``a`` is
+        :func:`rcs_amplitude` of ``sigma_m2``.
+        """
+
+        amplitude = rcs_amplitude(float(sigma_m2), SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz))
+        signs = {"sphere": 1.0, "dihedral": -1.0}
+        if kind not in signs:
+            raise ValueError(f"kind must be one of {sorted(signs)}, got {kind!r}")
+        return cls.from_values(amplitude, 0.0, 0.0, signs[kind] * amplitude, up=up, device=device)
+
+    @property
+    def is_geometry_dependent(self) -> bool:
+        return False
+
+    def evaluate(self, row_count: int, device: torch.device) -> torch.Tensor:
+        """``complex64[row_count, 4]`` on ``device``."""
+
+        if row_count < 0:
+            raise ValueError("row_count must be non-negative")
+        matrix = self.matrix.to(device=device)
+        return matrix.expand(row_count, 4) if matrix.ndim == 1 else matrix
+
+    def site_up(self, row_count: int, device: torch.device) -> torch.Tensor:
+        """``float32[row_count, 3]`` unit up axes on ``device``."""
+
+        up = self.up.to(device=device)
+        up = up / torch.linalg.vector_norm(up, dim=-1, keepdim=True)
+        return up.expand(row_count, 3).contiguous() if up.ndim == 1 else up.contiguous()
 
 
 #: The fully qualified name the composer checks against its owner list.
@@ -650,4 +774,11 @@ def _require_direction(leg, rows: int, name: str) -> torch.Tensor:
     return direction.contiguous()
 
 
-__all__ = ["AspectScatterResponse", "ScalarRcsResponse", "ScatterResponse"]
+__all__ = [
+    "SCATTERING_MATRIX_LAYOUT",
+    "SITE_BASIS",
+    "AspectScatterResponse",
+    "ScalarRcsResponse",
+    "ScatterResponse",
+    "ScatteringMatrixResponse",
+]

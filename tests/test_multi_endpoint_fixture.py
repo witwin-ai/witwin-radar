@@ -228,7 +228,7 @@ def test_leg_delays_match_the_image_source_closed_form(spike):
                 row.component,
             )
         # Not vacuous: every row carries a nonzero coefficient.
-        assert float(batch.coefficient.abs().min()) > 0.0, name
+        assert float(torch.linalg.vector_norm(batch.field, dim=1).min()) > 0.0, name
 
 
 def test_the_occlusion_is_load_bearing_rather_than_a_broken_endpoint():

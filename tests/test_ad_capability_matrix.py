@@ -68,7 +68,7 @@ STRUCTURAL_SUP_ROWS = frozenset(
         ("reevaluate/prepared", "out:compact row identity across none, jvp and vjp", "both"),
         ("reevaluate/prepared", "out:topology identity, scene-leaf compile against the shared one", "both"),
         ("frontend/noise", "out:the Philox realisation under AD", "vjp"),
-        ("tape/two_way", "out:join context, 10 saved tensors, one launch each way", "vjp"),
+        ("tape/two_way", "out:join context, 15 saved tensors, one launch each way", "vjp"),
         ("tape/aspect", "out:aspect context, 9 saved tensors, one launch each way", "vjp"),
         ("tape/fmcw_beat", "out:beat context, backward saves segment where forward saves offsets", "both"),
         ("tape/ofdm_cfr", "out:cfr context, same forward/backward asymmetry", "both"),

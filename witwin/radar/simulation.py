@@ -33,7 +33,14 @@ import torch
 from witwin.core.dynamics import DynamicScene
 
 from .adaptive import AdaptiveTable, PlaneGroups, composed_plane_identity, echo_adaptive_frame, trace_adaptive_frame
-from .binding import SITE_SOURCE_EXPLICIT, RadarWorldBinding, ScatterSitePolicy, SensorEndpointIds, bind_radar_world
+from .binding import (
+    SITE_SOURCE_EXPLICIT,
+    RadarWorldBinding,
+    ScatterSitePolicy,
+    SensorEndpointIds,
+    bind_radar_world,
+    with_site_positions,
+)
 from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
@@ -366,6 +373,9 @@ def _stacked(specs: Sequence[RadarEndpointSpec]) -> RadarEndpointSpec:
         positions_m=torch.cat([spec.positions_m for spec in specs], dim=0),
         polarizations=torch.cat([spec.polarizations for spec in specs], dim=0),
         powers_w=None if first.powers_w is None else torch.cat([_powers(spec) for spec in specs], dim=0),
+        precise_positions_m=(
+            None if first.precise_positions_m is None else torch.cat([_precise(spec) for spec in specs], dim=0)
+        ),
     )
 
 
@@ -488,6 +498,12 @@ class LegRequest:
     frequency_offsets_hz: tuple[float, ...] | None = None
 
 
+def _precise(spec: RadarEndpointSpec) -> torch.Tensor:
+    if spec.precise_positions_m is None:
+        raise ValueError("every slot of a stack authored in float64 carries precise_positions_m")
+    return spec.precise_positions_m
+
+
 def _powers(spec: RadarEndpointSpec) -> torch.Tensor:
     if spec.powers_w is None:
         raise ValueError("every slot of a source stack carries powers_w")
@@ -524,6 +540,7 @@ class WorldHalf:
         still_world: bool = False,
         batch_observations: int = 1,
         request: LegRequest | None = None,
+        rx_polarization: Sequence[float] | None = None,
     ) -> None:
         from .channel import compile_scene
 
@@ -531,6 +548,7 @@ class WorldHalf:
         self.dynamic = dynamic
         self.sites = sites
         self.polarization = polarization
+        self.rx_polarization = polarization if rx_polarization is None else rx_polarization
         self.sensor_endpoints = sensor_endpoints
         self.response = response
         self.antenna_pattern = antenna_pattern
@@ -601,6 +619,7 @@ class WorldHalf:
             snapshot,
             sites=self.sites,
             polarization=self.polarization,
+            rx_polarization=self.rx_polarization,
             sensor_endpoints=self.sensor_endpoints,
         )
         if self.pose is None:
@@ -695,7 +714,11 @@ class WorldHalf:
         direct = None
         if request.direct_components:
             direct = adapter.discover(
-                binding.transmitters, binding.receivers, rows=rows, components=request.direct_components
+                binding.transmitters,
+                binding.receivers,
+                rows=rows,
+                components=request.direct_components,
+                element_sinks=True,
             )
         handles = (inbound, outbound) if direct is None else (inbound, outbound, direct)
         self._report = self._report.including(handles)
@@ -807,7 +830,7 @@ class WorldHalf:
             positions = self.sites.resolve(frame.snapshot, device=template.device)
             if positions.shape != template.site_positions_m.shape:
                 raise ValueError("a site trajectory must preserve the declared site count")
-            return replace(template, sites=replace(template.sites, positions_m=positions))
+            return replace(template, sites=with_site_positions(template.sites, positions))
         return self._bind_world(frame.snapshot, frame.time_s)
 
     def _identity(self, frame: EpochFrame) -> Hashable:
@@ -963,6 +986,7 @@ class WorldHalf:
                         weight_includes_antenna_pattern=paths.weight_includes_antenna_pattern,
                         complex_transfer_band=paths.complex_transfer_band,
                         frequency_offsets_hz=paths.frequency_offsets_hz,
+                        total_delay_residual_s=paths.total_delay_residual_s,
                     ),
                     offsets=round_trip.composer.pair_offsets_host,
                     slots=1,
@@ -996,6 +1020,9 @@ class WorldHalf:
                 if batched.complex_transfer_band is None
                 else batched.complex_transfer_band[selection],
                 frequency_offsets_hz=batched.frequency_offsets_hz,
+                total_delay_residual_s=(
+                    None if batched.total_delay_residual_s is None else batched.total_delay_residual_s[selection]
+                ),
             )
             identity = entry.identity
             if valid_rows is not None:
@@ -1044,9 +1071,17 @@ class WorldHalf:
         slots = len(group)
         offsets = self.request.frequency_offsets_hz
 
-        def replayed(handle: Any, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> RadarLegBatch:
+        def replayed(
+            handle: Any, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, element_sinks: bool = False
+        ) -> RadarLegBatch:
             batch: RadarLegBatch = first.adapter.reevaluate_slots(
-                handle, sources, sinks, slot_count=slots, ad_mode=self.ad_mode, frequency_offsets_hz=offsets
+                handle,
+                sources,
+                sinks,
+                slot_count=slots,
+                ad_mode=self.ad_mode,
+                frequency_offsets_hz=offsets,
+                element_sinks=element_sinks,
             )
             return batch
 
@@ -1055,7 +1090,9 @@ class WorldHalf:
             RadarPropagationLegs(
                 inbound=replayed(first.handles[0], transmitters, sites),
                 outbound=replayed(first.handles[1], _stacked([b.receiver_sources for b in bindings]), sites),
-                direct=None if len(first.handles) < 3 else replayed(first.handles[2], transmitters, receivers),
+                direct=None
+                if len(first.handles) < 3
+                else replayed(first.handles[2], transmitters, receivers, element_sinks=True),
             ),
             None,
         )
@@ -1069,25 +1106,36 @@ class WorldHalf:
     ) -> SlotRows:
         """Compose and pattern-weight a slot-major replay.
 
-        A per-site response under a unit-gain pattern is composed by the join
-        striding its single-slot tables across the slots, and the pattern stage
-        is the identity. A geometry-dependent response or a directional
-        pattern still needs per-row tables for every slot, which are built once
-        per identity and group size and kept in a bounded cache.
+        A per-site response is composed by the join striding its single-slot
+        tables across the slots, and the pattern stage strides its own the same
+        way (the identity under a unit-gain pattern). A geometry-dependent
+        response still needs the join's per-row tables for every slot, which
+        are built once per identity and group size and kept in a bounded cache.
         """
 
         round_trip = _round_trip(group[0].epoch_frame.frozen)
         slots = len(group)
         if self._strided(round_trip):
-            rows = round_trip.composer.compose_slots(
-                replay.inbound, replay.outbound, self.response, slots, replay.direct
-            )
-            # The stage's identity: isotropic elements at 0 dBi publish the
-            # weight unchanged and record that the pattern was applied.
+            composer = round_trip.composer
+            rows = composer.compose_slots(replay.inbound, replay.outbound, self.response, slots, replay.direct)
             band = self._band(round_trip, replay, slots, None, transmitters, receivers)
+            if round_trip.pattern.plan.is_identity:
+                # The stage's identity: isotropic elements at 0 dBi publish the
+                # weight unchanged and record that the pattern was applied.
+                rows = replace(rows, weight_includes_antenna_pattern=True)
+            else:
+                tx_targets, rx_targets = composer.segment_targets(
+                    replay.inbound, replay.outbound, replay.direct, slots=slots
+                )
+                rows = round_trip.pattern.apply_slots(
+                    rows,
+                    tx_pos=transmitters.positions_m,
+                    rx_pos=receivers.positions_m,
+                    tx_targets_m=tx_targets,
+                    rx_targets_m=rx_targets,
+                )
             return replace(
                 rows,
-                weight_includes_antenna_pattern=True,
                 complex_transfer_band=band,
                 frequency_offsets_hz=None if band is None else self.request.frequency_offsets_hz,
             )
@@ -1120,12 +1168,18 @@ class WorldHalf:
             weight_includes_antenna_pattern=weighted.weight_includes_antenna_pattern,
             complex_transfer_band=self._band(round_trip, replay, slots, (tables, key), transmitters, receivers),
             frequency_offsets_hz=self.request.frequency_offsets_hz,
+            total_delay_residual_s=weighted.total_delay_residual_s,
         )
 
     def _strided(self, round_trip: FrozenRoundTrip) -> bool:
-        """Whether this join composes by striding its single-slot tables (site response, unit-gain pattern)."""
+        """Whether this group composes by striding single-slot tables.
 
-        return not self.response.is_geometry_dependent and round_trip.pattern.plan.is_identity
+        The join strides them for any per-site response and the pattern stage
+        for any pattern seen in the world frame; a radar pose turns each slot's
+        pattern frame, which the per-row route carries.
+        """
+
+        return not self.response.is_geometry_dependent and (round_trip.pattern.plan.is_identity or self.pose is None)
 
     def _band(
         self,
@@ -1160,9 +1214,20 @@ class WorldHalf:
         inbound, outbound = band_as_slots(replay.inbound), band_as_slots(replay.outbound)
         direct = None if replay.direct is None else band_as_slots(replay.direct)
         if tables is None:
-            weight = round_trip.composer.compose_slots(
-                inbound, outbound, self.response, slots * columns, direct
-            ).complex_transfer_ref
+            composer = round_trip.composer
+            rows = composer.compose_slots(
+                inbound, outbound, self.response, slots * columns, direct, frequency_offsets_hz=offsets
+            )
+            if not round_trip.pattern.plan.is_identity:
+                tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct, slots=slots * columns)
+                rows = round_trip.pattern.apply_slots(
+                    rows,
+                    tx_pos=transmitters.positions_m.repeat(columns, 1),
+                    rx_pos=receivers.positions_m.repeat(columns, 1),
+                    tx_targets_m=tx_targets,
+                    rx_targets_m=rx_targets,
+                )
+            weight = rows.complex_transfer_ref
         else:
             (group_composer, group_pattern), key = tables
             band_key = (key, columns)
@@ -1171,7 +1236,7 @@ class WorldHalf:
                 band_tables = (group_composer.for_slots(columns), group_pattern.for_slots(columns))
                 self._slot_tables.put(band_key, band_tables)
             composer, pattern = band_tables
-            composed = composer.compose(inbound, outbound, self.response, direct)
+            composed = composer.compose(inbound, outbound, self.response, direct, frequency_offsets_hz=offsets)
             tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct)
             weight = pattern.apply(
                 composed,
@@ -1398,6 +1463,7 @@ def open_session(
     max_round_trips: int | None = None,
     wideband: bool = False,
     pose: Callable[[float], Any] | None = None,
+    rx_polarization: Sequence[float] | None = None,
 ) -> tuple[Session, Iterator[FrameTrace]]:
     """Open one scene session: the world half, and what the instrument half needs.
 
@@ -1619,6 +1685,7 @@ def open_session(
         dynamic,
         sites=sites,
         polarization=polarization,
+        rx_polarization=polarization if rx_polarization is None else rx_polarization,
         sensor_endpoints=sensor_endpoints,
         response=response,
         antenna_pattern=antenna_pattern,

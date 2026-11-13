@@ -989,8 +989,13 @@ class Radar:
     up: Any = (0.0, 1.0, 0.0)
     #: ``"up"``, ``"right"`` or a world vector. The two aliases are derived
     #: from the pose and are therefore transverse to the boresight; a vector
-    #: parallel to the boresight radiates nothing and is refused.
+    #: parallel to the boresight radiates nothing and is refused. It is the
+    #: transmit elements' polarization and, unless ``rx_polarization`` is
+    #: given, the receive elements'.
     polarization: Any = "up"
+    #: The receive elements' polarization, in the same vocabulary. ``None`` is
+    #: ``polarization``; a different value measures a cross-polar channel.
+    rx_polarization: Any = None
     device: Any = "cuda"
 
     # -- derived, built once in __post_init__ ------------------------------
@@ -999,6 +1004,7 @@ class Radar:
     tx_pos: torch.Tensor = field(init=False, repr=False, compare=False)
     rx_pos: torch.Tensor = field(init=False, repr=False, compare=False)
     polarization_vector: tuple[float, float, float] = field(init=False, repr=False, compare=False)
+    rx_polarization_vector: tuple[float, float, float] = field(init=False, repr=False, compare=False)
 
     # A radar holds no run state. The four typed per-frame diagnostics live on
     # the result that produced them, which is the record that can honestly say
@@ -1178,28 +1184,35 @@ class Radar:
         _, world_from_local = self._world_from_local_matrix(device="cpu", dtype=torch.float32)
         right, true_up, forward = world_from_local[:, 0], world_from_local[:, 1], -world_from_local[:, 2]
 
-        if self.polarization == "up":
-            vector = true_up
-        elif self.polarization == "right":
-            vector = right
-        elif isinstance(self.polarization, str):
-            raise ValueError(
-                f"Radar.polarization must be one of {list(POLARIZATION_ALIASES)} or a world vector, "
-                f"got {self.polarization!r}"
-            )
-        else:
-            vector = vec3_tensor(self.polarization, name="Radar.polarization")
-            norm = torch.linalg.norm(vector)
-            if norm <= 1e-12:
-                raise ValueError("Radar.polarization must be non-zero.")
-            vector = vector / norm
-            if float(torch.linalg.norm(torch.cross(vector, forward, dim=0))) <= 1e-6:
-                raise ValueError(
-                    "Radar.polarization is parallel to the boresight, so the field radiates nothing and every "
-                    "transport would come back exactly zero. Use 'up' or 'right' for a vector that is transverse "
-                    "by construction."
-                )
-        set_(self, "polarization_vector", tuple(float(v) for v in vector))
+        def resolve(value: Any, name: str) -> tuple[float, float, float]:
+            if value == "up":
+                vector = true_up
+            elif value == "right":
+                vector = right
+            elif isinstance(value, str):
+                raise ValueError(f"{name} must be one of {list(POLARIZATION_ALIASES)} or a world vector, got {value!r}")
+            else:
+                vector = vec3_tensor(value, name=name)
+                norm = torch.linalg.norm(vector)
+                if norm <= 1e-12:
+                    raise ValueError(f"{name} must be non-zero.")
+                vector = vector / norm
+                if float(torch.linalg.norm(torch.cross(vector, forward, dim=0))) <= 1e-6:
+                    raise ValueError(
+                        f"{name} is parallel to the boresight, so the field radiates nothing and every "
+                        "transport would come back exactly zero. Use 'up' or 'right' for a vector that is "
+                        "transverse by construction."
+                    )
+            return tuple(float(v) for v in vector)  # type: ignore[return-value]
+
+        set_(self, "polarization_vector", resolve(self.polarization, "Radar.polarization"))
+        set_(
+            self,
+            "rx_polarization_vector",
+            self.polarization_vector
+            if self.rx_polarization is None
+            else resolve(self.rx_polarization, "Radar.rx_polarization"),
+        )
 
         array = self.system_config.sensors.array
         tx_local, rx_local = array.local_offsets_m(device=self.device)
@@ -1651,6 +1664,7 @@ class Radar:
             "max_depth": max(int(reflections), 1 if (transmission or diffraction) else 0),
             "ad_mode": grad,
             "polarization": self.polarization_vector,
+            "rx_polarization": self.rx_polarization_vector,
             "antenna_pattern": self.system_config.sensors.pattern,
             "sensor_endpoints": endpoints,
             "motion": resolved,

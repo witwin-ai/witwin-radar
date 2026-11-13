@@ -39,6 +39,8 @@ from witwin.radar.binding import (
     ScatterSitePolicy,
     StableIdAllocator,
     bind_radar_world,
+    site_spec,
+    with_site_positions,
 )
 
 # ---------------------------------------------------------------------------
@@ -117,10 +119,23 @@ def test_an_explicit_policy_passes_a_live_tensor_through_untouched():
 
 
 def test_an_explicit_policy_refuses_a_silent_cast():
-    positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float64)
+    positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float16)
     policy = ScatterSitePolicy.explicit(positions)
-    with pytest.raises(TypeError, match="must use torch.float32"):
+    with pytest.raises(TypeError, match="must use torch.float32 or torch.float64"):
         policy.resolve(None, device=torch.device("cpu"))
+
+
+def test_float64_site_positions_are_kept_as_the_precise_position():
+    """R-ADR-040: a float64 site reaches Channel rounded and the join exactly."""
+
+    positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float64)
+    assert ScatterSitePolicy.explicit(positions).resolve(None, device=torch.device("cpu")) is positions
+    spec = site_spec(positions, (7,), polarization=torch.tensor([0.0, 0.0, 1.0]))
+    assert spec.precise_positions_m is not None
+    assert torch.equal(spec.precise_positions_m, positions)
+    assert spec.positions_m.dtype == torch.float32
+    assert torch.equal(spec.positions_m, positions.float())
+    assert with_site_positions(spec, positions.float()).precise_positions_m is None
 
 
 def test_the_two_site_sources_cannot_be_declared_together():

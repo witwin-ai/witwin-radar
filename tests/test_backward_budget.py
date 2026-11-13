@@ -118,11 +118,14 @@ OBSERVED_REEVALUATE_FORWARD_MS_RANGE = (3.636, 5.542)
 OBSERVED_REEVALUATE_VJP_MS_RANGE = (5.326, 7.071)
 
 #: ADR-043 accounting at the pinned fixture, per leg, under ``ad_mode='vjp'``.
-#: Two companion launches each; the tape differs between the legs because the
-#: inbound one is line-of-sight only and the outbound one carries reflections.
-REEVALUATE_AD_LAUNCHES_PER_LEG = 2
-REEVALUATE_INBOUND_TAPE_BYTES = 200
-REEVALUATE_OUTBOUND_TAPE_BYTES = 496
+#: Four companion launches each with ``complex3_transport`` (R-ADR-041): the
+#: field transport and the source-excitation scale of the unprojected vector,
+#: where the scalar response's projection fused them into two. The tape
+#: differs between the legs because the inbound one is line-of-sight only and
+#: the outbound one carries reflections.
+REEVALUATE_AD_LAUNCHES_PER_LEG = 4
+REEVALUATE_INBOUND_TAPE_BYTES = 284
+REEVALUATE_OUTBOUND_TAPE_BYTES = 692
 
 
 def _cuda_ms(fn, *, warmup: int = 10, runs: int = 50) -> float:
@@ -221,11 +224,15 @@ def test_the_join_context_saves_the_predicted_bytes(narrow):
     rows_in = narrow.composer.inbound_row_count
     rows_out = narrow.composer.outbound_row_count
     sites = narrow.composer.site_count
-    paths = narrow.composer.path_count
+    inbound, outbound = narrow.legs()
+    width_in = int(inbound.interaction_positions_m.shape[1])
+    width_out = int(outbound.interaction_positions_m.shape[1])
 
-    #: float32 per leg coefficient component (4 tensors of 4 B), plus the
-    #: response pair, plus int32 ``row_valid`` and three int64 index tables.
-    per_context = 8 * rows_in + 8 * rows_out + 8 * sites + 28 * paths
+    #: Per leg row: float32 delay (4 B), complex3 field pair (24 B), element and
+    #: site positions (24 B), ``W`` float32 interaction points and Channel's
+    #: length (4 B); per site: one complex64 response. The index tables and
+    #: validity live in the composer and are not saved per context.
+    per_context = (56 + 12 * width_in) * rows_in + (56 + 12 * width_out) * rows_out + 8 * sites
     contexts, total, distinct = _join_tape(narrow)
     assert contexts == 1
     assert total == per_context, (total, per_context)
@@ -453,12 +460,7 @@ def test_the_channel_reevaluate_reverse_pass_is_a_surcharge_not_a_second_solve(p
     def reverse():
         sites = values["sites"].clone().requires_grad_(True)
         inbound, outbound = _legs(spike, values, ad_mode="vjp", leaf=sites)
-        loss = (
-            inbound.delay_s.sum()
-            + outbound.delay_s.sum()
-            + inbound.coefficient.abs().sum()
-            + outbound.coefficient.abs().sum()
-        )
+        loss = inbound.delay_s.sum() + outbound.delay_s.sum() + inbound.field.abs().sum() + outbound.field.abs().sum()
         loss.backward()
 
     forward_ms, reverse_ms = _cuda_ms_paired(forward, reverse)
@@ -522,10 +524,12 @@ def test_the_join_bytes_formula_is_the_law_this_module_measures(narrow):
 
     contexts, total, _ = _join_tape(narrow)
     measured_per_context = total // contexts
+    inbound, outbound = narrow.legs()
     documented = two_way_join_tape_bytes(
         R_in=narrow.composer.inbound_row_count,
         R_out=narrow.composer.outbound_row_count,
         S=narrow.composer.site_count,
-        K=narrow.composer.path_count,
+        W_in=int(inbound.interaction_positions_m.shape[1]),
+        W_out=int(outbound.interaction_positions_m.shape[1]),
     )
     assert documented == measured_per_context, (documented, measured_per_context)

@@ -43,10 +43,17 @@ def require_tensor(
 class RadarEndpointSpec:
     """One batch of radar endpoints in world coordinates.
 
-    ``positions_m`` is the only differentiable member. It may carry
+    ``positions_m`` is the float32 position Channel receives and, with
+    ``precise_positions_m``, a differentiable member. It may carry
     ``requires_grad`` for reverse mode or a forward-AD tangent for the
     ADR-038 forward-only dual; the remaining members are primal-only because
     the native field companions treat them as constants.
+
+    ``precise_positions_m`` is the float64 position the caller authored, when
+    it authored one: ``positions_m`` is then its float32 rounding, and the
+    two-way join computes the round-trip path length from the float64 one
+    (R-ADR-040). Both derive from the same leaf, so a gradient reaches it
+    through both.
 
     Structural validation runs here and is device-agnostic on purpose: the
     CUDA requirement belongs to the Channel endpoint contract, so a caller
@@ -58,6 +65,7 @@ class RadarEndpointSpec:
     positions_m: torch.Tensor
     polarizations: torch.Tensor
     powers_w: torch.Tensor | None = None
+    precise_positions_m: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         positions = require_tensor("positions_m", self.positions_m, dtype=torch.float32, ndim=2)
@@ -68,11 +76,14 @@ class RadarEndpointSpec:
         require_tensor("polarizations", self.polarizations, dtype=torch.float32, shape=(rows, 3))
         if self.powers_w is not None:
             require_tensor("powers_w", self.powers_w, dtype=torch.float32, shape=(rows,))
+        if self.precise_positions_m is not None:
+            require_tensor("precise_positions_m", self.precise_positions_m, dtype=torch.float64, shape=(rows, 3))
         device = positions.device
         for name, value in (
             ("stable_ids", self.stable_ids),
             ("polarizations", self.polarizations),
             ("powers_w", self.powers_w),
+            ("precise_positions_m", self.precise_positions_m),
         ):
             if value is not None and value.device != device:
                 raise ValueError(f"{name} must share the positions_m device {device}, got {value.device}")
@@ -106,7 +117,7 @@ def require_endpoint_role(spec: RadarEndpointSpec, role: EndpointRole) -> None:
 class RadarLegBatch:
     """One reevaluated propagation leg in Radar vocabulary.
 
-    ``delay_s`` and ``coefficient`` ALIAS the consumer tensors: same storage,
+    ``delay_s`` and ``field`` ALIAS the consumer tensors: same storage,
     same stride, same gradient state. Copying them would silently break the
     zero-copy discipline the compact contract exists to provide, so a change
     here has to preserve object identity.
@@ -130,6 +141,13 @@ class RadarLegBatch:
     also the direction it left the source in, and for a higher-order row is
     not.
 
+    ``field`` is Channel's ``complex3_transport``: the complex electric field
+    vector AT THE SINK in world Cartesian components, launched by the source's
+    declared polarization and carrying ``sqrt(powers_w)``, the spreading, the
+    interactions and the reference-frequency phase ``exp(-j k32 L32)``, and NOT
+    projected onto any sink polarization. Every leg Radar evaluates runs from
+    a radar element toward a site (R-ADR-039), so this is the field at the site.
+
     The segment endpoints are per-row world points [m]:
     ``departure_origin_m`` is the source, ``departure_target_m`` the first
     point after it (the first interaction, or the sink), ``arrival_origin_m``
@@ -138,6 +156,8 @@ class RadarLegBatch:
     ``(rows, depth, 3)`` interaction table, zero padded past each row's depth,
     and ``path_length_m`` Channel's float32 unfolded length - the length its
     reference-frequency phase was evaluated from.
+    ``precise_arrival_target_m`` is the sink as the float64 position the
+    binding authored, when it authored one (R-ADR-040).
 
     ``slot_count`` states how many time slots - TDM slots, OFDM symbols or
     pulses - this batch carries. The default ``1`` is one instant and is what
@@ -165,7 +185,7 @@ class RadarLegBatch:
     material_sequence: torch.Tensor
     interaction_type: torch.Tensor
     delay_s: torch.Tensor
-    coefficient: torch.Tensor
+    field: torch.Tensor
     field_direction: torch.Tensor
     row_valid: torch.Tensor | None
     diagnostics: object
@@ -173,14 +193,21 @@ class RadarLegBatch:
     departure_origin_m: torch.Tensor | None = None
     departure_target_m: torch.Tensor | None = None
     arrival_origin_m: torch.Tensor | None = None
-    #: The same rows evaluated at ``reference + frequency_offsets_hz[j]``,
-    #: ``complex64[rows, F]``, column major in frequency (Channel's wideband
-    #: layout). Present exactly when the replay declared an offset grid.
-    coefficient_band: torch.Tensor | None = None
+    #: The same rows' field vectors at ``reference + frequency_offsets_hz[j]``,
+    #: ``complex64[rows, F, 3]`` (Channel's wideband ``field_offsets``).
+    #: Present exactly when the replay declared an offset grid.
+    field_band: torch.Tensor | None = None
     frequency_offsets_hz: tuple[float, ...] | None = None
     arrival_target_m: torch.Tensor | None = None
     interaction_positions_m: torch.Tensor | None = None
     path_length_m: torch.Tensor | None = None
+    precise_arrival_target_m: torch.Tensor | None = None
+    #: Each row's source polarization, ``float32[rows, 3]``: the vector Channel
+    #: launched the leg with, which the join's element factor divides out.
+    source_polarization: torch.Tensor | None = None
+    #: Each row's sink polarization, published for a leg whose sink is a radar
+    #: element (the site-less leg): the receiver reads the field along it.
+    sink_polarization: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
@@ -213,18 +240,21 @@ class RadarLegBatch:
         for name in ("primitive_sequence", "material_sequence", "interaction_type"):
             require_tensor(name, getattr(self, name), dtype=torch.int32, shape=(self.leg_count, width))
         require_tensor("delay_s", self.delay_s, dtype=torch.float32, shape=rows)
-        require_tensor("coefficient", self.coefficient, dtype=torch.complex64, shape=rows)
+        require_tensor("field", self.field, dtype=torch.complex64, shape=(self.leg_count, 3))
         require_tensor("field_direction", self.field_direction, dtype=torch.float32, shape=(self.leg_count, 3))
         if self.row_valid is not None:
             require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
         for name in ("departure_origin_m", "departure_target_m", "arrival_origin_m", "arrival_target_m"):
             if getattr(self, name) is not None:
                 require_tensor(name, getattr(self, name), dtype=torch.float32, shape=(self.leg_count, 3))
-        if (self.coefficient_band is None) != (self.frequency_offsets_hz is None):
-            raise ValueError("coefficient_band and frequency_offsets_hz are paired: publish both or neither")
-        if self.coefficient_band is not None and self.frequency_offsets_hz is not None:
-            band = (self.leg_count, len(self.frequency_offsets_hz))
-            require_tensor("coefficient_band", self.coefficient_band, dtype=torch.complex64, shape=band)
+        if (self.field_band is None) != (self.frequency_offsets_hz is None):
+            raise ValueError("field_band and frequency_offsets_hz are paired: publish both or neither")
+        if self.field_band is not None and self.frequency_offsets_hz is not None:
+            band = (self.leg_count, len(self.frequency_offsets_hz), 3)
+            require_tensor("field_band", self.field_band, dtype=torch.complex64, shape=band)
+        for name in ("source_polarization", "sink_polarization"):
+            if getattr(self, name) is not None:
+                require_tensor(name, getattr(self, name), dtype=torch.float32, shape=(self.leg_count, 3))
         if self.interaction_positions_m is not None:
             interactions = require_tensor(
                 "interaction_positions_m", self.interaction_positions_m, dtype=torch.float32, ndim=3
@@ -236,6 +266,13 @@ class RadarLegBatch:
                 )
         if self.path_length_m is not None:
             require_tensor("path_length_m", self.path_length_m, dtype=torch.float32, shape=rows)
+        if self.precise_arrival_target_m is not None:
+            require_tensor(
+                "precise_arrival_target_m",
+                self.precise_arrival_target_m,
+                dtype=torch.float64,
+                shape=(self.leg_count, 3),
+            )
 
     @property
     def device(self) -> torch.device:
@@ -252,7 +289,7 @@ class RadarLegBatch:
     def slot(self, index: int) -> RadarLegBatch:
         """One slot of a slot-major batch, as a single-slot batch.
 
-        The payload members are NARROWED, so ``delay_s``, ``coefficient``,
+        The payload members are NARROWED, so ``delay_s``, ``field``,
         ``field_direction`` and ``row_valid`` still alias the batched storage
         and a gradient flows straight back through them. Only the two partition
         tables are rebased, because a slot's pair ranks have to start at zero
@@ -290,7 +327,7 @@ class RadarLegBatch:
             material_sequence=narrow(self.material_sequence),
             interaction_type=narrow(self.interaction_type),
             delay_s=narrow(self.delay_s),
-            coefficient=narrow(self.coefficient),
+            field=narrow(self.field),
             field_direction=narrow(self.field_direction),
             row_valid=narrow(self.row_valid),
             diagnostics=self.diagnostics,
@@ -298,11 +335,14 @@ class RadarLegBatch:
             departure_origin_m=narrow(self.departure_origin_m),
             departure_target_m=narrow(self.departure_target_m),
             arrival_origin_m=narrow(self.arrival_origin_m),
-            coefficient_band=narrow(self.coefficient_band),
+            field_band=narrow(self.field_band),
             frequency_offsets_hz=self.frequency_offsets_hz,
             arrival_target_m=narrow(self.arrival_target_m),
             interaction_positions_m=narrow(self.interaction_positions_m),
             path_length_m=narrow(self.path_length_m),
+            precise_arrival_target_m=narrow(self.precise_arrival_target_m),
+            source_polarization=narrow(self.source_polarization),
+            sink_polarization=narrow(self.sink_polarization),
         )
 
 
@@ -366,7 +406,7 @@ def stack_slots(batches: Sequence[RadarLegBatch]) -> RadarLegBatch:
         material_sequence=cat("material_sequence"),
         interaction_type=cat("interaction_type"),
         delay_s=cat("delay_s"),
-        coefficient=cat("coefficient"),
+        field=cat("field"),
         field_direction=cat("field_direction"),
         row_valid=cat("row_valid"),
         diagnostics=first.diagnostics,
@@ -377,21 +417,24 @@ def stack_slots(batches: Sequence[RadarLegBatch]) -> RadarLegBatch:
         arrival_target_m=cat("arrival_target_m"),
         interaction_positions_m=cat("interaction_positions_m"),
         path_length_m=cat("path_length_m"),
+        precise_arrival_target_m=cat("precise_arrival_target_m"),
+        source_polarization=cat("source_polarization"),
+        sink_polarization=cat("sink_polarization"),
     )
 
 
 def band_as_slots(batch: RadarLegBatch) -> RadarLegBatch:
     """A wideband batch with its frequency columns laid out as outer slots.
 
-    Row ``j * rows + r`` is row ``r`` with ``coefficient_band[r, j]`` as its
-    coefficient, and every other member is repeated per column, because
+    Row ``j * rows + r`` is row ``r`` with ``field_band[r, j]`` as its
+    field, and every other member is repeated per column, because
     geometry and validity do not depend on frequency. That is exactly the
     block-diagonal slot layout, so the slot-replicated join and pattern tables
     compose every column in one launch each with the same native equations as
     the reference column. ``band.T`` is the only copy of the payload.
     """
 
-    band, offsets = batch.coefficient_band, batch.frequency_offsets_hz
+    band, offsets = batch.field_band, batch.frequency_offsets_hz
     if band is None or offsets is None:
         raise ValueError("band_as_slots needs a wideband batch: replay it with frequency_offsets_hz")
     columns = len(offsets)
@@ -418,7 +461,7 @@ def band_as_slots(batch: RadarLegBatch) -> RadarLegBatch:
         material_sequence=repeat(batch.material_sequence),
         interaction_type=repeat(batch.interaction_type),
         delay_s=repeat(batch.delay_s),
-        coefficient=band.transpose(0, 1).reshape(-1),
+        field=band.transpose(0, 1).reshape(-1, 3),
         field_direction=repeat(batch.field_direction),
         row_valid=repeat(batch.row_valid),
         diagnostics=batch.diagnostics,
@@ -429,6 +472,9 @@ def band_as_slots(batch: RadarLegBatch) -> RadarLegBatch:
         arrival_target_m=repeat(batch.arrival_target_m),
         interaction_positions_m=repeat(batch.interaction_positions_m),
         path_length_m=repeat(batch.path_length_m),
+        precise_arrival_target_m=repeat(batch.precise_arrival_target_m),
+        source_polarization=repeat(batch.source_polarization),
+        sink_polarization=repeat(batch.sink_polarization),
     )
 
 
@@ -954,8 +1000,8 @@ def _require_positions(name: str, value: object) -> torch.Tensor:
         raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
     if value.ndim != 2 or int(value.shape[1]) != 3:
         raise ValueError(f"{name} must have shape (N, 3), got {tuple(value.shape)}")
-    if value.dtype != torch.float32:
-        raise TypeError(f"{name} must use torch.float32, got {value.dtype}")
+    if value.dtype not in (torch.float32, torch.float64):
+        raise TypeError(f"{name} must use torch.float32 or torch.float64, got {value.dtype}")
     return value
 
 
@@ -980,9 +1026,9 @@ def _vector3(name: str, value: object, device: torch.device, dtype: torch.dtype)
 class Kinematics:
     """One ordered endpoint set's world positions at one instant.
 
-    ``positions_m`` is ``(N, 3)`` float32 and contiguous, which is the Channel
-    endpoint contract restated at the point where the tensor is BUILT rather
-    than at the point where it is rejected. There is no velocity member: the
+    ``positions_m`` is ``(N, 3)`` and contiguous, float32 (the Channel
+    endpoint contract) or float64 (a precise position the binding rounds for
+    Channel and keeps for the join's path length, R-ADR-040). There is no velocity member: the
     delay rate comes from the propagation solve at each observation instant,
     never from a site velocity.
     """

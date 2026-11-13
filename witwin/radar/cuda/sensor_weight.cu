@@ -516,7 +516,23 @@ struct RowInputs {
   int num_tx;
   int num_rx;
   float c0;
+  // Slot stride: the index and per-row tables describe ONE slot of
+  // rows_per_slot rows; row k of a slot-major batch reads table row
+  // k % rows_per_slot and its antennas are offset by the slot times the
+  // per-slot antenna counts. With one slot this is the plain launch.
+  int64_t rows_per_slot;
+  int tx_per_slot;
+  int rx_per_slot;
 };
+
+// The strided antenna of row k: table row k % rows_per_slot, clamped to one
+// slot's antennas, offset by its slot.
+__device__ __forceinline__ int64_t strided_antenna(
+    const int64_t* __restrict__ index, int64_t k, int64_t rows_per_slot, int per_slot) {
+  int64_t a = index[k % rows_per_slot];
+  a = a < 0 ? 0 : (a >= per_slot ? per_slot - 1 : a);
+  return a + (k / rows_per_slot) * per_slot;
+}
 
 __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) {
   RowTerm term;
@@ -546,16 +562,15 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
   term.dscale_im_drx = zero;
   term.dscale_im_dintensity = 0.0f;
 
-  int64_t ti = in.tx_index[k];
-  ti = ti < 0 ? 0 : (ti >= in.num_tx ? in.num_tx - 1 : ti);
-  int64_t ri = in.rx_index[k];
-  ri = ri < 0 ? 0 : (ri >= in.num_rx ? in.num_rx - 1 : ri);
-  const int kind = in.row_kind[k];
+  const int64_t r = k % in.rows_per_slot;
+  const int64_t ti = strided_antenna(in.tx_index, k, in.rows_per_slot, in.tx_per_slot);
+  const int64_t ri = strided_antenna(in.rx_index, k, in.rows_per_slot, in.rx_per_slot);
+  const int kind = in.row_kind[r];
 
   const Vec3 tx = load3(in.tx_pos, ti);
   const Vec3 rx = load3(in.rx_pos, ri);
-  const Vec3 v_tx = load3(in.tx_velocity, ti);
-  const Vec3 v_rx = load3(in.rx_velocity, ri);
+  const Vec3 v_tx = load3(in.tx_velocity, ti % in.tx_per_slot);
+  const Vec3 v_rx = load3(in.rx_velocity, ri % in.rx_per_slot);
 
   const Vec3 axis_right = load3(in.pattern_frame, 0);
   const Vec3 axis_up = load3(in.pattern_frame, 1);
@@ -613,7 +628,7 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
   } else {
     const Vec3 site_in = load3(in.site_in, k);
     const Vec3 site_out = load3(in.site_out, k);
-    const Vec3 v_site = load3(in.site_velocity, k);
+    const Vec3 v_site = load3(in.site_velocity, r);
     const Vec3 d_in = sub3(site_in, tx);
     const Vec3 d_out = sub3(rx, site_out);
     const float raw_a = norm3(d_in);
@@ -623,7 +638,7 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
     const Vec3 u_in = scale3(d_in, 1.0f / a);
     const Vec3 u_out = scale3(d_out, 1.0f / b);
 
-    length = raw_a + in.fixed_length_m[k] + raw_b;
+    length = raw_a + in.fixed_length_m[r] + raw_b;
     dlen_dsite_in = u_in;
     dlen_dtx = scale3(u_in, -1.0f);
     dlen_dsite_out = scale3(u_out, -1.0f);
@@ -655,7 +670,7 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
       evaluate_element(in.rx_pattern, axis_right, axis_up, axis_back, direction_rx);
   const float peak = element_tx.amplitude * element_rx.amplitude;
 
-  const float raw_intensity = in.intensity[k];
+  const float raw_intensity = in.intensity[r];
   const float clamped_intensity = raw_intensity > 0.0f ? raw_intensity : 0.0f;
   const float intensity_amplitude = sqrtf(clamped_intensity);
 
@@ -796,10 +811,9 @@ __global__ void sensor_weight_jvp_kernel(
   }
   const RowTerm term = evaluate_row(in, k);
 
-  int64_t ti = in.tx_index[k];
-  ti = ti < 0 ? 0 : (ti >= in.num_tx ? in.num_tx - 1 : ti);
-  int64_t ri = in.rx_index[k];
-  ri = ri < 0 ? 0 : (ri >= in.num_rx ? in.num_rx - 1 : ri);
+  const int64_t r = k % in.rows_per_slot;
+  const int64_t ti = strided_antenna(in.tx_index, k, in.rows_per_slot, in.tx_per_slot);
+  const int64_t ri = strided_antenna(in.rx_index, k, in.rows_per_slot, in.rx_per_slot);
 
   const Vec3 d_tx = load3(tan_tx_pos, ti);
   const Vec3 d_rx = load3(tan_rx_pos, ri);
@@ -808,12 +822,12 @@ __global__ void sensor_weight_jvp_kernel(
 
   const float d_scale = dot3(term.dscale_dsite_in, d_site_in) +
       dot3(term.dscale_dsite_out, d_site_out) + dot3(term.dscale_dtx, d_tx) +
-      dot3(term.dscale_drx, d_rx) + term.dscale_dintensity * tan_intensity[k];
+      dot3(term.dscale_drx, d_rx) + term.dscale_dintensity * tan_intensity[r];
 
   if (term.complex_scale) {
     const float d_scale_im = dot3(term.dscale_im_dsite_in, d_site_in) +
         dot3(term.dscale_im_dsite_out, d_site_out) + dot3(term.dscale_im_dtx, d_tx) +
-        dot3(term.dscale_im_drx, d_rx) + term.dscale_im_dintensity * tan_intensity[k];
+        dot3(term.dscale_im_drx, d_rx) + term.dscale_im_dintensity * tan_intensity[r];
     const float w_re = weight_in_re[k];
     const float w_im = weight_in_im[k];
     const float t_re = tan_weight_re[k];
@@ -922,7 +936,10 @@ __global__ void sensor_weight_backward_antennas_kernel(
     float* __restrict__ grad_rx_pos,
     int num_paths,
     int num_tx,
-    int num_rx) {
+    int num_rx,
+    int64_t rows_per_slot,
+    int tx_per_slot,
+    int rx_per_slot) {
   const int slot = blockIdx.x * blockDim.x + threadIdx.x;
   const int total = (num_tx + num_rx) * 3;
   if (slot >= total) {
@@ -934,12 +951,11 @@ __global__ void sensor_weight_backward_antennas_kernel(
   const int component = local % 3;
   const int64_t* index = is_tx ? tx_index : rx_index;
   const float* scratch = is_tx ? tx_row_scratch : rx_row_scratch;
-  const int bound = is_tx ? num_tx : num_rx;
+  const int per_slot = is_tx ? tx_per_slot : rx_per_slot;
 
   double total_grad = 0.0;
   for (int k = 0; k < num_paths; ++k) {
-    int64_t a = index[k];
-    a = a < 0 ? 0 : (a >= bound ? bound - 1 : a);
+    const int64_t a = strided_antenna(index, k, rows_per_slot, per_slot);
     if (static_cast<int>(a) != antenna) {
       continue;
     }
@@ -999,10 +1015,18 @@ RowInputs build_inputs(
     int num_paths,
     int num_tx,
     int num_rx,
-    double c0) {
+    double c0,
+    int64_t slots) {
   STD_TORCH_CHECK(num_tx > 0, "num_tx must be positive.");
   STD_TORCH_CHECK(num_rx > 0, "num_rx must be positive.");
   STD_TORCH_CHECK(c0 > 0.0, "c0 must be positive.");
+  STD_TORCH_CHECK(slots >= 1, "slots must be positive.");
+  STD_TORCH_CHECK(
+      num_paths % slots == 0 && num_tx % slots == 0 && num_rx % slots == 0,
+      "a slot-major batch carries the same rows and antennas in every slot.");
+  const int64_t slot_rows = num_paths / slots;
+  const int tx_per_slot = static_cast<int>(num_tx / slots);
+  const int rx_per_slot = static_cast<int>(num_rx / slots);
 
   check_cuda_float(t.tx_pos, "tx_pos");
   check_cuda_float(t.rx_pos, "rx_pos");
@@ -1010,26 +1034,25 @@ RowInputs build_inputs(
   check_cuda_float(t.rx_velocity, "rx_velocity");
   STD_TORCH_CHECK(
       t.tx_pos.numel() == static_cast<int64_t>(num_tx) * 3 &&
-          t.tx_velocity.numel() == static_cast<int64_t>(num_tx) * 3,
-      "tx_pos and tx_velocity must hold three components per transmitter.");
+          t.tx_velocity.numel() == static_cast<int64_t>(tx_per_slot) * 3,
+      "tx_pos must hold three components per transmitter and tx_velocity per transmitter of one slot.");
   STD_TORCH_CHECK(
       t.rx_pos.numel() == static_cast<int64_t>(num_rx) * 3 &&
-          t.rx_velocity.numel() == static_cast<int64_t>(num_rx) * 3,
-      "rx_pos and rx_velocity must hold three components per receiver.");
+          t.rx_velocity.numel() == static_cast<int64_t>(rx_per_slot) * 3,
+      "rx_pos must hold three components per receiver and rx_velocity per receiver of one slot.");
 
+  const int one_slot = static_cast<int>(slot_rows);
   check_row_vector(t.site_in, num_paths, "site_in");
   check_row_vector(t.site_out, num_paths, "site_out");
-  check_row_vector(t.site_velocity, num_paths, "site_velocity");
-  check_row_scalar(t.fixed_length_m, num_paths, "fixed_length_m");
-  check_row_scalar(t.intensity, num_paths, "intensity");
+  check_row_vector(t.site_velocity, one_slot, "site_velocity");
+  check_row_scalar(t.fixed_length_m, one_slot, "fixed_length_m");
+  check_row_scalar(t.intensity, one_slot, "intensity");
   check_cuda_long(t.tx_index, "tx_index");
   check_cuda_long(t.rx_index, "rx_index");
   check_cuda_int(t.row_kind, "row_kind");
   STD_TORCH_CHECK(
-      t.tx_index.numel() == static_cast<int64_t>(num_paths) &&
-          t.rx_index.numel() == static_cast<int64_t>(num_paths) &&
-          t.row_kind.numel() == static_cast<int64_t>(num_paths),
-      "tx_index, rx_index, and row_kind must hold one entry per path.");
+      t.tx_index.numel() == slot_rows && t.rx_index.numel() == slot_rows && t.row_kind.numel() == slot_rows,
+      "tx_index, rx_index, and row_kind must hold one entry per path of one slot.");
 
   check_cuda_float(t.pattern_frame, "pattern_frame");
   STD_TORCH_CHECK(
@@ -1058,6 +1081,9 @@ RowInputs build_inputs(
   in.num_tx = num_tx;
   in.num_rx = num_rx;
   in.c0 = static_cast<float>(c0);
+  in.rows_per_slot = slot_rows > 0 ? slot_rows : 1;
+  in.tx_per_slot = tx_per_slot;
+  in.rx_per_slot = rx_per_slot;
   return in;
 }
 
@@ -1089,7 +1115,8 @@ void sensor_weight_forward_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    double c0) {
+    double c0,
+    int64_t slots) {
   const int paths = checked_int(num_paths, "num_paths");
   const GeometryTensors tensors{
       tx_pos,
@@ -1112,7 +1139,8 @@ void sensor_weight_forward_cuda(
       paths,
       checked_int(num_tx, "num_tx"),
       checked_int(num_rx, "num_rx"),
-      c0);
+      c0,
+      slots);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
   check_row_scalar(out_re, paths, "out_re");
@@ -1176,7 +1204,8 @@ void sensor_weight_jvp_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    double c0) {
+    double c0,
+    int64_t slots) {
   const int paths = checked_int(num_paths, "num_paths");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int receivers = checked_int(num_rx, "num_rx");
@@ -1201,7 +1230,8 @@ void sensor_weight_jvp_cuda(
       paths,
       transmitters,
       receivers,
-      c0);
+      c0,
+      slots);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
   check_cuda_float(tan_tx_pos, "tan_tx_pos");
@@ -1214,7 +1244,7 @@ void sensor_weight_jvp_cuda(
       "tan_rx_pos must match rx_pos.");
   check_row_vector(tan_site_in, paths, "tan_site_in");
   check_row_vector(tan_site_out, paths, "tan_site_out");
-  check_row_scalar(tan_intensity, paths, "tan_intensity");
+  check_row_scalar(tan_intensity, static_cast<int>(in.rows_per_slot), "tan_intensity");
   check_row_scalar(tan_weight_re, paths, "tan_weight_re");
   check_row_scalar(tan_weight_im, paths, "tan_weight_im");
   check_row_scalar(tan_out_re, paths, "tan_out_re");
@@ -1285,7 +1315,8 @@ void sensor_weight_backward_cuda(
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
-    double c0) {
+    double c0,
+    int64_t slots) {
   const int paths = checked_int(num_paths, "num_paths");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int receivers = checked_int(num_rx, "num_rx");
@@ -1310,7 +1341,8 @@ void sensor_weight_backward_cuda(
       paths,
       transmitters,
       receivers,
-      c0);
+      c0,
+      slots);
   check_row_scalar(weight_in_re, paths, "weight_in_re");
   check_row_scalar(weight_in_im, paths, "weight_in_im");
   check_row_scalar(grad_out_re, paths, "grad_out_re");
@@ -1375,7 +1407,10 @@ void sensor_weight_backward_cuda(
       grad_rx_pos.mutable_data_ptr<float>(),
       paths,
       transmitters,
-      receivers);
+      receivers,
+      in.rows_per_slot,
+      in.tx_per_slot,
+      in.rx_per_slot);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

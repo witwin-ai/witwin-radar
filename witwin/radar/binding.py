@@ -11,7 +11,7 @@ declared by the caller or published by Core, never derived from a mesh
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
@@ -249,7 +249,7 @@ class ScatterSitePolicy:
         )
 
     def resolve(self, snapshot: Any, *, device: torch.device) -> torch.Tensor:
-        """The ``(S, 3)`` float32 site positions this policy names."""
+        """The ``(S, 3)`` site positions this policy names, float32 or float64 as authored."""
 
         if self.source == SITE_SOURCE_EXPLICIT:
             if self.trajectory is not None:
@@ -271,13 +271,15 @@ def _site_positions(positions: SitePositions | None, *, device: torch.device) ->
     moved, cast, or made contiguous here: every one of those is a new node that
     would leave the caller holding a tensor that is no longer the one the legs
     differentiate through, and a device or dtype mismatch is a caller error
-    worth a message rather than a silent copy.
+    worth a message rather than a silent copy. A float64 tensor is the precise
+    position the join computes path lengths from (R-ADR-040); the binding
+    rounds it to float32 for Channel.
     """
 
     if isinstance(positions, torch.Tensor):
-        if positions.dtype != torch.float32:
+        if positions.dtype not in (torch.float32, torch.float64):
             raise TypeError(
-                f"site positions must use torch.float32, got {positions.dtype}; "
+                f"site positions must use torch.float32 or torch.float64, got {positions.dtype}; "
                 "casting here would detach the tensor a caller expects to "
                 "differentiate through"
             )
@@ -415,6 +417,30 @@ def _endpoint_spec(
     )
 
 
+def site_spec(
+    positions_m: torch.Tensor, stable_ids: tuple[int, ...], *, polarization: torch.Tensor
+) -> RadarEndpointSpec:
+    """The sites as the sink of both legs.
+
+    Float64 positions are kept as the spec's ``precise_positions_m`` and
+    rounded to float32 for Channel through a differentiable cast, so a leaf in
+    either precision receives its gradient through both (R-ADR-040).
+    """
+
+    if positions_m.dtype == torch.float64:
+        spec = _endpoint_spec(positions_m.float(), stable_ids, polarization=polarization, power_w=None)
+        return replace(spec, precise_positions_m=positions_m.contiguous())
+    return _endpoint_spec(positions_m, stable_ids, polarization=polarization, power_w=None)
+
+
+def with_site_positions(spec: RadarEndpointSpec, positions_m: torch.Tensor) -> RadarEndpointSpec:
+    """``spec`` at new site positions, in the precision they were authored in."""
+
+    if positions_m.dtype == torch.float64:
+        return replace(spec, positions_m=positions_m.float(), precise_positions_m=positions_m.contiguous())
+    return replace(spec, positions_m=positions_m, precise_positions_m=None)
+
+
 def _polarization_tensor(polarization: Sequence[float], *, device: torch.device) -> torch.Tensor:
     """Validate the declared polarization on the HOST, then build it once.
 
@@ -470,6 +496,7 @@ def bind_radar_world(
     sites: ScatterSitePolicy,
     polarization: Sequence[float] = DEFAULT_POLARIZATION,
     sensor_endpoints: SensorEndpointIds | None = None,
+    rx_polarization: Sequence[float] | None = None,
 ) -> RadarWorldBinding:
     """Turn one ``Radar`` plus one ``SceneSnapshot`` into endpoint specs.
 
@@ -527,16 +554,19 @@ def bind_radar_world(
         )
 
     polarization_vector = _polarization_tensor(polarization, device=device)
+    receive_vector = (
+        polarization_vector if rx_polarization is None else _polarization_tensor(rx_polarization, device=device)
+    )
     transmit_power_w = float(radar.transmit_power_watts)
     return RadarWorldBinding(
         transmitters=_endpoint_spec(
             transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
         ),
-        receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=polarization_vector, power_w=None),
+        receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=receive_vector, power_w=None),
         receiver_sources=_endpoint_spec(
-            receiver_positions, receiver_ids, polarization=polarization_vector, power_w=sites.power_w
+            receiver_positions, receiver_ids, polarization=receive_vector, power_w=sites.power_w
         ),
-        sites=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=None),
+        sites=site_spec(site_positions, tuple(site_ids), polarization=polarization_vector),
         transmitter_ids=transmitter_ids,
         receiver_ids=receiver_ids,
         site_ids=tuple(site_ids),

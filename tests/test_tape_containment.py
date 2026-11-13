@@ -350,7 +350,7 @@ def test_the_diagnostics_alias_the_frame_rather_than_a_detached_copy(simulated):
 
     _, result = simulated
     assert result.last_radar_paths.complex_transfer_ref.requires_grad
-    assert result.last_propagation.inbound.coefficient.requires_grad
+    assert result.last_propagation.inbound.field.requires_grad
 
 
 @pytest.mark.gpu

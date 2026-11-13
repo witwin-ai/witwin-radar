@@ -21,7 +21,7 @@ from .radar import Chirp, Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .results import Frame, Result
 from .sensors import Coupling, Pattern
 from .simulation import Paths
-from .targets import Aspect, PointTargets, StructureTargets
+from .targets import Aspect, PointTargets, ScatteringMatrix, StructureTargets
 
 __all__ = [
     "Adc",
@@ -43,6 +43,7 @@ __all__ = [
     "Pulsed",
     "Radar",
     "Result",
+    "ScatteringMatrix",
     "StructureTargets",
     "processing",
 ]

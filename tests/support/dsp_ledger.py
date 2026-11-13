@@ -57,13 +57,18 @@ HOST_COUNTERS = (*HOST_OBSERVERS, "synchronize", *IMPLICIT_SYNCHRONIZERS)
 #: reads the document asserts its cell equals this string and evaluates the
 #: law through :func:`two_way_join_tape_bytes`, so the document cannot drift
 #: from what is measured.
-TWO_WAY_JOIN_TAPE_FORMULA = "8*R_in + 8*R_out + 8*S + 28*K"
+TWO_WAY_JOIN_TAPE_FORMULA = "(56 + 12*W_in)*R_in + (56 + 12*W_out)*R_out + 8*S"
 
 
-def two_way_join_tape_bytes(*, R_in: int, R_out: int, S: int, K: int) -> int:
-    """:data:`TWO_WAY_JOIN_TAPE_FORMULA` at one fixture point."""
+def two_way_join_tape_bytes(*, R_in: int, R_out: int, S: int, W_in: int, W_out: int) -> int:
+    """:data:`TWO_WAY_JOIN_TAPE_FORMULA` at one fixture point.
 
-    return 8 * R_in + 8 * R_out + 8 * S + 28 * K
+    Per leg row: the float32 delay, the complex3 field pair (24 B), the element
+    and site positions, ``W`` interaction points and Channel's length; per
+    site: one complex response. A scalar response saves no direction table.
+    """
+
+    return (56 + 12 * W_in) * R_in + (56 + 12 * W_out) * R_out + 8 * S
 
 
 class DspLedger:

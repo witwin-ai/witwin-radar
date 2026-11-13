@@ -73,7 +73,7 @@ Phase 11 deletion mentioned below does not describe the current waveform API.
 - **bytes formula** is symbolic in the fixture dimensions, so the row PREDICTS.
   A row that only reports a number describes one run and rots on the next
   fixture change. Symbols: `K` composed rows, `R_in` / `R_out` leg rows, `S`
-  response slots (sites), `T` transmitters, `R` receivers, `P` pair segments,
+  response slots (sites), `W_in` / `W_out` interaction-table widths, `T` transmitters, `R` receivers, `P` pair segments,
   `N` samples or targets, `G` AGC groups.
 - **measured bytes** is the formula evaluated at the pinned fixture, taken by
   reading `ctx.to_save` inside `setup_context` - the only moment the storage is
@@ -114,7 +114,7 @@ cannot be created is worse than no row.
 
 | family | tape owner (file::symbol) | saved tensors | bytes formula | measured bytes @fixture | fwd launches | bwd launches | bwd ms (measured) | lifetime |
 |---|---|---|---|---|---|---|---|---|
-| two-way join | `witwin/radar/paths.py::_TwoWayJoin.setup_context` | `c_in_re`, `c_in_im`, `c_out_re`, `c_out_im`, `s_re`, `s_im`, `row_valid`, `idx_in`, `idx_out`, `idx_s` | `8*R_in + 8*R_out + 8*S + 28*K` | 104 B at `R_in=R_out=S=K=2` | 1 `two_way_join_forward` | 1 `two_way_join_backward` | 0.412 | created in `TwoWayComposer.compose`; released when the composed `RadarPathBatch`'s graph is freed. |
+| two-way join | `witwin/radar/paths.py::_TwoWayJoin.setup_context` | per leg `tau`, `field` pairs, `departure_origin_m`, site, `interaction_positions_m`, `path_length_m`; the response pairs (a matrix response adds the two direction tables) | `(56 + 12*W_in)*R_in + (56 + 12*W_out)*R_out + 8*S` | 288 B at `R_in=R_out=S=2`, `W_in=W_out=1` | 1 `two_way_join_forward` | 1 `two_way_join_backward` | 0.412 | created in `TwoWayComposer.compose`; released when the composed `RadarPathBatch`'s graph is freed. |
 | aspect response | `witwin/radar/scattering.py::_AspectResponse.setup_context` | `dir_in`, `dir_out`, `axis`, `amplitude`, `phase_rad`, `idx_in`, `idx_out`, `idx_site`, `row_valid` | `12*(R_in + R_out + S) + 8*S + 28*K` | 144 B at `R_in=R_out=S=K=2` | 1 `scatter_response_aspect_forward` | 1 `scatter_response_aspect_backward` | 0.276 | created inside `AspectScatterResponse.evaluate_rows`, which the composer calls once per compose; released with the composed batch. The two direction tables are the legs' own aliased tensors, so this context pins the legs' geometry alive as well as its own. |
 | sensor weight | `witwin/radar/sensors.py::_SensorWeight.setup_context` | `tx_pos`, `rx_pos`, `site_in`, `site_out`, `intensity`, `weight_re`, `weight_im`, `tx_velocity`, `rx_velocity` | `24*T + 24*R + 36*K` | 120 B at `T=R=1`, `K=2` | 1 `sensor_weight_forward` | 1 `sensor_weight_backward` | 0.348 | created in `evaluate_sensor_weights`, once per frame; released with the `SensorWeightResult`'s graph. The geometry and the plan are attached to the context as configuration, not saved as tensors, so neither is retained storage. Since Phase 11 the PRODUCTION creator on the scene-driven route is `RoundTripPatternStage.apply` (`witwin/radar/sensors.py`), which calls the same facade and therefore reuses this one context rather than defining a `Function` of its own - it added no owner to this table. |
 | FMCW beat | `witwin/radar/synthesis/fmcw.py::_FmcwSynthesis.setup_context` | backward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`segment`**, `tx_index`; forward: `tau_rt`, `tau_rate`, `weight_re`, `weight_im`, **`offsets`**, `tx_index` | backward `16*K + 8*K + 4*T`; forward `16*K + 8*(P+1) + 4*T` | 52 B at `K=2`, `P=1`, `T=1` | 1 `fmcw_beat_forward` | 1 `fmcw_beat_backward` | 0.313 | created in `synthesize_fmcw_rows`; released with the cube's graph. **The two lists differ**: the backward needs a per-ROW segment id to reduce into, the jvp needs the per-SEGMENT offsets to walk. That is not an inconsistency, and it means the reverse and forward tapes have different sizes whenever `K != P+1`. |
@@ -143,8 +143,12 @@ Measured through the Radar adapter at the multi-endpoint fixture, per
 |---|---|---|---|---|
 | `reevaluate` inbound leg (line-of-sight only) | `none` | 3 | 0 | 0 |
 | `reevaluate` outbound leg (line-of-sight + reflection) | `none` | 7 | 0 | 0 |
-| `reevaluate` inbound leg | `vjp` | 3 | 2 | 200 |
-| `reevaluate` outbound leg | `vjp` | 7 | 2 | 496 |
+| `reevaluate` inbound leg | `vjp` | 3 | 4 | 284 |
+| `reevaluate` outbound leg | `vjp` | 7 | 4 | 692 |
+
+The replay requests `complex3_transport` (R-ADR-041): the field transport and
+the source-excitation scale of the unprojected vector are two companions each,
+where the projected scalar response needed one.
 
 Two things this table says that a single number would not. The **vjp-only tape
 gate is real**: a primal solve reports an exact zero rather than forwarding the

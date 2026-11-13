@@ -81,7 +81,7 @@ tree before ADR-043 and it is now the falsifier.
 | aspect/evaluate_rows | endpoint positions through dir_in and dir_out | jvp | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse | tests/test_aspect_direction_ad.py::test_a_forward_tangent_on_the_sites_reaches_the_aspect_response | adjoint |
 | aspect/compose/fmcw | endpoint positions to a synthesized cube | both | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse | tests/test_aspect_direction_ad.py::test_the_aspect_direction_gradient_reaches_a_synthesized_fmcw_loss, tests/test_aspect_direction_ad.py::test_the_direction_term_is_load_bearing_in_the_synthesized_loss | fd |
 | aspect/evaluate_rows | outbound reflection segment endpoints | both | SUP | native-companion | witwin/radar/scattering.py::_ScatterDirection | tests/test_multipath_directions.py::test_native_scatter_direction_primal_vjp_and_jvp, tests/test_multipath_directions.py::test_outbound_reflection_aspect_uses_departure_and_carries_gradients | fd |
-| aspect/evaluate_rows | missing outbound reflection geometry | both | REF | host-declaration | witwin/radar/scattering.py::AspectScatterResponse | tests/test_scatter_response_kernel.py::test_the_response_refuses_missing_departure_geometry | refusal |
+| aspect/evaluate_rows | missing outbound arrival segment | both | REF | host-declaration | witwin/radar/scattering.py::AspectScatterResponse | tests/test_scatter_response_kernel.py::test_a_reflected_outbound_row_reads_its_departure_off_the_arrival_segment | refusal |
 
 ### SMPL authoring (`witwin/radar/smpl.py`)
 
@@ -368,6 +368,10 @@ unchanged.
 | reevaluate/prepared | endpoint positions of a fully occluded site | vjp | ZERO | native-companion | witwin/radar/channel.py::ChannelPropagationAdapter.reevaluate_slots | tests/test_row_validity_ad.py::test_a_fully_occluded_site_answers_with_an_exactly_zero_gradient, tests/test_row_validity_ad.py::test_moving_one_site_kills_exactly_two_rows_and_keeps_nine | analytic |
 | join/freeze | a declared site with no row at a discovery (occluded) | both | ZERO | torch-orchestration | witwin/radar/paths.py::TwoWayComposer.freeze | tests/test_row_validity_ad.py::test_a_fresh_freeze_at_the_occluded_geometry_composes_the_site_to_zero | analytic |
 | join/freeze | an unknown declared site ID | both | REF | torch-orchestration | witwin/radar/paths.py::TwoWayComposer.freeze | tests/test_row_validity_ad.py::test_an_unknown_site_id_is_still_refused | refusal |
+| join/compose | complex3 fields, element and site positions, interaction points, Channel length, scalar response | both | SUP | native-companion | witwin/radar/paths.py::_TwoWayJoin | tests/test_join_geometry_ad.py::test_reverse_mode_matches_float64_autograd, tests/test_join_geometry_ad.py::test_forward_mode_satisfies_the_adjoint_identity | oracle-f64 |
+| join/compose | scattering matrix and final-segment directions (site basis) | both | SUP | native-companion | witwin/radar/paths.py::_TwoWayJoin | tests/test_join_geometry_ad.py::test_reverse_mode_matches_float64_autograd, tests/test_join_geometry_ad.py::test_forward_mode_satisfies_the_adjoint_identity | oracle-f64 |
+| join/compose | out:total_delay_residual_s, the float64 delay residual | both | DECL | native-declared | witwin/radar/paths.py::_TwoWayJoin | tests/test_join_geometry_ad.py::test_forward_matches_the_float64_reference | declaration |
+| scatter/matrix | a scattering matrix's site up axis | both | REF | host-declaration | witwin/radar/scattering.py::ScatteringMatrixResponse | tests/test_polarimetric_scattering.py::test_the_matrix_response_refuses_a_derivative_on_its_site_axis | refusal |
 | reevaluate/prepared | out:a stale discovery-time answer | both | REF | native-companion | witwin/radar/channel.py::ChannelPropagationAdapter.reevaluate_slots | tests/test_row_validity_ad.py::test_the_replay_never_answers_with_the_geometry_it_was_frozen_at | analytic |
 
 ## Refused tangents, driven through the whole chain
@@ -420,7 +424,7 @@ above; a tape row does not restate it.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| tape/two_way | out:join context, 10 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/paths.py::_TwoWayJoin.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/two_way | out:join context, 15 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/paths.py::_TwoWayJoin.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/aspect | out:aspect context, 9 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/scattering.py::_AspectResponse.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/fmcw_beat | out:beat context, backward saves segment where forward saves offsets | both | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/ofdm_cfr | out:cfr context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/ofdm.py::_OfdmCfrSynthesis.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |

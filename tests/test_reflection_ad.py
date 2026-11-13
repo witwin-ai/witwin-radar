@@ -161,7 +161,7 @@ def test_the_reflection_rows_carry_the_whole_loss(spike, endpoints, weights):
     # Both legs really do carry a reflection row with a nontrivial coefficient,
     # so "through a reflection leg" is a fact about this fixture.
     for name, legs in (("inbound", inbound), ("outbound", outbound)):
-        magnitudes = legs.coefficient.abs()
+        magnitudes = torch.linalg.vector_norm(legs.field, dim=1)
         assert int(legs.leg_count) == 2, name
         assert float(magnitudes.min()) > 0.0, name
     baseline = _evaluate(spike, endpoints, weights, SITE_M)

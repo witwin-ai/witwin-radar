@@ -67,8 +67,8 @@ def _reference(composer, inbound, outbound, response, row_valid):
     return join_reference(
         tau_in=inbound.delay_s,
         tau_out=outbound.delay_s,
-        c_in=inbound.coefficient,
-        c_out=outbound.coefficient,
+        c_in=inbound.field[:, 2],
+        c_out=outbound.field[:, 2],
         response=response.evaluate(composer.site_count, inbound.delay_s.device),
         idx_in=composer.inbound_row,
         idx_out=composer.outbound_row,

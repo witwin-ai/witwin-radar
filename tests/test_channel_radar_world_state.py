@@ -82,7 +82,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
             reference_frequency_hz=geo.REFERENCE_FREQUENCY_HZ,
             topology=spike.inbound.prepared,
             times_s=times,
-            response="scalar_transport",
+            response="complex3_transport",
             ad_mode="none",
         ),
     )
@@ -95,7 +95,7 @@ def test_channel_cir_and_radar_frames_use_the_same_world_state():
     for slot in range(SLOT_COUNT):
         radar_slot = inbound.slot(slot)
         assert torch.equal(evaluation.delay_s[slot], radar_slot.delay_s), slot
-        assert torch.equal(evaluation.transport.coefficient[slot], radar_slot.coefficient), slot
+        assert torch.equal(evaluation.transport.field[slot], radar_slot.field), slot
         if slot and not torch.equal(evaluation.delay_s[slot], evaluation.delay_s[0]):
             moved = True
     # Non-vacuity: a world that did not move would make every slot trivially

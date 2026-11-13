@@ -61,7 +61,7 @@ def test_an_endpoint_the_snapshot_does_not_declare_is_named():
 def test_kinematics_holds_the_endpoint_contract_at_construction():
     with pytest.raises(ValueError, match="shape"):
         propagation.Kinematics(positions_m=torch.zeros(3, 2))
-    with pytest.raises(TypeError, match="float32"):
-        propagation.Kinematics(positions_m=torch.zeros(3, 3, dtype=torch.float64))
+    with pytest.raises(TypeError, match="float32 or torch.float64"):
+        propagation.Kinematics(positions_m=torch.zeros(3, 3, dtype=torch.float16))
     with pytest.raises(ValueError, match="contiguous"):
         propagation.Kinematics(positions_m=torch.zeros(3, 6)[:, ::2])

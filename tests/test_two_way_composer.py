@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from support.dsp_ledger import DspLedger
+from support.join_fixture import scalar_field
 
 from witwin.radar.paths import TwoWayComposer
 from witwin.radar.propagation import RadarLegBatch
@@ -72,7 +73,7 @@ def _legs(delays, coefficients, *, valid=None, device="cpu"):
         material_sequence=zeros(torch.int32, (rows, 1)),
         interaction_type=zeros(torch.int32, (rows, 1)),
         delay_s=make(delays, torch.float32),
-        coefficient=make(coefficients, torch.complex64),
+        field=scalar_field(make(coefficients, torch.complex64)),
         field_direction=zeros(torch.float32, (rows, 3)),
         row_valid=None if valid is None else make(valid, torch.bool),
         diagnostics=None,
@@ -112,7 +113,7 @@ def test_delay_is_additive_and_transfer_factorizes():
         composed.total_delay_s.cpu(), torch.tensor([3.0e-8], dtype=torch.float32), rtol=1e-6, atol=0.0
     )
     assert composed.delay_rate is None
-    expected = outbound.coefficient * _response().evaluate(1, torch.device("cuda")) * inbound.coefficient
+    expected = outbound.field[:, 2] * _response().evaluate(1, torch.device("cuda")) * inbound.field[:, 2]
     torch.testing.assert_close(composed.complex_transfer_ref, expected, rtol=1e-6, atol=0.0)
     assert composed.topology.radar_source_id.tolist() == [10]
     assert composed.topology.site_id.tolist() == [20]

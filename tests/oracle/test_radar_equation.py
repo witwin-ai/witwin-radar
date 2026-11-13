@@ -37,13 +37,6 @@ POWER_DBM = 10.0
 POWER_RTOL = 1e-3
 ANGLES_DEG = (0.0, 30.0, 45.0, 60.0)
 
-_PH5 = (
-    "PH-5: each leg applies an unnormalised dipole projection at both endpoints and the site takes the "
-    "radar's polarization, so a target off the plane normal to the polarization loses sin^4 of its angle "
-    "to the polarization in amplitude (-5.0 dB at 30 deg, -12.0 dB at 45 deg), even for Pattern.isotropic(); "
-    "Pattern.dipole() then counts the E-plane cut a second time"
-)
-
 
 def _direction(plane: str, angle_deg: float) -> tuple[float, float, float]:
     angle = math.radians(angle_deg)
@@ -72,8 +65,7 @@ def _cases():
     for pattern in ("isotropic", "dipole"):
         for plane in ("E", "H"):
             for angle in ANGLES_DEG:
-                marks = [pytest.mark.xfail(strict=True, reason=_PH5)] if plane == "E" and angle != 0.0 else []
-                yield pytest.param(pattern, plane, angle, marks=marks, id=f"{pattern}-{plane}plane-{angle:g}deg")
+                yield pytest.param(pattern, plane, angle, id=f"{pattern}-{plane}plane-{angle:g}deg")
 
 
 @pytest.mark.parametrize(("pattern_name", "plane", "angle_deg"), list(_cases()))

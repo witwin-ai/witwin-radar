@@ -37,11 +37,12 @@ def test_outbound_reflection_aspect_uses_departure_and_carries_gradients():
     real, imaginary = response.evaluate_rows(composer, inbound, outbound, valid)
     # Analytic mirrored receiver across x=4: the site must look towards the
     # reflection, not along the reflected segment arriving at the receiver.
-    sinks = spike.receiver_tensor()[outbound.sink_index.long()]
+    # The outbound leg runs from the receiver (its source) to the site (its sink).
+    sinks = spike.receiver_tensor()[outbound.source_index.long()]
     mirrored = sinks.clone()
     mirrored[:, 0] = 8.0 - sinks[:, 0]
     targets = torch.where((outbound.depth > 0)[:, None], mirrored, sinks)
-    directions = torch.nn.functional.normalize(targets - positions[outbound.source_index.long()], dim=-1)
+    directions = torch.nn.functional.normalize(targets - positions[outbound.sink_index.long()], dim=-1)
     axis = response.axis[composer.response_slot]
     ci = (-(inbound.field_direction[composer.inbound_row] * axis).sum(-1)).clamp_min(0)
     co = ((directions[composer.outbound_row] * axis).sum(-1)).clamp_min(0)

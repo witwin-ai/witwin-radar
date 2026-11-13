@@ -118,7 +118,7 @@ def test_reevaluate_aliases_by_object_identity(adapter, frozen_inbound, monkeypa
     legs = adapter.reevaluate_slots(frozen_inbound, _tx(), _site_sink(), slot_count=1, ad_mode="none")
     result = captured["result"]
     assert legs.delay_s is result.paths.geometry.delay_s
-    assert legs.coefficient is result.paths.transport.coefficient
+    assert legs.field is result.paths.transport.field
     assert legs.pair_index is result.paths.pair_index
     assert legs.diagnostics is result.diagnostics
     assert legs.row_valid is result.row_valid

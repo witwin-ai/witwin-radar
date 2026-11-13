@@ -271,7 +271,7 @@ def test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss(spec):
     inbound_ref, _ = spike_ref.legs()
     inbound_moved, _ = spike_moved.legs()
     assert torch.equal(inbound_ref.delay_s, inbound_moved.delay_s)
-    assert not torch.equal(inbound_ref.coefficient, inbound_moved.coefficient)
+    assert not torch.equal(inbound_ref.field, inbound_moved.field)
 
 
 # --------------------------------------------------------------------------

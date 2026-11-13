@@ -197,9 +197,10 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
                 # adapter is exercised against a geometry that does not exist.
                 "field_direction": torch.zeros(rows, 3, dtype=torch.float32),
                 "interaction_positions_m": torch.zeros(rows, 1, 3, dtype=torch.float32),
+                "path_length_m": torch.zeros(rows, dtype=torch.float32),
             },
         )()
-        transport = type("_Transport", (), {"coefficient": torch.zeros(rows, dtype=torch.complex64)})()
+        transport = type("_Transport", (), {"field": torch.zeros(rows, 3, dtype=torch.complex64)})()
 
     class _Evaluation:
         paths = _Paths()

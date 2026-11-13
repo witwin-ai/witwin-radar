@@ -18,17 +18,19 @@ the native OFDM CFR kernel already accepts one weight per subcarrier (`weight_co
 
 A wideband run asks every replay for `frequency_offsets_hz = (n * df for n in range(num_subcarriers))`, which is
 exactly the CFR kernel's subcarrier grid (`f_n = f_ref + n df`). The adapter publishes the band as
-`RadarLegBatch.coefficient_band` beside the reference `coefficient`. Discovery has no band, so a wideband run always
+`RadarLegBatch.field_band` (`[rows, F, 3]`, Channel's `field_offsets`) beside the reference `field` (R-ADR-041). Discovery has no band, so a wideband run always
 replays (it never takes the discovery route of R-ADR-033), and `transmission`/`diffraction`, which cannot be frozen,
 are refused with it by name.
 
 ### 2. The band is composed by the existing equations, columns as slots
 
 `propagation.band_as_slots` lays a leg's `F` columns out as outer slots: row `j * rows + r` carries
-`coefficient_band[r, j]`, and every frequency-independent member (delay, directions, validity, segment ends) is
+`field_band[r, j]`, and every frequency-independent member (delay, directions, validity, segment ends) is
 repeated. That is the block-diagonal slot layout, so `TwoWayComposer.for_slots(F)` and
 `RoundTripPatternStage.for_slots(F)` compose and pattern-weight every column in one launch each with the native join
-and sensor-weight kernels, their VJPs and JVPs unchanged. The tables are built once per (topology, group size, `F`)
+and sensor-weight kernels, their VJPs and JVPs unchanged. Each column takes its own wave numbers: the join reads
+`(k64, k32)` per column from a float64 table (`f_ref + n df` in float64, Channel's float32 frequency for `k32`), so
+the float64 path-length phase of R-ADR-040 is exact per subcarrier. The tables are built once per (topology, group size, `F`)
 and cached with the slot tables. The result is reshaped to `RadarPathBatch.complex_transfer_band` `[rows, F]`, whose
 column 0 (offset 0) is bit-identical to `complex_transfer_ref`. The element patterns are frequency independent, so
 one pattern stage serves every column; the site-less leg is banded the same way.

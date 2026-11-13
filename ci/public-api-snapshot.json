@@ -99,7 +99,7 @@
           "name": "PointTargets",
           "kind": "class",
           "target": "witwin.radar.targets.PointTargets",
-          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'float' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None) -> None"
+          "signature": "(positions: 'Any', rcs: 'Any' = None, amplitude: 'Any' = None, phase: 'float' = 0.0, trajectory: 'Callable[[float], Any] | None' = None, ids: 'tuple[int, ...] | None' = None, aspect: 'Aspect | None' = None, scattering: 'ScatteringMatrix | None' = None) -> None"
         },
         {
           "name": "Pulsed",
@@ -111,13 +111,19 @@
           "name": "Radar",
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
-          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', device: 'Any' = 'cuda') -> None"
+          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', rx_polarization: 'Any' = None, device: 'Any' = 'cuda') -> None"
         },
         {
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
           "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
+        },
+        {
+          "name": "ScatteringMatrix",
+          "kind": "class",
+          "target": "witwin.radar.targets.ScatteringMatrix",
+          "signature": "(hh: 'complex' = 1.0, hv: 'complex' = 0.0, vh: 'complex' = 0.0, vv: 'complex' = 1.0, up: 'tuple[float, float, float]' = (0.0, 0.0, 1.0)) -> None"
         },
         {
           "name": "StructureTargets",
@@ -518,6 +524,16 @@
           "signature": "(axis: 'torch.Tensor', amplitude: 'torch.Tensor', phase_rad: 'torch.Tensor', exponent: 'float', coherent_interval_s: 'float', aspect_phase_rate_rad_per_s: 'float' = 0.0) -> None"
         },
         {
+          "name": "SCATTERING_MATRIX_LAYOUT",
+          "kind": "value",
+          "target": "<tuple> SCATTERING_MATRIX_LAYOUT"
+        },
+        {
+          "name": "SITE_BASIS",
+          "kind": "value",
+          "target": "<str> SITE_BASIS"
+        },
+        {
           "name": "ScalarRcsResponse",
           "kind": "class",
           "target": "witwin.radar.scattering.ScalarRcsResponse",
@@ -528,6 +544,12 @@
           "kind": "class",
           "target": "witwin.radar.scattering.ScatterResponse",
           "signature": "(*args, **kwargs)"
+        },
+        {
+          "name": "ScatteringMatrixResponse",
+          "kind": "class",
+          "target": "witwin.radar.scattering.ScatteringMatrixResponse",
+          "signature": "(matrix: 'torch.Tensor', up: 'torch.Tensor') -> None"
         }
       ]
     },
@@ -690,6 +712,10 @@
         },
         {
           "name": "rx_pattern",
+          "kind": "value"
+        },
+        {
+          "name": "rx_polarization",
           "kind": "value"
         },
         {

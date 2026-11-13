@@ -241,8 +241,8 @@ def test_every_stage_output_stays_on_the_tape(spike, spec, reference_iq):
     response = drv.make_response(requires_grad=True)
     composed, inbound, outbound = spike.paths(tx, site, rx, response, ad_mode="vjp")
     assert inbound.delay_s.requires_grad
-    assert inbound.coefficient.requires_grad
-    assert outbound.coefficient.requires_grad
+    assert inbound.field.requires_grad
+    assert outbound.field.requires_grad
     assert composed.total_delay_s.requires_grad
     assert composed.complex_transfer_ref.requires_grad
 

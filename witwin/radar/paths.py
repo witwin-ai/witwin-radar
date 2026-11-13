@@ -17,6 +17,8 @@ this package never crosses the Channel boundary either.
 
 from __future__ import annotations
 
+import functools
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -84,7 +86,12 @@ class _PathInterpolation(torch.autograd.Function):
 
 
 def interpolate_path_rows(
-    delays: Sequence[torch.Tensor], transfers: Sequence[torch.Tensor], weights: torch.Tensor, carrier_hz: float
+    delays: Sequence[torch.Tensor],
+    transfers: Sequence[torch.Tensor],
+    weights: torch.Tensor,
+    carrier_hz: float,
+    *,
+    float64_delay: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Transport Channel phasors to the interpolated delay, then blend envelopes.
 
@@ -98,7 +105,9 @@ def interpolate_path_rows(
     Topology equality and the choice of nodes are the caller's obligations. The
     weights are a fixed, dimensionless consequence of a discrete time-grid
     decision and are not differentiated. Delays [s] and complex transfers
-    retain native first-order derivatives.
+    retain native first-order derivatives. ``float64_delay`` returns the
+    interpolated delay in the kernel's float64 instead of rounding it to
+    float32, which is what a comparison against float64 delays needs.
     """
 
     refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
@@ -109,10 +118,12 @@ def interpolate_path_rows(
     columns = []
     for index, (delay, transfer) in enumerate(zip(delays, transfers, strict=True)):
         columns += [delay.double(), transfer.real.double(), transfer.imag.double(), weights[:, index].double()]
-    return _interpolate_packed_rows(torch.stack(columns, dim=1).contiguous(), carrier_hz)
+    return _interpolate_packed_rows(torch.stack(columns, dim=1).contiguous(), carrier_hz, float64_delay)
 
 
-def _interpolate_packed_rows(values: torch.Tensor, carrier_hz: float) -> tuple[torch.Tensor, torch.Tensor]:
+def _interpolate_packed_rows(
+    values: torch.Tensor, carrier_hz: float, float64_delay: bool = False
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Native interpolation over repeated [delay, real, imaginary, basis] columns.
 
     Used by the adaptive controller's small error probes. Full observation
@@ -121,7 +132,8 @@ def _interpolate_packed_rows(values: torch.Tensor, carrier_hz: float) -> tuple[t
     result = _PathInterpolation.apply(
         values, torch.empty(0, device=values.device, dtype=torch.int64), values.new_empty(0), carrier_hz
     )
-    return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
+    delay = result[:, 0] if float64_delay else result[:, 0].float()
+    return delay, torch.complex(result[:, 1].float(), result[:, 2].float())
 
 
 def interpolate_indexed_rows(
@@ -136,6 +148,19 @@ def interpolate_indexed_rows(
     refuse_derivative("adaptive time partition", "time-grid decisions are discrete", weights=weights)
     result = _PathInterpolation.apply(samples, indices, weights, carrier_hz)
     return result[:, 0].float(), torch.complex(result[:, 1].float(), result[:, 2].float())
+
+
+def float64_delay(batch: RadarPathBatch) -> torch.Tensor:
+    """A batch's round-trip delay in float64 [s]: ``total_delay_s`` plus its residual.
+
+    The composer publishes the float64 delay as a float32 pair (R-ADR-040);
+    without a residual the float32 delay is all there is.
+    """
+
+    delay = batch.total_delay_s.double()
+    if batch.total_delay_residual_s is None:
+        return delay
+    return delay + batch.total_delay_residual_s.double()
 
 
 def stable_ids(values: torch.Tensor | Sequence[int], name: str) -> list[int]:
@@ -486,6 +511,13 @@ class RadarPathBatch:
     is the one producer that publishes ``True``. It exists to be READ: the
     stage refuses a batch that already carries it, because applying an antenna
     pattern twice squares its gain and no magnitude plot shows the difference.
+
+    ``total_delay_residual_s`` is ``tau64 - total_delay_s`` in float32, or
+    ``None``: the composer computes the round-trip delay from float64 path
+    lengths (R-ADR-040) and publishes it as the pair, so
+    ``total_delay_s.double() + total_delay_residual_s.double()`` is the float64
+    delay. It is primal only; the delay's derivative is carried entirely by
+    ``total_delay_s``.
     """
 
     sensor_pair_count: int
@@ -506,6 +538,7 @@ class RadarPathBatch:
     #: reads it instead of shifting the reference coefficient.
     complex_transfer_band: torch.Tensor | None = None
     frequency_offsets_hz: tuple[float, ...] | None = None
+    total_delay_residual_s: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if type(self.weight_includes_antenna_pattern) is not bool:
@@ -523,6 +556,8 @@ class RadarPathBatch:
         require_tensor("sensor_pair_index", self.sensor_pair_index, dtype=torch.int64, shape=rows)
         require_tensor("pair_offsets", self.pair_offsets, dtype=torch.int64, shape=(self.sensor_pair_count + 1,))
         require_tensor("total_delay_s", self.total_delay_s, dtype=torch.float32, shape=rows)
+        if self.total_delay_residual_s is not None:
+            require_tensor("total_delay_residual_s", self.total_delay_residual_s, dtype=torch.float32, shape=rows)
         require_tensor("complex_transfer_ref", self.complex_transfer_ref, dtype=torch.complex64, shape=rows)
         if self.delay_rate is not None:
             require_tensor("delay_rate", self.delay_rate, dtype=torch.float32, shape=rows)
@@ -619,6 +654,108 @@ class SlotRows:
     #: wideband run (see :class:`RadarPathBatch`); ``None`` otherwise.
     complex_transfer_band: torch.Tensor | None = None
     frequency_offsets_hz: tuple[float, ...] | None = None
+    total_delay_residual_s: torch.Tensor | None = None
+
+
+#: The vacuum speed of light the round-trip delay is published with [m/s].
+SPEED_OF_LIGHT_M_PER_S = 299792458.0
+
+
+def channel_wave_number(frequency_hz: float) -> float:
+    """The float32 wave number Channel evaluates a leg's phase with [rad/m].
+
+    Channel's transport computes ``k32 = float32(2 pi f / c)`` in float32
+    arithmetic, ``(2 * pi_f32) * f_f32 / c_f32``, and the phase as
+    ``-k32 * L32`` from its float32 unfolded length. The join replaces that
+    phase by ``-k64 * L64``, so it must remove exactly Channel's ``k32``; the
+    replica is pinned by ``tests/test_float64_path_length.py``, which reads
+    Channel's own phase back.
+    """
+
+    two_pi = np.float32(2.0) * np.float32(np.pi)
+    return float(np.float32(np.float32(two_pi * np.float32(frequency_hz)) / np.float32(SPEED_OF_LIGHT_M_PER_S)))
+
+
+@functools.lru_cache(maxsize=64)
+def _wave_table(device: torch.device, frequency_hz: float, offsets_hz: tuple[float, ...] | None) -> torch.Tensor:
+    """``float64[columns, 2]``: ``(k64, k32)`` per frequency column, on ``device``.
+
+    Column ``j`` is ``frequency_hz + offsets_hz[j]`` (one column without
+    offsets). ``k32`` replicates Channel's float32 evaluation at its float32
+    launch frequency (``resolution_hz = ulp_float32(reference)``). Cached per
+    grid: a frame does not re-upload it.
+    """
+
+    columns = (0.0,) if offsets_hz is None else offsets_hz
+    rows = []
+    for offset in columns:
+        frequency = float(np.float32(np.float32(frequency_hz) + np.float32(offset))) if offset else frequency_hz
+        rows.append((2.0 * math.pi * (frequency_hz + offset) / SPEED_OF_LIGHT_M_PER_S, channel_wave_number(frequency)))
+    return torch.tensor(rows, dtype=torch.float64, device=device)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _JoinPlan:
+    """The non-differentiable inputs of one join launch.
+
+    Index tables, validity, the response's width, owners and gradient family,
+    the legs' depths, the site axes of a matrix response, the legs' launch
+    polarizations, the wave table and the composed placement of the site-less
+    rows.
+    """
+
+    join: TwoWayComposer
+    flags: torch.Tensor
+    idx_s: torch.Tensor
+    family: ResponseFamily
+    width: int
+    up: torch.Tensor
+    depth_in: torch.Tensor
+    depth_out: torch.Tensor
+    depth_d: torch.Tensor
+    polarization: torch.Tensor
+    valid_d: torch.Tensor
+    waves: torch.Tensor
+    place: torch.Tensor
+    columns: int
+    rows: int
+
+
+def _empty(like: torch.Tensor) -> torch.Tensor:
+    return like.new_empty(0)
+
+
+def _leg_geometry(leg: RadarLegBatch, name: str) -> tuple[torch.Tensor, ...] | None:
+    """One leg's (element, site, interaction points, Channel length), or ``None``.
+
+    The site is the float64 precise position when the binding authored one
+    (R-ADR-040) and Channel's float32 sink otherwise. A leg with no
+    ``path_length_m`` carries no geometry at all.
+    """
+
+    if leg.path_length_m is None:
+        return None
+    site = leg.precise_arrival_target_m if leg.precise_arrival_target_m is not None else leg.arrival_target_m
+    for label, value in (
+        ("departure_origin_m", leg.departure_origin_m),
+        ("arrival_target_m", site),
+        ("interaction_positions_m", leg.interaction_positions_m),
+    ):
+        if value is None:
+            raise ValueError(f"the {name} leg publishes path_length_m but not {label}; its geometry is incomplete")
+    assert leg.departure_origin_m is not None and site is not None and leg.interaction_positions_m is not None
+    return (
+        leg.departure_origin_m.contiguous(),
+        site.contiguous(),
+        leg.interaction_positions_m.contiguous(),
+        leg.path_length_m.contiguous(),
+    )
+
+
+def _field_direction(leg: RadarLegBatch) -> torch.Tensor:
+    """The leg's final-segment propagation direction INTO the site."""
+
+    return leg.field_direction.contiguous()
 
 
 class _TwoWayJoin(torch.autograd.Function):
@@ -631,214 +768,94 @@ class _TwoWayJoin(torch.autograd.Function):
       forward-only dual has ``requires_grad == False``, so a ``requires_grad``
       shortcut around autograd would silently swallow its tangent and return a
       plain tensor.
-    * No complex tensor crosses the autograd boundary. The composer splits
-      every complex value into real and imaginary parts with Torch's own
-      autograd-aware accessors and recombines the output the same way, which
-      makes the conjugate-Wirtinger convention question structurally
-      impossible to get wrong.
+    * No complex tensor crosses the autograd boundary. Complex fields, the
+      response and the composed value cross as ``view_as_real`` float32 pairs,
+      views taken outside this Function, so the conjugate-Wirtinger convention
+      question is structurally impossible to get wrong.
+
+    The twenty tensor inputs, in order: the two site legs' delays, their field
+    pairs ``[rows, 3, 2]``, their final-segment directions (a matrix response
+    only), each site leg's element position, site position, interaction points
+    and float32 Channel length (all empty without geometry), the response
+    pairs, then the site-less leg's field pairs, element, receiver,
+    interaction points and Channel length (all empty without that leg). An
+    empty input takes no gradient.
     """
 
     @staticmethod
-    def forward(
-        tau_in: torch.Tensor,
-        tau_out: torch.Tensor,
-        c_in_re: torch.Tensor,
-        c_in_im: torch.Tensor,
-        c_out_re: torch.Tensor,
-        c_out_im: torch.Tensor,
-        s_re: torch.Tensor,
-        s_im: torch.Tensor,
-        row_valid: torch.Tensor,
-        idx_in: torch.Tensor,
-        idx_out: torch.Tensor,
-        idx_s: torch.Tensor,
-        join: TwoWayComposer,
-        response_family: ResponseFamily,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        rows = int(row_valid.shape[0])
-        tau_rt = torch.empty(rows, dtype=torch.float32, device=tau_in.device)
-        c_rt_re = torch.empty_like(tau_rt)
-        c_rt_im = torch.empty_like(tau_rt)
-        _ops().two_way_join_forward(
-            tau_in,
-            tau_out,
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-            tau_rt,
-            c_rt_re,
-            c_rt_im,
-            rows,
-            response_family.slots,
-            int(response_family.slot_local),
-        )
-        return tau_rt, c_rt_re, c_rt_im
+    def forward(*inputs: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        *tensors, plan = inputs
+        rows = plan.rows
+        device = tensors[0].device
+        tau_hi = torch.empty(rows, dtype=torch.float32, device=device)
+        tau_lo = torch.empty_like(tau_hi)
+        value = torch.empty((rows, 2), dtype=torch.float32, device=device)
+        _ops().two_way_join_forward(*_kernel_inputs(tensors, plan), tau_hi, tau_lo, value, *_kernel_scalars(plan))
+        return tau_hi, tau_lo, value
 
     @staticmethod
     def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
-        (
-            _tau_in,
-            _tau_out,
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-            join,
-            response_family,
-        ) = inputs
-        ctx.join = join
-        # The response's gradient owners: which CSR reduces it and how many
-        # slots it has. A per-site response uses the frozen site family; a
-        # per-row response uses the identity family. Everything else about the
-        # backward is identical, which is the whole point of routing a row
-        # response through the same kernel.
-        ctx.response_family = response_family
-        saved = (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s)
-        ctx.save_for_backward(*saved)
-        ctx.save_for_forward(*saved)
+        *tensors, plan = inputs
+        ctx.plan = plan
+        ctx.mark_non_differentiable(output[1])
+        ctx.save_for_backward(*tensors)
+        ctx.save_for_forward(*tensors)
 
     @staticmethod
     @first_order_only
     def backward(
-        ctx: Any, grad_tau_rt: torch.Tensor, grad_c_rt_re: torch.Tensor, grad_c_rt_im: torch.Tensor
+        ctx: Any, grad_tau: torch.Tensor, grad_tau_lo: torch.Tensor | None, grad_value: torch.Tensor
     ) -> tuple[torch.Tensor | None, ...]:
-        (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
-        join = ctx.join
-        family = ctx.response_family
-        grad_tau_in = torch.empty_like(c_in_re)
-        grad_c_in_re = torch.empty_like(c_in_re)
-        grad_c_in_im = torch.empty_like(c_in_re)
-        grad_tau_out = torch.empty_like(c_out_re)
-        grad_c_out_re = torch.empty_like(c_out_re)
-        grad_c_out_im = torch.empty_like(c_out_re)
-        grad_s_re = torch.empty_like(s_re)
-        grad_s_im = torch.empty_like(s_re)
+        tensors = ctx.saved_tensors
+        plan: _JoinPlan = ctx.plan
+        join = plan.join
+        grads = [torch.empty_like(tensor) for tensor in tensors]
         _ops().two_way_join_backward(
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
+            *_kernel_inputs(tensors, plan),
             join.by_inbound_offsets,
             join.by_inbound_rows,
             join.by_outbound_offsets,
             join.by_outbound_rows,
-            family.offsets,
-            family.rows,
-            grad_tau_rt.contiguous(),
-            grad_c_rt_re.contiguous(),
-            grad_c_rt_im.contiguous(),
-            grad_tau_in,
-            grad_tau_out,
-            grad_c_in_re,
-            grad_c_in_im,
-            grad_c_out_re,
-            grad_c_out_im,
-            grad_s_re,
-            grad_s_im,
-            int(row_valid.shape[0]),
-            int(c_in_re.shape[0]),
-            int(c_out_re.shape[0]),
-            family.owners,
-            family.slots,
-            int(family.slot_local),
+            plan.family.offsets,
+            plan.family.rows,
+            grad_tau.contiguous(),
+            grad_value.contiguous(),
+            *grads,
+            *_kernel_scalars(plan),
         )
-        return (
-            grad_tau_in,
-            grad_tau_out,
-            grad_c_in_re,
-            grad_c_in_im,
-            grad_c_out_re,
-            grad_c_out_im,
-            grad_s_re,
-            grad_s_im,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        return (*(None if tensor.numel() == 0 else grad for tensor, grad in zip(tensors, grads, strict=True)), None)
 
     @staticmethod
-    def jvp(
-        ctx: Any,
-        tan_tau_in: torch.Tensor | None,
-        tan_tau_out: torch.Tensor | None,
-        tan_c_in_re: torch.Tensor | None,
-        tan_c_in_im: torch.Tensor | None,
-        tan_c_out_re: torch.Tensor | None,
-        tan_c_out_im: torch.Tensor | None,
-        tan_s_re: torch.Tensor | None,
-        tan_s_im: torch.Tensor | None,
-        tan_row_valid: Any,
-        tan_idx_in: Any,
-        tan_idx_out: Any,
-        tan_idx_s: Any,
-        tan_join: Any,
-        tan_response_family: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        family = ctx.response_family
-        (c_in_re, c_in_im, c_out_re, c_out_im, s_re, s_im, row_valid, idx_in, idx_out, idx_s) = ctx.saved_tensors
+    def jvp(ctx: Any, *tangents: Any) -> tuple[torch.Tensor, None, torch.Tensor]:
+        tensors = ctx.saved_tensors
+        plan: _JoinPlan = ctx.plan
+        filled = [
+            torch.zeros_like(tensor) if tangent is None else tangent.contiguous()
+            for tensor, tangent in zip(tensors, tangents[: len(tensors)], strict=True)
+        ]
+        rows = plan.rows
+        tan_tau = torch.empty(rows, dtype=torch.float32, device=tensors[0].device)
+        tan_value = torch.empty((rows, 2), dtype=torch.float32, device=tensors[0].device)
+        _ops().two_way_join_jvp(*_kernel_inputs(tensors, plan), *filled, tan_tau, tan_value, *_kernel_scalars(plan))
+        return tan_tau, None, tan_value
 
-        def inbound(tangent: torch.Tensor | None) -> torch.Tensor:
-            return torch.zeros_like(c_in_re) if tangent is None else tangent.contiguous()
 
-        def outbound(tangent: torch.Tensor | None) -> torch.Tensor:
-            return torch.zeros_like(c_out_re) if tangent is None else tangent.contiguous()
+def _kernel_inputs(tensors: Sequence[torch.Tensor], plan: _JoinPlan) -> tuple[torch.Tensor, ...]:
+    """The kernel's input tensors, in schema order, from the Function's inputs."""
 
-        def site(tangent: torch.Tensor | None) -> torch.Tensor:
-            return torch.zeros_like(s_re) if tangent is None else tangent.contiguous()
+    (tau_in, tau_out, field_in, field_out, k_in, k_out, src_in, sink_in, points_in, length_in, src_out, sink_out,
+     points_out, length_out, response, field_d, src_d, sink_d, points_d, length_d) = tensors  # fmt: skip
+    join = plan.join
+    return (
+        tau_in, tau_out, field_in, field_out, k_in, k_out, src_in, sink_in, points_in, plan.depth_in, length_in,
+        src_out, sink_out, points_out, plan.depth_out, length_out, response, plan.up, plan.polarization, field_d,
+        src_d, sink_d, points_d, plan.depth_d, length_d, plan.valid_d, plan.waves, plan.place, plan.flags,
+        join.inbound_row, join.outbound_row, plan.idx_s,
+    )  # fmt: skip
 
-        rows = int(row_valid.shape[0])
-        tan_tau_rt = torch.empty(rows, dtype=torch.float32, device=c_in_re.device)
-        tan_c_rt_re = torch.empty_like(tan_tau_rt)
-        tan_c_rt_im = torch.empty_like(tan_tau_rt)
-        _ops().two_way_join_jvp(
-            c_in_re,
-            c_in_im,
-            c_out_re,
-            c_out_im,
-            s_re,
-            s_im,
-            row_valid,
-            idx_in,
-            idx_out,
-            idx_s,
-            inbound(tan_tau_in),
-            outbound(tan_tau_out),
-            inbound(tan_c_in_re),
-            inbound(tan_c_in_im),
-            outbound(tan_c_out_re),
-            outbound(tan_c_out_im),
-            site(tan_s_re),
-            site(tan_s_im),
-            tan_tau_rt,
-            tan_c_rt_re,
-            tan_c_rt_im,
-            rows,
-            family.slots,
-            int(family.slot_local),
-        )
-        return tan_tau_rt, tan_c_rt_re, tan_c_rt_im
+
+def _kernel_scalars(plan: _JoinPlan) -> tuple[int, ...]:
+    return (plan.width, plan.family.slots, int(plan.family.slot_local), plan.columns)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -906,6 +923,10 @@ class TwoWayComposer:
     #: rows only; ``sensor_pair_index``, ``pair_offsets`` and ``topology``
     #: address the composed rows.
     merge: torch.Tensor | None = None
+    #: The inverse of ``merge``: each site row's and each site-less row's
+    #: position in one slot's composed order, which the native join writes
+    #: to. ``None`` exactly when ``merge`` is.
+    place: torch.Tensor | None = None
 
     @classmethod
     def freeze(
@@ -1171,7 +1192,7 @@ class TwoWayComposer:
             *by_response,
         )
         if composed_direct is not None and merge is not None:
-            tables = (*tables, composed_in, composed_out, composed_direct, merge)
+            tables = (*tables, composed_in, composed_out, composed_direct, merge, np.argsort(merge, kind="stable"))
         uploaded = torch.from_numpy(np.concatenate([np.asarray(table, dtype=np.int64) for table in tables])).to(device)
         views = torch.split(uploaded, [len(table) for table in tables])
         (
@@ -1190,10 +1211,10 @@ class TwoWayComposer:
             by_response_offsets,
             by_response_rows,
         ) = views[:14]
-        merge_table = None
+        merge_table = place_table = None
         topology_in, topology_out, direct_row = inbound_row, outbound_row, None
         if merge is not None:
-            topology_in, topology_out, direct_row, merge_table = views[14:]
+            topology_in, topology_out, direct_row, merge_table, place_table = views[14:]
         topology = RadarPathTopology(
             radar_source_id=radar_source_id,
             site_id=site_id,
@@ -1226,6 +1247,7 @@ class TwoWayComposer:
             pair_offsets_host=offsets,
             direct_row_count=direct_count,
             merge=merge_table,
+            place=place_table,
             identity_host=identity_host,
             inbound_sequence_host=inbound_sequence_host,
             outbound_sequence_host=outbound_sequence_host,
@@ -1250,6 +1272,8 @@ class TwoWayComposer:
         outbound: RadarLegBatch,
         response: ScatterResponse,
         direct: RadarLegBatch | None = None,
+        *,
+        frequency_offsets_hz: tuple[float, ...] | None = None,
     ) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
 
@@ -1259,11 +1283,13 @@ class TwoWayComposer:
         plausible number that no consumer should ever read.
 
         ``direct`` is the third leg's batch when this join was frozen with one.
-        A site-less row is that leg's row as it stands - its delay and its
-        coefficient, with no scatter factor - so placing it is a gather, not
-        an equation: the native join composes the site rows and the two sets
-        are interleaved by the frozen ``merge`` order in one ``index_select``.
-        Its derivative is the gather's.
+        A site-less row is composed by the same native launch as the site rows
+        (receive projection, element factors, float64 length) and written
+        straight into its frozen composed position.
+
+        ``frequency_offsets_hz`` says that the legs are a wideband band laid
+        out as outer slots (:func:`~witwin.radar.propagation.band_as_slots`),
+        so each column takes its own wave numbers.
         """
 
         self._require_frame(inbound, outbound, direct)
@@ -1271,53 +1297,22 @@ class TwoWayComposer:
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
-        response_re, response_im, response_index, response_family = self._response(
-            response, inbound, outbound, flags, device
+        value, up, width, index, family = self._response(response, inbound, outbound, flags, device)
+        tau_hi, tau_lo, transfer, row_valid = self._launch(
+            inbound, outbound, direct, value, up, width, index, family, flags, row_valid, 1, frequency_offsets_hz
         )
-
-        # Torch-owned, autograd-aware accessors: the real pairs cross the
-        # boundary, never the complex tensors.
-        tau_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
-            inbound.delay_s.contiguous(),
-            outbound.delay_s.contiguous(),
-            inbound.coefficient.real.contiguous(),
-            inbound.coefficient.imag.contiguous(),
-            outbound.coefficient.real.contiguous(),
-            outbound.coefficient.imag.contiguous(),
-            response_re,
-            response_im,
-            flags,
-            self.inbound_row,
-            self.outbound_row,
-            response_index,
-            self,
-            response_family,
-        )
-        transfer = torch.complex(transfer_re, transfer_im)
-        if self.merge is not None:
-            assert direct is not None
-            tau_rt = torch.cat((tau_rt, direct.delay_s)).index_select(0, self.merge)
-            transfer = torch.cat((transfer, direct.coefficient)).index_select(0, self.merge)
-            if row_valid is not None or direct.row_valid is not None:
-                site_valid = torch.ones(rows, dtype=torch.bool, device=device) if row_valid is None else row_valid
-                direct_valid = (
-                    torch.ones(direct.leg_count, dtype=torch.bool, device=device)
-                    if direct.row_valid is None
-                    else direct.row_valid
-                )
-                row_valid = torch.cat((site_valid, direct_valid)).index_select(0, self.merge)
-
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
             path_count=self.path_count,
             sensor_pair_index=self.sensor_pair_index,
             pair_offsets=self.pair_offsets,
-            total_delay_s=tau_rt,
+            total_delay_s=tau_hi,
             delay_rate=None,
             complex_transfer_ref=transfer,
             reference_frequency_hz=self.reference_frequency_hz,
             row_valid=row_valid,
             topology=self.topology,
+            total_delay_residual_s=tau_lo,
         )
 
     def compose_slots(
@@ -1327,6 +1322,8 @@ class TwoWayComposer:
         response: ScatterResponse,
         slots: int,
         direct: RadarLegBatch | None = None,
+        *,
+        frequency_offsets_hz: tuple[float, ...] | None = None,
     ) -> SlotRows:
         """Compose a slot-major replay of ``slots`` instants with this one join.
 
@@ -1338,9 +1335,10 @@ class TwoWayComposer:
         composed row and takes :meth:`for_slots` instead.
 
         ``direct`` is the slot-major site-less leg when this join was frozen
-        with one. Its rows are interleaved per slot by the single-slot
-        ``merge`` order over the ``[slots, site rows | direct rows]`` view, so
-        no slot-replicated merge table exists either.
+        with one; the native join writes each of its rows into its slot's
+        frozen composed position, so no slot-replicated table exists either.
+        ``frequency_offsets_hz`` marks a band laid out as outer slots, whose
+        column is ``slot // (slots / columns)``.
         """
 
         if (direct is None) != (self.merge is None):
@@ -1360,48 +1358,150 @@ class TwoWayComposer:
         device = inbound.delay_s.device
         row_valid = self._slot_validity(inbound, outbound, slots, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
-        value = self._site_response(response, device)
-        tau_rt, transfer_re, transfer_im = _TwoWayJoin.apply(
-            inbound.delay_s.contiguous(),
-            outbound.delay_s.contiguous(),
-            inbound.coefficient.real.contiguous(),
-            inbound.coefficient.imag.contiguous(),
-            outbound.coefficient.real.contiguous(),
-            outbound.coefficient.imag.contiguous(),
-            value.real.contiguous(),
-            value.imag.contiguous(),
-            flags,
-            self.inbound_row,
-            self.outbound_row,
+        value, up, width = self._site_response(response, device)
+        family = ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots)
+        tau_hi, tau_lo, transfer, row_valid = self._launch(
+            inbound,
+            outbound,
+            direct,
+            value,
+            up,
+            width,
             self.response_slot,
-            self,
-            ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots),
+            family,
+            flags,
+            row_valid,
+            slots,
+            frequency_offsets_hz,
         )
-        transfer = torch.complex(transfer_re, transfer_im)
-        if direct is not None and self.merge is not None:
-            merge = self.merge
-
-            def interleaved(site: torch.Tensor, through: torch.Tensor) -> torch.Tensor:
-                joined = torch.cat((site.view(slots, -1), through.view(slots, -1)), dim=1)
-                return joined.index_select(1, merge).reshape(-1)
-
-            tau_rt = interleaved(tau_rt, direct.delay_s)
-            transfer = interleaved(transfer, direct.coefficient)
-            if row_valid is not None or direct.row_valid is not None:
-                site_valid = torch.ones(rows, dtype=torch.bool, device=device) if row_valid is None else row_valid
-                direct_valid = (
-                    torch.ones(direct.leg_count, dtype=torch.bool, device=device)
-                    if direct.row_valid is None
-                    else direct.row_valid
-                )
-                row_valid = interleaved(site_valid, direct_valid)
         return SlotRows(
-            total_delay_s=tau_rt,
+            total_delay_s=tau_hi,
             complex_transfer_ref=transfer,
             row_valid=row_valid,
             slots=slots,
             rows_per_slot=self.path_count,
+            total_delay_residual_s=tau_lo,
         )
+
+    def _launch(
+        self,
+        inbound: RadarLegBatch,
+        outbound: RadarLegBatch,
+        direct: RadarLegBatch | None,
+        value: torch.Tensor,
+        up: torch.Tensor,
+        width: int,
+        index: torch.Tensor,
+        family: ResponseFamily,
+        flags: torch.Tensor,
+        row_valid: torch.Tensor | None,
+        slots: int,
+        frequency_offsets_hz: tuple[float, ...] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """One native join launch: ``(tau_hi, tau_lo, complex transfer, composed row_valid)``.
+
+        The legs' complex3 fields and the response cross the autograd boundary
+        as ``view_as_real`` pairs, and the transfer comes back as a view of the
+        kernel's pair output: no launch is spent splitting or recombining a
+        complex tensor. Legs that carry Channel's geometry (every production
+        leg) get the float64 path-length correction and, with their launch
+        polarizations, the element factors; legs that carry none compose
+        Channel's float32 delays as they stand. ``row_valid`` is the site
+        rows' validity; with a site-less leg it is extended into the composed
+        order here.
+        """
+
+        legs = [("inbound", inbound), ("outbound", outbound)] + ([] if direct is None else [("direct", direct)])
+        geometries = [_leg_geometry(leg, name) for name, leg in legs]
+        geometric = [geometry is not None for geometry in geometries]
+        if len(set(geometric)) > 1:
+            raise ValueError("every leg carries Channel's geometry or none does; a mixed set has no single delay law")
+        if direct is not None and not geometric[0]:
+            raise ValueError("a site-less leg is composed from Channel's geometry; this one carries none")
+        sites = {geometry[1].dtype for geometry in geometries[:2] if geometry is not None and len(geometry[1])}
+        if len(sites) > 1:
+            raise ValueError("both site legs publish the site in one precision")
+        empty = _empty(inbound.delay_s)
+        none = (empty, empty, empty, empty)
+        source_in, site_in, points_in, length_in = geometries[0] or none
+        source_out, site_out, points_out, length_out = geometries[1] or none
+        source_d, sink_d, points_d, length_d = (geometries[2] if direct is not None else None) or none
+        directions = (_field_direction(inbound), _field_direction(outbound)) if width == 4 else (empty, empty)
+        depth = torch.empty(0, dtype=torch.int32, device=empty.device)
+        polarization = empty
+        if geometric[0]:
+            launched = [leg.source_polarization for _, leg in legs]
+            if direct is not None:
+                launched.append(direct.sink_polarization)
+            if all(value is not None for value in launched):
+                polarization = torch.cat([value for value in launched if value is not None])
+            elif direct is not None:
+                raise ValueError("a site-less row is read along the receiver's polarization; the direct leg lacks it")
+        columns = 1 if frequency_offsets_hz is None else len(frequency_offsets_hz)
+        if self.path_count * slots % columns:
+            raise ValueError(f"{self.path_count * slots} composed rows do not split into {columns} frequency columns")
+        direct_valid = (
+            None
+            if direct is None
+            else (
+                torch.ones(direct.leg_count, dtype=torch.int32, device=empty.device)
+                if direct.row_valid is None
+                else direct.row_valid.to(torch.int32)
+            )
+        )
+        plan = _JoinPlan(
+            join=self,
+            flags=flags,
+            idx_s=index,
+            family=family,
+            width=width,
+            up=up,
+            depth_in=inbound.depth if geometric[0] else depth,
+            depth_out=outbound.depth if geometric[0] else depth,
+            depth_d=depth if direct is None else direct.depth,
+            polarization=polarization,
+            valid_d=depth if direct_valid is None else direct_valid,
+            waves=_wave_table(empty.device, self.reference_frequency_hz, frequency_offsets_hz)
+            if geometric[0]
+            else torch.empty(0, dtype=torch.float64, device=empty.device),
+            place=self.place if self.place is not None else torch.empty(0, dtype=torch.int64, device=empty.device),
+            columns=columns,
+            rows=self.path_count * slots,
+        )
+        tau_hi, tau_lo, value_pairs = _TwoWayJoin.apply(
+            inbound.delay_s.contiguous(),
+            outbound.delay_s.contiguous(),
+            torch.view_as_real(inbound.field),
+            torch.view_as_real(outbound.field),
+            *directions,
+            source_in,
+            site_in,
+            points_in,
+            length_in,
+            source_out,
+            site_out,
+            points_out,
+            length_out,
+            value,
+            empty if direct is None else torch.view_as_real(direct.field),
+            source_d,
+            sink_d,
+            points_d,
+            length_d,
+            plan,
+        )
+        if direct is not None and (row_valid is not None or direct.row_valid is not None):
+            assert self.merge is not None
+            site_valid = (
+                torch.ones(self.site_row_count * slots, dtype=torch.bool, device=empty.device)
+                if row_valid is None
+                else row_valid
+            )
+            through = torch.ones(direct.leg_count, dtype=torch.bool, device=empty.device)
+            through = through if direct.row_valid is None else direct.row_valid
+            joined = torch.cat((site_valid.view(slots, -1), through.view(slots, -1)), dim=1)
+            row_valid = joined.index_select(1, self.merge).reshape(-1)
+        return tau_hi, tau_lo, torch.view_as_complex(value_pairs), row_valid
 
     def _slot_validity(
         self, inbound: RadarLegBatch, outbound: RadarLegBatch, slots: int, device: torch.device
@@ -1431,7 +1531,7 @@ class TwoWayComposer:
         return valid_in & valid_out
 
     def segment_targets(
-        self, inbound: RadarLegBatch, outbound: RadarLegBatch, direct: RadarLegBatch | None = None
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, direct: RadarLegBatch | None = None, *, slots: int = 1
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Per composed row, the far end of its first and the near end of its last segment.
 
@@ -1441,25 +1541,24 @@ class TwoWayComposer:
         Channel's live geometry, so a derivative through a reflection point
         survives. The outbound leg runs from the receiver to the site
         (R-ADR-039), so the receiver's point is that leg's first segment's far
-        end, ``departure_target_m``.
+        end, ``departure_target_m``. With ``slots`` the legs are a slot-major
+        replay of this join's single-slot tables and every slot is gathered by
+        them, so no slot-replicated table is built.
         """
 
-        first = _present_member(inbound.departure_target_m, "departure_target_m")
-        last = _present_member(outbound.departure_target_m, "departure_target_m")
-        if self.merge is None:
-            return first.index_select(0, self.topology.inbound_row), last.index_select(0, self.topology.outbound_row)
-        assert direct is not None
-        return (
-            torch.cat(
-                (
-                    first.index_select(0, self.inbound_row),
-                    _present_member(direct.departure_target_m, "departure_target_m"),
-                )
-            ).index_select(0, self.merge),
-            torch.cat(
-                (last.index_select(0, self.outbound_row), _present_member(direct.arrival_origin_m, "arrival_origin_m"))
-            ).index_select(0, self.merge),
-        )
+        first = _present_member(inbound.departure_target_m, "departure_target_m").view(slots, -1, 3)
+        last = _present_member(outbound.departure_target_m, "departure_target_m").view(slots, -1, 3)
+        first = first.index_select(1, self.inbound_row)
+        last = last.index_select(1, self.outbound_row)
+        if self.merge is not None:
+            assert direct is not None
+            first = torch.cat(
+                (first, _present_member(direct.departure_target_m, "departure_target_m").view(slots, -1, 3)), dim=1
+            ).index_select(1, self.merge)
+            last = torch.cat(
+                (last, _present_member(direct.arrival_origin_m, "arrival_origin_m").view(slots, -1, 3)), dim=1
+            ).index_select(1, self.merge)
+        return first.reshape(-1, 3), last.reshape(-1, 3)
 
     def for_slots(self, count: int, *, per_slot_response: bool = False) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
@@ -1528,6 +1627,7 @@ class TwoWayComposer:
             response_slot=responses,
             topology=topology,
             merge=merge,
+            place=None if merge is None else torch.argsort(merge, stable=True),
             direct_row_count=self.direct_row_count * count,
             sensor_pair_index=shifted(self.sensor_pair_index, self.sensor_pair_count),
             pair_offsets=slot_csr(self.pair_offsets, composed),
@@ -1592,14 +1692,14 @@ class TwoWayComposer:
         outbound: RadarLegBatch,
         flags: torch.Tensor,
         device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, ResponseFamily]:
-        """The response as a real pair, its index, and its gradient family.
+    ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor, ResponseFamily]:
+        """The response as real pairs, its site axes, width, index and gradient family.
 
         Two shapes, one join. A per-SITE response is broadcast across the rows
         of its site through the frozen ``response_slot`` and its gradient is
         reduced through the frozen site CSR. A per-ROW response is indexed by
         the identity table and reduced through the identity CSR, which is the
-        same kernel with ``num_sites = path_count``.
+        same kernel with one owner per composed row.
 
         The refusal narrows here and does not disappear. A geometry-dependent
         response is per-path physics, and composing one in Torch is precisely
@@ -1612,13 +1712,9 @@ class TwoWayComposer:
         from .scattering import NATIVE_ROW_RESPONSE_OWNERS
 
         if not response.is_geometry_dependent:
-            value = self._site_response(response, device)
-            return (
-                value.real.contiguous(),
-                value.imag.contiguous(),
-                self.response_slot,
-                ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count),
-            )
+            value, up, width = self._site_response(response, device)
+            family = ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count)
+            return value, up, width, self.response_slot, family
         if getattr(response, "native_row_owner", None) not in NATIVE_ROW_RESPONSE_OWNERS:
             raise NotImplementedError(
                 "a geometry-dependent scatter response varies per path and must "
@@ -1634,32 +1730,45 @@ class TwoWayComposer:
                     f"a row-evaluated scatter response must publish one {name} "
                     f"value per composed site row; this join has {self.site_row_count}"
                 )
-        return (
-            rows_re,
-            rows_im,
-            self.row_slot,
-            ResponseFamily(self.by_row_offsets, self.by_row_rows, self.site_row_count),
-        )
+        pairs = torch.stack((rows_re, rows_im), dim=-1)
+        family = ResponseFamily(self.by_row_offsets, self.by_row_rows, self.site_row_count)
+        return pairs, _empty(pairs), 1, self.row_slot, family
 
-    def _site_response(self, response: ScatterResponse, device: torch.device) -> torch.Tensor:
-        """The per-site response, checked against the frozen site count.
+    def _site_response(self, response: ScatterResponse, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """The per-site response as real pairs, its site axes and its width.
 
-        ``ScatterResponse`` is an extension point, and ``evaluate`` returning
-        the wrong length is the same unbounded gather as a mismatched leg: the
-        forward kernel's only check on the response is against itself. The
-        protocol says ``complex[row_count]``, so holding it to that here is
-        enforcing the contract, not second-guessing the implementation.
+        A scalar response evaluates to ``complex64[sites]`` (width 1); a
+        scattering-matrix response (R-ADR-041) declares ``matrix_width == 4``,
+        evaluates to ``complex64[sites, 4]`` ``[HH, HV, VH, VV]`` and publishes
+        its sites' up axes. ``ScatterResponse`` is an extension point, and a
+        wrong length is the same unbounded gather as a mismatched leg, so the
+        shape is held to the contract here.
         """
 
+        width = int(getattr(response, "matrix_width", 1))
+        if width not in (1, 4):
+            raise ValueError(f"a scatter response has width 1 (scalar) or 4 (2x2 matrix), got {width}")
         value = response.evaluate(self.site_count, device)
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"a scatter response must evaluate to a torch.Tensor, got {type(value).__name__}")
-        if value.numel() != self.site_count:
+        if value.numel() != self.site_count * width:
             raise ValueError(
                 f"the scatter response evaluated to {value.numel()} values but "
-                f"this join was frozen against {self.site_count} sites"
+                f"this join was frozen against {self.site_count} sites of width {width}"
             )
-        return value
+        if value.dtype != torch.complex64:
+            raise TypeError(f"a scatter response evaluates to complex64, got {value.dtype}")
+        pairs = torch.view_as_real(value.contiguous())
+        if width == 1:
+            return pairs, _empty(pairs), 1
+        matrix: Any = response
+        up = matrix.site_up(self.site_count, device)
+        if not isinstance(up, torch.Tensor) or up.dtype != torch.float32 or tuple(up.shape) != (self.site_count, 3):
+            raise ValueError(
+                f"a scattering-matrix response publishes float32 site axes of shape ({self.site_count}, 3)"
+            )
+        refuse_derivative("site polarization basis", "the site's up axis is a frame declaration", up=up)
+        return pairs, up.contiguous(), 4
 
     def _row_validity(
         self, inbound: RadarLegBatch, outbound: RadarLegBatch, rows: int, device: torch.device

@@ -15,7 +15,7 @@ from typing import Any
 import torch
 
 from .cuda import native_ops as _ops
-from .paths import RadarPathBatch
+from .paths import RadarPathBatch, SlotRows
 from .policy import SPEED_OF_LIGHT_M_PER_S, first_order_only, refuse_derivative
 
 DEFAULT_DIPOLE_ANGLES_DEG = tuple(float(angle) for angle in range(-90, 91))
@@ -542,6 +542,10 @@ class SensorWeightGeometry:
     rx_index: torch.Tensor
     row_kind: torch.Tensor
     pattern_frame: torch.Tensor
+    #: How many slot-major instants the launch carries. The per-row tables and
+    #: the velocities describe ONE slot; ``num_tx``/``num_rx`` count every
+    #: slot's antennas, and the kernel strides the tables across the slots.
+    slots: int = 1
 
     #: The float tensors this owner declares constant, in declaration order.
     #: Named as data so that a field added to the dataclass without a decision
@@ -554,12 +558,18 @@ class SensorWeightGeometry:
 
     @property
     def path_count(self) -> int:
-        return int(self.fixed_length_m.shape[0])
+        return int(self.fixed_length_m.shape[0]) * self.slots
 
     def validate(self) -> None:
-        rows = self.path_count
-        _require("tx_velocity", self.tx_velocity, dtype=torch.float32, shape=(self.num_tx, 3))
-        _require("rx_velocity", self.rx_velocity, dtype=torch.float32, shape=(self.num_rx, 3))
+        if type(self.slots) is not int or self.slots < 1:
+            raise ValueError(f"slots must be a positive int, got {self.slots!r}")
+        if self.num_tx % self.slots or self.num_rx % self.slots:
+            raise ValueError(
+                f"{self.num_tx} transmitters and {self.num_rx} receivers do not split into {self.slots} slots"
+            )
+        rows = int(self.fixed_length_m.shape[0])
+        _require("tx_velocity", self.tx_velocity, dtype=torch.float32, shape=(self.num_tx // self.slots, 3))
+        _require("rx_velocity", self.rx_velocity, dtype=torch.float32, shape=(self.num_rx // self.slots, 3))
         _require("site_velocity", self.site_velocity, dtype=torch.float32, shape=(rows, 3))
         _require("fixed_length_m", self.fixed_length_m, dtype=torch.float32, shape=(rows,))
         _require("tx_index", self.tx_index, dtype=torch.int64, shape=(rows,))
@@ -616,7 +626,7 @@ class SensorWeightPlan:
         gradient than in the primal.
         """
 
-        return (geometry.num_tx, geometry.num_rx, self.c0)
+        return (geometry.num_tx, geometry.num_rx, self.c0, geometry.slots)
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,12 +674,12 @@ class _SensorWeight(torch.autograd.Function):
     def forward(
         tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity, geometry, plan
     ):
-        rows = int(intensity.shape[0])
-        out_re = torch.empty_like(intensity)
-        out_im = torch.empty_like(intensity)
-        total_delay_s = torch.empty_like(intensity)
-        delay_rate = torch.empty_like(intensity)
-        pattern_gain = torch.empty_like(intensity)
+        rows = int(site_in.shape[0])
+        out_re = site_in.new_empty(rows)
+        out_im = site_in.new_empty(rows)
+        total_delay_s = site_in.new_empty(rows)
+        delay_rate = site_in.new_empty(rows)
+        pattern_gain = site_in.new_empty(rows)
         _ops().sensor_weight_forward(
             tx_pos,
             rx_pos,
@@ -725,13 +735,14 @@ class _SensorWeight(torch.autograd.Function):
         )
         geometry = ctx.geometry
         plan = ctx.plan
-        rows = int(intensity.shape[0])
-        zeros = torch.zeros_like(intensity)
+        rows = int(site_in.shape[0])
+        zeros = site_in.new_zeros(rows)
         grad_tx_pos = torch.empty_like(tx_pos)
         grad_rx_pos = torch.empty_like(rx_pos)
         grad_site_in = torch.empty_like(site_in)
         grad_site_out = torch.empty_like(site_out)
-        grad_intensity = torch.empty_like(intensity)
+        # One value per batched row; the intensity table is one slot's.
+        grad_intensity = site_in.new_empty(rows)
         grad_weight_re = torch.empty_like(weight_re)
         grad_weight_im = torch.empty_like(weight_im)
         tx_row_scratch = torch.empty_like(site_in)
@@ -764,6 +775,8 @@ class _SensorWeight(torch.autograd.Function):
             rows,
             *plan.kernel_tail(geometry),
         )
+        if geometry.slots > 1:
+            grad_intensity = grad_intensity.view(geometry.slots, -1).sum(dim=0)
         return (
             grad_tx_pos,
             grad_rx_pos,
@@ -798,21 +811,21 @@ class _SensorWeight(torch.autograd.Function):
         )
         geometry = ctx.geometry
         plan = ctx.plan
-        rows = int(intensity.shape[0])
-        row_zeros = torch.zeros_like(intensity)
+        rows = int(site_in.shape[0])
+        row_zeros = site_in.new_zeros(rows)
         vector_zeros = torch.zeros_like(site_in)
         tan_tx_pos = torch.zeros_like(tx_pos) if tan_tx_pos is None else tan_tx_pos.contiguous()
         tan_rx_pos = torch.zeros_like(rx_pos) if tan_rx_pos is None else tan_rx_pos.contiguous()
         tan_site_in = vector_zeros if tan_site_in is None else tan_site_in.contiguous()
         tan_site_out = vector_zeros if tan_site_out is None else tan_site_out.contiguous()
-        tan_intensity = row_zeros if tan_intensity is None else tan_intensity.contiguous()
+        tan_intensity = torch.zeros_like(intensity) if tan_intensity is None else tan_intensity.contiguous()
         tan_weight_re = row_zeros if tan_weight_re is None else tan_weight_re.contiguous()
         tan_weight_im = row_zeros if tan_weight_im is None else tan_weight_im.contiguous()
 
-        tan_out_re = torch.empty_like(intensity)
-        tan_out_im = torch.empty_like(intensity)
-        tan_tau_rt = torch.empty_like(intensity)
-        tan_tau_rate = torch.empty_like(intensity)
+        tan_out_re = site_in.new_empty(rows)
+        tan_out_im = site_in.new_empty(rows)
+        tan_tau_rt = site_in.new_empty(rows)
+        tan_tau_rate = site_in.new_empty(rows)
         _ops().sensor_weight_jvp(
             tx_pos,
             rx_pos,
@@ -869,7 +882,7 @@ def evaluate_sensor_weights(
     _require("rx_pos", rx_pos, dtype=torch.float32, shape=(geometry.num_rx, 3))
     _require("site_in", site_in, dtype=torch.float32, shape=(rows, 3))
     _require("site_out", site_out, dtype=torch.float32, shape=(rows, 3))
-    _require("intensity", intensity, dtype=torch.float32, shape=(rows,))
+    _require("intensity", intensity, dtype=torch.float32, shape=(rows // geometry.slots,))
     if weight.dtype != torch.complex64:
         raise TypeError(f"weight must be complex64, got {weight.dtype}")
     if tuple(weight.shape) != (rows,):
@@ -994,10 +1007,10 @@ class RoundTripPatternStage:
             plan=_pattern_plan(pattern, rx_pattern, device=device),
         )
 
-    def _geometry(self) -> SensorWeightGeometry:
+    def _geometry(self, slots: int = 1) -> SensorWeightGeometry:
         return SensorWeightGeometry(
-            num_tx=self.num_tx,
-            num_rx=self.num_rx,
+            num_tx=self.num_tx * slots,
+            num_rx=self.num_rx * slots,
             tx_velocity=self.tx_velocity,
             rx_velocity=self.rx_velocity,
             site_velocity=self.zero_vectors,
@@ -1006,6 +1019,7 @@ class RoundTripPatternStage:
             rx_index=self.rx_index,
             row_kind=self.row_kind,
             pattern_frame=self.pattern_frame,
+            slots=slots,
         )
 
     def for_slots(self, count: int) -> RoundTripPatternStage:
@@ -1026,6 +1040,49 @@ class RoundTripPatternStage:
             tx_velocity=self.tx_velocity.repeat(count, 1),
             rx_velocity=self.rx_velocity.repeat(count, 1),
         )
+
+    def apply_slots(
+        self,
+        rows: SlotRows,
+        *,
+        tx_pos: torch.Tensor,
+        rx_pos: torch.Tensor,
+        tx_targets_m: torch.Tensor,
+        rx_targets_m: torch.Tensor,
+    ) -> SlotRows:
+        """:meth:`apply` for a slot-major batch, with this stage's one-slot tables.
+
+        The native operator strides the routing tables across ``rows.slots``
+        instants (the transmitter of batch row ``k`` is table row
+        ``k % rows_per_slot`` offset by its slot), so no per-slot copy of a
+        table is built; the weights are the bit for bit equal of
+        :meth:`for_slots` followed by :meth:`apply`. ``tx_pos``/``rx_pos`` are
+        the slot-major endpoint stacks and the targets are per batch row.
+        """
+
+        if rows.weight_includes_antenna_pattern:
+            raise ValueError(
+                "these rows already record weight_includes_antenna_pattern; applying the array pattern twice "
+                "squares its gain and is refused"
+            )
+        if rows.rows_per_slot != self.row_count:
+            raise ValueError(
+                f"these rows carry {rows.rows_per_slot} paths per slot but this stage was frozen against "
+                f"{self.row_count}; the batch does not belong to this frozen topology"
+            )
+        if self.plan.is_identity:
+            return replace(rows, weight_includes_antenna_pattern=True)
+        weight = evaluate_sensor_weights(
+            tx_pos=tx_pos,
+            rx_pos=rx_pos,
+            site_in=tx_targets_m,
+            site_out=rx_targets_m,
+            intensity=self.unit_intensity,
+            weight=rows.complex_transfer_ref,
+            geometry=self._geometry(rows.slots),
+            plan=self.plan,
+        ).weight
+        return replace(rows, complex_transfer_ref=weight, weight_includes_antenna_pattern=True)
 
     def apply(
         self,
@@ -1080,6 +1137,7 @@ class RoundTripPatternStage:
                 row_valid=paths.row_valid,
                 topology=paths.topology,
                 weight_includes_antenna_pattern=True,
+                total_delay_residual_s=paths.total_delay_residual_s,
             )
         geometry = self._geometry()
         weight = evaluate_sensor_weights(
@@ -1104,6 +1162,7 @@ class RoundTripPatternStage:
             row_valid=paths.row_valid,
             topology=paths.topology,
             weight_includes_antenna_pattern=True,
+            total_delay_residual_s=paths.total_delay_residual_s,
         )
 
 

@@ -74,7 +74,7 @@ def test_batched_slots_equal_a_per_slot_loop(spike):
         for batched, single, leg in ((batched_in, one_in, "inbound"), (batched_out, one_out, "outbound")):
             view = batched.slot(slot)
             assert torch.equal(view.delay_s, single.delay_s), (leg, slot)
-            assert torch.equal(view.coefficient, single.coefficient), (leg, slot)
+            assert torch.equal(view.field, single.field), (leg, slot)
             assert torch.equal(view.pair_index, single.pair_index), (leg, slot)
             assert torch.equal(view.pair_offsets, single.pair_offsets), (leg, slot)
             assert torch.equal(view.source_id, single.source_id), (leg, slot)
@@ -152,8 +152,8 @@ def test_a_slot_view_aliases_the_batched_storage(spike):
         assert view.delay_s.data_ptr() == (
             batched.delay_s.data_ptr() + slot * view.leg_count * batched.delay_s.element_size()
         )
-        assert view.coefficient.data_ptr() == (
-            batched.coefficient.data_ptr() + slot * view.leg_count * batched.coefficient.element_size()
+        assert view.field.data_ptr() == (
+            batched.field.data_ptr() + 3 * slot * view.leg_count * batched.field.element_size()
         )
         assert view.slot_count == 1
 

@@ -231,7 +231,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor weight_in_im, Tensor pattern_frame, Tensor tx_pattern, "
       "Tensor rx_pattern, Tensor(a!) out_re, Tensor(b!) out_im, "
       "Tensor(c!) tau_rt, Tensor(d!) tau_rate, Tensor(e!) pattern_gain, "
-      "int num_paths, int num_tx, int num_rx, float c0) -> ()");
+      "int num_paths, int num_tx, int num_rx, float c0, int slots) -> ()");
   m.def(
       "sensor_weight_backward(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
@@ -244,7 +244,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor(e!) grad_intensity, Tensor(f!) grad_weight_re, "
       "Tensor(g!) grad_weight_im, Tensor(h!) tx_row_scratch, "
       "Tensor(i!) rx_row_scratch, int num_paths, int num_tx, int num_rx, "
-      "float c0) -> ()");
+      "float c0, int slots) -> ()");
   m.def(
       "sensor_weight_jvp(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
@@ -255,7 +255,7 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor tan_site_in, Tensor tan_site_out, Tensor tan_intensity, "
       "Tensor tan_weight_re, Tensor tan_weight_im, Tensor(a!) tan_out_re, "
       "Tensor(b!) tan_out_im, Tensor(c!) tan_tau_rt, Tensor(d!) tan_tau_rate, "
-      "int num_paths, int num_tx, int num_rx, float c0) -> ()");
+      "int num_paths, int num_tx, int num_rx, float c0, int slots) -> ()");
   // Receiver frontend. Three families, ONE fixed order, and the order
   // lives in the Python runtime rather than in a caller:
   //
@@ -373,12 +373,13 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
 
   // Two-way join: inbound leg x outbound leg -> radar round trip.
   //
-  //   tau_rt  = tau_in + tau_out
-  //   C_rt    = (C_out * S) * C_in
+  //   V   = a_t a_r exp(j psi) H^T M E      (R-ADR-039/040/041)
+  //   tau = L64 / c0, published as (tau_hi, tau_lo)
   //
-  // Complex values cross as separate real and imaginary tensors, matching the
-  // beat family: no complex tensor crosses the autograd boundary, so the
-  // conjugate-Wirtinger convention cannot be got wrong at the seam.
+  // Complex values cross as interleaved float32 (re, im) pairs, views of the
+  // complex tensors taken outside the autograd Function, so no complex tensor
+  // crosses the boundary and the conjugate-Wirtinger convention cannot be got
+  // wrong at the seam.
   //
   // row_valid is int32 and is the sole authority on whether a composed row
   // means anything. It is the conjunction of the two legs' masks, formed at
@@ -388,32 +389,57 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // The backward operator consumes the frozen CSR tables so each thread owns
   // one gradient slot and needs no atomics; the summation order is therefore a
   // property of the frozen join rather than of the schedule. See R-ADR-004.
+  // Inputs shared by the three join operators (see two_way_join.cu for the
+  // equations): per leg, the delay, the complex3 field at the site as float32
+  // [rows, 3, 2] pairs, the final-segment direction (width-4 responses only),
+  // and the geometry (element, site, interaction points, depth, float32
+  // length; all empty to disable the float64 correction). The response is
+  // [owners, width, 2] pairs with width 1 (scalar) or 4 ([HH, HV, VH, VV]),
+  // and up is the per-owner site axis of a width-4 response. ``polarization``
+  // is each leg row's launch polarization, [inbound | outbound | site-less
+  // source | site-less sink] rows, or empty; ``waves`` is (k64, k32) per
+  // frequency column (empty: no geometry); ``place`` is one slot's composed
+  // position of every site row and site-less row (empty: no site-less rows).
   m.def(
-      "two_way_join_forward(Tensor tau_in, Tensor tau_out, Tensor c_in_re, "
-      "Tensor c_in_im, Tensor c_out_re, Tensor c_out_im, Tensor s_re, "
-      "Tensor s_im, Tensor row_valid, Tensor idx_in, Tensor idx_out, "
-      "Tensor idx_s, Tensor(a!) tau_rt, Tensor(b!) c_rt_re, "
-      "Tensor(c!) c_rt_im, int num_rows, int slots, int slot_local_sites) -> ()");
+      "two_way_join_forward(" "Tensor tau_in, Tensor tau_out, Tensor field_in, Tensor field_out, "
+      "Tensor k_in, Tensor k_out, Tensor src_in, Tensor sink_in, Tensor points_in, Tensor depth_in, "
+      "Tensor length_in, Tensor src_out, Tensor sink_out, Tensor points_out, Tensor depth_out, "
+      "Tensor length_out, Tensor response, Tensor up, Tensor polarization, Tensor field_d, "
+      "Tensor src_d, Tensor sink_d, Tensor points_d, Tensor depth_d, Tensor length_d, "
+      "Tensor valid_d, Tensor waves, Tensor place, Tensor row_valid, Tensor idx_in, "
+      "Tensor idx_out, Tensor idx_s, "
+      "Tensor(a!) tau_hi, Tensor(b!) tau_lo, Tensor(c!) value, "
+      "int response_width, int slots, int slot_local_sites, int columns) -> ()");
   m.def(
-      "two_way_join_backward(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
-      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
-      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor by_in_offsets, "
-      "Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, "
-      "Tensor by_s_offsets, Tensor by_s_rows, Tensor grad_tau_rt, "
-      "Tensor grad_c_rt_re, Tensor grad_c_rt_im, Tensor(a!) grad_tau_in, "
-      "Tensor(b!) grad_tau_out, Tensor(c!) grad_c_in_re, "
-      "Tensor(d!) grad_c_in_im, Tensor(e!) grad_c_out_re, "
-      "Tensor(f!) grad_c_out_im, Tensor(g!) grad_s_re, Tensor(h!) grad_s_im, "
-      "int num_rows, int num_in, int num_out, int num_sites, int slots, "
-      "int slot_local_sites) -> ()");
+      "two_way_join_backward(" "Tensor tau_in, Tensor tau_out, Tensor field_in, Tensor field_out, "
+      "Tensor k_in, Tensor k_out, Tensor src_in, Tensor sink_in, Tensor points_in, Tensor depth_in, "
+      "Tensor length_in, Tensor src_out, Tensor sink_out, Tensor points_out, Tensor depth_out, "
+      "Tensor length_out, Tensor response, Tensor up, Tensor polarization, Tensor field_d, "
+      "Tensor src_d, Tensor sink_d, Tensor points_d, Tensor depth_d, Tensor length_d, "
+      "Tensor valid_d, Tensor waves, Tensor place, Tensor row_valid, Tensor idx_in, "
+      "Tensor idx_out, Tensor idx_s, "
+      "Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_s_offsets, "
+      "Tensor by_s_rows, Tensor grad_tau, Tensor grad_value, Tensor(a!) grad_tau_in, Tensor(b!) grad_tau_out, "
+      "Tensor(c!) grad_field_in, Tensor(d!) grad_field_out, Tensor(e!) grad_k_in, Tensor(f!) grad_k_out, "
+      "Tensor(g!) grad_src_in, Tensor(h!) grad_sink_in, Tensor(i!) grad_points_in, Tensor(j!) grad_length_in, "
+      "Tensor(k!) grad_src_out, Tensor(l!) grad_sink_out, Tensor(m!) grad_points_out, "
+      "Tensor(n!) grad_length_out, Tensor(o!) grad_response, Tensor(p!) grad_field_d, Tensor(q!) grad_src_d, "
+      "Tensor(r!) grad_sink_d, Tensor(s!) grad_points_d, Tensor(t!) grad_length_d, "
+      "int response_width, int slots, int slot_local_sites, int columns) -> ()");
   m.def(
-      "two_way_join_jvp(Tensor c_in_re, Tensor c_in_im, Tensor c_out_re, "
-      "Tensor c_out_im, Tensor s_re, Tensor s_im, Tensor row_valid, "
-      "Tensor idx_in, Tensor idx_out, Tensor idx_s, Tensor tan_tau_in, "
-      "Tensor tan_tau_out, Tensor tan_c_in_re, Tensor tan_c_in_im, "
-      "Tensor tan_c_out_re, Tensor tan_c_out_im, Tensor tan_s_re, "
-      "Tensor tan_s_im, Tensor(a!) tan_tau_rt, Tensor(b!) tan_c_rt_re, "
-      "Tensor(c!) tan_c_rt_im, int num_rows, int slots, int slot_local_sites) -> ()");
+      "two_way_join_jvp(" "Tensor tau_in, Tensor tau_out, Tensor field_in, Tensor field_out, "
+      "Tensor k_in, Tensor k_out, Tensor src_in, Tensor sink_in, Tensor points_in, Tensor depth_in, "
+      "Tensor length_in, Tensor src_out, Tensor sink_out, Tensor points_out, Tensor depth_out, "
+      "Tensor length_out, Tensor response, Tensor up, Tensor polarization, Tensor field_d, "
+      "Tensor src_d, Tensor sink_d, Tensor points_d, Tensor depth_d, Tensor length_d, "
+      "Tensor valid_d, Tensor waves, Tensor place, Tensor row_valid, Tensor idx_in, "
+      "Tensor idx_out, Tensor idx_s, "
+      "Tensor tan_tau_in, Tensor tan_tau_out, Tensor tan_field_in, Tensor tan_field_out, Tensor tan_k_in, "
+      "Tensor tan_k_out, Tensor tan_src_in, Tensor tan_sink_in, Tensor tan_points_in, Tensor tan_length_in, "
+      "Tensor tan_src_out, Tensor tan_sink_out, Tensor tan_points_out, Tensor tan_length_out, "
+      "Tensor tan_response, Tensor tan_field_d, Tensor tan_src_d, Tensor tan_sink_d, Tensor tan_points_d, "
+      "Tensor tan_length_d, Tensor(a!) tan_tau, Tensor(b!) tan_value, "
+      "int response_width, int slots, int slot_local_sites, int columns) -> ()");
 
   // Aspect-dependent scatter response, evaluated per COMPOSED row from the
   // direction basis the two legs publish. TwoWayComposer.compose refuses to

@@ -75,6 +75,8 @@ def leg_batch(
     row_valid: torch.Tensor | None = None,
     direction: torch.Tensor | None = None,
     site_departure: torch.Tensor | None = None,
+    field: torch.Tensor | None = None,
+    geometry: dict | None = None,
 ):
     """A ``RadarLegBatch`` around already-built payload tensors.
 
@@ -91,6 +93,13 @@ def leg_batch(
     site (R-ADR-039), so the response reads that bearing off the leg's arrival
     segment, ``arrival_origin_m - arrival_target_m``; the fixture publishes it
     as a segment from the origin to the unit vector.
+
+    ``field`` replaces the ``coefficient * z_hat`` field with an arbitrary
+    complex3 one. ``geometry`` gives the leg Channel's geometry - ``source``,
+    ``site`` (float32 or float64), ``points`` ``[rows, W, 3]``, ``depth`` and
+    ``length`` - which switches the join to the float64 path length; with
+    ``polarization`` (``[rows, 3]``, each row's launch polarization) the join
+    also applies the element factor.
     """
 
     from witwin.radar.propagation import RadarLegBatch
@@ -108,7 +117,7 @@ def leg_batch(
         pair_offsets=torch.tensor([0, rows], dtype=torch.int64, device=device),
         source_index=zeros(torch.int32),
         sink_index=zeros(torch.int32),
-        depth=zeros(torch.int32),
+        depth=zeros(torch.int32) if geometry is None else geometry["depth"],
         component_id=zeros(torch.int32),
         source_id=zeros(torch.int64),
         sink_id=zeros(torch.int64),
@@ -116,13 +125,46 @@ def leg_batch(
         material_sequence=zeros(torch.int32, (rows, 1)),
         interaction_type=zeros(torch.int32, (rows, 1)),
         delay_s=delay,
-        coefficient=coefficient,
+        field=scalar_field(coefficient) if field is None else field,
         field_direction=zeros(torch.float32, (rows, 3)) if direction is None else direction,
         row_valid=row_valid,
         diagnostics=None,
-        arrival_target_m=None if site_departure is None else torch.zeros_like(site_departure),
         arrival_origin_m=site_departure,
+        **(
+            {"arrival_target_m": None if site_departure is None else torch.zeros_like(site_departure)}
+            if geometry is None
+            else _geometry_members(geometry)
+        ),
     )
+
+
+def _geometry_members(geometry: dict) -> dict:
+    site = geometry["site"]
+    members = {
+        "departure_origin_m": geometry["source"],
+        "interaction_positions_m": geometry["points"],
+        "path_length_m": geometry["length"],
+        "source_polarization": geometry.get("polarization"),
+    }
+    if site.dtype == torch.float64:
+        members["arrival_target_m"] = site.float()
+        members["precise_arrival_target_m"] = site
+    else:
+        members["arrival_target_m"] = site
+    return members
+
+
+def scalar_field(coefficient: torch.Tensor) -> torch.Tensor:
+    """A field whose only component is ``z``: ``coefficient * z_hat``.
+
+    Both legs of a fabricated join carry their field along the same unit
+    vector, so the join's isotropic dyadic composes ``(C_out S) C_in`` exactly
+    - the scalar algebra the fabricated join tests pin. Built by
+    differentiable ops so a leaf on ``coefficient`` keeps its gradient.
+    """
+
+    axis = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=coefficient.device)
+    return (coefficient[:, None] * axis).contiguous()
 
 
 def payload(rows: int, *, seed: int, device: str = "cuda", scale: float = 1.0):
@@ -145,4 +187,4 @@ def payload(rows: int, *, seed: int, device: str = "cuda", scale: float = 1.0):
     return delay, coefficient
 
 
-__all__ = ["frozen_leg", "leg_batch", "leg_rows", "outbound_leg_rows", "payload"]
+__all__ = ["frozen_leg", "leg_batch", "leg_rows", "outbound_leg_rows", "payload", "scalar_field"]

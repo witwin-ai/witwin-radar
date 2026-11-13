@@ -183,7 +183,7 @@ def test_a_primal_only_endpoint_input_is_refused_in_both_modes(spike, counter, f
 def test_the_endpoint_spec_carries_no_polarization_basis_to_mark(spike):
     """Why there is no basis row on the Radar side, stated as a fact.
 
-    ``RadarEndpointSpec`` has exactly four fields. The transverse basis is
+    ``RadarEndpointSpec`` has exactly five fields. The transverse basis is
     Channel's, derived inside the consumer, and a Radar caller cannot reach it -
     so the refusal for it belongs to Channel's matrix and not to this one. If a
     basis field ever appears here this test fails, which is the point.
@@ -196,6 +196,7 @@ def test_the_endpoint_spec_carries_no_polarization_basis_to_mark(spike):
         "positions_m",
         "polarizations",
         "powers_w",
+        "precise_positions_m",
     )
 
 
