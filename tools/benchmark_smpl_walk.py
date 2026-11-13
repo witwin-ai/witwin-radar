@@ -50,9 +50,14 @@ from witwin.radar.smpl import SMPLBody
 # but cover the user's 15 m working volume with a 16.49 m complex range window.
 WALK_RADAR = {**MIMO, "slope": 40.0}
 
-#: Wet skin near 77 GHz, approximately (Gabriel's tissue model): eps' 6.4,
-#: eps'' 9.9, i.e. sigma = eps'' omega eps_0 = 42 S/m. A 1 cm layer of it is
-#: opaque at the carrier, so the stack is effectively a half space.
+#: Wet skin near 77 GHz, approximately: eps' 6.4, eps'' 9.9, i.e.
+#: sigma = eps'' omega eps_0 = 42 S/m. Source: the four-term Cole-Cole "skin
+#: (wet)" model of S. Gabriel, R. W. Lau and C. Gabriel, "The dielectric
+#: properties of biological tissues: III. Parametric models for the dielectric
+#: spectrum of tissues", Phys. Med. Biol. 41 (1996) 2271-2293, read near the
+#: carrier and rounded; it is a benchmark default, not a fitted body model.
+#: A 1 cm layer of it is opaque at the carrier, so the stack is effectively a
+#: half space.
 SKIN = {"eps_r": 6.4, "sigma_e": 42.0, "thickness_m": 0.01}
 BODY_STRUCTURE_ID = 1
 
