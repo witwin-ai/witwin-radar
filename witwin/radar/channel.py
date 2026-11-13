@@ -51,7 +51,7 @@ from typing import Any
 import torch
 from witwin.channel.propagation import consumer
 
-from .propagation import RadarEndpointSpec, RadarLegBatch, require_endpoint_role
+from .propagation import CompiledWorld, RadarEndpointSpec, RadarLegBatch, require_endpoint_role
 
 #: Components whose path is the straight source-to-sink segment. Free-space
 #: propagation along it is undefined for coincident endpoints, so a leg that
@@ -226,7 +226,7 @@ def _detached(spec: RadarEndpointSpec) -> RadarEndpointSpec:
     )
 
 
-def compile_scene(scene_or_snapshot: object, *, reference_frequency_hz: float) -> object:
+def compile_scene(scene_or_snapshot: object, *, reference_frequency_hz: float) -> CompiledWorld:
     """Compile one Core ``Scene`` or ``SceneSnapshot`` at one frequency.
 
     A thin wrapper by design: Channel owns compilation, the compiled
@@ -253,6 +253,19 @@ def compile_scene(scene_or_snapshot: object, *, reference_frequency_hz: float) -
     compiled = channel_compile(scene_or_snapshot, reference_frequency_hz=reference_frequency_hz)
     require_reference_frequency(compiled, reference_frequency_hz)
     return compiled
+
+
+def consumer_capabilities() -> dict[str, object]:
+    """Channel's consumer contract as Radar reaches it: version, components, AD modes, world motions."""
+
+    record = consumer.capabilities()
+    return {
+        "contract_version": int(record.contract_version),
+        "components": sorted(record.components),
+        "fixed_topology_components": sorted(record.fixed_topology_components),
+        "ad_modes": sorted(record.ad_modes),
+        "world_motions": sorted(record.world_motions),
+    }
 
 
 def require_reference_frequency(compiled_scene: object, reference_frequency_hz: float) -> None:

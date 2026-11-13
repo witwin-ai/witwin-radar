@@ -267,8 +267,9 @@ def test_an_adaptive_trace_retains_its_probes_and_not_its_schedule() -> None:
     assert exhaustive.motion_sampling_exhaustive is True
     diagnostics = adaptive.adaptive_diagnostics[0]
     assert diagnostics["evaluations"] < diagnostics["observation_count"]
-    # A trace has synthesized nothing, so it cannot report a batch count.
-    assert "synthesis_batches" not in diagnostics
+    # A trace has synthesized nothing: the typed record carries every key, and
+    # its batch count is zero until an echo.
+    assert diagnostics["synthesis_batches"] == 0
 
 
 def test_a_trace_records_the_request_its_completeness_is_relative_to() -> None:

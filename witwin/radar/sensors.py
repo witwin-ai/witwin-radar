@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
@@ -224,6 +224,12 @@ class Pattern:
     modelling choice (an antenna that does not radiate behind itself) rather
     than an extrapolation accident.
     """
+
+    #: The fields that may be tensors carrying a derivative (their packed
+    #: table values and the peak gain), and the AD modes each supports.
+    LEAVES: ClassVar[dict[str, tuple[str, ...]]] = dict.fromkeys(
+        ("x_gain", "y_gain", "gain_table", "gain"), ("jvp", "vjp")
+    )
 
     kind: str
     #: Off-boresight angles of the x axis, degrees, strictly increasing.
@@ -599,6 +605,9 @@ class Coupling:
     products whose derivative in both modes is the transposed products, so the
     chain carries it with no slot of its own.
     """
+
+    #: The port coupling matrices may be complex tensors carrying a derivative.
+    LEAVES: ClassVar[dict[str, tuple[str, ...]]] = {"tx": ("jvp", "vjp"), "rx": ("jvp", "vjp")}
 
     tx: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None
     rx: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None

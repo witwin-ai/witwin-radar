@@ -15,10 +15,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import torch
 from witwin.core.dynamics import DynamicScene
+
+if TYPE_CHECKING:
+    from witwin.core import SceneSnapshot
 
 EndpointRole = Literal["source", "sink"]
 
@@ -537,6 +540,19 @@ class RadarPropagationLegs:
         return self.inbound.device
 
 
+class CompiledWorld(Protocol):
+    """What Radar reads off a compiled scene: Channel's ``CompiledScene`` as this package uses it.
+
+    Channel's consumer facade does not export the compiled scene's class, so
+    the published records name this protocol instead of ``object``. The one
+    member Radar calls is the exact frequency check
+    (:func:`witwin.radar.channel.require_reference_frequency`); everything
+    else is handed back to Channel unread.
+    """
+
+    def require_reference_frequency(self, reference_frequency_hz: float) -> None: ...
+
+
 class FrozenLeg(Protocol):
     """A frozen leg topology as the Radar side reads it.
 
@@ -651,8 +667,8 @@ class EpochFrame:
     """
 
     time_s: float
-    snapshot: object
-    compiled: object
+    snapshot: SceneSnapshot
+    compiled: CompiledWorld
     epoch: int
     frozen: FrozenEpoch
     rediscovered: bool
@@ -763,7 +779,7 @@ class SceneEpochLoop:
         *,
         reference_frequency_hz: float,
         bind: Callable[[object, object, FrozenEpoch | None], FrozenEpoch],
-        compile_scene: Callable[..., object],
+        compile_scene: Callable[..., CompiledWorld],
         motion_event_period_frames: int | None = None,
         world_motion: str = "frozen_world",
         motion_event_period_s: float | None = None,
@@ -793,7 +809,7 @@ class SceneEpochLoop:
         self._compile_scene = compile_scene
         self._structures_move = bool(dynamic_scene.structure_trajectories or dynamic_scene.structure_deformations)
         self._frozen: FrozenEpoch | None = None
-        self._compiled: object | None = None
+        self._compiled: CompiledWorld | None = None
         self._frame_index = -1
         self._epoch = -1
         self._last_discovery_frame = -1
@@ -862,7 +878,7 @@ class SceneEpochLoop:
             reason = DISPLACEMENT
         if reason is not None:
             self._rediscover(snapshot)
-        if self._frozen is None:
+        if self._frozen is None or self._compiled is None:
             raise RuntimeError("the epoch loop has no frozen topology after its first frame")
         return EpochFrame(
             time_s=float(time_s),
@@ -1000,7 +1016,7 @@ class SceneEpochLoop:
         self._last_discovery_time = self._time_s
         self.discovery_count += 1
 
-    def _compile(self, snapshot: object) -> object:
+    def _compile(self, snapshot: object) -> CompiledWorld:
         return self._compile_scene(snapshot, reference_frequency_hz=self._reference_frequency_hz)
 
 

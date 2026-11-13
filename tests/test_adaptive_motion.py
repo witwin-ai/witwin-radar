@@ -76,6 +76,13 @@ def test_completeness_and_exhaustiveness_are_reported_separately():
     assert not empty.motion_sampling_exhaustive
     assert empty.adaptive_diagnostics[0]["topology_proved_complete"]
     assert not empty.adaptive_diagnostics[0]["exhaustive"]
+    # The typed record: every declared key, Channel's ``complete`` meaning the
+    # run's path_set_complete, and the same statements in Channel's vocabulary.
+    from witwin.radar.adaptive import AdaptiveDiagnostics
+
+    assert set(empty.adaptive_diagnostics[0]) == set(AdaptiveDiagnostics.__annotations__)
+    assert empty.adaptive_diagnostics[0]["complete"] is True
+    assert empty.semantics == {"estimator": "coherent", "combine": "field", "complete": True, "exhaustive": False}
 
     exact = radar.simulate(Scene(structures=(), endpoints=[]), **kwargs, motion=Motion.adc())
     assert exact.path_set_complete and exact.motion_sampling_exhaustive

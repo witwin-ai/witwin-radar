@@ -234,6 +234,10 @@ class SMPLBody(GeometryBase):
 
     kind = "smpl"
 
+    #: Reverse-mode leaves only: Channel refuses a forward tangent on mesh
+    #: vertices at compile, and every one of these reaches the vertices.
+    LEAVES: dict[str, tuple[str, ...]] = dict.fromkeys(("pose", "shape", "position", "rotation"), ("vjp",))
+
     def __init__(
         self,
         pose,

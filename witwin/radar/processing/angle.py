@@ -475,6 +475,25 @@ def _require_array(array) -> ArrayGeometry:
     return array
 
 
+def require_separated(axes: ProcessingAxes, stage: str) -> None:
+    """Refuse a DDM or BPM product whose transmitters still share one channel.
+
+    Every angle route reads one element per (transmitter, receiver) pair. A
+    DDM or BPM cube holds all transmitters in one transmit channel until
+    :func:`demultiplex` separates them, which it can do only in slow time,
+    before the Doppler transform; a map built from the physical cube has no
+    virtual array to steer. ``Frame.points`` and ``Frame.range_angle``
+    demultiplex on their own.
+    """
+
+    if axes.mimo != "tdm" and not axes.demultiplexed:
+        raise ValueError(
+            f"{stage} needs one channel per transmitter, but this {axes.mimo.upper()} product holds every transmitter "
+            "in one channel: separate them with witwin.radar.processing.demultiplex(cube) before the range and "
+            "Doppler transforms, or use the Frame facade, which does it"
+        )
+
+
 def _require_virtual(virtual_ant: torch.Tensor, array: ArrayGeometry) -> None:
     if not isinstance(virtual_ant, torch.Tensor) or not virtual_ant.is_complex():
         raise TypeError("virtual_ant must be a complex torch.Tensor")
@@ -1057,6 +1076,7 @@ def beam_cube(rd: RangeDopplerMap, steering: torch.Tensor, *, directions: torch.
         )
     if not isinstance(steering, torch.Tensor) or not steering.is_complex():
         raise TypeError("steering must be a complex torch.Tensor")
+    require_separated(rd.axes, "beam_cube")
     data = rd.data
     if data.dim() < 3:
         raise ValueError(

@@ -2,6 +2,7 @@
   "schema_version": 2,
   "root_class_members": {
     "witwin.radar.Radar": [
+      "LEAVES",
       "adc",
       "agc",
       "antenna_unit",
@@ -40,6 +41,7 @@
   },
   "modules": {
     "witwin.radar": {
+      "capabilities": "witwin.radar.capabilities.capabilities",
       "Adc": "witwin.radar.frontend.Adc",
       "Agc": "witwin.radar.frontend.Agc",
       "Aspect": "witwin.radar.targets.Aspect",

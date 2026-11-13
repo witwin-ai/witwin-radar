@@ -99,7 +99,7 @@
           "name": "Paths",
           "kind": "class",
           "target": "witwin.radar.simulation.Paths",
-          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', transmission: 'bool', diffraction: 'bool', environment: 'bool', coupling: 'bool', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', discovery_complete: 'bool', transmission_dropped_rows: 'int', events: 'tuple[PathEvents, ...]', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
+          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', transmission: 'bool', diffraction: 'bool', environment: 'bool', coupling: 'bool', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', discovery_complete: 'bool', transmission_dropped_rows: 'int', events: 'tuple[PathEvents, ...]', last_snapshot: 'SceneSnapshot', last_compiled_scene: 'CompiledWorld', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
         },
         {
           "name": "Pattern",
@@ -135,7 +135,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs | None', last_radar_paths: 'RadarPathBatch | None', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'SceneSnapshot | None', last_compiled_scene: 'CompiledWorld | None', last_propagation: 'RadarPropagationLegs | None', last_radar_paths: 'RadarPathBatch | None', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
         },
         {
           "name": "ScatteringMatrix",
@@ -148,6 +148,12 @@
           "kind": "class",
           "target": "witwin.radar.targets.StructureTargets",
           "signature": "(rcs: 'Any' = None, amplitude: 'Any' = None, structure_ids: 'tuple[int, ...] | None' = None, phase: 'Any' = 0.0, ids: 'tuple[int, ...] | None' = None, fluctuation: 'Fluctuation | None' = None) -> None"
+        },
+        {
+          "name": "capabilities",
+          "kind": "function",
+          "target": "witwin.radar.capabilities.capabilities",
+          "signature": "() -> 'dict[str, Any]'"
         },
         {
           "name": "processing",
@@ -896,6 +902,10 @@
     {
       "class": "witwin.radar.Radar",
       "members": [
+        {
+          "name": "LEAVES",
+          "kind": "value"
+        },
         {
           "name": "adc",
           "kind": "value"

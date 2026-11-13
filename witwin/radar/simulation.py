@@ -32,7 +32,14 @@ import numpy as np
 import torch
 from witwin.core.dynamics import DynamicScene
 
-from .adaptive import AdaptiveTable, PlaneGroups, composed_plane_identity, echo_adaptive_frame, trace_adaptive_frame
+from .adaptive import (
+    AdaptiveDiagnostics,
+    AdaptiveTable,
+    PlaneGroups,
+    composed_plane_identity,
+    echo_adaptive_frame,
+    trace_adaptive_frame,
+)
 from .binding import (
     SITE_SOURCE_EXPLICIT,
     RadarWorldBinding,
@@ -48,6 +55,7 @@ from .paths import RadarPathBatch, SlotRows
 from .policy import _carries_derivative as _carries_value_derivative
 from .policy import refuse_derivative
 from .propagation import (
+    CompiledWorld,
     DiscoveryReport,
     EpochFrame,
     FrozenEpoch,
@@ -58,9 +66,11 @@ from .propagation import (
     band_as_slots,
     stack_slots,
 )
-from .results import Result, SceneFrame, assemble
+from .results import Result, RunSemantics, SceneFrame, assemble, run_semantics
 
 if TYPE_CHECKING:
+    from witwin.core import SceneSnapshot
+
     from .paths import ComponentDeclaration, RadarComponentIndex, TwoWayComposer
     from .radar import PropagationConfig, Radar
     from .scattering import ScatterResponse
@@ -197,7 +207,7 @@ class FrameTrace:
     #: so it is complete once the frame has been traced or echoed.
     events: PathEvents = field(default_factory=PathEvents)
     adaptive: AdaptiveTable | None = None
-    stats: dict[str, Any] | None = None
+    stats: AdaptiveDiagnostics | None = None
     opened: EpochFrame | None = None
     #: What Channel said about the discoveries this frame answered from. Read
     #: only after ``observations`` is drained, because the fused route
@@ -1918,7 +1928,7 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
             adaptive=frame.table,
             stats=frame.stats,
             opened=frame.first.epoch_frame,
-            path_set_complete=bool(frame.stats["exhaustive"] or frame.stats["topology_proved_complete"]),
+            path_set_complete=bool(frame.stats["complete"]),
             motion_sampling_exhaustive=bool(frame.stats["exhaustive"]),
             discovery=partial(_constant_report, report),
             events=events,
@@ -2420,7 +2430,7 @@ class Paths:
     discovery_count: int
     path_set_complete: bool
     motion_sampling_exhaustive: bool
-    adaptive_diagnostics: tuple[dict[str, Any], ...]
+    adaptive_diagnostics: tuple[AdaptiveDiagnostics, ...]
     #: Channel's completeness and dropped-transmission count; see
     #: :class:`~witwin.radar.Result`. ``path_set_complete`` is ANDed with it.
     discovery_complete: bool
@@ -2428,8 +2438,8 @@ class Paths:
     #: Each frame's path births and deaths (:class:`~witwin.radar.events.PathEvents`).
     events: tuple[PathEvents, ...]
     #: The closing observation's typed state, as the result publishes it.
-    last_snapshot: object
-    last_compiled_scene: object
+    last_snapshot: SceneSnapshot
+    last_compiled_scene: CompiledWorld
     last_propagation: RadarPropagationLegs
     last_radar_paths: RadarPathBatch
     _session: Session
@@ -2452,6 +2462,12 @@ class Paths:
         """Frames these rows cover."""
 
         return len(self._frames)
+
+    @property
+    def semantics(self) -> RunSemantics:
+        """These rows' completeness in Channel's result-semantics vocabulary (:class:`~witwin.radar.results.RunSemantics`)."""
+
+        return run_semantics(complete=self.path_set_complete, exhaustive=self.motion_sampling_exhaustive)
 
     def observation_times(self, frame: int = 0) -> np.ndarray:
         """``float64[observations]``: the instant of each observation :meth:`rows` indexes, s.

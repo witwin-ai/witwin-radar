@@ -11,7 +11,7 @@ import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 
@@ -20,11 +20,24 @@ from .propagation import DiscoveryReport
 
 if TYPE_CHECKING:
     import numpy as np
+    from witwin.core import SceneSnapshot
 
+    from .adaptive import AdaptiveDiagnostics
     from .events import PathEvents
     from .paths import RadarPathBatch
-    from .processing import ArrayGeometry, PointCloud, ProcessingAxes, ProcessingCube, RangeDopplerMap, RangeProfile
-    from .propagation import EpochFrame, RadarPropagationLegs
+    from .processing import (
+        Aperture,
+        ArrayGeometry,
+        PointCloud,
+        ProcessingAxes,
+        ProcessingCube,
+        RangeAngleMap,
+        RangeDopplerMap,
+        RangeProfile,
+        SarImage,
+    )
+    from .propagation import CompiledWorld, EpochFrame, RadarPropagationLegs
+    from .radar import Radar
     from .sensors import SensorArraySpec
     from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec, SynthesisResult
 
@@ -33,6 +46,31 @@ if TYPE_CHECKING:
 #: result, so an OFDM run publishes ``("frame", "tx", "rx", "symbol",
 #: "subcarrier")`` without this module knowing what a symbol is.
 SIMULATION_CUBE_LEADING_AXES = ("frame", "tx", "rx")
+
+
+class RunSemantics(TypedDict):
+    """A run's result-semantics keys, in Channel's vocabulary (``witwin.channel`` ``ResultSemantics``).
+
+    The keys mean what Channel's mean, so one consumer reads both packages'
+    results the same way. ``estimator`` is ``"coherent"``: every row is an
+    enumerated path, none is sampled. ``combine`` is ``"field"``: rows reach
+    the cube as complex sums. ``complete`` is ``path_set_complete``, no path
+    within the requested bounds can have been missed. ``exhaustive`` is
+    Radar's second statement, ``motion_sampling_exhaustive``: the world was
+    evaluated at every instant the waveform samples; Channel has no motion
+    and so no such key.
+    """
+
+    estimator: Literal["coherent"]
+    combine: Literal["field"]
+    complete: bool
+    exhaustive: bool
+
+
+def run_semantics(*, complete: bool, exhaustive: bool) -> RunSemantics:
+    """The :class:`RunSemantics` record of a run with these two completeness statements."""
+
+    return {"estimator": "coherent", "combine": "field", "complete": bool(complete), "exhaustive": bool(exhaustive)}
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -108,9 +146,9 @@ class Result:
     discovery_count: int
     #: The closing frame's Core ``SceneSnapshot``. ``None`` on a loaded result:
     #: the four ``last_*`` members are live world state and are not saved.
-    last_snapshot: object
+    last_snapshot: SceneSnapshot | None
     #: The closing frame's Channel ``CompiledScene``.
-    last_compiled_scene: object
+    last_compiled_scene: CompiledWorld | None
     last_propagation: RadarPropagationLegs | None
     last_radar_paths: RadarPathBatch | None
     #: Every observation instant of every frame, ``float64[observations]``
@@ -125,7 +163,7 @@ class Result:
     motion_sampling: str
     #: The synthesis result's own output domain.
     output_domain: str
-    adaptive_diagnostics: tuple[dict[str, Any], ...]
+    adaptive_diagnostics: tuple[AdaptiveDiagnostics, ...]
     #: When the closing frame's synthesis observed the world: ``frame``,
     #: ``slow_time``, ``fast_time`` or ``adaptive``, as the synthesis owner
     #: published it (``SynthesisResult.observation_schedule``). It is what ran,
@@ -169,6 +207,12 @@ class Result:
     @property
     def frame_count(self) -> int:
         return int(self.cube.shape[0])
+
+    @property
+    def semantics(self) -> RunSemantics:
+        """This run's completeness in Channel's result-semantics vocabulary (:class:`RunSemantics`)."""
+
+        return run_semantics(complete=self.path_set_complete, exhaustive=self.motion_sampling_exhaustive)
 
     def save(self, path: str | os.PathLike[str], *, overwrite: bool = False) -> None:
         """Write this result to the directory ``path`` (:mod:`witwin.radar.storage` is the format).
@@ -252,15 +296,15 @@ class Result:
         rediscovery_reasons: Sequence[str | None],
         compile_count: int,
         discovery_count: int,
-        last_snapshot: object,
-        last_compiled_scene: object,
+        last_snapshot: SceneSnapshot,
+        last_compiled_scene: CompiledWorld,
         last_propagation: RadarPropagationLegs,
         last_radar_paths: RadarPathBatch,
         sample_times_s: Sequence[np.ndarray],
         path_set_complete: bool,
         motion_sampling_exhaustive: bool,
         motion_sampling: str,
-        adaptive_diagnostics: Sequence[dict[str, Any]],
+        adaptive_diagnostics: Sequence[AdaptiveDiagnostics],
         discovery: DiscoveryReport | None = None,
         events: Sequence[PathEvents] = (),
     ) -> Result:
@@ -344,6 +388,19 @@ class Frame:
 
         return ProcessingCube(data=self.cube, axes=self.axes)
 
+    def virtual_cube(self) -> ProcessingCube:
+        """The cube with one channel per transmitter: :func:`~witwin.radar.processing.demultiplex` of it.
+
+        A TDM cube is already separated and comes back unchanged. A DDM or BPM
+        cube is separated here, because every angle route reads one element
+        per (transmitter, receiver) pair; its slow axis is decimated by the
+        code period (the axes record says by how much).
+        """
+
+        from .processing import demultiplex
+
+        return demultiplex(self.processing_cube())
+
     def range_profile(self, *, window: str | None = None, remove_dc: bool = False) -> RangeProfile:
         """Range profile.
 
@@ -372,6 +429,59 @@ class Frame:
 
         return range_doppler_map(self.range_profile(window=range_window, remove_dc=remove_dc), window=window)
 
+    def _virtual_range_doppler(self, *, window: str | None, range_window: str | None = None) -> RangeDopplerMap:
+        from .processing import range_doppler_map, range_profile
+
+        return range_doppler_map(range_profile(self.virtual_cube(), window=range_window), window=window)
+
+    def range_angle(
+        self, azimuth_rad: torch.Tensor, *, elevation_rad: float = 0.0, window: str | None = "hann"
+    ) -> RangeAngleMap:
+        """Range-angle map over ``azimuth_rad`` by conventional beamforming of the virtual array.
+
+        DDM and BPM cubes are demultiplexed first (:meth:`virtual_cube`).
+        ``window`` tapers the slow axis as in :meth:`range_doppler`.
+        """
+
+        from .processing import range_angle_map
+
+        rd = self._virtual_range_doppler(window=window)
+        return range_angle_map(rd, self.array(), azimuth_rad=azimuth_rad, elevation_rad=elevation_rad)
+
+    def aperture(self, radar: Radar, *, velocity_mps: object = None, pose: object = None) -> Aperture:
+        """The aperture this frame swept: :meth:`Aperture.from_radar <witwin.radar.processing.Aperture.from_radar>` at this frame's instant.
+
+        ``radar`` is the one that produced the frame; a result does not keep
+        it (a radar whose pose is a leaf has no saved form), so it is passed
+        here and checked against the frame's axes. ``velocity_mps`` and
+        ``pose`` are the platform motion :meth:`Aperture.from_radar` takes.
+        """
+
+        from .processing import Aperture
+
+        if float(radar.carrier) != float(self.axes.reference_frequency_hz) or (radar.num_tx, radar.num_rx) != (
+            self.axes.num_tx,
+            self.axes.num_rx,
+        ):
+            raise ValueError(
+                f"this frame was produced at {self.axes.reference_frequency_hz} Hz by a {self.axes.num_tx} x "
+                f"{self.axes.num_rx} array; the radar given is {radar.carrier} Hz, {radar.num_tx} x {radar.num_rx}"
+            )
+        return Aperture.from_radar(radar, time_s=self.time_s, velocity_mps=velocity_mps, pose=pose)
+
+    def image(self, aperture: Aperture, pixels_m: torch.Tensor, *, range_bins: int | None = None) -> SarImage:
+        """Back-project this frame onto ``pixels_m [*grid, 3]``: :func:`~witwin.radar.processing.backproject`.
+
+        ``range_bins`` zero pads the range transform; the image reads it by
+        linear interpolation, so pad an FMCW beat or OFDM cube (eight times
+        its sample count is the documented choice). DDM and BPM cubes are
+        demultiplexed first.
+        """
+
+        from .processing import backproject, range_profile
+
+        return backproject(range_profile(self.virtual_cube(), range_bins=range_bins), aperture, pixels_m)
+
     def array(self) -> ArrayGeometry:
         """The element geometry this frame's axes describe."""
 
@@ -392,6 +502,8 @@ class Frame:
     ) -> PointCloud:
         """Range-Doppler, then CA-CFAR, then a point cloud, in one call.
 
+        A DDM or BPM cube is demultiplexed first (:meth:`virtual_cube`), so
+        the detector and the angle route see one channel per transmitter.
         The sensor pairs are combined coherently - the boresight complex sum -
         before the detector, which is what makes one threshold meaningful
         across the virtual array. A caller who wants a different detector
@@ -406,7 +518,7 @@ class Frame:
 
         from .processing import ca_cfar, combine_coherent, point_cloud
 
-        rd = self.range_doppler(window=window)
+        rd = self._virtual_range_doppler(window=window)
         found = ca_cfar(combine_coherent(rd.data), guard_cells=guard_cells, training_cells=training_cells, pfa=pfa)
         return point_cloud(found, rd, self.array(), route=route, fft_size=fft_size, max_points=max_points)
 
@@ -442,7 +554,7 @@ class SceneFrame:
     epoch_frame: EpochFrame | None
     legs: RadarPropagationLegs | None
     composed: RadarPathBatch | None
-    diagnostics: dict[str, Any] | None
+    diagnostics: AdaptiveDiagnostics | None
     motion_sampling: str
     #: The declared waveform spec and the array, so that assembling the result
     #: builds its processing metadata from the same two records the cube came
@@ -502,4 +614,4 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
     )
 
 
-__all__ = ["Frame", "Result"]
+__all__ = ["Frame", "Result", "RunSemantics", "run_semantics"]

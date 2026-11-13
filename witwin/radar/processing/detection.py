@@ -40,7 +40,7 @@ import torch.nn.functional as F
 from ..cuda import native_ops as _ops
 from ..display import compact_repr
 from ..policy import refuse_derivative
-from .angle import AOA_ROUTES, ArrayGeometry, tdm_compensate
+from .angle import AOA_ROUTES, ArrayGeometry, require_separated, tdm_compensate
 from .range_doppler import RangeDopplerMap
 
 #: Why no detector here has a derivative. Written once and quoted by all four
@@ -865,6 +865,7 @@ def point_cloud(
         raise TypeError(f"array must be an ArrayGeometry, got {type(array).__name__}")
     if route not in AOA_ROUTES:
         raise ValueError(f"route must be one of {tuple(sorted(AOA_ROUTES))}, got {route!r}")
+    require_separated(rd.axes, "point_cloud")
     # Before the shape checks and before any arithmetic, so the refusal fires
     # with no PointCloud in existence and no transform paid for. The type
     # checks above are all that precede it, and only because the guard has to

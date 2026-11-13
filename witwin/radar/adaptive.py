@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 import numpy as np
 import torch
@@ -93,6 +93,42 @@ class AdaptiveTable:
         return int(self.delays.shape[0])
 
 
+class AdaptiveDiagnostics(TypedDict):
+    """One adaptive frame's probe record, as ``Result.adaptive_diagnostics`` publishes it.
+
+    A plain ``dict`` at run time, so it saves as JSON unchanged. ``complete``
+    is Channel's key with Channel's meaning: no path within the requested
+    bounds can have been missed in this frame, because every observation was
+    evaluated (``exhaustive``) or because the candidate family was certified
+    complete for all time (``topology_proved_complete``). It is the frame's
+    share of ``Result.path_set_complete``.
+    """
+
+    #: World evaluations (probes) the frame spent.
+    evaluations: int
+    #: Observation instants in the frame's schedule.
+    observation_count: int
+    #: Intervals refined because a probe saw a different path set.
+    topology_refinements: int
+    accepted_intervals: int
+    #: The largest phase error any accepted interval was tested at, rad.
+    max_tested_phase_error_rad: float
+    #: The largest relative amplitude error any accepted interval was tested at.
+    max_tested_relative_amplitude_error: float
+    #: The maximum probe spacing in force, s.
+    max_interval_s: float
+    #: Instants one accepted interval interpolates through.
+    interpolation_nodes: int
+    #: Jittered off-grid checks made, and how many of them forced a refinement.
+    verification_probes: int
+    verification_refinements: int
+    exhaustive: bool
+    topology_proved_complete: bool
+    complete: bool
+    #: Replay groups the echo synthesized the frame in; ``0`` before an echo.
+    synthesis_batches: int
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class AdaptiveFrame:
     """One adaptive frame's world half: the table, its statistics, and two probes.
@@ -103,7 +139,7 @@ class AdaptiveFrame:
     """
 
     table: AdaptiveTable
-    stats: dict[str, Any]
+    stats: AdaptiveDiagnostics
     first: ProbeRecord
     last: ProbeRecord
     #: Every evaluated probe, by its index in the frame's schedule. Its rows
@@ -363,17 +399,21 @@ class _Controller:
         self.partitions: list[tuple[int, int, list[int]]] = []
         #: The verification instant of each candidate interval, off its grid.
         self.verify: dict[tuple[int, int], int] = {}
-        self.stats: dict[str, Any] = {
+        self.stats: AdaptiveDiagnostics = {
             "evaluations": 0,
+            "observation_count": len(times),
             "topology_refinements": 0,
             "accepted_intervals": 0,
             "max_tested_phase_error_rad": 0.0,
             "max_tested_relative_amplitude_error": 0.0,
             "max_interval_s": self.max_interval_s,
+            "interpolation_nodes": self.node_count,
             "verification_probes": 0,
             "verification_refinements": 0,
             "exhaustive": False,
             "topology_proved_complete": False,
+            "complete": False,
+            "synthesis_batches": 0,
         }
 
     def ensure(self, indices: list[int]) -> None:
@@ -423,7 +463,6 @@ class _Controller:
         # the interpolation and tests the error at the instants between them,
         # so its probe grid is this wide and the even positions are the nodes.
         grid_width = 2 * (self.node_count - 1) + 1
-        self.stats["interpolation_nodes"] = self.node_count
 
         while pending:
             probes: dict[tuple[int, int], list[int]] = {}
@@ -711,7 +750,7 @@ class _Controller:
         stats["topology_proved_complete"] = any(frame.topology_complete for frame in frames) and all(
             frame.topology_complete or frame.rediscovered for frame in frames
         )
-        stats["observation_count"] = len(self.times)
+        stats["complete"] = stats["exhaustive"] or stats["topology_proved_complete"]
 
 
 def trace_adaptive_frame(
@@ -869,4 +908,11 @@ def echo_adaptive_frame(
     return all_slots[slot, pair // spec.num_tx], len(values)
 
 
-__all__ = ["AdaptiveFrame", "AdaptiveTable", "echo_adaptive_frame", "lagrange_weights", "trace_adaptive_frame"]
+__all__ = [
+    "AdaptiveDiagnostics",
+    "AdaptiveFrame",
+    "AdaptiveTable",
+    "echo_adaptive_frame",
+    "lagrange_weights",
+    "trace_adaptive_frame",
+]
