@@ -51,9 +51,12 @@ milestones. The changelog fragments each work item wrote (one file per item in a
   (`torch.equal`) against the route they replaced.
 - **Suites.** The coordinator's full GPU suite on the integration branch after wave 3 (head d09022f) ran 2060 passed,
   25 skipped, 5 xfailed and 3 failed; the three failures were test-side and were fixed in that head. The final full
-  GPU run on the release candidate, after Channel 0.6.0 is retagged, is the coordinator's; the release agent ran the
-  quick tier, the documentation snippets, the examples and the tests touching what it changed (its report states
-  each).
+  GPU run (head 0ac4c0d, against a Channel build whose native code is the published 0.6.0's) ran 2070 passed,
+  24 skipped, 1 xfailed (the dihedral, a Channel request) and 2 failed: a stale import allowlist, fixed in 66a948f,
+  and a profiler launch count that passed on rerun. On the published Channel 0.6.0 wheel (build fingerprint
+  `c76385ae...c1438bb`, tag c287e11) the Channel-facing, AD-mode, oracle, snapshot and matrix tests ran 206 passed,
+  1 xfailed, and the quick tier ran 823 passed with every static gate OK. The release agent ran the documentation
+  snippets, the examples and the tests touching what it changed (its report states each).
 
 ## Known limitations at release
 
