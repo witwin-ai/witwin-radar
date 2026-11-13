@@ -66,6 +66,12 @@
           "signature": "(isolation_db: 'Any', delay_s: 'Any', phase: 'Any' = 0.0) -> None"
         },
         {
+          "name": "MeshTargets",
+          "kind": "class",
+          "target": "witwin.radar.targets.MeshTargets",
+          "signature": "(structure_ids: 'tuple[int, ...] | None' = None, cluster_size_m: 'float | None' = None, max_sites: 'int | None' = None, seed: 'int' = 0) -> None"
+        },
+        {
           "name": "Motion",
           "kind": "class",
           "target": "witwin.radar.motion.Motion",
@@ -593,6 +599,12 @@
           "kind": "class",
           "target": "witwin.radar.scattering.AspectScatterResponse",
           "signature": "(axis: 'torch.Tensor', amplitude: 'torch.Tensor', phase_rad: 'torch.Tensor', exponent: 'float', coherent_interval_s: 'float', aspect_phase_rate_rad_per_s: 'float' = 0.0) -> None"
+        },
+        {
+          "name": "FacetScatterResponse",
+          "kind": "class",
+          "target": "witwin.radar.scattering.FacetScatterResponse",
+          "signature": "(wavenumber_rad_per_m: 'float', polarization: 'tuple[float, float, float]', seed: 'int' = 0, frame: 'object | None' = None) -> None"
         },
         {
           "name": "SCATTERING_MATRIX_LAYOUT",

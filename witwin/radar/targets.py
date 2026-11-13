@@ -1,13 +1,11 @@
 """What the radar is looking at: where the scatterers are and how they scatter.
 
-Two records, and the restriction is the design rather than an unfinished edge.
-:class:`PointTargets` names world positions outright; :class:`StructureTargets`
-puts one scatterer at each world anchor Core publishes for a moving structure.
-What is deliberately absent is any rule that DERIVES a scatterer from geometry
-- a surface sample, a centroid, a bounding-box centre, a visibility-weighted
-set. Every one of those is a geometry algorithm, and a geometry algorithm
-written in Torch on the production path is what this architecture exists to
-keep out. R-ADR-020 records the deferral and names what closing it would need.
+Three records. :class:`PointTargets` names world positions outright;
+:class:`StructureTargets` puts one scatterer at each world anchor Core
+publishes for a moving structure; :class:`MeshTargets` makes the facets of
+Core structures the scatterers, each a physical-optics facet of the structure's
+own material (R-ADR-042). The facet extraction is native and lives in
+:mod:`witwin.radar.facets`; nothing here computes geometry.
 
 Position and strength are one record because they are one statement about the
 world; the carrier and the device are the radar's and are supplied when the
@@ -20,6 +18,7 @@ This module owns the target vocabulary. The scattering COEFFICIENT is owned by
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
@@ -28,9 +27,15 @@ import torch
 
 from .binding import ScatterSitePolicy
 from .propagation import Kinematics
-from .scattering import AspectScatterResponse, ScalarRcsResponse, ScatteringMatrixResponse, rcs_amplitude
+from .scattering import (
+    AspectScatterResponse,
+    FacetScatterResponse,
+    ScalarRcsResponse,
+    ScatteringMatrixResponse,
+    rcs_amplitude,
+)
 
-__all__ = ["Aspect", "PointTargets", "ScatteringMatrix", "StructureTargets"]
+__all__ = ["Aspect", "MeshTargets", "PointTargets", "ScatteringMatrix", "StructureTargets"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +213,49 @@ class StructureTargets:
             _require_per_target_length(f"StructureTargets.{name}", getattr(self, name), count)
 
 
+@dataclass(frozen=True, slots=True)
+class MeshTargets:
+    """The facets of Core structures, each scattering as a physical-optics facet.
+
+    The selected structures stay in the scene, so the legs see them: a facet
+    hidden by the rest of the world contributes nothing, and the target's own
+    multi-bounce (a corner reflector's) comes from the scene's reflections, so
+    it needs ``reflections`` at least the number of bounces before the last.
+    What a facet returns is fixed by its area, its orientation to the two legs
+    and the material its structure carries (R-ADR-042); there is no cross
+    section to declare. A facet scatters from its normal side only, the side
+    the right-handed corner order points to.
+
+    Every facet is a site by default. ``cluster_size_m`` merges the facets
+    whose centroids share one cubic cell of that edge into one site, and
+    ``max_sites`` picks the finest such cell that keeps the site count within
+    the budget; a merged site keeps every facet's own term and phase, valid
+    while the cell is well inside the far field of the radar
+    (``k D^2 / (8 R)`` small for a cell of extent ``D`` at range ``R``), and
+    is occluded as one point.
+    """
+
+    #: Which structures scatter. ``None`` takes every structure in the scene.
+    structure_ids: tuple[int, ...] | None = None
+    #: Cubic cell edge, m, of one merged site; ``None`` keeps one facet per site.
+    cluster_size_m: float | None = None
+    #: The largest site count to allow; ``None`` declares no budget.
+    max_sites: int | None = None
+    #: Seed of the frozen per-facet phase of the diffuse (rough-surface) term.
+    seed: int = 0
+    #: Stable world IDs are allocated per site; a mesh target names none.
+
+    def __post_init__(self) -> None:
+        if self.cluster_size_m is not None and self.max_sites is not None:
+            raise ValueError("MeshTargets takes cluster_size_m or max_sites, not both")
+        if self.cluster_size_m is not None and not float(self.cluster_size_m) > 0.0:
+            raise ValueError("MeshTargets.cluster_size_m must be positive")
+        if self.max_sites is not None and (type(self.max_sites) is not int or self.max_sites < 1):
+            raise ValueError("MeshTargets.max_sites must be a positive int")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("MeshTargets.seed must be a non-negative int")
+
+
 def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
     """Exactly one of the two ways to say how strongly a target scatters."""
 
@@ -286,7 +334,7 @@ class _PositionTrajectory:
         return Kinematics(positions_m=positions)
 
 
-def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tuple[Any, Any]:
+def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *, radar) -> tuple[Any, Any]:
     """Split a target record into the site policy and the scatter response.
 
     The two halves go to two different owners - the binding places the sites,
@@ -296,6 +344,21 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
     of a target record.
     """
 
+    if isinstance(targets, MeshTargets):
+        from .facets import FacetSites
+
+        facets = FacetSites(
+            structure_ids=targets.structure_ids,
+            carrier_hz=float(radar.carrier),
+            cluster_size_m=targets.cluster_size_m,
+            max_sites=targets.max_sites,
+        )
+        response = FacetScatterResponse(
+            wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength),
+            polarization=tuple(float(value) for value in radar.polarization_vector),
+            seed=targets.seed,
+        )
+        return ScatterSitePolicy.from_facets(facets), response
     if isinstance(targets, PointTargets):
         positions = targets.positions
         if not isinstance(positions, torch.Tensor):
@@ -311,7 +374,7 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
         policy = ScatterSitePolicy.structure_anchor(structure_ids=targets.structure_ids, stable_ids=targets.ids)
     else:
         raise TypeError(
-            f"targets must be PointTargets or StructureTargets, got {type(targets).__name__}; where the "
+            f"targets must be PointTargets, StructureTargets or MeshTargets, got {type(targets).__name__}; where the "
             "scatterers are is a declaration, not a search"
         )
 

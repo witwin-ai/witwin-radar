@@ -958,6 +958,7 @@ class TwoWayComposer:
         direct_identity: LegIdentity | None = None,
         max_round_trips: int | None = None,
         leg_site_ids: Sequence[int] | None = None,
+        outbound_line_of_sight_only: bool = False,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -994,6 +995,16 @@ class TwoWayComposer:
         materialised, because the join is the step whose size is the product of
         the two legs' row counts, and a refusal there names the pair rather
         than an allocation failure somewhere downstream.
+
+        ``outbound_line_of_sight_only`` belongs to a mesh target (R-ADR-042):
+        it drops every reflected outbound row. A facet scatters once, with
+        physical optics, at the LAST interaction of the wave, so reflections
+        may precede the facet (inbound) but never follow it; without the rule
+        every multi-bounce on the target would be composed once per facet it
+        visits. The leg topology names its interactions by compiled face index
+        rather than by Core primitive, so the rule cannot single out the
+        target's own surfaces and drops reflections off the rest of the world
+        after the facet as well.
         """
 
         device = inbound.sink_id.device
@@ -1052,7 +1063,10 @@ class TwoWayComposer:
         # Rows that reach an undeclared site are not part of this join.
         declared = np.asarray(sites, dtype=np.int64)
         inbound_rows = np.flatnonzero(np.isin(arriving.sink, declared))
-        outbound_rows = np.flatnonzero(np.isin(leaving.sink, declared))
+        outbound_mask = np.isin(leaving.sink, declared)
+        if outbound_line_of_sight_only:
+            outbound_mask &= leaving.depth == 0
+        outbound_rows = np.flatnonzero(outbound_mask)
         inbound_site = _ranks(arriving.sink[inbound_rows], sites)
         through = (
             None

@@ -9,7 +9,8 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 ## Concept-axis layout
 
 - `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat-configuration loader.
-- `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py` and the site binding in `binding.py`; nothing here computes either.
+- `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `MeshTargets`, `Aspect`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py`, the site binding in `binding.py` and the facet extraction in `facets.py`; nothing here computes any of them.
+- `witwin/radar/facets.py` — a mesh target's facets: which faces scatter, their materials at the carrier, how facets group into sites, and each frame's facet corners and site positions through the native `facet_geometry` operator (R-ADR-042).
 - `witwin/radar/simulation.py` — scene-session orchestration: the typed `Session` record, the `WorldHalf` that owns the epoch loop and every Channel call, the instrument half (`echo_frame` and the one synthesis dispatch), and the `Paths` the world half retains.
 - `witwin/radar/motion.py` — the `Motion` sampling record and its adaptive tolerances.
 - `witwin/radar/binding.py` — binding one radar to one snapshot: stable IDs, the scatter-site policy, `SensorEndpointIds`, and the endpoint specs the legs consume.
@@ -18,7 +19,7 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
 - `witwin/radar/paths.py` — two-way round-trip path contracts and composition.
-- `witwin/radar/scattering.py` — scalar and aspect-dependent scattering responses.
+- `witwin/radar/scattering.py` — scattering responses: scalar, aspect lobe, and physical-optics facets.
 - `witwin/radar/sensors.py` — array geometry, transmit power, antenna patterns, and round-trip weighting.
 - `witwin/radar/frontend.py` — receiver chain, noise, ADC, AGC, and deterministic seed contracts.
 - `witwin/radar/smpl.py` — Radar-specific SMPL authoring on Core geometry.

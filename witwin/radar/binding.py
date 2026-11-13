@@ -4,8 +4,8 @@ A binding is a pure function of the radar, the snapshot and the declared site
 policy. It allocates the deterministic stable IDs a frozen leg topology names
 its rows by, resolves the scatter sites, and builds the four endpoint specs the
 two legs consume. It reads no device value and computes no geometry: sites are
-declared by the caller or published by Core, never derived from a mesh
-(R-ADR-020).
+declared by the caller, published by Core, or - for a mesh target - placed by
+the native facet operator that :mod:`witwin.radar.facets` owns (R-ADR-042).
 """
 
 from __future__ import annotations
@@ -63,19 +63,21 @@ DEFAULT_POLARIZATION = (0.0, 0.0, 1.0)
 #: transmit power ships.
 SITE_EXCITATION_POWER_W = 1.0
 
-#: Where scatter sites may come from. Both are declarations by the caller or by
-#: Core; neither derives a site from geometry.
+#: Where scatter sites may come from: declared by the caller, published by
+#: Core, or the facets of a mesh target placed by the native facet operator.
 SITE_SOURCE_EXPLICIT = "explicit"
 SITE_SOURCE_STRUCTURE_ANCHOR = "structure_anchor"
-SITE_SOURCES = (SITE_SOURCE_EXPLICIT, SITE_SOURCE_STRUCTURE_ANCHOR)
+SITE_SOURCE_FACETS = "facets"
+SITE_SOURCES = (SITE_SOURCE_EXPLICIT, SITE_SOURCE_STRUCTURE_ANCHOR, SITE_SOURCE_FACETS)
 
 _MESH_SITE_DEFERRAL = (
     "deriving scatter sites by sampling a structure's MESH is deferred by "
     "R-ADR-020. A sampling rule is a geometry algorithm, and "
     "geometry on a production path belongs to Channel's native geometry owner, "
     "not to a Torch expression in Radar. Declare the sites instead - "
-    "PointTargets(positions=...) - or give the structure a rigid "
-    "motion so that Core publishes a world anchor for it"
+    "PointTargets(positions=...) - give the structure a rigid "
+    "motion so that Core publishes a world anchor for it, or scatter from its "
+    "facets with MeshTargets"
 )
 
 
@@ -180,6 +182,8 @@ class ScatterSitePolicy:
     stable_ids: tuple[int, ...] | None = None
     power_w: float = SITE_EXCITATION_POWER_W
     trajectory: SiteTrajectory | None = None
+    #: The facet source of a mesh target (:class:`witwin.radar.facets.FacetSites`).
+    facets: Any = None
 
     def __post_init__(self) -> None:
         if self.trajectory is not None and not callable(getattr(self.trajectory, "at", None)):
@@ -202,9 +206,11 @@ class ScatterSitePolicy:
             if self.positions_m is not None:
                 raise ValueError(
                     "positions_m belongs to the explicit policy; a "
-                    "structure_anchor policy reads its positions from the "
+                    "structure_anchor or facets policy reads its positions from the "
                     "snapshot"
                 )
+        if (self.source == SITE_SOURCE_FACETS) != (self.facets is not None):
+            raise ValueError("a facets site policy, and only that policy, carries a facet source")
         if not float(self.power_w) > 0.0:
             raise ValueError("power_w must be positive")
 
@@ -248,8 +254,25 @@ class ScatterSitePolicy:
             power_w=power_w,
         )
 
+    @classmethod
+    def from_facets(cls, facets: Any, *, power_w: float = SITE_EXCITATION_POWER_W) -> ScatterSitePolicy:
+        """Sites at a mesh target's facets, placed per snapshot by the native facet operator."""
+
+        return cls(source=SITE_SOURCE_FACETS, facets=facets, power_w=power_w)
+
+    def resolve_frame(self, snapshot: Any, *, device: torch.device) -> tuple[torch.Tensor, Any]:
+        """The site positions, and the facet frame they came from when this is a mesh target."""
+
+        if self.source == SITE_SOURCE_FACETS:
+            frame = self.facets.resolve(snapshot, device=device)
+            return frame.sites, frame
+        return self.resolve(snapshot, device=device), None
+
     def resolve(self, snapshot: Any, *, device: torch.device) -> torch.Tensor:
         """The ``(S, 3)`` site positions this policy names, float32 or float64 as authored."""
+
+        if self.source == SITE_SOURCE_FACETS:
+            return self.resolve_frame(snapshot, device=device)[0]
 
         if self.source == SITE_SOURCE_EXPLICIT:
             if self.trajectory is not None:
@@ -371,6 +394,9 @@ class RadarWorldBinding:
     transmitter_ids: tuple[int, ...]
     receiver_ids: tuple[int, ...]
     site_ids: tuple[int, ...]
+    #: A mesh target's facet frame (:class:`witwin.radar.facets.FacetFrame`) at
+    #: this snapshot, whose ``sites`` are the site positions; ``None`` otherwise.
+    facets: Any = None
 
     def __post_init__(self) -> None:
         if self.transmitters.powers_w is None:
@@ -534,7 +560,7 @@ def bind_radar_world(
         raise ValueError(
             f"radar.tx_pos is on {device} but radar.rx_pos is on {receiver_positions.device}; one radar is one device"
         )
-    site_positions = sites.resolve(snapshot, device=device)
+    site_positions, facets = sites.resolve_frame(snapshot, device=device)
 
     transmitter_ids, receiver_ids, allocated_site_ids = StableIdAllocator().allocate(
         transmitter_count=int(transmitter_positions.shape[0]),
@@ -577,6 +603,7 @@ def bind_radar_world(
         transmitter_ids=transmitter_ids,
         receiver_ids=receiver_ids,
         site_ids=tuple(site_ids),
+        facets=facets,
     )
 
 

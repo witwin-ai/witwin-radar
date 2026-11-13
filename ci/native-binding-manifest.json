@@ -10,6 +10,7 @@
   "library": "_radar_native",
   "sources": [
     "witwin/radar/cuda/extension.cpp",
+    "witwin/radar/cuda/facet_scatter.cu",
     "witwin/radar/cuda/fmcw_beat.cu",
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
@@ -112,6 +113,66 @@
       "python_owner": "witwin/radar/processing/detection.py",
       "python_callers": [
         "_dbscan_roots"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_backward",
+      "ad_group": "facet_geometry",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.backward"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_forward",
+      "ad_group": "facet_geometry",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.forward"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_jvp",
+      "ad_group": "facet_geometry",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.jvp"
+      ]
+    },
+    {
+      "symbol": "facet_response_backward",
+      "ad_group": "facet_response",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.backward"
+      ]
+    },
+    {
+      "symbol": "facet_response_forward",
+      "ad_group": "facet_response",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.forward"
+      ]
+    },
+    {
+      "symbol": "facet_response_jvp",
+      "ad_group": "facet_response",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.jvp"
       ]
     },
     {

@@ -504,6 +504,24 @@ def _precise(spec: RadarEndpointSpec) -> torch.Tensor:
     return spec.precise_positions_m
 
 
+def _bound(response: ScatterResponse, binding: RadarWorldBinding, time_s: float) -> ScatterResponse:
+    """The response at one observation: bound to its facets, for a mesh target.
+
+    A response with ``bind_observation`` depends on the observation - a mesh
+    target's facet frame - and is bound here; every other response is the
+    session's own. A slot batch binds its first observation, which is exact
+    because only a world whose structures do not move is slot batched.
+    """
+
+    bind = getattr(response, "bind_observation", None)
+    if bind is None:
+        if binding.facets is not None:
+            raise TypeError("a mesh target's sites need a response that binds to their facets")
+        return response
+    bound: ScatterResponse = bind(binding, time_s)
+    return bound
+
+
 def _powers(spec: RadarEndpointSpec) -> torch.Tensor:
     if spec.powers_w is None:
         raise ValueError("every slot of a source stack carries powers_w")
@@ -749,6 +767,7 @@ class WorldHalf:
                 # so a site with no row is occluded at this instant rather
                 # than undeclared, and contributes zero.
                 leg_site_ids=binding.site_ids,
+                outbound_line_of_sight_only=binding.facets is not None,
             )
             pattern = RoundTripPatternStage.freeze(
                 self.radar,
@@ -909,9 +928,10 @@ class WorldHalf:
     def _response_at(self, group: list[_PendingObservation]) -> ScatterResponse:
         """The scatter response for one replay group, one site set per instant when it varies in time."""
 
-        if self.timed_response is None:
-            return self.response
-        return self.timed_response.at([entry.time_s for entry in group])
+        response = (
+            self.response if self.timed_response is None else self.timed_response.at([entry.time_s for entry in group])
+        )
+        return _bound(response, group[0].binding, group[0].time_s)
 
     def _body_frame(
         self, group: list[_PendingObservation], pattern: RoundTripPatternStage, *points: torch.Tensor

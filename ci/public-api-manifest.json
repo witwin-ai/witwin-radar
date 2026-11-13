@@ -48,6 +48,7 @@
       "Frame": "witwin.radar.results.Frame",
       "Iq": "witwin.radar.frontend.Iq",
       "Leakage": "witwin.radar.radar.Leakage",
+      "MeshTargets": "witwin.radar.targets.MeshTargets",
       "Motion": "witwin.radar.motion.Motion",
       "Noise": "witwin.radar.frontend.Noise",
       "Ofdm": "witwin.radar.radar.Ofdm",
@@ -144,6 +145,7 @@
       "AspectScatterResponse": "witwin.radar.scattering.AspectScatterResponse",
       "SCATTERING_MATRIX_LAYOUT": "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
       "SITE_BASIS": "witwin.radar.scattering.SITE_BASIS",
+      "FacetScatterResponse": "witwin.radar.scattering.FacetScatterResponse",
       "ScalarRcsResponse": "witwin.radar.scattering.ScalarRcsResponse",
       "ScatterResponse": "witwin.radar.scattering.ScatterResponse",
       "ScatteringMatrixResponse": "witwin.radar.scattering.ScatteringMatrixResponse"
