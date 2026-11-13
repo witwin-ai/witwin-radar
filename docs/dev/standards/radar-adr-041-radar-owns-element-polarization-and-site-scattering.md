@@ -25,9 +25,20 @@ topology for `{los, reflection}` with AD modes `{none, vjp, jvp}`;
 **Response.** Every replay requests `complex3_transport`
 (`witwin.radar.channel.FIELD_RESPONSE`). The adapter refuses, by name, a
 Channel that cannot replay it for the requested components or AD mode; there
-is no scalar fallback. Discovery keeps `scalar_transport`, which only decides
-which rows exist. `RadarLegBatch.coefficient` is replaced by `field`, the
-`complex64[rows, 3]` field at the site.
+is no scalar fallback. A discovery that keeps its rows (the discovery route of
+R-ADR-033) requests `complex3_transport` too, so those rows compose exactly as
+a replay's; a discovery that only decides which rows exist takes
+`scalar_transport`. `RadarLegBatch.coefficient` is replaced by `field`, the
+`complex64[rows, 3]` field at the sink, and a wideband replay's band by
+`field_band`, `complex64[rows, F, 3]` (Channel's `field_offsets`), laid out as
+outer slots by `band_as_slots` exactly like the reference column.
+
+**Receivers in two roles.** Channel refuses a sink that carries power, so the
+binding publishes the receivers twice over one set of ID, position and
+polarization tensors: `receivers` (no power: the site-less leg's sinks) and
+`receiver_sources` (1 W: the outbound leg's sources, R-ADR-039). The receive
+polarization is `Radar.rx_polarization` when declared, the transmit one
+otherwise, in both roles.
 
 **Orientation.** Both legs run from a radar element toward the site
 (R-ADR-039), so both fields are AT THE SITE: `E` launched by the transmitter,
@@ -35,9 +46,12 @@ which rows exist. `RadarLegBatch.coefficient` is replaced by `field`, the
 
 **Element factor.** Channel launches from a dipole `p`; its field carries
 `|P_perp(d) p|`, `d` the departure direction. The join multiplies each leg by
-`a = 1/|P_perp(d) p|` (`TwoWayComposer.freeze(element_polarization=(p_tx,
-p_rx))`), so the launched field is a unit co-polar vector times the transport
-and the pattern stage applies the declared element pattern once. On the
+`a = 1/|P_perp(d) p|`, so the launched field is a unit co-polar vector times
+the transport and the pattern stage applies the declared element pattern once.
+`p` is each leg row's own launch polarization (`RadarLegBatch.source_polarization`,
+the source endpoint's polarization gathered by the adapter), not a freeze-time
+constant: a radar pose (`pose=`) turns every element's polarization per
+instant, Channel launches the turned one, and the factor reads the same. On the
 element's own axis `a` is published as 0: no tangent field is non-zero on a
 whole sphere, so a linearly polarized "isotropic" element has a null there.
 
@@ -53,6 +67,17 @@ on a monostatic geometry. The interface a polarimetric response implements:
 `matrix_width = 4`, `evaluate(sites, device) -> complex64[sites, 4]` and
 `site_up(sites, device) -> float32[sites, 3]`; `scatter`'s facet-derived and
 per-site responses produce it.
+
+**Site-less rows.** A transmitter-to-receiver row (the direct leg of R-ADR-033:
+a wall echo, line of sight between distinct elements) is the join's fourth
+row family: `V = a_t a_r (p_r . E) exp(j psi)`, `E` the transmitter's field at
+the receiver, `p_r` the receiver's polarization (`sink_polarization`), `a_t` on
+the leg's first segment and `a_r = 1/|P_perp(d_last) p_r|` on its last, and the
+float64 length of R-ADR-040. The kernel writes each site row and each
+site-less row straight to its frozen composed position (`place`, the inverse
+of the composer's `merge`), so no gather follows the launch; the VJP gives the
+site-less rows a fourth owner family in the same grid (each such row owns its
+own gradient slot).
 
 **Native.** All of it is in the one join launch (forward, VJP, JVP), next to
 the float64 path length of R-ADR-040. Launch count is unchanged: the fields
@@ -84,7 +109,11 @@ pattern record extension of R-ADR-030 is left for when Channel publishes the
 - `tests/test_join_geometry_ad.py`: forward, every VJP input gradient (fields,
   directions, positions, lengths, the matrix) and the JVP adjoint identity,
   for width-1 and width-4 responses, against an independent float64 Torch
-  statement of the law.
+  statement of the law, with a different launch polarization on every row;
+  the same three for the site-less family at its composed positions.
+- `tests/test_polarimetric_scattering.py::test_the_element_factor_reads_the_polarization_the_pose_turned`:
+  a 60 degree yaw leaves the isotropic echo unchanged to 1e-5 (a factor read
+  from the authored polarization would leave a quarter).
 
 ## Consequences
 

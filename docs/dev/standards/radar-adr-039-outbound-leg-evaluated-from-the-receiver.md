@@ -84,7 +84,19 @@ test_radar_equation.py`, `test_image_multipath.py`,
 ## Consequences
 
 Budgets: a slot-major replay group stacks the site endpoints once instead of
-twice (one site spec), and the receivers now carry powers; the per-frame launch
-counts in `tests/test_session_budget.py` are re-pinned in the same commit.
+twice (one site spec). Channel refuses a sink that carries power, so the
+receivers appear in two roles over one set of tensors: `receivers` (no power,
+the site-less leg's sinks) and `receiver_sources` (1 W, this leg's sources);
+the second role uploads nothing. The per-frame launch counts in
+`tests/test_session_budget.py` are re-pinned over the merged release.
+
+Row identity: the outbound leg's interaction sequence and diffracting edge are
+recorded in the leg's own orientation, receiver to site. A composed row's key
+(`TwoWayComposer.identity_host`, the sequences and `edge_host`, which the path
+event log and the adaptive plane groups compare) is therefore the reverse of
+the site-to-receiver sequence for multi-bounce outbound rows. Every key is
+compared only with keys built the same way, so matching across epochs and
+probes is unaffected; a consumer that reads a sequence as an ordered route
+reads the outbound one from the receiver.
 The `multipath` work that resolves TX and RX toward the sites in one request
 (M3-5) builds on this orientation.

@@ -50,7 +50,14 @@ tau = L64 / c0
 ```
 
 written in that form so the large terms cancel analytically rather than in
-floating point. `tau` is published as the float32 pair
+floating point. A wideband band (R-ADR-035) is composed column by column with
+that column's own pair: the join reads `(k64, k32)` per frequency column from a
+float64 table, `k64 = 2 pi (f_ref + n df) / c0` and `k32` Channel's float32
+wave number at its float32 launch frequency `float32(f_ref + n df)` (the sum in
+float64; Channel's `launch_grid=float32`). A replica that rounded the sum in
+float32 misses some columns by a `k32` ulp, 9 mrad at 37 m, which is what the
+measurement test below caught. Site-less rows (R-ADR-041) take the same law in
+the same launch. `tau` is published as the float32 pair
 `RadarPathBatch.total_delay_s = float(tau)` and
 `total_delay_residual_s = float(tau - total_delay_s)`; the residual is primal
 only, the delay's derivative is carried by `total_delay_s`.
@@ -90,6 +97,20 @@ interpolates between float64 node delays; it subtracts a quantization
 allowance (two delays at the pair's `2^-46` relative resolution, two complex64
 phases at `2^-22` rad) from its phase test.
 
+Every waveform kernel reads the pair. The FMCW beat and range-spectrum, OFDM
+CFR and time-domain, and pulsed kernels take the residual as a
+non-differentiable `tau_lo` input and form every phase and envelope term from
+`tau_hi + tau_lo` in float64 (`path_delay.cuh`); an empty `tau_lo` reads
+`tau_hi` alone, bit for bit as before. The range spectrum's closed form also
+evaluates its Dirichlet argument in float64 when a residual is present: in
+float32 the argument alone is quantized to `N ulp32(x)`, the size of the
+float32 delay error it would otherwise refine. The fused adaptive FMCW kernel
+keeps its interpolated delay in float64 (`precise_delay`) when every probe
+carries the pair, and so does the unfused observation route; a table of bare
+float32 delays keeps the float32 boundary. `SynthesisPathBatch` carries
+`total_delay_residual_s`, and the session's slot flush gathers it with the
+rows.
+
 ## Evidence
 
 `tests/oracle/test_doppler_precision.py` (strict xfails removed, the
@@ -104,9 +125,8 @@ trajectory now returns float64), same scenario as the table above:
 | 100 m | const. velocity | -100.2 dBc | -107.6 dBc | 9.8e-6 rad | 2.8e-5 rad |
 | 100 m | const. acceleration | -102.8 dBc | -106.9 dBc | 7.2e-6 rad | 2.0e-5 rad |
 
-What remains is the float32 complex64 coefficient and the float32 delay the
-waveform kernels read for the slope term (`2 pi S tau u`, below 3e-5 rad at
-100 m for this chirp).
+What remains is the float32 complex64 coefficient; the waveform kernels read
+the float64 delay for the slope term too.
 
 - `tests/test_float64_path_length.py`: Channel's phase is `-k32 L32` (residual
   below 1e-6 rad at 100 m, and `k64` would be visibly wrong); a reflection
@@ -121,10 +141,20 @@ waveform kernels read for the slope term (`2 pi S tau u`, below 3e-5 rad at
   sites.
 - `tests/test_adaptive_float64_delays.py`: the same 5 m/s motion takes the
   same number of adaptive probes at 5 m and 100 m (within 2x).
+- `tests/test_float64_path_length.py::test_every_wideband_column_carries_the_float64_phase_at_its_own_frequency`:
+  every column of a 64 x 10 MHz band at 37 m is `exp(-j 2 pi n df tau64)`
+  relative to column 0 to 1e-5 rad (measured 6e-7).
+- `tests/test_delay_residual_synthesis.py`: one oracle per waveform family
+  (FMCW beat, range spectrum, fused adaptive FMCW, OFDM CFR, OFDM time,
+  pulsed LFM), a 4 GHz sweep at 100 m against a float64 statement of the
+  family's equation: under 1e-5 relative with the residual, over 1e-4 without
+  it, and an all-zero residual bit-identical to none (the spectrum, whose
+  residual route is the float64 Dirichlet, is held to the float64 statement at
+  the float32 delay instead).
 
 ## Consequences
 
-Waveform synthesis still reads `total_delay_s` (float32) for the slope and
-subcarrier terms; the residual is published so a waveform kernel can consume
-the float64 delay when a chirp's `2 pi B ulp32(tau)` matters (about 7e-4 rad
-for 4 GHz at 100 m). No Channel request is needed.
+Waveform synthesis reads the float64 delay, so a chirp's `2 pi B ulp32(tau)`
+(about 7e-4 rad for 4 GHz at 100 m) no longer enters the cube. No Channel
+request is needed for the delay; float64 interaction points remain the filed
+request for reflection rows.
