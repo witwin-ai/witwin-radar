@@ -161,15 +161,15 @@ def test_the_spec_refuses_an_impossible_grid(override, message):
         reference_spec(**override)
 
 
-def test_a_tabulated_pulse_is_refused_by_name_not_by_accident():
-    """The catalogue is two ANALYTIC kinds and the refusal says why.
+def test_a_tabulated_pulse_is_refused_by_name_and_pointed_at_the_coded_kind():
+    """An unknown kind is refused, and the refusal names where a sampled envelope lives.
 
-    A sampled or tabulated pulse would need a lookup inside the kernel at a
-    fractional argument, which is the interpolation this family exists to avoid.
-    Adding one is a design decision, not a configuration value.
+    A sampled envelope is the ``coded`` kind (R-ADR-046): one chip per sample,
+    held like a DAC holds it, so the kernel still evaluates a closed form at the
+    exact fractional delay and never interpolates.
     """
 
-    with pytest.raises(ValueError, match="ANALYTIC"):
+    with pytest.raises(ValueError, match="coded"):
         reference_spec(pulse_kind="tabulated")
 
 
