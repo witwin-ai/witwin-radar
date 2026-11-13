@@ -317,3 +317,36 @@ def test_a_refreshed_schedule_routes_every_link_cell_like_a_still_one(kind):
         assert refreshed.motion_sampling == kind
         scale = float(alone.cube.abs().max())
         torch.testing.assert_close(refreshed.cube, alone.cube, rtol=0, atol=1e-6 * scale)
+
+
+def test_mesh_targets_in_a_network_extract_their_facets_once_for_every_radar(monkeypatch):
+    """Each radar's cube is its standalone one, and the facet operator runs once per binding, not per radar."""
+
+    from witwin.core import PhysicalMaterial
+
+    from witwin.radar import MeshTargets
+    from witwin.radar.cuda import runtime
+    from witwin.radar.network import Network
+
+    vertices, faces = sc.plate_mesh(2, side_m=0.1, range_m=6.0)
+    scene = sc.mesh_scene(vertices, faces, material=PhysicalMaterial.perfect_conductor())
+    radars = _radars()
+    table = runtime.build_extension()
+    calls: dict[str, int] = {}
+    original = table.facet_geometry_forward
+
+    def counting(*args, **kwargs):
+        calls["facet_geometry_forward"] = calls.get("facet_geometry_forward", 0) + 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(table, "facet_geometry_forward", counting, raising=False)
+    results = Network(radars, links=((0, 1),)).simulate(scene, MeshTargets(), times=(0.0,), reflections=0)
+    network_calls = calls.pop("facet_geometry_forward")
+    alone = [radar.simulate(scene, MeshTargets(), times=(0.0,), reflections=0) for radar in radars]
+    single_calls = calls.pop("facet_geometry_forward") / len(radars)
+    assert network_calls == single_calls
+    assert torch.equal(results[0].cube, alone[0].cube)
+    # Radar 1 also hears radar 0 off the plate (a bistatic facet return).
+    assert not torch.equal(results[1].cube, alone[1].cube)
+    unlinked = Network(radars).simulate(scene, MeshTargets(), times=(0.0,), reflections=0)
+    assert torch.equal(unlinked[1].cube, alone[1].cube)
