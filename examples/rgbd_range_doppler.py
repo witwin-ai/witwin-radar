@@ -705,8 +705,10 @@ def generate_range_doppler(args: argparse.Namespace) -> np.ndarray:
         result = radar.simulate(scene, targets, times=(t0,), los=True, reflections=0)
         if axes is None:
             axes = result.axes
-            half = axes.range_bin_count // 2
-            ranges = axes.range_m[:half].detach().cpu().numpy()
+            # A complex (IQ) receiver resolves the whole published range axis; a
+            # real one folds its upper half onto the lower and reads only that.
+            shown = axes.range_bin_count // 2 if radar.waveform.sampling == "real" else axes.range_bin_count
+            ranges = axes.range_m[:shown].detach().cpu().numpy()
             velocities = axes.velocity_mps.detach().cpu().numpy()
 
         # The cube is already a range spectrum, so the range stage stays
