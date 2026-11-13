@@ -110,14 +110,14 @@ class _FacetGeometry(torch.autograd.Function):
     """Native facet corners and site positions, linear in the world vertices."""
 
     @staticmethod
-    def forward(vertices, model):
+    def forward(vertices: torch.Tensor, model: FacetModel) -> tuple[torch.Tensor, torch.Tensor]:
         corners = torch.empty((model.facet_count, 9), dtype=torch.float32, device=vertices.device)
         sites = torch.empty((model.site_count, 3), dtype=torch.float64, device=vertices.device)
         _ops().facet_geometry_forward(vertices, model.faces, model.site_offsets, model.site_facets, corners, sites)
         return corners, sites
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
         model = inputs[1]
         ctx.model = model
         # The operator is linear, so its tape is the topology: the vertex
@@ -129,7 +129,7 @@ class _FacetGeometry(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_corners, grad_sites):
+    def backward(ctx: Any, grad_corners: torch.Tensor, grad_sites: torch.Tensor) -> tuple[torch.Tensor, None]:
         vertex_offsets, vertex_entries, facet_site, site_offsets, site_facets = ctx.saved_tensors
         grad_vertices = torch.empty(
             (int(vertex_offsets.shape[0]) - 1, 3), dtype=torch.float32, device=grad_corners.device
@@ -147,7 +147,7 @@ class _FacetGeometry(torch.autograd.Function):
         return grad_vertices, None
 
     @staticmethod
-    def jvp(ctx, tan_vertices, tan_model):
+    def jvp(ctx: Any, tan_vertices: torch.Tensor, tan_model: Any) -> tuple[torch.Tensor, torch.Tensor]:
         faces, site_offsets, site_facets = ctx.saved_tensors
         corners = torch.empty((int(faces.shape[0]), 9), dtype=torch.float32, device=tan_vertices.device)
         sites = torch.empty((int(site_offsets.shape[0]) - 1, 3), dtype=torch.float64, device=tan_vertices.device)
@@ -222,10 +222,14 @@ class FacetSites:
         self._frame = None if live else (device, sources, frame)
         return frame
 
-    def _build(self, states, vertices, *, key: tuple, device: torch.device) -> FacetModel:
+    def _build(
+        self, states: list[Any], vertices: list[torch.Tensor], *, key: tuple, device: torch.device
+    ) -> FacetModel:
         """Host tables for one topology: one device-to-host copy of the vertices, at freeze time."""
 
-        faces_list, materials, offsets = [], [], 0
+        faces_list: list[np.ndarray] = []
+        materials: list[tuple[float, Any, list[list[Any]]]] = []
+        offsets = 0
         material_index: dict[int, int] = {}
         facet_material: list[np.ndarray] = []
         host_vertices = []
@@ -264,7 +268,14 @@ class FacetSites:
 
         # Every table crosses to the device in two copies, one per dtype, and
         # is published as views of those buffers.
-        integer_tables = (faces, site_offsets, site_facets, site_of, vertex_offsets, vertex_entries)
+        integer_tables: tuple[np.ndarray, ...] = (
+            faces,
+            site_offsets,
+            site_facets,
+            site_of,
+            vertex_offsets,
+            vertex_entries,
+        )
         integer_tables += (np.concatenate(facet_material), layer_offsets)
         integers = torch.from_numpy(
             np.concatenate([np.asarray(table, dtype=np.int64).reshape(-1) for table in integer_tables])

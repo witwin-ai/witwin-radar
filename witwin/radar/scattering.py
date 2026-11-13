@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import torch
 
@@ -417,7 +417,8 @@ class ScatteringMatrixResponse:
         :func:`rcs_amplitude` of ``sigma_m2``.
         """
 
-        amplitude = rcs_amplitude(float(sigma_m2), SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz))
+        # A float cross section gives a float amplitude.
+        amplitude = cast(float, rcs_amplitude(float(sigma_m2), SPEED_OF_LIGHT_M_PER_S / float(reference_frequency_hz)))
         signs = {"sphere": 1.0, "dihedral": -1.0}
         if kind not in signs:
             raise ValueError(f"kind must be one of {sorted(signs)}, got {kind!r}")
@@ -451,26 +452,26 @@ class _ScatterDirection(torch.autograd.Function):
     """Native unit departure bearing, with the same Jacobian in both AD modes."""
 
     @staticmethod
-    def forward(origin, target):
+    def forward(origin: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         out = torch.empty_like(origin)
         _ops().scatter_direction_forward(origin.contiguous(), target.contiguous(), out)
         return out
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
         ctx.save_for_backward(*inputs)
         ctx.save_for_forward(*inputs)
 
     @staticmethod
     @first_order_only
-    def backward(ctx, gradient):
+    def backward(ctx: Any, gradient: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         origin, target = ctx.saved_tensors
         projected = torch.empty_like(origin)
         _ops().scatter_direction_backward(origin.contiguous(), target.contiguous(), gradient.contiguous(), projected)
         return -projected, projected
 
     @staticmethod
-    def jvp(ctx, d_origin, d_target):
+    def jvp(ctx: Any, d_origin: torch.Tensor | None, d_target: torch.Tensor | None) -> torch.Tensor:
         origin, target = ctx.saved_tensors
         d_origin = torch.zeros_like(origin) if d_origin is None else d_origin
         d_target = torch.zeros_like(target) if d_target is None else d_target
@@ -492,7 +493,19 @@ class _AspectResponse(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid, exponent, tables):
+    def forward(
+        dir_in: torch.Tensor,
+        dir_out: torch.Tensor,
+        axis: torch.Tensor,
+        amplitude: torch.Tensor,
+        phase_rad: torch.Tensor,
+        idx_in: torch.Tensor,
+        idx_out: torch.Tensor,
+        idx_site: torch.Tensor,
+        row_valid: torch.Tensor,
+        exponent: float,
+        tables: _BackwardTables,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         rows = int(row_valid.shape[0])
         s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         s_im = torch.empty_like(s_re)
@@ -516,7 +529,7 @@ class _AspectResponse(torch.autograd.Function):
         return s_re, s_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
         (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid, exponent, tables) = inputs
         ctx.exponent = exponent
         ctx.tables = tables
@@ -526,7 +539,7 @@ class _AspectResponse(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_s_re, grad_s_im):
+    def backward(ctx: Any, grad_s_re: torch.Tensor, grad_s_im: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         tables = ctx.tables
         grad_dir_in = torch.empty_like(dir_in)
@@ -581,22 +594,22 @@ class _AspectResponse(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_dir_in,
-        tan_dir_out,
-        tan_axis,
-        tan_amplitude,
-        tan_phase_rad,
-        tan_idx_in,
-        tan_idx_out,
-        tan_idx_site,
-        tan_row_valid,
-        tan_exponent,
-        tan_tables,
-    ):
+        ctx: Any,
+        tan_dir_in: torch.Tensor | None,
+        tan_dir_out: torch.Tensor | None,
+        tan_axis: torch.Tensor | None,
+        tan_amplitude: torch.Tensor | None,
+        tan_phase_rad: torch.Tensor | None,
+        tan_idx_in: Any,
+        tan_idx_out: Any,
+        tan_idx_site: Any,
+        tan_row_valid: Any,
+        tan_exponent: Any,
+        tan_tables: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         (dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
 
-        def tangent(value, like):
+        def tangent(value: torch.Tensor | None, like: torch.Tensor) -> torch.Tensor:
             return torch.zeros_like(like) if value is None else value.contiguous()
 
         rows = int(row_valid.shape[0])
@@ -648,7 +661,7 @@ class _BackwardTables:
     slot_local_sites: int = 0
 
 
-def _require_parameter(name: str, value: object, *, sites: int, width: int | None):
+def _require_parameter(name: str, value: object, *, sites: int, width: int | None) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor, got {type(value).__name__}")
     if value.dtype != torch.float32:
@@ -728,9 +741,9 @@ class AspectScatterResponse:
     @classmethod
     def from_values(
         cls,
-        axis,
-        amplitude,
-        phase_rad,
+        axis: Any,
+        amplitude: Any,
+        phase_rad: Any,
         *,
         exponent: float,
         coherent_interval_s: float,
@@ -740,7 +753,7 @@ class AspectScatterResponse:
     ) -> AspectScatterResponse:
         """Build the response from host sequences, one row per site."""
 
-        def parameter(values, width: int | None) -> torch.Tensor:
+        def parameter(values: Any, width: int | None) -> torch.Tensor:
             tensor = torch.tensor(
                 [list(row) for row in values] if width else list(values), dtype=torch.float32, device=device
             )
@@ -779,7 +792,9 @@ class AspectScatterResponse:
             "dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+    def evaluate_rows(
+        self, composer: Any, inbound: Any, outbound: Any, row_valid: torch.Tensor, *, slots: int = 1
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """One complex value per composed row, as a real/imaginary pair.
 
         ``slots`` is the slot count of a slot-major batch: the composer's
@@ -827,8 +842,19 @@ class _FacetResponse(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid, law, tables
-    ):
+        k_in: torch.Tensor,
+        k_out: torch.Tensor,
+        corners: torch.Tensor,
+        sites: torch.Tensor,
+        material_params: torch.Tensor,
+        layers: torch.Tensor,
+        idx_in: torch.Tensor,
+        idx_out: torch.Tensor,
+        idx_site: torch.Tensor,
+        row_valid: torch.Tensor,
+        law: _FacetLaw,
+        tables: _BackwardTables,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         rows = int(row_valid.shape[0])
         matrix = torch.empty((rows, 4, 2), dtype=torch.float32, device=k_in.device)
         up = torch.empty((rows, 3), dtype=torch.float32, device=k_in.device)
@@ -852,7 +878,7 @@ class _FacetResponse(torch.autograd.Function):
         return matrix, up
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
         (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid, law, tables) = (
             inputs
         )
@@ -865,11 +891,12 @@ class _FacetResponse(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_matrix, grad_up):
+    def backward(ctx: Any, grad_matrix: torch.Tensor, grad_up: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law, tables = ctx.law, ctx.tables
         grads = [torch.empty_like(value) for value in (k_in, k_out, corners, sites)]
         want_material = ctx.needs_input_grad[4] or ctx.needs_input_grad[5]
+        material_grads: list[torch.Tensor | None]
         if want_material:
             material_grads = [torch.empty_like(material_params), torch.empty_like(layers)]
             scratch = torch.empty(
@@ -890,11 +917,20 @@ class _FacetResponse(torch.autograd.Function):
         return (*grads, *material_grads, None, None, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, tan_k_in, tan_k_out, tan_corners, tan_sites, tan_material_params, tan_layers, *_):
+    def jvp(
+        ctx: Any,
+        tan_k_in: torch.Tensor | None,
+        tan_k_out: torch.Tensor | None,
+        tan_corners: torch.Tensor | None,
+        tan_sites: torch.Tensor | None,
+        tan_material_params: torch.Tensor | None,
+        tan_layers: torch.Tensor | None,
+        *_: Any,
+    ) -> tuple[torch.Tensor, None]:
         (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law = ctx.law
 
-        def tangent(value, like):
+        def tangent(value: torch.Tensor | None, like: torch.Tensor) -> torch.Tensor:
             return torch.zeros_like(like) if value is None else value.contiguous()
 
         # An empty material tangent is a zero one; the kernel then keeps the material a constant.
@@ -992,7 +1028,9 @@ class FacetScatterResponse:
             "TwoWayComposer.compose dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+    def evaluate_rows(
+        self, composer: Any, inbound: Any, outbound: Any, row_valid: torch.Tensor, *, slots: int = 1
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """``([rows, 4, 2] matrix pairs, [rows, 3] up axes)`` for every composed row of every slot.
 
         The directions are the legs' final-segment directions into the site,
@@ -1039,7 +1077,18 @@ class _TableResponse(torch.autograd.Function):
     """Autograd bridge for the tabulated response; the table takes no derivative."""
 
     @staticmethod
-    def forward(dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im, tables):
+    def forward(
+        dir_in: torch.Tensor,
+        dir_out: torch.Tensor,
+        axis: torch.Tensor,
+        idx_in: torch.Tensor,
+        idx_out: torch.Tensor,
+        idx_site: torch.Tensor,
+        row_valid: torch.Tensor,
+        table_re: torch.Tensor,
+        table_im: torch.Tensor,
+        tables: _BackwardTables,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         rows = int(row_valid.shape[0])
         s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         s_im = torch.empty_like(s_re)
@@ -1050,7 +1099,7 @@ class _TableResponse(torch.autograd.Function):
         return s_re, s_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
         (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im, tables) = inputs
         ctx.tables = tables
         saved = (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im)
@@ -1059,7 +1108,7 @@ class _TableResponse(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_re, grad_im):
+    def backward(ctx: Any, grad_re: torch.Tensor, grad_im: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im) = ctx.saved_tensors
         tables = ctx.tables
         grads = [torch.empty_like(value) for value in (dir_in, dir_out, axis)]
@@ -1089,10 +1138,16 @@ class _TableResponse(torch.autograd.Function):
         return (*grads, None, None, None, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, tan_dir_in, tan_dir_out, tan_axis, *_):
+    def jvp(
+        ctx: Any,
+        tan_dir_in: torch.Tensor | None,
+        tan_dir_out: torch.Tensor | None,
+        tan_axis: torch.Tensor | None,
+        *_: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         (dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im) = ctx.saved_tensors
 
-        def tangent(value, like):
+        def tangent(value: torch.Tensor | None, like: torch.Tensor) -> torch.Tensor:
             return torch.zeros_like(like) if value is None else value.contiguous()
 
         rows = int(row_valid.shape[0])
@@ -1171,7 +1226,9 @@ class TableScatterResponse:
             "TwoWayComposer.compose dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+    def evaluate_rows(
+        self, composer: Any, inbound: Any, outbound: Any, row_valid: torch.Tensor, *, slots: int = 1
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         local = _slot_local_sites(self.site_count, composer, slots, "tabulated response")
         return _TableResponse.apply(
             _require_direction(inbound, composer.inbound_row_count * slots, "inbound"),
@@ -1257,7 +1314,9 @@ class FluctuatingResponse:
         factor = self._factor().to(device=device)
         return value * (factor if value.ndim == 1 else factor[:, None])
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+    def evaluate_rows(
+        self, composer: Any, inbound: Any, outbound: Any, row_valid: torch.Tensor, *, slots: int = 1
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if slots != 1:
             raise ValueError("a fluctuating response is bound per observation and is never slot batched")
         rows_re, rows_im = self.base.evaluate_rows(composer, inbound, outbound, row_valid)
@@ -1265,7 +1324,7 @@ class FluctuatingResponse:
         return rows_re * factor, rows_im * factor
 
 
-def _row_tables(composer, *, slots: int, slot_local_sites: int) -> _BackwardTables:
+def _row_tables(composer: Any, *, slots: int, slot_local_sites: int) -> _BackwardTables:
     """The join's own single-slot CSR tables and the slot stride a row family reads them with."""
 
     return _BackwardTables(
@@ -1280,7 +1339,7 @@ def _row_tables(composer, *, slots: int, slot_local_sites: int) -> _BackwardTabl
     )
 
 
-def _slot_local_sites(sites: int, composer, slots: int, owner: str) -> int:
+def _slot_local_sites(sites: int, composer: Any, slots: int, owner: str) -> int:
     """0 when the response's sites are the join's, shared by every slot; 1 when it carries one set per slot."""
 
     if sites == composer.site_count:
@@ -1293,7 +1352,7 @@ def _slot_local_sites(sites: int, composer, slots: int, owner: str) -> int:
     )
 
 
-def _site_departure(outbound) -> torch.Tensor:
+def _site_departure(outbound: Any) -> torch.Tensor:
     """The unit bearing from each outbound row's site to the last point before it.
 
     The outbound leg runs from the receiver TOWARD the site (R-ADR-039), so
@@ -1312,7 +1371,7 @@ def _present_points(points: torch.Tensor | None, name: str) -> torch.Tensor:
     return points
 
 
-def _require_direction(leg, rows: int, name: str) -> torch.Tensor:
+def _require_direction(leg: Any, rows: int, name: str) -> torch.Tensor:
     direction = leg.field_direction
     if int(direction.shape[0]) != rows:
         raise ValueError(
