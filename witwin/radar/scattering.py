@@ -815,14 +815,20 @@ class _FacetResponse(torch.autograd.Function):
     """Autograd bridge for the facet response operators.
 
     The differentiable inputs are the two legs' final-segment directions, the
-    facet corners and the float64 site positions; everything in ``law``
+    facet corners, the float64 site positions and the two material tables
+    (each material's front-roughness rms and every layer's thickness, Re eps,
+    Im eps and mu; the model column is a constant). Everything in ``law``
     selects the law and takes no derivative. The output is the row's 2x2
     matrix as ``[rows, 4, 2]`` real pairs and the row's site-basis up axis,
-    which is a frame declaration and carries no derivative.
+    which is a frame declaration and carries no derivative. A material
+    gradient is computed only when one is asked for, so a geometry-only
+    backward costs what it did.
     """
 
     @staticmethod
-    def forward(k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables):
+    def forward(
+        k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid, law, tables
+    ):
         rows = int(row_valid.shape[0])
         matrix = torch.empty((rows, 4, 2), dtype=torch.float32, device=k_in.device)
         up = torch.empty((rows, 3), dtype=torch.float32, device=k_in.device)
@@ -835,7 +841,7 @@ class _FacetResponse(torch.autograd.Function):
             idx_site,
             corners,
             sites,
-            *law.tables(),
+            *law.tables(material_params, layers),
             row_valid,
             matrix,
             up,
@@ -847,41 +853,61 @@ class _FacetResponse(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables) = inputs
+        (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid, law, tables) = (
+            inputs
+        )
         ctx.law = law
         ctx.tables = tables
         ctx.mark_non_differentiable(output[1])
-        saved = (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid)
+        saved = (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid)
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_matrix, grad_up):
-        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
+        (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law, tables = ctx.law, ctx.tables
         grads = [torch.empty_like(value) for value in (k_in, k_out, corners, sites)]
+        want_material = ctx.needs_input_grad[4] or ctx.needs_input_grad[5]
+        if want_material:
+            material_grads = [torch.empty_like(material_params), torch.empty_like(layers)]
+            scratch = torch.empty(
+                (int(corners.shape[0]), 1 + 4 * law.max_layers), dtype=torch.float64, device=corners.device
+            )
+        else:
+            material_grads = [material_params.new_empty(0), layers.new_empty(0)]
+            scratch = corners.new_empty(0, dtype=torch.float64)
         _ops().facet_response_backward(
-            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites, *law.tables(), row_valid,
+            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites,
+            *law.tables(material_params, layers), row_valid,
             tables.by_in_offsets, tables.by_in_rows, tables.by_out_offsets, tables.by_out_rows,
             tables.by_site_offsets, tables.by_site_rows, law.facet_site, grad_matrix.contiguous(), *grads,
-            law.wavenumber, law.seed, tables.slots,
+            *material_grads, scratch, law.wavenumber, law.seed, tables.slots, law.max_layers,
         )  # fmt: skip
-        return (*grads, None, None, None, None, None, None)
+        if not want_material:
+            material_grads = [None, None]
+        return (*grads, *material_grads, None, None, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, tan_k_in, tan_k_out, tan_corners, tan_sites, *_):
-        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
+    def jvp(ctx, tan_k_in, tan_k_out, tan_corners, tan_sites, tan_material_params, tan_layers, *_):
+        (k_in, k_out, corners, sites, material_params, layers, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law = ctx.law
 
         def tangent(value, like):
             return torch.zeros_like(like) if value is None else value.contiguous()
 
+        # An empty material tangent is a zero one; the kernel then keeps the material a constant.
+        if tan_material_params is None and tan_layers is None:
+            material_tangents = (material_params.new_empty(0), layers.new_empty(0))
+        else:
+            material_tangents = (tangent(tan_material_params, material_params), tangent(tan_layers, layers))
         tan_matrix = torch.empty((int(row_valid.shape[0]), 4, 2), dtype=torch.float32, device=k_in.device)
         _ops().facet_response_jvp(
-            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites, *law.tables(), row_valid,
+            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites,
+            *law.tables(material_params, layers), row_valid,
             tangent(tan_k_in, k_in), tangent(tan_k_out, k_out), tangent(tan_corners, corners),
-            tangent(tan_sites, sites), tan_matrix, law.wavenumber, law.seed, ctx.tables.slots,
+            tangent(tan_sites, sites), *material_tangents, tan_matrix, law.wavenumber, law.seed, ctx.tables.slots,
         )  # fmt: skip
         return tan_matrix, None
 
@@ -894,24 +920,19 @@ class _FacetLaw:
     site_facets: torch.Tensor
     facet_site: torch.Tensor
     facet_material: torch.Tensor
-    material_params: torch.Tensor
     layer_offsets: torch.Tensor
-    layers: torch.Tensor
     wavenumber: float
     seed: int
     #: Each inbound leg row's last point before the site (the gate against a
     #: facet illuminating itself); a discrete test, so no derivative.
     origin_in: torch.Tensor
+    #: The most layers any one material has (the material reverse pass's stride).
+    max_layers: int
 
-    def tables(self) -> tuple[torch.Tensor, ...]:
-        return (
-            self.site_offsets,
-            self.site_facets,
-            self.facet_material,
-            self.material_params,
-            self.layer_offsets,
-            self.layers,
-        )
+    def tables(self, material_params: torch.Tensor, layers: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """The operators' table arguments, in signature order, around the two material tables."""
+
+        return (self.site_offsets, self.site_facets, self.facet_material, material_params, self.layer_offsets, layers)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -992,18 +1013,19 @@ class FacetScatterResponse:
             site_facets=model.site_facets,
             facet_site=model.facet_site,
             facet_material=model.facet_material,
-            material_params=model.material_params,
             layer_offsets=model.layer_offsets,
-            layers=model.layers,
             wavenumber=float(self.wavenumber_rad_per_m),
             seed=int(self.seed),
             origin_in=_present_points(inbound.arrival_origin_m, "arrival_origin_m").detach().contiguous(),
+            max_layers=int(model.max_layers),
         )
         return _FacetResponse.apply(
             _require_direction(inbound, composer.inbound_row_count * slots, "inbound"),
             _require_direction(outbound, composer.outbound_row_count * slots, "outbound"),
             frame.corners,
             frame.sites,
+            frame.material_params,
+            frame.layers,
             composer.inbound_row,
             composer.outbound_row,
             composer.response_slot,

@@ -84,8 +84,18 @@
 // position in the phase offset), reduced through the join's own frozen CSR.
 //
 // Everything accumulates in double and stores float32 (the site gradient in
-// float64). A dead row publishes exactly zero. The material table, the
-// wavenumber and the seed take no derivative: they select the law.
+// float64). A dead row publishes exactly zero. The wavenumber, the seed and the
+// material model column take no derivative: they select the law.
+//
+// MATERIAL PARAMETERS (R-ADR-052). The front-roughness rms height and every
+// layer's thickness, Re eps, Im eps and mu are differentiable. The JVP carries
+// their tangents on its one lane beside the geometry's; the layer stack then
+// runs on the outer jet itself instead of being chained through its cosine
+// slope. The VJP gives each facet's thread a second sweep over the same rows in
+// the same order, one pass per layer of its material on a five-lane jet (rms on
+// lane 0 of the first pass, the layer's four fields on lanes 1 to 4), into a
+// per-facet scratch row; a second launch sums those rows per material entry in
+// ascending facet order. Both run only when a material derivative is asked for.
 
 #include <torch/csrc/stable/accelerator.h>
 #include <torch/csrc/stable/c/shim.h>
@@ -200,82 +210,120 @@ __device__ __forceinline__ void form_factor(
 // (model, rms_height_m); model 1 is a perfect conductor (r_TE = r_TM = -1). layers row: (thickness_m, eps_re, eps_im, mu_r) with
 // eps_im <= 0.
 
-struct Reflection {
-  double te_re, te_im, te_slope_re, te_slope_im;
-  double tm_re, tm_im, tm_slope_re, tm_slope_im;
+// Which material parameters carry derivative lanes. The forward and the
+// geometry companions pass none. The material JVP puts every parameter's
+// tangent on lane 0; the material VJP seeds the front-roughness rms on lane 0
+// and one layer's four fields (thickness, Re eps, Im eps, mu) on lanes 1 to 4,
+// one layer per evaluation.
+struct MaterialSeed {
+  const float* tan_params;  // per-material (model, rms) tangents, or nullptr
+  const float* tan_layers;  // per-layer tangents, or nullptr
+  int64_t seed_layer;       // the layer seeded on lanes 1..4, or -1
+  bool seed_rms;            // rms seeded on lane 0
+  bool active;              // false: the material is a constant of the law
 };
 
-__device__ __forceinline__ Reflection stack_reflection(
-    double cosine, int model, const float* __restrict__ layers, int64_t begin, int64_t end,
-    double k0) {
-  Reflection out;
-  if (model == 1) {
-    out = {-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0};
-    return out;
+__host__ __device__ __forceinline__ MaterialSeed no_material_seed() { return {nullptr, nullptr, -1, false, false}; }
+
+template <int N>
+__device__ __forceinline__ J<N> layer_value(
+    const float* __restrict__ layers, int64_t layer, int field, const MaterialSeed& seed) {
+  J<N> value = jconst<N>(layers[layer * 4 + field]);
+  if constexpr (N >= 1) {
+    if (seed.tan_layers != nullptr) value.d[0] = seed.tan_layers[layer * 4 + field];
   }
-  J<1> c = jconst<1>(cosine);
-  c.d[0] = 1.0;
-  const J<1> sin2 = jconst<1>(1.0) - c * c;
+  if constexpr (N >= 5) {
+    if (layer == seed.seed_layer) value.d[1 + field] = 1.0;
+  }
+  return value;
+}
+
+template <int N>
+__device__ __forceinline__ J<N> rms_value(const float* __restrict__ material_params, int64_t material, const MaterialSeed& seed) {
+  J<N> value = jconst<N>(material_params[material * 2 + 1]);
+  if constexpr (N >= 1) {
+    if (seed.tan_params != nullptr) value.d[0] = seed.tan_params[material * 2 + 1];
+    if (seed.seed_rms) value.d[0] = 1.0;
+  }
+  return value;
+}
+
+// r_TE and r_TM of the layer stack at the cosine jet `c`, every layer
+// parameter a jet as `seed` asks. This is the stack's one expression: the
+// geometry-only evaluation below runs it on a one-lane jet over the cosine and
+// chains the slope into the caller's lanes.
+template <int N>
+__device__ __forceinline__ void stack_reflection_jet(
+    const J<N>& c, const float* __restrict__ layers, int64_t begin, int64_t end, double k0,
+    const MaterialSeed& seed, C<N>* te, C<N>* tm) {
+  const J<N> sin2 = jconst<N>(1.0) - c * c;
   // Vacuum outside and behind: k_z = cos, y_TE = cos, y_TM = 1 / cos.
-  const C<1> kz_out = {c, jconst<1>(0.0)};
-  const C<1> one = cconst<1>(1.0, 0.0);
-  C<1> results[2];
+  const C<N> kz_out = {c, jconst<N>(0.0)};
+  const C<N> one = cconst<N>(1.0, 0.0);
+  C<N> results[2];
   for (int pol = 0; pol < 2; ++pol) {
-    const C<1> y_out = pol == 0 ? kz_out : one / kz_out;
-    C<1> m11 = one;
-    C<1> m12 = cconst<1>(0.0, 0.0);
-    C<1> m21 = cconst<1>(0.0, 0.0);
-    C<1> m22 = one;
+    const C<N> y_out = pol == 0 ? kz_out : one / kz_out;
+    C<N> m11 = one;
+    C<N> m12 = cconst<N>(0.0, 0.0);
+    C<N> m21 = cconst<N>(0.0, 0.0);
+    C<N> m22 = one;
     for (int64_t layer = begin; layer < end; ++layer) {
-      const double thickness = layers[layer * 4];
-      const C<1> eps = cconst<1>(layers[layer * 4 + 1], layers[layer * 4 + 2]);
-      const double mu = layers[layer * 4 + 3];
-      C<1> arg = eps * mu;
+      const J<N> thickness = layer_value<N>(layers, layer, 0, seed);
+      const C<N> eps = {layer_value<N>(layers, layer, 1, seed), layer_value<N>(layers, layer, 2, seed)};
+      const J<N> mu = layer_value<N>(layers, layer, 3, seed);
+      C<N> arg = eps * mu;
       arg.re = arg.re - sin2;
-      const C<1> kz = csqrt_passive(arg);
-      const C<1> y = pol == 0 ? kz * (1.0 / mu) : eps / kz;
-      const C<1> delta = kz * (k0 * thickness);
+      const C<N> kz = csqrt_passive(arg);
+      const C<N> y = pol == 0 ? kz * (jconst<N>(1.0) / mu) : eps / kz;
+      const C<N> delta = kz * (thickness * k0);
       // cos and sin of delta, both scaled by exp(Im delta).
-      const C<1> e_plus = cis(delta.re);
-      const C<1> e_minus = cexp(C<1>{delta.im * 2.0, -delta.re});
-      const C<1> cos_s = (e_plus + e_minus) * 0.5;
-      const C<1> sin_s = times_j(e_minus - e_plus) * 0.5;  // (e+ - e-) / (2 j)
-      const C<1> j_sin = times_j(sin_s);
-      const C<1> l12 = j_sin / y;
-      const C<1> l21 = j_sin * y;
-      const C<1> n11 = m11 * cos_s + m12 * l21;
-      const C<1> n12 = m11 * l12 + m12 * cos_s;
-      const C<1> n21 = m21 * cos_s + m22 * l21;
-      const C<1> n22 = m21 * l12 + m22 * cos_s;
+      const C<N> e_plus = cis(delta.re);
+      const C<N> e_minus = cexp(C<N>{delta.im * 2.0, -delta.re});
+      const C<N> cos_s = (e_plus + e_minus) * 0.5;
+      const C<N> sin_s = times_j(e_minus - e_plus) * 0.5;  // (e+ - e-) / (2 j)
+      const C<N> j_sin = times_j(sin_s);
+      const C<N> l12 = j_sin / y;
+      const C<N> l21 = j_sin * y;
+      const C<N> n11 = m11 * cos_s + m12 * l21;
+      const C<N> n12 = m11 * l12 + m12 * cos_s;
+      const C<N> n21 = m21 * cos_s + m22 * l21;
+      const C<N> n22 = m21 * l12 + m22 * cos_s;
       m11 = n11;
       m12 = n12;
       m21 = n21;
       m22 = n22;
     }
-    const C<1> y_back = y_out;
-    const C<1> b = m11 + m12 * y_back;
-    const C<1> cc = m21 + m22 * y_back;
+    const C<N> y_back = y_out;
+    const C<N> b = m11 + m12 * y_back;
+    const C<N> cc = m21 + m22 * y_back;
     results[pol] = (y_out * b - cc) / (y_out * b + cc);
   }
-  out.te_re = results[0].re.v;
-  out.te_im = results[0].im.v;
-  out.te_slope_re = results[0].re.d[0];
-  out.te_slope_im = results[0].im.d[0];
-  out.tm_re = results[1].re.v;
-  out.tm_im = results[1].im.v;
-  out.tm_slope_re = results[1].re.d[0];
-  out.tm_slope_im = results[1].im.d[0];
-  return out;
+  *te = results[0];
+  *tm = results[1];
 }
 
-// r_TE and r_TM at cosine x, chained into the outer jet.
+// r_TE and r_TM at cosine x, chained into the outer jet. A perfect conductor
+// (model 1) is the exact -1 on both. With an active material seed the stack
+// runs on the outer jet itself, so the material lanes ride with the geometry's.
 template <int N>
 __device__ __forceinline__ void fresnel(
-    const J<N>& x, int model, const float* __restrict__ layers, int64_t begin, int64_t end, double k0, C<N>* te,
-    C<N>* tm) {
-  const Reflection r = stack_reflection(x.v, model, layers, begin, end, k0);
-  *te = chain(x, r.te_re, r.te_im, r.te_slope_re, r.te_slope_im);
-  *tm = chain(x, r.tm_re, r.tm_im, r.tm_slope_re, r.tm_slope_im);
+    const J<N>& x, int model, const float* __restrict__ layers, int64_t begin, int64_t end, double k0,
+    const MaterialSeed& seed, C<N>* te, C<N>* tm) {
+  if (model == 1) {
+    *te = cconst<N>(-1.0, 0.0);
+    *tm = cconst<N>(-1.0, 0.0);
+    return;
+  }
+  if (seed.active) {
+    stack_reflection_jet<N>(x, layers, begin, end, k0, seed, te, tm);
+    return;
+  }
+  J<1> c = jconst<1>(x.v);
+  c.d[0] = 1.0;
+  C<1> r_te, r_tm;
+  stack_reflection_jet<1>(c, layers, begin, end, k0, no_material_seed(), &r_te, &r_tm);
+  *te = chain(x, r_te.re.v, r_te.im.v, r_te.re.d[0], r_te.im.d[0]);
+  *tm = chain(x, r_tm.re.v, r_tm.im.v, r_tm.re.d[0], r_tm.im.d[0]);
 }
 
 // A uniform phase in [0, 2 pi) per (seed, facet): splitmix64 of the pair.
@@ -333,7 +381,7 @@ __device__ __forceinline__ M4<N> m4_zero() {
 template <int N>
 __device__ __forceinline__ M4<N> facet_matrix(
     const V3<N>& k_in, const V3<N>& k_out, const V3<N>& v0, const V3<N>& v1, const V3<N>& v2,
-    const V3<N>& site, int64_t facet, const Law& law) {
+    const V3<N>& site, int64_t facet, const Law& law, const MaterialSeed& seed = no_material_seed()) {
   const V3<N> e1 = v1 - v0;
   const V3<N> e2 = v2 - v0;
   const V3<N> normal_area = cross(e1, e2);
@@ -368,16 +416,16 @@ __device__ __forceinline__ M4<N> facet_matrix(
 
   const int64_t material = law.facet_material[facet];
   const int model = static_cast<int>(law.material_params[material * 2]);
-  const double rms = static_cast<double>(law.material_params[material * 2 + 1]);
+  const J<N> rms = rms_value<N>(law.material_params, material, seed);
   const int64_t begin = law.layer_offsets[material];
   const int64_t end = law.layer_offsets[material + 1];
   C<N> r_te, r_tm;
-  fresnel(ci, model, law.layers, begin, end, k, &r_te, &r_tm);
+  fresnel(ci, model, law.layers, begin, end, k, seed, &r_te, &r_tm);
 
   // The coherent amplitude: j (k^2/pi) A chi F exp(j k q.(c - x_s)).
   J<N> magnitude = area * (k * k / kPi);
-  if (rms > 0.0) {
-    const J<N> kh = sum_cos * (k * rms);
+  if (rms.v > 0.0) {
+    const J<N> kh = sum_cos * (rms * k);
     magnitude = magnitude * jexp(kh * kh * -0.5);
   }
   const C<N> coherent = times_j(form * offset * magnitude);
@@ -410,10 +458,10 @@ __device__ __forceinline__ M4<N> facet_matrix(
 
   C<N> diffuse = cconst<N>(0.0, 0.0);
   bool rough = false;
-  if (rms > 0.0) {
+  if (rms.v > 0.0) {
     const J<N> reflectance =
         (r_te.re * r_te.re + r_te.im * r_te.im + r_tm.re * r_tm.re + r_tm.im * r_tm.im) * 0.5;
-    const J<N> kh = ci * (2.0 * k * rms);
+    const J<N> kh = ci * (rms * (2.0 * k));
     const J<N> fraction = (jconst<N>(1.0) - jexp(kh * kh * -1.0)) * reflectance;
     const J<N> sigma_d = fraction * ci * co * area * 4.0;
     if (sigma_d.v > 1.0e-300) {
@@ -537,7 +585,7 @@ __global__ void facet_response_forward_kernel(Rows rows, Law law, float* s, floa
 
 __global__ void facet_response_jvp_kernel(
     Rows rows, Law law, const float* tan_k_in, const float* tan_k_out, const float* tan_corners,
-    const double* tan_sites, float* tan_s, int64_t num_rows) {
+    const double* tan_sites, MaterialSeed material, float* tan_s, int64_t num_rows) {
   const int64_t k = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (k >= num_rows) return;
   if (rows.row_valid[k] == 0) {
@@ -563,7 +611,7 @@ __global__ void facet_response_jvp_kernel(
       v[corner] = jload<1>(rows.corners, 3 * f + corner);
       jtangent(v[corner], tan_corners, 3 * f + corner);
     }
-    const M4<1> m = facet_matrix<1>(k_in, k_out, v[0], v[1], v[2], site, f, law);
+    const M4<1> m = facet_matrix<1>(k_in, k_out, v[0], v[1], v[2], site, f, law, material);
     for (int e = 0; e < 4; ++e) {
       acc[2 * e] += m.s[e].re.d[0];
       acc[2 * e + 1] += m.s[e].im.d[0];
@@ -598,7 +646,8 @@ __device__ __forceinline__ void contract(const M4<N>& m, const float* grad, int6
 // owner walks its per-slot CSR once per slot, in slot order.
 __global__ void facet_response_backward_kernel(
     Rows rows, Law law, Owners owners, const float* grad, float* grad_k_in, float* grad_k_out, float* grad_corners,
-    double* grad_sites, int64_t num_in, int64_t num_out, int64_t num_facets, int64_t num_sites) {
+    double* grad_sites, double* material_scratch, int material_stride, int64_t num_in, int64_t num_out,
+    int64_t num_facets, int64_t num_sites) {
   const int64_t thread = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (thread >= num_in + num_out + num_facets + num_sites) return;
 
@@ -683,6 +732,76 @@ __global__ void facet_response_backward_kernel(
     }
   }
   for (int lane = 0; lane < 9; ++lane) grad_corners[f * 9 + lane] = static_cast<float>(g[lane]);
+  if (material_scratch == nullptr) return;
+
+  // The facet's material parameters, summed over the same rows in the same
+  // order: the rms on lane 0 of the first pass, then one layer's four fields
+  // on lanes 1..4 per pass. A perfect conductor has no layer and one pass.
+  const int64_t material = law.facet_material[f];
+  const int64_t begin = law.layer_offsets[material];
+  const int64_t count = law.layer_offsets[material + 1] - begin;
+  double* out = material_scratch + f * material_stride;
+  for (int lane = 0; lane < material_stride; ++lane) out[lane] = 0.0;
+  for (int64_t pass = 0; pass < (count > 0 ? count : 1); ++pass) {
+    const MaterialSeed seed = {nullptr, nullptr, count > 0 ? begin + pass : -1, pass == 0, true};
+    double lanes[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    for (int64_t gslot = 0; gslot < owners.slots; ++gslot) {
+      for (int64_t entry = owners.by_site_offsets[s]; entry < owners.by_site_offsets[s + 1]; ++entry) {
+        const int64_t k = gslot * rows.rows_per_slot + owners.by_site_rows[entry];
+        if (rows.row_valid[k] == 0) continue;
+        const RowIndex index = row_index(rows, k);
+        if (self_illuminated(rows, index)) continue;
+        const M4<5> m = facet_matrix<5>(
+            jload<5>(rows.k_in, index.i), jload<5>(rows.k_out, index.o), jload<5>(rows.corners, 3 * f),
+            jload<5>(rows.corners, 3 * f + 1), jload<5>(rows.corners, 3 * f + 2), jload64<5>(rows.sites, s), f, law,
+            seed);
+        contract(m, grad, k, lanes);
+      }
+    }
+    if (pass == 0) out[0] = lanes[0];
+    if (count > 0) {
+      for (int field = 0; field < 4; ++field) out[1 + 4 * pass + field] = lanes[1 + field];
+    }
+  }
+}
+
+// One thread per material parameter: the rms column of material_params, or
+// one (layer, field) entry of layers, summed over the facets of its material
+// in ascending facet order. The model column takes no derivative.
+__global__ void facet_material_reduce_kernel(
+    const double* __restrict__ scratch, int material_stride, const int64_t* __restrict__ facet_material,
+    const int64_t* __restrict__ layer_offsets, int64_t num_facets, int64_t num_materials, int64_t num_layers,
+    float* __restrict__ grad_material_params, float* __restrict__ grad_layers) {
+  const int64_t thread = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (thread < num_materials * 2) {
+    const int64_t material = thread / 2;
+    double sum = 0.0;
+    if (thread % 2 == 1) {
+      for (int64_t f = 0; f < num_facets; ++f) {
+        if (facet_material[f] == material) sum += scratch[f * material_stride];
+      }
+    }
+    grad_material_params[thread] = static_cast<float>(sum);
+    return;
+  }
+  const int64_t entry = thread - num_materials * 2;
+  if (entry >= num_layers * 4) return;
+  const int64_t layer = entry / 4;
+  const int field = static_cast<int>(entry % 4);
+  int64_t material = 0;
+  while (material + 1 < num_materials && layer_offsets[material + 1] <= layer) ++material;
+  const int64_t local = layer - layer_offsets[material];
+  double sum = 0.0;
+  // The placeholder row of a table whose materials are all conductors belongs
+  // to no material and takes no derivative.
+  if (local < 0 || layer >= layer_offsets[material + 1]) {
+    grad_layers[entry] = 0.0f;
+    return;
+  }
+  for (int64_t f = 0; f < num_facets; ++f) {
+    if (facet_material[f] == material) sum += scratch[f * material_stride + 1 + 4 * local + field];
+  }
+  grad_layers[entry] = static_cast<float>(sum);
 }
 
 // ---------------------------------------------------------------------------
@@ -926,21 +1045,32 @@ void facet_response_forward_cuda(
 
 void facet_response_jvp_cuda(
     FACET_ROW_ARGS, const torch::stable::Tensor& tan_k_in, const torch::stable::Tensor& tan_k_out,
-    const torch::stable::Tensor& tan_corners, const torch::stable::Tensor& tan_sites, torch::stable::Tensor tan_s,
-    double wavenumber, int64_t seed, int64_t slots) {
+    const torch::stable::Tensor& tan_corners, const torch::stable::Tensor& tan_sites,
+    const torch::stable::Tensor& tan_material_params, const torch::stable::Tensor& tan_layers,
+    torch::stable::Tensor tan_s, double wavenumber, int64_t seed, int64_t slots) {
   const Shapes shapes = FACET_CHECK_ROWS;
   check_count(tan_k_in, k_in.numel(), "tan_k_in");
   check_count(tan_k_out, k_out.numel(), "tan_k_out");
   check_count(tan_corners, corners.numel(), "tan_corners");
   check_double_count(tan_sites, sites.numel(), "tan_sites");
   check_count(tan_s, shapes.rows * 8, "tan_s");
+  // An empty material tangent is a zero one and leaves the material a constant.
+  MaterialSeed material = no_material_seed();
+  if (tan_material_params.numel() != 0 || tan_layers.numel() != 0) {
+    STD_TORCH_CHECK(
+        tan_material_params.numel() == material_params.numel() && tan_layers.numel() == layers.numel(),
+        "a material tangent covers both material tables.");
+    check_cuda_float(tan_material_params, "tan_material_params");
+    check_cuda_float(tan_layers, "tan_layers");
+    material = {tan_material_params.const_data_ptr<float>(), tan_layers.const_data_ptr<float>(), -1, false, true};
+  }
   const Law law = make_law(facet_material, material_params, layer_offsets, layers, wavenumber, seed);
   if (shapes.rows == 0) return;
   const torch::stable::accelerator::DeviceGuard guard(tan_s.get_device_index());
   facet_response_jvp_kernel<<<wide_grid(shapes.rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(tan_s)>>>(
       FACET_MAKE_ROWS, law, tan_k_in.const_data_ptr<float>(), tan_k_out.const_data_ptr<float>(),
-      tan_corners.const_data_ptr<float>(), tan_sites.const_data_ptr<double>(), tan_s.mutable_data_ptr<float>(),
-      shapes.rows);
+      tan_corners.const_data_ptr<float>(), tan_sites.const_data_ptr<double>(), material,
+      tan_s.mutable_data_ptr<float>(), shapes.rows);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -950,7 +1080,9 @@ void facet_response_backward_cuda(
     const torch::stable::Tensor& by_site_offsets, const torch::stable::Tensor& by_site_rows,
     const torch::stable::Tensor& facet_site, const torch::stable::Tensor& grad_s, torch::stable::Tensor grad_k_in,
     torch::stable::Tensor grad_k_out, torch::stable::Tensor grad_corners, torch::stable::Tensor grad_sites,
-    double wavenumber, int64_t seed, int64_t slots) {
+    torch::stable::Tensor grad_material_params, torch::stable::Tensor grad_layers,
+    torch::stable::Tensor facet_material_scratch, double wavenumber, int64_t seed, int64_t slots,
+    int64_t max_layers) {
   const Shapes shapes = FACET_CHECK_ROWS;
   const int64_t legs_in = k_in.numel() / 3;
   const int64_t legs_out = k_out.numel() / 3;
@@ -968,6 +1100,15 @@ void facet_response_backward_cuda(
   check_count(grad_corners, corners.numel(), "grad_corners");
   check_double_count(grad_sites, sites.numel(), "grad_sites");
   const Law law = make_law(facet_material, material_params, layer_offsets, layers, wavenumber, seed);
+  // Empty material gradients: the material is a constant and no lane is spent on it.
+  const bool want_material = grad_material_params.numel() != 0;
+  const int material_stride = 1 + 4 * static_cast<int>(max_layers);
+  if (want_material) {
+    STD_TORCH_CHECK(max_layers >= 0, "max_layers must not be negative.");
+    check_count(grad_material_params, material_params.numel(), "grad_material_params");
+    check_count(grad_layers, layers.numel(), "grad_layers");
+    check_double_count(facet_material_scratch, shapes.facets * material_stride, "facet_material_scratch");
+  }
   const int64_t total = legs_in + legs_out + shapes.facets + shapes.sites;
   if (total == 0) return;
   const Owners owners = {
@@ -979,7 +1120,18 @@ void facet_response_backward_cuda(
   facet_response_backward_kernel<<<wide_grid(total), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_corners)>>>(
       FACET_MAKE_ROWS, law, owners, grad_s.const_data_ptr<float>(), grad_k_in.mutable_data_ptr<float>(),
       grad_k_out.mutable_data_ptr<float>(), grad_corners.mutable_data_ptr<float>(),
-      grad_sites.mutable_data_ptr<double>(), legs_in, legs_out, shapes.facets, shapes.sites);
+      grad_sites.mutable_data_ptr<double>(),
+      want_material ? facet_material_scratch.mutable_data_ptr<double>() : nullptr, material_stride, legs_in,
+      legs_out, shapes.facets, shapes.sites);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+  if (!want_material) return;
+  const int64_t num_materials = material_params.numel() / 2;
+  const int64_t num_layers = layers.numel() / 4;
+  const int64_t entries = num_materials * 2 + num_layers * 4;
+  facet_material_reduce_kernel<<<wide_grid(entries), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_corners)>>>(
+      facet_material_scratch.const_data_ptr<double>(), material_stride, facet_material.const_data_ptr<int64_t>(),
+      layer_offsets.const_data_ptr<int64_t>(), shapes.facets, num_materials, num_layers,
+      grad_material_params.mutable_data_ptr<float>(), grad_layers.mutable_data_ptr<float>());
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

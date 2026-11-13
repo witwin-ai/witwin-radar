@@ -199,8 +199,8 @@ three routes: the site positions (through both legs), the leg directions, and
 the facet corners in the response. Reverse mode is supported end to end; forward
 mode is supported by both facet families, while Channel 0.6 refuses a forward
 vertex tangent on the compiled scene at compile time, which is where a mesh in
-the scene stops it. Material constants, the polarization and the seed select the
-law and take no derivative.
+the scene stops it. The polarization and the seed select the law and take no
+derivative; the material parameters are leaves since R-ADR-052.
 
 ## Evidence
 

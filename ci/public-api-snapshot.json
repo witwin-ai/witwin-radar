@@ -39,7 +39,7 @@
           "name": "Coupling",
           "kind": "class",
           "target": "witwin.radar.sensors.Coupling",
-          "signature": "(tx: 'tuple[tuple[complex, ...], ...] | None' = None, rx: 'tuple[tuple[complex, ...], ...] | None' = None) -> None"
+          "signature": "(tx: 'tuple[tuple[complex, ...], ...] | torch.Tensor | None' = None, rx: 'tuple[tuple[complex, ...], ...] | torch.Tensor | None' = None) -> None"
         },
         {
           "name": "Fluctuation",

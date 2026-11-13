@@ -30,6 +30,7 @@
     "fluctuation_factor": "The Swerling factor is a counter-based draw from a host key and has no differentiable input; witwin/radar/scattering.py multiplies the response by it, so a derivative of the response reaches the strength through that product.",
     "frontend_baseband": "The kernel writes the additive DC offset and flicker term; witwin/radar/frontend.py adds it to the signal, so the identity derivative is carried by that addition and the family needs no companion.",
     "frontend_quantize": "The ADC sits below the R-ADR-018 differentiability wall: quantization is a discrete choice, and witwin/radar/frontend.py refuses a differentiable input before this operator runs.",
+    "keyed_sum": "Sums a stable-sorted keyed list inside the sensor-weight reverse pass (the pattern-table, peak-gain and pattern-frame gradients, witwin/radar/sensors.py); it runs only within a backward and is never itself differentiated.",
     "oscillator_phase": "Oscillator phase (white-FM, flicker-FM and floor regions) is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs.",
     "path_events": "An event is a discrete change of a row's existence and has no derivative; witwin/radar/events.py passes detached payloads and the log is published as host diagnostics, never into a differentiable result."
   },
@@ -444,6 +445,16 @@
       "python_owner": "witwin/radar/frontend.py",
       "python_callers": [
         "FrontendChain._quantize"
+      ]
+    },
+    {
+      "symbol": "keyed_sum_forward",
+      "ad_group": "keyed_sum",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/sensor_weight.cu",
+      "python_owner": "witwin/radar/sensors.py",
+      "python_callers": [
+        "_keyed_parameter_gradients"
       ]
     },
     {

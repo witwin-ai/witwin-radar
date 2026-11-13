@@ -254,12 +254,12 @@ section of `docs/dev/radar-ad-capability-matrix.md` and summarised here:
 |---|---|
 | `field_direction` on transmission, wedge and coupled diffraction | Channel, in the RayD ADR that ADR-043 defers to |
 | discovery-route geometry liveness | Channel, ADR-043 |
-| a pose derivative into the compiled scene (SMPL) | Radar `geometry/smpl.py` plus `witwin.core` Mesh construction, as one accepted design |
+| a pose derivative into the compiled scene (SMPL) | done in reverse mode by R-ADR-052; forward mode waits on Channel's compile |
 | a material-only forward tangent | Radar `propagation/channel_consumer.py`, whose dead-tangent guard owns the decision |
-| the LNA voltage gain as a leaf | Radar `frontend/`, one extra slot on the fused operator |
+| the LNA voltage gain as a leaf | done by R-ADR-052 |
 | waveform-parameter optimisation | Radar `synthesis/`, as a new R-ADR |
 | a pathwise derivative through the noise realisation | Radar `frontend/`, as a reparameterised noise-model R-ADR |
-| a sensor pattern table as a leaf | Radar `sensors/` |
+| a sensor pattern table as a leaf | done by R-ADR-052 |
 | the Channel diffraction primal `IndexError` | Channel, as a primal reachability fix separate from any AD work |
 
 ## Consistency with Channel

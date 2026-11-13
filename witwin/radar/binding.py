@@ -532,9 +532,8 @@ def bind_radar_world(
     element sets come from ``radar.tx_pos`` / ``radar.rx_pos``, which are the
     pose-transformed world positions the radar already maintains - they are used as they stand
     rather than rebuilt, so a caller who supplied moving Core phase centres
-    through ``sensor_endpoints`` keeps their tape all the way into both legs.
-    The radar's own pose carries none: it is a host declaration, and
-    :func:`~witwin.radar.radar.vec3_tensor` refuses a derivative in it.
+    through ``sensor_endpoints`` keeps their tape all the way into both legs,
+    and so does a radar whose own pose is a leaf (R-ADR-052).
 
     ``snapshot`` is required even for an explicit site policy. A binding is
     against a world at an instant, and letting it be optional would invite a

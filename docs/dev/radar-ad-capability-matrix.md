@@ -85,14 +85,44 @@ tree before ADR-043 and it is now the falsifier.
 
 ### SMPL authoring (`witwin/radar/smpl.py`)
 
+R-ADR-052 makes the pose, the shape and the body transform reverse-mode leaves:
+every `DeformationState` the bridge publishes holds the posed vertices as a
+differentiable expression of them, and the facet geometry, the facet response
+and Channel's fixed-topology replay carry the vertex derivative. The end-to-end
+evidence runs on a synthetic 24-joint linear-blend-skinning rig through the same
+code path (`tests/support/synthetic_smpl.py`); the real-model tests skip without
+the SMPL pickles. Forward mode stays refused: Channel refuses a compile whose
+vertices carry a dual, and `velocity_at` opens its own forward level.
+
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| smpl/SmplPoseDeformation | body pose, body shape | vjp | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_refusal.py::test_a_pose_or_shape_derivative_is_refused_at_the_deformation_bridge | refusal |
-| smpl/SmplPoseDeformation | body pose | jvp | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_refusal.py::test_a_pose_carrying_a_forward_dual_is_refused_too | refusal |
-| smpl/SmplPoseDeformation | pose_rate | both | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_refusal.py::test_a_pose_rate_that_requires_grad_is_refused_by_adr_038 | refusal |
-| smpl/rest_mesh | body position, body rotation | both | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation.rest_mesh | tests/test_smpl_pose_refusal.py::test_a_transform_derivative_is_refused_by_rest_mesh | refusal |
+| smpl/SmplPoseDeformation | body pose to the traced rows | vjp | SUP | native-companion | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_leaves.py::test_the_pose_gradient_matches_central_differences | fd |
+| smpl/SmplPoseDeformation | body shape to the traced rows | vjp | SUP | native-companion | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_leaves.py::test_the_shape_gradient_matches_central_differences | fd |
+| smpl/SmplPoseDeformation | body position to the traced rows | vjp | SUP | native-companion | witwin/radar/smpl.py::SmplPoseDeformation.rest_mesh | tests/test_smpl_pose_leaves.py::test_the_body_position_is_a_leaf_too | fd |
+| smpl/SmplPoseDeformation | body pose, body shape | jvp | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_leaves.py::test_a_pose_tangent_is_refused_before_any_compile, tests/test_smpl_pose_refusal.py::test_a_pose_carrying_a_forward_dual_is_refused_too | refusal |
+| smpl/rest_mesh | body position, body rotation | jvp | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation.rest_mesh | tests/test_smpl_pose_refusal.py::test_a_transform_tangent_is_refused_by_rest_mesh | refusal |
+| smpl/SmplPoseDeformation | pose_rate | both | REF | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation | tests/test_smpl_pose_leaves.py::test_a_pose_rate_leaf_is_still_refused, tests/test_smpl_pose_refusal.py::test_a_pose_rate_that_requires_grad_is_refused_by_adr_038 | refusal |
 | smpl/velocity_at | pose_rate as a tangent direction | jvp | SUP | torch-orchestration | witwin/radar/smpl.py::SmplPoseDeformation.velocity_at | tests/test_smpl_pose_refusal.py::test_the_analytic_vertex_velocity_still_comes_from_the_pose_rate | fd |
 | legacy-scene/SMPLBody | pose | vjp | SUP | torch-orchestration | witwin/radar/smpl.py::SMPLBody._evaluate | tests/test_smpl_pose_refusal.py::test_the_smpl_body_itself_still_publishes_a_pose_gradient | declaration |
+
+### Radar pose (`witwin/radar/radar.py`)
+
+`Radar.position`, `look_at` and `up` are leaves (R-ADR-052): every element
+position and the pattern frame are differentiable expressions of them, carried
+by Channel's replay, the two-way join and the sensor-weight frame slot. A
+polarization the pose would turn (`"up"`, `"right"`, a pose trajectory's
+rotation) is refused for a pose leaf, because Channel's replay takes endpoint
+polarizations as constants; a world-vector polarization does not turn and the
+derivative is then complete.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| radar/pose | position, look_at, up to the simulated cube | both | SUP | native-companion | witwin/radar/radar.py::Radar._place_antennas | tests/test_radar_pose_leaves.py::test_a_pose_leaf_matches_central_differences_in_both_modes | fd |
+| radar/pose | a pose trajectory's translation to the simulated cube | vjp | SUP | native-companion | witwin/radar/simulation.py::WorldHalf._rotation_at | tests/test_radar_pose_leaves.py::test_a_pose_trajectory_translation_is_a_leaf | fd |
+| radar/pose | a pose leaf with an "up" or "right" polarization | both | REF | host-declaration | witwin/radar/radar.py::Radar._require_pose_leaf_polarization | tests/test_radar_pose_leaves.py::test_a_pose_leaf_with_a_pose_derived_polarization_is_refused | refusal |
+| radar/pose | a polarization leaf | both | REF | host-declaration | witwin/radar/radar.py::Radar._place_antennas | tests/test_radar_pose_leaves.py::test_a_polarization_leaf_is_refused | refusal |
+| radar/pose | a pose trajectory's rotation | both | REF | host-declaration | witwin/radar/simulation.py::WorldHalf._rotation_at | tests/test_radar_pose_leaves.py::test_a_pose_trajectory_rotation_leaf_is_refused | refusal |
+| radar/pose | a pose leaf under a grad mode that does not carry it | both | REF | host-declaration | witwin/radar/radar.py::Radar._require_pose_ad_mode | tests/test_radar_pose_leaves.py::test_a_pose_leaf_in_the_wrong_ad_mode_is_refused_before_any_work | refusal |
 
 ## Synthesis, frontend and sensor cells
 
@@ -111,13 +141,18 @@ parametrized ids inside the cited test.
 
 The port impedance, the LNA gain and the seed no longer have records of their
 own: each was one number, so each is a field of `FrontendSpec` and of the radar
-that builds it. The refusal is unchanged - a marked tensor in any of them is
-still refused at the same host-declaration boundary - and the rows below name
-their new owner.
+that builds it. The impedance and the seed are refused at the same
+host-declaration boundary. The LNA gain and the transmit power are leaves
+(R-ADR-052): smooth amplitude factors whose derivative is exact - the chain
+runs at the host value and a unit factor carries the leaf.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
-| frontend/FrontendSpec | impedance, lna | both | REF | host-declaration | witwin/radar/frontend.py::FrontendSpec | tests/test_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/FrontendSpec | impedance | both | REF | host-declaration | witwin/radar/frontend.py::FrontendSpec | tests/test_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
+| frontend/FrontendSpec | lna, through noise, compression, IQ and the DC offset | both | SUP | torch-orchestration | witwin/radar/frontend.py::FrontendChain.apply | tests/test_receiver_gain_leaves.py::test_the_lna_gain_is_a_leaf_of_the_receive_chain | fd |
+| radar/power | transmit power to the simulated cube | both | SUP | native-companion | witwin/radar/radar.py::Radar._transmit_amplitude_scale | tests/test_receiver_gain_leaves.py::test_the_transmit_power_is_a_leaf_with_the_amplitude_law | fd |
+| radar/power | transmit power to the leakage rows | both | SUP | torch-orchestration | witwin/radar/radar.py::Radar._leakage_cube | tests/test_receiver_gain_leaves.py::test_the_transmit_power_reaches_the_leakage_rows | fd |
+| frontend/coupling | Coupling.tx, Coupling.rx complex matrices | both | SUP | torch-orchestration | witwin/radar/frontend.py::FrontendChain._couple | tests/test_receiver_gain_leaves.py::test_a_coupling_matrix_is_a_leaf | fd |
 | frontend/Noise | figure, antenna_temperature, bandwidth, phase_density, phase_offset, phase_sample_rate | both | REF | host-declaration | witwin/radar/frontend.py::Noise | tests/test_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | frontend/Agc | target_rms, min_gain, max_gain | both | REF | host-declaration | witwin/radar/frontend.py::Agc | tests/test_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
 | frontend/Adc | bits, full_scale | both | REF | host-declaration | witwin/radar/frontend.py::Adc | tests/test_host_float_refusal.py::test_every_configuration_scalar_refuses_a_marked_tensor | refusal |
@@ -130,10 +165,11 @@ their new owner.
 
 ### Sensor weight (`witwin/radar/sensors.py`)
 
-Six differentiable inputs and thirteen frozen constants. The constants used to
-return `None` from `backward` by construction, with no refusal anywhere; they now
-fail at `SensorWeightGeometry` / `SensorWeightPlan` construction, before
-`validate` and before any launch.
+Nine differentiable inputs - the six position, intensity and weight inputs, the
+pattern frame and the two packed element patterns (table values and peak
+amplitudes, R-ADR-052) - and frozen velocities and fixed lengths. The frozen
+constants fail at `SensorWeightGeometry` construction, before `validate` and
+before any launch.
 
 The former cached MIMO caller exposed a silent velocity-gradient hole. The
 breaking cutover removed that route; current velocity support and refusals are
@@ -146,9 +182,14 @@ represented only by the rows below.
 | sensor_weight/evaluate | intensity, weight real and imaginary parts | both | SUP | native-companion | witwin/radar/sensors.py::evaluate_sensor_weights | tests/test_sensor_weight.py::test_the_vjp_is_the_adjoint_of_the_jvp | adjoint |
 | sensor_weight/evaluate | antenna position reduction order | vjp | SUP | native-companion | witwin/radar/sensors.py::evaluate_sensor_weights | tests/test_sensor_weight.py::test_the_antenna_gradient_is_a_deterministic_reduction | declaration |
 | sensor_weight/SensorWeightGeometry | tx_velocity, rx_velocity, site_velocity | both | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_marked_frozen_geometry_field_is_refused, tests/test_sensor_constant_refusal.py::test_a_velocity_refusal_names_the_reason_a_velocity_is_never_a_leaf | refusal |
-| sensor_weight/SensorWeightGeometry | fixed_length_m, pattern_frame | vjp | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_marked_frozen_geometry_field_is_refused | refusal |
-| sensor_weight/SensorWeightGeometry | fixed_length_m, pattern_frame | jvp | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_dual_carrying_frozen_geometry_field_is_refused | refusal |
-| sensor_weight/SensorWeightPlan | pattern tables | both | REF | host-declaration | witwin/radar/sensors.py::SensorWeightPlan | tests/test_sensor_constant_refusal.py::test_a_marked_pattern_table_is_refused | refusal |
+| sensor_weight/SensorWeightGeometry | fixed_length_m | vjp | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_marked_frozen_geometry_field_is_refused | refusal |
+| sensor_weight/SensorWeightGeometry | fixed_length_m | jvp | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_dual_carrying_frozen_geometry_field_is_refused | refusal |
+| sensor_weight/evaluate | pattern_frame | both | SUP | native-companion | witwin/radar/sensors.py::_SensorWeight | tests/test_pattern_leaves.py::test_the_pattern_frame_matches_central_differences_in_both_modes | fd |
+| sensor_weight/evaluate | packed table values and peak gain, every kind, both sides | both | SUP | native-companion | witwin/radar/sensors.py::_SensorWeight | tests/test_pattern_leaves.py::test_table_values_and_gain_match_central_differences_in_both_modes | fd |
+| sensor_weight/evaluate | table and frame reduction order | vjp | SUP | native-companion | witwin/radar/sensors.py::_keyed_parameter_gradients | tests/test_pattern_leaves.py::test_the_parameter_reduction_is_deterministic | declaration |
+| sensor_weight/Pattern | Pattern.table / field_table values to the simulated cube | both | SUP | native-companion | witwin/radar/sensors.py::Pattern | tests/test_pattern_leaves.py::test_a_pattern_table_leaf_reaches_the_simulated_cube | fd |
+| sensor_weight/Pattern | Pattern.gain to the simulated cube | vjp | SUP | native-companion | witwin/radar/sensors.py::Pattern | tests/test_pattern_leaves.py::test_a_pattern_gain_leaf_reaches_the_simulated_cube | fd |
+| sensor_weight/Pattern | an angle axis | both | REF | host-declaration | witwin/radar/sensors.py::Pattern | tests/test_pattern_leaves.py::test_a_host_pattern_packs_bit_identically_and_a_tensor_axis_is_refused | refusal |
 | sensor_weight/round_trip | a marked velocity from a production entry point | both | REF | host-declaration | witwin/radar/sensors.py::SensorWeightGeometry | tests/test_sensor_constant_refusal.py::test_a_marked_field_on_the_production_geometry_is_still_refused, tests/test_sensor_constant_refusal.py::test_the_production_geometry_carries_no_marked_frozen_field | refusal |
 | sensor_weight/evaluate | out:pattern_gain | both | DECL | native-declared | witwin/radar/sensors.py::evaluate_sensor_weights | tests/test_sensor_weight.py::test_the_kernel_pattern_gain_equals_the_torch_pattern_gain | declaration |
 | sensor_weight/round_trip | site positions to a composed round-trip weight | vjp | SUP | native-companion | witwin/radar/sensors.py::RoundTripPatternStage.apply | tests/test_antenna_pattern_route.py::test_the_reverse_gradient_of_a_site_matches_a_central_difference | fd |
@@ -184,9 +225,10 @@ per-path product downstream of it is still a native kernel.
 ### Mesh-target facets and tabulated responses (`witwin/radar/facets.py`, `witwin/radar/scattering.py`)
 
 The facet and table responses are native per-row families whose companions
-are exact forward-mode jets (R-ADR-042, R-ADR-045). Material constants, the
-polarization, the diffuse seed and a response table select the law and are not
-leaves. A forward tangent on the vertices of a mesh that is also in the scene
+are exact forward-mode jets (R-ADR-042, R-ADR-045). A facet material's
+front-roughness rms and every layer's thickness, permittivity and permeability
+are leaves (R-ADR-052); the material model, the polarization, the diffuse seed
+and a response table select the law and are not. A forward tangent on the vertices of a mesh that is also in the scene
 stops at Channel's compile, which refuses a forward vertex tangent on the
 compiled scene; the facet families themselves carry it.
 
@@ -196,6 +238,9 @@ compiled scene; the facet families themselves carry it.
 | scatter/facet_response | leg directions, facet corners, float64 site positions (2x2 matrix per row) | jvp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | adjoint |
 | facets/facet_geometry | world vertices | both | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_facet_scatter_kernel.py::test_facet_geometry_and_its_two_companions | adjoint |
 | mesh/trace | authored mesh vertices to the composed rows | vjp | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_mesh_targets.py::test_the_vertex_gradient_matches_finite_differences | fd |
+| scatter/facet_response | material tables: rms, layer thickness, Re eps, Im eps, mu | both | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_material_leaves.py::test_the_material_tables_match_central_differences_in_both_modes | fd |
+| mesh/trace | Core material eps_r, sigma_e, thickness_m, roughness rms to the composed rows | both | SUP | native-companion | witwin/radar/facets.py::_live_material_tables | tests/test_facet_material_leaves.py::test_a_core_material_leaf_reaches_the_traced_rows_in_both_modes | fd |
+| mesh/trace | a roughness rms leaf at exactly zero | both | REF | host-declaration | witwin/radar/facets.py::_material_rows | tests/test_facet_material_leaves.py::test_a_roughness_leaf_at_exactly_zero_is_refused | refusal |
 | scatter/table_response | leg directions, table axis | both | SUP | native-companion | witwin/radar/scattering.py::_TableResponse | tests/test_target_fluctuation_and_tables.py::test_the_table_operator_matches_finite_differences_and_its_adjoint | fd |
 ### FMCW beat synthesis (`witwin/radar/synthesis/fmcw.py`)
 
@@ -452,7 +497,9 @@ above; a tape row does not restate it.
 | tape/fmcw_beat | out:beat context, backward saves segment where forward saves offsets | both | SUP | native-companion | witwin/radar/synthesis/fmcw.py::_FmcwSynthesis.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/ofdm_cfr | out:cfr context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/ofdm.py::_OfdmCfrSynthesis.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
 | tape/pulsed_echo | out:echo context, same forward/backward asymmetry | both | SUP | native-companion | witwin/radar/synthesis/pulsed.py::_PulsedEchoSynthesis.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
-| tape/sensor_weight | out:weight context, 9 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/sensors.py::_SensorWeight.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/sensor_weight | out:weight context, 12 saved tensors, one launch each way | vjp | SUP | native-companion | witwin/radar/sensors.py::_SensorWeight.setup_context | tests/test_backward_budget.py::test_each_boundary_costs_one_backward_launch_per_forward_launch | declaration |
+| tape/sensor_weight | out:a table or frame leaf adds one keyed_sum launch, none otherwise | vjp | SUP | native-companion | witwin/radar/sensors.py::_keyed_parameter_gradients | tests/test_pattern_leaves.py::test_the_parameter_backward_costs_one_reduction_and_only_when_asked | declaration |
+| tape/facet_response | out:the material sweep and reduction run only for a material leaf | vjp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse.backward | tests/test_facet_material_leaves.py::test_the_material_reverse_pass_runs_only_when_asked | declaration |
 | tape/frontend | out:noise and AGC contexts, two owners in one call | vjp | SUP | native-companion | witwin/radar/frontend.py::_FrontendNoise.setup_context | tests/test_backward_budget.py::test_the_frontend_costs_one_backward_launch_per_forward_stage | declaration |
 | tape/any | out:no tape reaches a public result record | both | SUP | torch-orchestration | witwin/radar/propagation.py::RadarLegBatch | tests/test_tape_containment.py::test_the_leg_batch_and_the_composed_batch_carry_no_tape, tests/test_tape_containment.py::test_the_synthesis_and_sensor_results_carry_no_tape | declaration |
 | tape/any | out:no module outside an owner reads a context | both | SUP | native-companion | witwin/radar/policy.py::first_order_only | tests/test_tape_containment.py::test_every_context_read_sits_inside_a_tape_owner, tests/test_tape_containment.py::test_the_context_scan_is_not_vacuous | declaration |
@@ -476,22 +523,11 @@ above, never a silent one.
   no subgradient at one. The supported differentiable route is
   `prepare_fixed_topology` + `reevaluate`, which is the route Radar runs per
   frame. Channel owns the deferral. Follow-up owner: Channel, ADR-043 section on `differentiable_geometry_outputs`.
-- **A pose derivative into the compiled scene.** `SmplPoseDeformation` publishes
-  a rest `Mesh` and per-frame `DeformationState`s that cross the Core/Channel
-  compile boundary, and a pose derivative is not plumbed across it. Whether a
-  graph-bearing vertex tensor survives `Mesh` construction and a Channel compile
-  is unverified, and a half-working pose gradient would be worse than none, so
-  the bridge refuses. The supported differentiable geometry today is a
-  `witwin.core.Mesh` vertex tensor. Plumbing a pose derivative across the
-  boundary is a separate accepted design. Follow-up owner: Radar `geometry/smpl.py` plus `witwin.core` Mesh construction, as one accepted design covering the compile boundary.
-- **The LNA voltage gain as a leaf.** It is the one frontend scalar whose
-  derivative would be perfectly well defined - a smooth multiplicative factor on
-  the whole signal - and it is refused anyway, because the native frontend
-  operator carries no tangent or gradient slot for it and no consumer asks for
-  one. Adding the slot is a self-contained native change: one extra input on the
-  fused phase/thermal/LNA operator's backward and jvp. It is deferred rather
-  than done because a device gain is not scene state and nothing in the Phase-9
-  acceptance set needs it. Follow-up owner: Radar `frontend/`, one extra tangent and gradient slot on the fused phase/thermal/LNA operator.
+- **The compression parameters as leaves.** `Compression.iip3`, `p1db` and
+  `am_pm` are smooth except at the saturation hold point, but each is a scalar
+  of the whole cube (a cube-wide reduction per parameter) and the native
+  compression operator has no parameter slot; no consumer has asked. They stay
+  host floats under the host-float rule. Follow-up owner: Radar `frontend.py`, a parameter slot on `frontend_compress_{backward,jvp}` with a deterministic block reduction.
 - **Waveform-parameter optimisation.** A spec scalar changes the SHAPE of the
   output as often as its value - `num_samples`, `num_subcarriers` and
   `pulse_width_s` all move a sampling grid - and a derivative taken across a
@@ -503,12 +539,18 @@ above, never a silent one.
   model, where the realisation is a smooth function of a fixed standard normal,
   is the shape that would make these leaves meaningful, and it is a separate
   design with its own accuracy and reproducibility questions. Follow-up owner: Radar `frontend/`, as a reparameterised noise-model R-ADR with its own accuracy and reproducibility evidence.
-- **A sensor pattern table as a leaf.** The tables are a resident lookup and the
-  kernel interpolates them; the pattern's real contribution to the derivative is
-  already carried by the weight, through the positions that decide which angle
-  is looked up. Optimising the tabulated VALUES - antenna design rather than
-  scene reconstruction - would need a gradient slot on the interpolation and a
-  decision about what a derivative at a knot means. Follow-up owner: Radar `sensors/`, gated on a consumer asking for antenna-design gradients rather than scene gradients.
+- **Forward-mode pose, shape and body-transform derivatives of a mesh body.**
+  The reverse mode is supported (R-ADR-052). A forward tangent on mesh vertices
+  is refused by Channel 0.6.0 at compile (its finite-vertex check has no
+  forward-AD formula), so a pose tangent cannot reach the legs, and
+  `SmplPoseDeformation.velocity_at` opens its own forward level over the pose.
+  Follow-up owner: Channel, a primal-only finite-vertex check at compile; then Radar `smpl.py` evaluates the vertex velocity outside the caller's forward level.
+- **A pose-dependent polarization.** An `"up"`/`"right"` polarization and a
+  pose trajectory's rotation turn the polarization every leg is launched with,
+  and Channel's fixed-topology replay takes endpoint polarizations as
+  primal-only constants (its field is linear in the launched dipole, but the
+  3x3 transport that maps it is not published). Refused for a pose leaf.
+  Follow-up owner: Channel, a polarization tangent and cotangent on the replay (or the unprojected 3x3 transport); Radar then opens the rotation and the alias polarizations.
 - **The Channel diffraction primal defect.** `evaluate` with
   `components={"diffraction"}` raises `IndexError` inside Channel's own
   enumerated diffraction stage at every AD mode including `none`, because the

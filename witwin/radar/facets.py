@@ -11,7 +11,10 @@ everything about the facets that is not the scattering coefficient itself:
   budget;
 * one frame's facet corners and site positions, from the snapshot's world
   vertices, through the native ``facet_geometry`` operator and its exact
-  forward and reverse companions.
+  forward and reverse companions;
+* the material tables the response reads, which are differentiable inputs of
+  the facet response when a Core material's permittivity, conductivity,
+  thickness, permeability or front-roughness rms height is a leaf (R-ADR-052).
 
 The coefficient is :class:`witwin.radar.scattering.FacetScatterResponse`; the
 target record is :class:`witwin.radar.targets.MeshTargets`; the binding reads
@@ -70,6 +73,8 @@ class FacetModel:
     layer_offsets: torch.Tensor
     layers: torch.Tensor
     key: tuple
+    #: The most layers any one material has: the stride of the material reverse pass.
+    max_layers: int = 0
 
     @property
     def facet_count(self) -> int:
@@ -90,12 +95,15 @@ class FacetFrame:
 
     ``corners`` is ``(F, 9)`` float32 world metres and ``sites`` ``(S, 3)`` float64 (the
     precise site the join computes path lengths from, R-ADR-040); both carry the
-    tape of the snapshot's vertices.
+    tape of the snapshot's vertices. ``material_params`` and ``layers`` are the
+    model's tables, carrying the tape of any material leaf.
     """
 
     model: FacetModel
     corners: torch.Tensor
     sites: torch.Tensor
+    material_params: torch.Tensor
+    layers: torch.Tensor
 
 
 class _FacetGeometry(torch.autograd.Function):
@@ -170,6 +178,8 @@ class FacetSites:
         self.max_sites = max_sites
         self._model: FacetModel | None = None
         self._frame: tuple[torch.device, tuple, FacetFrame] | None = None
+        #: The model's material tables on the tape of their leaves, when any is one.
+        self._materials: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def resolve(self, snapshot: Any, *, device: torch.device) -> FacetFrame:
         states = _selected_states(snapshot, self.structure_ids)
@@ -206,7 +216,8 @@ class FacetSites:
             self._model = model
         stacked = vertices[0] if len(vertices) == 1 else torch.cat(vertices, dim=0)
         corners, sites = _FacetGeometry.apply(stacked.contiguous(), model)
-        frame = FacetFrame(model=model, corners=corners, sites=sites)
+        material_params, layers = self._materials or (model.material_params, model.layers)
+        frame = FacetFrame(model=model, corners=corners, sites=sites, material_params=material_params, layers=layers)
         live = stacked.requires_grad or _carries_tangent(stacked)
         self._frame = None if live else (device, sources, frame)
         return frame
@@ -244,11 +255,12 @@ class FacetSites:
         vertex_entries = np.argsort(incidence, kind="stable")
         vertex_counts = np.bincount(incidence, minlength=points.shape[0])
         vertex_offsets = np.concatenate(([0], np.cumsum(vertex_counts)))
-        params = np.asarray([[row[0], row[1]] for row in materials], dtype=np.float32)
-        layer_rows = [layer for row in materials for layer in row[2]]
+        params = np.asarray([[row[0], _host(row[1])] for row in materials], dtype=np.float32)
+        layer_rows = [[_host(value) for value in layer] for row in materials for layer in row[2]]
         layer_counts = [len(row[2]) for row in materials]
         layer_offsets = np.concatenate(([0], np.cumsum(layer_counts)))
         layers = np.asarray(layer_rows if layer_rows else [[0.0, 1.0, 0.0, 1.0]], dtype=np.float32).reshape(-1, 4)
+        self._materials = _live_material_tables(materials, device=device)
 
         # Every table crosses to the device in two copies, one per dtype, and
         # is published as views of those buffers.
@@ -276,6 +288,7 @@ class FacetSites:
             layer_offsets=views[7],
             layers=layer_values,
             key=key,
+            max_layers=max(layer_counts),
         )
 
 
@@ -387,7 +400,38 @@ def _cells(centroids: np.ndarray, size: float) -> np.ndarray:
     return order[inverse.reshape(-1)].astype(np.int64)
 
 
-def _material_rows(material: Any, carrier_hz: float) -> tuple[float, float, list[list[float]]]:
+def _host(value: Any) -> float:
+    return float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
+
+
+def _live(value: Any) -> bool:
+    return isinstance(value, torch.Tensor) and (value.requires_grad or _carries_tangent(value))
+
+
+def _live_material_tables(materials: list, *, device: torch.device) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """The material tables as expressions of their leaves, or ``None`` when no entry is one.
+
+    The same rows, in the same order, as the host tables the model uploads; a
+    constant entry is a constant here. A handful of library calls per
+    topology, never per frame.
+    """
+
+    entries = [row[1] for row in materials] + [value for row in materials for layer in row[2] for value in layer]
+    if not any(_live(value) for value in entries):
+        return None
+
+    def scalar(value: Any) -> torch.Tensor:
+        if isinstance(value, torch.Tensor):
+            return value.to(device=device, dtype=torch.float32).reshape(())
+        return torch.tensor(float(value), dtype=torch.float32, device=device)
+
+    params = torch.stack([torch.stack((scalar(row[0]), scalar(row[1]))) for row in materials])
+    rows = [torch.stack([scalar(value) for value in layer]) for row in materials for layer in row[2]]
+    layers = torch.stack(rows) if rows else torch.tensor([[0.0, 1.0, 0.0, 1.0]], dtype=torch.float32, device=device)
+    return params.reshape(-1).contiguous(), layers.reshape(-1).contiguous()
+
+
+def _material_rows(material: Any, carrier_hz: float) -> tuple[float, Any, list[list[Any]]]:
     """``(model, rms_height_m, layers)`` of one Core material at the carrier.
 
     A perfect conductor is the exact ``r_TE = -1``, ``r_TM = +1``. Anything else
@@ -396,12 +440,27 @@ def _material_rows(material: Any, carrier_hz: float) -> tuple[float, float, list
     Im eps, mu_r)`` with ``eps`` the complex relative permittivity Core
     evaluates at the carrier (``Im eps <= 0``). The front roughness's rms
     height drives the coherent loss and the diffuse term.
+
+    An entry stays a tensor when Core hands one back, so a leaf on the
+    material (``eps_r``, ``sigma_e``, ``thickness_m``, ``mu_r`` or the
+    roughness's ``rms_height_m``) reaches the tables with its tape. A leaf rms
+    of exactly zero is refused: the diffuse amplitude grows like ``|h|`` there,
+    so the surface sits on the edge of the model's domain and has only a
+    one-sided derivative.
     """
 
     from witwin.core import MaterialLayer
 
     roughness = getattr(material, "roughness_front", None)
-    rms = 0.0 if roughness is None else float(roughness.rms_height_m)
+    rms: Any = 0.0 if roughness is None else roughness.rms_height_m
+    if isinstance(rms, torch.Tensor) and _live(rms) and float(rms.detach()) == 0.0:
+        raise RuntimeError(
+            "the material's front roughness rms_height_m is a leaf at exactly zero: the diffuse term's amplitude "
+            "grows like |h| there, so a smooth surface is the edge of the roughness model's domain and has only "
+            "a one-sided derivative. Start the rms at a positive height, or keep it a host value."
+        )
+    if not isinstance(rms, torch.Tensor):
+        rms = float(rms)
     if getattr(material, "conductor_model", None) == "perfect":
         return float(MODEL_PEC), rms, []
     layers = tuple(getattr(material, "layers", ()) or ())
@@ -418,12 +477,31 @@ def _material_rows(material: Any, carrier_hz: float) -> tuple[float, float, list
     rows = []
     for layer in layers:
         sample = layer.evaluate_at_frequency(carrier_hz)
-        eps = complex(sample.eps_r)
-        mu = complex(sample.mu_r)
-        if abs(mu.imag) > 0.0:
+        eps, mu = sample.eps_r, sample.mu_r
+        if abs(complex(_host_complex(mu)).imag) > 0.0:
             raise NotImplementedError("a magnetic loss tangent is not part of the facet reflection law")
-        rows.append([float(layer.thickness_m), eps.real, min(eps.imag, 0.0), mu.real])
+        thickness = layer.thickness_m if isinstance(layer.thickness_m, torch.Tensor) else float(layer.thickness_m)
+        rows.append([thickness, _real(eps), _loss(eps), _real(mu)])
     return float(MODEL_LAYERED), rms, rows
+
+
+def _host_complex(value: Any) -> complex:
+    return complex(value.detach()) if isinstance(value, torch.Tensor) else complex(value)
+
+
+def _real(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.real if value.is_complex() else value
+    return complex(value).real
+
+
+def _loss(value: Any) -> Any:
+    """``min(Im eps, 0)``: a passive medium; a tensor keeps its tape (the clamp passes it at and below zero)."""
+
+    if isinstance(value, torch.Tensor):
+        imaginary = value.imag if value.is_complex() else torch.zeros_like(value)
+        return torch.clamp(imaginary, max=0.0)
+    return min(complex(value).imag, 0.0)
 
 
 def _world_vertices(state: Any, *, device: torch.device) -> torch.Tensor:

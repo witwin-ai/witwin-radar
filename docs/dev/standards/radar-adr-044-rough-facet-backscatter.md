@@ -43,8 +43,8 @@ variable about `sum sigma_d`, as a real rough surface's does for one
 realisation.
 
 **Derivatives.** Both terms are differentiated exactly with respect to the leg
-directions, the facet corners and the site positions. The seed and `h` select
-the law and take no derivative. `sqrt(sigma_d)` is not differentiable at
+directions, the facet corners and the site positions. The seed selects the law
+and takes no derivative; `h` is a leaf since R-ADR-052, refused at exactly zero. `sqrt(sigma_d)` is not differentiable at
 `sigma_d = 0`; the diffuse term is skipped there (grazing, or `h = 0`).
 
 ## Evidence
