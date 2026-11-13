@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from functools import reduce
 from typing import TYPE_CHECKING, Any
 
 import torch
+
+from .propagation import DiscoveryReport
 
 if TYPE_CHECKING:
     import numpy as np
@@ -61,6 +64,15 @@ class Result:
     first and not the second, which is exactly the trade it exists to make;
     collapsing them into one flag would report a proven-complete adaptive run
     as if it might have lost a path.
+
+    ``discovery_complete`` is Channel's own half of the first statement: every
+    leg discovery behind the run returned ``PropagationEvaluation.complete``.
+    It is ``False`` when reflection candidates came from ray discovery (the
+    ``"rays"`` source, or ``"auto"`` past its image-tree cost budget), and
+    ``path_set_complete`` is already ANDed with it. ``transmission_dropped_rows``
+    is the largest number of source-sink pairs any one discovery left without a
+    transmission path because their straight segment crosses more walls than
+    the reflection depth admits; it is ``0`` for a run without transmission.
 
     RETENTION, stated because these members are a real tensor lifetime. The
     ``last_*`` members alias the frame's own batches, so holding this result
@@ -112,6 +124,8 @@ class Result:
     #: which can be coarser than the requested ``Motion``: an OFDM CFR symbol
     #: has no fast-time grid of its own.
     observation_schedule: str = "frame"
+    discovery_complete: bool = True
+    transmission_dropped_rows: int = 0
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axis_names):
@@ -188,6 +202,7 @@ class Result:
         motion_sampling_exhaustive: bool,
         motion_sampling: str,
         adaptive_diagnostics: Sequence[dict[str, Any]],
+        discovery: DiscoveryReport | None = None,
     ) -> Result:
         """Stack the per-frame cubes and carry the waveform's conventions.
 
@@ -228,6 +243,8 @@ class Result:
             output_domain=synthesis.output_domain,
             adaptive_diagnostics=tuple(adaptive_diagnostics),
             observation_schedule=synthesis.observation_schedule,
+            discovery_complete=True if discovery is None else discovery.complete,
+            transmission_dropped_rows=0 if discovery is None else discovery.transmission_dropped_rows,
         )
 
 
@@ -365,6 +382,8 @@ class SceneFrame:
     #: from rather than from whatever a caller has to hand.
     output_spec: FmcwSpec | OfdmSpec | PulsedSpec
     array: SensorArraySpec
+    #: What Channel said about the discoveries this frame answered from.
+    discovery: DiscoveryReport = DiscoveryReport()
 
     def released(self) -> SceneFrame:
         """This frame without the device state only a closing frame publishes."""
@@ -408,6 +427,7 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
         motion_sampling_exhaustive=all(frame.motion_sampling_exhaustive for frame in frames),
         motion_sampling=last.motion_sampling,
         adaptive_diagnostics=[frame.diagnostics for frame in frames if frame.diagnostics is not None],
+        discovery=reduce(DiscoveryReport.merged, (frame.discovery for frame in frames)),
     )
 
 

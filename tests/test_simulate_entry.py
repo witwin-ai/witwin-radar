@@ -239,13 +239,13 @@ def _count_freezes(monkeypatch) -> list:
     from witwin.radar.channel import ChannelPropagationAdapter
 
     calls: list = []
-    original = ChannelPropagationAdapter.freeze
+    original = ChannelPropagationAdapter.discover
 
-    def counting(self, sources, sinks):
+    def counting(self, sources, sinks, **kwargs):
         calls.append((id(self), len(calls)))
-        return original(self, sources, sinks)
+        return original(self, sources, sinks, **kwargs)
 
-    monkeypatch.setattr(ChannelPropagationAdapter, "freeze", counting)
+    monkeypatch.setattr(ChannelPropagationAdapter, "discover", counting)
     return calls
 
 

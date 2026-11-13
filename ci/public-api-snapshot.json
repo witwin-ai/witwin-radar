@@ -87,7 +87,7 @@
           "name": "Paths",
           "kind": "class",
           "target": "witwin.radar.simulation.Paths",
-          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
+          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', transmission: 'bool', diffraction: 'bool', environment: 'bool', coupling: 'bool', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', discovery_complete: 'bool', transmission_dropped_rows: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
         },
         {
           "name": "Pattern",
@@ -117,7 +117,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame') -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0) -> None"
         },
         {
           "name": "StructureTargets",
@@ -579,7 +579,7 @@
           "name": "SynthesisPathBatch",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
-          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False) -> None"
+          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False, complex_transfer_band: torch.Tensor | None = None, frequency_offsets_hz: tuple[float, ...] | None = None) -> None"
         },
         {
           "name": "SynthesisResult",
@@ -699,12 +699,12 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Result'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Result'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Iterator[Result]'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Iterator[Result]'"
         },
         {
           "name": "to",
@@ -714,7 +714,7 @@
         {
           "name": "trace",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Paths'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None) -> 'Paths'"
         },
         {
           "name": "transmit_power_watts",

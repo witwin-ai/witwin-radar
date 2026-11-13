@@ -31,7 +31,16 @@ from .propagation import FrozenLeg, RadarLegBatch, require_tensor
 if TYPE_CHECKING:
     from .scattering import ScatterResponse
 
-LegKey = tuple[int, int, tuple[int, ...], tuple[int, ...]]
+LegKey = tuple[Any, ...]
+
+#: The ``site_id`` of a composed row that visits no scatter site.
+NO_SITE = -1
+
+
+def _present_member(value: torch.Tensor | None, name: str) -> torch.Tensor:
+    if value is None:
+        raise ValueError(f"a leg batch composed with segment targets must carry {name}")
+    return value
 
 
 class _PathInterpolation(torch.autograd.Function):
@@ -154,6 +163,11 @@ class LegIdentity:
     key that distinguishes two rows of the SAME leg. Every column is frame
     invariant, so the composed order it induces is frame invariant too.
 
+    ``edge`` is the diffracting edge of each row, read only for a leg that
+    requested ``diffraction``: a diffracted row interacts with an edge rather
+    than a face, so its primitive sequence does not tell two edges apart. It
+    is appended last, so it only breaks what would otherwise be a tie.
+
     ``packed`` is the whole identity as one bytes object - the row count and
     sequence width followed by every column - so two legs have the same
     identity exactly when their ``packed`` values are equal. It is what an
@@ -167,6 +181,7 @@ class LegIdentity:
     primitive: np.ndarray
     material: np.ndarray
     packed: bytes
+    edge: np.ndarray | None = None
 
     @property
     def row_count(self) -> int:
@@ -180,15 +195,17 @@ class LegIdentity:
         leg carries sequences of the same width.
         """
 
-        return np.column_stack((self.component, self.depth, self.primitive, self.material))
+        columns = (self.component, self.depth, self.primitive, self.material)
+        return np.column_stack(columns if self.edge is None else (*columns, self.edge))
 
     def key(self, row: int) -> LegKey:
-        return (
+        key: LegKey = (
             int(self.component[row]),
             int(self.depth[row]),
             tuple(int(value) for value in self.primitive[row]),
             tuple(int(value) for value in self.material[row]),
         )
+        return key if self.edge is None else (*key, int(self.edge[row]))
 
 
 def read_leg_identity(frozen: FrozenLeg, name: str) -> LegIdentity:
@@ -209,29 +226,29 @@ def read_leg_identity(frozen: FrozenLeg, name: str) -> LegIdentity:
     ):
         if tuple(column.shape) != shape:
             raise ValueError(f"{name} leg {label} has shape {tuple(column.shape)}, expected {shape}")
-    packed = (
-        torch.cat(
-            (
-                frozen.source_id.to(torch.int64),
-                frozen.sink_id.to(torch.int64),
-                frozen.component_id.to(torch.int64),
-                frozen.depth.to(torch.int64),
-                frozen.primitive_sequence.to(torch.int64).reshape(-1),
-                frozen.material_sequence.to(torch.int64).reshape(-1),
-            )
-        )
-        .cpu()
-        .numpy()
-    )
+    edge_column = getattr(frozen, "edge_id", None) if "diffraction" in getattr(frozen, "requested", ()) else None
+    columns = [
+        frozen.source_id.to(torch.int64),
+        frozen.sink_id.to(torch.int64),
+        frozen.component_id.to(torch.int64),
+        frozen.depth.to(torch.int64),
+        frozen.primitive_sequence.to(torch.int64).reshape(-1),
+        frozen.material_sequence.to(torch.int64).reshape(-1),
+    ]
+    if edge_column is not None:
+        columns.append(edge_column.to(torch.int64).reshape(rows))
+    packed = torch.cat(columns).cpu().numpy()
     sequence = rows * width
+    end = 4 * rows + 2 * sequence
     return LegIdentity(
         source=packed[:rows],
         sink=packed[rows : 2 * rows],
         component=packed[2 * rows : 3 * rows],
         depth=packed[3 * rows : 4 * rows],
         primitive=packed[4 * rows : 4 * rows + sequence].reshape(rows, width),
-        material=packed[4 * rows + sequence :].reshape(rows, width),
+        material=packed[4 * rows + sequence : end].reshape(rows, width),
         packed=np.asarray((rows, width), dtype=np.int64).tobytes() + packed.tobytes(),
+        edge=None if edge_column is None else packed[end:],
     )
 
 
@@ -304,6 +321,55 @@ def sink_major_rank(sources: list[int], sinks: list[int]) -> Callable[[np.ndarra
     return rank
 
 
+def require_round_trip_budget(
+    inbound_source: np.ndarray,
+    inbound_site: np.ndarray,
+    outbound_sink: np.ndarray,
+    outbound_site: np.ndarray,
+    *,
+    site_count: int,
+    sources: list[int],
+    sinks: list[int],
+    direct: tuple[np.ndarray, np.ndarray] | None,
+    budget: int,
+) -> None:
+    """Refuse a join whose composed rows for some sensor pair would exceed ``budget``.
+
+    The composed row count of pair ``(t, r)`` is ``sum_s A[s, t] * B[s, r]``,
+    where ``A[s, t]`` counts inbound rows from transmitter ``t`` to site ``s``
+    and ``B[s, r]`` outbound rows from site ``s`` to receiver ``r`` - one small
+    host matrix product over per-site counts, so the cross join it bounds is
+    never materialised to be measured. Direct rows add their own per-pair
+    count. Host-only; reads no device value.
+    """
+
+    if type(budget) is not int or budget < 1:
+        raise ValueError(f"max_round_trips must be a positive int, got {budget!r}")
+    num_tx, num_rx = len(sources), len(sinks)
+    arriving = np.bincount(
+        inbound_site * num_tx + _ranks(inbound_source, sources), minlength=site_count * num_tx
+    ).reshape(site_count, num_tx)
+    leaving = np.bincount(outbound_site * num_rx + _ranks(outbound_sink, sinks), minlength=site_count * num_rx).reshape(
+        site_count, num_rx
+    )
+    # rows[r, t]: sink major, the same rank law as the composed partition.
+    rows = (arriving.T.astype(np.int64) @ leaving.astype(np.int64)).T
+    if direct is not None:
+        pair = sink_major_rank(sources, sinks)(direct[0], direct[1])
+        rows = rows + np.bincount(pair, minlength=num_tx * num_rx).reshape(num_rx, num_tx)
+    worst = int(rows.argmax())
+    count = int(rows.reshape(-1)[worst])
+    if count > budget:
+        receiver, transmitter = divmod(worst, num_tx)
+        raise ValueError(
+            f"max_round_trips={budget} is exceeded: sensor pair (transmitter {sources[transmitter]}, receiver "
+            f"{sinks[receiver]}) would compose {count} round-trip rows "
+            f"({int((rows > budget).sum())} of {num_tx * num_rx} pairs exceed the budget). Each composed row is "
+            "one inbound row times one outbound row through the same site, so reduce reflections, the site "
+            "count or the scene's facets, or raise max_round_trips"
+        )
+
+
 def pair_offsets(pair_of_row: np.ndarray | Sequence[int], pair_count: int) -> np.ndarray:
     """A half-open partition of composed rows by sensor pair.
 
@@ -362,6 +428,12 @@ class RadarPathTopology:
     silently wrong the moment a leg publishes its rows in a different order,
     and the resulting error looks like a physics bug rather than a bookkeeping
     one.
+
+    A SITE-LESS row - transmitter straight to receiver, through the third leg -
+    carries ``site_id == NO_SITE`` and ``inbound_row == outbound_row == -1``,
+    and ``direct_row`` names its row of that leg. ``direct_row`` is ``None``
+    when the join composed no third leg and ``-1`` on every site row when it
+    did.
     """
 
     radar_source_id: torch.Tensor
@@ -369,11 +441,14 @@ class RadarPathTopology:
     radar_sink_id: torch.Tensor
     inbound_row: torch.Tensor
     outbound_row: torch.Tensor
+    direct_row: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         rows = (int(self.radar_source_id.shape[0]),)
         for name in ("radar_source_id", "site_id", "radar_sink_id", "inbound_row", "outbound_row"):
             require_tensor(name, getattr(self, name), dtype=torch.int64, shape=rows)
+        if self.direct_row is not None:
+            require_tensor("direct_row", self.direct_row, dtype=torch.int64, shape=rows)
 
     @property
     def row_count(self) -> int:
@@ -424,10 +499,22 @@ class RadarPathBatch:
     row_valid: torch.Tensor | None
     topology: RadarPathTopology
     weight_includes_antenna_pattern: bool = False
+    #: The same rows at ``reference_frequency_hz + frequency_offsets_hz[j]``,
+    #: ``complex64[path_count, F]``, composed column by column exactly as
+    #: ``complex_transfer_ref`` is. Present only on a wideband run, where a
+    #: consumer that evaluates per frequency (OFDM, one column per subcarrier)
+    #: reads it instead of shifting the reference coefficient.
+    complex_transfer_band: torch.Tensor | None = None
+    frequency_offsets_hz: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if type(self.weight_includes_antenna_pattern) is not bool:
             raise TypeError("weight_includes_antenna_pattern must be a bool")
+        if (self.complex_transfer_band is None) != (self.frequency_offsets_hz is None):
+            raise ValueError("complex_transfer_band and frequency_offsets_hz are paired: publish both or neither")
+        if self.complex_transfer_band is not None and self.frequency_offsets_hz is not None:
+            band = (self.path_count, len(self.frequency_offsets_hz))
+            require_tensor("complex_transfer_band", self.complex_transfer_band, dtype=torch.complex64, shape=band)
         if type(self.sensor_pair_count) is not int or self.sensor_pair_count < 1:
             raise ValueError("sensor_pair_count must be a positive int")
         if type(self.path_count) is not int or self.path_count < 0:
@@ -528,6 +615,10 @@ class SlotRows:
     slots: int
     rows_per_slot: int
     weight_includes_antenna_pattern: bool = False
+    #: Every slot's per-frequency weights, ``[slots * rows_per_slot, F]``, on a
+    #: wideband run (see :class:`RadarPathBatch`); ``None`` otherwise.
+    complex_transfer_band: torch.Tensor | None = None
+    frequency_offsets_hz: tuple[float, ...] | None = None
 
 
 class _TwoWayJoin(torch.autograd.Function):
@@ -792,6 +883,17 @@ class TwoWayComposer:
     #: its upload. A slot-major replica keeps the single-slot table, which is
     #: what an instrument half selecting pair segments slot by slot reads.
     pair_offsets_host: np.ndarray
+    #: How many rows of the third, site-less leg this join composes, ``0``
+    #: when it composes none.
+    direct_row_count: int = 0
+    #: The composed order over ``[site rows | direct rows]``: composed row
+    #: ``i`` is row ``merge[i]`` of that concatenation. ``None`` when there are
+    #: no direct rows, in which case the native join's output IS the composed
+    #: order and nothing is gathered. The native join, its CSR families and
+    #: ``inbound_row`` / ``outbound_row`` / ``response_slot`` address the site
+    #: rows only; ``sensor_pair_index``, ``pair_offsets`` and ``topology``
+    #: address the composed rows.
+    merge: torch.Tensor | None = None
 
     @classmethod
     def freeze(
@@ -805,6 +907,9 @@ class TwoWayComposer:
         reference_frequency_hz: float,
         inbound_identity: LegIdentity | None = None,
         outbound_identity: LegIdentity | None = None,
+        direct: FrozenLeg | None = None,
+        direct_identity: LegIdentity | None = None,
+        max_round_trips: int | None = None,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -823,6 +928,16 @@ class TwoWayComposer:
         legitimate. What is refused is the reverse - a declared site with no
         row at all in one of the legs - because that is a wrong stable ID, and
         dropping it silently is how a join produces a plausible empty answer.
+
+        ``direct`` is the optional third leg, transmitter straight to receiver.
+        Each of its rows becomes one site-less composed row in its sensor
+        pair's segment, after that pair's site rows, ordered by its own leg key.
+
+        ``max_round_trips`` bounds the composed rows of any ONE sensor pair. It
+        is checked on the host from per-site row counts BEFORE the cross join is
+        materialised, because the join is the step whose size is the product of
+        the two legs' row counts, and a refusal there names the pair rather
+        than an allocation failure somewhere downstream.
         """
 
         device = inbound.sink_id.device
@@ -870,6 +985,32 @@ class TwoWayComposer:
         inbound_rows = np.flatnonzero(np.isin(arriving.sink, declared))
         outbound_rows = np.flatnonzero(np.isin(leaving.source, declared))
         inbound_site = _ranks(arriving.sink[inbound_rows], sites)
+        through = (
+            None
+            if direct is None
+            else (read_leg_identity(direct, "direct") if direct_identity is None else direct_identity)
+        )
+        if through is not None:
+            stray = sorted(set(through.source.tolist()) - set(sources)) + sorted(
+                set(through.sink.tolist()) - set(sinks)
+            )
+            if stray:
+                raise ValueError(
+                    f"direct leg rows carry endpoint IDs {stray} outside radar_source_ids {sources} and "
+                    f"radar_sink_ids {sinks}"
+                )
+        if max_round_trips is not None:
+            require_round_trip_budget(
+                arriving.source[inbound_rows],
+                inbound_site,
+                leaving.sink[outbound_rows],
+                _ranks(leaving.source[outbound_rows], sites),
+                site_count=len(sites),
+                sources=sources,
+                sinks=sinks,
+                direct=None if through is None else (through.source, through.sink),
+                budget=max_round_trips,
+            )
         outbound_order = outbound_rows[np.argsort(_ranks(leaving.source[outbound_rows], sites), kind="stable")]
         per_site = np.bincount(_ranks(leaving.source[outbound_rows], sites), minlength=len(sites))
         first_partner = np.concatenate(([0], np.cumsum(per_site)[:-1]))
@@ -893,22 +1034,52 @@ class TwoWayComposer:
         source, sink = source[order], sink[order]
 
         pair_count = len(sources) * len(sinks)
-        validate_pair_ordering(pair, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
-        offsets = pair_offsets(pair, pair_count)
         inbound_count = arriving.row_count
         outbound_count = leaving.row_count
         by_inbound = csr(joined_in, inbound_count)
         by_outbound = csr(joined_out, outbound_count)
         by_response = csr(site_rank, len(sites))
 
+        # The site-less rows join their sensor pair's segment after its site
+        # rows (site rank ``len(sites)``), in the order of their own leg key.
+        # The site rows are already in canonical order, so a stable merge
+        # keeps them as the native join publishes them.
+        merge = None
+        direct_count = 0
+        composed_source, composed_site, composed_sink = source, arriving.sink[joined_in], sink
+        composed_in, composed_out, composed_direct = joined_in, joined_out, None
+        if through is not None:
+            direct_count = through.row_count
+            direct_key = _dense_rank(through.key_columns())
+            _require_unique_keys(through, direct_key, "direct")
+            direct_pair = np.asarray(sink_major_rank(sources, sinks)(through.source, through.sink), dtype=np.int64)
+            merge = np.lexsort(
+                (
+                    np.concatenate((np.zeros(total, dtype=np.int64), direct_key)),
+                    np.concatenate((np.arange(total, dtype=np.int64), np.zeros(direct_count, dtype=np.int64))),
+                    np.concatenate((site_rank, np.full(direct_count, len(sites), dtype=np.int64))),
+                    np.concatenate((pair, direct_pair)),
+                )
+            )
+            none = np.full(direct_count, -1, dtype=np.int64)
+            pair = np.concatenate((pair, direct_pair))[merge]
+            composed_source = np.concatenate((source, through.source))[merge]
+            composed_site = np.concatenate((composed_site, np.full(direct_count, NO_SITE, dtype=np.int64)))[merge]
+            composed_sink = np.concatenate((sink, through.sink))[merge]
+            composed_in = np.concatenate((joined_in, none))[merge]
+            composed_out = np.concatenate((joined_out, none))[merge]
+            composed_direct = np.concatenate((np.full(total, -1, dtype=np.int64), np.arange(direct_count)))[merge]
+        validate_pair_ordering(pair, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
+        offsets = pair_offsets(pair, pair_count)
+
         # Every integer table of the join crosses to the device in ONE copy and
         # is published as views of that buffer.
-        tables = (
+        tables: tuple[np.ndarray, ...] = (
             pair,
             site_rank,
-            source,
-            arriving.sink[joined_in],
-            sink,
+            composed_source,
+            composed_site,
+            composed_sink,
             joined_in,
             joined_out,
             offsets,
@@ -916,6 +1087,8 @@ class TwoWayComposer:
             *by_outbound,
             *by_response,
         )
+        if composed_direct is not None and merge is not None:
+            tables = (*tables, composed_in, composed_out, composed_direct, merge)
         uploaded = torch.from_numpy(np.concatenate([np.asarray(table, dtype=np.int64) for table in tables])).to(device)
         views = torch.split(uploaded, [len(table) for table in tables])
         (
@@ -933,18 +1106,24 @@ class TwoWayComposer:
             by_outbound_rows,
             by_response_offsets,
             by_response_rows,
-        ) = views
+        ) = views[:14]
+        merge_table = None
+        topology_in, topology_out, direct_row = inbound_row, outbound_row, None
+        if merge is not None:
+            topology_in, topology_out, direct_row, merge_table = views[14:]
+        topology = RadarPathTopology(
+            radar_source_id=radar_source_id,
+            site_id=site_id,
+            radar_sink_id=radar_sink_id,
+            inbound_row=topology_in,
+            outbound_row=topology_out,
+            direct_row=direct_row,
+        )
         return cls(
             inbound_row=inbound_row,
             outbound_row=outbound_row,
             response_slot=response_slot,
-            topology=RadarPathTopology(
-                radar_source_id=radar_source_id,
-                site_id=site_id,
-                radar_sink_id=radar_sink_id,
-                inbound_row=inbound_row,
-                outbound_row=outbound_row,
-            ),
+            topology=topology,
             sensor_pair_index=sensor_pair_index,
             pair_offsets=offsets_table,
             sensor_pair_count=pair_count,
@@ -963,23 +1142,44 @@ class TwoWayComposer:
             by_row_rows=torch.arange(total, dtype=torch.int64, device=device),
             outbound_max_depth=int(leaving.depth[joined_out].max()) if total else 0,
             pair_offsets_host=offsets,
+            direct_row_count=direct_count,
+            merge=merge_table,
         )
 
     @property
-    def path_count(self) -> int:
+    def site_row_count(self) -> int:
+        """Composed rows that visit a scatter site: the native join's rows."""
+
         return int(self.inbound_row.shape[0])
 
-    def compose(self, inbound: RadarLegBatch, outbound: RadarLegBatch, response: ScatterResponse) -> RadarPathBatch:
+    @property
+    def path_count(self) -> int:
+        return self.site_row_count + self.direct_row_count
+
+    def compose(
+        self,
+        inbound: RadarLegBatch,
+        outbound: RadarLegBatch,
+        response: ScatterResponse,
+        direct: RadarLegBatch | None = None,
+    ) -> RadarPathBatch:
         """Compose one frame's round-trip rows. Device work only.
 
         A dead row's payload is exactly zero, not a partial composition. The
         row is a complete answer that this round trip does not exist at these
         endpoint positions; publishing ``tau_in + 0`` for it would be a
         plausible number that no consumer should ever read.
+
+        ``direct`` is the third leg's batch when this join was frozen with one.
+        A site-less row is that leg's row as it stands - its delay and its
+        coefficient, with no scatter factor - so placing it is a gather, not
+        an equation: the native join composes the site rows and the two sets
+        are interleaved by the frozen ``merge`` order in one ``index_select``.
+        Its derivative is the gather's.
         """
 
-        self._require_frame(inbound, outbound)
-        rows = self.path_count
+        self._require_frame(inbound, outbound, direct)
+        rows = self.site_row_count
         device = inbound.delay_s.device
         row_valid = self._row_validity(inbound, outbound, rows, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
@@ -1005,22 +1205,40 @@ class TwoWayComposer:
             self,
             response_family,
         )
+        transfer = torch.complex(transfer_re, transfer_im)
+        if self.merge is not None:
+            assert direct is not None
+            tau_rt = torch.cat((tau_rt, direct.delay_s)).index_select(0, self.merge)
+            transfer = torch.cat((transfer, direct.coefficient)).index_select(0, self.merge)
+            if row_valid is not None or direct.row_valid is not None:
+                site_valid = torch.ones(rows, dtype=torch.bool, device=device) if row_valid is None else row_valid
+                direct_valid = (
+                    torch.ones(direct.leg_count, dtype=torch.bool, device=device)
+                    if direct.row_valid is None
+                    else direct.row_valid
+                )
+                row_valid = torch.cat((site_valid, direct_valid)).index_select(0, self.merge)
 
         return RadarPathBatch(
             sensor_pair_count=self.sensor_pair_count,
-            path_count=rows,
+            path_count=self.path_count,
             sensor_pair_index=self.sensor_pair_index,
             pair_offsets=self.pair_offsets,
             total_delay_s=tau_rt,
             delay_rate=None,
-            complex_transfer_ref=torch.complex(transfer_re, transfer_im),
+            complex_transfer_ref=transfer,
             reference_frequency_hz=self.reference_frequency_hz,
             row_valid=row_valid,
             topology=self.topology,
         )
 
     def compose_slots(
-        self, inbound: RadarLegBatch, outbound: RadarLegBatch, response: ScatterResponse, slots: int
+        self,
+        inbound: RadarLegBatch,
+        outbound: RadarLegBatch,
+        response: ScatterResponse,
+        slots: int,
+        direct: RadarLegBatch | None = None,
     ) -> SlotRows:
         """Compose a slot-major replay of ``slots`` instants with this one join.
 
@@ -1030,19 +1248,27 @@ class TwoWayComposer:
         of composing with :meth:`for_slots` tables. A per-site response is
         shared by every slot; a geometry-dependent response is evaluated per
         composed row and takes :meth:`for_slots` instead.
+
+        ``direct`` is the slot-major site-less leg when this join was frozen
+        with one. Its rows are interleaved per slot by the single-slot
+        ``merge`` order over the ``[slots, site rows | direct rows]`` view, so
+        no slot-replicated merge table exists either.
         """
 
+        if (direct is None) != (self.merge is None):
+            raise ValueError("pass the site-less leg exactly when this join was frozen with one")
         if response.is_geometry_dependent:
             raise ValueError("a geometry-dependent response is evaluated per composed row; compose it with for_slots")
         for name, batch, expected in (
             ("inbound", inbound, self.inbound_row_count * slots),
             ("outbound", outbound, self.outbound_row_count * slots),
+            ("direct", direct, self.direct_row_count * slots),
         ):
-            if batch.leg_count != expected:
+            if batch is not None and batch.leg_count != expected:
                 raise ValueError(
                     f"{name} leg carries {batch.leg_count} rows but {slots} slots of this join need {expected}"
                 )
-        rows = self.path_count * slots
+        rows = self.site_row_count * slots
         device = inbound.delay_s.device
         row_valid = self._slot_validity(inbound, outbound, slots, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
@@ -1063,9 +1289,27 @@ class TwoWayComposer:
             self,
             ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots),
         )
+        transfer = torch.complex(transfer_re, transfer_im)
+        if direct is not None and self.merge is not None:
+            merge = self.merge
+
+            def interleaved(site: torch.Tensor, through: torch.Tensor) -> torch.Tensor:
+                joined = torch.cat((site.view(slots, -1), through.view(slots, -1)), dim=1)
+                return joined.index_select(1, merge).reshape(-1)
+
+            tau_rt = interleaved(tau_rt, direct.delay_s)
+            transfer = interleaved(transfer, direct.coefficient)
+            if row_valid is not None or direct.row_valid is not None:
+                site_valid = torch.ones(rows, dtype=torch.bool, device=device) if row_valid is None else row_valid
+                direct_valid = (
+                    torch.ones(direct.leg_count, dtype=torch.bool, device=device)
+                    if direct.row_valid is None
+                    else direct.row_valid
+                )
+                row_valid = interleaved(site_valid, direct_valid)
         return SlotRows(
             total_delay_s=tau_rt,
-            complex_transfer_ref=torch.complex(transfer_re, transfer_im),
+            complex_transfer_ref=transfer,
             row_valid=row_valid,
             slots=slots,
             rows_per_slot=self.path_count,
@@ -1078,7 +1322,7 @@ class TwoWayComposer:
 
         if inbound.row_valid is None and outbound.row_valid is None:
             return None
-        rows = self.path_count * slots
+        rows = self.site_row_count * slots
         ones = torch.ones(rows, dtype=torch.bool, device=device)
         valid_in = (
             ones
@@ -1092,6 +1336,35 @@ class TwoWayComposer:
         )
         return valid_in & valid_out
 
+    def segment_targets(
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, direct: RadarLegBatch | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per composed row, the far end of its first and the near end of its last segment.
+
+        The antenna-pattern stage reads the transmit pattern toward the first
+        and the receive pattern from the last. A site row takes them from its
+        inbound and outbound legs, a site-less row from its own leg. Gathers of
+        Channel's live geometry, so a derivative through a reflection point
+        survives.
+        """
+
+        first = _present_member(inbound.departure_target_m, "departure_target_m")
+        last = _present_member(outbound.arrival_origin_m, "arrival_origin_m")
+        if self.merge is None:
+            return first.index_select(0, self.topology.inbound_row), last.index_select(0, self.topology.outbound_row)
+        assert direct is not None
+        return (
+            torch.cat(
+                (
+                    first.index_select(0, self.inbound_row),
+                    _present_member(direct.departure_target_m, "departure_target_m"),
+                )
+            ).index_select(0, self.merge),
+            torch.cat(
+                (last.index_select(0, self.outbound_row), _present_member(direct.arrival_origin_m, "arrival_origin_m"))
+            ).index_select(0, self.merge),
+        )
+
     def for_slots(self, count: int) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
 
@@ -1101,31 +1374,56 @@ class TwoWayComposer:
         """
         device = self.inbound_row.device
         slot = torch.arange(count, device=device, dtype=torch.int64)[:, None]
-        rows = self.path_count
+        rows = self.site_row_count
+        composed = self.path_count
 
         def shifted(table: torch.Tensor, stride: int) -> torch.Tensor:
             return (table[None, :] + slot * stride).reshape(-1)
 
-        def slot_csr(offsets: torch.Tensor) -> torch.Tensor:
-            return torch.cat((shifted(offsets[:-1], rows), offsets[-1:] * count))
+        def slot_csr(offsets: torch.Tensor, stride: int = rows) -> torch.Tensor:
+            return torch.cat((shifted(offsets[:-1], stride), offsets[-1:] * count))
+
+        def shifted_or_none(table: torch.Tensor, stride: int) -> torch.Tensor:
+            # -1 (this row has no entry in that leg) stays -1 in every slot.
+            row = table[None, :]
+            return torch.where(row >= 0, row + slot * stride, row).reshape(-1)
 
         inbound = shifted(self.inbound_row, self.inbound_row_count)
         outbound = shifted(self.outbound_row, self.outbound_row_count)
         responses = self.response_slot.repeat(count)
+        topology_in, topology_out, direct_row = inbound, outbound, None
+        merge = None
+        if self.merge is not None and self.topology.direct_row is not None:
+            topology_in = shifted_or_none(self.topology.inbound_row, self.inbound_row_count)
+            topology_out = shifted_or_none(self.topology.outbound_row, self.outbound_row_count)
+            direct_row = shifted_or_none(self.topology.direct_row, self.direct_row_count)
+            # The slot-major concatenation is [count * site rows | count * direct
+            # rows], so a site entry moves by whole site blocks and a direct
+            # entry by whole direct blocks after every site row.
+            site = self.merge < rows
+            merge = torch.where(
+                site[None, :],
+                self.merge[None, :] + slot * rows,
+                (self.merge - rows)[None, :] + count * rows + slot * self.direct_row_count,
+            ).reshape(-1)
+        topology = RadarPathTopology(
+            self.topology.radar_source_id.repeat(count),
+            self.topology.site_id.repeat(count),
+            self.topology.radar_sink_id.repeat(count),
+            topology_in,
+            topology_out,
+            direct_row,
+        )
         return replace(
             self,
             inbound_row=inbound,
             outbound_row=outbound,
             response_slot=responses,
-            topology=RadarPathTopology(
-                self.topology.radar_source_id.repeat(count),
-                self.topology.site_id.repeat(count),
-                self.topology.radar_sink_id.repeat(count),
-                inbound,
-                outbound,
-            ),
+            topology=topology,
+            merge=merge,
+            direct_row_count=self.direct_row_count * count,
             sensor_pair_index=shifted(self.sensor_pair_index, self.sensor_pair_count),
-            pair_offsets=slot_csr(self.pair_offsets),
+            pair_offsets=slot_csr(self.pair_offsets, composed),
             sensor_pair_count=self.sensor_pair_count * count,
             inbound_row_count=self.inbound_row_count * count,
             outbound_row_count=self.outbound_row_count * count,
@@ -1140,7 +1438,9 @@ class TwoWayComposer:
             by_row_rows=torch.arange(count * rows, device=device, dtype=torch.int64),
         )
 
-    def _require_frame(self, inbound: RadarLegBatch, outbound: RadarLegBatch) -> None:
+    def _require_frame(
+        self, inbound: RadarLegBatch, outbound: RadarLegBatch, direct: RadarLegBatch | None = None
+    ) -> None:
         """Refuse a frame that is not the one this join was frozen against.
 
         The index tables address the FROZEN leg rows, so a batch of a different
@@ -1158,11 +1458,19 @@ class TwoWayComposer:
         rather than a guard.
         """
 
+        if (direct is None) != (self.merge is None):
+            raise ValueError(
+                "this join was frozen "
+                + ("with" if self.merge is not None else "without")
+                + " a site-less direct leg and the frame "
+                + ("does not carry one" if direct is None else "carries one")
+            )
         for name, batch, expected in (
             ("inbound", inbound, self.inbound_row_count),
             ("outbound", outbound, self.outbound_row_count),
+            ("direct", direct, self.direct_row_count),
         ):
-            if batch.leg_count != expected:
+            if batch is not None and batch.leg_count != expected:
                 raise ValueError(
                     f"{name} leg carries {batch.leg_count} rows but this join "
                     f"was frozen against {expected}; the frame does not belong "
@@ -1213,12 +1521,17 @@ class TwoWayComposer:
         row_response: Any = response
         rows_re, rows_im = row_response.evaluate_rows(self, inbound, outbound, flags)
         for name, value in (("real", rows_re), ("imaginary", rows_im)):
-            if not isinstance(value, torch.Tensor) or value.numel() != self.path_count:
+            if not isinstance(value, torch.Tensor) or value.numel() != self.site_row_count:
                 raise ValueError(
                     f"a row-evaluated scatter response must publish one {name} "
-                    f"value per composed row; this join has {self.path_count}"
+                    f"value per composed site row; this join has {self.site_row_count}"
                 )
-        return (rows_re, rows_im, self.row_slot, ResponseFamily(self.by_row_offsets, self.by_row_rows, self.path_count))
+        return (
+            rows_re,
+            rows_im,
+            self.row_slot,
+            ResponseFamily(self.by_row_offsets, self.by_row_rows, self.site_row_count),
+        )
 
     def _site_response(self, response: ScatterResponse, device: torch.device) -> torch.Tensor:
         """The per-site response, checked against the frozen site count.
@@ -1250,8 +1563,6 @@ class TwoWayComposer:
         valid_out = ones if outbound.row_valid is None else outbound.row_valid.index_select(0, self.outbound_row)
         return valid_in & valid_out
 
-
-NO_SITE = -1
 
 TARGET = "target"
 
@@ -1423,29 +1734,43 @@ class RadarComponentIndex:
 
     @classmethod
     def from_two_way(
-        cls, composer: TwoWayComposer, inbound: FrozenLeg, outbound: FrozenLeg, declaration: ComponentDeclaration
+        cls,
+        composer: TwoWayComposer,
+        inbound: FrozenLeg,
+        outbound: FrozenLeg,
+        declaration: ComponentDeclaration,
+        direct: FrozenLeg | None = None,
     ) -> RadarComponentIndex:
-        """Classify a two-way join's rows from its two frozen leg topologies.
+        """Classify a two-way join's rows from its frozen leg topologies.
 
         ``composer`` is a :class:`~witwin.radar.paths.TwoWayComposer`
-        and ``inbound`` / ``outbound`` are the frozen leg handles it was frozen
-        against; all three are duck typed so this module adds no import edge to
-        the Channel adapter.
+        and ``inbound`` / ``outbound`` (and ``direct``, when the join composed
+        site-less rows) are the frozen leg handles it was frozen against; all
+        are duck typed so this module adds no import edge to the Channel
+        adapter. A site-less row's depth and materials are its direct leg row's.
         """
 
         if not isinstance(declaration, ComponentDeclaration):
             raise TypeError(f"declaration must be a ComponentDeclaration, got {type(declaration).__name__}")
         topology = composer.topology
+        if (topology.direct_row is None) != (direct is None):
+            raise ValueError("pass the direct leg exactly when the join composed site-less rows")
         site = [int(value) for value in topology.site_id.tolist()]
         inbound_row = [int(value) for value in topology.inbound_row.tolist()]
         outbound_row = [int(value) for value in topology.outbound_row.tolist()]
+        direct_row = [-1] * len(site) if topology.direct_row is None else topology.direct_row.tolist()
         in_depth, in_materials = _leg_facts(inbound, "inbound")
         out_depth, out_materials = _leg_facts(outbound, "outbound")
+        direct_depth, direct_materials = ([], []) if direct is None else _leg_facts(direct, "direct")
 
         classes: list[int] = []
         for row, site_id in enumerate(site):
-            depth = max(in_depth[inbound_row[row]], out_depth[outbound_row[row]])
-            materials = in_materials[inbound_row[row]] | out_materials[outbound_row[row]]
+            if site_id == NO_SITE:
+                depth = direct_depth[int(direct_row[row])]
+                materials = direct_materials[int(direct_row[row])]
+            else:
+                depth = max(in_depth[inbound_row[row]], out_depth[outbound_row[row]])
+                materials = in_materials[inbound_row[row]] | out_materials[outbound_row[row]]
             matched = declaration.classify(site_id=site_id, depth=depth, material_slots=materials)
             if len(matched) != 1:
                 raise ValueError(
@@ -1470,6 +1795,7 @@ class RadarComponentIndex:
 
 __all__ = [
     "COMPONENT_NAMES",
+    "NO_SITE",
     "DIRECT_LEAKAGE",
     "ENVIRONMENT_CLUTTER",
     "MULTI_INTERACTION",

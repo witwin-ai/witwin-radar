@@ -179,6 +179,32 @@ Full discovery runs at each dynamic observation by default. An explicitly longer
 Visibility changes are real discontinuities: no smoothing or velocity clipping
 is applied across them. Complete means complete within the requested supported
 Channel components and discovery policy, not all conceivable propagation physics.
+`path_set_complete` also requires Channel's own discovery to be provably complete;
+`discovery="rays"` (or `"auto"` past its image-tree budget) clears it, and
+`Result.discovery_complete` publishes that half separately.
+
+The propagation request is `los=`, `reflections=`, `transmission=` (through walls)
+and `diffraction=` (edges). Transmission and diffraction exist only at discovery,
+so they need `grad="none"` and a discovery at every evaluated instant, which is
+the default; other routes refuse them by name.
+
+By default only transmitter -> site -> receiver round trips are composed, so a
+wall with no declared site returns nothing. Two keywords add a third, site-less
+transmitter -> receiver leg (both are off by default in 0.5.0, R-ADR-034):
+
+```python
+result = radar.simulate(scene, targets, times=times, reflections=1, environment=True)
+# a wall facing the radar now echoes at 2d/c; rows carry site_id == -1
+result = radar.simulate(scene, targets, times=times, environment=True, coupling=True)
+# coupling adds the elements' line-of-sight coupling; refused for co-located TX/RX
+paths = radar.trace(scene, targets, times=times, environment=True)
+clutter = radar.echo(paths.select("environment_clutter"))  # one component class
+```
+
+`max_round_trips=n` refuses, before the join, a sensor pair that would compose
+more than `n` rows (no default bound); `max_paths=n` bounds one Channel discovery.
+`wideband=True` makes an OFDM CFR radar consume Channel's per-subcarrier transport
+(R-ADR-035); it is refused for FMCW, pulsed and time-domain OFDM.
 
 ## 5. FMCW synthesis domains
 

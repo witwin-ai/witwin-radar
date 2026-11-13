@@ -1384,6 +1384,14 @@ class Radar:
         times,
         los: bool = True,
         reflections: int = 1,
+        transmission: bool = False,
+        diffraction: bool = False,
+        environment: bool = False,
+        coupling: bool = False,
+        discovery: str = "auto",
+        max_paths: int | None = None,
+        max_round_trips: int | None = None,
+        wideband: bool = False,
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
@@ -1405,7 +1413,23 @@ class Radar:
 
         from .simulation import trace_scene
 
-        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        session = self._session(
+            targets,
+            times,
+            los,
+            reflections,
+            motion,
+            grad,
+            endpoints,
+            transmission=transmission,
+            diffraction=diffraction,
+            environment=environment,
+            coupling=coupling,
+            discovery=discovery,
+            max_paths=max_paths,
+            max_round_trips=max_round_trips,
+            wideband=wideband,
+        )
         return trace_scene(self, scene, **session)
 
     def echo(self, paths: Paths) -> Result:
@@ -1434,6 +1458,14 @@ class Radar:
         times,
         los: bool = True,
         reflections: int = 1,
+        transmission: bool = False,
+        diffraction: bool = False,
+        environment: bool = False,
+        coupling: bool = False,
+        discovery: str = "auto",
+        max_paths: int | None = None,
+        max_round_trips: int | None = None,
+        wideband: bool = False,
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
@@ -1447,7 +1479,24 @@ class Radar:
         for it would be an unchosen statement about the world.
 
         ``los`` and ``reflections`` are the propagation request for THIS call
-        and do not edit the radar. ``motion`` selects how often the world is
+        and do not edit the radar. ``transmission`` adds paths through walls on
+        the straight segment and ``diffraction`` edge-diffracted paths; Channel
+        evaluates both only at discovery, so they require ``grad="none"`` and a
+        discovery at every evaluated instant (the default). ``environment``
+        adds site-less transmitter-to-receiver rows for the scene's own
+        returns (reflections, diffraction), and ``coupling`` the elements'
+        straight-segment coupling; both are off by default, and coupling is
+        refused for co-located transmit and receive elements, where free-space
+        transport is undefined. ``discovery`` is Channel's reflection candidate
+        source (``"auto"``, ``"exhaustive"`` or ``"rays"``; anything but a
+        complete image tree clears ``path_set_complete``), ``max_paths`` bounds
+        one discovery's rows (Channel refuses, never truncates), and
+        ``max_round_trips`` bounds one sensor pair's composed rows, refused by
+        name before the join. ``wideband`` evaluates each OFDM subcarrier's
+        transport (spreading, material and layer response) instead of shifting
+        the reference coefficient; it replays every frozen row at every
+        subcarrier and is refused for the other waveforms. ``motion`` selects
+        how often the world is
         resampled inside a frame and defaults to
         :meth:`~witwin.radar.motion.Motion.auto`. ``grad`` is ``"none"``,
         ``"vjp"`` or ``"jvp"``.
@@ -1459,7 +1508,23 @@ class Radar:
 
         from .simulation import simulate_scene
 
-        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        session = self._session(
+            targets,
+            times,
+            los,
+            reflections,
+            motion,
+            grad,
+            endpoints,
+            transmission=transmission,
+            diffraction=diffraction,
+            environment=environment,
+            coupling=coupling,
+            discovery=discovery,
+            max_paths=max_paths,
+            max_round_trips=max_round_trips,
+            wideband=wideband,
+        )
         return simulate_scene(self, scene, **session)
 
     def stream(
@@ -1470,6 +1535,14 @@ class Radar:
         times,
         los: bool = True,
         reflections: int = 1,
+        transmission: bool = False,
+        diffraction: bool = False,
+        environment: bool = False,
+        coupling: bool = False,
+        discovery: str = "auto",
+        max_paths: int | None = None,
+        max_round_trips: int | None = None,
+        wideband: bool = False,
         motion: Motion | None = None,
         grad: str = "none",
         endpoints=None,
@@ -1487,10 +1560,44 @@ class Radar:
 
         from .simulation import stream_scene
 
-        session = self._session(targets, times, los, reflections, motion, grad, endpoints)
+        session = self._session(
+            targets,
+            times,
+            los,
+            reflections,
+            motion,
+            grad,
+            endpoints,
+            transmission=transmission,
+            diffraction=diffraction,
+            environment=environment,
+            coupling=coupling,
+            discovery=discovery,
+            max_paths=max_paths,
+            max_round_trips=max_round_trips,
+            wideband=wideband,
+        )
         yield from stream_scene(self, scene, **session)
 
-    def _session(self, targets, times, los, reflections, motion, grad, endpoints) -> dict[str, Any]:
+    def _session(
+        self,
+        targets,
+        times,
+        los,
+        reflections,
+        motion,
+        grad,
+        endpoints,
+        *,
+        transmission: bool = False,
+        diffraction: bool = False,
+        environment: bool = False,
+        coupling: bool = False,
+        discovery: str = "auto",
+        max_paths: int | None = None,
+        max_round_trips: int | None = None,
+        wideband: bool = False,
+    ) -> dict[str, Any]:
         """Turn the public call arguments into what the frame loop takes."""
 
         from .motion import Motion
@@ -1498,16 +1605,25 @@ class Radar:
 
         if not isinstance(reflections, int) or isinstance(reflections, bool) or reflections < 0:
             raise ValueError(f"reflections must be a non-negative int, got {reflections!r}")
-        if not los and reflections == 0:
+        for name, value in (("transmission", transmission), ("diffraction", diffraction)):
+            if type(value) is not bool:
+                raise TypeError(f"{name} must be a bool, got {type(value).__name__}")
+        if not (los or reflections or transmission or diffraction):
             raise ValueError(
-                "a solve with neither the line of sight nor any reflection asks for no propagation at all; "
-                "set los=True, reflections>0, or both"
+                "a solve with neither the line of sight nor any reflection, transmission or diffraction asks for "
+                "no propagation at all; set los=True, reflections>0, or both"
             )
+        if max_round_trips is not None and (type(max_round_trips) is not int or max_round_trips < 1):
+            raise ValueError(f"max_round_trips must be a positive int or None, got {max_round_trips!r}")
         components = set()
         if los:
             components.add("los")
         if reflections > 0:
             components.add("reflection")
+        if transmission:
+            components.add("transmission")
+        if diffraction:
+            components.add("diffraction")
         sites, response = as_session_targets(targets, radar=self)
         resolved = Motion.auto() if motion is None else motion
         return {
@@ -1515,12 +1631,21 @@ class Radar:
             "response": response,
             "sites": sites,
             "components": frozenset(components),
-            "max_depth": int(reflections),
+            # Channel's one depth bound also limits how many walls a
+            # transmission path crosses and how many edges a diffracted one
+            # meets, so those components keep at least one interaction.
+            "max_depth": max(int(reflections), 1 if (transmission or diffraction) else 0),
             "ad_mode": grad,
             "polarization": self.polarization_vector,
             "antenna_pattern": self.system_config.sensors.pattern,
             "sensor_endpoints": endpoints,
             "motion": resolved,
+            "environment": environment,
+            "coupling": coupling,
+            "discovery": discovery,
+            "max_paths": max_paths,
+            "max_round_trips": max_round_trips,
+            "wideband": wideband,
         }
 
 

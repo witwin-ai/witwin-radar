@@ -168,6 +168,11 @@ class RadarLegBatch:
     departure_origin_m: torch.Tensor | None = None
     departure_target_m: torch.Tensor | None = None
     arrival_origin_m: torch.Tensor | None = None
+    #: The same rows evaluated at ``reference + frequency_offsets_hz[j]``,
+    #: ``complex64[rows, F]``, column major in frequency (Channel's wideband
+    #: layout). Present exactly when the replay declared an offset grid.
+    coefficient_band: torch.Tensor | None = None
+    frequency_offsets_hz: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
@@ -207,6 +212,11 @@ class RadarLegBatch:
         for name in ("departure_origin_m", "departure_target_m", "arrival_origin_m"):
             if getattr(self, name) is not None:
                 require_tensor(name, getattr(self, name), dtype=torch.float32, shape=(self.leg_count, 3))
+        if (self.coefficient_band is None) != (self.frequency_offsets_hz is None):
+            raise ValueError("coefficient_band and frequency_offsets_hz are paired: publish both or neither")
+        if self.coefficient_band is not None and self.frequency_offsets_hz is not None:
+            band = (self.leg_count, len(self.frequency_offsets_hz))
+            require_tensor("coefficient_band", self.coefficient_band, dtype=torch.complex64, shape=band)
 
     @property
     def device(self) -> torch.device:
@@ -269,7 +279,129 @@ class RadarLegBatch:
             departure_origin_m=narrow(self.departure_origin_m),
             departure_target_m=narrow(self.departure_target_m),
             arrival_origin_m=narrow(self.arrival_origin_m),
+            coefficient_band=narrow(self.coefficient_band),
+            frequency_offsets_hz=self.frequency_offsets_hz,
         )
+
+
+def stack_slots(batches: Sequence[RadarLegBatch]) -> RadarLegBatch:
+    """Single-slot batches of one frozen topology, as one slot-major batch.
+
+    The inverse of :meth:`RadarLegBatch.slot`: row ``t * rows + r`` is batch
+    ``t``'s row ``r`` and the pair partition is block diagonal, which is the
+    layout a slot-batched replay publishes. It exists for rows that were not
+    replayed - a discovery's own rows at several instants of one topology - so
+    one composition serves them all exactly as it serves a slot-batched replay.
+
+    Every batch must carry the same row count and pair count; the payload is
+    concatenated (one ``torch.cat`` per member, whatever the slot count) and
+    the pair partition is shifted by whole slots. ``source_index`` and
+    ``sink_index`` stay per-slot endpoint indices: a stack does not know the
+    per-slot endpoint counts, and nothing that composes it reads them.
+    """
+
+    if not batches:
+        raise ValueError("stack_slots needs at least one batch")
+    if len(batches) == 1:
+        return batches[0]
+    first = batches[0]
+    slots = len(batches)
+    for batch in batches:
+        if batch.slot_count != 1:
+            raise ValueError("stack_slots stacks single-slot batches")
+        if batch.leg_count != first.leg_count or batch.pair_count != first.pair_count:
+            raise ValueError(
+                f"a slot-major stack repeats one topology; got {batch.leg_count} rows / {batch.pair_count} pairs "
+                f"after {first.leg_count} / {first.pair_count}"
+            )
+    rows, pairs = first.leg_count, first.pair_count
+    device = first.delay_s.device
+    slot = torch.arange(slots, dtype=torch.int64, device=device)
+
+    def cat(name: str) -> Any:
+        values = [getattr(batch, name) for batch in batches]
+        return None if values[0] is None else torch.cat(values, dim=0)
+
+    pair_index = torch.cat([batch.pair_index for batch in batches]) + slot.repeat_interleave(rows) * pairs
+    pair_offsets = torch.cat(
+        (
+            (torch.stack([batch.pair_offsets[:-1] for batch in batches]) + slot[:, None] * rows).reshape(-1),
+            first.pair_offsets[-1:] * slots,
+        )
+    )
+    return RadarLegBatch(
+        leg_count=rows * slots,
+        pair_count=pairs * slots,
+        pair_index=pair_index,
+        pair_offsets=pair_offsets,
+        source_index=cat("source_index"),
+        sink_index=cat("sink_index"),
+        depth=cat("depth"),
+        component_id=cat("component_id"),
+        source_id=cat("source_id"),
+        sink_id=cat("sink_id"),
+        primitive_sequence=cat("primitive_sequence"),
+        material_sequence=cat("material_sequence"),
+        interaction_type=cat("interaction_type"),
+        delay_s=cat("delay_s"),
+        coefficient=cat("coefficient"),
+        field_direction=cat("field_direction"),
+        row_valid=cat("row_valid"),
+        diagnostics=first.diagnostics,
+        slot_count=slots,
+        departure_origin_m=cat("departure_origin_m"),
+        departure_target_m=cat("departure_target_m"),
+        arrival_origin_m=cat("arrival_origin_m"),
+    )
+
+
+def band_as_slots(batch: RadarLegBatch) -> RadarLegBatch:
+    """A wideband batch with its frequency columns laid out as outer slots.
+
+    Row ``j * rows + r`` is row ``r`` with ``coefficient_band[r, j]`` as its
+    coefficient, and every other member is repeated per column, because
+    geometry and validity do not depend on frequency. That is exactly the
+    block-diagonal slot layout, so the slot-replicated join and pattern tables
+    compose every column in one launch each with the same native equations as
+    the reference column. ``band.T`` is the only copy of the payload.
+    """
+
+    band, offsets = batch.coefficient_band, batch.frequency_offsets_hz
+    if band is None or offsets is None:
+        raise ValueError("band_as_slots needs a wideband batch: replay it with frequency_offsets_hz")
+    columns = len(offsets)
+    rows, pairs = batch.leg_count, batch.pair_count
+    column = torch.arange(columns, dtype=torch.int64, device=batch.delay_s.device)
+
+    def repeat(value: Any) -> Any:
+        return None if value is None else value.repeat((columns,) + (1,) * (value.ndim - 1))
+
+    return RadarLegBatch(
+        leg_count=rows * columns,
+        pair_count=pairs * columns,
+        pair_index=batch.pair_index.repeat(columns) + column.repeat_interleave(rows) * pairs,
+        pair_offsets=torch.cat(
+            ((batch.pair_offsets[:-1][None, :] + column[:, None] * rows).reshape(-1), batch.pair_offsets[-1:] * columns)
+        ),
+        source_index=repeat(batch.source_index),
+        sink_index=repeat(batch.sink_index),
+        depth=repeat(batch.depth),
+        component_id=repeat(batch.component_id),
+        source_id=repeat(batch.source_id),
+        sink_id=repeat(batch.sink_id),
+        primitive_sequence=repeat(batch.primitive_sequence),
+        material_sequence=repeat(batch.material_sequence),
+        interaction_type=repeat(batch.interaction_type),
+        delay_s=repeat(batch.delay_s),
+        coefficient=band.transpose(0, 1).reshape(-1),
+        field_direction=repeat(batch.field_direction),
+        row_valid=repeat(batch.row_valid),
+        diagnostics=batch.diagnostics,
+        slot_count=batch.slot_count * columns,
+        departure_origin_m=repeat(batch.departure_origin_m),
+        departure_target_m=repeat(batch.departure_target_m),
+        arrival_origin_m=repeat(batch.arrival_origin_m),
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -292,27 +424,35 @@ class RadarPropagationLegs:
     The two legs of one frame are evaluated at one world instant on one device,
     and a pair that disagrees about either is not a round trip. Both are checked
     on the host from members the batches already publish.
+
+    ``direct`` is the third, site-less leg - transmitter straight to receiver
+    - when the run asked for environment returns or element coupling, and
+    ``None`` otherwise. Its rows reach the receiver without a scatter site:
+    the environment's own specular backscatter and the geometric coupling.
     """
 
     inbound: RadarLegBatch
     outbound: RadarLegBatch
+    direct: RadarLegBatch | None = None
 
     def __post_init__(self) -> None:
-        for name in ("inbound", "outbound"):
+        for name in ("inbound", "outbound", "direct"):
             value = getattr(self, name)
+            if value is None and name == "direct":
+                continue
             if not isinstance(value, RadarLegBatch):
                 raise TypeError(f"{name} must be a RadarLegBatch, got {type(value).__name__}")
-        if self.inbound.slot_count != self.outbound.slot_count:
-            raise ValueError(
-                f"the inbound leg carries {self.inbound.slot_count} slots and "
-                f"the outbound leg {self.outbound.slot_count}; the two legs of "
-                "one frame are the same slow-time axis"
-            )
-        if self.inbound.device != self.outbound.device:
-            raise ValueError(
-                f"the inbound leg is on {self.inbound.device} and the outbound "
-                f"leg on {self.outbound.device}; one round trip is one device"
-            )
+            if value.slot_count != self.inbound.slot_count:
+                raise ValueError(
+                    f"the inbound leg carries {self.inbound.slot_count} slots and "
+                    f"the {name} leg {value.slot_count}; the legs of "
+                    "one frame are the same slow-time axis"
+                )
+            if value.device != self.inbound.device:
+                raise ValueError(
+                    f"the inbound leg is on {self.inbound.device} and the {name} "
+                    f"leg on {value.device}; one round trip is one device"
+                )
 
     @property
     def slot_count(self) -> int:
@@ -364,8 +504,17 @@ class PropagationAdapter(Protocol):
 
     def freeze(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> Any: ...
 
+    def discover(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, *, rows: bool = True) -> Any: ...
+
     def reevaluate_slots(
-        self, frozen: Any, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, *, slot_count: int, ad_mode: str
+        self,
+        frozen: Any,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        *,
+        slot_count: int,
+        ad_mode: str,
+        frequency_offsets_hz: tuple[float, ...] | None = None,
     ) -> RadarLegBatch: ...
 
     def rediscovery_required(self, frozen: Any, *, revalidate_source: bool = False) -> str | None: ...
@@ -426,6 +575,40 @@ class EpochFrame:
     rediscovered: bool
     reason: str | None
     topology_complete: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryReport:
+    """What Channel said about the discoveries one frame answered from.
+
+    ``complete`` is the conjunction of every such discovery's
+    ``PropagationEvaluation.complete``: ``False`` as soon as one leg's
+    reflection candidates came from ray discovery, which can miss paths.
+    ``transmission_dropped_rows`` is the largest per-discovery count of
+    source-sink pairs left without a transmission path because their straight
+    segment crosses more walls than ``max_depth``; the largest rather than the
+    sum, because a frame that rediscovers at every observation would otherwise
+    count the same dropped pair once per observation.
+    """
+
+    complete: bool = True
+    transmission_dropped_rows: int = 0
+
+    def including(self, handles: Sequence[object]) -> DiscoveryReport:
+        """This report with every handle in ``handles`` folded in."""
+
+        complete = self.complete
+        dropped = self.transmission_dropped_rows
+        for handle in handles:
+            complete = complete and bool(getattr(handle, "complete", True))
+            dropped = max(dropped, int(getattr(handle, "transmission_dropped_rows", 0)))
+        return DiscoveryReport(complete=complete, transmission_dropped_rows=dropped)
+
+    def merged(self, other: DiscoveryReport) -> DiscoveryReport:
+        return DiscoveryReport(
+            complete=self.complete and other.complete,
+            transmission_dropped_rows=max(self.transmission_dropped_rows, other.transmission_dropped_rows),
+        )
 
 
 #: Why a frame paid for a rediscovery. Frozen strings so a caller can assert.
@@ -806,6 +989,7 @@ def endpoint_kinematics(
 
 
 __all__ = [
+    "DiscoveryReport",
     "EndpointRole",
     "EpochFrame",
     "FrozenEpoch",
@@ -816,6 +1000,8 @@ __all__ = [
     "RadarLegBatch",
     "RadarPropagationLegs",
     "SceneEpochLoop",
+    "band_as_slots",
     "endpoint_kinematics",
     "require_endpoint_role",
+    "stack_slots",
 ]

@@ -1308,6 +1308,11 @@ class SynthesisPathBatch:
     weight_includes_tx_power: bool
     slow_time_mode: SlowTimeMode
     weight_includes_antenna_pattern: bool = False
+    #: The composed rows' per-frequency weights, ``[path_count, F]``, from a
+    #: wideband run; see :class:`~witwin.radar.paths.RadarPathBatch`. Only the
+    #: OFDM family consumes it, one column per subcarrier.
+    complex_transfer_band: torch.Tensor | None = None
+    frequency_offsets_hz: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.slow_time_mode, SlowTimeMode):
@@ -1391,6 +1396,8 @@ class SynthesisPathBatch:
             reference_frequency_hz=float(paths.reference_frequency_hz),
             topology=paths.topology,
             row_valid=paths.row_valid,
+            complex_transfer_band=paths.complex_transfer_band,
+            frequency_offsets_hz=paths.frequency_offsets_hz,
             weight_includes_reference_phase=True,
             weight_includes_spreading=True,
             weight_includes_tx_power=True,
@@ -1527,6 +1534,11 @@ def require_compatible(batch: SynthesisPathBatch, spec: WaveformSpecProtocol) ->
 
     if not isinstance(batch, SynthesisPathBatch):
         raise TypeError(f"require_compatible needs a SynthesisPathBatch, got {type(batch).__name__}")
+    if batch.complex_transfer_band is not None and not isinstance(spec, OfdmSpec):
+        raise NotImplementedError(
+            "a wideband batch carries one weight per frequency column, and only the OFDM family consumes one "
+            "(a column per subcarrier); this spec would silently use the reference column alone"
+        )
     if not isinstance(spec, WaveformSpecProtocol):
         raise TypeError(
             f"{type(spec).__name__} does not declare carrier_hz, carrier_rate_hz, "

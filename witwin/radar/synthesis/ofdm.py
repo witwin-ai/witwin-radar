@@ -445,9 +445,25 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
 
     require_ofdm_compatible(batch, spec)
     transfer = batch.complex_transfer_ref
+    if batch.complex_transfer_band is not None:
+        # A wideband batch's column ``n`` was evaluated at f_ref + n * df, the
+        # subcarrier the kernel pairs it with; any other grid is refused.
+        grid = tuple(float(n) * spec.subcarrier_spacing_hz for n in range(spec.num_subcarriers))
+        if batch.frequency_offsets_hz != grid:
+            raise ValueError(
+                "a wideband batch's frequency columns must be this spec's subcarriers, f_ref + n * df for "
+                f"n in [0, {spec.num_subcarriers})"
+            )
+        transfer = batch.complex_transfer_band
     if batch.row_valid is not None:
-        transfer = torch.where(batch.row_valid, transfer, torch.zeros_like(transfer))
+        valid = batch.row_valid if transfer.ndim == 1 else batch.row_valid[:, None]
+        transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
     if spec.time_domain:
+        if transfer.ndim != 1:
+            raise NotImplementedError(
+                "a wideband batch carries one weight per subcarrier and only the OFDM CFR family consumes it; the "
+                "time-domain OFDM family synthesizes each row as one tap and would use the reference column alone"
+            )
         return synthesize_ofdm_time_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
     return synthesize_cfr_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
 

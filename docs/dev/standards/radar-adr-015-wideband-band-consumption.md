@@ -6,7 +6,8 @@ Status: Superseded (Phase 8; marked superseded by R-ADR-026, 2026-11-12)
 > every waveform consumes the reference-frequency coefficient, so all quantities are evaluated narrowband at the
 > reference frequency (audit findings PH-7 and MP-8, `radar_development_plan.md` sections 3.2 and 3.5). Only the
 > native `weight_columns` path in `witwin/radar/cuda/ofdm_cfr.cu` survives from this decision. Wideband consumption
-> on Channel 0.6's `[K, F]` replay is a new decision, not a revival of this one.
+> on Channel 0.6's `[K, F]` replay is a new decision, not a revival of this one: R-ADR-035 (OFDM consumes the band,
+> FMCW stays narrowband).
 
 ## Context
 
