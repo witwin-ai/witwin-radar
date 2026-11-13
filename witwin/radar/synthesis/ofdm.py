@@ -42,7 +42,15 @@ import torch
 
 from ..cuda import native_ops as _ops
 from ..policy import first_order_only, refuse_derivative
-from .assembly import OfdmSpec, SynthesisPathBatch, delay_residual, require_ofdm_compatible, segment_of_each_row
+from .assembly import (
+    CrossRouting,
+    OfdmSpec,
+    SynthesisPathBatch,
+    delay_residual,
+    require_ofdm_compatible,
+    segment_of_each_row,
+    synthesize_cross,
+)
 
 
 class _OfdmCfrSynthesis(torch.autograd.Function):
@@ -508,4 +516,46 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     )
 
 
-__all__ = ["OfdmSpec", "symbol_tensor", "synthesize_cfr_rows", "synthesize_ofdm", "synthesize_ofdm_time_rows"]
+#: Columns of one OFDM cross-radar link row (R-ADR-051), in the kernel's order.
+OFDM_CROSS_COLUMNS = (
+    "tx_frame_shift_s",
+    "tx_offset_hz",
+    "rx_offset_hz",
+    "rx_frame_start_s",
+    "tx_symbol_period_s",
+    "tx_symbol_count",
+    "tx_cyclic_prefix_s",
+    "tx_subcarrier_spacing_hz",
+    "tx_subcarrier_count",
+    "tx_first_symbol_entry",
+    "tx_inverse_sqrt_n",
+)
+
+
+def synthesize_ofdm_cross(
+    transfer: torch.Tensor,
+    delay: torch.Tensor,
+    residual: torch.Tensor | None,
+    valid: torch.Tensor | None,
+    routing: CrossRouting,
+) -> torch.Tensor:
+    """A sampled receiver's samples of other radars' OFDM streams, ``complex64[cells, num_samples]`` (R-ADR-051).
+
+    Channel convention. ``routing.link_table`` rows follow
+    :data:`OFDM_CROSS_COLUMNS`; ``routing.aux`` is the transmitters' symbol
+    tables, ``float32[entries, 2]``. See
+    :func:`~witwin.radar.synthesis.assembly.synthesize_cross`.
+    """
+
+    return synthesize_cross("ofdm", transfer, delay, residual, valid, routing)
+
+
+__all__ = [
+    "OFDM_CROSS_COLUMNS",
+    "OfdmSpec",
+    "symbol_tensor",
+    "synthesize_cfr_rows",
+    "synthesize_ofdm",
+    "synthesize_ofdm_cross",
+    "synthesize_ofdm_time_rows",
+]

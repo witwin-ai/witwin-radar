@@ -61,6 +61,7 @@
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
 #include "path_delay.cuh"
+#include "cross_routing.cuh"
 
 #include <cmath>
 #include <cstdint>
@@ -445,8 +446,125 @@ void ofdm_time_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// ---------------------------------------------------------------------------
+// Cross-radar OFDM (R-ADR-051): what a sampled receiver hears from another
+// radar's OFDM symbol stream, in the Channel convention. Routing and launches
+// are cross_routing.cuh's; the transmitted waveform is envelope_at above, on
+// the transmitter's own symbol grid and symbol table.
+//
+// The transmitter's symbol j covers [j T_sym, (j + 1) T_sym) of its own frame
+// (j in [0, symbols)), the emission instant is e = t - tau - dT, and every
+// oscillator runs at f_ref + its offset from world time 0:
+//
+//   y = C * x_j(e - j T_sym - T_cp) * exp(+j 2 pi cycles)
+//   cycles = delta_A (F_B + t - tau) - (delta_B + lo)(F_B + t)
+//
+// so the receiver's own symbol timing (the cells' instants), a timing offset
+// against the transmitter's prefix and a carrier offset (inter-carrier
+// interference after the receiver's FFT) all follow from the samples; the
+// receiver demodulates with its own reference downstream. With A = B this is
+// the time-domain echo's -carrier * tau. Derivative:
+// dy/dtau = C exp(j 2 pi cycles) (-x' - j 2 pi delta_A x).
+//
+// link_table row (float64, kOfdmCrossWidth): tx frame start minus rx frame
+// start [s], delta_A [Hz], delta_B [Hz], F_B [s], T_sym [s], symbol count,
+// T_cp [s], df [Hz], subcarrier count, the first entry of the transmitter's
+// symbols in `symbols` (float32 [n, 2]), 1/sqrt(N). Constants: no derivative.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kOfdmCrossWidth = 11;
+
+struct OfdmCrossPhase {
+  const float* symbols;
+
+  __device__ __forceinline__ bool operator()(
+      const double* link, const int, const double tau, const CrossSample& when, CrossValue& out) const {
+    const Grid grid{
+        static_cast<int>(link[5]),
+        static_cast<int>(link[8]),
+        0,
+        link[7],
+        link[6],
+        link[4],
+        0.0,
+        link[10],
+        symbols + 2 * static_cast<int64_t>(link[9]),
+        nullptr};
+    const Envelope env = envelope_at(grid, 0, when.t - tau - link[0]);
+    if (!env.live) return false;
+    const double absolute = link[3] + when.t;
+    const double cycles = link[1] * (absolute - tau) - (link[2] + when.lo) * absolute;
+    const double frac = cycles - floor(cycles);
+    float s, c;
+    sincosf(static_cast<float>(kTwoPiD * frac), &s, &c);
+    out.u_re = env.x_re * c - env.x_im * s;
+    out.u_im = env.x_re * s + env.x_im * c;
+    const float dx_re = env.dx_re * c - env.dx_im * s;
+    const float dx_im = env.dx_re * s + env.dx_im * c;
+    const float k = static_cast<float>(kTwoPiD * link[1]);
+    // -x' e^{j phi} - j k x e^{j phi}
+    out.du_re = -dx_re + k * out.u_im;
+    out.du_im = -dx_im - k * out.u_re;
+    return true;
+  }
+};
+
+OfdmCrossPhase ofdm_cross_phase(const torch::stable::Tensor& symbols) {
+  check_cuda_float(symbols, "symbols");
+  STD_TORCH_CHECK(symbols.dim() == 2 && symbols.size(1) == 2, "symbols must be (entries, 2).");
+  return {symbols.const_data_ptr<float>()};
+}
+
+}  // namespace
+
+void ofdm_cross_forward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& symbols,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    torch::stable::Tensor& out, int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kOfdmCrossWidth, rows_per_slot);
+  cross_forward<false>(
+      rows, ofdm_cross_phase(symbols), segment_rows, segment_schedule, out, num_samples, sample_period_s);
+}
+
+void ofdm_cross_jvp_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& symbols,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    const torch::stable::Tensor& tan_transfer, const torch::stable::Tensor& tan_tau, torch::stable::Tensor& tan_out,
+    int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kOfdmCrossWidth, rows_per_slot);
+  cross_jvp<false>(
+      rows, ofdm_cross_phase(symbols), segment_rows, segment_schedule, tan_transfer, tan_tau, tan_out, num_samples,
+      sample_period_s);
+}
+
+void ofdm_cross_backward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& symbols,
+    const torch::stable::Tensor& row_segment_offsets, const torch::stable::Tensor& row_segments,
+    const torch::stable::Tensor& segment_schedule, const torch::stable::Tensor& grad_out,
+    torch::stable::Tensor& grad_transfer, torch::stable::Tensor& grad_tau, int64_t rows_per_slot, int64_t num_samples,
+    double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kOfdmCrossWidth, rows_per_slot);
+  cross_backward<false>(
+      rows, ofdm_cross_phase(symbols), row_segment_offsets, row_segments, segment_schedule, grad_out, grad_transfer,
+      grad_tau, num_samples, sample_period_s);
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("ofdm_time_forward", TORCH_BOX(&ofdm_time_forward_cuda));
   m.impl("ofdm_time_backward", TORCH_BOX(&ofdm_time_backward_cuda));
   m.impl("ofdm_time_jvp", TORCH_BOX(&ofdm_time_jvp_cuda));
+  m.impl("ofdm_cross_forward", TORCH_BOX(&ofdm_cross_forward_cuda));
+  m.impl("ofdm_cross_backward", TORCH_BOX(&ofdm_cross_backward_cuda));
+  m.impl("ofdm_cross_jvp", TORCH_BOX(&ofdm_cross_jvp_cuda));
 }

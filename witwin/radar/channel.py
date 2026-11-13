@@ -45,6 +45,7 @@ published as a host int, so nothing here calls ``.item()``, ``.cpu()``,
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -461,6 +462,7 @@ class ChannelPropagationAdapter:
         rows: bool = True,
         components: frozenset[str] | None = None,
         element_sinks: bool = False,
+        separation: Sequence[tuple[RadarEndpointSpec, RadarEndpointSpec]] | None = None,
     ) -> FrozenLegTopology:
         """Discover one leg's topology and, with ``rows``, keep the rows discovery evaluated.
 
@@ -485,7 +487,11 @@ class ChannelPropagationAdapter:
         pair: free-space transport is singular at coincident endpoints, and
         Channel publishes a finite, unbounded coefficient there rather than
         refusing. The check is one one-byte device read per discovery, and it
-        refuses by name the first coincident pair.
+        refuses by name the first coincident pair. ``separation`` narrows it
+        to the listed ``(sources, sinks)`` groups, one read each, for a leg
+        whose other pairs' straight-segment rows the caller drops (a network's
+        receiver beside its own transmitter, R-ADR-051); such a pair still
+        evaluates, to Channel's finite value, and must not be consumed.
         """
 
         requested = self._components if components is None else frozenset(components)
@@ -499,9 +505,21 @@ class ChannelPropagationAdapter:
         source_batch = _endpoint_batch(detached_sources, "source")
         sink_batch = _endpoint_batch(detached_sinks, "sink")
         if requested & STRAIGHT_SEGMENT_COMPONENTS:
-            consumer.check_endpoint_separation(
-                source_batch, sink_batch, reference_frequency_hz=self._reference_frequency_hz
+            groups = (
+                ((source_batch, sink_batch),)
+                if separation is None
+                else tuple(
+                    (
+                        _endpoint_batch(_detached(group_sources), "source"),
+                        _endpoint_batch(_detached(group_sinks), "sink"),
+                    )
+                    for group_sources, group_sinks in separation
+                )
             )
+            for group_sources, group_sinks in groups:
+                consumer.check_endpoint_separation(
+                    group_sources, group_sinks, reference_frequency_hz=self._reference_frequency_hz
+                )
         evaluation = consumer.evaluate(
             self._compiled,
             consumer.PropagationRequest(

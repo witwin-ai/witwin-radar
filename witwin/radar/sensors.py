@@ -1217,7 +1217,15 @@ class RoundTripPatternStage:
 
     @classmethod
     def freeze(
-        cls, radar, composer, *, site_ids, pattern: Pattern, rx_pattern: Pattern | None = None
+        cls,
+        radar,
+        composer,
+        *,
+        site_ids,
+        pattern: Pattern,
+        rx_pattern: Pattern | None = None,
+        array_size: tuple[int, int] | None = None,
+        pattern_frame: torch.Tensor | None = None,
     ) -> RoundTripPatternStage:
         """Build the constant tables for one frozen :class:`TwoWayComposer`.
 
@@ -1227,11 +1235,16 @@ class RoundTripPatternStage:
         count here rather than read back from the device column
         ``topology.site_id``: the host tuple is already there, and the device
         column is not.
+
+        ``array_size`` and ``pattern_frame`` replace the radar's own
+        ``(num_tx, num_rx)`` and local frame for a join over several radars'
+        elements (R-ADR-051): the caller then turns every direction into its
+        element's own radar frame before :meth:`apply`, and passes the
+        identity as the frame.
         """
 
         array = radar.system_config.sensors.array
-        num_tx = int(array.num_tx)
-        num_rx = int(array.num_rx)
+        num_tx, num_rx = (int(array.num_tx), int(array.num_rx)) if array_size is None else array_size
         pair_index = composer.sensor_pair_index
         device = pair_index.device
         if composer.sensor_pair_count != num_tx * num_rx:
@@ -1269,9 +1282,11 @@ class RoundTripPatternStage:
             # A local direction is ``v @ world_from_local``, so the pattern-frame
             # components are dot products with that matrix's COLUMNS. The kernel
             # takes those columns as its rows; the transpose IS the frame change.
-            pattern_frame=radar._world_from_local_matrix(device=device, dtype=torch.float32)[1]
-            .transpose(0, 1)
-            .contiguous(),
+            pattern_frame=(
+                radar._world_from_local_matrix(device=device, dtype=torch.float32)[1].transpose(0, 1).contiguous()
+                if pattern_frame is None
+                else pattern_frame
+            ),
             plan=_pattern_plan(
                 pattern, rx_pattern, device=device, transmit_scale=radar._transmit_amplitude_scale(device=device)
             ),

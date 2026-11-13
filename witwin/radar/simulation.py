@@ -479,6 +479,76 @@ def _discovered_legs(epoch: FrozenEpoch) -> RadarPropagationLegs:
     )
 
 
+def pose_at(
+    pose: Callable[[float], Any], time_s: float, device: torch.device, *, ad_mode: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``pose(t)`` as a ``float32[3, 3]`` local-to-world rotation and a ``float32[3]`` translation, m.
+
+    The translation may be a leaf; ``ad_mode`` is the run's, and a translation
+    carrying a derivative the legs will not carry in that mode is refused, as
+    is a rotation carrying one (R-ADR-052).
+    """
+
+    rotation, translation = pose(float(time_s))
+    refuse_derivative(
+        "the radar pose trajectory",
+        "the rotation turns the polarization every leg is launched with, and Channel's replay takes an "
+        "endpoint polarization as a primal-only constant, so the rotation's derivative cannot be "
+        "delivered whole. The translation is a leaf; keep the rotation a host value.",
+        rotation=rotation,
+    )
+    carrier = _carries_value_derivative(translation)
+    if carrier is not None and ad_mode != ("vjp" if carrier == "a gradient" else "jvp"):
+        raise RuntimeError(
+            f"the radar pose trajectory's translation carries {carrier}, which moves every element "
+            "position, and the legs carry that derivative only in the matching AD mode: pass "
+            f"grad={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got grad={ad_mode!r})."
+        )
+    rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
+    translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
+    if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):
+        raise ValueError(
+            "pose(t) must return a (3, 3) local-to-world rotation and a (3,) world translation, got "
+            f"{tuple(rotation.shape)} and {tuple(translation.shape)}"
+        )
+    return rotation, translation
+
+
+def carry_binding(
+    binding: RadarWorldBinding, centre: Any, rotation: torch.Tensor, translation: torch.Tensor
+) -> RadarWorldBinding:
+    """``binding`` with its radar's elements carried by one pose.
+
+    The rotation turns the array about the radar's authored position
+    ``centre`` and the translation then moves it: ``p(t) = c + T(t) + R(t) (p - c)``.
+    The declared polarization turns with it on every endpoint; only the
+    radar's own elements move, and the receivers' two roles keep sharing one
+    moved position tensor.
+    """
+
+    device = binding.device
+    origin = torch.as_tensor(centre, dtype=torch.float32, device=device)
+
+    def turned(spec: RadarEndpointSpec) -> torch.Tensor:
+        # Row vectors: ``v @ R^T`` is ``R v``.
+        return (spec.polarizations @ rotation.T).contiguous()
+
+    def carried(spec: RadarEndpointSpec) -> RadarEndpointSpec:
+        moved = ((spec.positions_m - origin) @ rotation.T + origin + translation).contiguous()
+        return replace(spec, positions_m=moved, polarizations=turned(spec))
+
+    receivers = carried(binding.receivers)
+    return replace(
+        binding,
+        transmitters=carried(binding.transmitters),
+        receivers=receivers,
+        receiver_sources=replace(
+            binding.receiver_sources, positions_m=receivers.positions_m, polarizations=receivers.polarizations
+        ),
+        sites=replace(binding.sites, polarizations=turned(binding.sites)),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LegRequest:
     """What a session asks of every leg discovery beyond the component set.
@@ -652,65 +722,37 @@ class WorldHalf:
         """The pose at ``time_s``: a ``float32[3, 3]`` rotation and ``float32[3]`` translation."""
 
         assert self.pose is not None
-        rotation, translation = self.pose(float(time_s))
-        refuse_derivative(
-            "the radar pose trajectory",
-            "the rotation turns the polarization every leg is launched with, and Channel's replay takes an "
-            "endpoint polarization as a primal-only constant, so the rotation's derivative cannot be "
-            "delivered whole. The translation is a leaf; keep the rotation a host value.",
-            rotation=rotation,
-        )
-        carrier = _carries_value_derivative(translation)
-        if carrier is not None and self.ad_mode != ("vjp" if carrier == "a gradient" else "jvp"):
-            raise RuntimeError(
-                f"the radar pose trajectory's translation carries {carrier}, which moves every element "
-                "position, and the legs carry that derivative only in the matching AD mode: pass "
-                f"grad={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got grad={self.ad_mode!r})."
-            )
-        rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
-        translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
-        if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):
-            raise ValueError(
-                "pose(t) must return a (3, 3) local-to-world rotation and a (3,) world translation, got "
-                f"{tuple(rotation.shape)} and {tuple(translation.shape)}"
-            )
-        return rotation, translation
+        return pose_at(self.pose, time_s, device, ad_mode=self.ad_mode)
 
     def _posed(self, binding: RadarWorldBinding, time_s: float) -> tuple[RadarWorldBinding, torch.Tensor]:
         """The binding with the radar's elements carried by its pose at ``time_s``.
 
-        The rotation turns the array about the radar's authored position and
-        the translation then moves it: ``p(t) = c + T(t) + R(t) (p - c)``. The
-        declared polarization turns with it on every endpoint. Returns the rotation too, which
-        the pattern stage reads to see each direction in the body frame.
+        Returns the rotation too, which the pattern stage reads to see each
+        direction in the body frame.
         """
 
-        device = binding.device
-        rotation, translation = self._rotation_at(time_s, device)
-        centre = torch.as_tensor(self.radar.position, dtype=torch.float32, device=device)
+        rotation, translation = self._rotation_at(time_s, binding.device)
+        return carry_binding(binding, self.radar.position, rotation, translation), rotation
 
-        def turned(spec: RadarEndpointSpec) -> torch.Tensor:
-            # Row vectors: ``v @ R^T`` is ``R v``.
-            return (spec.polarizations @ rotation.T).contiguous()
+    def _direct_separation(
+        self, binding: RadarWorldBinding
+    ) -> list[tuple[RadarEndpointSpec, RadarEndpointSpec]] | None:
+        """The endpoint groups the site-less leg's separation check covers; ``None`` is every pair."""
 
-        def carried(spec: RadarEndpointSpec) -> RadarEndpointSpec:
-            moved = ((spec.positions_m - centre) @ rotation.T + centre + translation).contiguous()
-            return replace(spec, positions_m=moved, polarizations=turned(spec))
+        return None
 
-        # Every endpoint of a binding carries the radar's declared polarization,
-        # so all of them turn with the pose; only the radar's own elements move.
-        # The receivers' two roles keep sharing one moved position tensor.
-        receivers = carried(binding.receivers)
-        posed = replace(
-            binding,
-            transmitters=carried(binding.transmitters),
-            receivers=receivers,
-            receiver_sources=replace(
-                binding.receiver_sources, positions_m=receivers.positions_m, polarizations=receivers.polarizations
-            ),
-            sites=replace(binding.sites, polarizations=turned(binding.sites)),
+    def _freeze_pattern(self, composer: TwoWayComposer, binding: RadarWorldBinding) -> RoundTripPatternStage:
+        """The antenna-pattern tables of one frozen join."""
+
+        from .sensors import RoundTripPatternStage
+
+        return RoundTripPatternStage.freeze(
+            self.radar,
+            composer,
+            site_ids=binding.site_ids,
+            pattern=self.antenna_pattern,
+            rx_pattern=self.radar.system_config.sensors.rx_pattern,
         )
-        return posed, rotation
 
     def bind(self, compiled: object, snapshot: object, previous: FrozenEpoch | None) -> FrozenEpoch:
         """Freeze one topology epoch: both legs, the join and the pattern tables.
@@ -723,7 +765,6 @@ class WorldHalf:
 
         from .channel import ChannelPropagationAdapter
         from .paths import TwoWayComposer, read_leg_identity
-        from .sensors import RoundTripPatternStage
 
         binding = self._bind_world(snapshot)
         request = self.request
@@ -749,12 +790,14 @@ class WorldHalf:
         outbound = adapter.discover(binding.receiver_sources, binding.sites, rows=rows, components=site_components)
         direct = None
         if request.direct_components:
+            separation = self._direct_separation(binding)
             direct = adapter.discover(
                 binding.transmitters,
                 binding.receivers,
                 rows=rows,
                 components=request.direct_components,
                 element_sinks=True,
+                **({} if separation is None else {"separation": separation}),
             )
         handles = (inbound, outbound) if direct is None else (inbound, outbound, direct)
         self._report = self._report.including(handles)
@@ -787,13 +830,7 @@ class WorldHalf:
                 leg_site_ids=binding.site_ids,
                 outbound_line_of_sight_only=binding.facets is not None,
             )
-            pattern = RoundTripPatternStage.freeze(
-                self.radar,
-                composer,
-                site_ids=binding.site_ids,
-                pattern=self.antenna_pattern,
-                rx_pattern=self.radar.system_config.sensors.rx_pattern,
-            )
+            pattern = self._freeze_pattern(composer, binding)
         adaptive_identity: Hashable = identity
         if self.planes is not None:
             adaptive_identity = composed_plane_identity(
@@ -1514,6 +1551,109 @@ def open_session(
 ) -> tuple[Session, Iterator[FrameTrace]]:
     """Open one scene session: the world half, and what the instrument half needs.
 
+    The arguments are :func:`prepare_session`'s; this builds the
+    :class:`WorldHalf` it describes and the frame generator over it.
+    """
+
+    prepared = prepare_session(
+        radar,
+        scene,
+        times=times,
+        response=response,
+        sites=sites,
+        components=components,
+        max_depth=max_depth,
+        ad_mode=ad_mode,
+        polarization=polarization,
+        antenna_pattern=antenna_pattern,
+        sensor_endpoints=sensor_endpoints,
+        motion=motion,
+        environment=environment,
+        coupling=coupling,
+        discovery=discovery,
+        max_paths=max_paths,
+        max_round_trips=max_round_trips,
+        wideband=wideband,
+        pose=pose,
+        rx_polarization=rx_polarization,
+    )
+    world = WorldHalf(**prepared.world)
+    session = Session(loop=world.loop, **prepared.session)
+    if prepared.adaptive:
+        return session, _adaptive_traces(session, world)
+    return session, _frame_traces(session, world, path_set_complete=prepared.complete, exhaustive=prepared.exhaustive)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedSession:
+    """Everything :func:`open_session` resolves before it builds anything.
+
+    ``world`` is the :class:`WorldHalf` constructor's keywords and ``session``
+    the :class:`Session` record's, less its ``loop``. A multi-radar session
+    (:mod:`witwin.radar.network`) prepares one per radar and builds one world
+    half for all of them from these.
+    """
+
+    world: dict[str, Any]
+    session: dict[str, Any]
+    complete: bool
+    exhaustive: bool
+    adaptive: bool
+    #: Whether anything moves inside a frame, after ``world_moves``.
+    sampled: bool
+
+
+def moves_within_frame(
+    dynamic: DynamicScene, sites: ScatterSitePolicy, response: ScatterResponse, pose: Callable[[float], Any] | None
+) -> bool:
+    """Whether a session's world changes inside a frame, so it must be observed more than once a frame."""
+
+    from .targets import TimedAspectResponse
+
+    return bool(
+        dynamic.structure_trajectories
+        or dynamic.structure_deformations
+        or dynamic.endpoint_trajectories
+        or sites.trajectory is not None
+        or pose is not None
+        or isinstance(response, TimedAspectResponse)
+    )
+
+
+def prepare_session(
+    radar: Radar,
+    scene: object,
+    *,
+    times: Sequence[float],
+    response: ScatterResponse,
+    sites: ScatterSitePolicy,
+    components: frozenset[str],
+    max_depth: int,
+    ad_mode: str,
+    polarization: Sequence[float],
+    antenna_pattern: Pattern,
+    sensor_endpoints: SensorEndpointIds | None,
+    motion: Motion,
+    environment: bool = False,
+    coupling: bool = False,
+    discovery: str = "auto",
+    max_paths: int | None = None,
+    max_round_trips: int | None = None,
+    wideband: bool = False,
+    pose: Callable[[float], Any] | None = None,
+    rx_polarization: Sequence[float] | None = None,
+    world_moves: bool = False,
+    beat: bool = False,
+) -> PreparedSession:
+    """Resolve one scene session: the world half's arguments, and what the instrument half needs.
+
+    ``world_moves`` declares that something outside this radar's own view of
+    the world moves within a frame (another radar of a network), so the
+    session observes the world as a moving one; ``beat`` makes an FMCW session
+    synthesize ADC-time beat samples, and an OFDM one received time samples,
+    whatever its output domain, for a frame that other rows are added to
+    before the receive chain.
+
     The single owner of the session; every argument arrives resolved by
     :meth:`~witwin.radar.Radar._session`. Returns the session record and a
     generator of per-frame traces.
@@ -1599,18 +1739,9 @@ def open_session(
     dynamic = _dynamic_scene(scene)
     if dynamic.endpoint_trajectories and sensor_endpoints is None:
         raise ValueError("moving Core endpoints require explicit sensor_endpoints in array order")
-    from .targets import TimedAspectResponse
-
     if pose is not None and not callable(pose):
         raise TypeError("pose must be callable as pose(t) -> (rotation (3, 3), translation (3,))")
-    sampled = bool(
-        dynamic.structure_trajectories
-        or dynamic.structure_deformations
-        or dynamic.endpoint_trajectories
-        or sites.trajectory is not None
-        or pose is not None
-        or isinstance(response, TimedAspectResponse)
-    )
+    sampled = moves_within_frame(dynamic, sites, response, pose) or bool(world_moves)
     declared = solve_config.waveform_spec()
     path_phase_noise = radar.frontend is not None and radar.frontend.has_phase_noise
     if path_phase_noise:
@@ -1622,6 +1753,10 @@ def open_session(
             raise ValueError("common-oscillator phase noise requires ADC-time observations")
         sampled = True
     working = _working_spec(radar, declared)
+    if beat and isinstance(working, FmcwSpec):
+        working = replace(working, output_domain="beat")
+    if beat and isinstance(working, OfdmSpec):
+        working = replace(working, output_domain="time")
     # Adaptive interpolation covers one uniform TDM ramp, so only that is
     # what ``auto`` may hand it.
     interpolable = (
@@ -1735,61 +1870,65 @@ def open_session(
     kind, exhaustive = _published_sampling(
         _schedule(motion_sampling, sampled=sampled, adc_sampled=adc_sampled), working
     )
-    world = WorldHalf(
-        radar,
-        dynamic,
-        sites=sites,
-        polarization=polarization,
-        rx_polarization=polarization if rx_polarization is None else rx_polarization,
-        sensor_endpoints=sensor_endpoints,
-        response=response,
-        antenna_pattern=antenna_pattern,
-        propagation=propagation,
-        array=array,
-        motion_sampling=motion_sampling,
-        ad_mode=ad_mode,
-        cadence=cadence,
-        period_s=period_s,
-        displacement_m=displacement_m,
-        world_motion=motion.world,
-        pose=pose,
-        still_world=still_world,
-        batch_observations=int(motion.batch_observations),
-        request=request,
-    )
-    session = Session(
-        radar=radar,
-        array=array,
-        loop=world.loop,
-        mode=mode,
-        specs=InstrumentSpecs(declared=declared, working=working, single=single),
-        offsets=offsets,
-        pair_samples=pair_samples,
-        sampled=sampled,
-        adc_sampled=adc_sampled,
-        samples_per_slot=samples_per_slot,
-        path_phase_noise=path_phase_noise,
-        reference_frequency_hz=reference_frequency_hz,
-        kind=kind,
-        components=frozenset(propagation.components),
-        max_depth=int(propagation.max_depth),
-        grad=str(ad_mode),
-        motion=motion,
-        times=instants,
-        environment=environment,
-        coupling=coupling,
-    )
+    world = {
+        "radar": radar,
+        "dynamic": dynamic,
+        "sites": sites,
+        "polarization": polarization,
+        "rx_polarization": polarization if rx_polarization is None else rx_polarization,
+        "sensor_endpoints": sensor_endpoints,
+        "response": response,
+        "antenna_pattern": antenna_pattern,
+        "propagation": propagation,
+        "array": array,
+        "motion_sampling": motion_sampling,
+        "ad_mode": ad_mode,
+        "cadence": cadence,
+        "period_s": period_s,
+        "displacement_m": displacement_m,
+        "world_motion": motion.world,
+        "pose": pose,
+        "still_world": still_world,
+        "batch_observations": int(motion.batch_observations),
+        "request": request,
+    }
+    session = {
+        "radar": radar,
+        "array": array,
+        "mode": mode,
+        "specs": InstrumentSpecs(declared=declared, working=working, single=single),
+        "offsets": offsets,
+        "pair_samples": pair_samples,
+        "sampled": sampled,
+        "adc_sampled": adc_sampled,
+        "samples_per_slot": samples_per_slot,
+        "path_phase_noise": path_phase_noise,
+        "reference_frequency_hz": reference_frequency_hz,
+        "kind": kind,
+        "components": frozenset(propagation.components),
+        "max_depth": int(propagation.max_depth),
+        "grad": str(ad_mode),
+        "motion": motion,
+        "times": instants,
+        "environment": environment,
+        "coupling": coupling,
+    }
     # Whether a non-adaptive route can have missed a path birth is a property
     # of the declared cadence and world motion, not of any one frame, so it is
     # decided once here and repeated on every frame the run publishes.
     complete = (
         not sampled
         or (cadence == 1 and period_s is None and displacement_m is None)
-        or (motion.world == "frozen_world" and world.loop.structures_move)
+        or (motion.world == "frozen_world" and bool(dynamic.structure_trajectories or dynamic.structure_deformations))
     )
-    if sampled and motion_sampling == "adaptive":
-        return session, _adaptive_traces(session, world)
-    return session, _frame_traces(session, world, path_set_complete=bool(complete), exhaustive=exhaustive)
+    return PreparedSession(
+        world=world,
+        session=session,
+        complete=bool(complete),
+        exhaustive=exhaustive,
+        adaptive=sampled and motion_sampling == "adaptive",
+        sampled=sampled,
+    )
 
 
 #: Components Channel publishes at discovery and cannot freeze for replay.
@@ -2181,7 +2320,9 @@ def observation_schedule(session: Session, trace: FrameTrace) -> str:
     return _schedule("adc", sampled=session.sampled, adc_sampled=session.adc_sampled)
 
 
-def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
+def echo_frame(
+    session: Session, trace: FrameTrace, interference: Callable[[], torch.Tensor] | None = None
+) -> SceneFrame:
     """Synthesize one traced frame. The whole instrument half lives here.
 
     Everything this does is a property of the radar and the waveform, never of
@@ -2191,6 +2332,11 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
     a caller re-run it against a different receiver without re-tracing.
 
     ``trace.observations`` is drained exactly once, in order.
+
+    ``interference`` returns what other radars' transmitters put on this
+    receiver (R-ADR-051): a ``[slow, pairs, fast]`` cube in the working beat
+    domain, added to the synthesized frame before the receive chain, so the
+    receiver's noise, gain and ADC act on the sum.
     """
 
     from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec, SynthesisResult
@@ -2312,6 +2458,8 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         from .synthesis.fmcw import multiplex_transmitters
 
         synthesis = replace(synthesis, cube=multiplex_transmitters(synthesis.cube, working))
+    if interference is not None:
+        synthesis = replace(synthesis, cube=synthesis.cube + interference())
     synthesis = replace(synthesis, observation_schedule=observation_schedule(session, trace))
     discovery = trace.discovery()
     frame_cube, synthesis = _finish_frame(session, synthesis, trace.time_s)
