@@ -61,5 +61,8 @@ def test_float32_delays_would_put_the_quantization_into_the_phase_test(monkeypat
     monkeypatch.setattr(paths, "float64_delay", lambda batch: batch.total_delay_s.double())
     _, near_error = _evaluations(5.0)
     _, far_error = _evaluations(100.0)
-    # 2 pi f_c ulp32(tau): about 1e-2 rad at 100 m, well above the float64 floor.
-    assert far_error > 20 * max(near_error, 1e-4), (near_error, far_error)
+    # 2 pi f_c ulp32(tau): up to 1.4e-2 rad at 100 m and 16 times less at 5 m
+    # (the float32 ulp of 667 ns over that of 33 ns), against a float64 floor
+    # of 1e-4 at both. What a sample of it reaches is rounding luck, so the
+    # falsifier asks for an order of magnitude above the floor and growth.
+    assert far_error > 2e-3 and far_error > 5 * max(near_error, 1e-4), (near_error, far_error)
