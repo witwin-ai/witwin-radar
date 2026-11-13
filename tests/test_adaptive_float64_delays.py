@@ -26,7 +26,7 @@ VELOCITY_M_PER_S = 5.0
 def _evaluations(range_m: float) -> tuple[int, float]:
     from witwin.radar import Motion, PointTargets
 
-    radar = sc.radar(sc.beat_fmcw(samples=32, chirps=32))
+    radar = sc.radar(sc.beat_fmcw(samples=64, chirps=64))
 
     def trajectory(time_s: float) -> torch.Tensor:
         position = np.array([[range_m + VELOCITY_M_PER_S * float(time_s), 0.0, 0.0]])
@@ -48,4 +48,18 @@ def test_the_probe_count_of_one_motion_does_not_grow_with_range():
     near, near_error = _evaluations(5.0)
     far, far_error = _evaluations(100.0)
     assert max(near, far) <= 2 * min(near, far), (near, far)
-    assert near_error <= 0.02 and far_error <= 0.02
+    # A linear motion is interpolated exactly: what the test measures is the
+    # representation alone, which the allowance removes at every range.
+    assert near_error <= 1e-4 and far_error <= 1e-4, (near_error, far_error)
+
+
+def test_float32_delays_would_put_the_quantization_into_the_phase_test(monkeypatch):
+    """The falsifier: compared as float32, the same motion's tested error grows with range."""
+
+    import witwin.radar.paths as paths
+
+    monkeypatch.setattr(paths, "float64_delay", lambda batch: batch.total_delay_s.double())
+    _, near_error = _evaluations(5.0)
+    _, far_error = _evaluations(100.0)
+    # 2 pi f_c ulp32(tau): about 1e-2 rad at 100 m, well above the float64 floor.
+    assert far_error > 20 * max(near_error, 1e-4), (near_error, far_error)

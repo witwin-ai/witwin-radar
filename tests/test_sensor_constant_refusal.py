@@ -91,7 +91,7 @@ def test_an_unmarked_geometry_and_plan_still_construct_and_validate():
 def test_the_declared_frozen_field_list_matches_the_dataclass():
     """A new float field cannot be added without a decision about it.
 
-    ``FROZEN_FIELDS`` plus the four index/count fields plus the differentiable
+    ``FROZEN_FIELDS`` plus the index/count fields (and the slot count) plus the differentiable
     positions is the whole surface. If someone adds, say, a per-row temperature
     to the geometry, this fails and the new field gets a decision instead of a
     silent ``None``.
@@ -100,7 +100,14 @@ def test_the_declared_frozen_field_list_matches_the_dataclass():
     import dataclasses
 
     declared = {field.name for field in dataclasses.fields(SensorWeightGeometry)}
-    accounted = set(SensorWeightGeometry.FROZEN_FIELDS) | {"num_tx", "num_rx", "tx_index", "rx_index", "row_kind"}
+    accounted = set(SensorWeightGeometry.FROZEN_FIELDS) | {
+        "num_tx",
+        "num_rx",
+        "tx_index",
+        "rx_index",
+        "row_kind",
+        "slots",
+    }
     assert declared == accounted, sorted(declared ^ accounted)
     assert set(SensorWeightGeometry.FROZEN_FIELDS) == set(GEOMETRY_SHAPES)
 
