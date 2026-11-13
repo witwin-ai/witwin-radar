@@ -5,7 +5,9 @@ The whole happy path is here, in the order a caller meets it: build a
 what it is looking at with :class:`PointTargets`, :class:`StructureTargets` or
 :class:`MeshTargets`, with an :class:`RcsTable` cross section or a
 :class:`Fluctuation` where one applies; choose how often the world is
-resampled with :class:`Motion`; then call one of the radar's four verbs. Products go to :mod:`witwin.radar.processing`.
+resampled with :class:`Motion`; then call one of the radar's four verbs.
+Several radars that share one scene are a :class:`Network`, whose verbs
+publish one result per radar. Products go to :mod:`witwin.radar.processing`.
 
 Advanced records stay in their owner modules and are imported from there:
 ``SensorEndpointIds`` and ``StableIdAllocator`` in
@@ -18,6 +20,7 @@ Advanced records stay in their owner modules and are imported from there:
 from . import processing
 from .frontend import Adc, Agc, Compression, Iq, Noise
 from .motion import Motion
+from .network import Network
 from .radar import Chirp, Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .results import Frame, Result
 from .sensors import Coupling, Pattern
@@ -38,6 +41,7 @@ __all__ = [
     "Leakage",
     "MeshTargets",
     "Motion",
+    "Network",
     "Noise",
     "Ofdm",
     "Paths",

@@ -34,6 +34,16 @@
       "up",
       "waveform_spec",
       "wavelength"
+    ],
+    "witwin.radar.Network": [
+      "clock_offsets",
+      "echo",
+      "if_bandwidths",
+      "links",
+      "radars",
+      "simulate",
+      "stream",
+      "trace"
     ]
   },
   "modules": {
@@ -51,6 +61,7 @@
       "Leakage": "witwin.radar.radar.Leakage",
       "MeshTargets": "witwin.radar.targets.MeshTargets",
       "Motion": "witwin.radar.motion.Motion",
+      "Network": "witwin.radar.network.Network",
       "Noise": "witwin.radar.frontend.Noise",
       "Ofdm": "witwin.radar.radar.Ofdm",
       "Paths": "witwin.radar.simulation.Paths",

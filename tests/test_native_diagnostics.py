@@ -206,6 +206,7 @@ def test_the_minimal_root_does_not_load_native_or_channel():
         "Leakage",
         "MeshTargets",
         "Motion",
+        "Network",
         "Noise",
         "Ofdm",
         "Paths",

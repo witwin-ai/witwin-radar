@@ -15,6 +15,7 @@
     "witwin.radar.facets",
     "witwin.radar.frontend",
     "witwin.radar.motion",
+    "witwin.radar.network",
     "witwin.radar.paths",
     "witwin.radar.policy",
     "witwin.radar.processing",
@@ -64,7 +65,8 @@
     "witwin.radar.processing.calibration",
     "witwin.radar.sensors",
     "witwin.radar.frontend",
-    "witwin.radar.facets"
+    "witwin.radar.facets",
+    "witwin.radar.network"
   ],
   "concept_owners": {
     "radar_system_and_configuration": "witwin.radar.radar",
@@ -94,7 +96,8 @@
     "native_runtime": "witwin.radar.cuda.runtime",
     "target_declaration": "witwin.radar.targets",
     "path_events": "witwin.radar.events",
-    "mesh_facets": "witwin.radar.facets"
+    "mesh_facets": "witwin.radar.facets",
+    "radar_network": "witwin.radar.network"
   },
   "public_facades": [
     "witwin.radar",
@@ -114,6 +117,7 @@
     "witwin.radar.facets",
     "witwin.radar.frontend",
     "witwin.radar.motion",
+    "witwin.radar.network",
     "witwin.radar.paths",
     "witwin.radar.policy",
     "witwin.radar.propagation",

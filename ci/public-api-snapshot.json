@@ -84,6 +84,12 @@
           "signature": "(kind: 'str' = 'auto', phase_error: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval: 'float' = 0.002, nodes: 'int' = 2, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256, rediscover_every_frames: 'int | None' = None, rediscover_every_chirps: 'int | None' = None, rediscover_every_seconds: 'float | None' = None, rediscover_on_displacement: 'float | None' = None, motion_bandwidth: 'float | None' = None, max_acceleration: 'float | None' = None, world: 'str' = 'frozen_world') -> None"
         },
         {
+          "name": "Network",
+          "kind": "class",
+          "target": "witwin.radar.network.Network",
+          "signature": "(radars: 'tuple[Radar, ...]', links: 'tuple[tuple[int, int], ...]' = (), clock_offsets: 'tuple[float, ...]' = (), if_bandwidths: 'tuple[float | None, ...]' = ()) -> None"
+        },
+        {
           "name": "Noise",
           "kind": "class",
           "target": "witwin.radar.frontend.Noise",
@@ -867,6 +873,47 @@
           "name": "wavelength",
           "kind": "property",
           "doc_first_line": "``c0 / carrier``, m."
+        }
+      ]
+    },
+    {
+      "class": "witwin.radar.Network",
+      "members": [
+        {
+          "name": "clock_offsets",
+          "kind": "value"
+        },
+        {
+          "name": "echo",
+          "kind": "function",
+          "signature": "(self, paths: 'NetworkPaths') -> 'tuple[Result, ...]'"
+        },
+        {
+          "name": "if_bandwidths",
+          "kind": "value"
+        },
+        {
+          "name": "links",
+          "kind": "value"
+        },
+        {
+          "name": "radars",
+          "kind": "value"
+        },
+        {
+          "name": "simulate",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, direct: 'bool' = True, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, motion: 'Motion | None' = None, grad: 'str' = 'none') -> 'tuple[Result, ...]'"
+        },
+        {
+          "name": "stream",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, **request: 'Any') -> 'Iterator[tuple[Result, ...]]'"
+        },
+        {
+          "name": "trace",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, **request: 'Any') -> 'NetworkPaths'"
         }
       ]
     }
