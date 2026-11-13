@@ -34,7 +34,7 @@ COMPONENTS = [0, 1]
 def _composer() -> TwoWayComposer:
     return TwoWayComposer.freeze(
         fx.frozen_leg(fx.leg_rows(SOURCES, SITES, COMPONENTS)),
-        fx.frozen_leg(fx.leg_rows(SITES, SINKS, COMPONENTS)),
+        fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, COMPONENTS)),
         torch.tensor(SITES, dtype=torch.int64, device="cuda"),
         radar_source_ids=SOURCES,
         radar_sink_ids=SINKS,

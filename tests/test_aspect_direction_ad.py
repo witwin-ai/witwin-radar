@@ -97,9 +97,11 @@ ASPECT_FD_RTOL = 5.0e-3
 #: component (8.0e-9, three orders below the dominant 3.5e-6) sits close to the
 #: float32 cancellation floor. That component is what forces the FOURTH-order
 #: stencil here: with the second-order one it reads 15-20% low at 1e-4 and
-#: 2e-4 m. Fourth order, worst component across steps of 1e-4, 2e-4, 4e-4, 8e-4
-#: and 1.6e-3 m: 15.2%, 19.9%, 1.07%, 1.07% and 1.37%.
-CUBE_STEP_M = 8.0e-4
+#: 2e-4 m. With the outbound leg evaluated from the receiver (R-ADR-039) the
+#: float32 noise on that component moved: fourth order, worst component across
+#: steps of 1e-4, 2e-4, 4e-4, 8e-4, 1.6e-3 and 3.2e-3 m reads 22%, 18%, 9.3%,
+#: 5.8%, 1.4% and 0.07% off the analytic value, converging onto it.
+CUBE_STEP_M = 1.6e-3
 CUBE_FD_RTOL = 3.0e-2
 
 #: Below this a component is structurally zero rather than a small number.
@@ -215,7 +217,6 @@ def test_the_fixture_puts_one_reflection_row_and_one_line_of_sight_row_in_the_lo
     """
 
     (real, imaginary), inbound, outbound = _aspect_rows(spike)
-    assert spike.composer.outbound_max_depth == 0
     assert spike.composer.path_count == 6
 
     magnitude = torch.sqrt(real * real + imaginary * imaginary)
@@ -280,8 +281,9 @@ def test_a_reverse_aspect_gradient_reaches_the_site_positions(spike):
 def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(spike):
     """The falsifier the whole module rests on.
 
-    ``evaluate_rows`` reads the two legs' ``field_direction`` and nothing else
-    that could carry a leaf. Detaching that one column must therefore take the
+    ``evaluate_rows`` reads the inbound leg's ``field_direction`` and the
+    outbound leg's arrival segment and nothing else that could carry a leaf.
+    Detaching those must therefore take the
     gradient to EXACTLY zero - not small, zero - which is precisely the state
     the tree was in before ADR-043 and precisely what a regression would look
     like.
@@ -290,8 +292,16 @@ def test_the_aspect_gradient_is_exactly_zero_when_field_direction_is_detached(sp
     weights = _cotangent(spike.composer.path_count, seed=901)
     sites = spike.site_tensor(requires_grad=True)
     inbound, outbound = spike.legs(sites, ad_mode="vjp")
-    severed = tuple(
-        dataclasses.replace(leg, field_direction=leg.field_direction.detach()) for leg in (inbound, outbound)
+    # The response reads the inbound leg's arrival direction and the outbound
+    # leg's arrival segment (the outbound leg runs from the receiver to the
+    # site, R-ADR-039); severing those is severing all of it.
+    severed = (
+        dataclasses.replace(inbound, field_direction=inbound.field_direction.detach()),
+        dataclasses.replace(
+            outbound,
+            arrival_origin_m=outbound.arrival_origin_m.detach(),
+            arrival_target_m=outbound.arrival_target_m.detach(),
+        ),
     )
     real, imaginary = aspect_response().evaluate_rows(spike.composer, severed[0], severed[1], _flags(spike))
     w_re, w_im = weights

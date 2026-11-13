@@ -50,13 +50,17 @@ DEFAULT_SITE_ID_BASE = 3_000_000
 #: resulting complex transfer and therefore has no polarization input.
 DEFAULT_POLARIZATION = (0.0, 0.0, 1.0)
 
-#: A scatter site is excited at exactly one watt.
+#: The outbound leg is excited at exactly one watt.
 #:
-#: The site is a re-radiator, not a second transmitter: the whole target
-#: strength lives in the two-way join's ``S = sqrt(4 pi sigma) / lambda``
-#: factor. A site excitation of anything but unit power multiplies that factor
-#: again, and with a transmit power of 1 W the extra ``sqrt(P)`` is numerically
-#: invisible - which is exactly how a squared transmit power ships.
+#: The outbound leg is evaluated from each receive element toward the sites,
+#: with the receive element as a source of this power; by Lorentz reciprocity
+#: that transport equals the site re-radiating at the same power toward the
+#: receiver (R-ADR-039). The site is a re-radiator, not a second transmitter:
+#: the whole target strength lives in the two-way join's
+#: ``S = sqrt(4 pi sigma) / lambda`` factor. An excitation of anything but unit
+#: power multiplies that factor again, and with a transmit power of 1 W the
+#: extra ``sqrt(P)`` is numerically invisible - which is exactly how a squared
+#: transmit power ships.
 SITE_EXCITATION_POWER_W = 1.0
 
 #: Where scatter sites may come from. Both are declarations by the caller or by
@@ -165,7 +169,7 @@ class ScatterSitePolicy:
     architecture exists to keep out. R-ADR-020 records the deferral and names
     what closing it would need.
 
-    ``power_w`` is the site excitation and defaults to
+    ``power_w`` is the outbound-leg excitation and defaults to
     :data:`SITE_EXCITATION_POWER_W`. Changing it is almost always wrong; read
     that constant's note first.
     """
@@ -342,11 +346,16 @@ def _structure_anchor_positions(
 class RadarWorldBinding:
     """One radar and one snapshot, as the endpoint specs the legs consume.
 
-    Four specs and three ID tuples. The two site specs are the same sites in
-    their two roles - sink of the inbound leg, source of the outbound leg - and
-    they SHARE one ``positions_m`` object, which ``__post_init__`` asserts
-    rather than assumes. That aliasing is the whole reason this is one type
-    instead of four loose arguments.
+    Four specs and three ID tuples. Both site legs are evaluated FROM a radar
+    element TOWARD the sites: the inbound leg from the transmitters, the
+    outbound leg from ``receiver_sources`` (the receivers as 1 W sources),
+    and every site is a sink. ``receivers`` is the same elements as a sink,
+    for the site-less transmitter-to-receiver leg; the two share one
+    ``positions_m`` object. The outbound transport is the reciprocal of the site-to-receiver one
+    (R-ADR-039), which is what lets one transported field vector per row carry
+    a site's full scattering matrix. ``sites`` is therefore ONE spec shared by
+    both legs, and its ``positions_m`` is the one site tensor both legs
+    differentiate through.
 
     The ID tuples are host tuples, not tensors, because the composer's declared
     identity lists are host lists and because reading them back out of a device
@@ -355,37 +364,33 @@ class RadarWorldBinding:
 
     transmitters: RadarEndpointSpec
     receivers: RadarEndpointSpec
-    site_sources: RadarEndpointSpec
-    site_sinks: RadarEndpointSpec
+    receiver_sources: RadarEndpointSpec
+    sites: RadarEndpointSpec
     transmitter_ids: tuple[int, ...]
     receiver_ids: tuple[int, ...]
     site_ids: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        if self.site_sources.positions_m is not self.site_sinks.positions_m:
-            raise ValueError(
-                "the site source and sink specs must share one positions_m "
-                "tensor; rebuilding it for the second role drops half of a "
-                "reverse gradient and all of a forward tangent"
-            )
         if self.transmitters.powers_w is None:
             raise ValueError("the transmitter spec must carry powers_w")
-        if self.site_sources.powers_w is None:
-            raise ValueError("the site source spec must carry powers_w")
         if self.receivers.powers_w is not None:
-            raise ValueError("the receiver spec must not carry powers_w")
-        if self.site_sinks.powers_w is not None:
-            raise ValueError("the site sink spec must not carry powers_w")
+            raise ValueError("the receiver spec must not carry powers_w; it is the direct leg's sink")
+        if self.receiver_sources.powers_w is None:
+            raise ValueError("the receiver source spec must carry powers_w; it is the source of the outbound leg")
+        if self.receiver_sources.positions_m is not self.receivers.positions_m:
+            raise ValueError("the receivers' two roles must share one positions_m tensor")
+        if self.sites.powers_w is not None:
+            raise ValueError("the site spec must not carry powers_w; a site is the sink of both legs")
 
     @property
     def site_positions_m(self) -> torch.Tensor:
         """The one site tensor both legs differentiate through."""
 
-        return self.site_sources.positions_m
+        return self.sites.positions_m
 
     @property
     def site_count(self) -> int:
-        return self.site_sources.count
+        return self.sites.count
 
     @property
     def device(self) -> torch.device:
@@ -469,9 +474,10 @@ def bind_radar_world(
     """Turn one ``Radar`` plus one ``SceneSnapshot`` into endpoint specs.
 
     The transmit elements become SOURCES carrying the array's transmit power in
-    watts; the receive elements become SINKS with no power at all. Both come
-    from ``radar.tx_pos`` / ``radar.rx_pos``, which are the pose-transformed
-    world positions the radar already maintains - they are used as they stand
+    watts; the receive elements become SOURCES of the outbound leg carrying the
+    outbound excitation (R-ADR-039); the sites are the SINK of both legs. Both
+    element sets come from ``radar.tx_pos`` / ``radar.rx_pos``, which are the
+    pose-transformed world positions the radar already maintains - they are used as they stand
     rather than rebuilt, so a caller who supplied moving Core phase centres
     through ``sensor_endpoints`` keeps their tape all the way into both legs.
     The radar's own pose carries none: it is a host declaration, and
@@ -527,8 +533,10 @@ def bind_radar_world(
             transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
         ),
         receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=polarization_vector, power_w=None),
-        site_sources=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=sites.power_w),
-        site_sinks=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=None),
+        receiver_sources=_endpoint_spec(
+            receiver_positions, receiver_ids, polarization=polarization_vector, power_w=sites.power_w
+        ),
+        sites=_endpoint_spec(site_positions, site_ids, polarization=polarization_vector, power_w=None),
         transmitter_ids=transmitter_ids,
         receiver_ids=receiver_ids,
         site_ids=tuple(site_ids),

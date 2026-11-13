@@ -128,11 +128,16 @@ class RadarLegBatch:
     is the direction of the row's FINAL segment, so it is the direction the
     field arrives at the sink travelling in - which for a line-of-sight row is
     also the direction it left the source in, and for a higher-order row is
-    not. An aspect-dependent scatter response consumes it and is responsible
-    for saying which of the two meanings it needs; see
-    :mod:`witwin.radar.scattering`, which refuses an outbound leg whose
-    rows are not line of sight rather than reading a departure direction off a
-    row that does not carry one.
+    not.
+
+    The segment endpoints are per-row world points [m]:
+    ``departure_origin_m`` is the source, ``departure_target_m`` the first
+    point after it (the first interaction, or the sink), ``arrival_origin_m``
+    the last point before the sink (the last interaction, or the source) and
+    ``arrival_target_m`` the sink. ``interaction_positions_m`` is Channel's
+    ``(rows, depth, 3)`` interaction table, zero padded past each row's depth,
+    and ``path_length_m`` Channel's float32 unfolded length - the length its
+    reference-frequency phase was evaluated from.
 
     ``slot_count`` states how many time slots - TDM slots, OFDM symbols or
     pulses - this batch carries. The default ``1`` is one instant and is what
@@ -173,6 +178,9 @@ class RadarLegBatch:
     #: layout). Present exactly when the replay declared an offset grid.
     coefficient_band: torch.Tensor | None = None
     frequency_offsets_hz: tuple[float, ...] | None = None
+    arrival_target_m: torch.Tensor | None = None
+    interaction_positions_m: torch.Tensor | None = None
+    path_length_m: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if type(self.leg_count) is not int or self.leg_count < 0:
@@ -209,7 +217,7 @@ class RadarLegBatch:
         require_tensor("field_direction", self.field_direction, dtype=torch.float32, shape=(self.leg_count, 3))
         if self.row_valid is not None:
             require_tensor("row_valid", self.row_valid, dtype=torch.bool, shape=rows)
-        for name in ("departure_origin_m", "departure_target_m", "arrival_origin_m"):
+        for name in ("departure_origin_m", "departure_target_m", "arrival_origin_m", "arrival_target_m"):
             if getattr(self, name) is not None:
                 require_tensor(name, getattr(self, name), dtype=torch.float32, shape=(self.leg_count, 3))
         if (self.coefficient_band is None) != (self.frequency_offsets_hz is None):
@@ -217,6 +225,17 @@ class RadarLegBatch:
         if self.coefficient_band is not None and self.frequency_offsets_hz is not None:
             band = (self.leg_count, len(self.frequency_offsets_hz))
             require_tensor("coefficient_band", self.coefficient_band, dtype=torch.complex64, shape=band)
+        if self.interaction_positions_m is not None:
+            interactions = require_tensor(
+                "interaction_positions_m", self.interaction_positions_m, dtype=torch.float32, ndim=3
+            )
+            if interactions.shape[0] != self.leg_count or interactions.shape[2] != 3:
+                raise ValueError(
+                    f"interaction_positions_m must have shape ({self.leg_count}, depth, 3), "
+                    f"got {tuple(interactions.shape)}"
+                )
+        if self.path_length_m is not None:
+            require_tensor("path_length_m", self.path_length_m, dtype=torch.float32, shape=rows)
 
     @property
     def device(self) -> torch.device:
@@ -281,6 +300,9 @@ class RadarLegBatch:
             arrival_origin_m=narrow(self.arrival_origin_m),
             coefficient_band=narrow(self.coefficient_band),
             frequency_offsets_hz=self.frequency_offsets_hz,
+            arrival_target_m=narrow(self.arrival_target_m),
+            interaction_positions_m=narrow(self.interaction_positions_m),
+            path_length_m=narrow(self.path_length_m),
         )
 
 
@@ -352,6 +374,9 @@ def stack_slots(batches: Sequence[RadarLegBatch]) -> RadarLegBatch:
         departure_origin_m=cat("departure_origin_m"),
         departure_target_m=cat("departure_target_m"),
         arrival_origin_m=cat("arrival_origin_m"),
+        arrival_target_m=cat("arrival_target_m"),
+        interaction_positions_m=cat("interaction_positions_m"),
+        path_length_m=cat("path_length_m"),
     )
 
 
@@ -401,6 +426,9 @@ def band_as_slots(batch: RadarLegBatch) -> RadarLegBatch:
         departure_origin_m=repeat(batch.departure_origin_m),
         departure_target_m=repeat(batch.departure_target_m),
         arrival_origin_m=repeat(batch.arrival_origin_m),
+        arrival_target_m=repeat(batch.arrival_target_m),
+        interaction_positions_m=repeat(batch.interaction_positions_m),
+        path_length_m=repeat(batch.path_length_m),
     )
 
 

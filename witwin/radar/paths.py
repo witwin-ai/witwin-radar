@@ -873,12 +873,6 @@ class TwoWayComposer:
     row_slot: torch.Tensor
     by_row_offsets: torch.Tensor
     by_row_rows: torch.Tensor
-    # The deepest outbound row this join composes, read from the frozen leg
-    # identity on the host. An aspect-dependent response needs the DEPARTURE
-    # direction at the site and a leg publishes its final segment's direction,
-    # so it refuses anything but a line-of-sight outbound leg; the host int is
-    # what lets it refuse without reading a device column.
-    outbound_max_depth: int
     #: One slot's pair partition on the host, as built: ``pair_offsets`` before
     #: its upload. A slot-major replica keeps the single-slot table, which is
     #: what an instrument half selecting pair segments slot by slot reads.
@@ -979,15 +973,18 @@ class TwoWayComposer:
         _require_unique_keys(arriving, inbound_key, "inbound")
         _require_unique_keys(leaving, outbound_key, "outbound")
 
-        # Nothing may fall outside the declared front end. A leg row whose
-        # radar endpoint is not in the declared lists would never be joined,
-        # which is a silent drop rather than an empty segment.
+        # Both legs run FROM a radar element TOWARD the sites (R-ADR-039): the
+        # inbound leg's source is a transmitter, the outbound leg's source is a
+        # receiver, and both legs' sink is the site. Nothing may fall outside
+        # the declared front end. A leg row whose radar endpoint is not in the
+        # declared lists would never be joined, which is a silent drop rather
+        # than an empty segment.
         stray_sources = sorted(set(arriving.source.tolist()) - set(sources))
         if stray_sources:
             raise ValueError(
                 f"inbound leg rows carry radar source IDs {stray_sources} that are not in radar_source_ids {sources}"
             )
-        stray_sinks = sorted(set(leaving.sink.tolist()) - set(sinks))
+        stray_sinks = sorted(set(leaving.source.tolist()) - set(sinks))
         if stray_sinks:
             raise ValueError(
                 f"outbound leg rows carry radar sink IDs {stray_sinks} that are not in radar_sink_ids {sinks}"
@@ -1001,7 +998,7 @@ class TwoWayComposer:
         # as a sensor pair that sees nothing composes to an empty segment.
         if leg_site_ids is None:
             reachable_in = set(arriving.sink.tolist())
-            reachable_out = set(leaving.source.tolist())
+            reachable_out = set(leaving.sink.tolist())
             for site in sites:
                 if site not in reachable_in:
                     raise ValueError(f"site {site} has no inbound leg row in the frozen topology")
@@ -1020,7 +1017,7 @@ class TwoWayComposer:
         # Rows that reach an undeclared site are not part of this join.
         declared = np.asarray(sites, dtype=np.int64)
         inbound_rows = np.flatnonzero(np.isin(arriving.sink, declared))
-        outbound_rows = np.flatnonzero(np.isin(leaving.source, declared))
+        outbound_rows = np.flatnonzero(np.isin(leaving.sink, declared))
         inbound_site = _ranks(arriving.sink[inbound_rows], sites)
         through = (
             None
@@ -1040,16 +1037,16 @@ class TwoWayComposer:
             require_round_trip_budget(
                 arriving.source[inbound_rows],
                 inbound_site,
-                leaving.sink[outbound_rows],
-                _ranks(leaving.source[outbound_rows], sites),
+                leaving.source[outbound_rows],
+                _ranks(leaving.sink[outbound_rows], sites),
                 site_count=len(sites),
                 sources=sources,
                 sinks=sinks,
                 direct=None if through is None else (through.source, through.sink),
                 budget=max_round_trips,
             )
-        outbound_order = outbound_rows[np.argsort(_ranks(leaving.source[outbound_rows], sites), kind="stable")]
-        per_site = np.bincount(_ranks(leaving.source[outbound_rows], sites), minlength=len(sites))
+        outbound_order = outbound_rows[np.argsort(_ranks(leaving.sink[outbound_rows], sites), kind="stable")]
+        per_site = np.bincount(_ranks(leaving.sink[outbound_rows], sites), minlength=len(sites))
         first_partner = np.concatenate(([0], np.cumsum(per_site)[:-1]))
         partners = per_site[inbound_site]
         total = int(partners.sum())
@@ -1058,7 +1055,7 @@ class TwoWayComposer:
         joined_out = outbound_order[np.repeat(first_partner[inbound_site], partners) + within]
         site_rank = np.repeat(inbound_site, partners)
         source = arriving.source[joined_in]
-        sink = leaving.sink[joined_out]
+        sink = leaving.source[joined_out]
         pair = np.broadcast_to(np.asarray(sink_major_rank(sources, sinks)(source, sink), dtype=np.int64), (total,))
 
         # The canonical order: pair rank, site rank, inbound key, outbound key.
@@ -1226,7 +1223,6 @@ class TwoWayComposer:
             row_slot=torch.arange(total, dtype=torch.int64, device=device),
             by_row_offsets=torch.arange(total + 1, dtype=torch.int64, device=device),
             by_row_rows=torch.arange(total, dtype=torch.int64, device=device),
-            outbound_max_depth=int(leaving.depth[joined_out].max()) if total else 0,
             pair_offsets_host=offsets,
             direct_row_count=direct_count,
             merge=merge_table,
@@ -1443,11 +1439,13 @@ class TwoWayComposer:
         and the receive pattern from the last. A site row takes them from its
         inbound and outbound legs, a site-less row from its own leg. Gathers of
         Channel's live geometry, so a derivative through a reflection point
-        survives.
+        survives. The outbound leg runs from the receiver to the site
+        (R-ADR-039), so the receiver's point is that leg's first segment's far
+        end, ``departure_target_m``.
         """
 
         first = _present_member(inbound.departure_target_m, "departure_target_m")
-        last = _present_member(outbound.arrival_origin_m, "arrival_origin_m")
+        last = _present_member(outbound.departure_target_m, "departure_target_m")
         if self.merge is None:
             return first.index_select(0, self.topology.inbound_row), last.index_select(0, self.topology.outbound_row)
         assert direct is not None

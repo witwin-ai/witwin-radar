@@ -275,10 +275,14 @@ def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
     binding = bind_radar_world(radar, radar_snapshot(), sites=sites)
 
     assert isinstance(binding, RadarWorldBinding)
+    # Both site legs run from an element toward the sites (R-ADR-039): the
+    # receivers are the outbound leg's 1 W source and the direct leg's sink,
+    # one position tensor in two roles; the sites are a sink only.
     assert binding.transmitters.powers_w is not None
-    assert binding.site_sources.powers_w is not None
+    assert binding.receiver_sources.powers_w is not None
     assert binding.receivers.powers_w is None
-    assert binding.site_sinks.powers_w is None
+    assert binding.receiver_sources.positions_m is binding.receivers.positions_m
+    assert binding.sites.powers_w is None
 
     expected_w = radar.transmit_power_watts
     torch.testing.assert_close(
@@ -286,8 +290,8 @@ def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
         torch.full((binding.transmitters.count,), float(expected_w), dtype=torch.float32, device=binding.device),
     )
     torch.testing.assert_close(
-        binding.site_sources.powers_w,
-        torch.full((2,), SITE_EXCITATION_POWER_W, dtype=torch.float32, device=binding.device),
+        binding.receiver_sources.powers_w,
+        torch.full((binding.receivers.count,), SITE_EXCITATION_POWER_W, dtype=torch.float32, device=binding.device),
     )
 
 
@@ -302,18 +306,17 @@ def test_two_bindings_of_one_snapshot_agree_on_every_stable_id(radar):
     assert first.receiver_ids == second.receiver_ids
     assert first.site_ids == second.site_ids
     assert torch.equal(first.transmitters.stable_ids, second.transmitters.stable_ids)
-    assert torch.equal(first.site_sinks.stable_ids, second.site_sinks.stable_ids)
+    assert torch.equal(first.sites.stable_ids, second.sites.stable_ids)
 
     every_id = set(first.transmitter_ids) | set(first.receiver_ids) | set(first.site_ids)
     assert len(every_id) == (len(first.transmitter_ids) + len(first.receiver_ids) + len(first.site_ids))
 
 
 @pytest.mark.gpu
-def test_the_two_site_roles_share_one_position_tensor(radar):
+def test_both_legs_share_one_site_position_tensor(radar):
     positions = torch.tensor([geo.SITE_P_POSITION_M], dtype=torch.float32, device=radar.device).requires_grad_(True)
     binding = bind_radar_world(radar, radar_snapshot(), sites=ScatterSitePolicy.explicit(positions))
-    assert binding.site_sources.positions_m is positions
-    assert binding.site_sinks.positions_m is positions
+    assert binding.sites.positions_m is positions
     assert binding.site_positions_m is positions
     assert binding.transmitters.positions_m is radar.tx_pos
     assert binding.receivers.positions_m is radar.rx_pos

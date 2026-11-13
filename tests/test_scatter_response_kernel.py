@@ -57,7 +57,7 @@ def _composer(device: str = "cuda", *, outbound_components=(0,)) -> TwoWayCompos
     """
 
     inbound = fx.frozen_leg(fx.leg_rows(SOURCES, SITES, (0, 1)), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(SITES, SINKS, outbound_components), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, outbound_components), device=device)
     return TwoWayComposer.freeze(
         inbound,
         outbound,
@@ -234,7 +234,7 @@ def test_the_composed_round_trip_carries_the_row_response():
     tau_in, c_in = fx.payload(composer.inbound_row_count, seed=11)
     tau_out, c_out = fx.payload(composer.outbound_row_count, seed=12)
     inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=dir_in)
-    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), site_departure=dir_out)
 
     composed = composer.compose(inbound, outbound, response)
 
@@ -326,28 +326,33 @@ def test_the_composer_still_refuses_an_unowned_geometry_dependent_response():
         composer.compose(inbound, outbound, _HandWrittenGeometryResponse())
 
 
-def test_the_response_refuses_missing_departure_geometry():
-    """The one honest limitation of reading the published direction basis.
+def test_a_reflected_outbound_row_reads_its_departure_off_the_arrival_segment():
+    """The outbound leg runs from the receiver to the site (R-ADR-039).
 
-    A leg publishes the direction of its FINAL segment. For the outbound leg
-    that is the arrival direction at the receiver, which equals the departure
-    direction from the site only when the row is line of sight. Reading it as a
-    departure direction for a reflected row is wrong by the reflection angle
-    and entirely plausible.
+    Its last segment arrives AT the site, so the site's departure bearing is
+    that segment reversed at every depth: a reflected outbound row composes
+    like a line-of-sight one, and a leg without the arrival segment is refused
+    by name rather than read off ``field_direction``.
     """
 
     composer = _composer(outbound_components=(0, 1))
-    assert composer.outbound_max_depth == 1
     response = _parameters(composer.site_count)
     dir_in = _directions(composer.inbound_row_count, seed=41, into_site=True)
     dir_out = _directions(composer.outbound_row_count, seed=42)
     tau_in, c_in = fx.payload(composer.inbound_row_count, seed=11)
     tau_out, c_out = fx.payload(composer.outbound_row_count, seed=12)
     inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=dir_in)
-    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
+    flags = torch.ones(composer.path_count, dtype=torch.int32, device="cuda")
 
-    with pytest.raises(ValueError, match="departure segment endpoints"):
-        composer.compose(inbound, outbound, response)
+    without = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=dir_out)
+    with pytest.raises(ValueError, match="arrival segment endpoints"):
+        composer.compose(inbound, without, response)
+
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), site_departure=dir_out)
+    real, imaginary = response.evaluate_rows(composer, inbound, outbound, flags)
+    expected_re, expected_im = _launch(composer, response, dir_in, dir_out, flags)
+    torch.testing.assert_close(real, expected_re, rtol=1e-6, atol=1e-7)
+    torch.testing.assert_close(imaginary, expected_im, rtol=1e-6, atol=1e-7)
 
 
 def test_the_kernel_refuses_a_host_tensor_instead_of_computing_on_it():

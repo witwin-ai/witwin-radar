@@ -167,7 +167,9 @@ def test_the_legs_carry_the_row_counts_and_identity_the_geometry_predicts(spike)
     # Spelled out, because these exact lists are what the join tests build on.
     assert spike.inbound.source_id.tolist() == [10, 10, 10]
     assert spike.inbound.sink_id.tolist() == [20, 20, 21]
-    assert spike.outbound.sink_id.tolist() == [30, 30, 30, 31, 31, 31, 31]
+    # The outbound leg runs from the receiver to the site (R-ADR-039).
+    assert spike.outbound.source_id.tolist() == [30, 30, 31, 31, 30, 31, 31]
+    assert spike.outbound.sink_id.tolist() == [20, 20, 20, 20, 21, 21, 21]
     # ``TX_B`` (stable ID 11) reaches nothing at all.
     assert geo.TX_B_STABLE_ID not in spike.inbound.source_id.tolist()
 
@@ -205,8 +207,8 @@ def test_the_channel_leg_publishes_an_empty_pair_segment_of_its_own(spike):
     assert inbound.pair_offsets.tolist() == [0, 2, 2, 3, 3]
     assert inbound.pair_index.tolist() == [0, 0, 2]
     assert outbound.pair_count == 4
-    assert outbound.pair_offsets.tolist() == [0, 2, 3, 5, 7]
-    assert outbound.pair_index.tolist() == [0, 0, 1, 2, 2, 3, 3]
+    assert outbound.pair_offsets.tolist() == [0, 2, 4, 5, 7]
+    assert outbound.pair_index.tolist() == [0, 0, 1, 1, 2, 3, 3]
     assert inbound.pair_offsets.tolist() == geo.pair_offsets(spike.predicted_inbound_rows(), 4)
     assert outbound.pair_offsets.tolist() == geo.pair_offsets(spike.predicted_outbound_rows(), 4)
 

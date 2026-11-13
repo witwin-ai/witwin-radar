@@ -610,12 +610,14 @@ class AspectScatterResponse:
                 f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
             )
         dir_in = _require_direction(inbound, composer.inbound_row_count, "inbound")
-        if composer.outbound_max_depth == 0:
-            dir_out = _require_direction(outbound, composer.outbound_row_count, "outbound")
-        else:
-            if outbound.departure_origin_m is None or outbound.departure_target_m is None:
-                raise ValueError("outbound reflection requires actual departure segment endpoints")
-            dir_out = _ScatterDirection.apply(outbound.departure_origin_m, outbound.departure_target_m)
+        # The outbound leg runs from the receiver TOWARD the site (R-ADR-039),
+        # so its last segment arrives at the site and the site's departure
+        # bearing is that segment reversed: site -> last point before it. This
+        # holds at every depth, so a reflected outbound row needs no separate
+        # departure table.
+        if outbound.arrival_target_m is None or outbound.arrival_origin_m is None:
+            raise ValueError("an aspect response needs the outbound leg's arrival segment endpoints")
+        dir_out = _ScatterDirection.apply(outbound.arrival_target_m, outbound.arrival_origin_m)
         tables = _BackwardTables(
             by_in_offsets=composer.by_inbound_offsets,
             by_in_rows=composer.by_inbound_rows,

@@ -1,10 +1,11 @@
 """End-to-end orchestration for the single-site AD spike.
 
 compile -> discover -> freeze -> per-frame reevaluate -> compose -> synthesize
--> scalar loss, with one differentiable scatter site that is the sink of the
-inbound leg and the source of the outbound leg. The SAME position tensor plays
-both roles; nothing special is needed to make that work, and its gradient
-accumulates from both legs.
+-> scalar loss, with one differentiable scatter site that is the sink of both
+legs: the inbound leg runs from the transmitter and the outbound leg from the
+receiver toward it (R-ADR-039). The SAME position tensor plays both roles;
+nothing special is needed to make that work, and its gradient accumulates from
+both legs.
 
 This lives under ``tests/`` because it is orchestration for a spike, not a
 production owner. Every numerical primitive it calls is a production module.
@@ -69,7 +70,7 @@ class Phase4Spike:
             self._source(geo.TX_POSITION_M, geo.TX_STABLE_ID), self._sink(geo.SITE_POSITION_M, geo.SITE_STABLE_ID)
         )
         self.outbound = self.adapter.freeze(
-            self._source(geo.SITE_POSITION_M, geo.SITE_STABLE_ID), self._sink(geo.RX_POSITION_M, geo.RX_STABLE_ID)
+            self._source(geo.RX_POSITION_M, geo.RX_STABLE_ID), self._sink(geo.SITE_POSITION_M, geo.SITE_STABLE_ID)
         )
         self.composer = TwoWayComposer.freeze(
             self.inbound,
@@ -98,8 +99,8 @@ class Phase4Spike:
         )
         outbound = self.adapter.reevaluate_slots(
             self.outbound,
-            self._source(site, geo.SITE_STABLE_ID),
-            self._sink(rx, geo.RX_STABLE_ID),
+            self._source(rx, geo.RX_STABLE_ID),
+            self._sink(site, geo.SITE_STABLE_ID),
             slot_count=1,
             ad_mode=ad_mode,
         )

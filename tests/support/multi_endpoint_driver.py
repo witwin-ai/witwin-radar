@@ -105,15 +105,14 @@ class MultiEndpointSpike:
     fabricated ones.
 
     ``outbound_components`` and ``outbound_max_depth`` give the OUTBOUND leg its
-    own adapter. An aspect-dependent scatter response refuses an outbound leg
-    that reaches any depth above zero, because a leg publishes its final
-    segment's direction and above depth zero that is the arrival direction at
-    the receiver rather than the departure direction from the site. Freezing the
-    outbound leg line-of-sight only while the inbound leg keeps its reflection
-    rows is the shape that response accepts, and it is the only way to drive a
-    REFLECTION ``field_direction`` into it. A separate adapter is required
-    rather than merely convenient: a frozen handle carries the epoch of the
-    adapter that produced it and only that adapter may replay it.
+    own adapter, which is how a test drives a reflected inbound leg against a
+    line-of-sight outbound one. A separate adapter is required rather than
+    merely convenient: a frozen handle carries the epoch of the adapter that
+    produced it and only that adapter may replay it.
+
+    Both legs run from a radar element toward the sites (R-ADR-039): the
+    outbound leg's SOURCE is the receiver, excited at ``SITE_POWER_W``, and its
+    sink is the site.
     """
 
     def __init__(
@@ -176,10 +175,10 @@ class MultiEndpointSpike:
 
         # Freeze once, outside every loop.
         self.inbound = self.adapter.freeze(
-            self._transmitter_batch(transmitter_positions), self._site_batch(site_positions, role="sink")
+            self._transmitter_batch(transmitter_positions), self._site_batch(site_positions)
         )
         self.outbound = self.outbound_adapter.freeze(
-            self._site_batch(site_positions, role="source"), self._receiver_batch(receiver_positions)
+            self._receiver_batch(receiver_positions), self._site_batch(site_positions)
         )
         self.composer = TwoWayComposer.freeze(
             self.inbound,
@@ -207,20 +206,19 @@ class MultiEndpointSpike:
         return world.endpoint_batch(positions, self.transmitter_ids, power_w=geo.TX_POWER_W, device=self.device)
 
     def _receiver_batch(self, positions):
-        return world.endpoint_batch(positions, self.receiver_ids, device=self.device)
+        """The receivers as the outbound leg's source, excited at exactly 1 W.
 
-    def _site_batch(self, positions, *, role: str):
-        """The site endpoint, excited at exactly 1 W when it is the source.
-
-        It used to be excited at ``TX_POWER_W``, the same value as the real
-        transmitter, so the composed coefficient carried ``sqrt(P_tx)`` twice.
-        With ``TX_POWER_W = 1.0`` that was numerically invisible. The site is a
-        re-radiator: the whole target strength belongs to the join's ``S``.
+        The site is a re-radiator: the whole target strength belongs to the
+        join's ``S``, so the outbound excitation is unit power and never the
+        transmitter's.
         """
 
-        return world.endpoint_batch(
-            positions, self.site_ids, power_w=geo.SITE_POWER_W if role == "source" else None, device=self.device
-        )
+        return world.endpoint_batch(positions, self.receiver_ids, power_w=geo.SITE_POWER_W, device=self.device)
+
+    def _site_batch(self, positions):
+        """The sites, the sink of both legs."""
+
+        return world.endpoint_batch(positions, self.site_ids, device=self.device)
 
     def site_tensor(self, positions=None, *, requires_grad: bool = False):
         """The site positions as one ``(N, 3)`` float32 CUDA tensor."""
@@ -248,8 +246,8 @@ class MultiEndpointSpike:
 
         Each of the three endpoint sets may be a live ``(N, 3)`` tensor. For
         the sites that has always been true and it is what makes a reverse
-        gradient accumulate over both legs: the SAME object is handed to the
-        inbound sink batch and the outbound source batch.
+        gradient accumulate over both legs: the SAME object is handed to both
+        legs' sink batch.
 
         A tensor passed here reaches the endpoint batch untouched, so a forward
         tangent or a reverse leaf on any of the three sets survives into the
@@ -259,14 +257,14 @@ class MultiEndpointSpike:
         inbound = self.adapter.reevaluate_slots(
             self.inbound,
             self._transmitter_batch(self._transmitter_positions(transmitters)),
-            self._site_batch(self.site_positions if sites is None else sites, role="sink"),
+            self._site_batch(self.site_positions if sites is None else sites),
             slot_count=1,
             ad_mode=ad_mode,
         )
         outbound = self.outbound_adapter.reevaluate_slots(
             self.outbound,
-            self._site_batch(self.site_positions if sites is None else sites, role="source"),
             self._receiver_batch(self._receiver_positions(receivers)),
+            self._site_batch(self.site_positions if sites is None else sites),
             slot_count=1,
             ad_mode=ad_mode,
         )
@@ -345,8 +343,8 @@ class MultiEndpointSpike:
         )
         outbound = self.outbound_adapter.reevaluate_slots(
             self.outbound,
-            self._stacked_ids(sites, self.site_ids, geo.SITE_POWER_W),
-            self._stacked_ids(receivers, self.receiver_ids, None),
+            self._stacked_ids(receivers, self.receiver_ids, geo.SITE_POWER_W),
+            self._stacked_ids(sites, self.site_ids, None),
             slot_count=slot_count,
             ad_mode=ad_mode,
         )
@@ -407,7 +405,7 @@ class MultiEndpointSpike:
         return geo.leg_rows(self.transmitters, self.sites)
 
     def predicted_outbound_rows(self):
-        return geo.leg_rows(self.sites, self.receivers)
+        return geo.leg_rows(self.receivers, self.sites)
 
     def predicted_combined_rows(self):
         return geo.combined_rows(self.transmitters, self.sites, self.receivers)

@@ -86,7 +86,7 @@ def _response(amplitude=2.0, phase=0.3):
 def _one_site_composer(device="cpu"):
     return TwoWayComposer.freeze(
         _frozen([10], [20], device=device),
-        _frozen([20], [30], device=device),
+        _frozen([30], [20], device=device),
         torch.tensor([20], dtype=torch.int64, device=device),
         radar_source_ids=[10],
         radar_sink_ids=[30],
@@ -173,7 +173,7 @@ def test_join_is_by_identity_not_by_array_position():
 
     straight = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([20, 21], [30, 30], components=[0, 0], device="cuda"),
+        _frozen([30, 30], [20, 21], components=[0, 0], device="cuda"),
         sites,
         radar_source_ids=[10],
         radar_sink_ids=[30],
@@ -181,7 +181,7 @@ def test_join_is_by_identity_not_by_array_position():
     ).compose(inbound, _legs([2.0e-8, 8.0e-8], [1.0 + 0.0j, 0.0 + 1.0j], device="cuda"), _response())
     permuted = TwoWayComposer.freeze(
         inbound_frozen,
-        _frozen([21, 20], [30, 30], components=[0, 0], device="cuda"),
+        _frozen([30, 30], [21, 20], components=[0, 0], device="cuda"),
         sites,
         radar_source_ids=[10],
         radar_sink_ids=[30],
@@ -201,7 +201,7 @@ def test_join_is_by_identity_not_by_array_position():
 def _two_by_two_composer(device="cpu"):
     return TwoWayComposer.freeze(
         _frozen([10, 11], [20, 20], components=[0, 0], device=device),
-        _frozen([20, 20], [30, 31], components=[0, 0], device=device),
+        _frozen([30, 31], [20, 20], components=[0, 0], device=device),
         torch.tensor([20], dtype=torch.int64),
         radar_source_ids=[10, 11],
         radar_sink_ids=[30, 31],
@@ -236,7 +236,7 @@ def test_the_pair_partition_spans_the_front_end_not_the_surviving_rows():
 
     composer = TwoWayComposer.freeze(
         _frozen([10], [20]),
-        _frozen([20], [30]),
+        _frozen([30], [20]),
         torch.tensor([20], dtype=torch.int64),
         radar_source_ids=[10, 11],
         radar_sink_ids=[30, 31],
@@ -283,7 +283,7 @@ def test_a_site_without_a_leg_is_refused_rather_than_dropped():
     with pytest.raises(ValueError, match="no outbound leg row"):
         TwoWayComposer.freeze(
             _frozen([10], [20]),
-            _frozen([21], [30]),
+            _frozen([30], [21]),
             torch.tensor([20], dtype=torch.int64),
             radar_source_ids=[10],
             radar_sink_ids=[30],
@@ -292,7 +292,7 @@ def test_a_site_without_a_leg_is_refused_rather_than_dropped():
     with pytest.raises(ValueError, match="no inbound leg row"):
         TwoWayComposer.freeze(
             _frozen([10], [21]),
-            _frozen([20], [30]),
+            _frozen([30], [20]),
             torch.tensor([20], dtype=torch.int64),
             radar_source_ids=[10],
             radar_sink_ids=[30],
@@ -311,7 +311,7 @@ def test_a_leg_endpoint_outside_the_declared_front_end_is_refused():
     with pytest.raises(ValueError, match="not in radar_source_ids"):
         TwoWayComposer.freeze(
             _frozen([11], [20]),
-            _frozen([20], [30]),
+            _frozen([30], [20]),
             torch.tensor([20], dtype=torch.int64),
             radar_source_ids=[10],
             radar_sink_ids=[30],
@@ -320,7 +320,7 @@ def test_a_leg_endpoint_outside_the_declared_front_end_is_refused():
     with pytest.raises(ValueError, match="not in radar_sink_ids"):
         TwoWayComposer.freeze(
             _frozen([10], [20]),
-            _frozen([20], [31]),
+            _frozen([31], [20]),
             torch.tensor([20], dtype=torch.int64),
             radar_source_ids=[10],
             radar_sink_ids=[30],
@@ -340,7 +340,7 @@ def test_two_leg_rows_that_share_an_identity_key_are_refused():
     with pytest.raises(ValueError, match="share the identity key"):
         TwoWayComposer.freeze(
             _frozen([10, 10], [20, 20], components=[1, 1]),
-            _frozen([20], [30]),
+            _frozen([30], [20]),
             torch.tensor([20], dtype=torch.int64),
             radar_source_ids=[10],
             radar_sink_ids=[30],
@@ -352,7 +352,7 @@ def test_two_leg_rows_that_share_an_identity_key_are_refused():
 def test_row_validity_is_the_conjunction_of_both_legs():
     composer = TwoWayComposer.freeze(
         _frozen([10, 10], [20, 21], components=[0, 0], device="cuda"),
-        _frozen([20, 21], [30, 30], components=[0, 0], device="cuda"),
+        _frozen([30, 30], [20, 21], components=[0, 0], device="cuda"),
         torch.tensor([20, 21], dtype=torch.int64, device="cuda"),
         radar_source_ids=[10],
         radar_sink_ids=[30],

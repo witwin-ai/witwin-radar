@@ -50,7 +50,7 @@ def _ops():
 
 def _composer(device: str = "cuda") -> TwoWayComposer:
     inbound = fx.frozen_leg(fx.leg_rows(SOURCES, SITES, (0,)), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(SITES, SINKS, (0,)), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, (0,)), device=device)
     return TwoWayComposer.freeze(
         inbound,
         outbound,
@@ -255,7 +255,7 @@ def _frame(composer, dir_in, dir_out):
     tau_in, c_in = fx.payload(composer.inbound_row_count, seed=21)
     tau_out, c_out = fx.payload(composer.outbound_row_count, seed=22)
     inbound = fx.leg_batch(tau_in.float(), c_in.to(torch.complex64), direction=_cuda(dir_in))
-    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), direction=_cuda(dir_out))
+    outbound = fx.leg_batch(tau_out.float(), c_out.to(torch.complex64), site_departure=_cuda(dir_out))
     return inbound, outbound
 
 

@@ -642,15 +642,18 @@ class WorldHalf:
             moved = ((spec.positions_m - centre) @ rotation.T + centre + translation).contiguous()
             return replace(spec, positions_m=moved, polarizations=turned(spec))
 
-        # Every endpoint of a binding carries the radar's declared polarization
-        # (the sites re-radiate co-polarized), so all four turn with the pose;
-        # only the radar's own elements move.
+        # Every endpoint of a binding carries the radar's declared polarization,
+        # so all of them turn with the pose; only the radar's own elements move.
+        # The receivers' two roles keep sharing one moved position tensor.
+        receivers = carried(binding.receivers)
         posed = replace(
             binding,
             transmitters=carried(binding.transmitters),
-            receivers=carried(binding.receivers),
-            site_sources=replace(binding.site_sources, polarizations=turned(binding.site_sources)),
-            site_sinks=replace(binding.site_sinks, polarizations=turned(binding.site_sinks)),
+            receivers=receivers,
+            receiver_sources=replace(
+                binding.receiver_sources, positions_m=receivers.positions_m, polarizations=receivers.polarizations
+            ),
+            sites=replace(binding.sites, polarizations=turned(binding.sites)),
         )
         return posed, rotation
 
@@ -684,8 +687,11 @@ class WorldHalf:
         )
         rows = self.discovered_rows
         site_components = self.propagation.components
-        inbound = adapter.discover(binding.transmitters, binding.site_sinks, rows=rows, components=site_components)
-        outbound = adapter.discover(binding.site_sources, binding.receivers, rows=rows, components=site_components)
+        # Both site legs run from a radar element toward the sites; the outbound
+        # one is the reciprocal of site-to-receiver transport (R-ADR-039), so
+        # the receivers are its 1 W sources here and the direct leg's sinks below.
+        inbound = adapter.discover(binding.transmitters, binding.sites, rows=rows, components=site_components)
+        outbound = adapter.discover(binding.receiver_sources, binding.sites, rows=rows, components=site_components)
         direct = None
         if request.direct_components:
             direct = adapter.discover(
@@ -801,11 +807,7 @@ class WorldHalf:
             positions = self.sites.resolve(frame.snapshot, device=template.device)
             if positions.shape != template.site_positions_m.shape:
                 raise ValueError("a site trajectory must preserve the declared site count")
-            return replace(
-                template,
-                site_sources=replace(template.site_sources, positions_m=positions),
-                site_sinks=replace(template.site_sinks, positions_m=positions),
-            )
+            return replace(template, sites=replace(template.sites, positions_m=positions))
         return self._bind_world(frame.snapshot, frame.time_s)
 
     def _identity(self, frame: EpochFrame) -> Hashable:
@@ -1048,10 +1050,11 @@ class WorldHalf:
             )
             return batch
 
+        sites = _stacked([b.sites for b in bindings])
         return (
             RadarPropagationLegs(
-                inbound=replayed(first.handles[0], transmitters, _stacked([b.site_sinks for b in bindings])),
-                outbound=replayed(first.handles[1], _stacked([b.site_sources for b in bindings]), receivers),
+                inbound=replayed(first.handles[0], transmitters, sites),
+                outbound=replayed(first.handles[1], _stacked([b.receiver_sources for b in bindings]), sites),
                 direct=None if len(first.handles) < 3 else replayed(first.handles[2], transmitters, receivers),
             ),
             None,

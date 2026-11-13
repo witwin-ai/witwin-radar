@@ -151,7 +151,7 @@ def _two_way(device: str = "cuda") -> Boundary:
     sites = (10, 11)
     sinks = (20,)
     inbound = fx.frozen_leg(fx.leg_rows(sources, sites, (0,)), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(sites, sinks, (0,)), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(sites, sinks, (0,)), device=device)
     composer = TwoWayComposer.freeze(
         inbound,
         outbound,
@@ -274,7 +274,7 @@ def _aspect(device: str = "cuda") -> Boundary:
 
     sources, sites, sinks = (0,), (10, 11), (20,)
     inbound = fx.frozen_leg(fx.leg_rows(sources, sites, (0,)), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(sites, sinks, (0,)), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(sites, sinks, (0,)), device=device)
     composer = TwoWayComposer.freeze(
         inbound,
         outbound,
@@ -314,7 +314,7 @@ def _aspect(device: str = "cuda") -> Boundary:
 
     def loss(leaf: torch.Tensor) -> torch.Tensor:
         inbound_batch = fx.leg_batch(tau_in.to(torch.float32), c_in.to(torch.complex64), direction=leaf)
-        outbound_batch = fx.leg_batch(tau_out.to(torch.float32), c_out.to(torch.complex64), direction=dir_out)
+        outbound_batch = fx.leg_batch(tau_out.to(torch.float32), c_out.to(torch.complex64), site_departure=dir_out)
         s_re, s_im = response.evaluate_rows(composer, inbound_batch, outbound_batch, row_valid)
         return (s_re.square() + s_im.square()).sum()
 

@@ -70,9 +70,9 @@ POLARIZATION = (0.0, 0.0, 1.0)
 #: The transmitter's radiated power, in watts, and deliberately NOT 1.0.
 #:
 #: A Channel coefficient carries ``sqrt(tx_power)`` from the source endpoint's
-#: ``powers_w``. The outbound leg's source is the SITE, so with a site power
-#: equal to the transmitter power the composed ``C_rt`` carries
-#: ``sqrt(P_tx) * sqrt(P_site)`` - and with both equal to 1.0 W that second
+#: ``powers_w``. The outbound leg's source is the RECEIVER (R-ADR-039), so with
+#: an outbound excitation equal to the transmitter power the composed ``C_rt``
+#: carries ``sqrt(P_tx) * sqrt(P_out)`` - and with both equal to 1.0 W that second
 #: factor is numerically invisible, which is exactly how a squared transmit
 #: power ships. Every absolute-level test in Phase 6 therefore runs at
 #: ``P_tx != 1 W``.
@@ -437,7 +437,8 @@ def combined_rows(
     """
 
     inbound_rows = leg_rows(transmitters, sites)
-    outbound_rows = leg_rows(sites, receivers)
+    # The outbound leg runs from the receiver toward the site (R-ADR-039).
+    outbound_rows = leg_rows(receivers, sites)
     source_ids = [stable_id for stable_id, _ in transmitters]
     sink_ids = [stable_id for stable_id, _ in receivers]
     site_ids = sorted(stable_id for stable_id, _ in sites)
@@ -451,7 +452,7 @@ def combined_rows(
                     if inbound.source_id != source_id or inbound.sink_id != site_id:
                         continue
                     for outbound in outbound_rows:
-                        if outbound.source_id != site_id or outbound.sink_id != sink_id:
+                        if outbound.sink_id != site_id or outbound.source_id != sink_id:
                             continue
                         ranked.append(
                             (

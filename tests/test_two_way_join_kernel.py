@@ -34,7 +34,7 @@ REFERENCE_FREQUENCY_HZ = 77.0e9
 
 def _frozen_pair(device: str = "cuda"):
     inbound = fx.frozen_leg(fx.leg_rows(SOURCES, SITES, COMPONENTS), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(SITES, SINKS, COMPONENTS), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, COMPONENTS), device=device)
     return inbound, outbound
 
 
@@ -157,7 +157,7 @@ def test_an_empty_pair_segment_composes_without_a_special_case():
     """
 
     inbound = fx.frozen_leg(fx.leg_rows([10], SITES, COMPONENTS))
-    outbound = fx.frozen_leg(fx.leg_rows(SITES, [30], COMPONENTS))
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(SITES, [30], COMPONENTS))
     composer = TwoWayComposer.freeze(
         inbound,
         outbound,

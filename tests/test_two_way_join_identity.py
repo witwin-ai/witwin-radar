@@ -45,7 +45,7 @@ def _run(inbound_order, outbound_order, *, requires_grad=False):
     """Freeze and compose with the leg rows in a given order."""
 
     inbound_rows = fx.leg_rows(SOURCES, SITES, COMPONENTS)
-    outbound_rows = fx.leg_rows(SITES, SINKS, COMPONENTS)
+    outbound_rows = fx.outbound_leg_rows(SITES, SINKS, COMPONENTS)
     tau_in, c_in = fx.payload(len(inbound_rows), seed=31)
     tau_out, c_out = fx.payload(len(outbound_rows), seed=32)
     _, site_value = fx.payload(len(SITES), seed=33)

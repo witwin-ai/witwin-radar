@@ -198,8 +198,8 @@ def _static_legs(spike):
     )
     outbound = spike.adapter.reevaluate_slots(
         spike.outbound,
-        spike._stacked_ids(sites, spike.site_ids, geo.SITE_POWER_W),
-        spike._stacked_ids(spike.stacked([p for _, p in spike.receivers], 1), spike.receiver_ids, None),
+        spike._stacked_ids(spike.stacked([p for _, p in spike.receivers], 1), spike.receiver_ids, geo.SITE_POWER_W),
+        spike._stacked_ids(sites, spike.site_ids, None),
         slot_count=1,
         ad_mode="none",
     )

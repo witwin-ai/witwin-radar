@@ -139,8 +139,8 @@ def _legs(spike, tx, site, rx, *, ad_mode: str = "none"):
     )
     outbound = spike.adapter.reevaluate_slots(
         spike.outbound,
-        spike._source(site, geo.SITE_STABLE_ID),
-        spike._sink(rx, geo.RX_STABLE_ID),
+        spike._source(rx, geo.RX_STABLE_ID),
+        spike._sink(site, geo.SITE_STABLE_ID),
         slot_count=1,
         ad_mode=ad_mode,
     )

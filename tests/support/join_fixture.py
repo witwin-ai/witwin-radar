@@ -58,12 +58,23 @@ def leg_rows(sources, sinks, components) -> list[tuple[int, int, int]]:
     return [(source, sink, component) for source in sources for sink in sinks for component in components]
 
 
+def outbound_leg_rows(sites, receivers, components) -> list[tuple[int, int, int]]:
+    """Outbound rows: the RECEIVER is the source and the site the sink (R-ADR-039).
+
+    Rows come in site-major order, so row ``r`` names the same (site,
+    receiver, component) it would in the site-to-receiver orientation.
+    """
+
+    return [(receiver, site, component) for site in sites for receiver in receivers for component in components]
+
+
 def leg_batch(
     delay: torch.Tensor,
     coefficient: torch.Tensor,
     *,
     row_valid: torch.Tensor | None = None,
     direction: torch.Tensor | None = None,
+    site_departure: torch.Tensor | None = None,
 ):
     """A ``RadarLegBatch`` around already-built payload tensors.
 
@@ -74,6 +85,12 @@ def leg_batch(
     ``direction`` is the row's propagation direction. A fabricated leg has no
     geometry behind it, so it defaults to zeros; a test that drives an
     aspect-dependent response passes real unit vectors.
+
+    ``site_departure`` is, for an OUTBOUND leg, the unit bearing from the site
+    toward the receiver side. The outbound leg runs from the receiver to the
+    site (R-ADR-039), so the response reads that bearing off the leg's arrival
+    segment, ``arrival_origin_m - arrival_target_m``; the fixture publishes it
+    as a segment from the origin to the unit vector.
     """
 
     from witwin.radar.propagation import RadarLegBatch
@@ -103,6 +120,8 @@ def leg_batch(
         field_direction=zeros(torch.float32, (rows, 3)) if direction is None else direction,
         row_valid=row_valid,
         diagnostics=None,
+        arrival_target_m=None if site_departure is None else torch.zeros_like(site_departure),
+        arrival_origin_m=site_departure,
     )
 
 
@@ -126,4 +145,4 @@ def payload(rows: int, *, seed: int, device: str = "cuda", scale: float = 1.0):
     return delay, coefficient
 
 
-__all__ = ["frozen_leg", "leg_batch", "leg_rows", "payload"]
+__all__ = ["frozen_leg", "leg_batch", "leg_rows", "outbound_leg_rows", "payload"]

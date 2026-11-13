@@ -723,6 +723,9 @@ def _leg_batch(
         departure_origin_m=source_positions,
         departure_target_m=first,
         arrival_origin_m=last,
+        arrival_target_m=sink_positions,
+        interaction_positions_m=interactions,
+        path_length_m=geometry.path_length_m,
         coefficient_band=band,
         frequency_offsets_hz=None if band is None else tuple(transport.frequency_offsets_hz),
     )

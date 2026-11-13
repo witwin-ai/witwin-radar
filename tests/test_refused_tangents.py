@@ -146,7 +146,7 @@ def _sources(spike, **overrides):
 
 def _replay(spike, sources, *, ad_mode):
     return spike.adapter.reevaluate_slots(
-        spike.inbound, sources, spike._site_batch(spike.site_tensor(), role="sink"), slot_count=1, ad_mode=ad_mode
+        spike.inbound, sources, spike._site_batch(spike.site_tensor()), slot_count=1, ad_mode=ad_mode
     )
 
 

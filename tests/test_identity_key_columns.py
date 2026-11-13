@@ -61,7 +61,7 @@ CANONICAL_ORDER = [0, 3, 2, 1, 4]
 
 # One outbound row, with key columns of its own that share nothing with the
 # inbound ones: the composed order below is then the inbound key order alone.
-OUTBOUND_ROWS = [(20, 30, 0, 0, (9,), (4,))]
+OUTBOUND_ROWS = [(30, 20, 0, 0, (9,), (4,))]
 
 # A row differing from BASE_ROW in exactly the named column.
 COLUMN_TWINS = {

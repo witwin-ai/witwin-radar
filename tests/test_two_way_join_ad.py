@@ -48,7 +48,7 @@ ZERO_FLOOR = 1.0e-9
 
 def _composer(device: str = "cuda"):
     inbound = fx.frozen_leg(fx.leg_rows(SOURCES, SITES, COMPONENTS), device=device)
-    outbound = fx.frozen_leg(fx.leg_rows(SITES, SINKS, COMPONENTS), device=device)
+    outbound = fx.frozen_leg(fx.outbound_leg_rows(SITES, SINKS, COMPONENTS), device=device)
     return TwoWayComposer.freeze(
         inbound,
         outbound,
