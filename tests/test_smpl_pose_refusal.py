@@ -9,8 +9,8 @@ code path in ``test_smpl_pose_leaves.py``; this file needs the real model
 pickles and skips without them.
 
 What is refused: a forward TANGENT on the pose, the shape or the body transform
-(Channel refuses a compile whose vertices carry a dual, and ``velocity_at``
-opens its own forward level over the pose), and ``pose_rate`` as a leaf, which
+(``velocity_at`` opens its own forward level over the pose, and PyTorch's
+forward AD cannot nest a caller's level around it), and ``pose_rate`` as a leaf, which
 under ADR-038 is a tangent direction rather than an input.
 """
 
@@ -106,7 +106,7 @@ def test_a_transform_tangent_is_refused_by_rest_mesh(smpl):
     ``_transform_mesh_verts`` applies the body's rotation and position to the
     posed vertices, so a dual position reaches the rest mesh without the pose
     or the shape ever carrying one. A gradient there is carried; a tangent is
-    refused before Channel's compile would.
+    refused for the same nesting reason as the pose.
     """
 
     SMPLBody, SmplPoseDeformation, root = smpl

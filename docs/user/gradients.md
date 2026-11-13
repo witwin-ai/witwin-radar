@@ -54,7 +54,7 @@ for record, leaves in capabilities()["ad_leaves"].items():
 | `Coupling` | `tx`, `rx` | complex tensor matrices |
 | Core `PhysicalMaterial` on a `MeshTargets` structure | `eps_r`, `sigma_e`, `thickness_m`, `mu_r`, roughness `rms_height_m` | need `ad_mode` |
 | Core `Mesh` vertices (walls and `MeshTargets`) | vertex tensor | reverse and forward mode |
-| `witwin.radar.smpl.SMPLBody` | `pose`, `shape`, `position`, `rotation` | reverse and forward mode |
+| `witwin.radar.smpl.SMPLBody` | `pose`, `shape`, `position`, `rotation` | reverse mode only |
 
 The setup used below is a small version of the quickstart radar (four chirps,
 beat output):
@@ -180,7 +180,7 @@ print("d energy / d vertex z:", [f"{v:.2e}" for v in d_vertices[:, 2].tolist()])
 
 Forward mode on the same vertices, moving the whole plate along `+z`:
 
-```python no-run
+```python
 with fwAD.dual_level():
     dual = fwAD.make_dual(corners, torch.tensor([0.0, 0.0, 1.0], device="cuda").expand_as(corners))
     cube = radar.simulate(plate_scene(dual), MeshTargets(), times=(0.0,), reflections=0, ad_mode="jvp").cube
@@ -200,8 +200,11 @@ print(f"d energy / d eps_r = {float(d_eps):.3e}")
 ```
 
 An SMPL body is a mesh target whose vertices are a differentiable function of
-the pose, shape and body transform, so those are leaves too, in both modes. It
-needs the SMPL model files, so this block is not run here:
+the pose, shape and body transform, so those are leaves too, in reverse mode.
+A forward tangent on them is refused: `SmplPoseDeformation.velocity_at` runs
+its own forward-mode level over the pose, and PyTorch cannot nest a caller's
+forward level around it. The block needs the SMPL model files, so it is not
+run here:
 
 ```python no-run
 from witwin.radar.smpl import SMPLBody, SmplPoseDeformation

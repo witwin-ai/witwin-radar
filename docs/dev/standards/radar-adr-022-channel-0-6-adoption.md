@@ -83,3 +83,21 @@ values there. The differences were:
 - A scatter site closer to a wall than 1e-5 of the scene diagonal has no reflection off that wall,
   and a specular point past a face edge is not a reflection; both follow Channel and are pinned by
   `tests/test_reflection_validity.py`.
+
+## Amendment: the published Channel 0.6.0 (tag 699fd8c)
+
+The measurements above were taken on a build of an earlier 0.6.0 tag that was never published. The
+published 0.6.0 (tag 699fd8c, RayD 0.10.3) changes three of them, and Radar 0.5.0 requires it:
+
+- **C-12.** A segment that ends at an endpoint is exempt from the minimum-segment rule, so a site on
+  or within 0.05 mm of a wall keeps its reflection off that wall. The edge rule (ADR-068) is
+  unchanged.
+- **C-16.** Discovery and fixed-topology replay apply the same rule, so a reflection frozen 1 cm from
+  the wall replays valid wherever discovery finds it.
+- **Forward-mode vertex tangents.** The finite-vertex check reads the primal, so a mesh whose
+  vertices carry a forward dual compiles; the two vertex-tangent tests are ordinary tests and the
+  mirrored AD-matrix row is `SUP`.
+
+`tests/test_reflection_validity.py`, `tests/oracle/test_survival.py` (`site_on_wall`,
+`site_near_wall`) and `tests/test_scene_leaf_ad.py` assert the new behaviour. Requests C-12 and
+C-16 above are closed.

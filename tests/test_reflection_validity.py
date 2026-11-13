@@ -4,8 +4,10 @@ Channel's consumer decides whether a specular reflection exists; Radar only
 composes the rows it is given. Two of its validity rules decide rows a radar
 scene reaches easily (Channel ADR-059 and ADR-068):
 
-* a path segment shorter than ``1e-5`` of the scene diagonal is not a path, so
-  a scatter site that close to a wall has no reflection off that wall;
+* a path segment shorter than ``1e-5`` of the scene diagonal is not a path,
+  EXCEPT a segment that ends at an endpoint (Channel 0.6.0, C-12): a scatter
+  site on or next to a wall keeps its reflection off that wall, and discovery
+  and fixed-topology replay apply the same rule (C-16);
 * the specular point must lie on the face to within a few float roundings of
   its coordinates, so a point just past the edge of a wall is not a reflection.
 
@@ -68,12 +70,15 @@ def _discovered(site) -> dict[tuple[int, int, int], bool]:
     return _inbound_rows(_spike(site), site)
 
 
-def test_c12_a_site_closer_to_a_wall_than_the_minimum_segment_has_no_reflection_off_it():
+#: Site-to-wall distances on both sides of the minimum segment, down to the wall itself.
+NEAR_WALL_DISTANCES_M = (1.0e-2, 1.0e-4, 5.0e-5, 1.0e-5, 0.0)
+
+
+def test_c12_a_site_closer_to_a_wall_than_the_minimum_segment_keeps_its_reflection():
     assert 1.011 * 5.0e-5 < MIN_SEGMENT_M < 1.0e-4
 
-    assert _discovered(_near_wall(1.0e-2)) == {LINE_OF_SIGHT: True, REFLECTION: True}
-    assert _discovered(_near_wall(1.0e-4)) == {LINE_OF_SIGHT: True, REFLECTION: True}
-    assert _discovered(_near_wall(5.0e-5)) == {LINE_OF_SIGHT: True}
+    for distance_m in NEAR_WALL_DISTANCES_M:
+        assert _discovered(_near_wall(distance_m)) == {LINE_OF_SIGHT: True, REFLECTION: True}, distance_m
 
 
 def test_c12_a_specular_point_just_past_the_wall_edge_is_not_a_reflection():
@@ -92,16 +97,9 @@ def test_c16_replay_and_discovery_agree_at_the_wall_edge():
         assert _inbound_rows(spike, _past_edge(offset_m)) == {LINE_OF_SIGHT: True, REFLECTION: False}, offset_m
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C-16: Channel 0.6 discovery drops a reflection whose segment is shorter than 1e-5 of the scene "
-        "diagonal (ADR-059), but reevaluate of a topology frozen farther away keeps that row valid; "
-        "reported to Channel"
-    ),
-)
 def test_c16_replay_and_discovery_agree_for_a_site_near_a_wall():
+    """A reflection frozen 1 cm from the wall replays valid wherever discovery finds it."""
+
     spike = _spike(_near_wall(1.0e-2))
-    assert _inbound_rows(spike, _near_wall(1.0e-4)) == {LINE_OF_SIGHT: True, REFLECTION: True}
-    assert _discovered(_near_wall(5.0e-5)) == {LINE_OF_SIGHT: True}
-    assert _inbound_rows(spike, _near_wall(5.0e-5)) == {LINE_OF_SIGHT: True, REFLECTION: False}
+    for distance_m in NEAR_WALL_DISTANCES_M:
+        assert _inbound_rows(spike, _near_wall(distance_m)) == _discovered(_near_wall(distance_m)), distance_m

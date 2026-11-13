@@ -128,3 +128,9 @@ discovery), which is what a moving target's per-observation rediscovery pays for
   straight-segment discovery adds one separation check (one D2H byte, one synchronization).
 - M3-5 (evaluating the outbound leg reversed) is owned by the `transport` work, which needs the reversed orientation
   for the polarimetric site matrix; one Channel request for TX and RX toward the sites builds on that.
+
+## Amendment: the published Channel 0.6.0
+
+The C-16 disagreement near a wall is closed in the published Channel 0.6.0 (tag 699fd8c): replay
+applies the same endpoint-exempt minimum-segment rule as discovery. Discovery remains the authority
+for which rows exist; the two no longer differ near a wall.

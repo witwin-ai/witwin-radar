@@ -35,26 +35,6 @@ TIMEOUT_S = 180
 NAMED_REFUSALS = ("ValueError", "TypeError", "NotImplementedError")
 
 
-def _channel_version() -> tuple[int, ...]:
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return tuple(int(part) for part in version("witwin-channel").split(".")[:2])
-    except (PackageNotFoundError, ValueError):
-        return (0, 0)
-
-
-#: Channel 0.6 rejects a reflection whose segment is shorter than ~1e-5 of the
-#: scene diagonal, so a site on or next to a wall loses that wall's bounce and
-#: echoes at its free-space level: +32 dB too strong at 0.05 mm from a
-#: conductor, and non-zero on it. Only that release drops them.
-_C12 = (
-    "C-12: Channel 0.6 drops a reflection whose segment is shorter than ~1e-5 of the scene diagonal, so a site "
-    "on or within 0.05 mm of a conductor keeps only its line of sight and echoes at the free-space level instead "
-    "of the image-method cancellation"
-)
-_C12_APPLIES = _channel_version() >= (0, 6)
-
 WAVELENGTH_M = 299_792_458.0 / 77e9
 WAVENUMBER = 2.0 * math.pi / WAVELENGTH_M
 
@@ -99,11 +79,11 @@ def _check_on_wall(record):
 
 
 #: case -> (what a correct result must satisfy, words a refusal must contain, and the strict-xfail
-#: reason, or ``(reason, condition)`` for a failure only some Channel releases have, or None).
+#: reason or None).
 CASES = {
     "occluded_mid_sequence": (_check_occluded, (), None),
-    "site_on_wall": (_check_on_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
-    "site_near_wall": (_check_near_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
+    "site_on_wall": (_check_on_wall, ("wall", "surface", "coincid", "distance"), None),
+    "site_near_wall": (_check_near_wall, ("wall", "surface", "coincid", "distance"), None),
     "site_at_element": (lambda record: False, ("coincid", "zero distance", "element", "endpoint", "distance"), None),
     "empty_scene": (
         lambda record: (
@@ -148,8 +128,7 @@ def _run_child(case: str) -> dict:
 
 def _params():
     for case, (_, _, expected_failure) in CASES.items():
-        reason, applies = expected_failure if isinstance(expected_failure, tuple) else (expected_failure, True)
-        marks = [pytest.mark.xfail(applies, strict=True, reason=reason)] if reason else []
+        marks = [pytest.mark.xfail(strict=True, reason=expected_failure)] if expected_failure else []
         yield pytest.param(case, marks=marks, id=case)
 
 

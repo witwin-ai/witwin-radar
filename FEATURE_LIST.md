@@ -116,7 +116,7 @@ Known limitations: the `[0.5.0]` section of [`CHANGELOG.md`](CHANGELOG.md).
 
 - `ad_mode="none" | "vjp" | "jvp"` on the world-facing verbs. Leaves (R-ADR-052; `LEAVES` on each record and
   `capabilities()`): target positions, trajectories, `rcs`/`amplitude`/`phase`, aspect axes, table values; mesh
-  vertices and SMPL pose, shape and transform (reverse and forward mode); a mesh target's Core material (`eps_r`, `sigma_e`, `thickness_m`, `mu_r`, roughness rms); antenna
+  vertices (reverse and forward mode); SMPL pose, shape and transform (reverse mode; a forward tangent is refused because `velocity_at` opens its own forward level); a mesh target's Core material (`eps_r`, `sigma_e`, `thickness_m`, `mu_r`, roughness rms); antenna
   pattern values and `Pattern.gain`; the transmit power and the LNA gain; coupling matrices; the radar pose
   (`position`, `look_at`, `up`, a pose trajectory's translation); every network link.
 - A derivative that is not defined (a discrete choice, a quantiser, a polarization) is refused by name before any

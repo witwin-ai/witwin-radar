@@ -98,7 +98,7 @@ def test_the_body_position_is_a_leaf_too(rig):
 
 
 def test_a_pose_tangent_is_refused_before_any_compile(rig):
-    """Forward mode cannot cross Channel's compile of dual-carrying vertices; refused at the bridge."""
+    """A caller's forward level cannot nest around velocity_at's own; refused at the bridge."""
 
     from witwin.radar.smpl import SmplPoseDeformation
 

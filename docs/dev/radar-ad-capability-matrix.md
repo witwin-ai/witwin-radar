@@ -43,10 +43,9 @@ The authority is Channel ADR-043 and consumer `CONTRACT_VERSION` 7 (Channel
 flag; every row mirrored below reads the same in Channel 0.6.0's propagation AD
 capability matrix as it did at version 6.
 
-A forward-mode tangent on mesh vertices is refused by Channel 0.6.0 at compile: RayD's finite-vertex check
-reduces the vertex buffer with `aminmax`, which has no forward-AD formula, so compiling a mesh whose vertices
-carry a dual raises `NotImplementedError` before any propagation. Channel's own matrix lists only the reverse
-mode for vertices. The two vertex-tangent tests are strict xfails until Channel checks the primal.
+A forward-mode tangent on mesh vertices compiles and propagates on Channel 0.6.0 (tag 699fd8c): its
+finite-vertex check reads the primal, so the `aminmax` reduction no longer sees the dual. The release built
+from the earlier 0.6.0 tag refused it at compile; that build was never published.
 
 Radar requests exactly one response, `scalar_transport`, with
 `components <= {los, reflection}`, always on the fixed-topology route. Every
@@ -56,7 +55,7 @@ mirrored row below is therefore a row Radar can actually reach.
 |---|---|---|---|---|---|---|---|
 | reevaluate/prepared | endpoint positions | both | SUP | native-companion | witwin/radar/channel.py::ChannelPropagationAdapter.reevaluate_slots | tests/test_single_site_end_to_end.py::test_reverse_mode_loss_gradients_match_the_oracle, tests/test_reflection_ad.py::test_reverse_mode_site_gradients_match_finite_differences | fd |
 | reevaluate/prepared | mesh vertices | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_mesh_vertex_gradient_reaches_a_synthesized_fmcw_loss | fd |
-| reevaluate/prepared | mesh vertices | jvp | REF | native-declared | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient | refusal |
+| reevaluate/prepared | mesh vertices | jvp | SUP | native-declared | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_forward_tangent_on_the_wall_matches_the_reverse_gradient | adjoint |
 | reevaluate/prepared | mesh vertices, in-plane components | both | ZERO | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_the_in_plane_vertex_gradient_is_exactly_zero_and_that_is_correct | analytic |
 | reevaluate/prepared | material eps_r | vjp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_a_material_permittivity_gradient_reaches_a_synthesized_fmcw_loss | fd |
 | reevaluate/prepared | material eps_r, beside an endpoint tangent | jvp | SUP | native-companion | tests/support/multi_endpoint_world.py::make_scene | tests/test_scene_leaf_ad.py::test_vertices_permittivity_and_endpoints_are_live_in_one_call | fd |
@@ -91,8 +90,9 @@ differentiable expression of them, and the facet geometry, the facet response
 and Channel's fixed-topology replay carry the vertex derivative. The end-to-end
 evidence runs on a synthetic 24-joint linear-blend-skinning rig through the same
 code path (`tests/support/synthetic_smpl.py`); the real-model tests skip without
-the SMPL pickles. Forward mode stays refused: Channel refuses a compile whose
-vertices carry a dual, and `velocity_at` opens its own forward level.
+the SMPL pickles. Forward mode stays refused: `velocity_at` opens its own
+forward level over the pose, and PyTorch's forward AD cannot nest a caller's
+level around it. Mesh vertices themselves take a forward tangent.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|
@@ -229,8 +229,7 @@ are exact forward-mode jets (R-ADR-042, R-ADR-045). A facet material's
 front-roughness rms and every layer's thickness, permittivity and permeability
 are leaves (R-ADR-052); the material model, the polarization, the diffuse seed
 and a response table select the law and are not. A forward tangent on the vertices of a mesh that is also in the scene
-stops at Channel's compile, which refuses a forward vertex tangent on the
-compiled scene; the facet families themselves carry it.
+reaches both the facet families and Channel's compiled scene.
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |
 |---|---|---|---|---|---|---|---|

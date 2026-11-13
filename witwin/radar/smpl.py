@@ -209,17 +209,18 @@ def _refuse_pose_tangent(name: str) -> None:
     this bridge publishes holds the posed vertices as a differentiable
     expression of the pose, the shape and the body transform, and the facet
     geometry, the facet response and Channel's fixed-topology replay carry the
-    vertex derivative in reverse mode. A forward TANGENT cannot be: Channel
-    refuses a compile whose mesh vertices carry a dual (its finite-vertex check
-    has no forward-AD formula), and :meth:`SmplPoseDeformation.velocity_at`
-    opens its own forward level over the pose, which a caller's dual would have
-    to nest inside.
+    vertex derivative in reverse mode. A forward TANGENT cannot be:
+    :meth:`SmplPoseDeformation.velocity_at` opens its own forward level over
+    the pose to differentiate the skinning in time, a caller's dual would have
+    to nest outside it, and PyTorch's forward AD has no nested levels. Mesh
+    vertices themselves take a forward tangent (Channel 0.6.0); only this
+    bridge refuses one.
     """
 
     raise RuntimeError(
         f"{name} carries a forward tangent, and SmplPoseDeformation cannot deliver a forward-mode pose "
-        "derivative: Channel refuses to compile mesh vertices that carry a dual, and velocity_at opens its own "
-        "forward level over the pose. The pose, the shape and the body transform are reverse-mode leaves: mark "
+        "derivative: velocity_at opens its own forward level over the pose, and PyTorch cannot nest a caller's "
+        "forward level around it. The pose, the shape and the body transform are reverse-mode leaves: mark "
         "them requires_grad and run the verb with ad_mode='vjp'."
     )
 
@@ -234,8 +235,8 @@ class SMPLBody(GeometryBase):
 
     kind = "smpl"
 
-    #: Reverse-mode leaves only: Channel refuses a forward tangent on mesh
-    #: vertices at compile, and every one of these reaches the vertices.
+    #: Reverse-mode leaves only: every one of these reaches the vertices AND
+    #: the velocity_at forward level, which cannot nest inside a caller's.
     LEAVES: dict[str, tuple[str, ...]] = dict.fromkeys(("pose", "shape", "position", "rotation"), ("vjp",))
 
     def __init__(
@@ -401,7 +402,7 @@ class SmplPoseDeformation:
         The vertices keep their tape: a gradient on the pose, the shape or the
         body's position or rotation is carried. A forward tangent that arrived
         through the body's TRANSFORM, which the constructor cannot see, is
-        refused here, before Channel's compile would.
+        refused here, for the same nesting reason as the pose.
         """
 
         vertices, faces = self._body.updated(pose=self._pose, device=self._device).to_mesh(device=self._device)
