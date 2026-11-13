@@ -77,6 +77,17 @@ def test_swerling_one_holds_a_scan_and_two_redraws_every_observation():
     np.testing.assert_array_equal(pulse, again)
 
 
+def test_pulse_to_pulse_fluctuation_refuses_adaptive_sampling():
+    from witwin.radar import Fluctuation, Motion, PointTargets
+
+    targets = PointTargets(positions=_positions(4), rcs=1.0, fluctuation=Fluctuation(2, INTERVAL_S))
+    scene = sc.empty_scene()
+    from witwin.core.dynamics import DynamicScene
+
+    with pytest.raises(ValueError, match="Swerling II or IV"):
+        sc.radar().simulate(DynamicScene(scene), targets, times=(0.0,), motion=Motion.adaptive())
+
+
 def _table(aspects: np.ndarray) -> np.ndarray:
     """A cross section linear in the aspect angle, so linear interpolation is exact."""
 

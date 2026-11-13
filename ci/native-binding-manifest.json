@@ -181,8 +181,10 @@
       "ad_group": "fluctuation_factor",
       "ad_role": "primal",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
-      "python_owner": null,
-      "python_callers": []
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "FluctuatingResponse.bind_observation"
+      ]
     },
     {
       "symbol": "fmcw_adaptive_backward",
@@ -649,24 +651,30 @@
       "ad_group": "scatter_response_table",
       "ad_role": "backward",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
-      "python_owner": null,
-      "python_callers": []
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.backward"
+      ]
     },
     {
       "symbol": "scatter_response_table_forward",
       "ad_group": "scatter_response_table",
       "ad_role": "primal",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
-      "python_owner": null,
-      "python_callers": []
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.forward"
+      ]
     },
     {
       "symbol": "scatter_response_table_jvp",
       "ad_group": "scatter_response_table",
       "ad_role": "jvp",
       "native_tu": "witwin/radar/cuda/scatter_response.cu",
-      "python_owner": null,
-      "python_callers": []
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.jvp"
+      ]
     },
     {
       "symbol": "sensor_weight_backward",

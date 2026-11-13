@@ -1605,6 +1605,12 @@ def open_session(
         and not working.simultaneous
     )
     motion_sampling = _resolve_sampling(motion, sampled=sampled, fmcw=interpolable)
+    if motion_sampling == "adaptive" and getattr(response, "per_observation", False):
+        raise ValueError(
+            "a pulse-to-pulse fluctuation (Swerling II or IV) redraws at every observation, and adaptive "
+            "sampling interpolates between the instants it probes, which would blend independent draws; "
+            "use Motion.adc() or Motion.chirp(), or a scan-to-scan model (Swerling I or III)"
+        )
     if motion_sampling == "adaptive" and not isinstance(working, FmcwSpec):
         raise NotImplementedError("adaptive motion currently requires FMCW")
     if motion_sampling == "adaptive" and isinstance(working, FmcwSpec):
