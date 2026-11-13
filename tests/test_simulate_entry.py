@@ -407,7 +407,7 @@ def test_a_target_set_that_is_not_a_target_record_is_refused():
     """Where the scatterers are is a declaration, never a search."""
 
     radar = fixture_radar()
-    with pytest.raises(TypeError, match="targets must be PointTargets or StructureTargets"):
+    with pytest.raises(TypeError, match="targets must be PointTargets, StructureTargets or MeshTargets"):
         radar.simulate(static_scene(), torch.tensor(SITE_POSITIONS_M, device=radar.device), times=(0.0,))
 
 

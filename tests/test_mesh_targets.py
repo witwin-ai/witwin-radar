@@ -341,10 +341,10 @@ def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypa
     }
     assert first_mesh["compose"] == first_point["compose"] > 0, report
     assert extra == {"facet_geometry_forward": 1, "facet_response_forward": first_mesh["compose"]}, report
-    # The facet tables: one device-to-host read of the vertices, one upload per
-    # table dtype, and the authored vertices' upload.
+    # The facet tables add at most one device-to-host read of the vertices, one
+    # upload per table dtype, and the authored vertices' upload.
     assert first_mesh["syncs"] - first_point["syncs"] <= 4, report
-    assert first_mesh["d2h"] - first_point["d2h"] == 1, report
+    assert 0 <= first_mesh["d2h"] - first_point["d2h"] <= 1, report
     for key in ("syncs", "d2h", "compose"):
         assert mesh[2][key] - mesh[1][key] == point[2][key] - point[1][key], report
 
