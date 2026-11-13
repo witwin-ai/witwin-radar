@@ -81,7 +81,7 @@ python -m examples.single_point          # a target and a wall: the radar equati
 python -m examples.moving_target         # moving targets, adaptive motion against the exhaustive reference
 python -m examples.walking_human         # a walking body and its micro-Doppler spectrogram
 python -m examples.music_imaging         # MUSIC angle imaging
-python -m examples.rgbd_range_doppler --input path/to/depths.npz
+python -m examples.rgbd_range_doppler --synthetic   # or --input path/to/depths.npz (a depth or point sequence)
 ```
 
 All scene-driven examples need CUDA and Channel.
