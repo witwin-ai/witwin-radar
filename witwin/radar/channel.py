@@ -538,8 +538,8 @@ class ChannelPropagationAdapter:
             discovered=discovered,
             epoch=self._epoch,
             interaction_type=topology.interaction_type,
-            interaction_normals=evaluation.paths.geometry.interaction_normals,
-            interaction_positions_m=evaluation.paths.geometry.interaction_positions_m,
+            interaction_normals=getattr(evaluation.paths.geometry, "interaction_normals", None),
+            interaction_positions_m=getattr(evaluation.paths.geometry, "interaction_positions_m", None),
         )
 
     def reevaluate_slots(

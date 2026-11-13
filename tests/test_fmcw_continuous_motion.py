@@ -15,7 +15,7 @@ from support import multi_endpoint_driver as drv
 from support import multi_endpoint_geometry as geo
 from support.simulate_fixture import static_scene
 
-from witwin.radar import PointTargets, Radar
+from witwin.radar import Motion, PointTargets, Radar
 from witwin.radar.synthesis.assembly import FmcwSpec
 from witwin.radar.synthesis.fmcw import synthesize_fmcw_rows
 
@@ -96,6 +96,9 @@ def test_scene_adc_sampling_matches_radial_motion_including_fast_time():
         times=(0.0,),
         los=True,
         reflections=0,
+        # The exhaustive reference by name: the default for a moving FMCW
+        # scene is adaptive sampling (R-ADR-037).
+        motion=Motion.adc(),
     )
     spec = radar.waveform_spec()
     assert result.motion_sampling == "adc"
