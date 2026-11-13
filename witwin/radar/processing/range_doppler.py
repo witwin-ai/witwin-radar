@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from ..display import compact_repr
 from .signal import (
     DEFAULT_WINDOW,
     ProcessingAxes,
@@ -51,6 +52,8 @@ class RangeProfile:
     in, so a caller that wants the raw transform can recover it.
     """
 
+    __repr__ = compact_repr
+
     data: torch.Tensor
     axes: ProcessingAxes
     window: str
@@ -81,6 +84,8 @@ class RangeDopplerMap:
     second, ascending, with the waveform's phasor reconciliation already
     applied. There is no second place in this package where a sign is decided.
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     axes: ProcessingAxes
@@ -572,6 +577,8 @@ class SlowTimeSignal:
     Range-Doppler axis uses; without it only the frequency axis is published.
     """
 
+    __repr__ = compact_repr
+
     samples: torch.Tensor
     times_s: tuple[float, ...]
     phasor: str
@@ -608,6 +615,8 @@ class MicroDopplerSpectrogram:
     transform carries ``1 / window_slots``, so a unit tone on a bin peaks at
     ``window_coherent_gain``. Differentiable in the samples.
     """
+
+    __repr__ = compact_repr
 
     data: torch.Tensor
     times_s: torch.Tensor

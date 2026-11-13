@@ -42,6 +42,7 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from ..display import compact_repr
 from ..policy import refuse_derivative
 from ..synthesis.assembly import SPEED_OF_LIGHT_M_PER_S
 from .angle import BeamCube
@@ -75,6 +76,8 @@ class ArrayCalibration:
     ``reference`` is the ``(tx, rx)`` channel whose phase is zero by
     definition. :meth:`apply` divides a product's channels by ``g``.
     """
+
+    __repr__ = compact_repr
 
     gains: torch.Tensor
     reference: tuple[int, int]

@@ -32,6 +32,9 @@ dependencies = [
 [project.urls]
 License = "https://witwin.ai/license"
 
+[project.scripts]
+witwin-radar-doctor = "witwin.radar.doctor:main"
+
 [project.optional-dependencies]
 dev = [
     "build>=1.0",

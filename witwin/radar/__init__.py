@@ -18,6 +18,7 @@ Advanced records stay in their owner modules and are imported from there:
 """
 
 from . import processing
+from .deployment import package_version as _package_version
 from .frontend import Adc, Agc, Compression, Iq, Noise
 from .motion import Motion
 from .network import Emitter, Network
@@ -26,6 +27,9 @@ from .results import Frame, Result
 from .sensors import Coupling, Pattern
 from .simulation import Paths
 from .targets import Aspect, Fluctuation, MeshTargets, PointTargets, RcsTable, ScatteringMatrix, StructureTargets
+
+#: The installed witwin-radar version, read from the package metadata (or a source tree's pyproject).
+__version__ = _package_version()
 
 __all__ = [
     "Adc",

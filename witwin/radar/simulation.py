@@ -41,9 +41,12 @@ from .binding import (
     bind_radar_world,
     with_site_positions,
 )
+from .display import summary_repr
 from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
+from .policy import _carries_derivative as _carries_value_derivative
+from .policy import refuse_derivative
 from .propagation import (
     DiscoveryReport,
     EpochFrame,
@@ -476,10 +479,31 @@ def _discovered_legs(epoch: FrozenEpoch) -> RadarPropagationLegs:
     )
 
 
-def pose_at(pose: Callable[[float], Any], time_s: float, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    """``pose(t)`` as a ``float32[3, 3]`` local-to-world rotation and a ``float32[3]`` translation, m."""
+def pose_at(
+    pose: Callable[[float], Any], time_s: float, device: torch.device, *, ad_mode: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``pose(t)`` as a ``float32[3, 3]`` local-to-world rotation and a ``float32[3]`` translation, m.
+
+    The translation may be a leaf; ``ad_mode`` is the run's, and a translation
+    carrying a derivative the legs will not carry in that mode is refused, as
+    is a rotation carrying one (R-ADR-052).
+    """
 
     rotation, translation = pose(float(time_s))
+    refuse_derivative(
+        "the radar pose trajectory",
+        "the rotation turns the polarization every leg is launched with, and Channel's replay takes an "
+        "endpoint polarization as a primal-only constant, so the rotation's derivative cannot be "
+        "delivered whole. The translation is a leaf; keep the rotation a host value.",
+        rotation=rotation,
+    )
+    carrier = _carries_value_derivative(translation)
+    if carrier is not None and ad_mode != ("vjp" if carrier == "a gradient" else "jvp"):
+        raise RuntimeError(
+            f"the radar pose trajectory's translation carries {carrier}, which moves every element "
+            "position, and the legs carry that derivative only in the matching AD mode: pass "
+            f"grad={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got grad={ad_mode!r})."
+        )
     rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
     translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
     if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):
@@ -698,7 +722,7 @@ class WorldHalf:
         """The pose at ``time_s``: a ``float32[3, 3]`` rotation and ``float32[3]`` translation."""
 
         assert self.pose is not None
-        return pose_at(self.pose, time_s, device)
+        return pose_at(self.pose, time_s, device, ad_mode=self.ad_mode)
 
     def _posed(self, binding: RadarWorldBinding, time_s: float) -> tuple[RadarWorldBinding, torch.Tensor]:
         """The binding with the radar's elements carried by its pose at ``time_s``.
@@ -2559,11 +2583,43 @@ class Paths:
     _session: Session
     _frames: tuple[FrameTrace, ...]
 
+    def __repr__(self) -> str:
+        return summary_repr(
+            "Paths",
+            kind=self.kind,
+            carrier=self.carrier,
+            frames=self.frame_count,
+            observations=self.observation_count,
+            rows=self.row_count,
+            times=self.times,
+            path_set_complete=self.path_set_complete,
+        )
+
     @property
     def frame_count(self) -> int:
         """Frames these rows cover."""
 
         return len(self._frames)
+
+    def observation_times(self, frame: int = 0) -> np.ndarray:
+        """``float64[observations]``: the instant of each observation :meth:`rows` indexes, s.
+
+        An adaptive frame retains one observation, the one that closed it.
+        """
+
+        return np.asarray([record.time_s for record in _retained(self._frames[frame])], dtype=np.float64)
+
+    def row_identity(self, frame: int = 0, observation: int = -1) -> np.ndarray:
+        """Each composed row's identity, ``int64[rows, 7]`` on the host; no device read.
+
+        Columns: radar source ID, site ID (``NO_SITE`` for a site-less row),
+        radar sink ID, the inbound and outbound legs' Channel component IDs, and
+        the inbound and outbound legs' interaction counts. Row ``i`` is row
+        ``i`` of ``rows(frame, observation)``.
+        """
+
+        record = _retained(self._frames[frame])[observation]
+        return _round_trip(record.epoch_frame.frozen).composer.identity_host
 
     @property
     def birth_lag_bound_s(self) -> tuple[float, ...]:

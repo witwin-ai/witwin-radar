@@ -29,6 +29,8 @@
       "simulate",
       "stream",
       "to",
+      "to_dict",
+      "to_json",
       "trace",
       "transmit_power_watts",
       "up",
@@ -82,10 +84,39 @@
     "witwin.radar.binding": {
       "SensorEndpointIds": "witwin.radar.binding.SensorEndpointIds"
     },
+    "witwin.radar.config": {
+      "PRESETS": "witwin.radar.config.PRESETS",
+      "TiConfig": "witwin.radar.config.TiConfig",
+      "config_schema": "witwin.radar.radar.config_schema",
+      "preset": "witwin.radar.config.preset",
+      "read_ti_cfg": "witwin.radar.config.read_ti_cfg"
+    },
+    "witwin.radar.dataset": {
+      "Episode": "witwin.radar.dataset.Episode",
+      "load_episode": "witwin.radar.dataset.load_episode",
+      "read_dataset": "witwin.radar.dataset.read_dataset",
+      "write_dataset": "witwin.radar.dataset.write_dataset"
+    },
     "witwin.radar.deployment": {
       "build_info": "witwin.radar.deployment.build_info",
       "require_supported_runtime": "witwin.radar.deployment.require_supported_runtime",
-      "runtime_diagnostics": "witwin.radar.deployment.runtime_diagnostics"
+      "runtime_diagnostics": "witwin.radar.deployment.runtime_diagnostics",
+      "package_version": "witwin.radar.deployment.package_version",
+      "runtime_failures": "witwin.radar.deployment.runtime_failures"
+    },
+    "witwin.radar.doctor": {
+      "channel_diagnostics": "witwin.radar.doctor.channel_diagnostics",
+      "doctor": "witwin.radar.doctor.doctor",
+      "doctor_report": "witwin.radar.doctor.doctor_report",
+      "main": "witwin.radar.doctor.main",
+      "smoke_test": "witwin.radar.doctor.smoke_test"
+    },
+    "witwin.radar.labels": {
+      "GroundTruth": "witwin.radar.labels.GroundTruth",
+      "PathSummary": "witwin.radar.labels.PathSummary",
+      "TargetLabels": "witwin.radar.labels.TargetLabels",
+      "ground_truth": "witwin.radar.labels.ground_truth",
+      "path_summary": "witwin.radar.labels.path_summary"
     },
     "witwin.radar.processing": {
       "AOA_ROUTES": "witwin.radar.processing.angle.AOA_ROUTES",
@@ -158,6 +189,11 @@
       "subtract_background": "witwin.radar.processing.calibration.subtract_background",
       "tdm_compensate": "witwin.radar.processing.angle.tdm_compensate"
     },
+    "witwin.radar.rawdata": {
+      "DCA1000_LAYOUTS": "witwin.radar.rawdata.DCA1000_LAYOUTS",
+      "read_dca1000": "witwin.radar.rawdata.read_dca1000",
+      "write_dca1000": "witwin.radar.rawdata.write_dca1000"
+    },
     "witwin.radar.scattering": {
       "AspectScatterResponse": "witwin.radar.scattering.AspectScatterResponse",
       "SCATTERING_MATRIX_LAYOUT": "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
@@ -193,13 +229,33 @@
       "primary_caller": "tests/test_dynamic_motion_sampling.py",
       "reason": "phase-centre identity for a radar on a moving structure"
     },
+    "witwin.radar.config": {
+      "primary_caller": "tests/test_config_io.py",
+      "reason": "TI mmWave profiles, device presets and the configuration schema"
+    },
+    "witwin.radar.dataset": {
+      "primary_caller": "tests/test_dataset_writer.py",
+      "reason": "streaming dataset writer: cubes, labels and metadata on disk"
+    },
     "witwin.radar.deployment": {
       "primary_caller": "tests/test_native_diagnostics.py",
       "reason": "runtime and native identity reporting"
     },
+    "witwin.radar.doctor": {
+      "primary_caller": "tests/test_doctor.py",
+      "reason": "the witwin-radar-doctor installation self-check"
+    },
+    "witwin.radar.labels": {
+      "primary_caller": "tests/test_labels.py",
+      "reason": "ground-truth target labels and the composed-path summary"
+    },
     "witwin.radar.processing": {
       "primary_caller": "examples/single_point.py",
       "reason": "typed signal products and processing algorithms"
+    },
+    "witwin.radar.rawdata": {
+      "primary_caller": "tests/test_dca1000_export.py",
+      "reason": "raw ADC export in the DCA1000 capture layout"
     },
     "witwin.radar.scattering": {
       "primary_caller": "tests/test_scatter_response_kernel.py",
@@ -223,7 +279,9 @@
     "witwin.radar.processing.IMAGE_FRAMES",
     "witwin.radar.processing.POINT_CLOUD_FRAMES",
     "witwin.radar.scattering.SCATTERING_MATRIX_LAYOUT",
-    "witwin.radar.scattering.SITE_BASIS"
+    "witwin.radar.scattering.SITE_BASIS",
+    "witwin.radar.config.PRESETS",
+    "witwin.radar.rawdata.DCA1000_LAYOUTS"
   ],
   "result_contracts": {
     "witwin.radar.synthesis.SynthesisResult": [

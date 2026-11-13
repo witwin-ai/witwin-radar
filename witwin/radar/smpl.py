@@ -137,14 +137,14 @@ def _to_vertex_tensor(value, *, device: str) -> torch.Tensor:
 
 
 def _get_smpl_layer(*, gender: str, model_root: str, device: str):
-    from smplpytorch.pytorch import smpl_layer
-
-    # SMPL_Layer.__init__ resolves ``ready_arguments`` through its module
-    # globals, so the chumpy-free loader is installed there, before any layer.
-    smpl_layer.ready_arguments = _load_model
     key = (str(gender), str(model_root), str(device))
     layer = _SMPL_LAYER_CACHE.get(key)
     if layer is None:
+        from smplpytorch.pytorch import smpl_layer
+
+        # SMPL_Layer.__init__ resolves ``ready_arguments`` through its module
+        # globals, so the chumpy-free loader is installed there, before any layer.
+        smpl_layer.ready_arguments = _load_model
         layer = smpl_layer.SMPL_Layer(center_idx=0, gender=gender, model_root=model_root).to(device)
         # Immutable model topology stays on the same device as the blend shapes.
         layer._radar_parents = torch.tensor(layer.kintree_parents[1:], dtype=torch.int64, device=device)
@@ -202,42 +202,34 @@ def _fast_smpl_forward(layer, pose: torch.Tensor, betas: torch.Tensor) -> torch.
     return vertices - posed_joints[0]
 
 
-def _refuse_deformation_derivative(name: str, carrier: str) -> None:
-    """Refuse a pose or shape derivative at the Core/Channel deformation bridge.
+def _refuse_pose_tangent(name: str) -> None:
+    """Refuse a forward tangent on the posed body at the deformation bridge.
 
-    ``SmplPoseDeformation`` publishes two things into the Core world model: a
-    rest ``Mesh`` and a per-frame ``DeformationState``. Both cross the
-    Core/Channel COMPILE boundary, and a pose derivative is not plumbed across
-    it. Detaching here would let a caller mark the pose, watch the whole chain
-    run, and read ``pose.grad is None`` back with nothing having failed, so the
-    bridge refuses instead and names the route that does carry a derivative.
-
-    ``SMPLBody`` itself publishes differentiable authored vertices. This refusal
-    applies only at the fixed-topology Core deformation bridge, where pose and
-    shape derivatives are not part of the accepted compiled-scene contract.
+    A pose or shape GRADIENT is carried (R-ADR-052): every ``DeformationState``
+    this bridge publishes holds the posed vertices as a differentiable
+    expression of the pose, the shape and the body transform, and the facet
+    geometry, the facet response and Channel's fixed-topology replay carry the
+    vertex derivative in reverse mode. A forward TANGENT cannot be: Channel
+    refuses a compile whose mesh vertices carry a dual (its finite-vertex check
+    has no forward-AD formula), and :meth:`SmplPoseDeformation.velocity_at`
+    opens its own forward level over the pose, which a caller's dual would have
+    to nest inside.
     """
 
     raise RuntimeError(
-        f"{name} carries {carrier}, and SmplPoseDeformation cannot deliver that "
-        "derivative: the rest Mesh and every DeformationState it publishes cross "
-        "the Core/Channel compile boundary, and a pose derivative is not plumbed "
-        "across it. Accepting this would sever the graph silently and hand back "
-        "grad = None. What IS supported is pose_rate as a forward-AD tangent "
-        "DIRECTION, which is how velocity_at produces an exact vertex velocity. "
-        "For a differentiable body geometry today, mark the mesh VERTICES of a "
-        "witwin.core.Mesh, which the fixed-topology reflection route does "
-        "support. Plumbing a pose derivative into the compiled scene is a "
-        "separate accepted design."
+        f"{name} carries a forward tangent, and SmplPoseDeformation cannot deliver a forward-mode pose "
+        "derivative: Channel refuses to compile mesh vertices that carry a dual, and velocity_at opens its own "
+        "forward level over the pose. The pose, the shape and the body transform are reverse-mode leaves: mark "
+        "them requires_grad and run the verb with grad='vjp'."
     )
 
 
 class SMPLBody(GeometryBase):
     """Differentiable SMPL geometry with position and rotation.
 
-    A ``requires_grad`` pose or shape reaches the authored vertices this object
-    publishes. Routing that derivative through :class:`SmplPoseDeformation` into
-    a compiled Core ``Structure`` is outside the accepted contract and refuses
-    before the compile boundary.
+    A ``requires_grad`` pose, shape, position or rotation reaches the authored
+    vertices this object publishes, and through :class:`SmplPoseDeformation`
+    every deformation state of a compiled Core ``Structure`` (R-ADR-052).
     """
 
     kind = "smpl"
@@ -318,14 +310,12 @@ class SmplPoseDeformation:
     def __init__(self, body: SMPLBody, *, pose_rate, reference_time_s: float = 0.0, device=None) -> None:
         if not isinstance(body, SMPLBody):
             raise TypeError(f"body must be an SMPLBody, got {type(body).__name__}")
-        # Refused here, at the earliest point the bridge exists, rather than at
-        # the first rest_mesh: a caller that got to build the deformation, run a
-        # whole epoch loop and only then learn the pose was never differentiable
-        # has already paid for the wrong answer.
+        # A gradient on the pose or the shape is carried into every state this
+        # bridge publishes. A forward tangent is refused here, at the earliest
+        # point the bridge exists, rather than at the compile it cannot cross.
         for name, value in (("body.pose", body.pose), ("body.shape", body.shape)):
-            carrier = _carries_derivative(value)
-            if carrier is not None:
-                _refuse_deformation_derivative(name, carrier)
+            if _carries_derivative(value) == "a forward tangent":
+                _refuse_pose_tangent(name)
         # pose_rate is a forward-AD tangent DIRECTION and never a leaf, the same
         # ADR-038 statement kinematics makes about a velocity: it is consumed by
         # make_dual inside velocity_at, so d(loss)/d(pose_rate) does not exist.
@@ -404,17 +394,15 @@ class SmplPoseDeformation:
         recentring to the DEFORMED vertices with a different bounding box, so a
         limb that moved would drag the whole body with it.
 
-        A derivative on the vertices is refused here, never detached. The
-        body's pose and shape were already checked at construction, so what
-        this catches is a derivative that arrived through the body's TRANSFORM
-        - a ``requires_grad`` ``position`` or ``rotation`` reaching
-        ``_transform_mesh_verts`` - which the constructor cannot see.
+        The vertices keep their tape: a gradient on the pose, the shape or the
+        body's position or rotation is carried. A forward tangent that arrived
+        through the body's TRANSFORM, which the constructor cannot see, is
+        refused here, before Channel's compile would.
         """
 
         vertices, faces = self._body.updated(pose=self._pose, device=self._device).to_mesh(device=self._device)
-        carrier = _carries_derivative(vertices)
-        if carrier is not None:
-            _refuse_deformation_derivative("the posed body's vertices (through its position or rotation)", carrier)
+        if _carries_derivative(vertices) == "a forward tangent":
+            _refuse_pose_tangent("the posed body's vertices (through its position or rotation)")
         return Mesh(
             vertices=vertices,
             faces=faces.detach().to(dtype=torch.int64),

@@ -286,7 +286,10 @@ class Network:
     Every radar shares one carrier (``Radar.carrier``), the frequency the
     shared world is evaluated at, and one element pattern pair
     (``pattern``/``rx_pattern``), because one join applies one pattern table;
-    with emitters the pattern must be isotropic.
+    with emitters the pattern must be isotropic. A pattern carrying a leaf is
+    shared by being the same object on every radar, and its gradient collects
+    every radar's rows; a pose trajectory's translation is a leaf per radar; a
+    transmit-power leaf is refused (one table has no per-radar power).
     """
 
     radars: tuple[Radar, ...]
@@ -324,6 +327,13 @@ class Network:
                 raise NotImplementedError(
                     f"radar {index} declares a different element pattern from radar 0; a network composes every "
                     "radar's rows in one join, which applies one transmit and one receive pattern table"
+                )
+        for index, radar in enumerate(radars):
+            if isinstance(radar.power, torch.Tensor):
+                raise NotImplementedError(
+                    f"radar {index} declares its transmit power as a tensor (a leaf); a network applies one transmit "
+                    "pattern table to every radar's transmitters, which carries no per-radar power factor. Give the "
+                    "radars host powers inside a network"
                 )
         emitters = tuple(self.emitters)
         if not all(isinstance(emitter, Emitter) for emitter in emitters):
@@ -656,7 +666,7 @@ class NetworkWorldHalf(WorldHalf):
                 # elements against those positions and resolve nothing.
                 sites = ScatterSitePolicy.explicit(binding.site_positions_m, stable_ids=binding.site_ids)
             if member.pose is not None:
-                rotation, translation = pose_at(member.pose, instant, binding.device)
+                rotation, translation = pose_at(member.pose, instant, binding.device, ad_mode=self.ad_mode)
                 binding = carry_binding(binding, radar.position, rotation, translation)
             parts.append(binding)
         return self._union(parts)
@@ -732,7 +742,7 @@ class NetworkWorldHalf(WorldHalf):
             if member.pose is None:
                 frames.append(member.frame)
             else:
-                frames.append(pose_at(member.pose, time_s, device)[0] @ member.frame)
+                frames.append(pose_at(member.pose, time_s, device, ad_mode=self.ad_mode)[0] @ member.frame)
         return torch.stack(frames)
 
     def _pending(self, time_s: float, frame: Any) -> _PendingObservation:

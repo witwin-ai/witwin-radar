@@ -1,6 +1,8 @@
 """The sensor-weight frozen constants refuse a derivative instead of returning None.
 
-``SensorWeightGeometry`` declares velocity, fixed-length and pattern-frame tensors as frozen inputs; the two packed element patterns are frozen with the plan. A marked frozen tensor must be refused before native dispatch.
+``SensorWeightGeometry`` declares velocity and fixed-length tensors as frozen inputs. A marked frozen tensor must
+be refused before native dispatch. The pattern frame and the two packed element patterns are differentiable inputs
+(R-ADR-052); their derivatives are tested in ``test_pattern_leaves.py``.
 
 The refusal is at CONSTRUCTION - before ``validate``, before a plan, before
 any launch - and it is ``witwin.radar.policy.refuse_derivative``'s wording with
@@ -34,7 +36,7 @@ NUM_TX = 2
 NUM_RX = 2
 ROWS = 3
 
-#: The five frozen float fields on the geometry, with the shape each one has.
+#: The four frozen float fields on the geometry, with the shape each one has.
 #: Written out rather than derived from the dataclass so that a field added
 #: without a decision about its derivative shows up as a mismatch below rather
 #: than being silently swept into the loop.
@@ -43,7 +45,6 @@ GEOMETRY_SHAPES = {
     "rx_velocity": (NUM_RX, 3),
     "site_velocity": (ROWS, 3),
     "fixed_length_m": (ROWS,),
-    "pattern_frame": (3, 3),
 }
 
 
@@ -58,6 +59,7 @@ def _geometry_fields() -> dict:
     for name, shape in GEOMETRY_SHAPES.items():
         fields[name] = torch.zeros(shape, dtype=torch.float32)
     fields["fixed_length_m"] = torch.ones(ROWS, dtype=torch.float32)
+    fields["pattern_frame"] = torch.eye(3, dtype=torch.float32)
     return fields
 
 
@@ -107,6 +109,8 @@ def test_the_declared_frozen_field_list_matches_the_dataclass():
         "rx_index",
         "row_kind",
         "slots",
+        # Differentiable: it follows the radar's orientation (R-ADR-052).
+        "pattern_frame",
     }
     assert declared == accounted, sorted(declared ^ accounted)
     assert set(SensorWeightGeometry.FROZEN_FIELDS) == set(GEOMETRY_SHAPES)
@@ -173,21 +177,18 @@ def test_a_velocity_refusal_names_the_reason_a_velocity_is_never_a_leaf():
 
 
 @pytest.mark.parametrize("index", range(2))
-def test_a_marked_pattern_table_is_refused(index):
-    """The tables are a resident lookup, not a differentiable input.
+def test_a_marked_pattern_table_is_accepted_as_a_leaf(index):
+    """R-ADR-052: the packed tables are differentiable inputs, so a marked one constructs.
 
-    The pattern's real contribution to the derivative is carried by the WEIGHT,
-    through the positions that decide which angle is interpolated - which is
-    covered, in both modes, by ``test_sensor_weight.py``. Marking the
-    table itself asks for the derivative of the tabulated VALUES, and the kernel
-    has no slot for it.
+    The values the kernel interpolates enter the weight linearly and the
+    operator carries that derivative natively; ``test_pattern_leaves.py``
+    checks it against finite differences in both modes.
     """
 
     tables = [torch.zeros(12, dtype=torch.float32) for _ in range(2)]
     tables[index] = tables[index].clone().requires_grad_(True)
-    with pytest.raises(RuntimeError) as excinfo:
-        _plan(tuple(tables))
-    assert "SensorWeightPlan" in str(excinfo.value) and f"tables[{index}] carries" in str(excinfo.value)
+    plan = _plan(tuple(tables))
+    assert plan.tables[index].requires_grad
 
 
 # --------------------------------------------------------------------------
@@ -204,7 +205,7 @@ def test_no_geometry_object_survives_a_refusal():
     """
 
     fields = _geometry_fields()
-    fields["pattern_frame"] = fields["pattern_frame"].clone().requires_grad_(True)
+    fields["fixed_length_m"] = fields["fixed_length_m"].clone().requires_grad_(True)
     captured = None
     try:
         captured = SensorWeightGeometry(**fields)
@@ -217,13 +218,13 @@ def test_the_refusal_precedes_the_shape_validation():
     """A marked tensor of the WRONG shape still reports the derivative.
 
     Ordering matters for the message a caller reads. ``validate`` would say
-    "pattern_frame must have shape (3, 3)", the caller would fix the shape, and the
+    "fixed_length_m must have shape (3,)", the caller would fix the shape, and the
     silent ``None`` would come back on the next run. The refusal fires at
     construction and ``validate`` never gets the chance.
     """
 
     fields = _geometry_fields()
-    fields["pattern_frame"] = torch.zeros(ROWS + 4, 3, requires_grad=True)
+    fields["fixed_length_m"] = torch.zeros(ROWS + 4, requires_grad=True)
     with pytest.raises(RuntimeError) as excinfo:
         SensorWeightGeometry(**fields)
     assert "frozen geometric constant" in str(excinfo.value)
@@ -263,11 +264,11 @@ def test_a_plain_tensor_without_a_derivative_is_accepted_unlike_a_spec_scalar():
     from witwin.radar.frontend import FrontendSpec
 
     geometry = SensorWeightGeometry(**_geometry_fields())
-    assert isinstance(geometry.pattern_frame, torch.Tensor)
-    assert not geometry.pattern_frame.requires_grad
+    assert isinstance(geometry.fixed_length_m, torch.Tensor)
+    assert not geometry.fixed_length_m.requires_grad
 
     with pytest.raises(TypeError):
-        FrontendSpec(lna=torch.tensor(20.0))
+        FrontendSpec(impedance=torch.tensor(50.0))
 
 
 # --------------------------------------------------------------------------

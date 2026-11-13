@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import importlib.metadata
 import platform
+import re
 import sys
+from pathlib import Path
 from typing import Any
 
 DEPLOYMENT_ABI = "witwin.radar.deployment.v1"
@@ -53,11 +55,28 @@ SM120_EVIDENCE = (
 )
 
 
-def _package_version() -> str:
+def package_version() -> str:
+    """The witwin-radar version of the code that is running.
+
+    A source checkout is read from its own ``pyproject.toml``, because the
+    package metadata on ``sys.path`` may describe a different, installed copy
+    than the tree being imported. An installed wheel has no such file beside
+    the package and is read from its distribution metadata. ``"unknown"`` when
+    neither exists.
+    """
+
+    source = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if source.is_file():
+        text = source.read_text(encoding="utf-8")
+        project = re.search(r"(?ms)^\[project\]\s*$(.*?)(?=^\[)", text)
+        if project is not None and re.search(r'(?m)^name\s*=\s*"witwin-radar"', project.group(1)):
+            version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project.group(1))
+            if version is not None:
+                return version.group(1)
     try:
         return importlib.metadata.version("witwin-radar")
     except importlib.metadata.PackageNotFoundError:
-        return "source-tree"
+        return "unknown"
 
 
 def sm_support(sm: int) -> dict[str, Any]:
@@ -128,7 +147,7 @@ def runtime_diagnostics() -> dict[str, Any]:
     diagnostics: dict[str, Any] = {
         "deployment_abi": DEPLOYMENT_ABI,
         "radar_abi_version": RADAR_ABI_VERSION,
-        "package_version": _package_version(),
+        "package_version": package_version(),
         "python": platform.python_version(),
         "python_executable": sys.executable,
         "platform": platform.platform(),
@@ -155,11 +174,14 @@ def runtime_diagnostics() -> dict[str, Any]:
     return diagnostics
 
 
-def require_supported_runtime() -> dict[str, Any]:
-    """Require CUDA, a declared device architecture, and SASS for it."""
+def runtime_failures(diagnostics: dict[str, Any]) -> list[str]:
+    """What :func:`require_supported_runtime` refuses, read from one diagnostics record.
 
-    diagnostics = runtime_diagnostics()
-    errors = list(diagnostics["errors"])
+    CUDA present, an active device whose SM is declared, and SASS for that SM in
+    the native library; every collection error is a failure too.
+    """
+
+    errors = list(diagnostics.get("errors", []))
     if not diagnostics.get("cuda_available", False):
         errors.append("CUDA is unavailable; Radar has no CPU backend")
     device = diagnostics.get("device")
@@ -171,9 +193,7 @@ def require_supported_runtime() -> dict[str, Any]:
                 f"GPU SM {device.get('sm')} is outside the declared build SM values {list(DECLARED_SM_ARCHITECTURES)}"
             )
         else:
-            native_build = diagnostics.get("native_build")
-            record = native_build.get("native_build") if isinstance(native_build, dict) else None
-            architectures = record.get("cuda_architectures") if isinstance(record, dict) else None
+            architectures = _compiled_architectures(diagnostics)
             sm = device.get("sm")
             if not isinstance(architectures, list) or not any(
                 entry.split("+", maxsplit=1)[0] == str(sm) for entry in architectures
@@ -182,9 +202,24 @@ def require_supported_runtime() -> dict[str, Any]:
                     f"the installed radar native library contains no sm_{sm} "
                     f"image; compiled CUDA architectures are {architectures!r}"
                 )
+    return errors
+
+
+def _compiled_architectures(diagnostics: dict[str, Any]) -> list[str] | None:
+    native_build = diagnostics.get("native_build")
+    record = native_build.get("native_build") if isinstance(native_build, dict) else None
+    architectures = record.get("cuda_architectures") if isinstance(record, dict) else None
+    return architectures if isinstance(architectures, list) else None
+
+
+def require_supported_runtime() -> dict[str, Any]:
+    """Require CUDA, a declared device architecture, and SASS for it."""
+
+    diagnostics = runtime_diagnostics()
+    errors = runtime_failures(diagnostics)
     if errors:
         raise RuntimeError("Radar runtime requirements failed: " + "; ".join(errors))
     return diagnostics
 
 
-__all__ = ["build_info", "require_supported_runtime", "runtime_diagnostics"]
+__all__ = ["build_info", "package_version", "require_supported_runtime", "runtime_diagnostics", "runtime_failures"]

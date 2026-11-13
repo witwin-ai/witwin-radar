@@ -98,13 +98,14 @@ NOISE_BASE = {
 #: their own: they are plain fields of the one receive-chain spec, so their
 #: refusal cases live on it and are named ``FrontendSpec.<field>`` in the
 #: message a caller reads.
-FRONTEND_BASE = {"impedance": 50.0, "lna": 20.0}
+FRONTEND_BASE = {"impedance": 50.0}
 
 #: ``(owner label, factory, base kwargs, refusing fields)``. The field lists are
 #: exhaustive per spec: every scalar the owner declares is here, so a new field
 #: added without a decision about its derivative shows up as a missing case.
 SPEC_CASES = (
-    ("FrontendSpec", FrontendSpec, FRONTEND_BASE, ("impedance", "lna")),
+    # ``lna`` is a leaf (R-ADR-052) and is tested in test_receiver_gain_leaves.py.
+    ("FrontendSpec", FrontendSpec, FRONTEND_BASE, ("impedance",)),
     (
         "Noise",
         Noise,
@@ -291,10 +292,10 @@ def test_a_forward_dual_is_refused_as_well():
     """
 
     with torch.autograd.forward_ad.dual_level():
-        dual = torch.autograd.forward_ad.make_dual(torch.tensor(20.0), torch.tensor(1.0))
+        dual = torch.autograd.forward_ad.make_dual(torch.tensor(50.0), torch.tensor(1.0))
         assert not dual.requires_grad
         with pytest.raises(TypeError):
-            FrontendSpec(lna=dual)
+            FrontendSpec(impedance=dual)
 
 
 # --------------------------------------------------------------------------
@@ -343,9 +344,12 @@ def test_a_radar_cross_section_is_deliberately_on_the_other_side_of_this_rule():
 
     This is the asymmetry the whole matrix turns on and it is a physical
     distinction, not an oversight: a cross section describes the WORLD, and a
-    sample period, a subcarrier spacing or an LNA gain describes the
-    INSTRUMENT. Pinning both directions in one test is what stops a later
-    tidy-up from making the package uniform in the wrong direction.
+    sample period, a subcarrier spacing or a port impedance describes the
+    INSTRUMENT's configuration. The receive gains (``lna``, ``Pattern.gain``,
+    the transmit power) are the deliberate exceptions: smooth amplitude
+    factors that are leaves under R-ADR-052. Pinning both directions in one
+    test is what stops a later tidy-up from making the package uniform in the
+    wrong direction.
     """
 
     from witwin.radar.scattering import ScalarRcsResponse
@@ -355,7 +359,7 @@ def test_a_radar_cross_section_is_deliberately_on_the_other_side_of_this_rule():
     assert response.amplitude.grad_fn is not None
 
     with pytest.raises(TypeError):
-        FrontendSpec(lna=torch.tensor(20.0, requires_grad=True))
+        FrontendSpec(impedance=torch.tensor(50.0, requires_grad=True))
 
 
 def test_the_seed_is_refused_by_its_own_older_type_rule():
