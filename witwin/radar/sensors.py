@@ -137,6 +137,53 @@ PATTERN_HEADER_LENGTH = 8
 _NORMALISATION_SLACK = 1e-6
 
 
+def _axis(values) -> tuple[float, ...]:
+    if isinstance(values, torch.Tensor):
+        refuse_derivative(
+            "witwin.radar.Pattern",
+            "an angle axis is a host declaration: a knot decides which interpolation segment a direction lands "
+            "in, so moving one is a different table rather than a derivative.",
+            axis=values,
+        )
+        values = values.tolist()
+    return tuple(float(v) for v in values)
+
+
+def _values(values, *, complex_values: bool, rank: int):
+    """Cut or table values: a tensor stays a tensor (a possible leaf), anything else becomes host tuples."""
+
+    if isinstance(values, torch.Tensor):
+        if values.dim() != rank:
+            raise ValueError(f"pattern values must be a rank-{rank} tensor, got shape {tuple(values.shape)}")
+        if complex_values != values.is_complex():
+            kind = "a complex" if complex_values else "a real floating"
+            raise TypeError(f"these pattern values must be {kind} tensor, got {values.dtype}")
+        if not complex_values and not values.is_floating_point():
+            raise TypeError(f"power pattern values must be a floating tensor, got {values.dtype}")
+        return values
+    convert = complex if complex_values else float
+    if rank == 1:
+        return tuple(convert(v) for v in values)
+    return tuple(tuple(convert(v) for v in row) for row in values)
+
+
+def _gain(gain):
+    return gain if isinstance(gain, torch.Tensor) else float(gain)
+
+
+def _host_values(values, *, name: str, complex_values: bool):
+    """A host copy for validation only; the field itself is untouched."""
+
+    if not isinstance(values, torch.Tensor):
+        return values
+    host = values.detach().to("cpu")
+    if host.dim() == 0:
+        return complex(host.item()) if complex_values else float(host.item())
+    if not bool(torch.isfinite(torch.view_as_real(host) if host.is_complex() else host).all()):
+        raise ValueError(f"Pattern.{name} must be finite")
+    return host.tolist()
+
+
 @dataclass(frozen=True, slots=True)
 class Pattern:
     """One antenna element's pattern versus the two off-boresight angles.
@@ -153,12 +200,22 @@ class Pattern:
     of the transmit and receive elements, so a radar with 10 dBi elements on
     both sides is 20 dB above the isotropic one and no other stage scales it.
 
-    The table is a CONSTANT. The direction into it is differentiable, and the
-    interpolation is piecewise linear (in power, or in the field's real and
-    imaginary parts), so the response has an exact almost-everywhere
-    derivative that the native kernel carries. A knot and the two support
-    edges are genuine non-differentiabilities and the kernel returns the
-    almost-everywhere value there.
+    The direction into the table is differentiable, and the interpolation is
+    piecewise linear (in power, or in the field's real and imaginary parts),
+    so the response has an exact almost-everywhere derivative that the native
+    kernel carries. A knot and the two support edges are genuine
+    non-differentiabilities and the kernel returns the almost-everywhere value
+    there.
+
+    The table VALUES and ``gain`` may be leaves. Pass a float tensor (power) or
+    a complex tensor (field) as the cut or table values, and a 0-dim float
+    tensor as ``gain``; either may carry a gradient or a forward tangent. The
+    response is LINEAR in the values with the interpolation weights as
+    constants of the direction, so the derivative is exact everywhere, and the
+    sensor-weight operator carries it natively in both modes (R-ADR-052). The
+    angle axes are host floats: a knot position decides which segment a
+    direction lands in, and moving one is a different table rather than a
+    derivative, so a tensor axis is refused.
 
     The angles are the same two the pattern helpers use: with a direction
     expressed in the radar's LOCAL frame, ``x = atan2(v_x, -v_z)`` and
@@ -189,30 +246,42 @@ class Pattern:
             raise ValueError(f"kind must be one of {list(PATTERN_KINDS)}, got {self.kind!r}")
         if self.quantity not in PATTERN_QUANTITIES:
             raise ValueError(f"quantity must be one of {list(PATTERN_QUANTITIES)}, got {self.quantity!r}")
-        if isinstance(self.gain, torch.Tensor) or not math.isfinite(float(self.gain)):
-            raise ValueError("Pattern.gain must be a finite host float, dBi")
+        for name in ("x_angles", "y_angles"):
+            if any(isinstance(value, torch.Tensor) for value in getattr(self, name)):
+                raise TypeError(
+                    f"Pattern.{name} must be host floats: a knot decides which interpolation segment a "
+                    "direction lands in, so moving one is a different table rather than a derivative"
+                )
+        if isinstance(self.gain, torch.Tensor) and (self.gain.dim() != 0 or not self.gain.is_floating_point()):
+            raise ValueError("a tensor Pattern.gain must be a 0-dim float tensor, dBi")
+        gain = _host_values(self.gain, name="Pattern.gain", complex_values=False)
+        if not math.isfinite(float(gain)):
+            raise ValueError("Pattern.gain must be finite, dBi")
         if len(self.x_angles) < 2 or len(self.y_angles) < 2:
             raise ValueError("both pattern axes need at least two samples")
         for name, axis in (("x_angles", self.x_angles), ("y_angles", self.y_angles)):
             if any(later <= earlier for earlier, later in zip(axis, axis[1:], strict=False)):
                 raise ValueError(f"{name} must be strictly increasing")
+        field = self.quantity == PATTERN_QUANTITY_FIELD
         if self.kind == PATTERN_KIND_SEPARABLE:
             if self.x_gain is None or self.y_gain is None:
                 raise ValueError("a separable pattern needs x_gain and y_gain")
-            if len(self.x_gain) != len(self.x_angles):
+            x_values = _host_values(self.x_gain, name="x_gain", complex_values=field)
+            y_values = _host_values(self.y_gain, name="y_gain", complex_values=field)
+            if len(x_values) != len(self.x_angles):
                 raise ValueError("x_gain must hold one value per x axis sample")
-            if len(self.y_gain) != len(self.y_angles):
+            if len(y_values) != len(self.y_angles):
                 raise ValueError("y_gain must hold one value per y axis sample")
-            rows: tuple = (self.x_gain, self.y_gain)
+            rows: tuple = (x_values, y_values)
         else:
             if self.gain_table is None:
                 raise ValueError("a table pattern needs gain_table")
-            if len(self.gain_table) != len(self.y_angles):
+            rows = tuple(_host_values(self.gain_table, name="gain_table", complex_values=field))
+            if len(rows) != len(self.y_angles):
                 raise ValueError("gain_table must hold one row per y axis sample")
-            for row in self.gain_table:
+            for row in rows:
                 if len(row) != len(self.x_angles):
                     raise ValueError("each gain_table row needs one entry per x sample")
-            rows = self.gain_table
         for row in rows:
             for value in row:
                 if self.quantity == PATTERN_QUANTITY_POWER:
@@ -229,9 +298,40 @@ class Pattern:
                         f"a field pattern is normalised to |F| <= 1, got {abs(value)}; put the peak in gain (dBi)"
                     )
 
+    def _fields(self) -> tuple:
+        return (
+            self.kind,
+            self.x_angles,
+            self.y_angles,
+            self.x_gain,
+            self.y_gain,
+            self.gain_table,
+            self.quantity,
+            self.gain,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        # A tensor field compares by identity: two leaves holding equal numbers
+        # are still two leaves, and elementwise == has no single truth value.
+        if not isinstance(other, Pattern):
+            return NotImplemented
+        return all(
+            a is b if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor) else a == b
+            for a, b in zip(self._fields(), other._fields(), strict=True)
+        )
+
+    def __hash__(self) -> int:
+        return hash(tuple(id(value) if isinstance(value, torch.Tensor) else value for value in self._fields()))
+
     @property
     def kind_code(self) -> int:
         return PATTERN_KIND_CODE[self.kind]
+
+    @property
+    def is_leaf_bearing(self) -> bool:
+        """Whether a tensor holds the values or the gain: the packed buffer is then built on the tape."""
+
+        return any(isinstance(value, torch.Tensor) for value in (self.x_gain, self.y_gain, self.gain_table, self.gain))
 
     @property
     def peak_amplitude(self) -> float:
@@ -243,7 +343,7 @@ class Pattern:
     def is_isotropic(self) -> bool:
         """Unit response in every direction at 0 dBi: the sensor stage is then the identity."""
 
-        if self.kind != PATTERN_KIND_SEPARABLE or self.gain != 0.0:
+        if self.is_leaf_bearing or self.kind != PATTERN_KIND_SEPARABLE or self.gain != 0.0:
             return False
         full = self.x_angles[0] <= -180.0 and self.x_angles[-1] >= 180.0
         full = full and self.y_angles[0] <= -180.0 and self.y_angles[-1] >= 180.0
@@ -267,7 +367,7 @@ class Pattern:
             y_angles=(-180.0, 180.0),
             x_gain=(1.0, 1.0),
             y_gain=(1.0, 1.0),
-            gain=float(gain),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -280,7 +380,7 @@ class Pattern:
             y_angles=tuple(DEFAULT_DIPOLE_ANGLES_DEG),
             x_gain=tuple(DEFAULT_DIPOLE_VALUES),
             y_gain=tuple(DEFAULT_DIPOLE_VALUES),
-            gain=float(gain),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -289,11 +389,11 @@ class Pattern:
 
         return cls(
             kind=PATTERN_KIND_SEPARABLE,
-            x_angles=tuple(float(v) for v in x_angles),
-            y_angles=tuple(float(v) for v in y_angles),
-            x_gain=tuple(float(v) for v in x_gain),
-            y_gain=tuple(float(v) for v in y_gain),
-            gain=float(gain),
+            x_angles=_axis(x_angles),
+            y_angles=_axis(y_angles),
+            x_gain=_values(x_gain, complex_values=False, rank=1),
+            y_gain=_values(y_gain, complex_values=False, rank=1),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -302,10 +402,10 @@ class Pattern:
 
         return cls(
             kind=PATTERN_KIND_MAP,
-            x_angles=tuple(float(v) for v in x_angles),
-            y_angles=tuple(float(v) for v in y_angles),
-            gain_table=tuple(tuple(float(v) for v in row) for row in values),
-            gain=float(gain),
+            x_angles=_axis(x_angles),
+            y_angles=_axis(y_angles),
+            gain_table=_values(values, complex_values=False, rank=2),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -314,12 +414,12 @@ class Pattern:
 
         return cls(
             kind=PATTERN_KIND_SEPARABLE,
-            x_angles=tuple(float(v) for v in x_angles),
-            y_angles=tuple(float(v) for v in y_angles),
-            x_gain=tuple(complex(v) for v in x_field),
-            y_gain=tuple(complex(v) for v in y_field),
+            x_angles=_axis(x_angles),
+            y_angles=_axis(y_angles),
+            x_gain=_values(x_field, complex_values=True, rank=1),
+            y_gain=_values(y_field, complex_values=True, rank=1),
             quantity=PATTERN_QUANTITY_FIELD,
-            gain=float(gain),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -328,11 +428,11 @@ class Pattern:
 
         return cls(
             kind=PATTERN_KIND_MAP,
-            x_angles=tuple(float(v) for v in x_angles),
-            y_angles=tuple(float(v) for v in y_angles),
-            gain_table=tuple(tuple(complex(v) for v in row) for row in field),
+            x_angles=_axis(x_angles),
+            y_angles=_axis(y_angles),
+            gain_table=_values(field, complex_values=True, rank=2),
             quantity=PATTERN_QUANTITY_FIELD,
-            gain=float(gain),
+            gain=_gain(gain),
         )
 
     @classmethod
@@ -383,13 +483,23 @@ class Pattern:
         normalised = (values / peak).tolist()
         return cls.field_table(xs, ys, normalised, gain=20.0 * math.log10(peak))
 
-    def packed(self, *, device: torch.device | str = "cpu") -> torch.Tensor:
+    def packed(
+        self, *, device: torch.device | str = "cpu", amplitude_scale: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """The one float32 buffer the kernel indexes; layout in ``sensor_weight.cu``.
 
         ``[kind, quantity, num_x, num_y, peak_amplitude, 0, 0, 0, x_axis,
         y_axis, values]``; a power pattern's imaginary block is zero.
+
+        A leaf-bearing pattern, or a transmit element that carries the radar's
+        differentiable power as ``amplitude_scale`` (a 0-dim tensor whose value
+        is exactly one), is assembled on the tape with a constant number of
+        library calls, so the operator's gradient for the buffer reaches the
+        leaves. Every other pattern takes the host route and is bit-identical.
         """
 
+        if self.is_leaf_bearing or amplitude_scale is not None:
+            return self._packed_on_tape(torch.device(device), amplitude_scale)
         num_x = len(self.x_angles)
         num_y = len(self.y_angles)
         header = [
@@ -414,6 +524,44 @@ class Pattern:
             body = [v.real for v in values] + [v.imag for v in values]
         flat = header + list(self.x_angles) + list(self.y_angles) + body
         return torch.tensor(flat, dtype=torch.float32, device=torch.device(device))
+
+    def _packed_on_tape(self, device: torch.device, amplitude_scale: torch.Tensor | None) -> torch.Tensor:
+        """:meth:`packed` as a differentiable expression of the leaves (same layout, same numbers)."""
+
+        field = self.quantity == PATTERN_QUANTITY_FIELD
+        dtype = torch.complex64 if field else torch.float32
+
+        def block(values) -> torch.Tensor:
+            if isinstance(values, torch.Tensor):
+                return values.to(device=device, dtype=dtype).reshape(-1)
+            flat = [v for row in values for v in row] if self.kind == PATTERN_KIND_MAP else list(values)
+            return torch.tensor(flat, dtype=dtype, device=device)
+
+        if self.kind == PATTERN_KIND_SEPARABLE:
+            values = torch.cat((block(self.x_gain), block(self.y_gain)))
+        else:
+            values = block(self.gain_table)
+        real = values.real if field else values
+        imaginary = values.imag if field else torch.zeros_like(values)
+        gain = self.gain
+        if isinstance(gain, torch.Tensor):
+            peak = torch.pow(10.0, gain.to(device=device, dtype=torch.float32) / 20.0).reshape(1)
+        else:
+            peak = torch.tensor([self.peak_amplitude], dtype=torch.float32, device=device)
+        if amplitude_scale is not None:
+            peak = peak * amplitude_scale.to(device=device, dtype=torch.float32).reshape(1)
+        head = torch.tensor(
+            [
+                float(self.kind_code),
+                float(PATTERN_QUANTITY_CODE[self.quantity]),
+                len(self.x_angles),
+                len(self.y_angles),
+            ],
+            dtype=torch.float32,
+            device=device,
+        )
+        tail = torch.tensor([0.0, 0.0, 0.0, *self.x_angles, *self.y_angles], dtype=torch.float32, device=device)
+        return torch.cat((head, peak, tail, real, imaginary)).contiguous()
 
 
 def _complex_matrix(name: str, rows) -> tuple[tuple[complex, ...], ...] | None:
@@ -486,18 +634,19 @@ def watts_from_dbm(power_dbm: float) -> float:
 ROW_KIND_VIA = 0
 
 #: Why the frozen tensors of the sensor-weight family refuse a derivative. They
-#: are constants of the array and of the frame's row set - velocities, the
-#: fixed leg length, the pattern frame and the pattern tables - and the native
-#: operator has no gradient or tangent slot for any of them, so a marked one
-#: would run the whole frame and return ``None``. Refused at CONSTRUCTION,
-#: before ``validate`` and before any launch. ``pattern_gain`` is the
-#: counter-example: a published OUTPUT that is ``mark_non_differentiable``,
+#: are constants of the frame's row set - velocities and the fixed leg length -
+#: and the native operator has no gradient or tangent slot for either, so a
+#: marked one would run the whole frame and return ``None``. Refused at
+#: CONSTRUCTION, before ``validate`` and before any launch. The pattern frame
+#: and the packed pattern tables are differentiable inputs (R-ADR-052).
+#: ``pattern_gain`` is a published OUTPUT that is ``mark_non_differentiable``,
 #: which is a declaration rather than a silence.
 _FROZEN_REASON = (
-    "it is a frozen geometric constant of the array rather than a differentiable "
+    "it is a frozen geometric constant of the frame's row set rather than a differentiable "
     "input, and the native sensor-weight operator has no gradient or tangent slot "
     "for it. The differentiable inputs here are tx_pos, rx_pos, site_in, site_out, "
-    "intensity and the complex weight. A VELOCITY additionally has no leaf "
+    "intensity, the complex weight, the pattern frame and the packed pattern tables. "
+    "A VELOCITY additionally has no leaf "
     "semantics under ADR-038: it is a forward-AD tangent direction that "
     "witwin.radar.propagation puts in the tangent slot of a position, so "
     "d(loss)/d(velocity) does not exist in either mode."
@@ -521,15 +670,17 @@ def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int,
 
 @dataclass(frozen=True, slots=True)
 class SensorWeightGeometry:
-    """The constant part of one frame's row set.
+    """The row-set part of one frame's sensor description.
 
-    Every field here is a CONSTANT with respect to the derivative; the four
-    position tensors are passed separately to the autograd entry so that they
-    can carry a tangent or a gradient. ``__post_init__`` refuses a float tensor
-    here that carries ``requires_grad`` or a forward tangent, naming the field,
-    before :meth:`validate` and before any launch. The index tensors are
-    deliberately not checked: they are ``int64`` / ``int32`` and cannot carry a
-    derivative for autograd to lose.
+    Every field in :attr:`FROZEN_FIELDS` is a CONSTANT with respect to the
+    derivative; the four position tensors are passed separately to the
+    autograd entry so that they can carry a tangent or a gradient.
+    ``__post_init__`` refuses a frozen float tensor that carries
+    ``requires_grad`` or a forward tangent, naming the field, before
+    :meth:`validate` and before any launch. ``pattern_frame`` is the
+    exception: it follows the radar's orientation and the operator carries its
+    derivative. The index tensors are deliberately not checked: they are
+    ``int64`` / ``int32`` and cannot carry a derivative for autograd to lose.
     """
 
     num_tx: int
@@ -550,7 +701,7 @@ class SensorWeightGeometry:
     #: The float tensors this owner declares constant, in declaration order.
     #: Named as data so that a field added to the dataclass without a decision
     #: about its derivative is visible as a gap rather than as silence.
-    FROZEN_FIELDS = ("tx_velocity", "rx_velocity", "site_velocity", "fixed_length_m", "pattern_frame")
+    FROZEN_FIELDS = ("tx_velocity", "rx_velocity", "site_velocity", "fixed_length_m")
 
     def __post_init__(self) -> None:
         frozen = {name: getattr(self, name) for name in SensorWeightGeometry.FROZEN_FIELDS}
@@ -580,14 +731,14 @@ class SensorWeightGeometry:
 
 @dataclass(frozen=True, slots=True)
 class SensorWeightPlan:
-    """The scalars and the resident pattern tables one launch needs.
+    """The scalars and the packed pattern tables one launch needs.
 
-    The tables are a resident LOOKUP - a measured or synthesised antenna
-    pattern, sampled on a fixed angular grid - and the kernel interpolates
-    them. They are not differentiable inputs of the operator, so a marked
-    table is refused here for the same reason the geometry's constants are.
-    The pattern's contribution to the derivative is real and is carried by the
-    WEIGHT, through the positions that decide which angle is looked up.
+    The tables are the two packed element patterns the kernel interpolates.
+    They are differentiable inputs of the operator: the response is linear in
+    the table values (the interpolation weights are constants of the
+    direction) and in each element's peak amplitude, and the operator carries
+    both derivatives natively (R-ADR-052). A host-authored pattern packs to a
+    plain constant buffer, exactly as before.
     """
 
     #: The packed transmit and receive element patterns, in that order.
@@ -595,10 +746,6 @@ class SensorWeightPlan:
     c0: float
     #: Both elements isotropic at 0 dBi: the stage multiplies by exactly one.
     is_identity: bool = False
-
-    def __post_init__(self) -> None:
-        tables = {f"tables[{index}]": table for index, table in enumerate(self.tables)}
-        refuse_derivative("witwin.radar.sensors.SensorWeightPlan", _FROZEN_REASON, **tables)
 
     @classmethod
     def build(
@@ -608,14 +755,20 @@ class SensorWeightPlan:
         rx_pattern: Pattern | None = None,
         c0: float = SPEED_OF_LIGHT_M_PER_S,
         device: torch.device | str = "cuda",
+        transmit_scale: torch.Tensor | None = None,
     ) -> SensorWeightPlan:
-        """``pattern`` is the transmit element; ``rx_pattern`` the receive one (default: the same)."""
+        """``pattern`` is the transmit element; ``rx_pattern`` the receive one (default: the same).
+
+        ``transmit_scale`` is the radar's differentiable transmit amplitude
+        factor ``sqrt(P / P_host)``, exactly one in value, folded into the
+        transmit element's peak (see ``Radar._transmit_amplitude_scale``).
+        """
 
         receive = pattern if rx_pattern is None else rx_pattern
         return cls(
-            tables=(pattern.packed(device=device), receive.packed(device=device)),
+            tables=(pattern.packed(device=device, amplitude_scale=transmit_scale), receive.packed(device=device)),
             c0=float(c0),
-            is_identity=pattern.is_isotropic and receive.is_isotropic,
+            is_identity=pattern.is_isotropic and receive.is_isotropic and transmit_scale is None,
         )
 
     def kernel_tail(self, geometry: SensorWeightGeometry) -> tuple:
@@ -661,18 +814,31 @@ def _row_constants(geometry: SensorWeightGeometry) -> tuple:
     return (geometry.site_velocity, geometry.fixed_length_m, geometry.tx_index, geometry.rx_index, geometry.row_kind)
 
 
-def _sensor_constants(geometry: SensorWeightGeometry, plan: SensorWeightPlan) -> tuple:
-    """The constant sensor tensors that sit AFTER the weight in every signature."""
-
-    return (geometry.pattern_frame,) + plan.tables
-
-
 class _SensorWeight(torch.autograd.Function):
-    """Autograd bridge for the three native sensor-weight operators."""
+    """Autograd bridge for the native sensor-weight operators.
+
+    The pattern frame and the two packed tables are explicit inputs, so a
+    caller whose radar pose or element pattern carries a leaf gets their
+    derivatives; a launch whose frame and tables are constants runs exactly the
+    position-only operators.
+    """
 
     @staticmethod
     def forward(
-        tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity, geometry, plan
+        tx_pos,
+        rx_pos,
+        site_in,
+        site_out,
+        intensity,
+        weight_re,
+        weight_im,
+        pattern_frame,
+        tx_table,
+        rx_table,
+        tx_velocity,
+        rx_velocity,
+        geometry,
+        plan,
     ):
         rows = int(site_in.shape[0])
         out_re = site_in.new_empty(rows)
@@ -691,7 +857,9 @@ class _SensorWeight(torch.autograd.Function):
             intensity,
             weight_re,
             weight_im,
-            *_sensor_constants(geometry, plan),
+            pattern_frame,
+            tx_table,
+            rx_table,
             out_re,
             out_im,
             total_delay_s,
@@ -712,6 +880,9 @@ class _SensorWeight(torch.autograd.Function):
             intensity,
             weight_re,
             weight_im,
+            pattern_frame,
+            tx_table,
+            rx_table,
             tx_velocity,
             rx_velocity,
             geometry,
@@ -719,7 +890,20 @@ class _SensorWeight(torch.autograd.Function):
         ) = inputs
         ctx.geometry = geometry
         ctx.plan = plan
-        saved = (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity)
+        saved = (
+            tx_pos,
+            rx_pos,
+            site_in,
+            site_out,
+            intensity,
+            weight_re,
+            weight_im,
+            pattern_frame,
+            tx_table,
+            rx_table,
+            tx_velocity,
+            rx_velocity,
+        )
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
         # The pattern gain is a diagnostic, not a differentiable product: it is
@@ -730,13 +914,25 @@ class _SensorWeight(torch.autograd.Function):
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im, grad_tau_rt, grad_tau_rate, grad_gain):
-        (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity) = (
-            ctx.saved_tensors
-        )
+        (
+            tx_pos,
+            rx_pos,
+            site_in,
+            site_out,
+            intensity,
+            weight_re,
+            weight_im,
+            pattern_frame,
+            tx_table,
+            rx_table,
+            tx_velocity,
+            rx_velocity,
+        ) = ctx.saved_tensors
         geometry = ctx.geometry
         plan = ctx.plan
         rows = int(site_in.shape[0])
         zeros = site_in.new_zeros(rows)
+        constants = (pattern_frame, tx_table, rx_table)
         grad_tx_pos = torch.empty_like(tx_pos)
         grad_rx_pos = torch.empty_like(rx_pos)
         grad_site_in = torch.empty_like(site_in)
@@ -747,6 +943,11 @@ class _SensorWeight(torch.autograd.Function):
         grad_weight_im = torch.empty_like(weight_im)
         tx_row_scratch = torch.empty_like(site_in)
         rx_row_scratch = torch.empty_like(site_in)
+        want_frame, want_tx, want_rx = ctx.needs_input_grad[7:10]
+        want_tables = want_tx or want_rx
+        stride = (18 if want_tables else 0) + (9 if want_frame else 0)
+        keys = torch.empty(rows * stride, dtype=torch.int64, device=site_in.device)
+        values = torch.empty(rows * stride, dtype=torch.float32, device=site_in.device)
         _ops().sensor_weight_backward(
             tx_pos,
             rx_pos,
@@ -758,7 +959,7 @@ class _SensorWeight(torch.autograd.Function):
             intensity,
             weight_re,
             weight_im,
-            *_sensor_constants(geometry, plan),
+            *constants,
             zeros if grad_out_re is None else grad_out_re.contiguous(),
             zeros if grad_out_im is None else grad_out_im.contiguous(),
             zeros if grad_tau_rt is None else grad_tau_rt.contiguous(),
@@ -772,11 +973,18 @@ class _SensorWeight(torch.autograd.Function):
             grad_weight_im,
             tx_row_scratch,
             rx_row_scratch,
+            keys,
+            values,
             rows,
             *plan.kernel_tail(geometry),
+            int(want_tables),
+            int(want_frame),
         )
         if geometry.slots > 1:
             grad_intensity = grad_intensity.view(geometry.slots, -1).sum(dim=0)
+        grad_frame = grad_tx_table = grad_rx_table = None
+        if stride:
+            grad_frame, grad_tx_table, grad_rx_table = _keyed_parameter_gradients(keys, values, tx_table, rx_table)
         return (
             grad_tx_pos,
             grad_rx_pos,
@@ -785,6 +993,9 @@ class _SensorWeight(torch.autograd.Function):
             grad_intensity,
             grad_weight_re,
             grad_weight_im,
+            grad_frame if want_frame else None,
+            grad_tx_table if want_tx else None,
+            grad_rx_table if want_rx else None,
             None,
             None,
             None,
@@ -801,14 +1012,28 @@ class _SensorWeight(torch.autograd.Function):
         tan_intensity,
         tan_weight_re,
         tan_weight_im,
+        tan_pattern_frame,
+        tan_tx_table,
+        tan_rx_table,
         tan_tx_velocity,
         tan_rx_velocity,
         tan_geometry,
         tan_plan,
     ):
-        (tx_pos, rx_pos, site_in, site_out, intensity, weight_re, weight_im, tx_velocity, rx_velocity) = (
-            ctx.saved_tensors
-        )
+        (
+            tx_pos,
+            rx_pos,
+            site_in,
+            site_out,
+            intensity,
+            weight_re,
+            weight_im,
+            pattern_frame,
+            tx_table,
+            rx_table,
+            tx_velocity,
+            rx_velocity,
+        ) = ctx.saved_tensors
         geometry = ctx.geometry
         plan = ctx.plan
         rows = int(site_in.shape[0])
@@ -837,7 +1062,9 @@ class _SensorWeight(torch.autograd.Function):
             intensity,
             weight_re,
             weight_im,
-            *_sensor_constants(geometry, plan),
+            pattern_frame,
+            tx_table,
+            rx_table,
             tan_tx_pos,
             tan_rx_pos,
             tan_site_in,
@@ -845,6 +1072,11 @@ class _SensorWeight(torch.autograd.Function):
             tan_intensity,
             tan_weight_re,
             tan_weight_im,
+            # An absent parameter tangent is an empty tensor: the kernel then
+            # skips the parameter term, so a position-only jvp costs nothing more.
+            _optional_tangent(tan_tx_table, tx_table),
+            _optional_tangent(tan_rx_table, rx_table),
+            _optional_tangent(tan_pattern_frame, pattern_frame),
             tan_out_re,
             tan_out_im,
             tan_tau_rt,
@@ -853,6 +1085,33 @@ class _SensorWeight(torch.autograd.Function):
             *plan.kernel_tail(geometry),
         )
         return tan_out_re, tan_out_im, tan_tau_rt, tan_tau_rate, None
+
+
+def _optional_tangent(tangent: torch.Tensor | None, primal: torch.Tensor) -> torch.Tensor:
+    if tangent is None:
+        return primal.new_empty(0)
+    return tangent.to(dtype=torch.float32).contiguous()
+
+
+def _keyed_parameter_gradients(
+    keys: torch.Tensor, values: torch.Tensor, tx_table: torch.Tensor, rx_table: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Reduce the backward's keyed contributions into the frame and table gradients.
+
+    The native backward wrote each row's contributions as ``(key, value)``
+    pairs over ``[tx_table | rx_table | frame]``; a stable sort groups them by
+    parameter in ascending row order and ``keyed_sum`` adds each run in that
+    order: deterministic, and no atomics (see ``sensor_weight.cu``). Returns
+    ``(grad_frame (3, 3), grad_tx_table, grad_rx_table)``.
+    """
+
+    sorted_keys, order = torch.sort(keys, stable=True)
+    tx_length = int(tx_table.numel())
+    rx_length = int(rx_table.numel())
+    total = torch.empty(tx_length + rx_length + 9, dtype=torch.float32, device=keys.device)
+    _ops().keyed_sum_forward(sorted_keys, values[order].contiguous(), total)
+    grad_tx, grad_rx, grad_frame = torch.split(total, [tx_length, rx_length, 9])
+    return grad_frame.view(3, 3), grad_tx, grad_rx
 
 
 def evaluate_sensor_weights(
@@ -896,6 +1155,9 @@ def evaluate_sensor_weights(
         intensity,
         weight.real.contiguous(),
         weight.imag.contiguous(),
+        geometry.pattern_frame,
+        plan.tables[0],
+        plan.tables[1],
         geometry.tx_velocity,
         geometry.rx_velocity,
         geometry,
@@ -904,14 +1166,18 @@ def evaluate_sensor_weights(
     return SensorWeightResult.from_components(out_re, out_im, total_delay_s, delay_rate, pattern_gain)
 
 
-def _pattern_plan(pattern: Pattern, rx_pattern: Pattern | None, *, device: torch.device) -> SensorWeightPlan:
+def _pattern_plan(
+    pattern: Pattern, rx_pattern: Pattern | None, *, device: torch.device, transmit_scale: torch.Tensor | None
+) -> SensorWeightPlan:
     for value in (pattern, rx_pattern):
         if value is not None and not isinstance(value, Pattern):
             raise TypeError(
                 f"a sensor weight needs a witwin.radar.Pattern, got {type(value).__name__}; "
                 "the radar's own are radar.pattern and radar.rx_pattern, and Pattern.isotropic() is the no-op"
             )
-    return SensorWeightPlan.build(pattern, rx_pattern=rx_pattern, c0=SPEED_OF_LIGHT_M_PER_S, device=device)
+    return SensorWeightPlan.build(
+        pattern, rx_pattern=rx_pattern, c0=SPEED_OF_LIGHT_M_PER_S, device=device, transmit_scale=transmit_scale
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1004,7 +1270,7 @@ class RoundTripPatternStage:
             pattern_frame=radar._world_from_local_matrix(device=device, dtype=torch.float32)[1]
             .transpose(0, 1)
             .contiguous(),
-            plan=_pattern_plan(pattern, rx_pattern, device=device),
+            plan=_pattern_plan(pattern, rx_pattern, device=device, transmit_scale=None),
         )
 
     def _geometry(self, slots: int = 1) -> SensorWeightGeometry:

@@ -30,14 +30,15 @@
 // FIELD pattern. A future polarimetric quantity appends its second component
 // after these and takes a new quantity code; the header does not move.
 //
-// Pattern lookup uses a fixed world-to-pattern frame. Endpoint positions,
-// intensity, and complex input weight are differentiable; velocities, row
-// topology, the pattern frame, and lookup tables are frozen constants.
+// Pattern lookup uses a world-to-pattern frame. Endpoint positions, intensity,
+// complex input weight, the pattern frame and the packed tables (values and
+// peak amplitudes) are differentiable; velocities and row topology are frozen
+// constants. The parameter derivatives are below evaluate_row.
 //
-// THE ANTENNA PATTERN IS INTERPOLATED, NOT TABULATED IN THE PHYSICS. The table
-// is a constant; the DIRECTION is differentiable, and the interpolation is
-// piecewise linear in the two angles, so the gain has an exact almost-everywhere
-// derivative that this kernel carries:
+// THE ANTENNA PATTERN IS INTERPOLATED, NOT TABULATED IN THE PHYSICS. The
+// DIRECTION is differentiable, and the interpolation is piecewise linear in the
+// two angles, so the gain has an exact almost-everywhere derivative that this
+// kernel carries:
 //
 //   w      = local(v)             w_j = v . pattern_frame[j]
 //   fwd    = -w_2
@@ -53,9 +54,11 @@
 // disagrees with both, and that disagreement is correct behaviour rather than a
 // defect.
 //
-// Differentiability. The differentiable inputs are the four endpoint positions
-// (tx_pos, rx_pos, site_in, site_out), the intensity, and the incoming complex
-// weight. The velocities, pattern frame, and lookup tables are constants. `tau_rate` depends on the
+// Differentiability. The position-only operators differentiate the four
+// endpoint positions (tx_pos, rx_pos, site_in, site_out), the intensity and the
+// incoming complex weight; the jvp also takes optional table and frame
+// tangents and the backward optional keyed table and frame contributions. The
+// velocities are constants. `tau_rate` depends on the
 // positions through the unit directions and that dependence is carried too:
 //
 //   d(u . p)/d(head) = ( p - u (u . p) ) / |d|
@@ -760,6 +763,327 @@ __device__ __forceinline__ RowTerm evaluate_row(const RowInputs& in, int64_t k) 
   return term;
 }
 
+// ---------------------------------------------------------------------------
+// The element patterns' own parameters: table values, peak gain and frame.
+// ---------------------------------------------------------------------------
+//
+// With each element written as a complex amplitude A (the field F, or
+// sqrt(max(G, 0)) for a power pattern) the scale of every row is
+//
+//   scale = q A_t A_r,   q = sqrt(max(I, 0)) a_t a_r,
+//
+// which is the power-by-power expression above as well (sqrt(G_t G_r) =
+// sqrt(G_t) sqrt(G_r) for the non-negative tables a power pattern holds). The
+// table VALUES enter A linearly through the interpolation, whose weights are
+// constants of the row's direction:
+//
+//   map:        A = sum_c w_c T[c]            (bilinear, four cells)
+//   separable:  A = Fx Fy,  Fx = sum_c wx_c Tx[c],  Fy = sum_c wy_c Ty[c]
+//
+// a power element then takes dA = dG / (2 sqrt(G)) for G > 0 and 0 at the
+// clamp, the same almost-everywhere convention the direction derivative uses.
+// The peak amplitude a (packed slot 4) enters q. The pattern frame enters
+// through w_j = v . axis_j: dA/daxis_j = v (dA/dw_j), and at the orthonormal
+// frame the radar builds dA/dw_j = (dA/dv) . axis_j.
+//
+// A real loss L sees a row through the cotangent of its complex scale,
+// Gs = g_scale + j g_scale_im (the same pair backward_rows forms), as
+// dL = Re(conj(Gs) dscale), so the cotangent of A_t is q conj(A_r) Gs and that
+// of a_t is sqrt(I) a_r Re(conj(Gs) A_t A_r).
+//
+// THE VJP IS A KEYED LIST, NOT AN ATOMIC SCATTER. Many rows interpolate the
+// same knots. Each row writes its contributions as (key, value) pairs - key
+// the flat index into [tx_pattern | rx_pattern | frame] - and the caller
+// stable-sorts the keys and reduces each key's run in ascending order, so the
+// summation order is a property of the row set and the reduction is
+// deterministic, the same guarantee the antenna reduction above gives.
+
+// One axis of the linear interpolation: the two knots and their weights, with
+// interp1d_zero_outside's edge conventions (outside: no knot carries weight;
+// a degenerate segment puts all of it on its one knot).
+struct Stencil1d {
+  int left;
+  int right;
+  float w_left;
+  float w_right;
+  bool inside;
+};
+
+__device__ __forceinline__ Stencil1d stencil1d(const float* __restrict__ axis, int count, float query) {
+  const int upper = bucketize_left(axis, count, query);
+  int left = upper - 1;
+  left = left < 0 ? 0 : (left > count - 1 ? count - 1 : left);
+  int right = upper;
+  right = right < 0 ? 0 : (right > count - 1 ? count - 1 : right);
+  const float x0 = axis[left];
+  const float span = axis[right] - x0;
+  const float denom = span < kMinDenom ? kMinDenom : span;
+  const float weight = (left == right) ? 0.0f : (query - x0) / denom;
+  Stencil1d s;
+  s.left = left;
+  s.right = right;
+  s.inside = (query >= axis[0]) && (query <= axis[count - 1]);
+  s.w_left = s.inside ? 1.0f - weight : 0.0f;
+  s.w_right = s.inside ? weight : 0.0f;
+  return s;
+}
+
+// Where one element's value in one direction reads its table: the knots,
+// their weights, and the offsets of the real and imaginary blocks in the
+// packed buffer. Map: cell[0..3] are flat (y, x) cells. Separable: cell[0..1]
+// index the x cut, cell[2..3] the y cut.
+struct Stencil {
+  int kind;
+  int quantity;
+  int num_x;
+  int num_y;
+  int64_t base;   // first value of the real block
+  int64_t block;  // length of the real block (offset of the imaginary one)
+  int cell[4];
+  float weight[4];
+};
+
+__device__ __forceinline__ Stencil pattern_stencil(
+    const float* __restrict__ packed, const Vec3 axis_right, const Vec3 axis_up, const Vec3 axis_back,
+    const Vec3 world_vector) {
+  Stencil s;
+  s.kind = static_cast<int>(packed[0]);
+  s.quantity = static_cast<int>(packed[1]);
+  s.num_x = static_cast<int>(packed[2]);
+  s.num_y = static_cast<int>(packed[3]);
+  s.base = kPatternHeader + s.num_x + s.num_y;
+  s.block = s.kind == kPatternMap ? static_cast<int64_t>(s.num_x) * s.num_y : s.num_x + s.num_y;
+  const float* x_axis = packed + kPatternHeader;
+  const float* y_axis = x_axis + s.num_x;
+  const float w0 = dot3(world_vector, axis_right);
+  const float w1 = dot3(world_vector, axis_up);
+  const float fwd = -dot3(world_vector, axis_back);
+  const float x_deg = kRadToDeg * atan2f(w0, fwd);
+  const float y_deg = kRadToDeg * atan2f(w1, fwd);
+  const Stencil1d sx = stencil1d(x_axis, s.num_x, x_deg);
+  const Stencil1d sy = stencil1d(y_axis, s.num_y, y_deg);
+  if (s.kind == kPatternMap) {
+    const bool inside = sx.inside && sy.inside;
+    // Bilinear: tx and ty are the right/high weights of the two axes.
+    const float tx = sx.w_right;
+    const float ty = sy.w_right;
+    s.cell[0] = sy.left * s.num_x + sx.left;
+    s.cell[1] = sy.left * s.num_x + sx.right;
+    s.cell[2] = sy.right * s.num_x + sx.left;
+    s.cell[3] = sy.right * s.num_x + sx.right;
+    s.weight[0] = inside ? (1.0f - tx) * (1.0f - ty) : 0.0f;
+    s.weight[1] = inside ? tx * (1.0f - ty) : 0.0f;
+    s.weight[2] = inside ? (1.0f - tx) * ty : 0.0f;
+    s.weight[3] = inside ? tx * ty : 0.0f;
+    return s;
+  }
+  s.cell[0] = sx.left;
+  s.cell[1] = sx.right;
+  s.cell[2] = sy.left;
+  s.cell[3] = sy.right;
+  s.weight[0] = sx.w_left;
+  s.weight[1] = sx.w_right;
+  s.weight[2] = sy.w_left;
+  s.weight[3] = sy.w_right;
+  return s;
+}
+
+// The separable cuts' values at the query, read from `values` (the primal or
+// a tangent buffer laid out like it): sum over each axis's two knots.
+__device__ __forceinline__ void separable_cuts(
+    const Stencil& s, const float* __restrict__ values, float* x_re, float* x_im, float* y_re, float* y_im) {
+  const float* xr = values + s.base;
+  const float* yr = xr + s.num_x;
+  const float* xi = values + s.base + s.block;
+  const float* yi = xi + s.num_x;
+  const bool field = s.quantity == kQuantityField;
+  *x_re = s.weight[0] * xr[s.cell[0]] + s.weight[1] * xr[s.cell[1]];
+  *y_re = s.weight[2] * yr[s.cell[2]] + s.weight[3] * yr[s.cell[3]];
+  *x_im = field ? s.weight[0] * xi[s.cell[0]] + s.weight[1] * xi[s.cell[1]] : 0.0f;
+  *y_im = field ? s.weight[2] * yi[s.cell[2]] + s.weight[3] * yi[s.cell[3]] : 0.0f;
+}
+
+// The element's raw table value (G for power, F for field) as a linear
+// function of `values`, for the tangent: the same stencil, the tangent's
+// numbers. `primal` supplies the other cut of a separable product.
+__device__ __forceinline__ void table_tangent(
+    const Stencil& s, const float* __restrict__ primal, const float* __restrict__ tangent, float* d_re, float* d_im) {
+  if (s.kind == kPatternMap) {
+    float re = 0.0f;
+    float im = 0.0f;
+    for (int c = 0; c < 4; ++c) {
+      re += s.weight[c] * tangent[s.base + s.cell[c]];
+      if (s.quantity == kQuantityField) im += s.weight[c] * tangent[s.base + s.block + s.cell[c]];
+    }
+    *d_re = re;
+    *d_im = im;
+    return;
+  }
+  float pxr, pxi, pyr, pyi, txr, txi, tyr, tyi;
+  separable_cuts(s, primal, &pxr, &pxi, &pyr, &pyi);
+  separable_cuts(s, tangent, &txr, &txi, &tyr, &tyi);
+  // d(Fx Fy) = dFx Fy + Fx dFy, complex.
+  *d_re = (txr * pyr - txi * pyi) + (pxr * tyr - pxi * tyi);
+  *d_im = (txr * pyi + txi * pyr) + (pxr * tyi + pxi * tyr);
+}
+
+// Everything the parameter derivatives of one row need, per element side.
+struct ElementSide {
+  Stencil stencil;
+  Vec3 direction;  // the world vector the element was evaluated in
+  float raw_re;    // G (power) or Re F (field)
+  float a_re;      // the amplitude A
+  float a_im;
+  Vec3 ga_re;      // dA / d(world vector)
+  Vec3 ga_im;
+  float da_dg;     // dA/dG of a power element (0.5 / sqrt(G), 0 at the clamp); 1 for a field
+  float peak;      // a = 10^(G_dBi / 20)
+};
+
+struct RowParameters {
+  ElementSide tx;
+  ElementSide rx;
+  float root_intensity;  // sqrt(max(I, 0))
+};
+
+__device__ __forceinline__ ElementSide element_side(
+    const float* __restrict__ packed, const Vec3 axis_right, const Vec3 axis_up, const Vec3 axis_back,
+    const Vec3 direction) {
+  ElementSide side;
+  const ElementValue value = evaluate_element(packed, axis_right, axis_up, axis_back, direction);
+  side.stencil = pattern_stencil(packed, axis_right, axis_up, axis_back, direction);
+  side.direction = direction;
+  side.raw_re = value.re;
+  side.peak = value.amplitude;
+  element_amplitude(value, &side.a_re, &side.a_im, &side.ga_re, &side.ga_im);
+  side.da_dg = value.quantity == kQuantityField ? 1.0f : (value.re > 0.0f ? 0.5f / side.a_re : 0.0f);
+  return side;
+}
+
+__device__ __forceinline__ RowParameters row_parameters(const RowInputs& in, int64_t k) {
+  const int64_t r = k % in.rows_per_slot;
+  const int64_t ti = strided_antenna(in.tx_index, k, in.rows_per_slot, in.tx_per_slot);
+  const int64_t ri = strided_antenna(in.rx_index, k, in.rows_per_slot, in.rx_per_slot);
+  const Vec3 tx = load3(in.tx_pos, ti);
+  const Vec3 rx = load3(in.rx_pos, ri);
+  Vec3 direction_tx;
+  Vec3 direction_rx;
+  // The two directions evaluate_row looks the elements up in.
+  if (in.row_kind[r] == kRowDirect) {
+    direction_tx = sub3(rx, tx);
+    direction_rx = sub3(tx, rx);
+  } else {
+    direction_tx = sub3(load3(in.site_in, k), tx);
+    direction_rx = sub3(load3(in.site_out, k), rx);
+  }
+  const Vec3 axis_right = load3(in.pattern_frame, 0);
+  const Vec3 axis_up = load3(in.pattern_frame, 1);
+  const Vec3 axis_back = load3(in.pattern_frame, 2);
+  RowParameters p;
+  p.tx = element_side(in.tx_pattern, axis_right, axis_up, axis_back, direction_tx);
+  p.rx = element_side(in.rx_pattern, axis_right, axis_up, axis_back, direction_rx);
+  const float raw_intensity = in.intensity[r];
+  p.root_intensity = sqrtf(raw_intensity > 0.0f ? raw_intensity : 0.0f);
+  return p;
+}
+
+// dA of one side: the table tangent, the frame tangent, and nothing else.
+__device__ __forceinline__ void side_tangent(
+    const ElementSide& side, const float* __restrict__ primal, const float* __restrict__ tangent,
+    const float* __restrict__ pattern_frame, const float* __restrict__ tan_frame, float* d_re, float* d_im) {
+  float re = 0.0f;
+  float im = 0.0f;
+  if (tangent != nullptr) {
+    float g_re, g_im;
+    table_tangent(side.stencil, primal, tangent, &g_re, &g_im);
+    re += side.da_dg * g_re;
+    im += side.stencil.quantity == kQuantityField ? g_im : 0.0f;
+  }
+  if (tan_frame != nullptr) {
+    for (int j = 0; j < 3; ++j) {
+      const Vec3 axis = load3(pattern_frame, j);
+      const float along = dot3(side.direction, load3(tan_frame, j));
+      re += dot3(side.ga_re, axis) * along;
+      im += dot3(side.ga_im, axis) * along;
+    }
+  }
+  *d_re = re;
+  *d_im = im;
+}
+
+// d(scale) from the parameter tangents: q (dA_t A_r + A_t dA_r) + dq A_t A_r.
+__device__ __forceinline__ void parameter_scale_tangent(
+    const RowInputs& in, int64_t k, const float* __restrict__ tan_tx_pattern,
+    const float* __restrict__ tan_rx_pattern, const float* __restrict__ tan_frame, float* d_scale,
+    float* d_scale_im) {
+  const RowParameters p = row_parameters(in, k);
+  float dt_re, dt_im, dr_re, dr_im;
+  side_tangent(p.tx, in.tx_pattern, tan_tx_pattern, in.pattern_frame, tan_frame, &dt_re, &dt_im);
+  side_tangent(p.rx, in.rx_pattern, tan_rx_pattern, in.pattern_frame, tan_frame, &dr_re, &dr_im);
+  const float q = p.root_intensity * p.tx.peak * p.rx.peak;
+  float re = q * ((dt_re * p.rx.a_re - dt_im * p.rx.a_im) + (p.tx.a_re * dr_re - p.tx.a_im * dr_im));
+  float im = q * ((dt_re * p.rx.a_im + dt_im * p.rx.a_re) + (p.tx.a_re * dr_im + p.tx.a_im * dr_re));
+  const float d_peak_t = tan_tx_pattern != nullptr ? tan_tx_pattern[4] : 0.0f;
+  const float d_peak_r = tan_rx_pattern != nullptr ? tan_rx_pattern[4] : 0.0f;
+  const float dq = p.root_intensity * (d_peak_t * p.rx.peak + p.tx.peak * d_peak_r);
+  re += dq * (p.tx.a_re * p.rx.a_re - p.tx.a_im * p.rx.a_im);
+  im += dq * (p.tx.a_re * p.rx.a_im + p.tx.a_im * p.rx.a_re);
+  *d_scale += re;
+  *d_scale_im += im;
+}
+
+// The keyed contributions of one element side: up to eight table entries and
+// its peak, at `key_base` (the side's offset in the key space). `g_re`, `g_im`
+// is the cotangent of the side's amplitude A. Every entry is written: a knot
+// the row does not reach carries weight zero, so the layout is fixed.
+__device__ __forceinline__ void side_contributions(
+    const ElementSide& side, const float* __restrict__ packed, float g_re, float g_im, float g_peak,
+    int64_t key_base, int64_t* __restrict__ keys, float* __restrict__ values) {
+  const Stencil& s = side.stencil;
+  const bool field = s.quantity == kQuantityField;
+  // The cotangent of the raw table value: F itself, or G = A^2 through dA/dG.
+  const float r_re = field ? g_re : g_re * side.da_dg;
+  const float r_im = field ? g_im : 0.0f;
+  if (s.kind == kPatternMap) {
+    for (int c = 0; c < 4; ++c) {
+      keys[c] = key_base + s.base + s.cell[c];
+      values[c] = s.weight[c] * r_re;
+      keys[4 + c] = key_base + s.base + s.block + s.cell[c];
+      values[4 + c] = field ? s.weight[c] * r_im : 0.0f;
+    }
+  } else {
+    float xr, xi, yr, yi;
+    separable_cuts(s, packed, &xr, &xi, &yr, &yi);
+    // Raw = Fx Fy: the cotangent of Fx is conj(Fy) R, of Fy conj(Fx) R.
+    const float gx_re = r_re * yr + r_im * yi;
+    const float gx_im = r_im * yr - r_re * yi;
+    const float gy_re = r_re * xr + r_im * xi;
+    const float gy_im = r_im * xr - r_re * xi;
+    const int64_t x_re = key_base + s.base;
+    const int64_t y_re = x_re + s.num_x;
+    const int64_t x_im = key_base + s.base + s.block;
+    const int64_t y_im = x_im + s.num_x;
+    keys[0] = x_re + s.cell[0];
+    values[0] = s.weight[0] * gx_re;
+    keys[1] = x_re + s.cell[1];
+    values[1] = s.weight[1] * gx_re;
+    keys[2] = y_re + s.cell[2];
+    values[2] = s.weight[2] * gy_re;
+    keys[3] = y_re + s.cell[3];
+    values[3] = s.weight[3] * gy_re;
+    keys[4] = x_im + s.cell[0];
+    values[4] = field ? s.weight[0] * gx_im : 0.0f;
+    keys[5] = x_im + s.cell[1];
+    values[5] = field ? s.weight[1] * gx_im : 0.0f;
+    keys[6] = y_im + s.cell[2];
+    values[6] = field ? s.weight[2] * gy_im : 0.0f;
+    keys[7] = y_im + s.cell[3];
+    values[7] = field ? s.weight[3] * gy_im : 0.0f;
+  }
+  keys[8] = key_base + 4;
+  values[8] = g_peak;
+}
+
 __global__ void sensor_weight_forward_kernel(
     RowInputs in,
     const float* __restrict__ weight_in_re,
@@ -804,6 +1128,9 @@ __global__ void sensor_weight_jvp_kernel(
     float* __restrict__ tan_out_im,
     float* __restrict__ tan_tau_rt,
     float* __restrict__ tan_tau_rate,
+    const float* __restrict__ tan_tx_pattern,
+    const float* __restrict__ tan_rx_pattern,
+    const float* __restrict__ tan_frame,
     int num_paths) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_paths) {
@@ -820,14 +1147,20 @@ __global__ void sensor_weight_jvp_kernel(
   const Vec3 d_site_in = load3(tan_site_in, k);
   const Vec3 d_site_out = load3(tan_site_out, k);
 
-  const float d_scale = dot3(term.dscale_dsite_in, d_site_in) +
+  float d_scale = dot3(term.dscale_dsite_in, d_site_in) +
       dot3(term.dscale_dsite_out, d_site_out) + dot3(term.dscale_dtx, d_tx) +
       dot3(term.dscale_drx, d_rx) + term.dscale_dintensity * tan_intensity[r];
+  // The element parameters' tangent, only when one was supplied: a launch
+  // without one is the position-only operator, unchanged.
+  float d_scale_param_im = 0.0f;
+  if (tan_tx_pattern != nullptr || tan_rx_pattern != nullptr || tan_frame != nullptr) {
+    parameter_scale_tangent(in, k, tan_tx_pattern, tan_rx_pattern, tan_frame, &d_scale, &d_scale_param_im);
+  }
 
   if (term.complex_scale) {
     const float d_scale_im = dot3(term.dscale_im_dsite_in, d_site_in) +
         dot3(term.dscale_im_dsite_out, d_site_out) + dot3(term.dscale_im_dtx, d_tx) +
-        dot3(term.dscale_im_drx, d_rx) + term.dscale_im_dintensity * tan_intensity[r];
+        dot3(term.dscale_im_drx, d_rx) + term.dscale_im_dintensity * tan_intensity[r] + d_scale_param_im;
     const float w_re = weight_in_re[k];
     const float w_im = weight_in_im[k];
     const float t_re = tan_weight_re[k];
@@ -965,6 +1298,102 @@ __global__ void sensor_weight_backward_antennas_kernel(
   out[antenna * 3 + component] = static_cast<float>(total_grad);
 }
 
+// Per row: the keyed contributions to the element parameters, laid out as
+// [tx side (9) | rx side (9)] when the tables are wanted and then the nine
+// frame entries when the frame is wanted. Keys index [tx_pattern | rx_pattern
+// | frame]; a knot outside the row's stencil carries the value zero.
+__global__ void sensor_weight_parameter_rows_kernel(
+    RowInputs in,
+    const float* __restrict__ weight_in_re,
+    const float* __restrict__ weight_in_im,
+    const float* __restrict__ grad_out_re,
+    const float* __restrict__ grad_out_im,
+    int64_t* __restrict__ keys,
+    float* __restrict__ values,
+    int64_t tx_length,
+    int64_t rx_length,
+    int want_tables,
+    int want_frame,
+    int stride,
+    int num_paths) {
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k >= num_paths) {
+    return;
+  }
+  const RowParameters p = row_parameters(in, k);
+  const float g_re = grad_out_re[k];
+  const float g_im = grad_out_im[k];
+  // Gs = conj-cotangent of the complex scale: out = w scale.
+  const float gs_re = g_re * weight_in_re[k] + g_im * weight_in_im[k];
+  const float gs_im = g_im * weight_in_re[k] - g_re * weight_in_im[k];
+  const float q = p.root_intensity * p.tx.peak * p.rx.peak;
+  // G_At = q conj(A_r) Gs and G_Ar = q conj(A_t) Gs.
+  const float gt_re = q * (p.rx.a_re * gs_re + p.rx.a_im * gs_im);
+  const float gt_im = q * (p.rx.a_re * gs_im - p.rx.a_im * gs_re);
+  const float gr_re = q * (p.tx.a_re * gs_re + p.tx.a_im * gs_im);
+  const float gr_im = q * (p.tx.a_re * gs_im - p.tx.a_im * gs_re);
+  int64_t* row_keys = keys + static_cast<int64_t>(k) * stride;
+  float* row_values = values + static_cast<int64_t>(k) * stride;
+  int offset = 0;
+  if (want_tables) {
+    // Re(conj(Gs) A_t A_r): the cotangent of q / q, shared by both peaks.
+    const float product_re = p.tx.a_re * p.rx.a_re - p.tx.a_im * p.rx.a_im;
+    const float product_im = p.tx.a_re * p.rx.a_im + p.tx.a_im * p.rx.a_re;
+    const float along = gs_re * product_re + gs_im * product_im;
+    side_contributions(
+        p.tx, in.tx_pattern, gt_re, gt_im, p.root_intensity * p.rx.peak * along, 0, row_keys, row_values);
+    side_contributions(
+        p.rx, in.rx_pattern, gr_re, gr_im, p.root_intensity * p.tx.peak * along, tx_length, row_keys + 9,
+        row_values + 9);
+    offset = 18;
+  }
+  if (want_frame) {
+    const int64_t frame_base = tx_length + rx_length;
+    for (int j = 0; j < 3; ++j) {
+      const Vec3 axis = load3(in.pattern_frame, j);
+      // dL/dw_j of each side, then dw_j/daxis_j = the side's direction.
+      const float t_local = gt_re * dot3(p.tx.ga_re, axis) + gt_im * dot3(p.tx.ga_im, axis);
+      const float r_local = gr_re * dot3(p.rx.ga_re, axis) + gr_im * dot3(p.rx.ga_im, axis);
+      const Vec3 g = add3(scale3(p.tx.direction, t_local), scale3(p.rx.direction, r_local));
+      row_keys[offset + 3 * j] = frame_base + 3 * j;
+      row_keys[offset + 3 * j + 1] = frame_base + 3 * j + 1;
+      row_keys[offset + 3 * j + 2] = frame_base + 3 * j + 2;
+      row_values[offset + 3 * j] = g.x;
+      row_values[offset + 3 * j + 1] = g.y;
+      row_values[offset + 3 * j + 2] = g.z;
+    }
+  }
+}
+
+// One thread per parameter: the run of its key in the stable-sorted list,
+// summed in ascending order in double.
+__global__ void keyed_sum_kernel(
+    const int64_t* __restrict__ sorted_keys,
+    const float* __restrict__ sorted_values,
+    int64_t count,
+    float* __restrict__ grad,
+    int64_t total) {
+  const int64_t slot = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (slot >= total) {
+    return;
+  }
+  int64_t low = 0;
+  int64_t high = count;
+  while (low < high) {
+    const int64_t mid = (low + high) >> 1;
+    if (sorted_keys[mid] < slot) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  double sum = 0.0;
+  for (int64_t entry = low; entry < count && sorted_keys[entry] == slot; ++entry) {
+    sum += static_cast<double>(sorted_values[entry]);
+  }
+  grad[slot] = static_cast<float>(sum);
+}
+
 void check_row_vector(
     const torch::stable::Tensor& tensor, int num_paths, const char* name) {
   check_cuda_float(tensor, name);
@@ -990,6 +1419,17 @@ void check_row_scalar(
 void check_packed_pattern(const torch::stable::Tensor& tensor, const char* name) {
   check_cuda_float(tensor, name);
   STD_TORCH_CHECK(tensor.numel() >= kPatternHeader + 4, name, " must be a packed element pattern.");
+}
+
+// A parameter tangent is either empty (zero, skipped) or shaped like its primal.
+const float* optional_tangent(
+    const torch::stable::Tensor& tangent, const torch::stable::Tensor& primal, const char* name) {
+  if (tangent.numel() == 0) {
+    return nullptr;
+  }
+  check_cuda_float(tangent, name);
+  STD_TORCH_CHECK(tangent.numel() == primal.numel(), name, " must match its primal or be empty.");
+  return tangent.const_data_ptr<float>();
 }
 
 struct GeometryTensors {
@@ -1197,6 +1637,9 @@ void sensor_weight_jvp_cuda(
     const torch::stable::Tensor& tan_intensity,
     const torch::stable::Tensor& tan_weight_re,
     const torch::stable::Tensor& tan_weight_im,
+    const torch::stable::Tensor& tan_tx_pattern,
+    const torch::stable::Tensor& tan_rx_pattern,
+    const torch::stable::Tensor& tan_pattern_frame,
     torch::stable::Tensor& tan_out_re,
     torch::stable::Tensor& tan_out_im,
     torch::stable::Tensor& tan_tau_rt,
@@ -1251,6 +1694,10 @@ void sensor_weight_jvp_cuda(
   check_row_scalar(tan_out_im, paths, "tan_out_im");
   check_row_scalar(tan_tau_rt, paths, "tan_tau_rt");
   check_row_scalar(tan_tau_rate, paths, "tan_tau_rate");
+  // An empty parameter tangent is a zero one and skips that work entirely.
+  const float* tan_tx_table = optional_tangent(tan_tx_pattern, tx_pattern, "tan_tx_pattern");
+  const float* tan_rx_table = optional_tangent(tan_rx_pattern, rx_pattern, "tan_rx_pattern");
+  const float* tan_frame = optional_tangent(tan_pattern_frame, pattern_frame, "tan_pattern_frame");
   if (paths == 0) {
     return;
   }
@@ -1277,6 +1724,9 @@ void sensor_weight_jvp_cuda(
       tan_out_im.mutable_data_ptr<float>(),
       tan_tau_rt.mutable_data_ptr<float>(),
       tan_tau_rate.mutable_data_ptr<float>(),
+      tan_tx_table,
+      tan_rx_table,
+      tan_frame,
       paths);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1312,11 +1762,15 @@ void sensor_weight_backward_cuda(
     torch::stable::Tensor& grad_weight_im,
     torch::stable::Tensor& tx_row_scratch,
     torch::stable::Tensor& rx_row_scratch,
+    torch::stable::Tensor& parameter_keys,
+    torch::stable::Tensor& parameter_values,
     int64_t num_paths,
     int64_t num_tx,
     int64_t num_rx,
     double c0,
-    int64_t slots) {
+    int64_t slots,
+    int64_t want_tables,
+    int64_t want_frame) {
   const int paths = checked_int(num_paths, "num_paths");
   const int transmitters = checked_int(num_tx, "num_tx");
   const int receivers = checked_int(num_rx, "num_rx");
@@ -1364,6 +1818,13 @@ void sensor_weight_backward_cuda(
   STD_TORCH_CHECK(
       grad_rx_pos.numel() == static_cast<int64_t>(receivers) * 3,
       "grad_rx_pos must match rx_pos.");
+  const int parameter_stride = (want_tables != 0 ? 18 : 0) + (want_frame != 0 ? 9 : 0);
+  check_cuda_long(parameter_keys, "parameter_keys");
+  check_cuda_float(parameter_values, "parameter_values");
+  STD_TORCH_CHECK(
+      parameter_keys.numel() == static_cast<int64_t>(paths) * parameter_stride &&
+          parameter_values.numel() == parameter_keys.numel(),
+      "parameter_keys and parameter_values must hold one entry per parameter contribution of every path.");
 
   const torch::stable::accelerator::DeviceGuard device_guard(
       grad_tx_pos.get_device_index());
@@ -1393,6 +1854,28 @@ void sensor_weight_backward_cuda(
     STD_CUDA_KERNEL_LAUNCH_CHECK();
   }
 
+  if (paths > 0 && parameter_stride > 0) {
+    sensor_weight_parameter_rows_kernel<<<
+        dim3((paths + block_size - 1) / block_size, 1, 1),
+        dim3(block_size, 1, 1),
+        0,
+        stream>>>(
+        in,
+        weight_in_re.const_data_ptr<float>(),
+        weight_in_im.const_data_ptr<float>(),
+        grad_out_re.const_data_ptr<float>(),
+        grad_out_im.const_data_ptr<float>(),
+        parameter_keys.mutable_data_ptr<int64_t>(),
+        parameter_values.mutable_data_ptr<float>(),
+        tx_pattern.numel(),
+        rx_pattern.numel(),
+        want_tables != 0 ? 1 : 0,
+        want_frame != 0 ? 1 : 0,
+        parameter_stride,
+        paths);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+
   const int antenna_slots = (transmitters + receivers) * 3;
   sensor_weight_backward_antennas_kernel<<<
       dim3((antenna_slots + block_size - 1) / block_size, 1, 1),
@@ -1414,7 +1897,35 @@ void sensor_weight_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void keyed_sum_forward_cuda(
+    const torch::stable::Tensor& sorted_keys,
+    const torch::stable::Tensor& sorted_values,
+    torch::stable::Tensor& total_out) {
+  check_cuda_long(sorted_keys, "sorted_keys");
+  check_cuda_float(sorted_values, "sorted_values");
+  check_cuda_float(total_out, "total");
+  STD_TORCH_CHECK(sorted_values.numel() == sorted_keys.numel(), "sorted_values must match sorted_keys.");
+  const int64_t total = total_out.numel();
+  if (total == 0) {
+    return;
+  }
+  const torch::stable::accelerator::DeviceGuard device_guard(total_out.get_device_index());
+  constexpr int block_size = 256;
+  keyed_sum_kernel<<<
+      dim3(static_cast<unsigned>((total + block_size - 1) / block_size), 1, 1),
+      dim3(block_size, 1, 1),
+      0,
+      current_cuda_stream(total_out)>>>(
+      sorted_keys.const_data_ptr<int64_t>(),
+      sorted_values.const_data_ptr<float>(),
+      sorted_keys.numel(),
+      total_out.mutable_data_ptr<float>(),
+      total);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
+  m.impl("keyed_sum_forward", TORCH_BOX(&keyed_sum_forward_cuda));
   m.impl("sensor_weight_forward", TORCH_BOX(&sensor_weight_forward_cuda));
   m.impl("sensor_weight_backward", TORCH_BOX(&sensor_weight_backward_cuda));
   m.impl("sensor_weight_jvp", TORCH_BOX(&sensor_weight_jvp_cuda));

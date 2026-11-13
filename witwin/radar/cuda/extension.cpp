@@ -271,8 +271,9 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor(b!) grad_rx_pos, Tensor(c!) grad_site_in, Tensor(d!) grad_site_out, "
       "Tensor(e!) grad_intensity, Tensor(f!) grad_weight_re, "
       "Tensor(g!) grad_weight_im, Tensor(h!) tx_row_scratch, "
-      "Tensor(i!) rx_row_scratch, int num_paths, int num_tx, int num_rx, "
-      "float c0, int slots) -> ()");
+      "Tensor(i!) rx_row_scratch, Tensor(j!) parameter_keys, "
+      "Tensor(k!) parameter_values, int num_paths, int num_tx, int num_rx, "
+      "float c0, int slots, int want_tables, int want_frame) -> ()");
   m.def(
       "sensor_weight_jvp(Tensor tx_pos, Tensor rx_pos, Tensor tx_velocity, "
       "Tensor rx_velocity, Tensor site_in, Tensor site_out, "
@@ -281,9 +282,18 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor weight_in_im, Tensor pattern_frame, Tensor tx_pattern, "
       "Tensor rx_pattern, Tensor tan_tx_pos, Tensor tan_rx_pos, "
       "Tensor tan_site_in, Tensor tan_site_out, Tensor tan_intensity, "
-      "Tensor tan_weight_re, Tensor tan_weight_im, Tensor(a!) tan_out_re, "
+      "Tensor tan_weight_re, Tensor tan_weight_im, Tensor tan_tx_pattern, "
+      "Tensor tan_rx_pattern, Tensor tan_pattern_frame, Tensor(a!) tan_out_re, "
       "Tensor(b!) tan_out_im, Tensor(c!) tan_tau_rt, Tensor(d!) tan_tau_rate, "
       "int num_paths, int num_tx, int num_rx, float c0, int slots) -> ()");
+  // The element parameters' reverse pass (packed tables, peak gains and the
+  // pattern frame) rides in sensor_weight_backward: with want_tables or
+  // want_frame set it also writes every row's keyed contributions, the caller
+  // stable-sorts the keys, and keyed_sum reduces each key's run in ascending
+  // order. Empty parameter tangents of the jvp are zero ones.
+  m.def(
+      "keyed_sum_forward(Tensor sorted_keys, Tensor sorted_values, "
+      "Tensor(a!) total) -> ()");
   // Receiver frontend. Three families, ONE fixed order, and the order
   // lives in the Python runtime rather than in a caller:
   //
