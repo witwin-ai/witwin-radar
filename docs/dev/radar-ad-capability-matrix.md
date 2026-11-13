@@ -43,7 +43,7 @@ The authority is Channel ADR-043 and consumer `CONTRACT_VERSION` 7 (Channel
 flag; every row mirrored below reads the same in Channel 0.6.0's propagation AD
 capability matrix as it did at version 6.
 
-A forward-mode tangent on mesh vertices compiles and propagates on Channel 0.6.0 (tag 699fd8c): its
+A forward-mode tangent on mesh vertices compiles and propagates on Channel 0.6.0 (tag c287e11): its
 finite-vertex check reads the primal, so the `aminmax` reduction no longer sees the dual. The release built
 from the earlier 0.6.0 tag refused it at compile; that build was never published.
 

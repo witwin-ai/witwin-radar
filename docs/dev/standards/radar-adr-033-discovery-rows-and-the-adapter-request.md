@@ -131,6 +131,6 @@ discovery), which is what a moving target's per-observation rediscovery pays for
 
 ## Amendment: the published Channel 0.6.0
 
-The C-16 disagreement near a wall is closed in the published Channel 0.6.0 (tag 699fd8c): replay
+The C-16 disagreement near a wall is closed in the published Channel 0.6.0 (tag c287e11): replay
 applies the same endpoint-exempt minimum-segment rule as discovery. Discovery remains the authority
 for which rows exist; the two no longer differ near a wall.

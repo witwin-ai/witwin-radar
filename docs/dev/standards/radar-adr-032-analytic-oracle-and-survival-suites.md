@@ -106,7 +106,7 @@ cancellation.
 
 ## Amendment: the published Channel 0.6.0
 
-The published Channel 0.6.0 (tag 699fd8c) closes C-12: a site on or 0.05 mm in front of a PEC wall
+The published Channel 0.6.0 (tag c287e11) closes C-12: a site on or 0.05 mm in front of a PEC wall
 keeps its four rows, the on-wall echo cancels below -60 dB and the near-wall echo matches the image
 method to 3 %. `site_on_wall` and `site_near_wall` are ordinary cases; the table above records what
 the unpublished earlier 0.6.0 build did.

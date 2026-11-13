@@ -84,10 +84,10 @@ values there. The differences were:
   and a specular point past a face edge is not a reflection; both follow Channel and are pinned by
   `tests/test_reflection_validity.py`.
 
-## Amendment: the published Channel 0.6.0 (tag 699fd8c)
+## Amendment: the published Channel 0.6.0 (tag c287e11)
 
 The measurements above were taken on a build of an earlier 0.6.0 tag that was never published. The
-published 0.6.0 (tag 699fd8c, RayD 0.10.3) changes three of them, and Radar 0.5.0 requires it:
+published 0.6.0 (tag c287e11, RayD 0.10.3) changes three of them, and Radar 0.5.0 requires it:
 
 - **C-12.** A segment that ends at an endpoint is exempt from the minimum-segment rule, so a site on
   or within 0.05 mm of a wall keeps its reflection off that wall. The edge rule (ADR-068) is
