@@ -186,6 +186,15 @@ an FMCW receiver hearing an emitter table through its IF band) against long-doub
 JVP. Routing: sampled receivers under `adc` and slow-time schedules equal their still-world cube; emitters and links
 add no Channel call; an end-to-end pulsed bistatic VJP/JVP against a central difference.
 
+### 7. Physical leaves inside a network (R-ADR-052)
+
+Each radar's `pose=` trajectory translation is a leaf of that radar's elements, checked by the same `pose_at` the
+single radar uses (a rotation leaf is refused, a translation leaf needs its matching `grad` mode); a radar's own
+cube differentiates through it exactly as alone. A pattern carrying a leaf is shared by being the same object on
+every radar (one join applies one table), and its gradient collects every radar's rows. A transmit-power leaf is
+refused by name: the shared transmit table has no per-radar power factor. LNA-gain and coupling leaves act in each
+radar's own receive chain and need nothing from the network.
+
 ## Not done (refused by name)
 
 - An FMCW transmitter heard by a pulsed or OFDM receiver, and a pulsed or OFDM transmitter or another waveform heard
@@ -193,7 +202,7 @@ add no Channel call; an end-to-end pulsed bistatic VJP/JVP against a central dif
 - A sampled receiver hearing a band wider than its sample rate or offset by more than half of it; a hearing sampled
   radar with several transmitters.
 - DDM/BPM, multi-profile chirp sequences and ramp phase errors on an FMCW link.
-- Emitters with directional radar elements; moving emitters.
+- Emitters with directional radar elements; moving emitters; a transmit-power leaf on a radar of a network.
 - Adaptive motion and `Motion.rediscover_every_chirps` in a network; `Motion.auto()` resolves to `adc` when anything
   moves.
 - Oscillator phase noise on a receiving radar, wideband OFDM and Core-endpoint `endpoints=` in a network.

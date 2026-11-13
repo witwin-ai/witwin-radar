@@ -491,3 +491,56 @@ def test_a_pulsed_bistatic_link_is_differentiable_in_both_modes():
         dual = forward_ad.make_dual(start.clone(), direction)
         forward = float(forward_ad.unpack_dual(_pulsed_bistatic_loss(dual, "jvp", weights)).tangent)
     assert forward == pytest.approx(reverse, rel=1e-3)
+
+
+def _weighted(cube):
+    weights = torch.randn(cube.shape, generator=torch.Generator().manual_seed(0), dtype=torch.complex64)
+    return (cube * weights.to(cube.device).conj()).real.sum() * 1e6
+
+
+def test_each_radars_pose_translation_is_a_leaf_inside_a_network():
+    """Radar 1's own cube differentiates through its own trajectory exactly as alone (R-ADR-052)."""
+
+    from witwin.radar import Motion
+    from witwin.radar.network import Network
+
+    radars = tuple(radar.replace(polarization=(0.0, 1.0, 0.0)) for radar in _radars(chirps_per_frame=2))
+    leaf = torch.zeros(3, requires_grad=True)
+
+    def pose(time_s):
+        return torch.eye(3), leaf + torch.tensor([0.0, 0.0, 5.0]) * time_s
+
+    arguments = {"times": (0.0,), "motion": Motion.chirp(), "grad": "vjp", "reflections": 0}
+    network = Network(radars).simulate(sc.empty_scene(), _targets(), poses=(None, pose), **arguments)
+    (inside,) = torch.autograd.grad(_weighted(network[1].cube), leaf)
+    alone = radars[1].simulate(sc.empty_scene(), _targets(), pose=pose, **arguments)
+    (outside,) = torch.autograd.grad(_weighted(alone.cube), leaf)
+    assert float(outside.abs().max()) > 0
+    torch.testing.assert_close(inside, outside, rtol=1e-4, atol=0)
+
+    def turning(time_s):
+        return torch.eye(3, requires_grad=True), torch.zeros(3)
+
+    with pytest.raises(RuntimeError, match="rotation"):
+        Network(radars).simulate(sc.empty_scene(), _targets(), poses=(None, turning), **arguments)
+
+
+def test_a_shared_pattern_leaf_collects_every_radars_rows_and_a_power_leaf_is_refused():
+    from witwin.radar import Pattern
+    from witwin.radar.network import Network
+
+    gain = torch.tensor(3.0, requires_grad=True)
+    element = Pattern.dipole(gain=gain)
+    radars = tuple(radar.replace(pattern=element) for radar in _radars())
+    results = Network(radars).simulate(sc.empty_scene(), _targets(), times=(0.0,), grad="vjp", reflections=0)
+    (inside,) = torch.autograd.grad(_weighted(results[0].cube), gain)
+    alone = radars[0].simulate(sc.empty_scene(), _targets(), times=(0.0,), grad="vjp", reflections=0)
+    (outside,) = torch.autograd.grad(_weighted(alone.cube), gain)
+    assert float(outside.abs()) > 0
+    torch.testing.assert_close(inside, outside, rtol=1e-4, atol=0)
+    # Two leaf patterns that are not the same object are two tables.
+    other = tuple(radar.replace(pattern=Pattern.dipole(gain=torch.tensor(3.0))) for radar in _radars())
+    with pytest.raises(NotImplementedError, match="element pattern"):
+        Network((radars[0], other[1]))
+    with pytest.raises(NotImplementedError, match="transmit power"):
+        Network((radars[0].replace(power=torch.tensor(10.0)), radars[1]))

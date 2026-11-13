@@ -31,4 +31,5 @@
   `Motion(rediscover_every_chirps=...)` are refused for a network. A link requires FMCW radars with a uniform TDM ramp
   or a one-profile sequence; FMCW into a pulsed or OFDM receiver (and the reverse), a sampled receiver hearing a band
   wider than its sample rate, DDM/BPM and multi-profile FMCW links, emitters with directional radar elements,
-  oscillator phase noise on a receiving radar and wideband OFDM are refused by name (R-ADR-051).
+  oscillator phase noise on a receiving radar, a transmit-power leaf and wideband OFDM are refused by name
+  (R-ADR-051); each radar's pose translation and a shared pattern are leaves inside a network.
