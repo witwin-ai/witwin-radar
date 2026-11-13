@@ -127,22 +127,23 @@ probes.
   a target walking past a PEC wall, 2 triangles against 32: the same probe
   count, no topology refinement, cubes equal to `1e-3`.
 * `tests/test_session_budget.py` (2 x 2 array, 2 chirps of 8 samples, one
-  wall, `reflections=1`), marginal frame, integration head a111481 against
-  this change, same environment:
+  wall, `reflections=1`), marginal frame, the committed pins of integration
+  head a699e07 (rows from discovery, strided join) against this change:
 
   | Case | evaluate | native | synchronizations | d2h |
   |---|---|---|---|---|
-  | `adaptive_point` | 6 -> 8 | 3 -> 4 | 68 -> 96 | 61 -> 88 |
-  | `adaptive_structure` | 6 -> 8 | 5 -> 7 | 159 -> 211 | 100 -> 133 |
-  | `adc_point` | 64 -> 64 | 2 -> 3 | 580 -> 581 | 578 -> 578 |
-  | `adc_point_per_chirp` (new) | 8 | 3 | 105 | 74 |
-  | `auto_point` (new) | 8 | 4 | 96 | 88 |
+  | `adaptive_point` | 6 -> 8 | 3 -> 4 | 40 -> 60 | 35 -> 54 |
+  | `adaptive_structure` | 6 -> 8 | 5 -> 7 | 120 -> 159 | 70 -> 93 |
+  | `adc_point` | 64 -> 64 | 2 -> 3 | 320 -> 321 | 320 -> 320 |
+  | `adc_structure` | 64 -> 64 | 64 -> 96 | 1152 -> 1152 | 672 -> 672 |
+  | `chirp_point` | 8 -> 8 | 2 -> 3 | 40 -> 41 | 40 -> 40 |
+  | `adc_point_per_chirp` (new) | 8 | 3 | 83 | 52 |
+  | `auto_point` (new) | 8 | 4 | 60 | 54 |
 
   The adaptive increase is the two verification probes per frame (each a
-  discovery and a replay) and, in a static world, one host read of each
-  leg's interaction geometry per discovery for the plane groups; `native` is
-  the event launch. `auto_point` costs what `adaptive_point` does and an
-  eighth of `adc_point`'s Channel evaluations. The committed pins before this
-  change were ceilings well above the measured values (for example 2884
-  synchronizations for `adc_point` against 580 measured on a111481); they are
-  now the measured values.
+  discovery) and, in a static world, one host read of each leg's
+  interaction geometry per discovery for the plane groups; `native` is the
+  event launch, one per replay group and one per observation where
+  structures move (each observation is its own replay there). `auto_point`
+  costs what `adaptive_point` does and an eighth of `adc_point`'s Channel
+  evaluations.

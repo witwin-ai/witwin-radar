@@ -1410,11 +1410,17 @@ class TwoWayComposer:
     def _slot_validity(
         self, inbound: RadarLegBatch, outbound: RadarLegBatch, slots: int, device: torch.device
     ) -> torch.Tensor | None:
-        """Row validity of every slot, gathered through the single-slot tables."""
+        """Row validity of every slot, gathered through the single-slot tables.
 
+        A join with no site row (every declared site occluded) publishes an
+        empty column, as :meth:`compose` does.
+        """
+
+        rows = self.site_row_count * slots
+        if rows == 0:
+            return torch.zeros(0, dtype=torch.bool, device=device)
         if inbound.row_valid is None and outbound.row_valid is None:
             return None
-        rows = self.site_row_count * slots
         ones = torch.ones(rows, dtype=torch.bool, device=device)
         valid_in = (
             ones
