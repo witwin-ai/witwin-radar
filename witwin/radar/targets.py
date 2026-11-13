@@ -465,11 +465,7 @@ def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *
             cluster_size_m=targets.cluster_size_m,
             max_sites=targets.max_sites,
         )
-        response = FacetScatterResponse(
-            wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength),
-            polarization=tuple(float(value) for value in radar.polarization_vector),
-            seed=targets.seed,
-        )
+        response = FacetScatterResponse(wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength), seed=targets.seed)
         return ScatterSitePolicy.from_facets(facets), response
     if isinstance(targets, PointTargets):
         positions = targets.positions

@@ -13,7 +13,10 @@ far-field distance ``2 D^2 / lambda`` of every shape), all perfect conductors:
   whose double bounce needs one scene reflection before the facet
   (``reflections=1``) and sees pure TE incidence with the ``"up"`` polarization;
 * triangular trihedral on its symmetry axis, ``4 pi L^4 / (3 lambda^2)``, whose
-  triple bounce needs two (``reflections=2``).
+  triple bounce needs two (``reflections=2``): two geometric-optics bounces on
+  the inbound leg, physical optics at the third face. The polarization rotation
+  of the two bounces reaches the facet through the legs' unprojected fields and
+  the facet's 2x2 scattering matrix (R-ADR-041, R-ADR-042).
 
 The measured cross section is the narrowband (CW) one: the coherent sum of the
 composed rows' complex transfers at the carrier, inverted through the
@@ -47,12 +50,6 @@ TOLERANCE_DB = 1.0
 WAVELENGTH_M = ref.wavelength_m(sc.CARRIER_HZ)
 WAVENUMBER = 2.0 * math.pi / WAVELENGTH_M
 
-_PH5_TRIHEDRAL = (
-    "PH-5: each leg is projected onto the site's dipole at the radar polarization, so the 180 degree "
-    "polarization rotation of a two-bounce inbound leg is lost at the facet; the six triple-bounce "
-    "orderings then sum with weights 2 (p.n_C)^2 - 1, whose mean is -1/3 (-9.5 dB). Needs the unprojected "
-    "transport and a 2x2 site scattering matrix (M4-4)"
-)
 
 #: shape -> (mesh generator, analytic RCS m^2, reflections, the three finest levels).
 SHAPES = {
@@ -78,7 +75,7 @@ SHAPES = {
         lambda level: sc.trihedral_mesh(level, edge_m=SIZE_M, range_m=RANGE_M),
         ref.triangular_trihedral_rcs_m2(SIZE_M, WAVELENGTH_M),
         2,
-        (4, 8, 16),
+        (16, 24, 32),
     ),
 }
 
@@ -118,15 +115,7 @@ def test_the_measurement_recovers_a_single_point_target():
     assert _rcs(_coherent_sum(rows)) == pytest.approx(0.37, rel=1e-4)
 
 
-@pytest.mark.parametrize(
-    "shape",
-    [
-        "plate",
-        "sphere",
-        "dihedral",
-        pytest.param("trihedral", marks=pytest.mark.xfail(strict=True, reason=_PH5_TRIHEDRAL)),
-    ],
-)
+@pytest.mark.parametrize("shape", ["plate", "sphere", "dihedral", "trihedral"])
 def test_mesh_target_rcs_converges_to_the_analytic_value(shape):
     generate, analytic, reflections, levels = SHAPES[shape]
     errors_db = {}

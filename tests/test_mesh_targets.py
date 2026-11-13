@@ -100,12 +100,15 @@ def _channel_wall_coefficient(material, *, cos_incidence: float, polarization: s
     mixed = complex(transfer[order][1] / transfer[order][0])
     coefficient = mixed / ((RANGE_M / unfolded) * cmath.exp(-1j * WAVENUMBER * (unfolded - RANGE_M)))
     if polarization == "tm":
-        # The polarization lies in the plane of incidence, along the wall normal.
-        # Each end of the bounced leg projects it onto the plane transverse to
-        # the ray, which keeps its normal part, sin^2(theta_i); the tangential
-        # part the coefficient flips is then projected away. The direct row
-        # projects to one.
-        coefficient /= -(1.0 - cos_incidence**2)
+        # The polarization lies in the plane of incidence, along the wall
+        # normal. The join divides out each element's dipole projection, so
+        # the field leaving the transmitter is a unit vector transverse to the
+        # ray; its normal component, sin(theta_i), is what the wall's TM
+        # coefficient carries to the target, where the receiver reads it along
+        # the polarization (the wall normal). The coefficient flips the
+        # tangential part, so in the tangential convention the normal part
+        # comes back with -r_TM. The direct row reads one.
+        coefficient /= -math.sqrt(1.0 - cos_incidence**2)
     return coefficient
 
 

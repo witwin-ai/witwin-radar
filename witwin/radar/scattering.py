@@ -493,7 +493,7 @@ class _AspectResponse(torch.autograd.Function):
 
     @staticmethod
     def forward(dir_in, dir_out, axis, amplitude, phase_rad, idx_in, idx_out, idx_site, row_valid, exponent, tables):
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         s_im = torch.empty_like(s_re)
         _ops().scatter_response_aspect_forward(
@@ -510,6 +510,8 @@ class _AspectResponse(torch.autograd.Function):
             s_im,
             exponent,
             rows,
+            tables.slots,
+            tables.slot_local_sites,
         )
         return s_re, s_im
 
@@ -556,10 +558,12 @@ class _AspectResponse(torch.autograd.Function):
             grad_amplitude,
             grad_phase_rad,
             ctx.exponent,
-            int(idx_in.shape[0]),
+            int(row_valid.shape[0]),
             int(dir_in.shape[0]),
             int(dir_out.shape[0]),
             int(axis.shape[0]),
+            tables.slots,
+            tables.slot_local_sites,
         )
         return (
             grad_dir_in,
@@ -595,7 +599,7 @@ class _AspectResponse(torch.autograd.Function):
         def tangent(value, like):
             return torch.zeros_like(like) if value is None else value.contiguous()
 
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         tan_s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         tan_s_im = torch.empty_like(tan_s_re)
         _ops().scatter_response_aspect_jvp(
@@ -617,6 +621,8 @@ class _AspectResponse(torch.autograd.Function):
             tan_s_im,
             ctx.exponent,
             rows,
+            ctx.tables.slots,
+            ctx.tables.slot_local_sites,
         )
         return tan_s_re, tan_s_im
 
@@ -636,6 +642,10 @@ class _BackwardTables:
     by_out_rows: torch.Tensor
     by_site_offsets: torch.Tensor
     by_site_rows: torch.Tensor
+    #: The slot stride: how many slots the batch carries, and whether each
+    #: slot has its own sites (1) or every slot shares them (0).
+    slots: int = 1
+    slot_local_sites: int = 0
 
 
 def _require_parameter(name: str, value: object, *, sites: int, width: int | None):
@@ -769,8 +779,12 @@ class AspectScatterResponse:
             "dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid):
+    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
         """One complex value per composed row, as a real/imaginary pair.
+
+        ``slots`` is the slot count of a slot-major batch: the composer's
+        tables describe one slot and the kernel strides them (sites shared by
+        every slot, or one set per slot for a time-resolved axis).
 
         Host work only: shape and depth validation, then one kernel launch. The
         direction tables are the legs' own aliased tensors, so a gradient taken
@@ -780,30 +794,11 @@ class AspectScatterResponse:
         may freeze.
         """
 
-        if self.site_count != composer.site_count:
-            raise ValueError(
-                f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
-            )
-        dir_in = _require_direction(inbound, composer.inbound_row_count, "inbound")
-        # The outbound leg runs from the receiver TOWARD the site (R-ADR-039),
-        # so its last segment arrives at the site and the site's departure
-        # bearing is that segment reversed: site -> last point before it. This
-        # holds at every depth, so a reflected outbound row needs no separate
-        # departure table.
-        if outbound.arrival_target_m is None or outbound.arrival_origin_m is None:
-            raise ValueError("an aspect response needs the outbound leg's arrival segment endpoints")
-        dir_out = _ScatterDirection.apply(outbound.arrival_target_m, outbound.arrival_origin_m)
-        tables = _BackwardTables(
-            by_in_offsets=composer.by_inbound_offsets,
-            by_in_rows=composer.by_inbound_rows,
-            by_out_offsets=composer.by_outbound_offsets,
-            by_out_rows=composer.by_outbound_rows,
-            by_site_offsets=composer.by_response_offsets,
-            by_site_rows=composer.by_response_rows,
-        )
+        local = _slot_local_sites(self.site_count, composer, slots, "aspect response")
+        dir_in = _require_direction(inbound, composer.inbound_row_count * slots, "inbound")
         return _AspectResponse.apply(
             dir_in,
-            dir_out,
+            _site_departure(outbound),
             self.axis,
             self.amplitude,
             self.phase_rad,
@@ -812,43 +807,29 @@ class AspectScatterResponse:
             composer.response_slot,
             row_valid,
             self.exponent,
-            tables,
+            _row_tables(composer, slots=slots, slot_local_sites=local),
         )
-
-
-def _departure_directions(composer, inbound, outbound) -> tuple[torch.Tensor, torch.Tensor]:
-    """The direction INTO the site per inbound leg row, and OUT OF it per outbound row.
-
-    A line-of-sight outbound leg's published direction is its departure
-    direction; a reflected one publishes its final segment's, so the departure
-    bearing is rebuilt natively from the first segment's endpoints.
-    """
-
-    dir_in = _require_direction(inbound, composer.inbound_row_count, "inbound")
-    if composer.outbound_max_depth == 0:
-        return dir_in, _require_direction(outbound, composer.outbound_row_count, "outbound")
-    if outbound.departure_origin_m is None or outbound.departure_target_m is None:
-        raise ValueError("outbound reflection requires actual departure segment endpoints")
-    return dir_in, _ScatterDirection.apply(outbound.departure_origin_m, outbound.departure_target_m)
 
 
 class _FacetResponse(torch.autograd.Function):
     """Autograd bridge for the facet response operators.
 
-    The differentiable inputs are the two leg direction tables, the facet
-    corners and the site positions; everything in ``law`` selects the law and
-    takes no derivative. Real and imaginary parts cross the boundary as two
-    real tensors.
+    The differentiable inputs are the two legs' final-segment directions, the
+    facet corners and the float64 site positions; everything in ``law``
+    selects the law and takes no derivative. The output is the row's 2x2
+    matrix as ``[rows, 4, 2]`` real pairs and the row's site-basis up axis,
+    which is a frame declaration and carries no derivative.
     """
 
     @staticmethod
-    def forward(dir_in, dir_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables):
-        rows = int(idx_in.shape[0])
-        s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
-        s_im = torch.empty_like(s_re)
+    def forward(k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables):
+        rows = int(row_valid.shape[0])
+        matrix = torch.empty((rows, 4, 2), dtype=torch.float32, device=k_in.device)
+        up = torch.empty((rows, 3), dtype=torch.float32, device=k_in.device)
         _ops().facet_response_forward(
-            dir_in,
-            dir_out,
+            law.origin_in,
+            k_in,
+            k_out,
             idx_in,
             idx_out,
             idx_site,
@@ -856,84 +837,53 @@ class _FacetResponse(torch.autograd.Function):
             sites,
             *law.tables(),
             row_valid,
-            s_re,
-            s_im,
-            *law.scalars(),
-            rows,
+            matrix,
+            up,
+            law.wavenumber,
+            law.seed,
+            tables.slots,
         )
-        return s_re, s_im
+        return matrix, up
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (dir_in, dir_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables) = inputs
+        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid, law, tables) = inputs
         ctx.law = law
         ctx.tables = tables
-        saved = (dir_in, dir_out, corners, sites, idx_in, idx_out, idx_site, row_valid)
+        ctx.mark_non_differentiable(output[1])
+        saved = (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid)
         ctx.save_for_backward(*saved)
         ctx.save_for_forward(*saved)
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_re, grad_im):
-        (dir_in, dir_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
+    def backward(ctx, grad_matrix, grad_up):
+        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law, tables = ctx.law, ctx.tables
-        grads = [torch.empty_like(value) for value in (dir_in, dir_out, corners, sites)]
+        grads = [torch.empty_like(value) for value in (k_in, k_out, corners, sites)]
         _ops().facet_response_backward(
-            dir_in,
-            dir_out,
-            idx_in,
-            idx_out,
-            idx_site,
-            corners,
-            sites,
-            *law.tables(),
-            row_valid,
-            tables.by_in_offsets,
-            tables.by_in_rows,
-            tables.by_out_offsets,
-            tables.by_out_rows,
-            tables.by_site_offsets,
-            tables.by_site_rows,
-            law.facet_site,
-            grad_re.contiguous(),
-            grad_im.contiguous(),
-            *grads,
-            *law.scalars(),
-            int(idx_in.shape[0]),
-        )
+            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites, *law.tables(), row_valid,
+            tables.by_in_offsets, tables.by_in_rows, tables.by_out_offsets, tables.by_out_rows,
+            tables.by_site_offsets, tables.by_site_rows, law.facet_site, grad_matrix.contiguous(), *grads,
+            law.wavenumber, law.seed, tables.slots,
+        )  # fmt: skip
         return (*grads, None, None, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, tan_dir_in, tan_dir_out, tan_corners, tan_sites, *_):
-        (dir_in, dir_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
+    def jvp(ctx, tan_k_in, tan_k_out, tan_corners, tan_sites, *_):
+        (k_in, k_out, corners, sites, idx_in, idx_out, idx_site, row_valid) = ctx.saved_tensors
         law = ctx.law
 
         def tangent(value, like):
             return torch.zeros_like(like) if value is None else value.contiguous()
 
-        rows = int(idx_in.shape[0])
-        tan_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
-        tan_im = torch.empty_like(tan_re)
+        tan_matrix = torch.empty((int(row_valid.shape[0]), 4, 2), dtype=torch.float32, device=k_in.device)
         _ops().facet_response_jvp(
-            dir_in,
-            dir_out,
-            idx_in,
-            idx_out,
-            idx_site,
-            corners,
-            sites,
-            *law.tables(),
-            row_valid,
-            tangent(tan_dir_in, dir_in),
-            tangent(tan_dir_out, dir_out),
-            tangent(tan_corners, corners),
-            tangent(tan_sites, sites),
-            tan_re,
-            tan_im,
-            *law.scalars(),
-            rows,
-        )
-        return tan_re, tan_im
+            law.origin_in, k_in, k_out, idx_in, idx_out, idx_site, corners, sites, *law.tables(), row_valid,
+            tangent(tan_k_in, k_in), tangent(tan_k_out, k_out), tangent(tan_corners, corners),
+            tangent(tan_sites, sites), tan_matrix, law.wavenumber, law.seed, ctx.tables.slots,
+        )  # fmt: skip
+        return tan_matrix, None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -948,8 +898,10 @@ class _FacetLaw:
     layer_offsets: torch.Tensor
     layers: torch.Tensor
     wavenumber: float
-    polarization: tuple[float, float, float]
     seed: int
+    #: Each inbound leg row's last point before the site (the gate against a
+    #: facet illuminating itself); a discrete test, so no derivative.
+    origin_in: torch.Tensor
 
     def tables(self) -> tuple[torch.Tensor, ...]:
         return (
@@ -961,41 +913,37 @@ class _FacetLaw:
             self.layers,
         )
 
-    def scalars(self) -> tuple[float, float, float, float, int]:
-        return (self.wavenumber, *self.polarization, self.seed)
-
 
 @dataclass(frozen=True, slots=True, eq=False)
 class FacetScatterResponse:
     """Physical-optics facet scattering of a mesh target (R-ADR-042).
 
-    One complex factor per composed row: the coherent sum, over the facets of
-    the row's site, of each facet's physical-optics term - area, Kirchhoff
-    obliquity, exact flat-facet form factor, the co-polar reflection
-    coefficient of the facet's material and the coherent roughness loss -
-    plus a Lambertian diffuse term that carries the power roughness removes
-    from the coherent one. The equation, its symbols and units, its
-    normalisation and its validity domain are in ``facet_scatter.cu`` and
-    R-ADR-042; this class is orchestration only.
+    One 2x2 scattering matrix per composed row (``matrix_width = 4``): the
+    projection onto the join's site basis of the coherent sum, over the facets
+    of the row's site, of each facet's vector physical-optics dyadic - area,
+    exact flat-facet form factor, the facet material's TE and TM reflection
+    coefficients and the coherent roughness loss - plus a Lambertian diffuse
+    term that carries the power roughness removes from the coherent one. The
+    equation, its symbols and units, its normalisation and its validity
+    domain are in ``facet_scatter.cu`` and R-ADR-042; this class is
+    orchestration only.
 
     The record built from a target carries the law - the carrier wavenumber
-    ``k`` in rad/m, the radar's world polarization and the diffuse seed - and
-    no geometry. The session binds it to each frame's facets with
-    :meth:`bind`; an unbound response refuses to evaluate.
+    ``k`` in rad/m and the diffuse seed - and no geometry. The session binds it
+    to each frame's facets with :meth:`bind`; an unbound response refuses to
+    evaluate.
     """
 
     wavenumber_rad_per_m: float
-    polarization: tuple[float, float, float]
     seed: int = 0
     frame: object | None = None
 
     native_row_owner = "witwin.radar.scattering.FacetScatterResponse"
+    matrix_width = 4
 
     def __post_init__(self) -> None:
         if not float(self.wavenumber_rad_per_m) > 0.0:
             raise ValueError("wavenumber_rad_per_m must be positive")
-        if len(self.polarization) != 3 or not any(float(value) for value in self.polarization):
-            raise ValueError("polarization must be a non-zero world 3-vector")
         if type(self.seed) is not int or not 0 <= self.seed < 2**63:
             raise ValueError(f"seed must be a non-negative int below 2**63, got {self.seed!r}")
 
@@ -1013,9 +961,7 @@ class FacetScatterResponse:
     def bind(self, frame: object) -> FacetScatterResponse:
         """This response against one frame's facets (a :class:`witwin.radar.facets.FacetFrame`)."""
 
-        return FacetScatterResponse(
-            wavenumber_rad_per_m=self.wavenumber_rad_per_m, polarization=self.polarization, seed=self.seed, frame=frame
-        )
+        return FacetScatterResponse(wavenumber_rad_per_m=self.wavenumber_rad_per_m, seed=self.seed, frame=frame)
 
     def evaluate(self, site_count: int, device: torch.device) -> torch.Tensor:
         """Refused: a facet response is a function of each row's two directions."""
@@ -1025,8 +971,12 @@ class FacetScatterResponse:
             "TwoWayComposer.compose dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid):
-        """One complex value per composed row, as a real/imaginary pair. Host work only."""
+    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+        """``([rows, 4, 2] matrix pairs, [rows, 3] up axes)`` for every composed row of every slot.
+
+        The directions are the legs' final-segment directions into the site,
+        the same tensors the join builds its site basis from. Host work only.
+        """
 
         frame: Any = self.frame
         if frame is None:
@@ -1037,7 +987,6 @@ class FacetScatterResponse:
                 f"this frame carries {model.site_count} facet sites but the join was frozen against "
                 f"{composer.site_count}"
             )
-        dir_in, dir_out = _departure_directions(composer, inbound, outbound)
         law = _FacetLaw(
             site_offsets=model.site_offsets,
             site_facets=model.site_facets,
@@ -1047,20 +996,12 @@ class FacetScatterResponse:
             layer_offsets=model.layer_offsets,
             layers=model.layers,
             wavenumber=float(self.wavenumber_rad_per_m),
-            polarization=tuple(float(value) for value in self.polarization),  # type: ignore[arg-type]
             seed=int(self.seed),
-        )
-        tables = _BackwardTables(
-            by_in_offsets=composer.by_inbound_offsets,
-            by_in_rows=composer.by_inbound_rows,
-            by_out_offsets=composer.by_outbound_offsets,
-            by_out_rows=composer.by_outbound_rows,
-            by_site_offsets=composer.by_response_offsets,
-            by_site_rows=composer.by_response_rows,
+            origin_in=_present_points(inbound.arrival_origin_m, "arrival_origin_m").detach().contiguous(),
         )
         return _FacetResponse.apply(
-            dir_in,
-            dir_out,
+            _require_direction(inbound, composer.inbound_row_count * slots, "inbound"),
+            _require_direction(outbound, composer.outbound_row_count * slots, "outbound"),
             frame.corners,
             frame.sites,
             composer.inbound_row,
@@ -1068,7 +1009,7 @@ class FacetScatterResponse:
             composer.response_slot,
             row_valid,
             law,
-            tables,
+            _row_tables(composer, slots=slots, slot_local_sites=0),
         )
 
 
@@ -1077,12 +1018,13 @@ class _TableResponse(torch.autograd.Function):
 
     @staticmethod
     def forward(dir_in, dir_out, axis, idx_in, idx_out, idx_site, row_valid, table_re, table_im, tables):
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         s_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         s_im = torch.empty_like(s_re)
         _ops().scatter_response_table_forward(
-            dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, s_re, s_im, rows
-        )
+            dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, s_re, s_im, rows,
+            tables.slots, tables.slot_local_sites,
+        )  # fmt: skip
         return s_re, s_im
 
     @staticmethod
@@ -1118,7 +1060,9 @@ class _TableResponse(torch.autograd.Function):
             grad_re.contiguous(),
             grad_im.contiguous(),
             *grads,
-            int(idx_in.shape[0]),
+            int(row_valid.shape[0]),
+            tables.slots,
+            tables.slot_local_sites,
         )
         return (*grads, None, None, None, None, None, None, None)
 
@@ -1129,7 +1073,7 @@ class _TableResponse(torch.autograd.Function):
         def tangent(value, like):
             return torch.zeros_like(like) if value is None else value.contiguous()
 
-        rows = int(idx_in.shape[0])
+        rows = int(row_valid.shape[0])
         tan_re = torch.empty(rows, dtype=torch.float32, device=dir_in.device)
         tan_im = torch.empty_like(tan_re)
         _ops().scatter_response_table_jvp(
@@ -1148,6 +1092,8 @@ class _TableResponse(torch.autograd.Function):
             tan_re,
             tan_im,
             rows,
+            ctx.tables.slots,
+            ctx.tables.slot_local_sites,
         )
         return tan_re, tan_im
 
@@ -1203,23 +1149,11 @@ class TableScatterResponse:
             "TwoWayComposer.compose dispatches evaluate_rows and there is no per-site value"
         )
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid):
-        if self.site_count != composer.site_count:
-            raise ValueError(
-                f"this response carries {self.site_count} sites but the join was frozen against {composer.site_count}"
-            )
-        dir_in, dir_out = _departure_directions(composer, inbound, outbound)
-        tables = _BackwardTables(
-            by_in_offsets=composer.by_inbound_offsets,
-            by_in_rows=composer.by_inbound_rows,
-            by_out_offsets=composer.by_outbound_offsets,
-            by_out_rows=composer.by_outbound_rows,
-            by_site_offsets=composer.by_response_offsets,
-            by_site_rows=composer.by_response_rows,
-        )
+    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+        local = _slot_local_sites(self.site_count, composer, slots, "tabulated response")
         return _TableResponse.apply(
-            dir_in,
-            dir_out,
+            _require_direction(inbound, composer.inbound_row_count * slots, "inbound"),
+            _site_departure(outbound),
             self.axis,
             composer.inbound_row,
             composer.outbound_row,
@@ -1227,7 +1161,7 @@ class TableScatterResponse:
             row_valid,
             self.table_re,
             self.table_im,
-            tables,
+            _row_tables(composer, slots=slots, slot_local_sites=local),
         )
 
 
@@ -1301,10 +1235,59 @@ class FluctuatingResponse:
         factor = self._factor().to(device=device)
         return value * (factor if value.ndim == 1 else factor[:, None])
 
-    def evaluate_rows(self, composer, inbound, outbound, row_valid):
+    def evaluate_rows(self, composer, inbound, outbound, row_valid, *, slots: int = 1):
+        if slots != 1:
+            raise ValueError("a fluctuating response is bound per observation and is never slot batched")
         rows_re, rows_im = self.base.evaluate_rows(composer, inbound, outbound, row_valid)
         factor = self._factor().index_select(0, composer.response_slot)
         return rows_re * factor, rows_im * factor
+
+
+def _row_tables(composer, *, slots: int, slot_local_sites: int) -> _BackwardTables:
+    """The join's own single-slot CSR tables and the slot stride a row family reads them with."""
+
+    return _BackwardTables(
+        by_in_offsets=composer.by_inbound_offsets,
+        by_in_rows=composer.by_inbound_rows,
+        by_out_offsets=composer.by_outbound_offsets,
+        by_out_rows=composer.by_outbound_rows,
+        by_site_offsets=composer.by_response_offsets,
+        by_site_rows=composer.by_response_rows,
+        slots=int(slots),
+        slot_local_sites=int(slot_local_sites),
+    )
+
+
+def _slot_local_sites(sites: int, composer, slots: int, owner: str) -> int:
+    """0 when the response's sites are the join's, shared by every slot; 1 when it carries one set per slot."""
+
+    if sites == composer.site_count:
+        return 0
+    if slots > 1 and sites == composer.site_count * slots:
+        return 1
+    raise ValueError(
+        f"this {owner} carries {sites} sites but the join was frozen against {composer.site_count}"
+        + (f" in each of {slots} slots" if slots > 1 else "")
+    )
+
+
+def _site_departure(outbound) -> torch.Tensor:
+    """The unit bearing from each outbound row's site to the last point before it.
+
+    The outbound leg runs from the receiver TOWARD the site (R-ADR-039), so
+    its last segment arrives at the site and the site's departure bearing is
+    that segment reversed, at every depth.
+    """
+
+    if outbound.arrival_target_m is None or outbound.arrival_origin_m is None:
+        raise ValueError("a per-row response needs the outbound leg's arrival segment endpoints")
+    return _ScatterDirection.apply(outbound.arrival_target_m, outbound.arrival_origin_m)
+
+
+def _present_points(points: torch.Tensor | None, name: str) -> torch.Tensor:
+    if points is None:
+        raise ValueError(f"a facet response needs the inbound leg's {name}")
+    return points
 
 
 def _require_direction(leg, rows: int, name: str) -> torch.Tensor:

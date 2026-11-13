@@ -616,7 +616,7 @@
           "name": "FacetScatterResponse",
           "kind": "class",
           "target": "witwin.radar.scattering.FacetScatterResponse",
-          "signature": "(wavenumber_rad_per_m: 'float', polarization: 'tuple[float, float, float]', seed: 'int' = 0, frame: 'object | None' = None) -> None"
+          "signature": "(wavenumber_rad_per_m: 'float', seed: 'int' = 0, frame: 'object | None' = None) -> None"
         },
         {
           "name": "FluctuatingResponse",

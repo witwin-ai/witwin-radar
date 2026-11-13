@@ -23,24 +23,25 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
   // Physical-optics facets (facet_scatter.cu). facet_geometry gathers one
   // frame's facet corners and places each site at its anchor facet's
   // centroid; it is linear, so its JVP is itself on the tangent.
-  // facet_response is one complex factor per composed row: the coherent sum of
-  // the site's facets' PO terms with the material's co-polar reflection, the
-  // coherent roughness factor and a Lambertian diffuse term. The material table,
-  // wavenumber, polarization and seed take no derivative.
+  // facet_response is one 2x2 scattering matrix per composed row in the join's
+  // site basis: the coherent sum of the site's facets' vector physical-optics
+  // dyadics with the material's TE/TM reflection, the coherent roughness factor
+  // and a Lambertian diffuse term, slot strided over a slot-major batch. The
+  // material table, wavenumber and seed take no derivative.
   m.def("facet_geometry_forward(Tensor vertices, Tensor faces, Tensor site_offsets, Tensor site_facets, Tensor(a!) corners, Tensor(b!) sites) -> ()");
   m.def("facet_geometry_jvp(Tensor tan_vertices, Tensor faces, Tensor site_offsets, Tensor site_facets, Tensor(a!) tan_corners, Tensor(b!) tan_sites) -> ()");
   m.def("facet_geometry_backward(Tensor vertex_offsets, Tensor vertex_entries, Tensor facet_site, Tensor site_offsets, Tensor site_facets, Tensor grad_corners, Tensor grad_sites, Tensor(a!) grad_vertices) -> ()");
-  m.def("facet_response_forward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor(a!) s_re, Tensor(b!) s_im, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
-  m.def("facet_response_jvp(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_corners, Tensor tan_sites, Tensor(a!) tan_s_re, Tensor(b!) tan_s_im, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
-  m.def("facet_response_backward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, Tensor facet_site, Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, Tensor(b!) grad_dir_out, Tensor(c!) grad_corners, Tensor(d!) grad_sites, float wavenumber, float pol_x, float pol_y, float pol_z, int seed, int num_rows) -> ()");
+  m.def("facet_response_forward(Tensor origin_in, Tensor k_in, Tensor k_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor(a!) s, Tensor(b!) up, float wavenumber, int seed, int slots) -> ()");
+  m.def("facet_response_jvp(Tensor origin_in, Tensor k_in, Tensor k_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor tan_k_in, Tensor tan_k_out, Tensor tan_corners, Tensor tan_sites, Tensor(a!) tan_s, float wavenumber, int seed, int slots) -> ()");
+  m.def("facet_response_backward(Tensor origin_in, Tensor k_in, Tensor k_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor corners, Tensor sites, Tensor site_offsets, Tensor site_facets, Tensor facet_material, Tensor material_params, Tensor layer_offsets, Tensor layers, Tensor row_valid, Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, Tensor facet_site, Tensor grad_s, Tensor(a!) grad_k_in, Tensor(b!) grad_k_out, Tensor(c!) grad_corners, Tensor(d!) grad_sites, float wavenumber, int seed, int slots) -> ()");
   // Tabulated response (scatter_response.cu): S(theta) interpolated per
   // composed row at the bistatic aspect angle between the site axis and the
   // bisector of the leg directions; the table takes no derivative. And the
   // Swerling amplitude factor, one per site, keyed on the host; no input of it
   // is differentiable.
-  m.def("scatter_response_table_forward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor(a!) s_re, Tensor(b!) s_im, int num_rows) -> ()");
-  m.def("scatter_response_table_jvp(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_axis, Tensor(a!) tan_s_re, Tensor(b!) tan_s_im, int num_rows) -> ()");
-  m.def("scatter_response_table_backward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, Tensor(b!) grad_dir_out, Tensor(c!) grad_axis, int num_rows) -> ()");
+  m.def("scatter_response_table_forward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor(a!) s_re, Tensor(b!) s_im, int num_rows, int slots, int slot_local_sites) -> ()");
+  m.def("scatter_response_table_jvp(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_axis, Tensor(a!) tan_s_re, Tensor(b!) tan_s_im, int num_rows, int slots, int slot_local_sites) -> ()");
+  m.def("scatter_response_table_backward(Tensor dir_in, Tensor dir_out, Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, Tensor table_re, Tensor table_im, Tensor row_valid, Tensor by_in_offsets, Tensor by_in_rows, Tensor by_out_offsets, Tensor by_out_rows, Tensor by_site_offsets, Tensor by_site_rows, Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, Tensor(b!) grad_dir_out, Tensor(c!) grad_axis, int num_rows, int slots, int slot_local_sites) -> ()");
   m.def("fluctuation_factor_forward(Tensor(a!) out, int key, int degrees) -> ()");
   m.def("scatter_direction_forward(Tensor origin, Tensor target, Tensor(a!) out) -> ()");
   m.def("scatter_direction_backward(Tensor origin, Tensor target, Tensor cotangent, Tensor(a!) out) -> ()");
@@ -493,14 +494,14 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "scatter_response_aspect_forward(Tensor dir_in, Tensor dir_out, "
       "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
       "Tensor amplitude, Tensor phase_rad, Tensor row_valid, "
-      "Tensor(a!) s_re, Tensor(b!) s_im, float exponent, int num_rows) -> ()");
+      "Tensor(a!) s_re, Tensor(b!) s_im, float exponent, int num_rows, int slots, int slot_local_sites) -> ()");
   m.def(
       "scatter_response_aspect_jvp(Tensor dir_in, Tensor dir_out, "
       "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
       "Tensor amplitude, Tensor phase_rad, Tensor row_valid, "
       "Tensor tan_dir_in, Tensor tan_dir_out, Tensor tan_axis, "
       "Tensor tan_amplitude, Tensor tan_phase_rad, Tensor(a!) tan_s_re, "
-      "Tensor(b!) tan_s_im, float exponent, int num_rows) -> ()");
+      "Tensor(b!) tan_s_im, float exponent, int num_rows, int slots, int slot_local_sites) -> ()");
   m.def(
       "scatter_response_aspect_backward(Tensor dir_in, Tensor dir_out, "
       "Tensor idx_in, Tensor idx_out, Tensor idx_site, Tensor axis, "
@@ -510,5 +511,5 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "Tensor grad_s_re, Tensor grad_s_im, Tensor(a!) grad_dir_in, "
       "Tensor(b!) grad_dir_out, Tensor(c!) grad_axis, "
       "Tensor(d!) grad_amplitude, Tensor(e!) grad_phase_rad, float exponent, "
-      "int num_rows, int num_in, int num_out, int num_sites) -> ()");
+      "int num_rows, int num_in, int num_out, int num_sites, int slots, int slot_local_sites) -> ()");
 }

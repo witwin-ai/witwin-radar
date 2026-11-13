@@ -965,7 +965,8 @@ class WorldHalf:
             entry = group[0]
             round_trip = _round_trip(entry.epoch_frame.frozen)
             composer = round_trip.composer
-            paths = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+            response = self._response_at(group)
+            paths = composer.compose(replay.inbound, replay.outbound, response, replay.direct)
             tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
                 group,
                 round_trip.pattern,
@@ -983,6 +984,7 @@ class WorldHalf:
                 None if self._strided(round_trip) else ((composer, round_trip.pattern), (round_trip.identity, 1)),
                 transmitters,
                 receivers,
+                response,
             )
             if band is not None:
                 paths = replace(
@@ -1138,8 +1140,9 @@ class WorldHalf:
         slots = len(group)
         if self._strided(round_trip):
             composer = round_trip.composer
-            rows = composer.compose_slots(replay.inbound, replay.outbound, self.response, slots, replay.direct)
-            band = self._band(round_trip, replay, slots, None, transmitters, receivers)
+            response = self._response_at(group)
+            rows = composer.compose_slots(replay.inbound, replay.outbound, response, slots, replay.direct)
+            band = self._band(round_trip, replay, slots, None, transmitters, receivers, response)
             if round_trip.pattern.plan.is_identity:
                 # The stage's identity: isotropic elements at 0 dBi publish the
                 # weight unchanged and record that the pattern was applied.
@@ -1169,7 +1172,8 @@ class WorldHalf:
             )
             self._slot_tables.put(key, tables)
         composer, pattern = tables
-        batched = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+        response = self._response_at(group)
+        batched = composer.compose(replay.inbound, replay.outbound, response, replay.direct)
         tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
             group,
             pattern,
@@ -1187,7 +1191,9 @@ class WorldHalf:
             slots=slots,
             rows_per_slot=round_trip.composer.path_count,
             weight_includes_antenna_pattern=weighted.weight_includes_antenna_pattern,
-            complex_transfer_band=self._band(round_trip, replay, slots, (tables, key), transmitters, receivers),
+            complex_transfer_band=self._band(
+                round_trip, replay, slots, (tables, key), transmitters, receivers, response
+            ),
             frequency_offsets_hz=self.request.frequency_offsets_hz,
             total_delay_residual_s=weighted.total_delay_residual_s,
         )
@@ -1195,12 +1201,14 @@ class WorldHalf:
     def _strided(self, round_trip: FrozenRoundTrip) -> bool:
         """Whether this group composes by striding single-slot tables.
 
-        The join strides them for any per-site response and the pattern stage
-        for any pattern seen in the world frame; a radar pose turns each slot's
-        pattern frame, which the per-row route carries.
+        The join strides them for every response - a per-site one shared by
+        the slots, a per-row one evaluated by its native family over the same
+        single-slot tables - and the pattern stage for any pattern seen in the
+        world frame; a radar pose turns each slot's pattern frame, which the
+        per-row route carries.
         """
 
-        return not self.response.is_geometry_dependent and (round_trip.pattern.plan.is_identity or self.pose is None)
+        return round_trip.pattern.plan.is_identity or self.pose is None
 
     def _band(
         self,
@@ -1210,6 +1218,7 @@ class WorldHalf:
         tables: tuple[tuple[TwoWayComposer, RoundTripPatternStage], tuple[Hashable, int]] | None,
         transmitters: RadarEndpointSpec,
         receivers: RadarEndpointSpec,
+        response: ScatterResponse,
     ) -> torch.Tensor | None:
         """The wideband columns of a replay, ``[slots * rows, F]``, or ``None`` on a narrowband run.
 
@@ -1237,7 +1246,7 @@ class WorldHalf:
         if tables is None:
             composer = round_trip.composer
             rows = composer.compose_slots(
-                inbound, outbound, self.response, slots * columns, direct, frequency_offsets_hz=offsets
+                inbound, outbound, response, slots * columns, direct, frequency_offsets_hz=offsets
             )
             if not round_trip.pattern.plan.is_identity:
                 tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct, slots=slots * columns)
@@ -1257,7 +1266,7 @@ class WorldHalf:
                 band_tables = (group_composer.for_slots(columns), group_pattern.for_slots(columns))
                 self._slot_tables.put(band_key, band_tables)
             composer, pattern = band_tables
-            composed = composer.compose(inbound, outbound, self.response, direct, frequency_offsets_hz=offsets)
+            composed = composer.compose(inbound, outbound, response, direct, frequency_offsets_hz=offsets)
             tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct)
             weight = pattern.apply(
                 composed,

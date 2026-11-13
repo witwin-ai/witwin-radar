@@ -88,7 +88,8 @@ class FacetModel:
 class FacetFrame:
     """One frame's facets: the static model plus this instant's geometry.
 
-    ``corners`` is ``(F, 9)`` world metres, ``sites`` ``(S, 3)``; both carry the
+    ``corners`` is ``(F, 9)`` float32 world metres and ``sites`` ``(S, 3)`` float64 (the
+    precise site the join computes path lengths from, R-ADR-040); both carry the
     tape of the snapshot's vertices.
     """
 
@@ -103,7 +104,7 @@ class _FacetGeometry(torch.autograd.Function):
     @staticmethod
     def forward(vertices, model):
         corners = torch.empty((model.facet_count, 9), dtype=torch.float32, device=vertices.device)
-        sites = torch.empty((model.site_count, 3), dtype=torch.float32, device=vertices.device)
+        sites = torch.empty((model.site_count, 3), dtype=torch.float64, device=vertices.device)
         _ops().facet_geometry_forward(vertices, model.faces, model.site_offsets, model.site_facets, corners, sites)
         return corners, sites
 
@@ -141,7 +142,7 @@ class _FacetGeometry(torch.autograd.Function):
     def jvp(ctx, tan_vertices, tan_model):
         faces, site_offsets, site_facets = ctx.saved_tensors
         corners = torch.empty((int(faces.shape[0]), 9), dtype=torch.float32, device=tan_vertices.device)
-        sites = torch.empty((int(site_offsets.shape[0]) - 1, 3), dtype=torch.float32, device=tan_vertices.device)
+        sites = torch.empty((int(site_offsets.shape[0]) - 1, 3), dtype=torch.float64, device=tan_vertices.device)
         _ops().facet_geometry_jvp(tan_vertices.contiguous(), faces, site_offsets, site_facets, corners, sites)
         return corners, sites
 

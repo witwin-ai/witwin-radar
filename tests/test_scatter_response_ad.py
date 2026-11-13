@@ -155,6 +155,8 @@ def test_the_aspect_kernel_jvp_matches_finite_differences():
         tan_s_im,
         EXPONENT,
         rows,
+        1,
+        0,
     )
     measured = torch.complex(tan_s_re.double(), tan_s_im.double()).cpu()
 
@@ -223,6 +225,8 @@ def test_the_aspect_kernel_vjp_matches_finite_differences():
         composer.inbound_row_count,
         composer.outbound_row_count,
         composer.site_count,
+        1,
+        0,
     )
 
     inputs = {"dir_in": dir_in, "dir_out": dir_out, "axis": axis, "amplitude": amplitude, "phase": phase}

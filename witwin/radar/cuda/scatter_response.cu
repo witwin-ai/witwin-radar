@@ -86,6 +86,60 @@ __device__ __forceinline__ double dot3(const Vec3 a, const Vec3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+// The slot stride of a slot-major batch: idx_in, idx_out and idx_site
+// describe ONE slot of rows_per_slot composed rows; row k is join row
+// k % rows_per_slot of slot g = k / rows_per_slot, whose leg rows are offset by
+// g times the legs' per-slot row counts. Sites are shared by every slot
+// (sites_per_slot == 0) or slot local (sites_per_slot > 0: slot g's site s is
+// owner g * sites_per_slot + s). A reverse-pass owner walks its per-slot CSR
+// once per slot it appears in, in slot order: the summation order of the
+// per-slot table copies, so the strided route is bit-identical to them.
+struct Strided {
+  int64_t i, o, s;
+};
+
+struct OwnerSlots {
+  int64_t local, first, last;
+};
+
+struct Stride {
+  int64_t rows_per_slot;
+  int64_t in_per_slot;
+  int64_t out_per_slot;
+  int64_t sites_per_slot;
+  int64_t slots;
+
+  __device__ __forceinline__ Strided row(
+      const int64_t k, const int64_t* __restrict__ idx_in, const int64_t* __restrict__ idx_out,
+      const int64_t* __restrict__ idx_site) const {
+    const int64_t g = k / rows_per_slot;
+    const int64_t r = k - g * rows_per_slot;
+    return {idx_in[r] + g * in_per_slot, idx_out[r] + g * out_per_slot, idx_site[r] + g * sites_per_slot};
+  }
+
+  // An owner that belongs to one slot: global index -> (local, slot, slot + 1).
+  __device__ __forceinline__ OwnerSlots owner(const int64_t global, const int64_t per_slot) const {
+    const int64_t g = global / per_slot;
+    return {global - g * per_slot, g, g + 1};
+  }
+
+  // An owner shared by every slot.
+  __device__ __forceinline__ OwnerSlots shared(const int64_t local) const { return {local, 0, slots}; }
+};
+
+inline Stride make_stride(
+    const torch::stable::Tensor& idx_in, const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out,
+    const int64_t sites, const int64_t slots, const int64_t slot_local_sites) {
+  STD_TORCH_CHECK(slots >= 1, "slots must be at least 1.");
+  STD_TORCH_CHECK(
+      (dir_in.numel() / 3) % slots == 0 && (dir_out.numel() / 3) % slots == 0,
+      "every slot carries the same leg rows.");
+  STD_TORCH_CHECK(slot_local_sites == 0 || sites % slots == 0, "slot-local sites hold the same count in every slot.");
+  return {
+      idx_in.numel(), dir_in.numel() / 3 / slots, dir_out.numel() / 3 / slots,
+      slot_local_sites == 0 ? 0 : sites / slots, slots};
+}
+
 // The clamped lobe and its derivative, evaluated together because every caller
 // needs both and recomputing pow() is the expensive half.
 __device__ __forceinline__ void lobe(
@@ -140,6 +194,7 @@ __global__ void scatter_response_aspect_forward_kernel(
     float* __restrict__ s_re,
     float* __restrict__ s_im,
     const double exponent,
+    const Stride stride,
     const int num_rows) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) {
@@ -150,10 +205,11 @@ __global__ void scatter_response_aspect_forward_kernel(
     s_im[k] = 0.0f;
     return;
   }
-  const int64_t s = idx_site[k];
+  const Strided at = stride.row(k, idx_in, idx_out, idx_site);
+  const int64_t s = at.s;
   const RowTerms terms = row_terms(
-      load3(dir_in, idx_in[k]),
-      load3(dir_out, idx_out[k]),
+      load3(dir_in, at.i),
+      load3(dir_out, at.o),
       load3(axis, s),
       static_cast<double>(amplitude[s]),
       static_cast<double>(phase_rad[s]),
@@ -180,6 +236,7 @@ __global__ void scatter_response_aspect_jvp_kernel(
     float* __restrict__ tan_s_re,
     float* __restrict__ tan_s_im,
     const double exponent,
+    const Stride stride,
     const int num_rows) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) {
@@ -190,9 +247,10 @@ __global__ void scatter_response_aspect_jvp_kernel(
     tan_s_im[k] = 0.0f;
     return;
   }
-  const int64_t i = idx_in[k];
-  const int64_t o = idx_out[k];
-  const int64_t s = idx_site[k];
+  const Strided at = stride.row(k, idx_in, idx_out, idx_site);
+  const int64_t i = at.i;
+  const int64_t o = at.o;
+  const int64_t s = at.s;
   const Vec3 d_in = load3(dir_in, i);
   const Vec3 d_out = load3(dir_out, o);
   const Vec3 u = load3(axis, s);
@@ -252,6 +310,7 @@ __global__ void scatter_response_aspect_backward_kernel(
     float* __restrict__ grad_amplitude,
     float* __restrict__ grad_phase_rad,
     const double exponent,
+    const Stride stride,
     const int num_in,
     const int num_out,
     const int num_sites) {
@@ -265,36 +324,42 @@ __global__ void scatter_response_aspect_backward_kernel(
   int slot;
   const int64_t* offsets;
   const int64_t* segment_rows;
+  OwnerSlots owned;
   if (thread < num_in) {
     family = 0;
     slot = thread;
     offsets = by_in_offsets;
     segment_rows = by_in_rows;
+    owned = stride.owner(thread, stride.in_per_slot);
   } else if (thread < num_in + num_out) {
     family = 1;
     slot = thread - num_in;
     offsets = by_out_offsets;
     segment_rows = by_out_rows;
+    owned = stride.owner(slot, stride.out_per_slot);
   } else {
     family = 2;
     slot = thread - num_in - num_out;
     offsets = by_site_offsets;
     segment_rows = by_site_rows;
+    owned = stride.sites_per_slot > 0 ? stride.owner(slot, stride.sites_per_slot) : stride.shared(slot);
   }
 
   Vec3 vector = {0.0, 0.0, 0.0};
   double scalar_a = 0.0;
   double scalar_b = 0.0;
-  const int64_t begin = offsets[slot];
-  const int64_t end = offsets[slot + 1];
+  const int64_t begin = offsets[owned.local];
+  const int64_t end = offsets[owned.local + 1];
+  for (int64_t g = owned.first; g < owned.last; ++g) {
   for (int64_t entry = begin; entry < end; ++entry) {
-    const int64_t k = segment_rows[entry];
+    const int64_t k = g * stride.rows_per_slot + segment_rows[entry];
     if (row_valid[k] == 0) {
       continue;
     }
-    const int64_t i = idx_in[k];
-    const int64_t o = idx_out[k];
-    const int64_t s = idx_site[k];
+    const Strided at = stride.row(k, idx_in, idx_out, idx_site);
+    const int64_t i = at.i;
+    const int64_t o = at.o;
+    const int64_t s = at.s;
     const Vec3 d_in = load3(dir_in, i);
     const Vec3 d_out = load3(dir_out, o);
     const Vec3 u = load3(axis, s);
@@ -335,6 +400,7 @@ __global__ void scatter_response_aspect_backward_kernel(
       scalar_a += terms.gi * terms.go * g_magnitude;
       scalar_b += g_phase;
     }
+  }
   }
 
   if (family == 0) {
@@ -387,9 +453,11 @@ void check_shared_inputs(
   STD_TORCH_CHECK(
       dir_in.numel() % 3 == 0 && dir_out.numel() % 3 == 0,
       "dir_in and dir_out must hold three values per leg row.");
-  check_index(idx_in, rows, "idx_in");
-  check_index(idx_out, rows, "idx_out");
-  check_index(idx_site, rows, "idx_site");
+  const int per_slot = checked_int(idx_in.numel(), "rows_per_slot");
+  check_index(idx_in, per_slot, "idx_in");
+  check_index(idx_out, per_slot, "idx_out");
+  check_index(idx_site, per_slot, "idx_site");
+  STD_TORCH_CHECK(per_slot == 0 ? rows == 0 : rows % per_slot == 0, "the rows must be whole slots of the index tables.");
   check_cuda_float(axis, "axis");
   STD_TORCH_CHECK(
       axis.numel() % 3 == 0, "axis must hold three values per site.");
@@ -417,7 +485,9 @@ void scatter_response_aspect_forward_cuda(
     torch::stable::Tensor& s_re,
     torch::stable::Tensor& s_im,
     double exponent,
-    int64_t num_rows) {
+    int64_t num_rows,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_shared_inputs(
       dir_in,
@@ -453,6 +523,7 @@ void scatter_response_aspect_forward_cuda(
       s_re.mutable_data_ptr<float>(),
       s_im.mutable_data_ptr<float>(),
       exponent,
+      make_stride(idx_in, dir_in, dir_out, axis.numel() / 3, slots, slot_local_sites),
       rows);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -475,7 +546,9 @@ void scatter_response_aspect_jvp_cuda(
     torch::stable::Tensor& tan_s_re,
     torch::stable::Tensor& tan_s_im,
     double exponent,
-    int64_t num_rows) {
+    int64_t num_rows,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_shared_inputs(
       dir_in,
@@ -521,6 +594,7 @@ void scatter_response_aspect_jvp_cuda(
       tan_s_re.mutable_data_ptr<float>(),
       tan_s_im.mutable_data_ptr<float>(),
       exponent,
+      make_stride(idx_in, dir_in, dir_out, axis.numel() / 3, slots, slot_local_sites),
       rows);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -552,7 +626,9 @@ void scatter_response_aspect_backward_cuda(
     int64_t num_rows,
     int64_t num_in,
     int64_t num_out,
-    int64_t num_sites) {
+    int64_t num_sites,
+    int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   const int legs_in = checked_int(num_in, "num_in");
   const int legs_out = checked_int(num_out, "num_out");
@@ -579,16 +655,18 @@ void scatter_response_aspect_backward_cuda(
   check_cuda_long(by_out_rows, "by_out_rows");
   check_cuda_long(by_site_offsets, "by_site_offsets");
   check_cuda_long(by_site_rows, "by_site_rows");
+  const Stride stride = make_stride(idx_in, dir_in, dir_out, sites, slots, slot_local_sites);
+  const int64_t site_owners = stride.sites_per_slot > 0 ? stride.sites_per_slot : sites;
   STD_TORCH_CHECK(
-      by_in_offsets.numel() == static_cast<int64_t>(legs_in) + 1 &&
-          by_out_offsets.numel() == static_cast<int64_t>(legs_out) + 1 &&
-          by_site_offsets.numel() == static_cast<int64_t>(sites) + 1,
-      "each CSR offsets table must hold one entry per owner plus one.");
+      by_in_offsets.numel() == stride.in_per_slot + 1 &&
+          by_out_offsets.numel() == stride.out_per_slot + 1 &&
+          by_site_offsets.numel() == site_owners + 1,
+      "each CSR offsets table must hold one entry per owner of one slot plus one.");
   STD_TORCH_CHECK(
-      by_in_rows.numel() == static_cast<int64_t>(rows) &&
-          by_out_rows.numel() == static_cast<int64_t>(rows) &&
-          by_site_rows.numel() == static_cast<int64_t>(rows),
-      "each CSR row table must permute every composed row exactly once.");
+      by_in_rows.numel() == stride.rows_per_slot &&
+          by_out_rows.numel() == stride.rows_per_slot &&
+          by_site_rows.numel() == stride.rows_per_slot,
+      "each CSR row table must permute every composed row of one slot exactly once.");
   check_len(grad_s_re, rows, "grad_s_re");
   check_len(grad_s_im, rows, "grad_s_im");
   check_vec3(grad_dir_in, legs_in, "grad_dir_in");
@@ -629,6 +707,7 @@ void scatter_response_aspect_backward_cuda(
       grad_amplitude.mutable_data_ptr<float>(),
       grad_phase_rad.mutable_data_ptr<float>(),
       exponent,
+      stride,
       legs_in,
       legs_out,
       sites);
@@ -732,7 +811,7 @@ __device__ __forceinline__ C<N> row(
 __global__ void scatter_response_table_forward_kernel(
     const float* dir_in, const float* dir_out, const int64_t* idx_in, const int64_t* idx_out,
     const int64_t* idx_site, const float* axis, const float* table_re, const float* table_im,
-    const int32_t* row_valid, float* s_re, float* s_im, int entries, int num_rows) {
+    const int32_t* row_valid, float* s_re, float* s_im, int entries, Stride stride, int num_rows) {
   using namespace radar_jets;
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) return;
@@ -741,9 +820,9 @@ __global__ void scatter_response_table_forward_kernel(
     s_im[k] = 0.0f;
     return;
   }
+  const Strided at = stride.row(k, idx_in, idx_out, idx_site);
   const C<0> value = table_response::row<0>(
-      jload<0>(dir_in, idx_in[k]), jload<0>(dir_out, idx_out[k]), jload<0>(axis, idx_site[k]), table_re, table_im,
-      entries);
+      jload<0>(dir_in, at.i), jload<0>(dir_out, at.o), jload<0>(axis, at.s), table_re, table_im, entries);
   s_re[k] = static_cast<float>(value.re.v);
   s_im[k] = static_cast<float>(value.im.v);
 }
@@ -752,7 +831,7 @@ __global__ void scatter_response_table_jvp_kernel(
     const float* dir_in, const float* dir_out, const int64_t* idx_in, const int64_t* idx_out,
     const int64_t* idx_site, const float* axis, const float* table_re, const float* table_im,
     const int32_t* row_valid, const float* tan_dir_in, const float* tan_dir_out, const float* tan_axis,
-    float* tan_re, float* tan_im, int entries, int num_rows) {
+    float* tan_re, float* tan_im, int entries, Stride stride, int num_rows) {
   using namespace radar_jets;
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= num_rows) return;
@@ -761,12 +840,13 @@ __global__ void scatter_response_table_jvp_kernel(
     tan_im[k] = 0.0f;
     return;
   }
-  V3<1> din = jload<1>(dir_in, idx_in[k]);
-  V3<1> dout = jload<1>(dir_out, idx_out[k]);
-  V3<1> u = jload<1>(axis, idx_site[k]);
-  jtangent(din, tan_dir_in, idx_in[k]);
-  jtangent(dout, tan_dir_out, idx_out[k]);
-  jtangent(u, tan_axis, idx_site[k]);
+  const Strided at = stride.row(k, idx_in, idx_out, idx_site);
+  V3<1> din = jload<1>(dir_in, at.i);
+  V3<1> dout = jload<1>(dir_out, at.o);
+  V3<1> u = jload<1>(axis, at.s);
+  jtangent(din, tan_dir_in, at.i);
+  jtangent(dout, tan_dir_out, at.o);
+  jtangent(u, tan_axis, at.s);
   const C<1> value = table_response::row<1>(din, dout, u, table_re, table_im, entries);
   tan_re[k] = static_cast<float>(value.re.d[0]);
   tan_im[k] = static_cast<float>(value.im.d[0]);
@@ -780,7 +860,7 @@ __global__ void scatter_response_table_backward_kernel(
     const int32_t* row_valid, const int64_t* by_in_offsets, const int64_t* by_in_rows,
     const int64_t* by_out_offsets, const int64_t* by_out_rows, const int64_t* by_site_offsets,
     const int64_t* by_site_rows, const float* grad_re, const float* grad_im, float* grad_dir_in,
-    float* grad_dir_out, float* grad_axis, int entries, int num_in, int num_out, int num_sites) {
+    float* grad_dir_out, float* grad_axis, int entries, Stride stride, int num_in, int num_out, int num_sites) {
   using namespace radar_jets;
   const int thread = blockIdx.x * blockDim.x + threadIdx.x;
   if (thread >= num_in + num_out + num_sites) return;
@@ -788,20 +868,26 @@ __global__ void scatter_response_table_backward_kernel(
   int slot;
   const int64_t* offsets;
   const int64_t* members;
+  OwnerSlots owned;
   if (thread < num_in) {
     family = 0, slot = thread, offsets = by_in_offsets, members = by_in_rows;
+    owned = stride.owner(slot, stride.in_per_slot);
   } else if (thread < num_in + num_out) {
     family = 1, slot = thread - num_in, offsets = by_out_offsets, members = by_out_rows;
+    owned = stride.owner(slot, stride.out_per_slot);
   } else {
     family = 2, slot = thread - num_in - num_out, offsets = by_site_offsets, members = by_site_rows;
+    owned = stride.sites_per_slot > 0 ? stride.owner(slot, stride.sites_per_slot) : stride.shared(slot);
   }
   double g[3] = {0.0, 0.0, 0.0};
-  for (int64_t entry = offsets[slot]; entry < offsets[slot + 1]; ++entry) {
-    const int64_t k = members[entry];
+  for (int64_t gslot = owned.first; gslot < owned.last; ++gslot)
+  for (int64_t entry = offsets[owned.local]; entry < offsets[owned.local + 1]; ++entry) {
+    const int64_t k = gslot * stride.rows_per_slot + members[entry];
     if (row_valid[k] == 0) continue;
-    V3<3> din = jload<3>(dir_in, idx_in[k]);
-    V3<3> dout = jload<3>(dir_out, idx_out[k]);
-    V3<3> u = jload<3>(axis, idx_site[k]);
+    const Strided at = stride.row(k, idx_in, idx_out, idx_site);
+    V3<3> din = jload<3>(dir_in, at.i);
+    V3<3> dout = jload<3>(dir_out, at.o);
+    V3<3> u = jload<3>(axis, at.s);
     if (family == 0) jseed(din, 0);
     if (family == 1) jseed(dout, 0);
     if (family == 2) jseed(u, 0);
@@ -823,9 +909,11 @@ void check_table_inputs(
   check_cuda_float(dir_out, "dir_out");
   STD_TORCH_CHECK(
       dir_in.numel() % 3 == 0 && dir_out.numel() % 3 == 0, "dir_in and dir_out must hold three values per leg row.");
-  check_index(idx_in, rows, "idx_in");
-  check_index(idx_out, rows, "idx_out");
-  check_index(idx_site, rows, "idx_site");
+  const int per_slot = checked_int(idx_in.numel(), "rows_per_slot");
+  check_index(idx_in, per_slot, "idx_in");
+  check_index(idx_out, per_slot, "idx_out");
+  check_index(idx_site, per_slot, "idx_site");
+  STD_TORCH_CHECK(per_slot == 0 ? rows == 0 : rows % per_slot == 0, "the rows must be whole slots of the index tables.");
   check_cuda_float(axis, "axis");
   STD_TORCH_CHECK(axis.numel() % 3 == 0, "axis must hold three values per site.");
   check_cuda_float(table_re, "table_re");
@@ -841,7 +929,8 @@ void scatter_response_table_forward_cuda(
     const torch::stable::Tensor& dir_in, const torch::stable::Tensor& dir_out, const torch::stable::Tensor& idx_in,
     const torch::stable::Tensor& idx_out, const torch::stable::Tensor& idx_site, const torch::stable::Tensor& axis,
     const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
-    const torch::stable::Tensor& row_valid, torch::stable::Tensor s_re, torch::stable::Tensor s_im, int64_t num_rows) {
+    const torch::stable::Tensor& row_valid, torch::stable::Tensor s_re, torch::stable::Tensor s_im, int64_t num_rows, int64_t slots,
+    int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
   check_len(s_re, rows, "s_re");
@@ -852,7 +941,8 @@ void scatter_response_table_forward_cuda(
       dir_in.const_data_ptr<float>(), dir_out.const_data_ptr<float>(), idx_in.const_data_ptr<int64_t>(),
       idx_out.const_data_ptr<int64_t>(), idx_site.const_data_ptr<int64_t>(), axis.const_data_ptr<float>(),
       table_re.const_data_ptr<float>(), table_im.const_data_ptr<float>(), row_valid.const_data_ptr<int32_t>(),
-      s_re.mutable_data_ptr<float>(), s_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), rows);
+      s_re.mutable_data_ptr<float>(), s_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()),
+      make_stride(idx_in, dir_in, dir_out, axis.numel() / 3, slots, slot_local_sites), rows);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -862,7 +952,7 @@ void scatter_response_table_jvp_cuda(
     const torch::stable::Tensor& table_re, const torch::stable::Tensor& table_im,
     const torch::stable::Tensor& row_valid, const torch::stable::Tensor& tan_dir_in,
     const torch::stable::Tensor& tan_dir_out, const torch::stable::Tensor& tan_axis, torch::stable::Tensor tan_re,
-    torch::stable::Tensor tan_im, int64_t num_rows) {
+    torch::stable::Tensor tan_im, int64_t num_rows, int64_t slots, int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
   check_vec3(tan_dir_in, dir_in.numel() / 3, "tan_dir_in");
@@ -877,7 +967,8 @@ void scatter_response_table_jvp_cuda(
       idx_out.const_data_ptr<int64_t>(), idx_site.const_data_ptr<int64_t>(), axis.const_data_ptr<float>(),
       table_re.const_data_ptr<float>(), table_im.const_data_ptr<float>(), row_valid.const_data_ptr<int32_t>(),
       tan_dir_in.const_data_ptr<float>(), tan_dir_out.const_data_ptr<float>(), tan_axis.const_data_ptr<float>(),
-      tan_re.mutable_data_ptr<float>(), tan_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), rows);
+      tan_re.mutable_data_ptr<float>(), tan_im.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()),
+      make_stride(idx_in, dir_in, dir_out, axis.numel() / 3, slots, slot_local_sites), rows);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -890,7 +981,7 @@ void scatter_response_table_backward_cuda(
     const torch::stable::Tensor& by_out_rows, const torch::stable::Tensor& by_site_offsets,
     const torch::stable::Tensor& by_site_rows, const torch::stable::Tensor& grad_re,
     const torch::stable::Tensor& grad_im, torch::stable::Tensor grad_dir_in, torch::stable::Tensor grad_dir_out,
-    torch::stable::Tensor grad_axis, int64_t num_rows) {
+    torch::stable::Tensor grad_axis, int64_t num_rows, int64_t slots, int64_t slot_local_sites) {
   const int rows = checked_int(num_rows, "num_rows");
   check_table_inputs(dir_in, dir_out, idx_in, idx_out, idx_site, axis, table_re, table_im, row_valid, rows);
   const int legs_in = checked_int(dir_in.numel() / 3, "num_in");
@@ -902,13 +993,16 @@ void scatter_response_table_backward_cuda(
   check_cuda_long(by_out_rows, "by_out_rows");
   check_cuda_long(by_site_offsets, "by_site_offsets");
   check_cuda_long(by_site_rows, "by_site_rows");
+  const Stride stride = make_stride(idx_in, dir_in, dir_out, sites, slots, slot_local_sites);
+  const int64_t site_owners = stride.sites_per_slot > 0 ? stride.sites_per_slot : sites;
   STD_TORCH_CHECK(
-      by_in_offsets.numel() == legs_in + 1 && by_out_offsets.numel() == legs_out + 1 &&
-          by_site_offsets.numel() == sites + 1,
-      "each CSR offsets table must hold one entry per owner plus one.");
+      by_in_offsets.numel() == stride.in_per_slot + 1 && by_out_offsets.numel() == stride.out_per_slot + 1 &&
+          by_site_offsets.numel() == site_owners + 1,
+      "each CSR offsets table must hold one entry per owner of one slot plus one.");
   STD_TORCH_CHECK(
-      by_in_rows.numel() == rows && by_out_rows.numel() == rows && by_site_rows.numel() == rows,
-      "each CSR row table must permute every composed row exactly once.");
+      by_in_rows.numel() == stride.rows_per_slot && by_out_rows.numel() == stride.rows_per_slot &&
+          by_site_rows.numel() == stride.rows_per_slot,
+      "each CSR row table must permute every composed row of one slot exactly once.");
   check_len(grad_re, rows, "grad_re");
   check_len(grad_im, rows, "grad_im");
   check_vec3(grad_dir_in, legs_in, "grad_dir_in");
@@ -925,7 +1019,7 @@ void scatter_response_table_backward_cuda(
       by_out_offsets.const_data_ptr<int64_t>(), by_out_rows.const_data_ptr<int64_t>(),
       by_site_offsets.const_data_ptr<int64_t>(), by_site_rows.const_data_ptr<int64_t>(), grad_re.const_data_ptr<float>(),
       grad_im.const_data_ptr<float>(), grad_dir_in.mutable_data_ptr<float>(), grad_dir_out.mutable_data_ptr<float>(),
-      grad_axis.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), legs_in, legs_out, sites);
+      grad_axis.mutable_data_ptr<float>(), static_cast<int>(table_re.numel()), stride, legs_in, legs_out, sites);
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

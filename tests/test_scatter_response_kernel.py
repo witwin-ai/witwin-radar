@@ -123,6 +123,8 @@ def _launch(composer, response, dir_in, dir_out, flags):
         s_im,
         response.exponent,
         rows,
+        1,
+        0,
     )
     return s_re, s_im
 
