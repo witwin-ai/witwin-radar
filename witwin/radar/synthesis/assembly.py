@@ -35,7 +35,7 @@ import torch
 
 from ..display import compact_repr
 from ..paths import RadarComponentIndex, RadarPathBatch, RadarPathTopology
-from ..policy import SPEED_OF_LIGHT_M_PER_S, require_host_floats
+from ..policy import SPEED_OF_LIGHT_M_PER_S, first_order_only, require_host_floats
 
 #: Why no waveform spec scalar is differentiable, stated once and quoted by all
 #: three specs.
@@ -2094,3 +2094,175 @@ def select_component(batch: SynthesisPathBatch, index: RadarComponentIndex, name
     mask = index.mask(name)
     weight = torch.where(mask, batch.complex_transfer_ref, torch.zeros_like(batch.complex_transfer_ref))
     return replace(batch, complex_transfer_ref=weight)
+
+
+# ---------------------------------------------------------------------------
+# Cross-radar synthesis (R-ADR-051): one autograd bridge for every family
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class CrossRouting:
+    """The constant routing of one cross-radar launch (R-ADR-051).
+
+    ``row_link`` and ``row_tx`` (``int32[rows_per_slot]``) give each row of one
+    slot its link in ``link_table`` (``float64[links, width]``, the family's
+    columns; ``-1`` is a row the receiver does not hear through this family)
+    and its transmitter's index within its own radar. ``aux`` is the
+    transmitters' tables (chips ``float64[n, 3]``, or OFDM symbols
+    ``float32[n, 2]``). ``segment_rows`` (``int64[cells, 2]``) is each receive
+    cell's half-open row range and ``segment_schedule`` (``float64[cells, 3]``)
+    its slot start in the receiver's frame [s], its first sample's offset from
+    that start [s] and the receiver's LO offset for the cell [Hz].
+    ``row_segment_offsets`` / ``row_segments`` are the inverse map the backward
+    reads. Every member is schedule or waveform data and carries no derivative.
+    """
+
+    row_link: torch.Tensor
+    row_tx: torch.Tensor
+    link_table: torch.Tensor
+    aux: torch.Tensor
+    segment_rows: torch.Tensor
+    segment_schedule: torch.Tensor
+    row_segment_offsets: torch.Tensor
+    row_segments: torch.Tensor
+    rows_per_slot: int
+    num_samples: int
+    sample_period_s: float
+
+    @property
+    def cell_count(self) -> int:
+        return int(self.segment_schedule.shape[0])
+
+    def tables(self) -> tuple[torch.Tensor, ...]:
+        return (self.row_link, self.row_tx, self.link_table, self.aux)
+
+    def scalars(self) -> tuple[int, int, float]:
+        return (self.rows_per_slot, self.num_samples, self.sample_period_s)
+
+
+def _cross_operators(family: str) -> tuple:
+    """The forward, backward and jvp operators of one cross family: ``fmcw``, ``pulsed`` or ``ofdm``."""
+
+    from ..cuda import native_ops
+
+    ops = native_ops()
+    if family == "fmcw":
+        return ops.fmcw_cross_forward, ops.fmcw_cross_backward, ops.fmcw_cross_jvp
+    if family == "pulsed":
+        return ops.pulsed_cross_forward, ops.pulsed_cross_backward, ops.pulsed_cross_jvp
+    if family == "ofdm":
+        return ops.ofdm_cross_forward, ops.ofdm_cross_backward, ops.ofdm_cross_jvp
+    raise ValueError(f"no cross-radar family {family!r}")
+
+
+class _CrossSynthesis(torch.autograd.Function):
+    """Autograd bridge of the native cross-radar families; ``family`` names the operators."""
+
+    @staticmethod
+    def forward(transfer, tau_rt, tau_lo, valid, routing, family):
+        out = transfer.new_empty((routing.cell_count, routing.num_samples, 2))
+        forward, _, _ = _cross_operators(family)
+        forward(
+            transfer,
+            tau_rt,
+            tau_lo,
+            valid,
+            *routing.tables(),
+            routing.segment_rows,
+            routing.segment_schedule,
+            out,
+            *routing.scalars(),
+        )
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        transfer, tau_rt, tau_lo, valid, routing, family = inputs
+        ctx.routing, ctx.family = routing, family
+        ctx.save_for_backward(transfer, tau_rt, tau_lo, valid)
+        ctx.save_for_forward(transfer, tau_rt, tau_lo, valid)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad_out):
+        transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
+        routing = ctx.routing
+        grad_transfer = torch.empty_like(transfer)
+        grad_tau = torch.empty_like(tau_rt)
+        _, backward, _ = _cross_operators(ctx.family)
+        backward(
+            transfer,
+            tau_rt,
+            tau_lo,
+            valid,
+            *routing.tables(),
+            routing.row_segment_offsets,
+            routing.row_segments,
+            routing.segment_schedule,
+            grad_out.contiguous(),
+            grad_transfer,
+            grad_tau,
+            *routing.scalars(),
+        )
+        return grad_transfer, grad_tau, None, None, None, None
+
+    @staticmethod
+    def jvp(ctx, tan_transfer, tan_tau_rt, tan_tau_lo, tan_valid, tan_routing, tan_family):
+        transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
+        routing = ctx.routing
+        tan_transfer = torch.zeros_like(transfer) if tan_transfer is None else tan_transfer.contiguous()
+        tan_tau_rt = torch.zeros_like(tau_rt) if tan_tau_rt is None else tan_tau_rt.contiguous()
+        tan_out = transfer.new_empty((routing.cell_count, routing.num_samples, 2))
+        _, _, jvp = _cross_operators(ctx.family)
+        jvp(
+            transfer,
+            tau_rt,
+            tau_lo,
+            valid,
+            *routing.tables(),
+            routing.segment_rows,
+            routing.segment_schedule,
+            tan_transfer,
+            tan_tau_rt,
+            tan_out,
+            *routing.scalars(),
+        )
+        return tan_out
+
+
+def synthesize_cross(
+    family: str,
+    transfer: torch.Tensor,
+    delay: torch.Tensor,
+    residual: torch.Tensor | None,
+    valid: torch.Tensor | None,
+    routing: CrossRouting,
+) -> torch.Tensor:
+    """Every receive cell's cross-radar samples, ``complex64[cells, num_samples]`` (R-ADR-051).
+
+    ``family`` is ``"fmcw"`` (an FMCW receiver's beat), ``"pulsed"`` or
+    ``"ofdm"`` (a sampled receiver hearing a pulse train or emitter, or an
+    OFDM stream).
+    ``transfer`` is the rows' Channel coefficient (``complex64[rows]``),
+    ``delay`` the float32 round-trip delay and ``residual`` its float64
+    remainder or ``None``. A row whose ``valid`` entry is false contributes
+    exactly zero and receives no gradient. Differentiable in ``transfer`` and
+    ``delay`` in both modes; the gates are discrete and contribute their
+    almost-everywhere derivative. No complex tensor crosses the autograd
+    boundary: the coefficient enters as ``view_as_real``.
+    """
+
+    if transfer.dtype != torch.complex64 or delay.dtype != torch.float32:
+        raise TypeError("cross-radar rows are a complex64 transfer and a float32 delay")
+    empty = delay.new_empty(0)
+    flags = torch.empty(0, dtype=torch.bool, device=delay.device) if valid is None else valid.contiguous()
+    out = _CrossSynthesis.apply(
+        torch.view_as_real(transfer.contiguous()),
+        delay.contiguous(),
+        empty if residual is None else residual.contiguous(),
+        flags,
+        routing,
+        family,
+    )
+    return torch.view_as_complex(out)

@@ -42,6 +42,12 @@
           "signature": "(tx: 'tuple[tuple[complex, ...], ...] | torch.Tensor | None' = None, rx: 'tuple[tuple[complex, ...], ...] | torch.Tensor | None' = None) -> None"
         },
         {
+          "name": "Emitter",
+          "kind": "class",
+          "target": "witwin.radar.network.Emitter",
+          "signature": "(position: 'Any', samples: 'Any', rate: 'float', power: 'float', carrier_offset: 'float' = 0.0, start: 'float' = 0.0, repeat: 'bool' = True, polarization: 'Any' = (0.0, 1.0, 0.0)) -> None"
+        },
+        {
           "name": "Fluctuation",
           "kind": "class",
           "target": "witwin.radar.targets.Fluctuation",
@@ -82,6 +88,12 @@
           "kind": "class",
           "target": "witwin.radar.motion.Motion",
           "signature": "(kind: 'str' = 'auto', phase_error: 'float' = 0.02, relative_amplitude_error: 'float' = 0.02, max_interval: 'float' = 0.002, nodes: 'int' = 2, max_evaluations: 'int' = 8192, batch_observations: 'int' = 256, rediscover_every_frames: 'int | None' = None, rediscover_every_chirps: 'int | None' = None, rediscover_every_seconds: 'float | None' = None, rediscover_on_displacement: 'float | None' = None, motion_bandwidth: 'float | None' = None, max_acceleration: 'float | None' = None, world: 'str' = 'frozen_world') -> None"
+        },
+        {
+          "name": "Network",
+          "kind": "class",
+          "target": "witwin.radar.network.Network",
+          "signature": "(radars: 'tuple[Radar, ...]', links: 'tuple[tuple[int, int], ...]' = (), clock_offsets: 'tuple[float, ...]' = (), if_bandwidths: 'tuple[float | None, ...]' = (), emitters: 'tuple[Emitter, ...]' = (), carrier_offsets: 'tuple[float, ...]' = ()) -> None"
         },
         {
           "name": "Noise",
@@ -1054,6 +1066,60 @@
           "name": "wavelength",
           "kind": "property",
           "doc_first_line": "``c0 / carrier``, m."
+        }
+      ]
+    },
+    {
+      "class": "witwin.radar.Network",
+      "members": [
+        {
+          "name": "carrier_offsets",
+          "kind": "value"
+        },
+        {
+          "name": "clock_offsets",
+          "kind": "value"
+        },
+        {
+          "name": "echo",
+          "kind": "function",
+          "signature": "(self, paths: 'NetworkPaths') -> 'tuple[Result, ...]'"
+        },
+        {
+          "name": "emitters",
+          "kind": "value"
+        },
+        {
+          "name": "hearing",
+          "kind": "function",
+          "signature": "(self) -> 'tuple[int, ...]'"
+        },
+        {
+          "name": "if_bandwidths",
+          "kind": "value"
+        },
+        {
+          "name": "links",
+          "kind": "value"
+        },
+        {
+          "name": "radars",
+          "kind": "value"
+        },
+        {
+          "name": "simulate",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, direct: 'bool' = True, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, motion: 'Motion | None' = None, grad: 'str' = 'none') -> 'tuple[Result, ...]'"
+        },
+        {
+          "name": "stream",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, **request: 'Any') -> 'Iterator[tuple[Result, ...]]'"
+        },
+        {
+          "name": "trace",
+          "kind": "function",
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, **request: 'Any') -> 'NetworkPaths'"
         }
       ]
     }

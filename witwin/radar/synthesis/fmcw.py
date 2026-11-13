@@ -34,12 +34,14 @@ from ..policy import first_order_only, refuse_derivative
 from .assembly import (
     FMCW_OUTPUT_BEAT,
     FMCW_OUTPUT_SPECTRUM,
+    CrossRouting,
     FmcwSpec,
     SynthesisPathBatch,
     delay_residual,
     pair_tx_index,
     require_compatible,
     segment_of_each_row,
+    synthesize_cross,
 )
 
 
@@ -589,10 +591,49 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
     )
 
 
+#: Columns of one FMCW cross-radar link row (R-ADR-051), in the kernel's order.
+FMCW_CROSS_COLUMNS = (
+    "tx_slope_hz_per_s",
+    "tx_start_offset_hz",
+    "tx_ramp_end_s",
+    "tx_slot_period_s",
+    "tx_slot_count",
+    "tx_transmitters",
+    "tx_frame_shift_s",
+    "rx_slope_hz_per_s",
+    "rx_start_offset_hz",
+    "phase0_cycles",
+    "rx_if_bandwidth_hz",
+    "tx_kind",
+    "tx_first_chip",
+    "tx_chip_count",
+)
+
+
+def synthesize_fmcw_cross(
+    transfer: torch.Tensor,
+    delay: torch.Tensor,
+    residual: torch.Tensor | None,
+    valid: torch.Tensor | None,
+    routing: CrossRouting,
+) -> torch.Tensor:
+    """An FMCW receiver's cross-radar beat per receive cell, ``complex64[cells, num_samples]`` (R-ADR-051).
+
+    The beat convention: the kernel conjugates the rows' Channel coefficient
+    into the beat weight. ``routing.link_table`` rows follow
+    :data:`FMCW_CROSS_COLUMNS`; ``routing.aux`` is the emitters' chip table.
+    See :func:`~witwin.radar.synthesis.assembly.synthesize_cross` for the rest.
+    """
+
+    return synthesize_cross("fmcw", transfer, delay, residual, valid, routing)
+
+
 __all__ = [
+    "FMCW_CROSS_COLUMNS",
     "FmcwSpec",
     "channel_phasor_to_beat_weight",
     "multiplex_transmitters",
+    "synthesize_fmcw_cross",
     "synthesize_fmcw_observations",
     "synthesize_fmcw_rows",
     "synthesize_fmcw",

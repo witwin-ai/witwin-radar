@@ -56,3 +56,33 @@ __device__ __forceinline__ FmcwPhaseTerms fmcw_profile_terms(
   terms.d_rate += two_pi * time * derivative;
   return terms;
 }
+
+// Cross-radar beat (R-ADR-051): receiver B's ramp mixed against a transmitter
+// that is not B's own, heard through one composed row of round-trip delay tau
+// [s]. Every oscillator runs at f_ref + its start offset delta [Hz] from world
+// time 0; the transmitter adds its own modulation phase tx_cycles at the
+// emission instant (an FMCW ramp's 0.5 * S_A * w^2 over its ramp time w, or an
+// emitter's sample-table phase), whose instantaneous frequency is tx_freq
+// [Hz]. The receiver mixes its LO (0.5 * S_B * v^2 over its own ramp time v)
+// against the conjugate of the received field, and the Channel weight conj(C)
+// carries +f_ref*tau, so the f_ref terms cancel and the beat is
+// conj(C) * conj(envelope magnitude) * exp(+j 2 pi cycles):
+//
+//   cycles = phase0 + delta_B*t - delta_A*(t - tau) + 0.5*S_B*v^2 - tx_cycles
+//
+// t is the receive instant in B's frame [s]; phase0 = frac((delta_B - delta_A) * F_B)
+// carries B's frame start F_B in world time [cycles], formed on the host in
+// float64. With A = B on one slot (tx_cycles = 0.5*S*(v - tau)^2) this is the
+// monostatic phase delta*tau + S*tau*(v - tau/2) exactly. The emission instant
+// falls by tau, so d(cycles)/d(tau) = delta_A + tx_freq; beat_hz = d(cycles)/dt
+// is the instantaneous beat frequency the receiver's IF band gates.
+// Independent oracle: tests/test_fmcw_cross.py (long-double signals).
+struct FmcwCrossTerms { double cycles, d_tau, beat_hz; };
+__device__ __forceinline__ FmcwCrossTerms fmcw_cross_terms(
+    double tau, double t, double v, double tx_cycles, double tx_freq, double rx_slope, double rx_offset,
+    double tx_offset, double phase0) {
+  constexpr double two_pi = 6.283185307179586476925286766559;
+  return {phase0 + rx_offset * t - tx_offset * (t - tau) + 0.5 * rx_slope * v * v - tx_cycles,
+          two_pi * (tx_offset + tx_freq),
+          rx_offset - tx_offset + rx_slope * v - tx_freq};
+}

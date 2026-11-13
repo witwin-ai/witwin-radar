@@ -42,6 +42,7 @@
 #include <torch/headeronly/macros/Macros.h>
 
 #include <cuda_runtime.h>
+#include "cross_routing.cuh"
 #include "fmcw_phase.cuh"
 #include "path_delay.cuh"
 #include "fmcw_tdm.cuh"
@@ -865,6 +866,125 @@ void fmcw_adaptive_run(const torch::stable::Tensor& samples, const torch::stable
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-radar beat (R-ADR-051): what an FMCW receiver hears from another
+// radar's FMCW transmitter or from a declared emitter. The phase is
+// fmcw_cross_terms; the routing and the three launches are cross_routing.cuh's;
+// this functor adds the transmitter's modulation and the gates.
+//
+// A row contributes at a sample only when (1) its emission instant falls on a
+// transmission of the transmitter's frame: slot m in [0, slots), time w into the
+// slot below the ramp end (an FMCW transmitter is off during idle; an emitter's
+// slot is its sample table, repeated or not), (2) slot m is the row's
+// transmitter's TDM slot (m mod tx_count == row_tx), and (3) the instantaneous
+// beat frequency lies in the receiver's IF band (|beat| <= if_bandwidth): an
+// ideal anti-alias filter, applied as a gate on the instantaneous frequency
+// (stationary phase of the beat; the filter's transition ripple is not
+// modelled). The gates are discrete; the derivative is the almost-everywhere one.
+//
+// link_table row (float64, kFmcwCrossWidth): tx slope [Hz/s], tx start offset
+// [Hz], tx ramp end [s], tx slot period [s], tx slot count, tx transmitter count,
+// tx frame start minus rx frame start [s], rx slope, rx start offset, phase0
+// [cycles], rx IF bandwidth [Hz], transmitter kind (0 ramp, 1 emitter), the
+// emitter's first chip in `chips`, its chip count. `chips` (float64 [n, 3]) is
+// an emitter's sample table: |a_i|, arg(a_i)/2pi, f_i [Hz], each sample held
+// over 1/rate with its phase advancing at f_i (phase-linear between samples).
+// Constants: no derivative.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kFmcwCrossWidth = 14;
+
+struct FmcwCrossPhase {
+  const double* chips;
+
+  __device__ __forceinline__ bool operator()(
+      const double* link, const int tx, const double tau, const CrossSample& when, CrossValue& out) const {
+    const double period = link[3];
+    const double emitted = when.t - tau - link[6];
+    const double slot = floor(emitted / period);
+    if (slot < 0.0 || slot >= link[4]) return false;
+    const double w = emitted - slot * period;
+    if (w >= link[2]) return false;
+    if (static_cast<int64_t>(slot) % static_cast<int64_t>(link[5]) != static_cast<int64_t>(tx)) return false;
+    double tx_cycles, tx_freq, magnitude = 1.0;
+    if (link[11] == 0.0) {
+      tx_cycles = 0.5 * link[0] * w * w;
+      tx_freq = link[0] * w;
+    } else {
+      const int count = static_cast<int>(link[13]);
+      const double width = link[2] / static_cast<double>(count);
+      int chip = static_cast<int>(floor(w / width));
+      chip = chip < 0 ? 0 : (chip >= count ? count - 1 : chip);
+      const double* entry = chips + 3 * (static_cast<int64_t>(link[12]) + chip);
+      magnitude = entry[0];
+      tx_freq = entry[2];
+      tx_cycles = entry[1] + tx_freq * (w - static_cast<double>(chip) * width);
+    }
+    const FmcwCrossTerms terms =
+        fmcw_cross_terms(tau, when.t, when.v, tx_cycles, tx_freq, link[7], link[8], link[1], link[9]);
+    if (fabs(terms.beat_hz) > link[10]) return false;
+    const double frac = terms.cycles - floor(terms.cycles);
+    float s, c;
+    sincosf(static_cast<float>(kTwoPiD * frac), &s, &c);
+    const float a = static_cast<float>(magnitude);
+    out.u_re = a * c;
+    out.u_im = a * s;
+    const float d = static_cast<float>(terms.d_tau);
+    out.du_re = -d * out.u_im;
+    out.du_im = d * out.u_re;
+    return true;
+  }
+};
+
+FmcwCrossPhase fmcw_cross_phase(const torch::stable::Tensor& chips) {
+  check_cross_double(chips, 3, "chips");
+  return {chips.numel() == 0 ? nullptr : chips.const_data_ptr<double>()};
+}
+
+}  // namespace
+
+void fmcw_cross_forward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    torch::stable::Tensor& out, int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kFmcwCrossWidth, rows_per_slot);
+  cross_forward<true>(rows, fmcw_cross_phase(chips), segment_rows, segment_schedule, out, num_samples, sample_period_s);
+}
+
+void fmcw_cross_jvp_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    const torch::stable::Tensor& tan_transfer, const torch::stable::Tensor& tan_tau, torch::stable::Tensor& tan_out,
+    int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kFmcwCrossWidth, rows_per_slot);
+  cross_jvp<true>(
+      rows, fmcw_cross_phase(chips), segment_rows, segment_schedule, tan_transfer, tan_tau, tan_out, num_samples,
+      sample_period_s);
+}
+
+void fmcw_cross_backward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& row_segment_offsets, const torch::stable::Tensor& row_segments,
+    const torch::stable::Tensor& segment_schedule, const torch::stable::Tensor& grad_out,
+    torch::stable::Tensor& grad_transfer, torch::stable::Tensor& grad_tau, int64_t rows_per_slot, int64_t num_samples,
+    double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kFmcwCrossWidth, rows_per_slot);
+  cross_backward<true>(
+      rows, fmcw_cross_phase(chips), row_segment_offsets, row_segments, segment_schedule, grad_out, grad_transfer,
+      grad_tau, num_samples, sample_period_s);
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("fmcw_adaptive_forward", TORCH_BOX(&fmcw_adaptive_run<0>));
   m.impl("fmcw_adaptive_backward", TORCH_BOX(&fmcw_adaptive_run<1>));
@@ -875,4 +995,7 @@ STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("fmcw_beat_forward", TORCH_BOX(&fmcw_beat_forward_cuda));
   m.impl("fmcw_beat_backward", TORCH_BOX(&fmcw_beat_backward_cuda));
   m.impl("fmcw_beat_jvp", TORCH_BOX(&fmcw_beat_jvp_cuda));
+  m.impl("fmcw_cross_forward", TORCH_BOX(&fmcw_cross_forward_cuda));
+  m.impl("fmcw_cross_backward", TORCH_BOX(&fmcw_cross_backward_cuda));
+  m.impl("fmcw_cross_jvp", TORCH_BOX(&fmcw_cross_jvp_cuda));
 }

@@ -248,6 +248,36 @@
       ]
     },
     {
+      "symbol": "fmcw_cross_backward",
+      "ad_group": "fmcw_cross",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "fmcw_cross_forward",
+      "ad_group": "fmcw_cross",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "fmcw_cross_jvp",
+      "ad_group": "fmcw_cross",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
       "symbol": "fmcw_observation_backward",
       "ad_group": "fmcw_observation",
       "ad_role": "backward",
@@ -488,6 +518,36 @@
       ]
     },
     {
+      "symbol": "ofdm_cross_backward",
+      "ad_group": "ofdm_cross",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "ofdm_cross_forward",
+      "ad_group": "ofdm_cross",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "ofdm_cross_jvp",
+      "ad_group": "ofdm_cross",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
       "symbol": "ofdm_time_backward",
       "ad_group": "ofdm_time",
       "ad_role": "backward",
@@ -565,6 +625,36 @@
       "python_owner": "witwin/radar/paths.py",
       "python_callers": [
         "_PathInterpolation.jvp"
+      ]
+    },
+    {
+      "symbol": "pulsed_cross_backward",
+      "ad_group": "pulsed_cross",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/pulsed_echo.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "pulsed_cross_forward",
+      "ad_group": "pulsed_cross",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/pulsed_echo.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
+      ]
+    },
+    {
+      "symbol": "pulsed_cross_jvp",
+      "ad_group": "pulsed_cross",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/pulsed_echo.cu",
+      "python_owner": "witwin/radar/synthesis/assembly.py",
+      "python_callers": [
+        "_cross_operators"
       ]
     },
     {

@@ -57,11 +57,13 @@ from .assembly import (
     PULSE_KIND_CODED,
     PULSE_KIND_LFM,
     PULSE_KIND_RECT,
+    CrossRouting,
     PulsedSpec,
     SynthesisPathBatch,
     delay_residual,
     require_pulsed_compatible,
     segment_of_each_row,
+    synthesize_cross,
 )
 
 #: The kernel's pulse-kind selector, mirroring the constants on the spec. An
@@ -338,4 +340,54 @@ def synthesize_pulsed(batch: SynthesisPathBatch, spec: PulsedSpec) -> torch.Tens
     )
 
 
-__all__ = ["PulsedSpec", "synthesize_echo_rows", "synthesize_pulsed"]
+#: Columns of one pulsed cross-radar link row (R-ADR-051), in the kernel's order.
+PULSED_CROSS_COLUMNS = (
+    "tx_frame_shift_s",
+    "tx_offset_hz",
+    "rx_offset_hz",
+    "rx_frame_start_s",
+    "tx_pri_s",
+    "tx_pulse_count",
+    "tx_pulse_kind",
+    "tx_pulse_width_s",
+    "tx_bandwidth_hz",
+    "tx_amplitude",
+    "tx_first_chip",
+    "tx_chip_count",
+    "tx_periodic",
+    "tx_frequency_step_hz",
+)
+
+
+def pulse_kind_code(spec: PulsedSpec) -> int:
+    """The kernel's selector for ``spec``'s pulse kind."""
+
+    return _PULSE_KIND_CODE[spec.pulse_kind]
+
+
+def synthesize_pulsed_cross(
+    transfer: torch.Tensor,
+    delay: torch.Tensor,
+    residual: torch.Tensor | None,
+    valid: torch.Tensor | None,
+    routing: CrossRouting,
+) -> torch.Tensor:
+    """A sampled receiver's samples of other radars' pulse trains and of emitters, ``complex64[cells, samples]``.
+
+    Channel convention (R-ADR-051). ``routing.link_table`` rows follow
+    :data:`PULSED_CROSS_COLUMNS`; ``routing.aux`` is the transmitters' chip
+    tables, ``float64[chips, 3]``. See
+    :func:`~witwin.radar.synthesis.assembly.synthesize_cross`.
+    """
+
+    return synthesize_cross("pulsed", transfer, delay, residual, valid, routing)
+
+
+__all__ = [
+    "PULSED_CROSS_COLUMNS",
+    "PulsedSpec",
+    "pulse_kind_code",
+    "synthesize_echo_rows",
+    "synthesize_pulsed",
+    "synthesize_pulsed_cross",
+]

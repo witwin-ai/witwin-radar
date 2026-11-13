@@ -214,6 +214,31 @@ more than `n` rows (no default bound); `max_paths=n` bounds one Channel discover
 `wideband=True` makes an OFDM CFR radar consume Channel's per-subcarrier transport
 (R-ADR-035); it is refused for FMCW, pulsed and time-domain OFDM.
 
+Several radars in one scene are a `Network` (R-ADR-051). Its verbs take one
+pose per radar and return one `Result` per radar; the world half (compile,
+discovery, replay, join) is paid once for all of them. `links` declares who
+hears whom:
+
+```python
+from witwin.radar import Network
+
+network = Network((radar_a, radar_b), links=((0, 1),), clock_offsets=(0.2e-6, 0.0))
+result_a, result_b = network.simulate(scene, targets, times=times, poses=(None, pose_b))
+# radar_b hears radar_a: bistatic target returns, the direct line of sight
+# (direct=True, the default) and, with environment=True, the environment's returns
+```
+
+A link mixes the transmitter's ramp against the receiver's own dechirp
+reference through the receiver's IF band (`if_bandwidths`, default half the ADC
+rate), so a same-slope interferer offset in time shows up as a ghost target and
+a slope mismatch as a broadband burst. A pulsed or OFDM receiver samples a pulsed
+or OFDM transmitter on its own grid and LO (`carrier_offsets=` sets their
+oscillator offsets) and matches or demodulates it with its own replica or symbols.
+`Network(..., emitters=(Emitter(position, samples, rate, power),))` adds a
+non-radar transmitter every radar hears. All radars share one carrier (an FMCW
+start offset is `Fmcw(sequence=(Chirp(start_offset=...),))`) and one element
+pattern pair; FMCW and sampled waveforms do not hear each other.
+
 ## 5. FMCW synthesis domains
 
 `witwin/radar/synthesis/fmcw.py` is the sole FMCW synthesis owner. It consumes compact path rows and conjugates the Channel transfer coefficient exactly once into the beat convention.
