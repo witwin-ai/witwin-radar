@@ -276,8 +276,8 @@ class SMPLBody(GeometryBase):
         pose = self.pose.to(device=device, dtype=torch.float32)
         shape = self.shape.to(device=device, dtype=torch.float32)
         vertices = self._transform_mesh_verts(_fast_smpl_forward(layer, pose, shape))
-        # Own the returned topology, just as the previous host-to-device copy
-        # did: a caller mutating its mesh must not corrupt the cached model.
+        # The returned topology is a copy: a caller mutating its mesh must not
+        # corrupt the cached model.
         return vertices.contiguous(), layer.th_faces.clone()
 
     def to_mesh(self, segments=16, *, device=None):

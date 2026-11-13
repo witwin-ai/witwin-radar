@@ -13,7 +13,7 @@ exactly one Python owner, this module.
 **This module publishes the matched-filter INPUT.** The received pulse train is
 the physics; correlating it against the transmitted replica is signal
 processing, and it lives in :mod:`witwin.radar.processing.range_doppler` under the
-plan's Torch/FFT exception. The split is not cosmetic: a filter fuses a
+processing Torch/FFT exception (cuFFT through ``torch.fft``). The split is not cosmetic: a filter fuses a
 modelling choice - which replica, which window, how much oversampling - into
 whatever it is part of, and those choices belong to a processing chain that a
 user may replace, not to a propagation model that they may not.

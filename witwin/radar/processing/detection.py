@@ -944,8 +944,8 @@ def _keep_strongest(mask: torch.Tensor, energy: torch.Tensor, max_points: int) -
     Guarded again even though :func:`point_cloud` already refused at its entry
     and is this function's only caller. Defence in depth is the right shape for
     a wall: a future second caller inherits the refusal instead of quietly
-    reopening the hole, and the ``topk`` here is the peak selection the plan
-    names by that name.
+    reopening the hole, and the ``topk`` here is the thinning step the refusal
+    reason names.
     """
 
     refuse_derivative("witwin.radar.processing.detection._keep_strongest", _SELECTION_REASON, energy=energy)

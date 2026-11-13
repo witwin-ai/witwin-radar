@@ -167,9 +167,10 @@ class Motion:
         structure trajectories or deformations, endpoint trajectories, a target
         trajectory, or a receiver with oscillator phase noise, which needs
         ADC-time observations to place its delayed phase difference. A moving
-        FMCW session resolves to :meth:`adaptive` with its default tolerances;
-        an OFDM or pulsed one, or one that declares a discovery cadence,
-        resolves to the exhaustive :meth:`adc` schedule; a still world is
+        FMCW session on one uniform TDM ramp resolves to :meth:`adaptive` with
+        its default tolerances; any other moving session (OFDM, pulsed, a chirp
+        sequence, a ramp phase error, DDM or BPM) or one that declares a
+        discovery cadence resolves to the exhaustive :meth:`adc` schedule; a still world is
         evaluated once a frame. :meth:`adc` stays the named exhaustive
         reference.
         """

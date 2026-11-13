@@ -84,7 +84,7 @@ def write_dataset(
 
     ``options`` are :meth:`Radar.stream` keywords shared by every episode
     (``los``, ``reflections``, ``motion``, ...); an episode's own ``options``
-    override them. ``grad`` is refused: a dataset is data, and a frame written
+    override them. An ``ad_mode`` other than ``"none"`` is refused: a dataset is data, and a frame written
     to disk keeps no graph. An existing non-empty ``path`` is refused unless
     ``overwrite`` and it holds a dataset this function wrote.
     """

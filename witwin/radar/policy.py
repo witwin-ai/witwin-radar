@@ -77,8 +77,8 @@ def resolve_device(device: object, *, owner: str) -> torch.device:
 def _carries_derivative(value: object) -> str | None:
     """``"a gradient"`` / ``"a forward tangent"`` / ``None`` for one value.
 
-    Both AD modes are checked, always. Checking only ``requires_grad`` is the
-    defect this module was written to close: a forward dual carries a live
+    Both AD modes are checked, always. Checking only ``requires_grad`` is not
+    enough: a forward dual carries a live
     tangent through a stage that has no business publishing one, and
     ``requires_grad`` is ``False`` the whole time.
     """

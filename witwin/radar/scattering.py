@@ -822,7 +822,7 @@ class _FacetResponse(torch.autograd.Function):
     matrix as ``[rows, 4, 2]`` real pairs and the row's site-basis up axis,
     which is a frame declaration and carries no derivative. A material
     gradient is computed only when one is asked for, so a geometry-only
-    backward costs what it did.
+    backward pays nothing for the material terms.
     """
 
     @staticmethod

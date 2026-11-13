@@ -3,7 +3,7 @@
 This is the ONLY Radar module that imports ``witwin.channel``, and it names
 exactly two things from it: the solver-neutral consumer facade
 ``witwin.channel.propagation.consumer`` and the scene compile facade
-``witwin.channel.scene.compile``. The second one arrived with the production
+``witwin.channel.scene.compile``. The second one serves the production
 scene-driven entry (R-ADR-020): compiling a Core world is a Channel lifecycle
 operation, so it belongs to the module that already owns this boundary rather
 than to a second allowlisted crossing. It is a MODULE function

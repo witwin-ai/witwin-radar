@@ -120,8 +120,8 @@ class Noise:
 
     The composite mask is their sum. All three are functions of absolute time,
     so the range-correlation of ``phi(t) - phi(t - tau)`` holds for every
-    region; the ``1/f^2`` region is the exact Brownian bridge it always was and
-    is bit-identical whether the other two are declared or not.
+    region; the ``1/f^2`` region is an exact Brownian bridge and is
+    bit-identical whether the other two are declared or not.
 
     ``flicker_corner`` is the baseband (mixer and IF amplifier) ``1/f`` noise:
     an additive noise whose density equals the white thermal density at that

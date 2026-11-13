@@ -43,9 +43,8 @@ through the radar's pose.
 
 **Build it once per array.** The record holds a materialised ``[P, 3]`` tensor,
 so a per-frame :func:`conventional_steering` costs no host-to-device copy of the
-element table. Rebuilding the geometry inside every call was measured at
-152 microseconds - the most expensive call in the whole processing chain - for a
-quantity that does not change between frames.
+element table. Rebuilding the geometry inside every call would repeat that
+upload every frame for a quantity that does not change between frames.
 
 **This module sits on BOTH sides of the non-differentiability wall, and the
 split is by function rather than by file.** :func:`tdm_compensate` is one

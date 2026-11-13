@@ -1460,11 +1460,11 @@ def _resolve_sampling(requested: Motion, *, sampled: bool, fmcw: bool) -> str:
     """The route a request runs, once it is known whether anything moves.
 
     ``auto`` resolves to the adaptive route for a world that moves under an
-    FMCW waveform, because the exhaustive ADC route rediscovers at every ADC
-    instant and is the reference, not the default. Adaptive interpolation is
-    FMCW only and owns its own discovery cadence, so a non-FMCW waveform or a
-    declared discovery cadence resolves ``auto`` to the exhaustive
-    route instead.
+    FMCW waveform (``fmcw`` is true only for one uniform TDM ramp), because the
+    exhaustive ADC route rediscovers at every ADC instant and is the reference,
+    not the default. Adaptive interpolation covers that ramp only and owns its
+    own discovery cadence, so any other waveform or a declared discovery
+    cadence resolves ``auto`` to the exhaustive route instead.
 
     ``static`` is refused rather than silently upgraded: it asks for one
     observation a frame, and a world that moves inside a frame would publish

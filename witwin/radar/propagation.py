@@ -754,8 +754,8 @@ class SceneEpochLoop:
     is never mutated outside the ``DynamicScene`` API. Both are true of a world
     with no structure motion and endpoints that never cross an occluder; a
     caller that edits mesh vertices in place must declare a period instead.
-    ``1`` means rediscover every frame, which is honest and costs the full
-    9-40 ms.
+    ``1`` means rediscover every frame, which is honest and pays a full
+    discovery every frame.
 
     ``world_motion`` is forwarded verbatim to
     :meth:`ChannelPropagationAdapter.refreeze`; read its docstring, because
