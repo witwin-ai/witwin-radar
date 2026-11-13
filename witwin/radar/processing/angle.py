@@ -60,7 +60,9 @@ peak pick in it to guard.
 """
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any, cast
 
 import torch
 
@@ -170,10 +172,13 @@ class ArrayGeometry:
     def _virtual_offsets(self) -> tuple[tuple[float, float, float], ...]:
         """The ``P`` virtual offsets in spacing units, TX major, as host floats."""
 
-        return tuple(
-            tuple(a + b for a, b in zip(tx, rx, strict=True))
-            for tx in self.tx_loc_half_wavelength
-            for rx in self.rx_loc_half_wavelength
+        return cast(
+            "tuple[tuple[float, float, float], ...]",
+            tuple(
+                tuple(a + b for a, b in zip(tx, rx, strict=True))
+                for tx in self.tx_loc_half_wavelength
+                for rx in self.rx_loc_half_wavelength
+            ),
         )
 
     @property
@@ -228,8 +233,8 @@ class ArrayGeometry:
     @classmethod
     def from_offsets(
         cls,
-        tx_loc,
-        rx_loc,
+        tx_loc: Sequence[Sequence[float]],
+        rx_loc: Sequence[Sequence[float]],
         *,
         element_spacing_m: float,
         wavelength_m: float,
@@ -270,12 +275,16 @@ class ArrayGeometry:
             element_spacing_m=float(element_spacing_m),
             wavelength_m=float(wavelength_m),
             phase_sign=int(phase_sign),
-            tx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in tx_loc),
-            rx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in rx_loc),
+            tx_loc_half_wavelength=cast(
+                "tuple[tuple[float, float, float], ...]", tuple(tuple(float(value) for value in row) for row in tx_loc)
+            ),
+            rx_loc_half_wavelength=cast(
+                "tuple[tuple[float, float, float], ...]", tuple(tuple(float(value) for value in row) for row in rx_loc)
+            ),
         )
 
 
-def _radar_local_to_processing(rows) -> tuple[tuple[float, float, float], ...]:
+def _radar_local_to_processing(rows: Sequence[Sequence[float]]) -> tuple[tuple[float, float, float], ...]:
     """``(right, up, -boresight)`` offsets -> ``(right, boresight, up)``: ``(x, y, z) -> (x, -z, y)``."""
 
     return tuple((float(x), -float(z) + 0.0, float(y)) for x, y, z in rows)
@@ -289,7 +298,7 @@ _LATTICE_TOLERANCE = 1e-6
 _LATTICE_MAX_EXTENT = 4096
 
 
-def _float_gcd(values) -> float:
+def _float_gcd(values: Sequence[float]) -> float:
     """The largest ``g`` with every value an integer multiple of it, to the lattice tolerance."""
 
     found = 0.0
@@ -328,7 +337,7 @@ class ArrayLattice:
     size_z: int
 
     @classmethod
-    def of(cls, offsets) -> "ArrayLattice | None":
+    def of(cls, offsets: Sequence[Sequence[float]]) -> "ArrayLattice | None":
         """The lattice the offsets sit on, or ``None`` when they sit on none."""
 
         boresight = [row[1] for row in offsets]
@@ -465,7 +474,7 @@ _PEAK_BIN_REASON = (
 )
 
 
-def _require_array(array) -> ArrayGeometry:
+def _require_array(array: Any) -> ArrayGeometry:
     if not isinstance(array, ArrayGeometry):
         raise TypeError(
             "this estimator takes an ArrayGeometry so that the element spacing "
@@ -646,7 +655,7 @@ def _signed_bin(index: torch.Tensor, size: int) -> torch.Tensor:
     return torch.where(index > size // 2 - 1, index - size, index)
 
 
-def _require_fft_size(fft_size) -> int:
+def _require_fft_size(fft_size: Any) -> int:
     if type(fft_size) is not int or fft_size < 2:
         raise ValueError(f"fft_size must be an int of at least 2, got {fft_size!r}")
     return fft_size
@@ -719,7 +728,7 @@ def _phase_comparison_layout(array: ArrayGeometry) -> tuple[float, int, float]:
     upper = offsets[2 * num_rx : 3 * num_rx]
     tolerance = _LATTICE_TOLERANCE
 
-    def uniform(rows) -> float | None:
+    def uniform(rows: Sequence[Sequence[float]]) -> float | None:
         if any(abs(r[1] - rows[0][1]) > tolerance or abs(r[2] - rows[0][2]) > tolerance for r in rows):
             return None
         if len(rows) < 2:
@@ -734,7 +743,7 @@ def _phase_comparison_layout(array: ArrayGeometry) -> tuple[float, int, float]:
     pitch = uniform(line)
     if pitch is None:
         raise _refuse_layout(route, array, f"its first {2 * num_rx} virtual elements are not a uniform line along x")
-    if num_rx > 1 and (uniform(upper) is None or abs(uniform(upper) - pitch) > tolerance):
+    if num_rx > 1 and (uniform(upper) is None or abs(cast(float, uniform(upper)) - pitch) > tolerance):
         raise _refuse_layout(route, array, "the third transmitter's elements are not a line of the same pitch")
     dz = upper[0][2] - line[0][2]
     if abs(dz) <= tolerance or abs(upper[0][1] - line[0][1]) > tolerance:
@@ -871,7 +880,7 @@ def scan_aoa(virtual_ant: torch.Tensor, array: ArrayGeometry, *, fft_size: int =
     return _finish_direction_cosines(u_x[best].to(real_dtype), u_z[best].to(real_dtype))
 
 
-def _collinear(offsets) -> bool:
+def _collinear(offsets: Sequence[Sequence[float]]) -> bool:
     origin = offsets[0]
     vectors = [tuple(b - a for a, b in zip(origin, row, strict=True)) for row in offsets[1:]]
     vectors = [v for v in vectors if max(abs(c) for c in v) > _LATTICE_TOLERANCE]

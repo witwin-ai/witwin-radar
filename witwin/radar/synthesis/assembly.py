@@ -28,7 +28,7 @@ import cmath
 import math
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import torch
@@ -1215,19 +1215,27 @@ class WaveformSpecProtocol(Protocol):
     the four questions that decide whether a weight may be handed to them.
     """
 
-    #: Absolute reference-frequency carrier the KERNEL applies, in Hz. Zero
-    #: means the kernel applies none because the weight already carries it.
-    carrier_hz: float
+    # Read-only members: the specs are frozen dataclasses and
+    # ``applies_spreading`` is a class constant, so none of them is settable.
 
-    #: Reference frequency applied to the delay CHANGE only, in Hz. Zero means
-    #: the kernel applies none.
-    carrier_rate_hz: float
+    @property
+    def carrier_hz(self) -> float:
+        """Absolute reference-frequency carrier the KERNEL applies, in Hz.
 
-    #: The frequency the weight was evaluated at. Must equal the batch's.
-    reference_frequency_hz: float
+        Zero means the kernel applies none because the weight already carries it.
+        """
 
-    #: Whether the waveform owner multiplies by ``lambda/(4 pi d)`` itself.
-    applies_spreading: bool
+    @property
+    def carrier_rate_hz(self) -> float:
+        """Reference frequency applied to the delay CHANGE only, in Hz. Zero means the kernel applies none."""
+
+    @property
+    def reference_frequency_hz(self) -> float:
+        """The frequency the weight was evaluated at. Must equal the batch's."""
+
+    @property
+    def applies_spreading(self) -> bool:
+        """Whether the waveform owner multiplies by ``lambda/(4 pi d)`` itself."""
 
 
 def _require_tensor(
@@ -1847,7 +1855,9 @@ def tdm_slot_count(*, num_chirps: int, num_tx: int) -> int:
     return num_chirps * num_tx
 
 
-def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
+def waveform_sampling(
+    spec: FmcwSpec | OfdmSpec | PulsedSpec, *, num_tx: int, num_rx: int, device: torch.device | str
+) -> tuple[tuple[float, ...], torch.Tensor, FmcwSpec | OfdmSpec | PulsedSpec]:
     """World-time offsets, pair gather indices, and a single-slot waveform.
 
     Every refreshed coefficient belongs to exactly one world instant. TDM
@@ -1856,6 +1866,7 @@ def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
     """
 
     pairs = _require_array(num_tx, num_rx)
+    single: FmcwSpec | OfdmSpec | PulsedSpec
     if isinstance(spec, FmcwSpec):
         if spec.simultaneous:
             # Every transmitter fires every chirp: one slot per chirp, heard by
@@ -1888,7 +1899,7 @@ def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
     return times, index, single
 
 
-def fast_time_grid(spec) -> tuple[float, float, int]:
+def fast_time_grid(spec: FmcwSpec | OfdmSpec | PulsedSpec) -> tuple[float, float, int]:
     """``(first, period, count)``: a slot's fast-time instants ``first + m period``, s.
 
     The instants a fast-time refreshed frame observes the world at within one
@@ -1905,7 +1916,7 @@ def fast_time_grid(spec) -> tuple[float, float, int]:
     raise NotImplementedError(f"{type(spec).__name__} has no fast-time observation grid")
 
 
-def fast_time_offsets(spec, slot_offsets: np.ndarray) -> np.ndarray:
+def fast_time_offsets(spec: FmcwSpec | OfdmSpec | PulsedSpec, slot_offsets: np.ndarray) -> np.ndarray:
     """Every fast-time observation instant of a frame, slot major, s.
 
     ``slot_offsets`` is each slot's start (:func:`waveform_sampling`). The
@@ -1921,7 +1932,7 @@ def fast_time_offsets(spec, slot_offsets: np.ndarray) -> np.ndarray:
     return (slot_offsets[:, None] + first + np.arange(count) * period).ravel()
 
 
-def fast_count(spec) -> int:
+def fast_count(spec: FmcwSpec | OfdmSpec | PulsedSpec) -> int:
     """The length of a cube's fast axis under ``spec``: samples, subcarriers or post-prefix samples."""
 
     if isinstance(spec, OfdmSpec):
@@ -1929,7 +1940,7 @@ def fast_count(spec) -> int:
     return int(spec.num_samples)
 
 
-def fast_time_single(single):
+def fast_time_single(single: FmcwSpec | OfdmSpec | PulsedSpec) -> FmcwSpec | OfdmSpec | PulsedSpec:
     """The one-sample spec each fast-time observation is synthesized with.
 
     ``single`` is the one-slot spec :func:`waveform_sampling` returns; the
@@ -1942,7 +1953,9 @@ def fast_time_single(single):
     return replace(single, num_samples=1)
 
 
-def refreshed_schedule(working, slot: np.ndarray, sample: np.ndarray | None) -> np.ndarray:
+def refreshed_schedule(
+    working: FmcwSpec | OfdmSpec | PulsedSpec, slot: np.ndarray, sample: np.ndarray | None
+) -> np.ndarray:
     """The per-segment schedule a refreshed slot batch is synthesized with.
 
     ``slot`` is each segment's frame slot and ``sample`` its fast-time sample,
@@ -2160,7 +2173,14 @@ class _CrossSynthesis(torch.autograd.Function):
     """Autograd bridge of the native cross-radar families; ``family`` names the operators."""
 
     @staticmethod
-    def forward(transfer, tau_rt, tau_lo, valid, routing, family):
+    def forward(
+        transfer: torch.Tensor,
+        tau_rt: torch.Tensor,
+        tau_lo: torch.Tensor,
+        valid: torch.Tensor,
+        routing: CrossRouting,
+        family: str,
+    ) -> torch.Tensor:
         out = transfer.new_empty((routing.cell_count, routing.num_samples, 2))
         forward, _, _ = _cross_operators(family)
         forward(
@@ -2177,7 +2197,7 @@ class _CrossSynthesis(torch.autograd.Function):
         return out
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         transfer, tau_rt, tau_lo, valid, routing, family = inputs
         ctx.routing, ctx.family = routing, family
         ctx.save_for_backward(transfer, tau_rt, tau_lo, valid)
@@ -2185,7 +2205,7 @@ class _CrossSynthesis(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out):
+    def backward(ctx: Any, grad_out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, None, None, None, None]:
         transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
         routing = ctx.routing
         grad_transfer = torch.empty_like(transfer)
@@ -2208,7 +2228,15 @@ class _CrossSynthesis(torch.autograd.Function):
         return grad_transfer, grad_tau, None, None, None, None
 
     @staticmethod
-    def jvp(ctx, tan_transfer, tan_tau_rt, tan_tau_lo, tan_valid, tan_routing, tan_family):
+    def jvp(
+        ctx: Any,
+        tan_transfer: torch.Tensor | None,
+        tan_tau_rt: torch.Tensor | None,
+        tan_tau_lo: Any,
+        tan_valid: Any,
+        tan_routing: Any,
+        tan_family: Any,
+    ) -> torch.Tensor:
         transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
         routing = ctx.routing
         tan_transfer = torch.zeros_like(transfer) if tan_transfer is None else tan_transfer.contiguous()

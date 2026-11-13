@@ -39,6 +39,7 @@ replacement and one subtraction.
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from typing import Any, TypeVar
 
 import torch
 
@@ -53,13 +54,16 @@ from .signal import ProcessingAxes, ProcessingCube, _range_axis
 #: The products a calibration applies to: each carries ``data [..., TX, RX, a, b]`` and its axes.
 CALIBRATED_PRODUCTS = (ProcessingCube, RangeProfile, RangeDopplerMap)
 
+#: One of :data:`CALIBRATED_PRODUCTS`; a calibration returns the kind it was given.
+_Product = TypeVar("_Product", ProcessingCube, RangeProfile, RangeDopplerMap)
+
 _PEAK_REASON = (
     "the range bias is read at the compressed peak, an argmax over range bins, and a peak position is a discrete "
     "choice whose derivative is not the derivative of the bias."
 )
 
 
-def _require_product(name: str, product: object):
+def _require_product(name: str, product: _Product) -> _Product:
     if not isinstance(product, CALIBRATED_PRODUCTS):
         if isinstance(product, BeamCube):
             raise TypeError(f"{name} is a beam cube; calibrate the channels before beamforming")
@@ -89,7 +93,7 @@ class ArrayCalibration:
         if not (0 <= tx < int(self.gains.shape[0]) and 0 <= rx < int(self.gains.shape[1])):
             raise ValueError(f"reference channel {self.reference} is outside the {tuple(self.gains.shape)} array")
 
-    def apply(self, product):
+    def apply(self, product: _Product) -> _Product:
         """The same product with each channel divided by its gain."""
 
         product = _require_product("product", product)
@@ -104,7 +108,7 @@ class ArrayCalibration:
 
 
 def estimate_array_calibration(
-    profile: RangeProfile, aperture: Aperture, reflector_m, *, reference: tuple[int, int] = (0, 0)
+    profile: RangeProfile, aperture: Aperture, reflector_m: Any, *, reference: tuple[int, int] = (0, 0)
 ) -> ArrayCalibration:
     """Measure the channel gains from a point reflector at the known position ``reflector_m``.
 
@@ -153,7 +157,7 @@ class RangeCalibration:
             range_m=_range_axis(int(axes.range_bin_count), float(axes.range_bin_m), origin, axes.device),
         )
 
-    def apply(self, product):
+    def apply(self, product: _Product) -> _Product:
         """The same samples, published on the corrected range axis."""
 
         product = _require_product("product", product)
@@ -161,7 +165,7 @@ class RangeCalibration:
 
 
 def estimate_range_calibration(
-    profile: RangeProfile, aperture: Aperture, reflector_m, *, search_m: float
+    profile: RangeProfile, aperture: Aperture, reflector_m: Any, *, search_m: float
 ) -> RangeCalibration:
     """Measure the round-trip delay bias from a point reflector at ``reflector_m``.
 
@@ -204,7 +208,7 @@ def estimate_range_calibration(
     return RangeCalibration(delay_s=2.0 * bias_m / SPEED_OF_LIGHT_M_PER_S)
 
 
-def _same_grid(product, background) -> None:
+def _same_grid(product: _Product, background: _Product) -> None:
     if type(product) is not type(background):
         raise TypeError(f"the background is a {type(background).__name__} and the product a {type(product).__name__}")
     a, b = product.axes, background.axes
@@ -220,7 +224,7 @@ def _same_grid(product, background) -> None:
         )
 
 
-def subtract_background(product, background):
+def subtract_background(product: _Product, background: _Product) -> _Product:
     """``product - background``, sample for sample, on the product's axes.
 
     ``background`` is the same kind of product recorded from the same radar
@@ -235,7 +239,7 @@ def subtract_background(product, background):
     return replace(product, data=product.data - background.data.to(product.data.device))
 
 
-def average_background(references: Sequence):
+def average_background(references: Sequence[_Product]) -> _Product:
     """The mean of several reference products of one radar, as one product."""
 
     references = list(references)

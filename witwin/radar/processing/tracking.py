@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 
@@ -371,11 +372,14 @@ class KalmanTracker:
         self.gate = float(gate)
         self.initial_velocity_std_mps = float(initial_velocity_std_mps)
         self.max_misses = max_misses
-        self._state: torch.Tensor | None = None
-        self._covariance: torch.Tensor | None = None
-        self._ids: torch.Tensor | None = None
-        self._hits: torch.Tensor | None = None
-        self._misses: torch.Tensor | None = None
+        # The five track tensors are None until the first push sets all of them
+        # together; ``tracks`` tests ``_state is None`` and every other reader
+        # runs inside or after a push, so they are typed as set.
+        self._state: torch.Tensor = cast(torch.Tensor, None)
+        self._covariance: torch.Tensor = cast(torch.Tensor, None)
+        self._ids: torch.Tensor = cast(torch.Tensor, None)
+        self._hits: torch.Tensor = cast(torch.Tensor, None)
+        self._misses: torch.Tensor = cast(torch.Tensor, None)
         self._time_s: float | None = None
         self._next_id = 0
 

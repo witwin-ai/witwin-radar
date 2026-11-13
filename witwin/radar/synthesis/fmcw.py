@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -45,17 +46,17 @@ from .assembly import (
 )
 
 
-def _forward_op(domain: str):
+def _forward_op(domain: str) -> Any:
     ops = _ops()
     return ops.fmcw_spectrum_forward if domain == "spectrum" else ops.fmcw_beat_forward
 
 
-def _backward_op(domain: str):
+def _backward_op(domain: str) -> Any:
     ops = _ops()
     return ops.fmcw_spectrum_backward if domain == "spectrum" else ops.fmcw_beat_backward
 
 
-def _jvp_op(domain: str):
+def _jvp_op(domain: str) -> Any:
     ops = _ops()
     return ops.fmcw_spectrum_jvp if domain == "spectrum" else ops.fmcw_beat_jvp
 
@@ -85,7 +86,7 @@ def _ramp_tables(spec: FmcwSpec, device: torch.device) -> tuple[torch.Tensor, to
     """The spec's slot table and phase-error polynomial on ``device``, uploaded once per spec.
 
     The slot table is empty for the uniform ramp, which the kernel then
-    evaluates from its scalars exactly as before; it is ``float64[slots, 4]``
+    evaluates from its scalars; it is ``float64[slots, 4]``
     when the spec carries a sequence or a start offset.
     """
 
@@ -115,7 +116,18 @@ class _FmcwSynthesis(torch.autograd.Function):
     """Autograd bridge for the selected native FMCW output domain."""
 
     @staticmethod
-    def forward(tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec):
+    def forward(
+        tau_rt: torch.Tensor,
+        tau_lo: torch.Tensor,
+        tau_rate: torch.Tensor,
+        weight_re: torch.Tensor,
+        weight_im: torch.Tensor,
+        offsets: torch.Tensor,
+        segment: torch.Tensor,
+        tx_index: torch.Tensor,
+        starts: torch.Tensor,
+        spec: FmcwSpec,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -150,7 +162,7 @@ class _FmcwSynthesis(torch.autograd.Function):
         return out_re, out_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, torch.Tensor]) -> None:
         (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, segment, tx_index, starts, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
@@ -159,7 +171,7 @@ class _FmcwSynthesis(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im):
+    def backward(ctx: Any, grad_out_re: torch.Tensor, grad_out_im: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
         (tau_rt, tau_lo, tau_rate, weight_re, weight_im, segment, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         spectrum = spec.output_domain == FMCW_OUTPUT_SPECTRUM
@@ -201,18 +213,18 @@ class _FmcwSynthesis(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tau_rt,
-        tan_tau_lo,
-        tan_tau_rate,
-        tan_weight_re,
-        tan_weight_im,
-        tan_offsets,
-        tan_segment,
-        tan_tx_index,
-        tan_starts,
-        tan_spec,
-    ):
+        ctx: Any,
+        tan_tau_rt: torch.Tensor | None,
+        tan_tau_lo: torch.Tensor | None,
+        tan_tau_rate: torch.Tensor | None,
+        tan_weight_re: torch.Tensor | None,
+        tan_weight_im: torch.Tensor | None,
+        tan_offsets: Any,
+        tan_segment: Any,
+        tan_tx_index: Any,
+        tan_starts: Any,
+        tan_spec: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         (tau_rt, tau_lo, tau_rate, weight_re, weight_im, offsets, tx_index, starts) = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
@@ -259,20 +271,22 @@ class _FmcwObservations(torch.autograd.Function):
     """Native CSR observation synthesis with fixed ADC scheduling."""
 
     @staticmethod
-    def forward(values, offsets, segment, slope, carrier):
+    def forward(
+        values: torch.Tensor, offsets: torch.Tensor, segment: torch.Tensor, slope: float, carrier: float
+    ) -> torch.Tensor:
         result = values.new_empty((len(offsets) - 1, 2))
         _ops().fmcw_observation_forward(values, offsets, segment, values.new_empty(0), result, slope, carrier)
         return result
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         values, offsets, segment, ctx.slope, ctx.carrier = inputs
         ctx.save_for_backward(values, offsets, segment)
         ctx.save_for_forward(values, offsets, segment)
 
     @staticmethod
     @first_order_only
-    def backward(ctx, gradient):
+    def backward(ctx: Any, gradient: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None]:
         values, offsets, segment = ctx.saved_tensors
         result = torch.empty_like(values)
         _ops().fmcw_observation_backward(
@@ -281,14 +295,29 @@ class _FmcwObservations(torch.autograd.Function):
         return result, None, None, None, None
 
     @staticmethod
-    def jvp(ctx, tangent, offsets_tangent, segment_tangent, slope_tangent, carrier_tangent):
+    def jvp(
+        ctx: Any,
+        tangent: torch.Tensor,
+        offsets_tangent: Any,
+        segment_tangent: Any,
+        slope_tangent: Any,
+        carrier_tangent: Any,
+    ) -> torch.Tensor:
         values, offsets, segment = ctx.saved_tensors
         result = values.new_empty((len(offsets) - 1, 2))
         _ops().fmcw_observation_jvp(values, offsets, segment, tangent.contiguous(), result, ctx.slope, ctx.carrier)
         return result
 
 
-def synthesize_fmcw_observations(delay, weight, offsets, adc_time, spec, *, segment=None):
+def synthesize_fmcw_observations(
+    delay: torch.Tensor,
+    weight: torch.Tensor,
+    offsets: torch.Tensor,
+    adc_time: torch.Tensor,
+    spec: FmcwSpec,
+    *,
+    segment: torch.Tensor | None = None,
+) -> torch.Tensor:
     """One complex beat value per CSR segment, using refreshed path rows.
 
     Delay [s] and conjugated Channel weight are differentiable. Chirp-local
@@ -316,7 +345,7 @@ class _AdaptiveObservationSpec:
     stop: int
     precise_delay: bool = False
 
-    def native_args(self):
+    def native_args(self) -> tuple[int, int, int, int, float, float, float, int]:
         spec = self.waveform
         return (
             self.begin,
@@ -329,7 +358,7 @@ class _AdaptiveObservationSpec:
             int(self.precise_delay),
         )
 
-    def output_shape(self, bounds):
+    def output_shape(self, bounds: torch.Tensor) -> tuple[int, int]:
         return ((self.stop - self.begin) * ((bounds.shape[1] - 1) // self.waveform.num_tx), 2)
 
 
@@ -337,7 +366,16 @@ class _AdaptiveFmcw(torch.autograd.Function):
     """Fused compact interpolation and ADC synthesis, with native first-order AD."""
 
     @staticmethod
-    def forward(samples, validity, starts, basis, bounds, owners, clock, plan):
+    def forward(
+        samples: torch.Tensor,
+        validity: torch.Tensor,
+        starts: torch.Tensor,
+        basis: torch.Tensor,
+        bounds: torch.Tensor,
+        owners: torch.Tensor,
+        clock: torch.Tensor,
+        plan: _AdaptiveObservationSpec,
+    ) -> torch.Tensor:
         result = samples.new_empty(plan.output_shape(bounds))
         _ops().fmcw_adaptive_forward(
             samples, validity, starts, basis, bounds, owners, clock, samples.new_empty(0), result, *plan.native_args()
@@ -345,14 +383,14 @@ class _AdaptiveFmcw(torch.autograd.Function):
         return result
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: torch.Tensor) -> None:
         ctx.plan = inputs[-1]
         ctx.save_for_backward(*inputs[:-1])
         ctx.save_for_forward(*inputs[:-1])
 
     @staticmethod
     @first_order_only
-    def backward(ctx, gradient):
+    def backward(ctx: Any, gradient: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None, None, None, None]:
         samples, *metadata = ctx.saved_tensors
         result = torch.zeros_like(samples)
         _ops().fmcw_adaptive_backward(samples, *metadata, gradient.contiguous(), result, *ctx.plan.native_args())
@@ -360,16 +398,16 @@ class _AdaptiveFmcw(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tangent,
-        validity_tangent,
-        starts_tangent,
-        basis_tangent,
-        bounds_tangent,
-        owners_tangent,
-        clock_tangent,
-        plan_tangent,
-    ):
+        ctx: Any,
+        tangent: torch.Tensor | None,
+        validity_tangent: Any,
+        starts_tangent: Any,
+        basis_tangent: Any,
+        bounds_tangent: Any,
+        owners_tangent: Any,
+        clock_tangent: Any,
+        plan_tangent: Any,
+    ) -> torch.Tensor:
         samples, *metadata = ctx.saved_tensors
         bounds = metadata[3]
         result = samples.new_empty(ctx.plan.output_shape(bounds))
@@ -379,8 +417,20 @@ class _AdaptiveFmcw(torch.autograd.Function):
 
 
 def synthesize_adaptive_fmcw(
-    samples, validity, starts, basis, bounds, owners, clock, spec, carrier_hz, begin, stop, *, precise_delay=False
-):
+    samples: torch.Tensor,
+    validity: torch.Tensor,
+    starts: torch.Tensor,
+    basis: torch.Tensor,
+    bounds: torch.Tensor,
+    owners: torch.Tensor,
+    clock: torch.Tensor,
+    spec: FmcwSpec,
+    carrier_hz: float,
+    begin: int,
+    stop: int,
+    *,
+    precise_delay: bool = False,
+) -> torch.Tensor:
     """Direct complete ADC values from compact adaptive probe rows.
 
     All routing and timestamps are discrete metadata. Samples retain native
@@ -437,7 +487,7 @@ def synthesize_fmcw_rows(
     (R-ADR-040): the kernels read ``tau = total_delay_s + residual`` in
     float64, so the bandwidth term ``2 pi B tau`` is not quantized to the
     float32 ulp of the delay. It carries no derivative; ``None`` reads the
-    float32 delay alone, bit for bit as before.
+    float32 delay alone.
 
     Under DDM and BPM every transmitter fires every chirp, so the slow-time
     coordinate of every segment is its chirp and ``segment_tx_index`` is not
@@ -507,7 +557,8 @@ def synthesize_fmcw_rows(
                 "per-segment ADC window starts belong to the beat domain; the range spectrum's closed form "
                 "assumes one uniform window"
             )
-        table = segment_t_start_s if segment_schedule is None else segment_schedule
+        # One of the two is not None: the both-None case took the branch above.
+        table = cast(torch.Tensor, segment_t_start_s if segment_schedule is None else segment_schedule)
         refuse_derivative("FMCW segment window starts", "ADC times are fixed metadata", starts=table)
         width = (num_segments,) if segment_schedule is None else (num_segments, 3)
         if table.dtype != torch.float64 or tuple(table.shape) != width:

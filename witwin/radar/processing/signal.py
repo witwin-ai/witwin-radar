@@ -20,7 +20,9 @@ the multiply.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
@@ -36,6 +38,9 @@ from ..synthesis.assembly import (
     SynthesisResult,
     assemble_frame_cube,
 )
+
+if TYPE_CHECKING:
+    from ..radar import Radar
 
 #: The window family, named so a caller comparing against an analytic
 #: unwindowed spectrum can turn it off by name rather than by passing ``None``
@@ -480,7 +485,7 @@ class ProcessingAxes:
 
     @classmethod
     def from_radar(
-        cls, radar, *, range_oversample: int = 1, device: torch.device | str | None = None
+        cls, radar: "Radar", *, range_oversample: int = 1, device: torch.device | str | None = None
     ) -> "ProcessingAxes":
         """The record a cube this radar produces is described by, with no cube.
 
@@ -546,14 +551,14 @@ class ProcessingAxes:
                 f"{float(array.reference_frequency_hz)} Hz; the two are the "
                 "same physical quantity"
             )
-        simultaneous = kind == "fmcw" and bool(spec.simultaneous)
+        simultaneous = kind == "fmcw" and bool(cast(FmcwSpec, spec).simultaneous)
         recorded = array.num_rx if simultaneous else array.sensor_pair_count
         if int(cube.shape[1]) != recorded:
             raise ValueError(
                 f"the cube spans {int(cube.shape[1])} sensor pairs but the array "
                 f"is {array.num_tx} x {array.num_rx} = "
                 f"{array.sensor_pair_count} pairs"
-                + (f", recorded on {array.num_rx} receivers under {spec.mimo}" if simultaneous else "")
+                + (f", recorded on {array.num_rx} receivers under {cast(FmcwSpec, spec).mimo}" if simultaneous else "")
             )
         if type(range_oversample) is not int or range_oversample < 1:
             raise ValueError(f"range_oversample must be a positive int, got {range_oversample!r}")
@@ -562,12 +567,14 @@ class ProcessingAxes:
         fast_count = int(cube.shape[2])
         wavelength = SPEED_OF_LIGHT_M_PER_S / reference
 
-        replica = None
+        replica: torch.Tensor | None = None
         replica_period = 0.0
         periodic = False
-        mimo, code, code_period = "tdm", None, 1
-        symbols = None
+        mimo, code_period = "tdm", 1
+        code: torch.Tensor | None = None
+        symbols: torch.Tensor | None = None
         if kind == "fmcw":
+            spec = cast(FmcwSpec, spec)
             if simultaneous:
                 mimo = str(spec.mimo)
                 physical = spec.transmit_code()
@@ -586,6 +593,7 @@ class ProcessingAxes:
             range_origin = 0.0
             max_range = range_bin * range_count
         elif kind == "ofdm":
+            spec = cast(OfdmSpec, spec)
             if spec.time_domain:
                 symbols = torch.from_numpy(spec.symbol_table()).to(device=device, dtype=torch.complex128)
             slow_period = float(spec.symbol_period_s)
@@ -595,6 +603,7 @@ class ProcessingAxes:
             range_origin = 0.0
             max_range = SPEED_OF_LIGHT_M_PER_S * float(spec.max_unambiguous_delay_s) / 2.0
         else:
+            spec = cast(PulsedSpec, spec)
             slow_period = float(spec.pri_s)
             max_speed = float(spec.max_unambiguous_speed_m_s)
             range_count = fast_count * range_oversample
@@ -625,8 +634,14 @@ class ProcessingAxes:
             num_tx=int(array.num_tx),
             num_rx=int(array.num_rx),
             element_spacing_m=float(array.element_spacing_m),
-            tx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in array.tx_loc),
-            rx_loc_half_wavelength=tuple(tuple(float(value) for value in row) for row in array.rx_loc),
+            tx_loc_half_wavelength=cast(
+                "tuple[tuple[float, float, float], ...]",
+                tuple(tuple(float(value) for value in row) for row in array.tx_loc),
+            ),
+            rx_loc_half_wavelength=cast(
+                "tuple[tuple[float, float, float], ...]",
+                tuple(tuple(float(value) for value in row) for row in array.rx_loc),
+            ),
             range_m=_range_axis(range_count, range_bin, range_origin, device),
             velocity_mps=_velocity_axis(slow_count, slow_period, wavelength, device),
             range_oversample=range_oversample,
@@ -685,20 +700,20 @@ class ProcessingAxes:
         return record
 
 
-def _range_axis(count: int, bin_m: float, origin_m: float, device) -> torch.Tensor:
+def _range_axis(count: int, bin_m: float, origin_m: float, device: torch.device) -> torch.Tensor:
     """``origin + k * bin`` in float64 metres: the one formula behind every range axis."""
 
     return (torch.arange(count, dtype=torch.float64, device=device) * bin_m + origin_m).contiguous()
 
 
-def _velocity_axis(count: int, period_s: float, wavelength_m: float, device) -> torch.Tensor:
+def _velocity_axis(count: int, period_s: float, wavelength_m: float, device: torch.device) -> torch.Tensor:
     """``lambda f / 2`` over the ``fftshift``ed slow-time frequencies, closing positive."""
 
     frequency = torch.fft.fftshift(torch.fft.fftfreq(count, d=period_s, dtype=torch.float64, device=device))
     return (frequency * (wavelength_m / 2.0)).contiguous()
 
 
-def _shape_only_result(spec, pairs: int) -> SynthesisResult:
+def _shape_only_result(spec: FmcwSpec | OfdmSpec | PulsedSpec, pairs: int) -> SynthesisResult:
     """The :class:`SynthesisResult` a frame of ``spec`` would publish, on a ``meta`` cube.
 
     The factory is the one the synthesis owner calls, so the axis names, the
@@ -706,6 +721,7 @@ def _shape_only_result(spec, pairs: int) -> SynthesisResult:
     a second table here. A ``meta`` tensor has a shape and no storage.
     """
 
+    build: Callable[[torch.Tensor, Any], SynthesisResult]
     if isinstance(spec, FmcwSpec):
         recorded = spec.num_rx if spec.simultaneous else pairs
         shape, build = (spec.num_chirps, recorded, spec.num_samples), SynthesisResult.from_fmcw
@@ -716,7 +732,7 @@ def _shape_only_result(spec, pairs: int) -> SynthesisResult:
         shape, build = (spec.num_pulses, pairs, spec.num_samples), SynthesisResult.from_pulsed
     else:
         raise TypeError(f"no processing owner for a {type(spec).__name__}")
-    return build(torch.empty(shape, dtype=torch.complex64, device="meta"), spec)
+    return build(torch.empty(shape, dtype=torch.complex64, device="meta"), cast(Any, spec))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -795,7 +811,7 @@ class ProcessingCube:
         return cls(data=assemble_frame_cube(result.cube, num_tx=axes.transmit_channels, num_rx=axes.num_rx), axes=axes)
 
     @classmethod
-    def from_tensor(cls, cube: torch.Tensor, radar, *, range_oversample: int = 1) -> "ProcessingCube":
+    def from_tensor(cls, cube: torch.Tensor, radar: "Radar", *, range_oversample: int = 1) -> "ProcessingCube":
         """A recorded or synthetic complex cube, described by the radar that took it.
 
         Two layouts are accepted, told apart by rank:
@@ -820,6 +836,7 @@ class ProcessingCube:
         fast = axes.range_bin_count // axes.range_oversample
         slow = axes.doppler_bin_count
         channels = axes.transmit_channels
+        expected: tuple[int, ...]
         if cube.dim() == 3:
             expected = (slow, channels * axes.num_rx, fast)
             if tuple(cube.shape) != expected:

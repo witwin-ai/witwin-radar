@@ -17,10 +17,12 @@ than assumed.
 
 import math
 from dataclasses import dataclass, replace
+from typing import cast
 
 import torch
 
 from ..display import compact_repr
+from ..synthesis.assembly import PulsedSpec
 from .signal import (
     DEFAULT_WINDOW,
     ProcessingAxes,
@@ -118,7 +120,7 @@ class RangeDopplerMap:
         return self.axes.velocity_mps
 
 
-def matched_filter(signal: torch.Tensor, spec, *, oversample: int = 1) -> torch.Tensor:
+def matched_filter(signal: torch.Tensor, spec: PulsedSpec, *, oversample: int = 1) -> torch.Tensor:
     """Correlate the fast-time axis against ``conj(p)``. Same rank as ``signal``.
 
     ``signal`` is the received train ``[..., num_samples]`` from the pulsed
@@ -151,7 +153,7 @@ def matched_filter(signal: torch.Tensor, spec, *, oversample: int = 1) -> torch.
     )
 
 
-def stepped_frequency_profile(signal: torch.Tensor, spec) -> tuple[torch.Tensor, torch.Tensor]:
+def stepped_frequency_profile(signal: torch.Tensor, spec: PulsedSpec) -> tuple[torch.Tensor, torch.Tensor]:
     """The synthetic range profile of a stepped-frequency train, and its delay axis.
 
     ``signal`` is ``[..., L, M]``, the received train of ``L`` pulses whose
@@ -174,7 +176,7 @@ def stepped_frequency_profile(signal: torch.Tensor, spec) -> tuple[torch.Tensor,
     return profile, delays
 
 
-def lag_axis(spec, *, oversample: int = 1, device: torch.device | str = "cpu"):
+def lag_axis(spec: PulsedSpec, *, oversample: int = 1, device: torch.device | str = "cpu") -> torch.Tensor:
     """The delay each :func:`matched_filter` output sample corresponds to.
 
     ``range_gate_start_s + m * T_s / oversample``, in seconds. Returned as a
@@ -190,7 +192,7 @@ def lag_axis(spec, *, oversample: int = 1, device: torch.device | str = "cpu"):
     return spec.range_gate_start_s + steps * (spec.sample_period_s / oversample)
 
 
-def _unpack(cube: ProcessingCube):
+def _unpack(cube: ProcessingCube) -> tuple[torch.Tensor, ProcessingAxes]:
     if not isinstance(cube, ProcessingCube):
         raise TypeError(
             "range_profile takes a ProcessingCube; bare tensors have no "
@@ -330,17 +332,17 @@ def range_profile(
                 f"metadata record was built for {expected} at oversample "
                 f"{record.range_oversample}"
             )
+        # ProcessingAxes holds a replica exactly when the waveform is pulsed.
+        replica = cast(torch.Tensor, record.matched_filter_replica)
         profile = correlate(
             data,
-            record.matched_filter_replica,
+            replica,
             sample_period_s=record.matched_filter_sample_period_s,
             oversample=record.range_oversample,
             window=name,
             periodic=record.matched_filter_periodic,
         )
-        taper_length = int(data.shape[-1]) + (
-            0 if record.matched_filter_periodic else int(record.matched_filter_replica.shape[0])
-        )
+        taper_length = int(data.shape[-1]) + (0 if record.matched_filter_periodic else int(replica.shape[0]))
     else:
         if int(data.shape[-1]) != record.range_bin_count:
             raise ValueError(
@@ -521,7 +523,9 @@ def remove_static_clutter(profile: RangeProfile, *, method: str = "mean") -> Ran
 MICRODOPPLER_WINDOWS = ("hann", "rectangular")
 
 
-def doppler_frequencies_hz(slot_count: int, slot_period_s: float, *, device=None):
+def doppler_frequencies_hz(
+    slot_count: int, slot_period_s: float, *, device: torch.device | str | None = None
+) -> torch.Tensor:
     """The signed, ``fftshift``ed Doppler axis of a ``slot_count`` transform.
 
     Runs from ``-1/(2 T_slot)`` up to just below ``+1/(2 T_slot)``. In the
@@ -542,7 +546,7 @@ def doppler_frequencies_hz(slot_count: int, slot_period_s: float, *, device=None
     return torch.fft.fftshift(torch.fft.fftfreq(slot_count, d=float(slot_period_s), dtype=torch.float64, device=device))
 
 
-def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann"):
+def slow_time_spectrum(samples: torch.Tensor, *, window: str = "hann") -> torch.Tensor:
     """The ``fftshift``ed slow-time spectrum of ``samples[..., slots]``.
 
     The transform is over the LAST axis: a slow-time cube is ``[..., slots]``
@@ -584,7 +588,7 @@ class SlowTimeSignal:
     phasor: str
     wavelength_m: float | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         _require_complex("samples", self.samples)
         if self.samples.ndim < 1 or len(self.times_s) != self.samples.shape[-1] or len(self.times_s) < 2:
             raise ValueError("timestamps must match a slow-time axis of at least two samples")
