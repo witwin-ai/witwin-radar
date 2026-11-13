@@ -72,16 +72,16 @@ def test_the_coupled_amplitude_is_the_declared_isolation_below_the_transmit_powe
     quietly interpreted as a power ratio on an amplitude.
     """
 
-    leakage = Leakage(isolation_db=40.0, delay_s=COUPLING_DELAY_S)
+    leakage = Leakage(isolation=40.0, delay=COUPLING_DELAY_S)
     transmit_watts = 1e-3 * 10.0 ** (CONFIG["power"] / 10.0)
     assert leakage.amplitude(CONFIG["power"]) == pytest.approx(math.sqrt(transmit_watts) * 10.0 ** (-40.0 / 20.0))
 
 
 def test_a_negative_isolation_and_a_negative_delay_are_refused():
-    with pytest.raises(ValueError, match="isolation_db must be positive"):
-        Leakage(isolation_db=0.0, delay_s=COUPLING_DELAY_S)
-    with pytest.raises(ValueError, match="delay_s must not be negative"):
-        Leakage(isolation_db=40.0, delay_s=-1e-12)
+    with pytest.raises(ValueError, match="isolation must be positive"):
+        Leakage(isolation=0.0, delay=COUPLING_DELAY_S)
+    with pytest.raises(ValueError, match="delay must not be negative"):
+        Leakage(isolation=40.0, delay=-1e-12)
 
 
 @pytest.mark.gpu
@@ -95,7 +95,7 @@ def test_the_coupling_lands_in_the_bin_its_delay_names_and_skirts_the_near_range
     That is the number a near-range dataset is missing when coupling is off.
     """
 
-    radar = _radar(leakage=Leakage(isolation_db=40.0, delay_s=COUPLING_DELAY_S))
+    radar = _radar(leakage=Leakage(isolation=40.0, delay=COUPLING_DELAY_S))
     spec = radar.system_config.waveform_spec()
     empty = torch.zeros((spec.num_chirps, 1, spec.num_samples), dtype=torch.complex64, device=radar.device)
     cube = radar._leakage_cube(spec, 1, empty)
@@ -122,7 +122,7 @@ def test_declaring_coupling_adds_it_to_the_echo_and_leaves_the_echo_alone():
     """
 
     ideal = _radar()
-    coupled = _radar(leakage=Leakage(isolation_db=30.0, delay_s=COUPLING_DELAY_S))
+    coupled = _radar(leakage=Leakage(isolation=30.0, delay=COUPLING_DELAY_S))
     spec = ideal.system_config.waveform_spec()
     empty = torch.zeros((spec.num_chirps, 1, spec.num_samples), dtype=torch.complex64, device=ideal.device)
 
@@ -143,7 +143,7 @@ def test_the_image_rejection_is_what_the_imbalance_declares():
     """
 
     for gain_db, phase_deg in ((0.5, 2.0), (1.0, 5.0)):
-        imbalance = Iq(gain_db=gain_db, phase_deg=phase_deg)
+        imbalance = Iq(gain=gain_db, phase=math.radians(phase_deg))
         chirps, bin_index = 64, 7
         # float64: the assertion is on the definition, and a float32 tone would
         # put its own rounding between the two coefficients and the measurement.
@@ -191,7 +191,7 @@ def test_the_imbalance_reaches_the_receive_chain_and_the_quantiser_sees_the_imag
 
 def _array_radar(waveform, leakage) -> Radar:
     return Radar(
-        carrier=77e9,
+        reference_frequency_hz=77e9,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0), (0.002, 0.0, 0.0)),
         rx=((0.0, 0.001, 0.0), (0.002, 0.001, 0.0), (0.004, 0.001, 0.0)),
@@ -224,7 +224,7 @@ def test_per_pair_ofdm_leakage_is_the_declared_cfr_term_of_each_pair():
 
     from witwin.radar import Ofdm
 
-    leakage = Leakage(isolation_db=ISOLATION_TABLE, delay_s=DELAY_TABLE, phase=PHASE_TABLE)
+    leakage = Leakage(isolation=ISOLATION_TABLE, delay=DELAY_TABLE, phase=PHASE_TABLE)
     waveform = Ofdm(
         subcarrier_spacing=1e6, num_subcarriers=64, cyclic_prefix=1e-7, num_symbols=4, max_expected_delay=5e-8
     )
@@ -244,7 +244,7 @@ def test_per_pair_ofdm_leakage_is_the_declared_cfr_term_of_each_pair():
 def test_per_pair_pulsed_leakage_appears_only_while_the_gate_overlaps_the_pulse():
     from witwin.radar import Pulsed
 
-    leakage = Leakage(isolation_db=ISOLATION_TABLE, delay_s=0.0, phase=PHASE_TABLE)
+    leakage = Leakage(isolation=ISOLATION_TABLE, delay=0.0, phase=PHASE_TABLE)
     waveform = Pulsed(
         pulse_kind="rect",
         pulse_width=1e-6,
@@ -273,6 +273,6 @@ def test_per_pair_pulsed_leakage_appears_only_while_the_gate_overlaps_the_pulse(
 
 
 def test_a_leakage_table_of_the_wrong_shape_is_refused_by_name():
-    leakage = Leakage(isolation_db=((30.0, 30.0),), delay_s=0.0)
-    with pytest.raises(ValueError, match="isolation_db is a 1 x 2 table but the array is 2 x 3"):
+    leakage = Leakage(isolation=((30.0, 30.0),), delay=0.0)
+    with pytest.raises(ValueError, match="isolation is a 1 x 2 table but the array is 2 x 3"):
         leakage.pair_rows(num_tx=2, num_rx=3, power_dbm=10.0)

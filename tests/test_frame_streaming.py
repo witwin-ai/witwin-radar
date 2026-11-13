@@ -56,8 +56,8 @@ def test_streamed_frames_equal_the_stacked_cube_bit_for_bit(motion):
     assert len(streamed) == FRAMES
     for index, frame in enumerate(streamed):
         assert frame.frame_count == 1
-        assert frame.times_s == (stacked.times_s[index],)
-        assert np.array_equal(frame.sample_times_s[0], stacked.sample_times_s[index])
+        assert frame.times == (stacked.times[index],)
+        assert np.array_equal(frame.sample_times[0], stacked.sample_times[index])
         assert frame.epochs == (stacked.epochs[index],)
         assert frame.rediscovery_reasons == (stacked.rediscovery_reasons[index],)
         assert frame.axis_names == stacked.axis_names
@@ -170,7 +170,7 @@ def test_retained_state_describes_the_observation_that_closed_the_frame(motion):
     # The site moves, so the snapshot of the frame's last observation is not the
     # snapshot of its first. Publishing the opening one would silently describe
     # a world the simulation had already left.
-    opening, closing = result.sample_times_s[-1][0], result.sample_times_s[-1][-1]
+    opening, closing = result.sample_times[-1][0], result.sample_times[-1][-1]
     assert closing > opening
     assert result.last_snapshot.time_s == pytest.approx(closing, abs=1e-12)
     assert result.last_snapshot.time_s != pytest.approx(opening, abs=1e-12)
@@ -193,6 +193,6 @@ def test_streaming_reports_the_frame_it_just_yielded():
     seen = []
     for frame in radar.stream(static_scene(), **kwargs, motion=Motion.adc()):
         assert frame.last_snapshot is not None
-        assert frame.last_snapshot.time_s == pytest.approx(frame.sample_times_s[0][-1], abs=1e-12)
-        seen.append(frame.times_s[0])
+        assert frame.last_snapshot.time_s == pytest.approx(frame.sample_times[0][-1], abs=1e-12)
+        seen.append(frame.times[0])
     assert seen == list(kwargs["times"])

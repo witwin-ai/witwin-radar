@@ -56,7 +56,7 @@ def _facing(waveform, other=None):
     from witwin.radar import Radar
 
     a = Radar(
-        carrier=F_C,
+        reference_frequency_hz=F_C,
         waveform=waveform,
         tx=((0.01, 0.0, 0.0),),
         rx=((-0.01, 0.0, 0.0),),
@@ -65,7 +65,7 @@ def _facing(waveform, other=None):
         up=sc.UP,
     )
     b = Radar(
-        carrier=F_C,
+        reference_frequency_hz=F_C,
         waveform=waveform if other is None else other,
         tx=((0.01, 0.0, 0.0),),
         rx=((-0.01, 0.0, 0.0),),

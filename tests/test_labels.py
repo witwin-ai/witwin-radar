@@ -27,7 +27,7 @@ def _radar(**fields):
         ramp_end=10e-6,
     )
     return Radar(
-        carrier=CARRIER_HZ,
+        reference_frequency_hz=CARRIER_HZ,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0),),
         rx=((0.0, 0.0, 0.0),),
@@ -123,7 +123,7 @@ def test_a_tabulated_cross_section_is_read_at_the_monostatic_aspect():
     from witwin.radar import PointTargets, RcsTable
     from witwin.radar.labels import ground_truth
 
-    table = RcsTable(axis=[[1.0, 0.0, 0.0]], rcs_m2=[0.0, 2.0, 4.0])  # on theta = 0, pi/2, pi
+    table = RcsTable(axis=[[1.0, 0.0, 0.0]], rcs=[0.0, 2.0, 4.0])  # on theta = 0, pi/2, pi
     targets = PointTargets(positions=[(3.0, 0.0, -4.0)], rcs=table)
     labels = ground_truth(_radar(), _empty(), targets, times=(0.0,))
     # The target-to-radar direction (-3, 0, 4)/5 is acos(-0.6) off the axis; the response

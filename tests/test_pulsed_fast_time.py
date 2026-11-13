@@ -73,7 +73,7 @@ def test_the_published_schedule_is_what_ran(rect_runs):
     assert slow.observation_schedule == "slow_time"
     spec = radar.waveform_spec()
     # One observation per pulse and gate sample, at its own absolute instant.
-    times = fast.sample_times_s[0]
+    times = fast.sample_times[0]
     assert len(times) == spec.num_pulses * spec.num_samples
     assert times[spec.num_samples + 3] == pytest.approx(spec.pri_s + 3 * spec.sample_period_s, abs=1e-15)
 
@@ -93,7 +93,7 @@ def test_a_refreshed_pulse_rotates_at_the_intra_pulse_doppler(rect_runs):
     refreshed = fast.cube[0, 0, 0, 0, window].to(torch.complex128).cpu()
     held = slow.cube[0, 0, 0, 0, window].to(torch.complex128).cpu()
     step = torch.angle(refreshed[1:] * refreshed[:-1].conj())
-    expected = -2.0 * math.pi * radar.carrier * TAU_DOT * spec.sample_period_s
+    expected = -2.0 * math.pi * radar.reference_frequency_hz * TAU_DOT * spec.sample_period_s
     assert float(step.mean()) == pytest.approx(expected, rel=1e-3)
     # The residual jitter is the float32 position rounding of each instant.
     assert float(step.std()) < 2e-2 * abs(expected)
@@ -112,7 +112,7 @@ def test_the_refreshed_train_is_the_per_pulse_train_times_the_delay_change(rect_
         start = RANGE_M + SPEED_MPS * pulse * spec.pri_s
         # Two one-way spreadings: the amplitude goes as 1 / r^2.
         expected = (start / (start + SPEED_MPS * elapsed)) ** 2 * torch.exp(
-            -2j * math.pi * radar.carrier * TAU_DOT * elapsed
+            -2j * math.pi * radar.reference_frequency_hz * TAU_DOT * elapsed
         )
         # Float32 positions: half an ulp at 1.5 m is 4e-4 rad of round-trip phase.
         assert float((ratio / expected).angle().abs().max()) < 2e-3
@@ -124,7 +124,7 @@ def test_lfm_range_doppler_coupling_appears_only_with_fast_time_observations():
     _, slow = _run("lfm", Motion.chirp())
     spec = radar.waveform_spec()
     k = spec.bandwidth_hz / spec.pulse_width_s
-    coupling = radar.carrier * TAU_DOT / k
+    coupling = radar.reference_frequency_hz * TAU_DOT / k
     assert coupling / spec.sample_period_s == pytest.approx(3.85, abs=0.01)
     for pulse in range(spec.num_pulses):
         start = pulse * spec.pri_s

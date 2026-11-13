@@ -84,7 +84,7 @@ def test_a_pose_carrying_a_forward_dual_is_refused_too(smpl):
         with pytest.raises(RuntimeError) as raised:
             SmplPoseDeformation(body, pose_rate=_rate())
     assert "forward tangent" in str(raised.value)
-    assert "grad='vjp'" in str(raised.value)
+    assert "ad_mode='vjp'" in str(raised.value)
 
 
 def test_a_pose_rate_that_requires_grad_is_refused_by_adr_038(smpl):

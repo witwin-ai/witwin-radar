@@ -2,8 +2,8 @@
 
 The leaves are a target's initial position and its velocity, entered through
 the trajectory ``p(t) = p0 + v t``, and the loss is a fixed random projection
-of the cube, ``L = Re sum(w * cube)``. Reverse mode (``grad="vjp"``) and
-forward mode (``grad="jvp"``) are each checked against a central difference of
+of the cube, ``L = Re sum(w * cube)``. Reverse mode (``ad_mode="vjp"``) and
+forward mode (``ad_mode="jvp"``) are each checked against a central difference of
 the primal route. The step is a power of two so that the perturbed float32
 coordinate is exact, and small enough that the carrier phase moves by a few
 hundredths of a radian, where the difference's truncation error is ``1e-4``.
@@ -51,7 +51,7 @@ def _loss(radar, scene, origin, velocity, motion, grad, *, weights):
         los=True,
         reflections=0,
         motion=motion,
-        grad=grad,
+        ad_mode=grad,
     )
     return (result.cube * weights).real.sum(), result
 

@@ -582,7 +582,7 @@ def bind_radar_world(
     receive_vector = (
         polarization_vector if rx_polarization is None else _polarization_tensor(rx_polarization, device=device)
     )
-    transmit_power_w = float(radar.transmit_power_watts)
+    transmit_power_w = float(radar.power_w)
     receivers = _endpoint_spec(receiver_positions, receiver_ids, polarization=receive_vector, power_w=None)
     return RadarWorldBinding(
         transmitters=_endpoint_spec(

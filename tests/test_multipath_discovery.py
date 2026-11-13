@@ -142,7 +142,7 @@ def test_m3_2_a_differentiable_run_still_replays(monkeypatch):
     calls = _channel_calls(monkeypatch)
     radar = sc.radar(sc.beat_fmcw(samples=4))
     positions = torch.tensor([[6.0, 0.3, 0.0]], device="cuda", requires_grad=True)
-    result = radar.simulate(_side_wall_scene(), _targets(positions), times=(0.0,), reflections=1, grad="vjp")
+    result = radar.simulate(_side_wall_scene(), _targets(positions), times=(0.0,), reflections=1, ad_mode="vjp")
     result.cube.abs().sum().backward()
     assert positions.grad is not None and torch.isfinite(positions.grad).all()
     assert calls.get("reevaluate") == 2 and calls.get("prepare_fixed_topology") == 2
@@ -252,7 +252,7 @@ def test_m3_2_unfreezable_components_are_refused_where_rows_would_be_replayed():
     scene = _wall(5.0, material=_slab())
     positions = torch.tensor([[10.0, 0.0, 0.0]], device="cuda", requires_grad=True)
     with pytest.raises(NotImplementedError, match="transmission"):
-        radar.simulate(scene, _targets(positions), times=(0.0,), transmission=True, grad="vjp")
+        radar.simulate(scene, _targets(positions), times=(0.0,), transmission=True, ad_mode="vjp")
     with pytest.raises(NotImplementedError, match="rediscover"):
         radar.simulate(
             scene, _moving_targets(), times=(0.0,), transmission=True, motion=Motion.chirp(rediscover_every_frames=2)

@@ -66,7 +66,7 @@ def test_simulate_runs_the_whole_pipeline_and_publishes_a_frame_cube():
     assert result.cube.device.type == radar.device.type
     assert result.axis_names == ("frame", "tx", "rx", "chirp", "range_bin")
     assert result.kind == "fmcw"
-    assert result.times_s == (0.0, 1.0e-3, 2.0e-3)
+    assert result.times == (0.0, 1.0e-3, 2.0e-3)
     assert result.frame_count == 3
     assert result.reference_frequency_hz == geo.REFERENCE_FREQUENCY_HZ
     # The conventions come from the waveform owner rather than from this entry.
@@ -139,7 +139,7 @@ def test_the_composed_rows_agree_with_the_reference_orchestration():
         assert torch.equal(getattr(produced.topology, name), getattr(reference.topology, name)), name
     assert torch.equal(produced.total_delay_s, reference.total_delay_s)
 
-    expected = (radar.transmit_power_watts / geo.TX_POWER_W) ** 0.5
+    expected = (radar.power_w / geo.TX_POWER_W) ** 0.5
     ratio = produced.complex_transfer_ref.abs() / reference.complex_transfer_ref.abs()
     torch.testing.assert_close(ratio, torch.full_like(ratio, float(expected)), rtol=1e-5, atol=0.0)
 
@@ -283,7 +283,7 @@ def test_a_moving_world_discovers_exactly_once_per_epoch(monkeypatch):
     dynamic = world.make_dynamic_scene(wall_velocity=geo.WALL_VELOCITY_M_PER_S)
     result = _simulate(radar, dynamic, (0.0, 1.0e-3, 2.0e-3))
 
-    slots = len(result.sample_times_s[0])
+    slots = len(result.sample_times[0])
     assert result.epochs == (0, slots, 2 * slots)
     assert result.rediscovery_reasons == ("first_frame", "structure_motion", "structure_motion")
     assert result.compile_count == 3 * slots
@@ -313,7 +313,7 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
 
     assert result.epochs == (0, 0, 0)
     assert result.discovery_count == 1
-    assert result.compile_count == 3 * len(result.sample_times_s[0])
+    assert result.compile_count == 3 * len(result.sample_times[0])
     assert not result.path_set_complete
     assert len(freezes) == 2, freezes
     # And the replay really tracked the moved wall.
@@ -326,7 +326,7 @@ def test_fixed_winner_replay_holds_one_epoch_across_a_moving_world(monkeypatch):
 
 
 def test_the_published_cube_is_differentiable_through_the_site_positions():
-    """``grad='vjp'`` reaches the leaf the target record passed through.
+    """``ad_mode='vjp'`` reaches the leaf the target record passed through.
 
     The site tensor is the SINK of the inbound leg and the SOURCE of the
     outbound one, and the binding hands the same object to both, so a gradient
@@ -338,7 +338,7 @@ def test_the_published_cube_is_differentiable_through_the_site_positions():
 
     radar = fixture_radar()
     targets = fixture_targets(radar, requires_grad=True)
-    result = radar.simulate(static_scene(), targets, times=(0.0,), grad="vjp")
+    result = radar.simulate(static_scene(), targets, times=(0.0,), ad_mode="vjp")
     assert result.cube.requires_grad
     result.cube.abs().square().sum().backward()
     grad = targets.positions.grad
@@ -363,7 +363,7 @@ def test_parameter_jvp_does_not_change_the_primal_scene():
         direction[:, 0] = scale
         with forward_ad.dual_level():
             dual = forward_ad.make_dual(positions, direction)
-            result = radar.simulate(scene, targets_at(dual), times=(0.0,), grad="jvp")
+            result = radar.simulate(scene, targets_at(dual), times=(0.0,), ad_mode="jvp")
             primal, tangent = forward_ad.unpack_dual(result.cube)
             torch.testing.assert_close(primal, reference.cube, rtol=0, atol=0)
             assert tangent is not None

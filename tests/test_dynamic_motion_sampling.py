@@ -37,7 +37,7 @@ def test_orbit_phase_and_tdm_match_independent_geometric_delay():
     beat = torch.fft.ifft(result.cube[0], dim=-1)
     for tx in range(spec.num_tx):
         for rx in range(spec.num_rx):
-            times = [result.sample_times_s[0][c * spec.num_tx + tx] for c in range(spec.num_chirps)]
+            times = [result.sample_times[0][c * spec.num_tx + tx] for c in range(spec.num_chirps)]
             positions = torch.cat([trajectory(t) for t in times]).double()
             delay = (
                 (positions - radar.tx_pos[tx].double()).norm(dim=-1)
@@ -92,7 +92,7 @@ def test_moving_scene_parameter_jvp_preserves_primal_and_matches_reverse():
             times=(0.0,),
             los=True,
             reflections=0,
-            grad=mode,
+            ad_mode=mode,
         ).cube
 
     reference = solve(base, "none")
@@ -130,7 +130,7 @@ def test_moving_sensor_endpoint_binding_and_missing_mapping_refusal():
     result = radar.simulate(
         dynamic, targets, endpoints=SensorEndpointIds((77110, 77111), (77112, 77113)), motion=Motion.adc(), **args
     )
-    last_time = float(result.sample_times_s[0][-1])
+    last_time = float(result.sample_times[0][-1])
     expected_tx = radar.tx_pos + torch.tensor([0.3 * last_time, 0, 0], device=radar.device)
     torch.testing.assert_close(result.last_propagation.inbound.departure_origin_m, expected_tx, rtol=0, atol=1e-8)
     assert result.path_set_complete and result.motion_sampling == "adc"
@@ -149,7 +149,7 @@ def test_moving_wall_round_trip_phase_matches_independent_image_geometry():
     predicted = []
     for result in results:
         paths, legs = result.last_radar_paths, result.last_propagation
-        t = result.sample_times_s[0][-1]
+        t = result.sample_times[0][-1]
         mirror = site.double().clone()
         wall_x = torch.tensor(4 + 4 * t, dtype=torch.float32, device=radar.device).double()
         mirror[:, 0] = 2 * wall_x - mirror[:, 0]

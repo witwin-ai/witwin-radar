@@ -206,7 +206,7 @@ def test_a_simulated_array_with_port_errors_and_leakage_is_calibrated_to_the_ide
     }
     ideal = scene_radar(config)
     broken = ideal.replace(
-        coupling=Coupling(tx=diagonal[0], rx=diagonal[1]), leakage=Leakage(isolation_db=25.0, delay_s=0.4e-9)
+        coupling=Coupling(tx=diagonal[0], rx=diagonal[1]), leakage=Leakage(isolation=25.0, delay=0.4e-9)
     )
     right, forward = _frame(ideal)
     reflector = 1.5 * forward + 0.25 * right

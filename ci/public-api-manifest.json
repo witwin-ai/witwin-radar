@@ -2,6 +2,7 @@
   "schema_version": 2,
   "root_class_members": {
     "witwin.radar.Radar": [
+      "LEAVES",
       "adc",
       "agc",
       "antenna_unit",
@@ -22,6 +23,7 @@
       "num_tx",
       "polarization",
       "position",
+      "power_w",
       "replace",
       "rx_pattern",
       "rx_polarization",
@@ -32,7 +34,6 @@
       "to_dict",
       "to_json",
       "trace",
-      "transmit_power_watts",
       "up",
       "waveform_spec",
       "wavelength"
@@ -53,6 +54,7 @@
   },
   "modules": {
     "witwin.radar": {
+      "capabilities": "witwin.radar.capabilities.capabilities",
       "Adc": "witwin.radar.frontend.Adc",
       "Agc": "witwin.radar.frontend.Agc",
       "Aspect": "witwin.radar.targets.Aspect",

@@ -257,6 +257,13 @@ class FmcwSpec:
         require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
         if not math.isfinite(self.start_offset_hz):
             raise ValueError("start_offset_hz must be finite")
+        window_end_s = self.t_start_s + (self.num_samples - 1) * self.sample_period_s
+        if window_end_s >= self.chirp_period_s:
+            raise ValueError(
+                f"the ADC window ends {window_end_s:.6g} s after the ramp starts (ADC start + (N - 1) / f_s), past "
+                f"the chirp period of {self.chirp_period_s:.6g} s (idle + ramp end): its last samples would be taken "
+                "on the next chirp"
+            )
         for index, profile in enumerate(self.sequence):
             if len(profile) != 5 or not all(math.isfinite(float(value)) for value in profile):
                 raise ValueError(f"sequence[{index}] must be five finite numbers (slope, offset, idle, adc, ramp end)")

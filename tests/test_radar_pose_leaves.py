@@ -45,7 +45,7 @@ def test_a_pose_leaf_matches_central_differences_in_both_modes(field, base, dire
     direction = torch.tensor(direction)
 
     def loss(value, grad):
-        return _verb_loss(_posed(**{field: value}), grad=grad)
+        return _verb_loss(_posed(**{field: value}), ad_mode=grad)
 
     leaf = base.clone().requires_grad_(True)
     (gradient,) = torch.autograd.grad(loss(leaf, "vjp"), leaf)
@@ -83,7 +83,7 @@ def _verb_loss_posed(pose, grad):
 
     targets = PointTargets(positions=torch.tensor([[6.0, 0.5, 1.0], [5.0, -0.4, -0.8]], device="cuda"), rcs=1.0)
     cube = _posed().simulate(
-        Scene(structures=(), endpoints=[]), targets, times=(0.0,), reflections=0, grad=grad, pose=pose,
+        Scene(structures=(), endpoints=[]), targets, times=(0.0,), reflections=0, ad_mode=grad, pose=pose,
         motion=Motion.chirp(),
     ).cube  # fmt: skip
     weights = torch.randn(cube.shape, generator=torch.Generator().manual_seed(0), dtype=torch.complex64)
@@ -124,8 +124,8 @@ def test_a_pose_leaf_in_the_wrong_ad_mode_is_refused_before_any_work(marked, gra
         radar = _posed(position=position)
         try:
             table.two_way_join_forward = lambda *args: calls.append(args) or original(*args)
-            with pytest.raises(RuntimeError, match="grad="):
-                _verb_loss(radar, grad=grad)
+            with pytest.raises(RuntimeError, match="ad_mode="):
+                _verb_loss(radar, ad_mode=grad)
         finally:
             table.two_way_join_forward = original
     assert calls == []

@@ -37,7 +37,6 @@
     "Scene.compile_renderables",
     "SeedSpec",
     "TxPowerSpec",
-    "ad_mode=",
     "motion_sampling=",
     "processing/adapters.py",
     "radar.last_compiled_scene",

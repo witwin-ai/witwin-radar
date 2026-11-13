@@ -89,7 +89,7 @@ def images():
 
 def oracle_rows(result, trajectory, spec):
     paths, legs = result.last_radar_paths, result.last_propagation
-    schedule = result.sample_times_s[0]
+    schedule = result.sample_times[0]
     last_time = float(schedule[-1])
     middle_time = (float(schedule[0]) + last_time) / 2
     point = trajectory.at(last_time).positions_m[0].double().cpu()
@@ -170,7 +170,7 @@ def run(args):
         record = {
             "frame_start_s": t,
             "seconds": elapsed,
-            "observations": len(result.sample_times_s[0]),
+            "observations": len(result.sample_times[0]),
             "discoveries": result.discovery_count,
             "path_set_complete": result.path_set_complete,
             "motion_sampling": result.motion_sampling,

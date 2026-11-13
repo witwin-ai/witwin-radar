@@ -283,7 +283,7 @@ class Network:
     transmitter whose band exceeds its complex sample rate, or whose carrier
     is offset by more than half of it, is refused.
 
-    Every radar shares one carrier (``Radar.carrier``), the frequency the
+    Every radar shares one carrier (``Radar.reference_frequency_hz``), the frequency the
     shared world is evaluated at, and one element pattern pair
     (``pattern``/``rx_pattern``), because one join applies one pattern table;
     with emitters the pattern must be isotropic. A pattern carrying a leaf is
@@ -310,9 +310,9 @@ class Network:
         count = len(radars)
         first = radars[0]
         for index, radar in enumerate(radars[1:], start=1):
-            if float(radar.carrier) != float(first.carrier):
+            if float(radar.reference_frequency_hz) != float(first.reference_frequency_hz):
                 raise ValueError(
-                    f"radar {index} is at {radar.carrier} Hz and radar 0 at {first.carrier} Hz; a network evaluates "
+                    f"radar {index} is at {radar.reference_frequency_hz} Hz and radar 0 at {first.reference_frequency_hz} Hz; a network evaluates "
                     "one world at one carrier. Declare a different start frequency as a one-profile chirp sequence "
                     "(FMCW) or a carrier offset (pulsed, OFDM)"
                 )
@@ -474,7 +474,7 @@ class Network:
         max_paths: int | None = None,
         max_round_trips: int | None = None,
         motion: Motion | None = None,
-        grad: str = "none",
+        ad_mode: str = "none",
     ) -> tuple[Result, ...]:
         """Simulate every radar over one shared world: one result per radar, in ``radars`` order.
 
@@ -502,7 +502,7 @@ class Network:
             "max_paths": max_paths,
             "max_round_trips": max_round_trips,
             "motion": motion,
-            "grad": grad,
+            "ad_mode": ad_mode,
         }
         session = _open(self, scene, targets, times=times, poses=poses, **arguments)
         frames: list[list[SceneFrame]] = [[] for _ in self.radars]
@@ -863,7 +863,7 @@ def _open(
     max_paths: int | None = None,
     max_round_trips: int | None = None,
     motion: Motion | None = None,
-    grad: str = "none",
+    ad_mode: str = "none",
 ) -> _NetworkSession:
     radars = network.radars
     member_poses = _poses(poses, len(radars))
@@ -890,7 +890,7 @@ def _open(
             los,
             reflections,
             requested,
-            grad,
+            ad_mode,
             None,
             transmission=transmission,
             diffraction=diffraction,
@@ -930,6 +930,8 @@ def _open(
             "segment has none); transmission rows have depth too, so transmission is not combined with "
             "environment, coupling or direct links in a network"
         )
+    for radar in radars:
+        radar._require_cuda()
     receivers = set(network.hearing())
     prepared = [
         prepare_session(radar, scene, **{**entry, "motion": requested}, world_moves=sampled, beat=index in receivers)

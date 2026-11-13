@@ -97,7 +97,7 @@ def test_fmcw_chirp_schedule_is_not_exhaustive_and_adc_is():
 def _slow_time_delay(result) -> torch.Tensor:
     """The float64 round-trip delay at each observation instant, from the trajectory itself."""
 
-    times = torch.as_tensor(result.sample_times_s[0], dtype=torch.float64)
+    times = torch.as_tensor(result.sample_times[0], dtype=torch.float64)
     return 2.0 * (START + SPEED * times) / C
 
 
@@ -173,7 +173,7 @@ def test_the_adaptive_route_carries_a_declared_leakage():
 
     from witwin.radar import Leakage
 
-    radar, targets = _fmcw_mover(leakage=Leakage(isolation_db=30.0, delay_s=1e-10))
+    radar, targets = _fmcw_mover(leakage=Leakage(isolation=30.0, delay=1e-10))
     kwargs = {"times": (0.0,), "reflections": 0}
     adaptive = radar.simulate(sc.empty_scene(), targets, motion=Motion.adaptive(), **kwargs)
     exact = radar.simulate(sc.empty_scene(), targets, motion=Motion.adc(), **kwargs)
@@ -198,9 +198,9 @@ def test_a_per_chirp_cadence_discovers_once_per_chirp_and_replays_every_sample()
     assert every.path_set_complete and not per_chirp.path_set_complete
     torch.testing.assert_close(per_chirp.cube, every.cube, rtol=1e-5, atol=0)
     # The lag bound is the discovery spacing actually incurred: one chirp.
-    starts = every.sample_times_s[0].reshape(4, 8)[:, 0]
-    assert per_chirp.birth_lag_bound_s[0] == pytest.approx(float(np.diff(starts).max()), rel=1e-9)
-    assert every.birth_lag_bound_s[0] == pytest.approx(float(np.diff(every.sample_times_s[0]).max()), rel=1e-9)
+    starts = every.sample_times[0].reshape(4, 8)[:, 0]
+    assert per_chirp.birth_lag_bound[0] == pytest.approx(float(np.diff(starts).max()), rel=1e-9)
+    assert every.birth_lag_bound[0] == pytest.approx(float(np.diff(every.sample_times[0]).max()), rel=1e-9)
 
 
 def _expected_discoveries(times: np.ndarray, due) -> list[int]:
@@ -220,11 +220,11 @@ def test_a_time_cadence_discovers_on_world_time():
     result = radar.simulate(
         sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.adc(rediscover_every_seconds=period)
     )
-    times = result.sample_times_s[0]
+    times = result.sample_times[0]
     found = _expected_discoveries(times, lambda last, index: times[index] - times[last] >= period * (1 - 1e-9))
     assert result.discovery_count == len(found)
     gaps = np.diff(times[found]).tolist() + [times[-1] - times[found[-1]]]
-    assert result.birth_lag_bound_s[0] == pytest.approx(max(gaps), rel=1e-9)
+    assert result.birth_lag_bound[0] == pytest.approx(max(gaps), rel=1e-9)
     assert not result.path_set_complete
 
 
@@ -234,7 +234,7 @@ def test_a_displacement_cadence_discovers_on_motion():
     result = radar.simulate(
         sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.adc(rediscover_on_displacement=step)
     )
-    times = result.sample_times_s[0]
+    times = result.sample_times[0]
     position = START + SPEED * times
     found = _expected_discoveries(times, lambda last, index: abs(position[index] - position[last]) >= step)
     assert 1 < result.discovery_count == len(found) < len(times)

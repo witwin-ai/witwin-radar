@@ -42,7 +42,7 @@ def _fmcw():
 
 def _radar(**fields) -> Radar:
     return Radar(
-        carrier=77e9,
+        reference_frequency_hz=77e9,
         waveform=_fmcw(),
         tx=((0.0, 0.0, 0.0),),
         rx=((0.0, 0.0, 0.0),),

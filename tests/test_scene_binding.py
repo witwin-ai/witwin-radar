@@ -299,7 +299,7 @@ def test_the_binding_publishes_the_source_and_sink_power_contract(radar):
     assert binding.receiver_sources.positions_m is binding.receivers.positions_m
     assert binding.sites.powers_w is None
 
-    expected_w = radar.transmit_power_watts
+    expected_w = radar.power_w
     torch.testing.assert_close(
         binding.transmitters.powers_w,
         torch.full((binding.transmitters.count,), float(expected_w), dtype=torch.float32, device=binding.device),

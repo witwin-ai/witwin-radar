@@ -9,8 +9,11 @@ the antenna layout, the receive chain's one-number stages, the pose - is a
 field here, because a wrapper whose only job is grouping makes the caller
 write two constructors to say one thing.
 
-No field name carries a unit suffix; every field's unit is on its docstring
-row. That rule covers this surface only. :mod:`witwin.radar.processing` is
+Names follow one rule (R-ADR-049). A field that names a quantity Channel
+also publishes, in Channel's unit, takes Channel's name verbatim:
+``reference_frequency_hz``, the verbs' ``ad_mode``, ``power_w``. Every other
+field name carries no unit suffix, and its unit is on its docstring row. That
+rule covers this surface only. :mod:`witwin.radar.processing` is
 frozen by R-ADR-017 and keeps ``range_m`` and its siblings, and the internal
 records (``FmcwSpec.sample_period_s``, ``RadarPathBatch.total_delay_s``) keep
 theirs, because those are the equation-owning modules where R-ADR-021 requires
@@ -36,9 +39,14 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import torch
 
 from .frontend import Adc, Agc, Compression, FrontendChain, FrontendSpec, Iq, Noise
-from .policy import SPEED_OF_LIGHT_M_PER_S, _carries_derivative, refuse_derivative, resolve_device
+from .policy import SPEED_OF_LIGHT_M_PER_S, _carries_derivative, refuse_derivative, require_real, resolve_device
 from .sensors import Coupling, Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
+    FMCW_OUTPUT_DOMAINS,
+    MIMO_SCHEMES,
+    OFDM_MODULATIONS,
+    OFDM_OUTPUT_DOMAINS,
+    PULSE_KINDS,
     PULSE_NORMALIZATION_UNIT_AMPLITUDE,
     SUBCARRIER_ORIGIN_F_REF_AT_N0,
     FmcwSpec,
@@ -60,6 +68,14 @@ WAVEFORM_OFDM = "ofdm"
 WAVEFORM_PULSED = "pulsed"
 WAVEFORM_KINDS = (WAVEFORM_FMCW, WAVEFORM_OFDM, WAVEFORM_PULSED)
 
+#: The Channel components a verb can request, in the order its keywords name
+#: them: ``los``, ``reflections > 0``, ``transmission`` and ``diffraction``.
+PROPAGATION_COMPONENTS = ("los", "reflection", "transmission", "diffraction")
+
+#: What ``Fmcw.sampling`` may say: an IQ receiver, or one that digitises the
+#: in-phase channel only.
+FMCW_SAMPLINGS = ("complex", "real")
+
 #: What ``antenna_unit`` may say. Half-wavelength offsets are the convention
 #: every TI-style configuration uses and the one the array keeps internally:
 #: the same description then means the same beam pattern at a different
@@ -71,6 +87,10 @@ ANTENNA_UNITS = ("m", "half_wavelength")
 #: property a hand-written vector silently loses, producing a cube of exact
 #: zeros with nothing raised.
 POLARIZATION_ALIASES = ("up", "right")
+
+#: The pose fields: each moves every element, so a leaf on any of them takes
+#: the same polarization and AD-mode rules.
+POSE_LEAVES = ("position", "look_at", "up")
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +111,7 @@ class Chirp:
 
     #: Ramp slope, Hz/s.
     slope: float | None = None
-    #: Start frequency relative to ``Radar.carrier``, Hz.
+    #: Start frequency relative to ``Radar.reference_frequency_hz``, Hz.
     start_offset: float = 0.0
     #: Idle time after the ramp, s.
     idle: float | None = None
@@ -101,9 +121,14 @@ class Chirp:
     ramp_end: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("slope", "idle", "adc_start", "ramp_end"):
-            if getattr(self, name) is not None:
-                _finite(f"Chirp.{name}", getattr(self, name))
+        if self.slope is not None:
+            _finite("Chirp.slope", self.slope)
+        if self.idle is not None:
+            _non_negative("Chirp.idle", self.idle)
+        if self.adc_start is not None:
+            _non_negative("Chirp.adc_start", self.adc_start)
+        if self.ramp_end is not None:
+            _positive("Chirp.ramp_end", self.ramp_end)
         _finite("Chirp.start_offset", self.start_offset)
 
 
@@ -157,8 +182,9 @@ class Fmcw:
     ddm_bands: int = 0
 
     def __post_init__(self) -> None:
-        if self.sampling not in ("complex", "real"):
-            raise ValueError(f"Fmcw.sampling must be 'complex' or 'real', got {self.sampling!r}")
+        _one_of("Fmcw.sampling", self.sampling, FMCW_SAMPLINGS)
+        _one_of("Fmcw.output", self.output, FMCW_OUTPUT_DOMAINS)
+        _one_of("Fmcw.mimo", self.mimo, MIMO_SCHEMES)
         if not all(isinstance(chirp, Chirp) for chirp in self.sequence):
             raise TypeError("Fmcw.sequence holds Chirp records")
         object.__setattr__(self, "sequence", tuple(self.sequence))
@@ -168,16 +194,63 @@ class Fmcw:
         _positive_int("Fmcw.samples_per_chirp", self.samples_per_chirp)
         _positive_int("Fmcw.chirps_per_frame", self.chirps_per_frame)
         _finite("Fmcw.slope", self.slope)
-        _finite("Fmcw.adc_start", self.adc_start)
+        _non_negative("Fmcw.adc_start", self.adc_start)
         _non_negative("Fmcw.idle", self.idle)
-        if self.output not in ("spectrum", "beat"):
-            raise ValueError(f"Fmcw.output must be 'spectrum' or 'beat', got {self.output!r}")
+        _non_negative_int("Fmcw.ddm_bands", self.ddm_bands)
+        # The rules that tie the fields together (the ADC window inside the
+        # chirp, DDM bands, a BPM frame) are the synthesis spec's; checking
+        # them here, on a one-transmitter probe spec, refuses a record that
+        # can never run at construction rather than at its first simulation.
+        # The transmitter-count rules run again when a Radar is built.
+        _probe_spec("Fmcw", lambda: self.to_spec(reference_frequency_hz=1.0))
+
+    @property
+    def sweep_bandwidth(self) -> float:
+        """``|slope| * N / f_s``: the band the ADC window sweeps, Hz.
+
+        It is what sets the range resolution, and it is narrower than the
+        whole ramp's ``|slope| * ramp_end`` by the samples' share of the ramp.
+        """
+
+        return abs(float(self.slope)) * int(self.samples_per_chirp) / float(self.sample_rate)
+
+    @property
+    def range_resolution(self) -> float:
+        """``c / (2 B)`` with ``B`` = :attr:`sweep_bandwidth`, m: one range bin of the unpadded transform."""
+
+        return SPEED_OF_LIGHT_M_PER_S / (2.0 * self.sweep_bandwidth)
+
+    @property
+    def max_range(self) -> float:
+        """``f_s c / (2 |slope|)``, m: the range whose beat tone sits at the sample rate.
+
+        A complex (IQ) receiver resolves beat frequencies in ``[0, f_s)``, so
+        this is its unambiguous range; a ``sampling="real"`` receiver folds
+        the upper half of that band onto the lower one and reads half of it.
+        """
+
+        return float(self.sample_rate) * SPEED_OF_LIGHT_M_PER_S / (2.0 * abs(float(self.slope)))
 
     @property
     def chirp_period(self) -> float:
         """``idle + ramp_end``, s."""
 
         return float(self.idle) + float(self.ramp_end)
+
+    def max_velocity(self, *, reference_frequency_hz: float, num_tx: int = 1) -> float:
+        """``lambda / (4 T_slot)``, m/s: the unambiguous radial speed of a TDM frame.
+
+        ``T_slot`` is one slow-time sample, ``num_tx`` chirp periods for TDM
+        (each transmitter repeats every ``num_tx`` chirps). The carrier and
+        the transmitter count are the radar's, not the waveform's, which is
+        why this is a method rather than a property. DDM and BPM decimate the
+        slow axis by their code period, so the demultiplexed cube's speed is
+        narrower; ``ProcessingAxes.max_unambiguous_speed_mps`` publishes the
+        one a processed cube actually has.
+        """
+
+        wavelength = SPEED_OF_LIGHT_M_PER_S / _positive("reference_frequency_hz", reference_frequency_hz)
+        return wavelength / (4.0 * _positive_int("num_tx", num_tx) * self.chirp_period)
 
     @classmethod
     def from_ti(
@@ -210,7 +283,9 @@ class Fmcw:
             output=str(output),
         )
 
-    def to_spec(self, *, carrier: float, num_tx: int = 1, num_rx: int = 1, offset: float = 0.0) -> FmcwSpec:
+    def to_spec(
+        self, *, reference_frequency_hz: float, num_tx: int = 1, num_rx: int = 1, offset: float = 0.0
+    ) -> FmcwSpec:
         """The SI synthesis spec. ``offset`` is a wideband band offset, Hz."""
 
         carrier_hz = float(offset)
@@ -221,9 +296,9 @@ class Fmcw:
             chirp_period_s=self.chirp_period,
             slope_hz_per_s=float(self.slope),
             t_start_s=float(self.adc_start),
-            reference_frequency_hz=float(carrier),
+            reference_frequency_hz=float(reference_frequency_hz),
             carrier_hz=carrier_hz,
-            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(reference_frequency_hz),
             num_tx=int(num_tx),
             num_rx=int(num_rx),
             output_domain=self.output,
@@ -283,6 +358,11 @@ class Ofdm:
         _positive_int("Ofdm.num_subcarriers", self.num_subcarriers)
         _positive_int("Ofdm.num_symbols", self.num_symbols)
         _non_negative("Ofdm.max_expected_delay", self.max_expected_delay)
+        _one_of("Ofdm.modulation", self.modulation, OFDM_MODULATIONS)
+        _one_of("Ofdm.output", self.output, OFDM_OUTPUT_DOMAINS)
+        _non_negative_int("Ofdm.pilot_spacing", self.pilot_spacing)
+        _non_negative_int("Ofdm.symbol_seed", self.symbol_seed)
+        _probe_spec("Ofdm", lambda: self.to_spec(reference_frequency_hz=1.0))
 
     @property
     def bandwidth(self) -> float:
@@ -301,7 +381,7 @@ class Ofdm:
 
         return self.bandwidth
 
-    def to_spec(self, *, carrier: float, offset: float = 0.0) -> OfdmSpec:
+    def to_spec(self, *, reference_frequency_hz: float, offset: float = 0.0) -> OfdmSpec:
         carrier_hz = float(offset)
         return OfdmSpec(
             subcarrier_spacing_hz=float(self.subcarrier_spacing),
@@ -309,13 +389,13 @@ class Ofdm:
             cyclic_prefix_s=float(self.cyclic_prefix),
             num_symbols=int(self.num_symbols),
             max_expected_delay_s=float(self.max_expected_delay),
-            reference_frequency_hz=float(carrier),
+            reference_frequency_hz=float(reference_frequency_hz),
             carrier_hz=carrier_hz,
             # Derived, never passed: the weight owns the carrier on the
             # production path, so the rate is the reference frequency there and
             # zero when the caller puts the carrier in the kernel instead.
             # Dropping it understates Doppler by the whole carrier term.
-            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(reference_frequency_hz),
             subcarrier_origin=self.subcarrier_origin,
             modulation=str(self.modulation),
             pilot_spacing=int(self.pilot_spacing),
@@ -377,10 +457,18 @@ class Pulsed:
         _non_negative("Pulsed.range_gate_start", self.range_gate_start)
         _non_negative("Pulsed.max_expected_delay_rate", self.max_expected_delay_rate)
         _finite("Pulsed.frequency_step", self.frequency_step)
+        _one_of("Pulsed.pulse_kind", self.pulse_kind, tuple(sorted(PULSE_KINDS)))
+        if type(self.periodic) is not bool:
+            raise TypeError(f"Pulsed.periodic must be a bool, got {type(self.periodic).__name__}")
         object.__setattr__(self, "chips", tuple(complex(chip) for chip in self.chips))
-        object.__setattr__(self, "chip_frequencies", tuple(float(value) for value in self.chip_frequencies))
+        object.__setattr__(
+            self,
+            "chip_frequencies",
+            tuple(_finite("Pulsed.chip_frequencies", value) for value in self.chip_frequencies),
+        )
+        _probe_spec("Pulsed", lambda: self.to_spec(reference_frequency_hz=1.0))
 
-    def to_spec(self, *, carrier: float, offset: float = 0.0) -> PulsedSpec:
+    def to_spec(self, *, reference_frequency_hz: float, offset: float = 0.0) -> PulsedSpec:
         carrier_hz = float(offset)
         return PulsedSpec(
             pulse_kind=str(self.pulse_kind),
@@ -392,9 +480,9 @@ class Pulsed:
             num_samples=int(self.num_samples),
             range_gate_start_s=float(self.range_gate_start),
             max_expected_delay_rate=float(self.max_expected_delay_rate),
-            reference_frequency_hz=float(carrier),
+            reference_frequency_hz=float(reference_frequency_hz),
             carrier_hz=carrier_hz,
-            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
+            carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(reference_frequency_hz),
             pulse_normalization=self.pulse_normalization,
             chips=self.chips,
             chip_frequencies_hz=self.chip_frequencies,
@@ -691,8 +779,10 @@ class RadarSystemConfig:
         array = self.sensors.array
         reference = self.propagation.reference_frequency_hz
         if self.waveform.kind == WAVEFORM_FMCW:
-            return self.waveform.to_spec(carrier=reference, num_tx=array.num_tx, num_rx=array.num_rx, offset=carrier_hz)
-        return self.waveform.to_spec(carrier=reference, offset=carrier_hz)
+            return self.waveform.to_spec(
+                reference_frequency_hz=reference, num_tx=array.num_tx, num_rx=array.num_rx, offset=carrier_hz
+            )
+        return self.waveform.to_spec(reference_frequency_hz=reference, offset=carrier_hz)
 
     def with_propagation(self, *, components=None, max_depth: int | None = None) -> RadarSystemConfig:
         """A copy whose propagation block carries these two knobs.
@@ -744,13 +834,7 @@ def _host_or_leaf(value: Any) -> Any:
 
 
 def _finite(name: str, value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite float, got {value!r}") from exc
-    if not math.isfinite(parsed):
-        raise ValueError(f"{name} must be a finite float, got {value!r}")
-    return parsed
+    return require_real(name, value)
 
 
 def _non_negative(name: str, value: Any) -> float:
@@ -771,6 +855,27 @@ def _positive_int(name: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive int, got {value!r}")
     return value
+
+
+def _non_negative_int(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative int, got {value!r}")
+    return value
+
+
+def _one_of(name: str, value: Any, vocabulary: Sequence[str]) -> str:
+    if value not in vocabulary:
+        raise ValueError(f"{name} must be one of {list(vocabulary)}, got {value!r}")
+    return value
+
+
+def _probe_spec(owner: str, build: Any) -> None:
+    """Run the synthesis spec's own cross-field checks now, naming the public record that failed them."""
+
+    try:
+        build()
+    except ValueError as error:
+        raise ValueError(f"{owner}: {error}") from None
 
 
 def vec3_tensor(value, *, name: str) -> torch.Tensor:
@@ -832,7 +937,7 @@ class Leakage:
     """Transmit-to-receive antenna coupling: the echo that never left the board.
 
     A fraction of every transmitted chirp reaches the receiver directly, and
-    after de-chirping it is a tone at ``slope * delay_s`` - a target at a range
+    after de-chirping it is a tone at ``slope * delay`` - a target at a range
     of centimetres, tens of dB above anything the scene returns. Two things make
     it matter rather than being a constant to subtract:
 
@@ -843,9 +948,9 @@ class Leakage:
 
     A synthetic set without it teaches a model that the near bins are clean.
 
-    ``isolation_db`` is the transmit-to-receive isolation, positive, so the
-    coupled amplitude is ``sqrt(P_tx) * 10^(-isolation_db/20)`` in the sqrt(W)
-    the synthesis families publish. ``delay_s`` is the coupling path's own
+    ``isolation`` is the transmit-to-receive isolation in dB, positive, so the
+    coupled amplitude is ``sqrt(P_tx) * 10^(-isolation/20)`` in the sqrt(W)
+    the synthesis families publish. ``delay`` (s) is the coupling path's own
     round-trip delay, which sets the beat tone and therefore which bin the
     skirt radiates from. ``phase`` is the coupling coefficient's argument at
     the reference frequency, rad, in Channel's phasor convention.
@@ -864,24 +969,22 @@ class Leakage:
     """
 
     #: Transmit-to-receive isolation, dB, scalar or ``[num_tx][num_rx]``.
-    isolation_db: Any
+    isolation: Any
     #: Coupling path delay, s, scalar or ``[num_tx][num_rx]``.
-    delay_s: Any
+    delay: Any
     #: Coupling phase at the reference frequency, rad, scalar or table.
     phase: Any = 0.0
 
     def __post_init__(self) -> None:
-        refuse_derivative(
-            "Leakage", _LEAKAGE_REASON, isolation_db=self.isolation_db, delay_s=self.delay_s, phase=self.phase
-        )
-        for name in ("isolation_db", "delay_s", "phase"):
+        refuse_derivative("Leakage", _LEAKAGE_REASON, isolation=self.isolation, delay=self.delay, phase=self.phase)
+        for name in ("isolation", "delay", "phase"):
             object.__setattr__(self, name, _pair_table(name, getattr(self, name)))
-        for value in self._flat("isolation_db"):
+        for value in self._flat("isolation"):
             if not math.isfinite(value) or not value > 0.0:
-                raise ValueError(f"isolation_db must be positive, got {value}")
-        for value in self._flat("delay_s"):
+                raise ValueError(f"isolation must be positive, got {value}")
+        for value in self._flat("delay"):
             if not math.isfinite(value) or value < 0.0:
-                raise ValueError(f"delay_s must not be negative, got {value}")
+                raise ValueError(f"delay must not be negative, got {value}")
         for value in self._flat("phase"):
             if not math.isfinite(value):
                 raise ValueError(f"phase must be finite, got {value}")
@@ -893,9 +996,9 @@ class Leakage:
     def amplitude(self, power_dbm: float) -> float:
         """Coupled amplitude in sqrt(W) of a scalar isolation, from the transmit power."""
 
-        if not isinstance(self.isolation_db, float):
+        if not isinstance(self.isolation, float):
             raise ValueError("a per-pair isolation has one amplitude per pair; use pair_rows")
-        return math.sqrt(watts_from_dbm(_host_scalar(power_dbm))) * 10.0 ** (-float(self.isolation_db) / 20.0)
+        return math.sqrt(watts_from_dbm(_host_scalar(power_dbm))) * 10.0 ** (-float(self.isolation) / 20.0)
 
     def pair_rows(self, *, num_tx: int, num_rx: int, power_dbm: float) -> tuple[list[float], list[complex]]:
         """Delay and complex coupling coefficient per sensor pair, in pair-rank order.
@@ -919,8 +1022,8 @@ class Leakage:
         weights: list[complex] = []
         for rx in range(num_rx):
             for tx in range(num_tx):
-                magnitude = root_power * 10.0 ** (-entry("isolation_db", tx, rx) / 20.0)
-                delays.append(entry("delay_s", tx, rx))
+                magnitude = root_power * 10.0 ** (-entry("isolation", tx, rx) / 20.0)
+                delays.append(entry("delay", tx, rx))
                 weights.append(magnitude * cmath.exp(1j * entry("phase", tx, rx)))
         return delays, weights
 
@@ -953,7 +1056,7 @@ class Radar:
 
     #: Reference frequency, Hz. The carrier the array spacing, the propagation
     #: solve and the synthesis all refer to; they are one physical quantity.
-    carrier: float
+    reference_frequency_hz: float
     waveform: Waveform
     #: Transmit element positions, in ``antenna_unit``.
     tx: tuple[tuple[float, float, float], ...]
@@ -995,7 +1098,11 @@ class Radar:
     seed: int = 0
     #: Radar origin in world coordinates, m. A tensor is a leaf.
     position: Any = (0.0, 0.0, 0.0)
-    #: The point the boresight looks at, world coordinates, m.
+    #: The point the boresight looks at, world coordinates, m. The default
+    #: pose looks along world -Z with +Y up, a Y-up world. Channel and Core
+    #: scenes are +Z up, where that default looks straight at the floor: a
+    #: Z-up scene states its pose, for example ``look_at=(1, 0, 0)`` with
+    #: ``up=(0, 0, 1)`` (R-ADR-049 records why the default is not changed).
     look_at: Any = (0.0, 0.0, -1.0)
     #: World-space up vector, used to complete the frame.
     up: Any = (0.0, 1.0, 0.0)
@@ -1009,6 +1116,17 @@ class Radar:
     #: ``polarization``; a different value measures a cross-polar channel.
     rx_polarization: Any = None
     device: Any = "cuda"
+
+    #: The fields that may be tensors carrying a derivative, and the AD modes
+    #: each supports (R-ADR-052). A pose leaf needs a world-vector
+    #: polarization and the verb's ``ad_mode`` in the leaf's own mode.
+    LEAVES: ClassVar[Mapping[str, tuple[str, ...]]] = {
+        "position": ("jvp", "vjp"),
+        "look_at": ("jvp", "vjp"),
+        "up": ("jvp", "vjp"),
+        "power": ("jvp", "vjp"),
+        "lna_gain": ("jvp", "vjp"),
+    }
 
     # -- derived, built once in __post_init__ ------------------------------
     system_config: RadarSystemConfig = field(init=False, repr=False, compare=False)
@@ -1026,7 +1144,7 @@ class Radar:
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
-        _positive("Radar.carrier", self.carrier)
+        _positive("Radar.reference_frequency_hz", self.reference_frequency_hz)
         _finite("Radar.power", _scalar_leaf("Radar.power", self.power))
         if self.lna_gain is not None:
             _finite("Radar.lna_gain", _scalar_leaf("Radar.lna_gain", self.lna_gain))
@@ -1039,6 +1157,11 @@ class Radar:
             raise TypeError(f"Radar.pattern must be a Pattern, got {type(self.pattern).__name__}")
         if self.rx_pattern is not None and not isinstance(self.rx_pattern, Pattern):
             raise TypeError(f"Radar.rx_pattern must be a Pattern, got {type(self.rx_pattern).__name__}")
+        if not isinstance(self.waveform, (Fmcw, Ofdm, Pulsed)):
+            raise TypeError(f"Radar.waveform must be an Fmcw, Ofdm or Pulsed, got {type(self.waveform).__name__}")
+        for name, kind in (("noise", Noise), ("agc", Agc), ("adc", Adc), ("iq", Iq), ("leakage", Leakage)):
+            if getattr(self, name) is not None and not isinstance(getattr(self, name), kind):
+                raise TypeError(f"Radar.{name} must be a {kind.__name__}, got {type(getattr(self, name)).__name__}")
 
         set_(self, "device", resolve_device(self.device, owner="Radar"))
         set_(self, "tx", _elements(self.tx, name="Radar.tx"))
@@ -1046,14 +1169,14 @@ class Radar:
 
         # The array keeps half-wavelength offsets, so a metre-authored layout is
         # divided by the half wavelength exactly here and nowhere else.
-        half_wavelength = SPEED_OF_LIGHT_M_PER_S / float(self.carrier) / 2.0
+        half_wavelength = SPEED_OF_LIGHT_M_PER_S / float(self.reference_frequency_hz) / 2.0
         scale = 1.0 if self.antenna_unit == "half_wavelength" else 1.0 / half_wavelength
         array = SensorArraySpec(
             num_tx=len(self.tx),
             num_rx=len(self.rx),
             tx_loc=tuple(tuple(v * scale for v in row) for row in self.tx),
             rx_loc=tuple(tuple(v * scale for v in row) for row in self.rx),
-            reference_frequency_hz=float(self.carrier),
+            reference_frequency_hz=float(self.reference_frequency_hz),
         )
 
         set_(
@@ -1062,12 +1185,16 @@ class Radar:
             RadarSystemConfig(
                 waveform=self.waveform,
                 sensors=SensorConfig(array=array, pattern=self.pattern, rx_pattern=self.rx_pattern),
-                propagation=PropagationConfig(reference_frequency_hz=float(self.carrier)),
+                propagation=PropagationConfig(reference_frequency_hz=float(self.reference_frequency_hz)),
                 frontend=self._build_frontend_spec(),
             ),
         )
         self._place_antennas()
         set_(self, "frontend", self._build_frontend_chain())
+        # The waveform checked its own fields; the rules that need the array
+        # (a BPM frame's Hadamard order, DDM bands per transmitter) and the
+        # carrier run here, so a radar that can never run is refused now.
+        _probe_spec("Radar.waveform", self.waveform_spec)
 
     # -- construction helpers ---------------------------------------------
 
@@ -1148,7 +1275,9 @@ class Radar:
 
         waveform = self.waveform
         if waveform.kind == WAVEFORM_FMCW:
-            spec = waveform.to_spec(carrier=float(self.carrier), num_tx=len(self.tx), num_rx=len(self.rx))
+            spec = waveform.to_spec(
+                reference_frequency_hz=float(self.reference_frequency_hz), num_tx=len(self.tx), num_rx=len(self.rx)
+            )
             return (spec.slot_period_s, float(waveform.adc_start), 1.0 / float(waveform.sample_rate))
         if waveform.kind == WAVEFORM_OFDM:
             symbol = 1.0 / float(waveform.subcarrier_spacing) + float(waveform.cyclic_prefix)
@@ -1251,7 +1380,7 @@ class Radar:
         then complete.
         """
 
-        marked = [f"Radar.{name}" for name in ("position", "look_at", "up") if _carries_derivative(getattr(self, name))]
+        marked = [f"Radar.{name}" for name in POSE_LEAVES if _carries_derivative(getattr(self, name))]
         if not marked:
             return
         aliased = [
@@ -1269,27 +1398,38 @@ class Radar:
                 "turn with the pose, or keep the pose a host declaration."
             )
 
-    def _require_pose_ad_mode(self, grad: str) -> None:
+    def _require_cuda(self) -> None:
+        """Refuse a verb on a radar that is not on a CUDA device, naming the device, before any work."""
+
+        if self.device.type != "cuda":
+            raise RuntimeError(
+                f"this Radar is on device {str(self.device)!r}, and simulation runs on CUDA only (Channel's "
+                "propagation and Radar's synthesis are native CUDA operators with no CPU route). Build the radar "
+                "with device='cuda' or move it with radar.to('cuda'); a CPU radar is for configuration and "
+                "processing work."
+            )
+
+    def _require_pose_ad_mode(self, ad_mode: str) -> None:
         """A pose leaf moves every element, so Channel's replay must carry its mode.
 
         The element positions reach both legs through Channel's fixed-topology
         replay, which publishes the position derivative only in the AD mode
-        the verb asks for: ``grad="vjp"`` for a gradient and ``grad="jvp"`` for
+        the verb asks for: ``ad_mode="vjp"`` for a gradient and ``ad_mode="jvp"`` for
         a forward tangent. Any other pairing would leave the legs' part out
         and publish the pattern stage's and the join's part alone, a silently
         partial derivative, so it is refused before any work.
         """
 
-        for name in ("position", "look_at", "up"):
+        for name in POSE_LEAVES:
             carrier = _carries_derivative(getattr(self, name))
             if carrier is None:
                 continue
             wanted = "vjp" if carrier == "a gradient" else "jvp"
-            if grad != wanted:
+            if ad_mode != wanted:
                 raise RuntimeError(
                     f"Radar.{name} carries {carrier}, which moves every element position, and the legs carry "
-                    f"that derivative only when the verb asks Channel for it: pass grad={wanted!r} (got "
-                    f"grad={grad!r})."
+                    f"that derivative only when the verb asks Channel for it: pass ad_mode={wanted!r} (got "
+                    f"ad_mode={ad_mode!r})."
                 )
 
     def _transmit_amplitude_scale(self, *, device) -> torch.Tensor | None:
@@ -1328,10 +1468,10 @@ class Radar:
     def wavelength(self) -> float:
         """``c0 / carrier``, m."""
 
-        return SPEED_OF_LIGHT_M_PER_S / float(self.carrier)
+        return SPEED_OF_LIGHT_M_PER_S / float(self.reference_frequency_hz)
 
     @property
-    def transmit_power_watts(self) -> float:
+    def power_w(self) -> float:
         """``power`` in watts, which is what a source endpoint's field takes."""
 
         return watts_from_dbm(_host_scalar(self.power))
@@ -1522,7 +1662,7 @@ class Radar:
         max_round_trips: int | None = None,
         wideband: bool = False,
         motion: Motion | None = None,
-        grad: str = "none",
+        ad_mode: str = "none",
         endpoints=None,
         pose=None,
     ) -> Paths:
@@ -1549,7 +1689,7 @@ class Radar:
             los,
             reflections,
             motion,
-            grad,
+            ad_mode,
             endpoints,
             transmission=transmission,
             diffraction=diffraction,
@@ -1561,6 +1701,10 @@ class Radar:
             wideband=wideband,
             pose=pose,
         )
+
+        # Every argument is checked; refuse a CPU radar before the session does device work.
+
+        self._require_cuda()
         return trace_scene(self, scene, **session)
 
     def echo(self, paths: Paths) -> Result:
@@ -1579,6 +1723,7 @@ class Radar:
 
         from .simulation import echo_paths
 
+        self._require_cuda()
         return echo_paths(self, paths)
 
     def simulate(
@@ -1598,7 +1743,7 @@ class Radar:
         max_round_trips: int | None = None,
         wideband: bool = False,
         motion: Motion | None = None,
-        grad: str = "none",
+        ad_mode: str = "none",
         endpoints=None,
         pose=None,
     ) -> Result:
@@ -1613,7 +1758,7 @@ class Radar:
         ``los`` and ``reflections`` are the propagation request for THIS call
         and do not edit the radar. ``transmission`` adds paths through walls on
         the straight segment and ``diffraction`` edge-diffracted paths; Channel
-        evaluates both only at discovery, so they require ``grad="none"`` and a
+        evaluates both only at discovery, so they require ``ad_mode="none"`` and a
         discovery at every evaluated instant (the default). ``environment``
         adds site-less transmitter-to-receiver rows for the scene's own
         returns (reflections, diffraction), and ``coupling`` the elements'
@@ -1630,7 +1775,7 @@ class Radar:
         subcarrier and is refused for the other waveforms. ``motion`` selects
         how often the world is
         resampled inside a frame and defaults to
-        :meth:`~witwin.radar.motion.Motion.auto`. ``grad`` is ``"none"``,
+        :meth:`~witwin.radar.motion.Motion.auto`. ``ad_mode`` is ``"none"``,
         ``"vjp"`` or ``"jvp"``.
 
         ``pose`` is the radar's ego-motion, ``pose(t) -> (rotation, translation)``:
@@ -1653,7 +1798,7 @@ class Radar:
             los,
             reflections,
             motion,
-            grad,
+            ad_mode,
             endpoints,
             transmission=transmission,
             diffraction=diffraction,
@@ -1665,6 +1810,10 @@ class Radar:
             wideband=wideband,
             pose=pose,
         )
+
+        # Every argument is checked; refuse a CPU radar before the session does device work.
+
+        self._require_cuda()
         return simulate_scene(self, scene, **session)
 
     def stream(
@@ -1684,7 +1833,7 @@ class Radar:
         max_round_trips: int | None = None,
         wideband: bool = False,
         motion: Motion | None = None,
-        grad: str = "none",
+        ad_mode: str = "none",
         endpoints=None,
         pose=None,
     ) -> Iterator[Result]:
@@ -1707,7 +1856,7 @@ class Radar:
             los,
             reflections,
             motion,
-            grad,
+            ad_mode,
             endpoints,
             transmission=transmission,
             diffraction=diffraction,
@@ -1719,6 +1868,10 @@ class Radar:
             wideband=wideband,
             pose=pose,
         )
+
+        # Every argument is checked; refuse a CPU radar before the session does device work.
+
+        self._require_cuda()
         yield from stream_scene(self, scene, **session)
 
     def _session(
@@ -1728,7 +1881,7 @@ class Radar:
         los,
         reflections,
         motion,
-        grad,
+        ad_mode,
         endpoints,
         *,
         transmission: bool = False,
@@ -1746,7 +1899,7 @@ class Radar:
         from .motion import Motion
         from .targets import as_session_targets
 
-        self._require_pose_ad_mode(grad)
+        self._require_pose_ad_mode(ad_mode)
         if not isinstance(reflections, int) or isinstance(reflections, bool) or reflections < 0:
             raise ValueError(f"reflections must be a non-negative int, got {reflections!r}")
         for name, value in (("transmission", transmission), ("diffraction", diffraction)):
@@ -1759,15 +1912,8 @@ class Radar:
             )
         if max_round_trips is not None and (type(max_round_trips) is not int or max_round_trips < 1):
             raise ValueError(f"max_round_trips must be a positive int or None, got {max_round_trips!r}")
-        components = set()
-        if los:
-            components.add("los")
-        if reflections > 0:
-            components.add("reflection")
-        if transmission:
-            components.add("transmission")
-        if diffraction:
-            components.add("diffraction")
+        requested = (bool(los), reflections > 0, transmission, diffraction)
+        components = {name for name, wanted in zip(PROPAGATION_COMPONENTS, requested, strict=True) if wanted}
         sites, response = as_session_targets(targets, radar=self)
         resolved = Motion.auto() if motion is None else motion
         return {
@@ -1779,7 +1925,7 @@ class Radar:
             # transmission path crosses and how many edges a diffracted one
             # meets, so those components keep at least one interaction.
             "max_depth": max(int(reflections), 1 if (transmission or diffraction) else 0),
-            "ad_mode": grad,
+            "ad_mode": ad_mode,
             "polarization": self.polarization_vector,
             "rx_polarization": self.rx_polarization_vector,
             "antenna_pattern": self.system_config.sensors.pattern,
@@ -1879,7 +2025,7 @@ CONFIG_FIELDS: tuple[tuple[str, Any, str, str], ...] = (
     ("lna_gain", "number", "dB", "LNA voltage gain"),
     ("agc", "object", "SI", "Agc record fields"),
     ("adc", "object", "SI", "Adc record fields"),
-    ("iq", "object", "dB, deg", "Iq record fields"),
+    ("iq", "object", "dB, rad", "Iq record fields"),
     ("leakage", "object", "dB, s, rad", "Leakage record fields; scalars or [num_tx][num_rx] tables"),
     ("compression", "object", "dBm, deg", "Compression record fields"),
     ("dc_offset", ["number", "object", "array"], "V", "one complex value or one per receiver"),
@@ -2058,7 +2204,7 @@ def _radar_from_flat_config(config: Mapping[str, Any], overrides: Mapping[str, A
         raise ValueError(f"rx_loc holds {len(rx)} entries but num_rx is {num_rx}")
 
     fields: dict[str, Any] = {
-        "carrier": _positive("fc", config["fc"]),
+        "reference_frequency_hz": _positive("fc", config["fc"]),
         "waveform": _waveform_from_dict(config["waveform"]) if "waveform" in config else _ti_waveform(config),
         "tx": tx,
         "rx": rx,
@@ -2089,7 +2235,7 @@ def _radar_to_flat_config(radar: Radar) -> dict[str, Any]:
         "format": CONFIG_FORMAT,
         "num_tx": radar.num_tx,
         "num_rx": radar.num_rx,
-        "fc": float(radar.carrier),
+        "fc": float(radar.reference_frequency_hz),
         "power": float(radar.power),
         "antenna_unit": radar.antenna_unit,
         "tx_loc": _encode(radar.tx),

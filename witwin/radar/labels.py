@@ -264,7 +264,9 @@ class GroundTruth:
             # The scatter response interpolates the complex amplitude linearly in theta
             # (R-ADR-045); the cross section is that amplitude's square, not an
             # interpolated square.
-            table = torch.as_tensor(rcs.amplitude_at(float(self.radar.carrier), wavelength), dtype=torch.complex128)
+            table = torch.as_tensor(
+                rcs.amplitude_at(float(self.radar.reference_frequency_hz), wavelength), dtype=torch.complex128
+            )
             axis = _host(rcs.axis).reshape(count, 3)
             cosine = (axis * toward).sum(dim=1).clamp(-1.0, 1.0)
             position = torch.arccos(cosine) / math.pi * (int(table.shape[0]) - 1)

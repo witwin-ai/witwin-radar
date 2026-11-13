@@ -40,7 +40,7 @@ def test_a_rotating_lobe_flashes_once_per_turn():
     )
     result = radar.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.chirp())
     assert result.motion_sampling == "chirp"
-    times = result.sample_times_s[0]
+    times = result.sample_times[0]
     magnitude = result.cube[0, 0, 0, :, 0].abs().double().cpu().numpy()
     lobe = np.maximum(-np.cos(omega * times), 0.0) ** (2 * EXPONENT)
     lit = lobe > 1e-3
@@ -83,7 +83,7 @@ def test_the_pattern_turns_with_the_radar_pose():
     held = sc.radar(waveform, pattern=Pattern.dipole()).simulate(
         sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.chirp()
     )
-    times = turning.sample_times_s[0]
+    times = turning.sample_times[0]
     for chirp in range(chirps):
         rotation = _yaw(heading(times[chirp]))
         static = sc.radar(waveform, pattern=Pattern.dipole())

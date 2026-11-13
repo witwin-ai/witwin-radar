@@ -74,7 +74,7 @@ def _facing(slope_a, slope_b, start_offset_a=0.0):
     from witwin.radar import Radar
 
     a = Radar(
-        carrier=F_C,
+        reference_frequency_hz=F_C,
         waveform=_waveform(slope_a, start_offset_a),
         tx=((0.01, 0.0, 0.0),),
         rx=((-0.01, 0.0, 0.0),),
@@ -83,7 +83,7 @@ def _facing(slope_a, slope_b, start_offset_a=0.0):
         up=sc.UP,
     )
     b = Radar(
-        carrier=F_C,
+        reference_frequency_hz=F_C,
         waveform=_waveform(slope_b),
         tx=((0.01, 0.0, 0.0),),
         rx=((-0.01, 0.0, 0.0),),
@@ -211,7 +211,7 @@ def test_synchronized_radars_hear_a_target_by_the_bistatic_radar_equation():
     slope = 30e12
     radars = tuple(
         Radar(
-            carrier=F_C,
+            reference_frequency_hz=F_C,
             waveform=_waveform(slope),
             tx=((0.0, 0.0, 0.0),),
             rx=((0.0, 0.0, 0.0),),

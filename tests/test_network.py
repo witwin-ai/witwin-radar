@@ -47,7 +47,7 @@ def _radars(count=2, **waveform):
     for index in range(count):
         radars.append(
             Radar(
-                carrier=sc.CARRIER_HZ,
+                reference_frequency_hz=sc.CARRIER_HZ,
                 waveform=_waveform(**waveform),
                 tx=((0.01, 0.0, 0.0), (0.03, 0.0, 0.0)) if index == 0 else ((0.01, 0.0, 0.0),),
                 rx=((-0.01, 0.0, 0.0), (-0.03, 0.0, 0.0)),
@@ -232,11 +232,11 @@ def test_network_refusals_name_what_is_unsupported():
 
     radars = _radars()
     with pytest.raises(ValueError, match="one carrier"):
-        Network((radars[0], radars[1].replace(carrier=78e9)))
+        Network((radars[0], radars[1].replace(reference_frequency_hz=78e9)))
     with pytest.raises(ValueError, match="names one radar twice"):
         Network(radars, links=((1, 1),))
     ofdm = Radar(
-        carrier=sc.CARRIER_HZ,
+        reference_frequency_hz=sc.CARRIER_HZ,
         waveform=Ofdm(
             subcarrier_spacing=1e6, num_subcarriers=16, cyclic_prefix=1e-6, num_symbols=4, max_expected_delay=1e-7
         ),
@@ -262,9 +262,9 @@ def _bistatic_loss(position, grad, weights=None):
     )
     network = Network(radars, links=((0, 1),))
     targets = PointTargets(positions=position.reshape(1, 3), rcs=1.0)
-    cube = network.simulate(sc.empty_scene(), targets, times=(0.0,), los=True, reflections=0, direct=False, grad=grad)[
-        1
-    ]
+    cube = network.simulate(
+        sc.empty_scene(), targets, times=(0.0,), los=True, reflections=0, direct=False, ad_mode=grad
+    )[1]
     if weights is None:
         return cube.cube
     return (cube.cube * weights).real.sum()
@@ -377,7 +377,7 @@ def _sampled_radars(kind):
         )
     return tuple(
         Radar(
-            carrier=sc.CARRIER_HZ,
+            reference_frequency_hz=sc.CARRIER_HZ,
             waveform=waveform,
             tx=((0.01, 0.0, 0.0),),
             rx=((-0.01, 0.0, 0.0), (-0.03, 0.0, 0.0)),
@@ -462,7 +462,7 @@ def _pulsed_bistatic_loss(position, grad, weights=None):
     )
     network = Network(radars, links=((0, 1),))
     targets = PointTargets(positions=position.reshape(1, 3), rcs=1.0)
-    cube = network.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0, direct=False, grad=grad)[1]
+    cube = network.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0, direct=False, ad_mode=grad)[1]
     if weights is None:
         return cube.cube
     return (cube.cube * weights).real.sum()
@@ -510,7 +510,7 @@ def test_each_radars_pose_translation_is_a_leaf_inside_a_network():
     def pose(time_s):
         return torch.eye(3), leaf + torch.tensor([0.0, 0.0, 5.0]) * time_s
 
-    arguments = {"times": (0.0,), "motion": Motion.chirp(), "grad": "vjp", "reflections": 0}
+    arguments = {"times": (0.0,), "motion": Motion.chirp(), "ad_mode": "vjp", "reflections": 0}
     network = Network(radars).simulate(sc.empty_scene(), _targets(), poses=(None, pose), **arguments)
     (inside,) = torch.autograd.grad(_weighted(network[1].cube), leaf)
     alone = radars[1].simulate(sc.empty_scene(), _targets(), pose=pose, **arguments)
@@ -532,9 +532,9 @@ def test_a_shared_pattern_leaf_collects_every_radars_rows_and_a_power_leaf_is_re
     gain = torch.tensor(3.0, requires_grad=True)
     element = Pattern.dipole(gain=gain)
     radars = tuple(radar.replace(pattern=element) for radar in _radars())
-    results = Network(radars).simulate(sc.empty_scene(), _targets(), times=(0.0,), grad="vjp", reflections=0)
+    results = Network(radars).simulate(sc.empty_scene(), _targets(), times=(0.0,), ad_mode="vjp", reflections=0)
     (inside,) = torch.autograd.grad(_weighted(results[0].cube), gain)
-    alone = radars[0].simulate(sc.empty_scene(), _targets(), times=(0.0,), grad="vjp", reflections=0)
+    alone = radars[0].simulate(sc.empty_scene(), _targets(), times=(0.0,), ad_mode="vjp", reflections=0)
     (outside,) = torch.autograd.grad(_weighted(alone.cube), gain)
     assert float(outside.abs()) > 0
     torch.testing.assert_close(inside, outside, rtol=1e-4, atol=0)

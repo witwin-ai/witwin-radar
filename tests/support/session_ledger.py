@@ -17,7 +17,15 @@ budgets:
   Radar's own Python-visible ones are not.
 * ``d2h`` / ``h2d`` / ``kernels``: device copies and every CUDA kernel, read
   from a separate profiled pass so the profiler cannot perturb the counts
-  above.
+  above. These three depend on what the PROCESS ran before, not only on the
+  call: process-global caches (Channel's compile registry rebinds a new
+  source's tables to an earlier source with the same geometry, and other
+  first-use and address-keyed caches decide some uploads and launches) let
+  earlier tests remove a few copies and kernels, so the same budget measured
+  inside a long pytest run moved by up to 3 % with the test order. A budget
+  that pins them measures in a fresh interpreter (:func:`measure_isolated`)
+  and reads the largest of several profiled passes (:func:`profiled_copies`),
+  where they are identical from run to run and process to process.
 * ``trips``: Python-level per-observation work: world advances
   (``SceneEpochLoop.frame``), composed batches (``TwoWayComposer.compose`` and ``compose_slots``)
   and join builds (``TwoWayComposer.freeze``).
@@ -100,25 +108,74 @@ class SessionLedger:
         return value
 
 
-def profiled_copies(call) -> dict[str, int]:
-    """D2H and H2D copies and CUDA kernels one call issues, from the profiler."""
+def measure_isolated(module: str, function: str, *args: object, timeout_s: float = 1200.0) -> object:
+    """``module.function(*args)`` in a fresh interpreter, returned through JSON.
+
+    ``module`` is imported from ``tests/`` with the worktree first on the path,
+    exactly as the suite imports it, and ``function`` must return JSON data. The
+    parent holds its GPU slot while the child runs, so the two never compete.
+    """
+
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    tests = Path(__file__).resolve().parents[1]
+    code = (
+        "import json, sys\n"
+        f"sys.path[:0] = [{str(tests)!r}, {str(tests.parent)!r}]\n"
+        f"from {module} import {function} as run\n"
+        "value = run(*json.loads(sys.argv[1]))\n"
+        "print('MEASURED ' + json.dumps(value))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code, json.dumps(list(args))],
+        cwd=tests.parent,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    lines = [line for line in completed.stdout.splitlines() if line.startswith("MEASURED ")]
+    if completed.returncode != 0 or len(lines) != 1:
+        raise RuntimeError(
+            f"{module}.{function}{args} failed in its subprocess (exit {completed.returncode}):\n"
+            f"{completed.stdout[-4000:]}\n{completed.stderr[-4000:]}"
+        )
+    return json.loads(lines[0][len("MEASURED ") :])
+
+
+def profiled_copies(call, *, passes: int = 3) -> dict[str, int]:
+    """D2H and H2D copies and CUDA kernels one call issues, from the profiler.
+
+    The call runs ``passes`` times and each count is the LARGEST pass. A warm
+    call does identical work every time, but the profiler's activity buffers
+    drop records when a pass is long or the device is contended (seen as one
+    missing upload, or a few dozen missing kernels, in one pass of an
+    otherwise identical run); a dropped record only ever lowers a count, so the
+    largest pass is the complete one. The caller warms the call first.
+    """
 
     from torch.profiler import ProfilerActivity, profile
 
-    torch.cuda.synchronize()
-    with profile(activities=[ProfilerActivity.CUDA]) as prof:
-        call()
+    best = {"d2h": 0, "h2d": 0, "kernels": 0}
+    for _ in range(passes):
         torch.cuda.synchronize()
-    counts = {"d2h": 0, "h2d": 0, "kernels": 0}
-    for event in prof.events():
-        name = event.name
-        if "Memcpy DtoH" in name:
-            counts["d2h"] += 1
-        elif "Memcpy HtoD" in name:
-            counts["h2d"] += 1
-        elif "Memcpy" not in name and "Memset" not in name and event.device_type == torch.autograd.DeviceType.CUDA:
-            counts["kernels"] += 1
-    return counts
+        with profile(activities=[ProfilerActivity.CUDA]) as prof:
+            call()
+            torch.cuda.synchronize()
+        counts = {"d2h": 0, "h2d": 0, "kernels": 0}
+        for event in prof.events():
+            name = event.name
+            if "Memcpy DtoH" in name:
+                counts["d2h"] += 1
+            elif "Memcpy HtoD" in name:
+                counts["h2d"] += 1
+            elif "Memcpy" not in name and "Memset" not in name and event.device_type == torch.autograd.DeviceType.CUDA:
+                counts["kernels"] += 1
+        best = {name: max(best[name], counts[name]) for name in best}
+    return best
 
 
-__all__ = ["CHANNEL_ENTRIES", "SessionLedger", "TRIP_HOOKS", "profiled_copies"]
+__all__ = ["CHANNEL_ENTRIES", "SessionLedger", "TRIP_HOOKS", "measure_isolated", "profiled_copies"]

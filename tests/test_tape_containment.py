@@ -307,7 +307,7 @@ def _simulate_once(radar=None, *, ad_mode: str = "vjp"):
         (geo.SITE_P_POSITION_M, geo.SITE_Q_POSITION_M), dtype=torch.float32, device=radar.device
     ).requires_grad_(ad_mode != "none")
     targets = PointTargets(positions=sites, amplitude=drv.FIXTURE_AMPLITUDE, phase=drv.FIXTURE_PHASE_RAD)
-    result = radar.simulate(scene, targets, times=(0.0,), grad=ad_mode)
+    result = radar.simulate(scene, targets, times=(0.0,), ad_mode=ad_mode)
     return radar, result
 
 

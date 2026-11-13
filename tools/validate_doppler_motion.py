@@ -104,7 +104,7 @@ def scene_experiment(kind):
     expected, theoretical = [], []
     # Independent free-space two-way oracle. All points lie in the polarization
     # transverse plane: field projection is one and amplitude is proportional to 1/R^2.
-    for index, t in enumerate(result.sample_times_s[0].tolist()):
+    for index, t in enumerate(result.sample_times[0].tolist()):
         p, v = trajectory.positions(t).double(), trajectory.velocity(t).double()
         distance = p.norm(dim=-1)
         delay = 2 * distance / C0
@@ -117,7 +117,7 @@ def scene_experiment(kind):
     expected *= beat[0, 0] / expected[0, 0]
     relative_rms = float((beat - expected).abs().square().mean().sqrt() / expected.abs().square().mean().sqrt())
     assert relative_rms < 2e-3, (kind, relative_rms)
-    times = tuple(result.sample_times_s[0][:: spec.num_samples].tolist())
+    times = tuple(result.sample_times[0][:: spec.num_samples].tolist())
     product = microdoppler_spectrogram(SlowTimeSignal(beat[:, 0], times, BEAT_PHASOR), window_slots=32, hop_slots=8)
     centres, frequencies, spectrum = product.times_s, product.frequency_hz, product.data
     reference = microdoppler_spectrogram(
@@ -129,7 +129,7 @@ def scene_experiment(kind):
         "relative_iq_rms_error": relative_rms,
         "relative_stft_error": spectrum_error,
         "seconds": elapsed,
-        "observations": len(result.sample_times_s[0]),
+        "observations": len(result.sample_times[0]),
         "discoveries": result.discovery_count,
         "motion_sampling": result.motion_sampling,
         "path_set_complete": result.path_set_complete,

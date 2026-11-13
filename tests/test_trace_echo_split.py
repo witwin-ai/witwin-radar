@@ -170,7 +170,7 @@ def test_simulate_is_echo_of_trace_bit_for_bit(route: str) -> None:
 
     assert torch.equal(fused.cube, split.cube)
     assert fused.cube.dtype == split.cube.dtype
-    for name in ("kind", "axis_names", "phasor", "time_dependence", "output_domain", "times_s", "motion_sampling"):
+    for name in ("kind", "axis_names", "phasor", "time_dependence", "output_domain", "times", "motion_sampling"):
         assert getattr(fused, name) == getattr(split, name), name
     # The metadata record holds tensors, so it is compared by the scalars that
     # decide what a bin means rather than by equality on the whole record.
@@ -192,7 +192,7 @@ def test_a_trace_publishes_the_completeness_its_fused_run_does(route: str) -> No
     fused = radar.simulate(scene, targets, **session)
     assert paths.path_set_complete == fused.path_set_complete
     assert paths.motion_sampling_exhaustive == fused.motion_sampling_exhaustive
-    assert paths.times == fused.times_s
+    assert paths.times == fused.times
     assert paths.kind == fused.motion_sampling
 
 
@@ -267,17 +267,18 @@ def test_an_adaptive_trace_retains_its_probes_and_not_its_schedule() -> None:
     assert exhaustive.motion_sampling_exhaustive is True
     diagnostics = adaptive.adaptive_diagnostics[0]
     assert diagnostics["evaluations"] < diagnostics["observation_count"]
-    # A trace has synthesized nothing, so it cannot report a batch count.
-    assert "synthesis_batches" not in diagnostics
+    # A trace has synthesized nothing: the typed record carries every key, and
+    # its batch count is zero until an echo.
+    assert diagnostics["synthesis_batches"] == 0
 
 
 def test_a_trace_records_the_request_its_completeness_is_relative_to() -> None:
     radar = _radar()
-    paths = radar.trace(_wall_scene(), _still(), times=(0.0,), los=True, reflections=1, grad="none")
+    paths = radar.trace(_wall_scene(), _still(), times=(0.0,), los=True, reflections=1, ad_mode="none")
     assert paths.los is True
     assert paths.reflections == 1
-    assert paths.grad == "none"
-    assert paths.carrier == radar.carrier
+    assert paths.ad_mode == "none"
+    assert paths.reference_frequency_hz == radar.reference_frequency_hz
     assert paths.waveform == radar.waveform
 
     direct = radar.trace(_wall_scene(), _still(), times=(0.0,), los=True, reflections=0)
@@ -309,7 +310,7 @@ def test_echo_refuses_a_radar_the_rows_do_not_describe() -> None:
     paths = radar.trace(_wall_scene(), _still(), times=(0.0,), reflections=1)
 
     with pytest.raises(ValueError, match="the carrier is the reference frequency"):
-        radar.replace(carrier=76e9).echo(paths)
+        radar.replace(reference_frequency_hz=76e9).echo(paths)
 
     wider = Radar.from_dict({**CONFIG, "num_rx": 3, "rx_loc": [[-3, 0, 0], [-2, 0, 0], [-1, 0, 0]]})
     with pytest.raises(ValueError, match="pair partition is frozen"):

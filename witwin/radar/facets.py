@@ -431,6 +431,14 @@ def _live_material_tables(materials: list, *, device: torch.device) -> tuple[tor
     return params.reshape(-1).contiguous(), layers.reshape(-1).contiguous()
 
 
+#: The Core material fields a mesh target carries to its facet tables with
+#: their tape, and the AD modes each supports (R-ADR-052). A rough-surface
+#: ``rms_height_m`` leaf at exactly zero is refused (one-sided derivative).
+MATERIAL_LEAVES: dict[str, tuple[str, ...]] = dict.fromkeys(
+    ("eps_r", "sigma_e", "thickness_m", "mu_r", "rms_height_m"), ("jvp", "vjp")
+)
+
+
 def _material_rows(material: Any, carrier_hz: float) -> tuple[float, Any, list[list[Any]]]:
     """``(model, rms_height_m, layers)`` of one Core material at the carrier.
 

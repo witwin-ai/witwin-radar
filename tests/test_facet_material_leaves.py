@@ -127,7 +127,7 @@ def _trace_loss(values: dict, grad: str) -> torch.Tensor:
         roughness_front=roughness,
     )
     scene = sc.mesh_scene(vertices, faces, material=material)
-    rows = sc.radar().trace(scene, MeshTargets(), times=(0.0,), reflections=0, grad=grad).rows()
+    rows = sc.radar().trace(scene, MeshTargets(), times=(0.0,), reflections=0, ad_mode=grad).rows()
     total = rows.complex_transfer_ref.sum()
     return (total.real * 0.7 + total.imag * 1.3) * 1e6
 

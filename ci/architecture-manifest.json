@@ -8,6 +8,7 @@
     "witwin.radar.__main__",
     "witwin.radar.adaptive",
     "witwin.radar.binding",
+    "witwin.radar.capabilities",
     "witwin.radar.channel",
     "witwin.radar.config",
     "witwin.radar.cuda",
@@ -112,7 +113,8 @@
     "installation_doctor": "witwin.radar.doctor",
     "ground_truth_labels": "witwin.radar.labels",
     "raw_adc_export": "witwin.radar.rawdata",
-    "saved_result_format": "witwin.radar.storage"
+    "saved_result_format": "witwin.radar.storage",
+    "build_capabilities": "witwin.radar.capabilities"
   },
   "public_facades": [
     "witwin.radar",
@@ -131,6 +133,7 @@
   "internal_modules": [
     "witwin.radar.__main__",
     "witwin.radar.adaptive",
+    "witwin.radar.capabilities",
     "witwin.radar.channel",
     "witwin.radar.cuda",
     "witwin.radar.cuda.runtime",

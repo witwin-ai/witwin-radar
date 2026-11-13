@@ -185,7 +185,7 @@ class TiConfig:
             mimo=mimo,
         )
         fields: dict[str, Any] = {
-            "carrier": carrier,
+            "reference_frequency_hz": carrier,
             "waveform": waveform,
             "tx": tuple(tuple(tx[index]) for index in transmitters),
             "rx": tuple(tuple(rx[index]) for index in receivers),

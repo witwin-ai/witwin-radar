@@ -18,6 +18,7 @@ Advanced records stay in their owner modules and are imported from there:
 """
 
 from . import processing
+from .capabilities import capabilities
 from .deployment import package_version as _package_version
 from .frontend import Adc, Agc, Compression, Iq, Noise
 from .motion import Motion
@@ -58,5 +59,6 @@ __all__ = [
     "Result",
     "ScatteringMatrix",
     "StructureTargets",
+    "capabilities",
     "processing",
 ]

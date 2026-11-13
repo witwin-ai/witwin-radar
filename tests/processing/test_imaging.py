@@ -596,6 +596,35 @@ def test_a_moving_radar_images_two_simulated_point_targets(motion):
 
 
 @pytest.mark.gpu
+def test_the_frame_image_facade_is_backproject_of_its_own_aperture():
+    """``Frame.image(Frame.aperture(radar), ...)`` is the processing route, bit for bit (R-ADR-049)."""
+
+    from conftest import empty_world, scene_radar
+
+    from witwin.radar import PointTargets
+    from witwin.radar.processing import range_profile
+
+    radar = scene_radar(_scene_config())
+    right, forward = _frame(radar)
+    velocity = 12.0 * right
+    near = (torch.as_tensor(radar.position, dtype=torch.float64) + 1.0 * forward).to(torch.float32).cuda()
+    drift = velocity.to(torch.float32).cuda()
+    targets = PointTargets(positions=near.reshape(1, 3), rcs=1.0, trajectory=lambda t: near.reshape(1, 3) - drift * t)
+    frame = radar.simulate(empty_world(), targets, times=(0.0,), los=True, reflections=0).frame(0)
+    pixels, _ = _line(near.cpu().to(torch.float64), forward, 0.05)
+    bins = 8 * int(frame.cube.shape[-1])
+    facade = frame.image(frame.aperture(radar, velocity_mps=velocity), pixels, range_bins=bins)
+    direct = backproject(
+        range_profile(frame.processing_cube(), range_bins=bins),
+        Aperture.from_radar(radar, time_s=frame.time, velocity_mps=velocity),
+        pixels,
+    )
+    assert torch.equal(facade.data, direct.data)
+    with pytest.raises(ValueError, match="the radar given is"):
+        frame.aperture(radar.replace(reference_frequency_hz=radar.reference_frequency_hz * 1.01))
+
+
+@pytest.mark.gpu
 def test_a_simulated_turning_target_images_in_its_body_frame():
     from conftest import scene_radar
 

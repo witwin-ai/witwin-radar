@@ -440,7 +440,7 @@ def _synthesis_batch(radar, *, rows: int = 3):
         total_delay_s=torch.full((rows,), 2e-8, dtype=torch.float32, device=device),
         delay_rate=None,
         complex_transfer_ref=torch.ones(rows, dtype=torch.complex64, device=device),
-        reference_frequency_hz=float(radar.carrier),
+        reference_frequency_hz=float(radar.reference_frequency_hz),
         row_valid=None,
         topology=RadarPathTopology(
             radar_source_id=ids.clone(),

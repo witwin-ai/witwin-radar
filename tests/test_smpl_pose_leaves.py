@@ -40,7 +40,7 @@ def _body(rig, pose, shape, position=(3.0, 0.0, -0.1)):
     return SMPLBody(pose=pose, shape=shape, position=position, gender=gender, model_root=root, device="cuda")
 
 
-def _loss(rig, pose, shape, position=(3.0, 0.0, -0.1), grad="vjp") -> torch.Tensor:
+def _loss(rig, pose, shape, position=(3.0, 0.0, -0.1), ad_mode="vjp") -> torch.Tensor:
     from witwin.core import PhysicalMaterial, Scene
 
     from witwin.radar.smpl import SmplPoseDeformation
@@ -49,7 +49,7 @@ def _loss(rig, pose, shape, position=(3.0, 0.0, -0.1), grad="vjp") -> torch.Tens
     scene, targets = deformation.mesh_target(
         Scene(structures=(), endpoints=[]), structure_id=7, material=PhysicalMaterial.perfect_conductor()
     )
-    rows = sc.radar().trace(scene, targets, times=(0.0,), reflections=0, grad=grad).rows()
+    rows = sc.radar().trace(scene, targets, times=(0.0,), reflections=0, ad_mode=ad_mode).rows()
     assert rows.path_count > 0
     total = rows.complex_transfer_ref.sum()
     return (total.real * 0.6 + total.imag * 1.1) * 1e6

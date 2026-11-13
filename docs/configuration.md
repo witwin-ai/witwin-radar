@@ -57,7 +57,7 @@ generated from the same field table the reader checks keys against:
 | `lna_gain` | number | dB | LNA voltage gain |
 | `agc` | object | SI | Agc record fields |
 | `adc` | object | SI | Adc record fields |
-| `iq` | object | dB, deg | Iq record fields |
+| `iq` | object | dB, rad | Iq record fields |
 | `leakage` | object | dB, s, rad | Leakage record fields; scalars or [num_tx][num_rx] tables |
 | `compression` | object | dBm, deg | Compression record fields |
 | `dc_offset` | number or object or array | V | one complex value or one per receiver |

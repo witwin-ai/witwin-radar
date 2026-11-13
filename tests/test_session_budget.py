@@ -10,7 +10,8 @@ rather than vanishing into a total.
 The numbers are exact integers for these fixtures. They are a ceiling, pinned
 at the measured value: a change that lowers one lowers the pin in the same
 commit, and a change that raises one has to explain itself here.
-``python tests/test_session_budget.py`` prints the measured table.
+``python tests/test_session_budget.py`` prints the measured table, one fresh
+interpreter per case as the test measures it.
 
 What is counted, and its blind spots, is stated once in
 :mod:`support.session_ledger`.
@@ -67,62 +68,65 @@ COUNTERS = (
     "joins",
 )
 
-#: The counters read from the profiler. They move by a few percent between
-#: processes - Channel's first-use caches and hash-ordered sets decide some of
-#: its uploads - so they are held to their ceiling plus :data:`PROFILED_SLACK`.
-#: Every other counter is exact.
+#: The profiled columns. Each case is measured in a fresh interpreter, where
+#: they do not depend on which tests ran before, and each count is the largest
+#: of three profiled passes, which undoes a dropped profiler record in one
+#: pass. Under a contended device every pass can still lose a record or a few
+#: dozen kernels (at most 26 of 24368 measured, 0.1 %), and a loss in the
+#: one-frame run RAISES the marginal column, so these hold to their pin plus
+#: :data:`PROFILED_MARGIN` (at least two). Every other counter is exact.
 PROFILED = frozenset({"d2h", "h2d", "kernels"})
-PROFILED_SLACK = 0.03
+PROFILED_MARGIN = 0.005
 
 #: Measured ceilings: ``case -> (first frame, marginal frame)``, each a tuple
-#: in :data:`COUNTERS` order. Profiled columns hold the larger of two
-#: processes' measurements. The transport pass (R-ADR-039 to 041) adds about
-#: ten kernels per discovered frame and no host observation: the legs' launch
-#: polarization and float64 site gathers, the join's polarization table and
-#: Channel's complex3 field on the discovery rows.
+#: in :data:`COUNTERS` order, the largest of two fresh-interpreter runs. The
+#: transport pass (R-ADR-039 to 041) adds about ten kernels per discovered
+#: frame and no host observation: the legs' launch polarization and float64
+#: site gathers, the join's polarization table and Channel's complex3 field on
+#: the discovery rows.
 BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
     "adaptive_point": (
         (8, 0, 0, 0, 12, 4, 96, 65, 98, 1332, 1, 4, 4, 1, 1),
         (8, 0, 0, 0, 16, 4, 60, 54, 62, 1203, 0, 4, 4, 1, 0),
     ),
     "adaptive_structure": (
-        (8, 0, 0, 0, 12, 7, 168, 93, 175, 1545, 4, 4, 4, 4, 1),
-        (8, 0, 0, 0, 16, 7, 159, 93, 166, 1508, 4, 4, 4, 4, 0),
+        (8, 0, 0, 0, 12, 7, 168, 93, 175, 1577, 4, 4, 4, 4, 1),
+        (8, 0, 0, 0, 16, 7, 159, 93, 166, 1540, 4, 4, 4, 4, 0),
     ),
     "adc_point": (
-        (64, 0, 0, 0, 124, 3, 359, 331, 486, 8421, 1, 32, 32, 1, 1),
-        (64, 0, 0, 0, 128, 3, 321, 320, 448, 8286, 0, 32, 32, 1, 0),
+        (64, 0, 0, 0, 124, 3, 359, 331, 487, 8421, 1, 32, 32, 1, 1),
+        (64, 0, 0, 0, 128, 3, 321, 320, 449, 8292, 0, 32, 32, 1, 0),
     ),
     "adc_point_per_chirp": (
-        (8, 2, 2, 2, 68, 3, 122, 63, 131, 1589, 1, 4, 32, 1, 1),
-        (8, 2, 2, 2, 72, 3, 83, 52, 98, 1460, 0, 4, 32, 1, 0),
+        (8, 2, 2, 2, 68, 3, 122, 63, 134, 1630, 1, 4, 32, 1, 1),
+        (8, 2, 2, 2, 72, 3, 83, 52, 95, 1501, 0, 4, 32, 1, 0),
     ),
     "adc_point_per_frame": (
-        (2, 2, 2, 2, 62, 3, 95, 33, 95, 845, 1, 1, 32, 1, 1),
-        (2, 2, 2, 2, 66, 3, 56, 22, 56, 716, 0, 1, 32, 1, 0),
+        (2, 2, 2, 2, 62, 3, 95, 33, 95, 862, 1, 1, 32, 1, 1),
+        (2, 2, 2, 2, 66, 3, 56, 22, 56, 733, 0, 1, 32, 1, 0),
     ),
     "adc_structure": (
-        (64, 0, 0, 0, 124, 95, 1179, 672, 1307, 12106, 32, 32, 32, 32, 1),
-        (64, 0, 0, 0, 128, 96, 1152, 672, 1279, 12066, 32, 32, 32, 32, 0),
+        (64, 0, 0, 0, 124, 95, 1179, 672, 1307, 12202, 32, 32, 32, 32, 1),
+        (64, 0, 0, 0, 128, 96, 1152, 672, 1280, 12166, 32, 32, 32, 32, 0),
     ),
     "auto_point": (
-        (8, 0, 0, 0, 12, 4, 96, 65, 95, 1331, 1, 4, 4, 1, 1),
+        (8, 0, 0, 0, 12, 4, 96, 65, 98, 1332, 1, 4, 4, 1, 1),
         (8, 0, 0, 0, 16, 4, 60, 54, 62, 1203, 0, 4, 4, 1, 0),
     ),
     "chirp_point": (
-        (8, 0, 0, 0, 12, 3, 79, 51, 92, 1250, 1, 4, 4, 1, 1),
+        (8, 0, 0, 0, 12, 3, 79, 51, 95, 1251, 1, 4, 4, 1, 1),
         (8, 0, 0, 0, 16, 3, 41, 40, 57, 1122, 0, 4, 4, 1, 0),
     ),
     "chirp_structure": (
-        (8, 0, 0, 0, 12, 11, 157, 84, 170, 1544, 4, 4, 4, 4, 1),
-        (8, 0, 0, 0, 16, 12, 144, 84, 160, 1512, 4, 4, 4, 4, 0),
+        (8, 0, 0, 0, 12, 11, 157, 84, 173, 1560, 4, 4, 4, 4, 1),
+        (8, 0, 0, 0, 16, 12, 144, 84, 160, 1524, 4, 4, 4, 4, 0),
     ),
-    "static": ((2, 0, 0, 0, 0, 2, 45, 21, 49, 408, 1, 1, 1, 1, 1), (0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)),
+    "static": ((2, 0, 0, 0, 0, 2, 45, 21, 49, 410, 1, 1, 1, 1, 1), (0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)),
 }
 
 
 def _ceiling(name: str, limit: int) -> int:
-    return limit + max(2, int(abs(limit) * PROFILED_SLACK)) if name in PROFILED else limit
+    return limit + max(2, int(limit * PROFILED_MARGIN)) if name in PROFILED else limit
 
 
 def _radar():
@@ -215,10 +219,7 @@ def _simulate(case: str, frames: int):
 def _measure_once(case: str, frames: int, monkeypatch) -> tuple[int, ...]:
     from support.session_ledger import SessionLedger, profiled_copies
 
-    # The profiler's counts carry other first-use work that lands in whichever
-    # pass meets it first; the smaller of two passes is the session's own.
-    passes = [profiled_copies(_simulate(case, frames)) for _ in range(2)]
-    copies = {name: min(counts[name] for counts in passes) for name in passes[0]}
+    copies = profiled_copies(_simulate(case, frames))
     with monkeypatch.context() as patch:
         ledger = SessionLedger(patch)
         result = ledger.run(_simulate(case, frames))
@@ -253,6 +254,13 @@ def measure(case: str, monkeypatch) -> tuple[tuple[int, ...], tuple[int, ...]]:
     return one, tuple(b - a for a, b in zip(one, two, strict=True))
 
 
+def measure_case(case: str) -> list[list[int]]:
+    """:func:`measure` with its own monkeypatch; what the fresh interpreter runs."""
+
+    with pytest.MonkeyPatch.context() as patch:
+        return [list(values) for values in measure(case, patch)]
+
+
 def _report(case: str, measured, budget) -> str:
     rows = []
     for label, values, ceiling in (("first", measured[0], budget[0]), ("marginal", measured[1], budget[1])):
@@ -264,11 +272,14 @@ def _report(case: str, measured, budget) -> str:
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_the_session_stays_within_its_per_frame_budget(case, monkeypatch):
+def test_the_session_stays_within_its_per_frame_budget(case):
     pytest.importorskip("witwin.channel")
     if not torch.cuda.is_available():
         pytest.skip("the scene session requires CUDA")
-    measured = measure(case, monkeypatch)
+    from support.session_ledger import measure_isolated
+
+    first, marginal = measure_isolated("test_session_budget", "measure_case", case)
+    measured = (tuple(first), tuple(marginal))
     budget = BUDGETS[case]
     over = [
         f"{label}.{name}: {value} > {limit}"
@@ -282,32 +293,9 @@ def test_the_session_stays_within_its_per_frame_budget(case, monkeypatch):
 if __name__ == "__main__":
     import sys
 
-    sys.path.insert(0, "tests")
-    sys.path.insert(0, ".")
-
-    class _Patch:
-        def __init__(self) -> None:
-            self.undo: list = []
-
-        def setattr(self, target, name, value, raising=True):
-            original = target.__dict__[name] if isinstance(target, type) else getattr(target, name)
-            self.undo.append((target, name, original))
-            setattr(target, name, value)
-
-        def context(self):
-            import contextlib
-
-            @contextlib.contextmanager
-            def scope():
-                inner = _Patch()
-                try:
-                    yield inner
-                finally:
-                    for target, name, value in reversed(inner.undo):
-                        setattr(target, name, value)
-
-            return scope()
+    sys.path[:0] = ["tests", "."]
+    from support.session_ledger import measure_isolated
 
     for name in sys.argv[1:] or sorted(CASES):
-        first, marginal = measure(name, _Patch())
-        print(f'    "{name}": ({first}, {marginal}),', flush=True)
+        first, marginal = measure_isolated("test_session_budget", "measure_case", name)
+        print(f'    "{name}": ({tuple(first)}, {tuple(marginal)}),', flush=True)

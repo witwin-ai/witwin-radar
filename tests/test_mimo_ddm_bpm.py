@@ -40,7 +40,7 @@ def _radar(mimo: str, chirps: int):
     from witwin.radar import Radar
 
     return Radar(
-        carrier=sc.CARRIER_HZ,
+        reference_frequency_hz=sc.CARRIER_HZ,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0), (4.0, 0.0, 0.0)),
         rx=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
@@ -103,3 +103,31 @@ def test_a_tdm_cube_demultiplexes_to_itself_and_coupling_is_refused_under_ddm():
             los=True,
             reflections=0,
         )
+
+
+@pytest.mark.parametrize("mimo", ["ddm", "bpm"])
+def test_the_frame_facades_demultiplex_and_find_the_tdm_angle(mimo):
+    """``Frame.points`` and ``Frame.range_angle`` separate the transmitters themselves (R-ADR-049)."""
+
+    from witwin.radar.processing import ca_cfar, combine_coherent, point_cloud
+
+    def frame(kind: str, chirps: int):
+        target = PointTargets(positions=[[RANGE_M * math.cos(AZIMUTH), 0.0, RANGE_M * math.sin(AZIMUTH)]], rcs=1.0)
+        result = _radar(kind, chirps).simulate(sc.empty_scene(), target, times=(0.0,), los=True, reflections=0)
+        return result.frame(0)
+
+    coded, tdm = frame(mimo, 32), frame("tdm", 16)
+    for points in (coded.points(route="scan"), tdm.points(route="scan")):
+        x, y = points.xyz[:, 0], points.xyz[:, 1]
+        strongest = int(points.energy.argmax())
+        assert math.degrees(float(torch.atan2(x[strongest], y[strongest]))) == pytest.approx(17.0, abs=1.0)
+    grid = torch.linspace(-0.6, 0.6, 241, dtype=torch.float64)
+    for item in (coded, tdm):
+        angles = item.range_angle(grid)
+        peak = int(angles.data.sum(dim=-1).argmax())
+        assert math.degrees(float(grid[peak])) == pytest.approx(17.0, abs=0.5)
+    # The processing route itself refuses the physical cube by name.
+    rd = coded.range_doppler()
+    found = ca_cfar(combine_coherent(rd.data), guard_cells=(2, 4), training_cells=(4, 8), pfa=1e-4)
+    with pytest.raises(ValueError, match="point_cloud needs one channel per transmitter"):
+        point_cloud(found, rd, coded.array())

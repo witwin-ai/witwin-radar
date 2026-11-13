@@ -248,7 +248,7 @@ def test_processed_cube_puts_each_ghost_at_its_mirrored_range_doppler_and_angle(
     range_bin = float(result.axes.range_bin_m)
     velocity_bin = float(result.axes.velocity_bin_mps)
 
-    times = np.asarray(result.sample_times_s[0], dtype=np.float64)
+    times = np.asarray(result.sample_times[0], dtype=np.float64)
     middle = _predictions(radar, 0.5 * float(times[0] + times[-1]))
     origin = radar.rx_pos.double().mean(dim=0).cpu().numpy()
 
