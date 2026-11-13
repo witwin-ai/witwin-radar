@@ -120,6 +120,7 @@ _RADAR_NATIVE_MEMBERS = (_RADAR_NATIVE_MEMBER, "witwin/radar/cuda/prebuilt/_rada
 #: ``source_fingerprint`` hashes each file's NAME and content in this order.
 _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
+    "witwin/radar/cuda/facet_scatter.cu",
     "witwin/radar/cuda/fmcw_beat.cu",
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",

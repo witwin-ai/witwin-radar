@@ -658,6 +658,7 @@ def extension_sources() -> list[Path]:
     root = source_root()
     return [
         root / "extension.cpp",
+        root / "facet_scatter.cu",
         root / "fmcw_beat.cu",
         root / "fmcw_spectrum.cu",
         root / "frontend.cu",
@@ -750,6 +751,7 @@ _REQUIRED_OPERATORS = (
     "cfar_order_statistic_forward",
     "pulsed_echo_forward",
     "scatter_response_aspect_forward",
+    "facet_response_forward",
     "sensor_weight_forward",
     "two_way_join_forward",
 )

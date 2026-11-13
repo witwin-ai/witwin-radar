@@ -10,6 +10,7 @@
   "library": "_radar_native",
   "sources": [
     "witwin/radar/cuda/extension.cpp",
+    "witwin/radar/cuda/facet_scatter.cu",
     "witwin/radar/cuda/fmcw_beat.cu",
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
@@ -26,6 +27,7 @@
   "no_backward": {
     "cfar_order_statistic": "Detection is a discrete selection below the R-ADR-018 differentiability wall; witwin/radar/processing/detection.py refuses a differentiable map before this operator runs.",
     "dbscan_labels": "Cluster labels are discrete; witwin/radar/processing/detection.py refuses a differentiable point cloud before this operator runs.",
+    "fluctuation_factor": "The Swerling factor is a counter-based draw from a host key and has no differentiable input; witwin/radar/scattering.py multiplies the response by it, so a derivative of the response reaches the strength through that product.",
     "frontend_baseband": "The kernel writes the additive DC offset and flicker term; witwin/radar/frontend.py adds it to the signal, so the identity derivative is carried by that addition and the family needs no companion.",
     "frontend_quantize": "The ADC sits below the R-ADR-018 differentiability wall: quantization is a discrete choice, and witwin/radar/frontend.py refuses a differentiable input before this operator runs.",
     "oscillator_phase": "Oscillator phase (white-FM, flicker-FM and floor regions) is nowhere differentiable in time; witwin/radar/frontend.py refuses a differentiable timestamp or path delay before this operator runs.",
@@ -112,6 +114,76 @@
       "python_owner": "witwin/radar/processing/detection.py",
       "python_callers": [
         "_dbscan_roots"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_backward",
+      "ad_group": "facet_geometry",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.backward"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_forward",
+      "ad_group": "facet_geometry",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.forward"
+      ]
+    },
+    {
+      "symbol": "facet_geometry_jvp",
+      "ad_group": "facet_geometry",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/facets.py",
+      "python_callers": [
+        "_FacetGeometry.jvp"
+      ]
+    },
+    {
+      "symbol": "facet_response_backward",
+      "ad_group": "facet_response",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.backward"
+      ]
+    },
+    {
+      "symbol": "facet_response_forward",
+      "ad_group": "facet_response",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.forward"
+      ]
+    },
+    {
+      "symbol": "facet_response_jvp",
+      "ad_group": "facet_response",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/facet_scatter.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_FacetResponse.jvp"
+      ]
+    },
+    {
+      "symbol": "fluctuation_factor_forward",
+      "ad_group": "fluctuation_factor",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "FluctuatingResponse.bind_observation"
       ]
     },
     {
@@ -572,6 +644,36 @@
       "python_owner": "witwin/radar/scattering.py",
       "python_callers": [
         "_AspectResponse.jvp"
+      ]
+    },
+    {
+      "symbol": "scatter_response_table_backward",
+      "ad_group": "scatter_response_table",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.backward"
+      ]
+    },
+    {
+      "symbol": "scatter_response_table_forward",
+      "ad_group": "scatter_response_table",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.forward"
+      ]
+    },
+    {
+      "symbol": "scatter_response_table_jvp",
+      "ad_group": "scatter_response_table",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/scatter_response.cu",
+      "python_owner": "witwin/radar/scattering.py",
+      "python_callers": [
+        "_TableResponse.jvp"
       ]
     },
     {

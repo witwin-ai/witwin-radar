@@ -423,9 +423,11 @@ def test_scalar_response_moves_to_the_device_it_is_asked_for():
 def test_scalar_response_rejects_malformed_parameters():
     with pytest.raises(TypeError, match="amplitude must be a torch.Tensor"):
         ScalarRcsResponse(amplitude=1.0, phase_rad=torch.tensor(0.0))
-    with pytest.raises(ValueError, match="must be a 0-dim tensor"):
-        ScalarRcsResponse(amplitude=torch.ones(2), phase_rad=torch.tensor(0.0))
+    with pytest.raises(ValueError, match="must be a 0-dim tensor or a 1-dim per-site tensor"):
+        ScalarRcsResponse(amplitude=torch.ones(2, 2), phase_rad=torch.tensor(0.0))
+    with pytest.raises(ValueError, match="must name the same sites"):
+        ScalarRcsResponse(amplitude=torch.ones(2), phase_rad=torch.zeros(3))
     with pytest.raises(TypeError, match="must use torch.float32"):
         ScalarRcsResponse(amplitude=torch.tensor(1.0, dtype=torch.float64), phase_rad=torch.tensor(0.0))
-    with pytest.raises(ValueError, match="row_count must be non-negative"):
+    with pytest.raises(ValueError, match="site_count must be non-negative"):
         ScalarRcsResponse.from_values(1.0, 0.0).evaluate(-1, torch.device("cpu"))

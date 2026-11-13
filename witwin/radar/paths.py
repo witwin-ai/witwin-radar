@@ -958,6 +958,7 @@ class TwoWayComposer:
         direct_identity: LegIdentity | None = None,
         max_round_trips: int | None = None,
         leg_site_ids: Sequence[int] | None = None,
+        outbound_line_of_sight_only: bool = False,
     ) -> TwoWayComposer:
         """Build the identity join from two frozen leg topologies.
 
@@ -994,6 +995,16 @@ class TwoWayComposer:
         materialised, because the join is the step whose size is the product of
         the two legs' row counts, and a refusal there names the pair rather
         than an allocation failure somewhere downstream.
+
+        ``outbound_line_of_sight_only`` belongs to a mesh target (R-ADR-042):
+        it drops every reflected outbound row. A facet scatters once, with
+        physical optics, at the LAST interaction of the wave, so reflections
+        may precede the facet (inbound) but never follow it; without the rule
+        every multi-bounce on the target would be composed once per facet it
+        visits. The leg topology names its interactions by compiled face index
+        rather than by Core primitive, so the rule cannot single out the
+        target's own surfaces and drops reflections off the rest of the world
+        after the facet as well.
         """
 
         device = inbound.sink_id.device
@@ -1052,7 +1063,10 @@ class TwoWayComposer:
         # Rows that reach an undeclared site are not part of this join.
         declared = np.asarray(sites, dtype=np.int64)
         inbound_rows = np.flatnonzero(np.isin(arriving.sink, declared))
-        outbound_rows = np.flatnonzero(np.isin(leaving.sink, declared))
+        outbound_mask = np.isin(leaving.sink, declared)
+        if outbound_line_of_sight_only:
+            outbound_mask &= leaving.depth == 0
+        outbound_rows = np.flatnonzero(outbound_mask)
         inbound_site = _ranks(arriving.sink[inbound_rows], sites)
         through = (
             None
@@ -1346,7 +1360,8 @@ class TwoWayComposer:
         copy of a routing table is built. The result is the bit for bit equal
         of composing with :meth:`for_slots` tables. A per-site response is
         shared by every slot; a geometry-dependent response is evaluated per
-        composed row and takes :meth:`for_slots` instead.
+        composed row of every slot by its own native family, striding the same
+        single-slot tables, and its values are slot local.
 
         ``direct`` is the slot-major site-less leg when this join was frozen
         with one; the native join writes each of its rows into its slot's
@@ -1357,8 +1372,6 @@ class TwoWayComposer:
 
         if (direct is None) != (self.merge is None):
             raise ValueError("pass the site-less leg exactly when this join was frozen with one")
-        if response.is_geometry_dependent:
-            raise ValueError("a geometry-dependent response is evaluated per composed row; compose it with for_slots")
         for name, batch, expected in (
             ("inbound", inbound, self.inbound_row_count * slots),
             ("outbound", outbound, self.outbound_row_count * slots),
@@ -1372,21 +1385,9 @@ class TwoWayComposer:
         device = inbound.delay_s.device
         row_valid = self._slot_validity(inbound, outbound, slots, device)
         flags = torch.ones(rows, dtype=torch.int32, device=device) if row_valid is None else row_valid.to(torch.int32)
-        value, up, width = self._site_response(response, device)
-        family = ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots)
+        value, up, width, index, family = self._response(response, inbound, outbound, flags, device, slots=slots)
         tau_hi, tau_lo, transfer, row_valid = self._launch(
-            inbound,
-            outbound,
-            direct,
-            value,
-            up,
-            width,
-            self.response_slot,
-            family,
-            flags,
-            row_valid,
-            slots,
-            frequency_offsets_hz,
+            inbound, outbound, direct, value, up, width, index, family, flags, row_valid, slots, frequency_offsets_hz
         )
         return SlotRows(
             total_delay_s=tau_hi,
@@ -1706,6 +1707,8 @@ class TwoWayComposer:
         outbound: RadarLegBatch,
         flags: torch.Tensor,
         device: torch.device,
+        *,
+        slots: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor, ResponseFamily]:
         """The response as real pairs, its site axes, width, index and gradient family.
 
@@ -1727,7 +1730,7 @@ class TwoWayComposer:
 
         if not response.is_geometry_dependent:
             value, up, width = self._site_response(response, device)
-            family = ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count)
+            family = ResponseFamily(self.by_response_offsets, self.by_response_rows, self.site_count, slots=slots)
             return value, up, width, self.response_slot, family
         if getattr(response, "native_row_owner", None) not in NATIVE_ROW_RESPONSE_OWNERS:
             raise NotImplementedError(
@@ -1737,15 +1740,26 @@ class TwoWayComposer:
         # The whitelist above is what licenses the row entry; the protocol
         # declares only the per-site one.
         row_response: Any = response
-        rows_re, rows_im = row_response.evaluate_rows(self, inbound, outbound, flags)
+        owners = self.site_row_count * slots
+        family = ResponseFamily(self.by_row_offsets, self.by_row_rows, owners, slots=slots, slot_local=slots > 1)
+        width = int(getattr(response, "matrix_width", 1))
+        if width == 4:
+            # A polarimetric row response publishes [rows, 4] complex pairs and
+            # the up axis of each row's site basis.
+            pairs, up = row_response.evaluate_rows(self, inbound, outbound, flags, slots=slots)
+            if tuple(pairs.shape) != (owners, 4, 2) or tuple(up.shape) != (owners, 3):
+                raise ValueError(
+                    f"a polarimetric row response publishes [{owners}, 4] complex pairs and [{owners}, 3] axes"
+                )
+            return pairs, up, 4, self.row_slot, family
+        rows_re, rows_im = row_response.evaluate_rows(self, inbound, outbound, flags, slots=slots)
         for name, value in (("real", rows_re), ("imaginary", rows_im)):
-            if not isinstance(value, torch.Tensor) or value.numel() != self.site_row_count:
+            if not isinstance(value, torch.Tensor) or value.numel() != owners:
                 raise ValueError(
                     f"a row-evaluated scatter response must publish one {name} "
-                    f"value per composed site row; this join has {self.site_row_count}"
+                    f"value per composed site row; this join has {owners}"
                 )
         pairs = torch.stack((rows_re, rows_im), dim=-1)
-        family = ResponseFamily(self.by_row_offsets, self.by_row_rows, self.site_row_count)
         return pairs, _empty(pairs), 1, self.row_slot, family
 
     def _site_response(self, response: ScatterResponse, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, int]:

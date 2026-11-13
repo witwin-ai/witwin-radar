@@ -1,13 +1,11 @@
 """What the radar is looking at: where the scatterers are and how they scatter.
 
-Two records, and the restriction is the design rather than an unfinished edge.
-:class:`PointTargets` names world positions outright; :class:`StructureTargets`
-puts one scatterer at each world anchor Core publishes for a moving structure.
-What is deliberately absent is any rule that DERIVES a scatterer from geometry
-- a surface sample, a centroid, a bounding-box centre, a visibility-weighted
-set. Every one of those is a geometry algorithm, and a geometry algorithm
-written in Torch on the production path is what this architecture exists to
-keep out. R-ADR-020 records the deferral and names what closing it would need.
+Three records. :class:`PointTargets` names world positions outright;
+:class:`StructureTargets` puts one scatterer at each world anchor Core
+publishes for a moving structure; :class:`MeshTargets` makes the facets of
+Core structures the scatterers, each a physical-optics facet of the structure's
+own material (R-ADR-042). The facet extraction is native and lives in
+:mod:`witwin.radar.facets`; nothing here computes geometry.
 
 Position and strength are one record because they are one statement about the
 world; the carrier and the device are the radar's and are supplied when the
@@ -20,6 +18,7 @@ This module owns the target vocabulary. The scattering COEFFICIENT is owned by
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
@@ -28,9 +27,17 @@ import torch
 
 from .binding import ScatterSitePolicy
 from .propagation import Kinematics
-from .scattering import AspectScatterResponse, ScalarRcsResponse, ScatteringMatrixResponse, rcs_amplitude
+from .scattering import (
+    AspectScatterResponse,
+    FacetScatterResponse,
+    FluctuatingResponse,
+    ScalarRcsResponse,
+    ScatteringMatrixResponse,
+    TableScatterResponse,
+    rcs_amplitude,
+)
 
-__all__ = ["Aspect", "PointTargets", "ScatteringMatrix", "StructureTargets"]
+__all__ = ["Aspect", "Fluctuation", "MeshTargets", "PointTargets", "RcsTable", "ScatteringMatrix", "StructureTargets"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +116,100 @@ class Aspect:
 
 
 @dataclass(frozen=True, slots=True)
+class RcsTable:
+    """A tabulated cross section, ``sigma(theta, f)``, as a target's ``rcs``.
+
+    ``theta`` is the aspect angle between the target's ``axis`` and the
+    bisector of the directions from the target to the transmitter and to the
+    receiver (the monostatic aspect when the two coincide), sampled uniformly
+    on ``[0, pi]`` by the table's last axis. ``rcs_m2`` is ``(A,)`` for one
+    frequency or ``(F, A)`` at ``frequencies_hz``; ``phase_rad`` (same shape,
+    or a scalar) is the scattering phase. The table is reduced to the radar's
+    carrier once, by linear interpolation of the complex amplitude
+    ``sqrt(4 pi sigma) / lambda exp(-j phase)`` in frequency, and evaluated per
+    composed row by linear interpolation in ``theta`` (R-ADR-045). It is host
+    data and takes no derivative; the aspect it is read at does.
+    """
+
+    #: One unit axis per target, world frame, shape ``(S, 3)``.
+    axis: Any
+    #: Cross section, m^2, ``(A,)`` or ``(F, A)``, ``A >= 2`` aspect samples on ``[0, pi]``.
+    rcs_m2: Any
+    #: The frequencies of the table's rows, Hz, ascending; required with an ``(F, A)`` table.
+    frequencies_hz: Any = None
+    #: Scattering phase, rad, broadcast against ``rcs_m2``.
+    phase_rad: Any = 0.0
+
+    def __post_init__(self) -> None:
+        import numpy as np
+
+        table = np.asarray(self.rcs_m2, dtype=np.float64)
+        if table.ndim not in (1, 2) or table.shape[-1] < 2:
+            raise ValueError("RcsTable.rcs_m2 must be (A,) or (F, A) with at least two aspect samples")
+        if np.any(table < 0.0) or not np.all(np.isfinite(table)):
+            raise ValueError("RcsTable.rcs_m2 is a cross section in square metres and must be finite and non-negative")
+        if (table.ndim == 2) != (self.frequencies_hz is not None):
+            raise ValueError("RcsTable.frequencies_hz is required with, and only with, an (F, A) table")
+        if table.ndim == 2:
+            frequencies = np.asarray(self.frequencies_hz, dtype=np.float64)
+            if frequencies.shape != (table.shape[0],) or np.any(np.diff(frequencies) <= 0.0):
+                raise ValueError("RcsTable.frequencies_hz must be ascending, one per table row")
+        np.broadcast_to(np.asarray(self.phase_rad, dtype=np.float64), table.shape)
+
+    def amplitude_at(self, carrier_hz: float, wavelength_m: float):
+        """The complex amplitude table at the carrier, ``(A,)`` complex128 on the host."""
+
+        import numpy as np
+
+        table = np.asarray(self.rcs_m2, dtype=np.float64)
+        phase = np.broadcast_to(np.asarray(self.phase_rad, dtype=np.float64), table.shape)
+        amplitude = np.sqrt(4.0 * math.pi * table) / float(wavelength_m) * np.exp(-1j * phase)
+        if table.ndim == 1:
+            return amplitude
+        frequencies = np.asarray(self.frequencies_hz, dtype=np.float64)
+        carrier = float(carrier_hz)
+        if not frequencies[0] <= carrier <= frequencies[-1]:
+            raise ValueError(
+                f"the carrier {carrier} Hz is outside the table's frequencies [{frequencies[0]}, {frequencies[-1]}] "
+                "Hz; a tabulated cross section is not extrapolated"
+            )
+        upper = int(min(np.searchsorted(frequencies, carrier, side="right"), len(frequencies) - 1))
+        lower = max(upper - 1, 0)
+        span = frequencies[upper] - frequencies[lower]
+        weight = 0.0 if span == 0.0 else (carrier - frequencies[lower]) / span
+        return (1.0 - weight) * amplitude[lower] + weight * amplitude[upper]
+
+
+@dataclass(frozen=True, slots=True)
+class Fluctuation:
+    """Swerling fluctuation of every target's cross section (R-ADR-045).
+
+    Each site's power is multiplied by an independent draw ``X`` with
+    ``E[X] = 1``: exponential (chi-square with 2 degrees of freedom) for
+    Swerling I and II, chi-square with 4 degrees of freedom for III and IV.
+    Swerling I and III hold one draw for every observation inside one
+    ``coherent_interval`` (a scan) and redraw at each interval boundary; II and
+    IV redraw at every observation instant (pulse to pulse). A draw is a pure
+    function of ``seed``, the interval's start (or the instant) and the site,
+    keyed like the frontend's noise, so every verb sees the same realisation.
+    The phase is not fluctuated.
+    """
+
+    swerling: int
+    #: The decorrelation interval of Swerling I and III, s.
+    coherent_interval: float
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.swerling not in (1, 2, 3, 4) or type(self.swerling) is not int:
+            raise ValueError(f"Fluctuation.swerling must be 1, 2, 3 or 4, got {self.swerling!r}")
+        if not float(self.coherent_interval) > 0.0:
+            raise ValueError("Fluctuation.coherent_interval must be positive")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("Fluctuation.seed must be a non-negative int")
+
+
+@dataclass(frozen=True, slots=True)
 class PointTargets:
     """Scatterers at world positions the caller names, with their cross section.
 
@@ -126,9 +227,9 @@ class PointTargets:
 
     #: World positions, m, shape ``(S, 3)`` or a sequence of triples.
     positions: Any
-    #: Radar cross section, m^2. One value for every target: a per-target
-    #: vector needs an :class:`Aspect`, because the scalar response broadcasts
-    #: one strength across every composed row.
+    #: Radar cross section, m^2: one value shared by every target, or one per
+    #: target in ``positions`` order (a sequence or a 1-dim tensor). Without an
+    #: :class:`Aspect` every target is isotropic at its own strength.
     rcs: Any = None
     #: The dimensionless target strength, ``sqrt(4 pi sigma) / lambda``, for a
     #: caller who has it rather than a cross section. Exactly one of this and
@@ -138,8 +239,8 @@ class PointTargets:
     #: as the leaf wants this one, because going through the cross section
     #: would put the square root in its gradient.
     amplitude: Any = None
-    #: Scattering phase, rad.
-    phase: float = 0.0
+    #: Scattering phase, rad: one value, or one per target in ``positions`` order.
+    phase: Any = 0.0
     #: ``trajectory(time)`` returns this same ordered set of material points at
     #: that instant, shape ``(S, 3)`` in metres. Rotation and articulation must
     #: MOVE the points: an angular-velocity label alone cannot. ``None`` is a
@@ -150,6 +251,8 @@ class PointTargets:
     aspect: Aspect | None = None
     #: Polarimetric scattering. ``None`` scatters as the identity dyadic.
     scattering: ScatteringMatrix | None = None
+    #: Swerling fluctuation of the cross section; ``None`` holds it fixed.
+    fluctuation: Fluctuation | None = None
 
     def __post_init__(self) -> None:
         _require_one_strength("PointTargets", rcs=self.rcs, amplitude=self.amplitude)
@@ -160,16 +263,19 @@ class PointTargets:
                 "PointTargets.scattering and PointTargets.aspect cannot be combined: the aspect lobe is a "
                 "per-row scalar and the scattering matrix a per-site 2x2, and no response composes both"
             )
+        if isinstance(self.rcs, RcsTable) and self.scattering is not None:
+            raise NotImplementedError("an RcsTable is a scalar aspect law; it does not compose with a ScatteringMatrix")
+        if isinstance(self.rcs, RcsTable) and self.aspect is not None:
+            raise ValueError("an RcsTable is its own aspect law; give a table or an Aspect, not both")
+        if self.fluctuation is not None and not isinstance(self.fluctuation, Fluctuation):
+            raise TypeError("PointTargets.fluctuation must be a Fluctuation")
         if self.trajectory is not None and not callable(self.trajectory):
             raise TypeError("PointTargets.trajectory must be callable as trajectory(time) -> (S, 3) positions")
         if self.aspect is not None and not isinstance(self.aspect, Aspect):
             raise TypeError(f"PointTargets.aspect must be an Aspect, got {type(self.aspect).__name__}")
-        strength = self.rcs if self.rcs is not None else self.amplitude
-        if isinstance(strength, torch.Tensor) and strength.dim() > 0 and self.aspect is None:
-            raise ValueError(
-                "a per-target strength vector needs an Aspect: the isotropic response carries ONE value and "
-                "broadcasts it across every composed row, so a vector here would silently take its first entry"
-            )
+        for name in ("rcs", "amplitude", "phase"):
+            if not isinstance(getattr(self, name), RcsTable):
+                _require_per_target_length(f"PointTargets.{name}", getattr(self, name), self.count)
 
     @property
     def count(self) -> int:
@@ -188,7 +294,8 @@ class StructureTargets:
     the alternative is a mesh-sampling rule, and that is a geometry algorithm.
     """
 
-    #: Radar cross section, m^2, shared by every selected structure.
+    #: Radar cross section, m^2: one value shared by every selected structure,
+    #: or one per selected structure in ascending structure-ID order.
     rcs: Any = None
     #: The dimensionless strength instead of a cross section; exactly one of
     #: the two, for the reason :class:`PointTargets` gives.
@@ -198,13 +305,67 @@ class StructureTargets:
     #: ID rather than by the scene's tuple order, so the array order is a
     #: function of world identity and survives a reordered scene.
     structure_ids: tuple[int, ...] | None = None
-    #: Scattering phase, rad.
-    phase: float = 0.0
+    #: Scattering phase, rad: one value, or one per selected structure in
+    #: ascending structure-ID order.
+    phase: Any = 0.0
     #: Stable world IDs, one per selected structure. ``None`` allocates them.
     ids: tuple[int, ...] | None = None
+    #: Swerling fluctuation of the cross section; ``None`` holds it fixed.
+    fluctuation: Fluctuation | None = None
 
     def __post_init__(self) -> None:
         _require_one_strength("StructureTargets", rcs=self.rcs, amplitude=self.amplitude)
+        if isinstance(self.rcs, RcsTable):
+            raise ValueError("an RcsTable needs a per-target axis; use PointTargets for a tabulated cross section")
+        if self.fluctuation is not None and not isinstance(self.fluctuation, Fluctuation):
+            raise TypeError("StructureTargets.fluctuation must be a Fluctuation")
+        count = None if self.structure_ids is None else len(self.structure_ids)
+        for name in ("rcs", "amplitude", "phase"):
+            _require_per_target_length(f"StructureTargets.{name}", getattr(self, name), count)
+
+
+@dataclass(frozen=True, slots=True)
+class MeshTargets:
+    """The facets of Core structures, each scattering as a physical-optics facet.
+
+    The selected structures stay in the scene, so the legs see them: a facet
+    hidden by the rest of the world contributes nothing, and the target's own
+    multi-bounce (a corner reflector's) comes from the scene's reflections, so
+    it needs ``reflections`` at least the number of bounces before the last.
+    What a facet returns is fixed by its area, its orientation to the two legs
+    and the material its structure carries (R-ADR-042); there is no cross
+    section to declare. A facet scatters from its normal side only, the side
+    the right-handed corner order points to.
+
+    Every facet is a site by default. ``cluster_size_m`` merges the facets
+    whose centroids share one cubic cell of that edge into one site, and
+    ``max_sites`` picks the finest such cell that keeps the site count within
+    the budget; a merged site keeps every facet's own term and phase, valid
+    while the cell is well inside the far field of the radar
+    (``k D^2 / (8 R)`` small for a cell of extent ``D`` at range ``R``) and
+    small against the surface's curvature, and is occluded as one point, at
+    the member facet nearest the cell's mean.
+    """
+
+    #: Which structures scatter. ``None`` takes every structure in the scene.
+    structure_ids: tuple[int, ...] | None = None
+    #: Cubic cell edge, m, of one merged site; ``None`` keeps one facet per site.
+    cluster_size_m: float | None = None
+    #: The largest site count to allow; ``None`` declares no budget.
+    max_sites: int | None = None
+    #: Seed of the frozen per-facet phase of the diffuse (rough-surface) term.
+    seed: int = 0
+    #: Stable world IDs are allocated per site; a mesh target names none.
+
+    def __post_init__(self) -> None:
+        if self.cluster_size_m is not None and self.max_sites is not None:
+            raise ValueError("MeshTargets takes cluster_size_m or max_sites, not both")
+        if self.cluster_size_m is not None and not float(self.cluster_size_m) > 0.0:
+            raise ValueError("MeshTargets.cluster_size_m must be positive")
+        if self.max_sites is not None and (type(self.max_sites) is not int or self.max_sites < 1):
+            raise ValueError("MeshTargets.max_sites must be a positive int")
+        if type(self.seed) is not int or self.seed < 0:
+            raise ValueError("MeshTargets.seed must be a non-negative int")
 
 
 def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
@@ -216,6 +377,53 @@ def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
             "amplitude = sqrt(4 pi rcs) / wavelength, so giving both leaves it undefined which one the "
             "response is built from, and giving neither says nothing about how strongly the target scatters."
         )
+
+
+def _per_target_length(value: Any) -> int | None:
+    """How many targets a strength or phase names; ``None`` for one shared value."""
+
+    if value is None or isinstance(value, (int, float)):
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.dim() > 1:
+            raise ValueError(f"a per-target value must be 0-dim or 1-dim, got shape {tuple(value.shape)}")
+        return None if value.dim() == 0 else int(value.shape[0])
+    return len(value)
+
+
+def _require_per_target_length(name: str, value: Any, count: int | None) -> None:
+    length = _per_target_length(value)
+    if length is not None and count is not None and length != count:
+        raise ValueError(f"{name} names {length} targets but the record declares {count}")
+
+
+def _per_site_tensor(value: Any, *, order: torch.Tensor | None, device) -> torch.Tensor:
+    """A shared value as a 0-dim tensor, or a per-target vector in the join's site order.
+
+    The join orders sites by ascending stable ID. Caller IDs need not be
+    ascending, so a per-target vector is permuted by ``order`` - an
+    ``index_select``, which keeps a caller's tape - rather than trusted to
+    already be in join order.
+    """
+
+    if isinstance(value, torch.Tensor):
+        tensor = value.to(device=device)
+    elif isinstance(value, (int, float)):
+        tensor = torch.tensor(float(value), dtype=torch.float32, device=device)
+    else:
+        tensor = torch.tensor([float(entry) for entry in value], dtype=torch.float32, device=device)
+    if tensor.dim() == 1 and order is not None:
+        tensor = tensor.index_select(0, order)
+    return tensor
+
+
+def _join_order(ids: tuple[int, ...] | None, *, device) -> torch.Tensor | None:
+    """The permutation from declaration order to ascending stable ID; ``None`` when they agree."""
+
+    if ids is None or list(ids) == sorted(ids):
+        return None
+    ranked = sorted(range(len(ids)), key=lambda index: ids[index])
+    return torch.tensor(ranked, dtype=torch.int64, device=device)
 
 
 class _PositionTrajectory:
@@ -238,7 +446,7 @@ class _PositionTrajectory:
         return Kinematics(positions_m=positions)
 
 
-def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tuple[Any, Any]:
+def as_session_targets(targets: PointTargets | StructureTargets | MeshTargets, *, radar) -> tuple[Any, Any]:
     """Split a target record into the site policy and the scatter response.
 
     The two halves go to two different owners - the binding places the sites,
@@ -248,6 +456,17 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
     of a target record.
     """
 
+    if isinstance(targets, MeshTargets):
+        from .facets import FacetSites
+
+        facets = FacetSites(
+            structure_ids=targets.structure_ids,
+            carrier_hz=float(radar.carrier),
+            cluster_size_m=targets.cluster_size_m,
+            max_sites=targets.max_sites,
+        )
+        response = FacetScatterResponse(wavenumber_rad_per_m=2.0 * math.pi / float(radar.wavelength), seed=targets.seed)
+        return ScatterSitePolicy.from_facets(facets), response
     if isinstance(targets, PointTargets):
         positions = targets.positions
         if not isinstance(positions, torch.Tensor):
@@ -263,60 +482,77 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
         policy = ScatterSitePolicy.structure_anchor(structure_ids=targets.structure_ids, stable_ids=targets.ids)
     else:
         raise TypeError(
-            f"targets must be PointTargets or StructureTargets, got {type(targets).__name__}; where the "
+            f"targets must be PointTargets, StructureTargets or MeshTargets, got {type(targets).__name__}; where the "
             "scatterers are is a declaration, not a search"
         )
 
+    order = _join_order(targets.ids, device=radar.device)
+    if isinstance(targets.rcs, RcsTable):
+        table = targets.rcs.amplitude_at(float(radar.carrier), radar.wavelength)
+        axis = _axis_tensor(targets.rcs.axis, count=targets.count, device=radar.device)
+        response: Any = TableScatterResponse(
+            axis=(axis if order is None else axis.index_select(0, order)).contiguous(),
+            table_re=torch.tensor(table.real, dtype=torch.float32, device=radar.device),
+            table_im=torch.tensor(table.imag, dtype=torch.float32, device=radar.device),
+        )
+        return policy, _fluctuated(response, targets.fluctuation)
+    phase = _per_site_tensor(targets.phase, order=order, device=radar.device)
+    if isinstance(targets.rcs, torch.Tensor):
+        # The tensor law keeps a cross-section leaf's tape.
+        sigma = _per_site_tensor(targets.rcs, order=order, device=radar.device)
+        amplitude = _per_site_tensor(rcs_amplitude(sigma, radar.wavelength), order=None, device=radar.device)
+    elif targets.rcs is not None:
+        # The host law refuses a negative cross section by name.
+        amplitude = _per_site_tensor(rcs_amplitude(targets.rcs, radar.wavelength), order=order, device=radar.device)
+    else:
+        amplitude = _per_site_tensor(targets.amplitude, order=order, device=radar.device)
     aspect = targets.aspect if isinstance(targets, PointTargets) else None
     scattering = targets.scattering if isinstance(targets, PointTargets) else None
     if scattering is not None:
-        strength = targets.amplitude if targets.rcs is None else rcs_amplitude(targets.rcs, radar.wavelength)
-        if isinstance(strength, torch.Tensor) and strength.dim() > 0:
-            raise ValueError("a scattering matrix takes one strength shared by every target")
+        if amplitude.dim() > 0 or phase.dim() > 0:
+            raise ValueError("a scattering matrix takes one strength and one phase shared by every target")
         factors = torch.tensor(scattering.values(), dtype=torch.complex64, device=radar.device)
-        phase = torch.exp(torch.tensor(-1j * float(targets.phase), dtype=torch.complex64, device=radar.device))
-        scale = strength.to(device=radar.device) if isinstance(strength, torch.Tensor) else float(strength)
+        rotation = torch.exp(-1j * phase.to(torch.complex64))
         response: Any = ScatteringMatrixResponse(
-            matrix=(factors * phase * scale).to(torch.complex64),
+            matrix=(factors * rotation * amplitude).to(torch.complex64),
             up=torch.tensor(scattering.up, dtype=torch.float32, device=radar.device),
         )
     elif aspect is None:
-        if targets.rcs is not None:
-            response = ScalarRcsResponse.from_rcs(
-                targets.rcs,
-                reference_frequency_hz=float(radar.carrier),
-                phase_rad=float(targets.phase),
-                device=radar.device,
-            )
-        elif isinstance(targets.amplitude, torch.Tensor):
-            # Built directly rather than through ``from_values``, which floats
-            # its argument and would silently drop the tape of a strength the
-            # caller marked as a leaf.
-            response = ScalarRcsResponse(
-                amplitude=targets.amplitude.to(device=radar.device),
-                phase_rad=torch.tensor(float(targets.phase), dtype=torch.float32, device=radar.device),
-            )
-        else:
-            response = ScalarRcsResponse.from_values(targets.amplitude, float(targets.phase), device=radar.device)
+        response = ScalarRcsResponse(amplitude=amplitude, phase_rad=phase)
     else:
-        amplitude = targets.amplitude if targets.rcs is None else rcs_amplitude(targets.rcs, radar.wavelength)
         count = targets.count
-        if not isinstance(amplitude, torch.Tensor):
-            amplitude = torch.full((count,), float(amplitude), dtype=torch.float32, device=radar.device)
-        elif amplitude.dim() == 0:
-            amplitude = amplitude.expand(count)
         timed = callable(aspect.axis)
+        axis = _axis_tensor(aspect.axis(0.0) if timed else aspect.axis, count=count, device=radar.device)
         response = AspectScatterResponse(
-            axis=_axis_tensor(aspect.axis(0.0) if timed else aspect.axis, count=count, device=radar.device),
-            amplitude=amplitude.to(device=radar.device),
-            phase_rad=torch.full((count,), float(targets.phase), dtype=torch.float32, device=radar.device),
+            axis=axis if order is None else axis.index_select(0, order),
+            amplitude=amplitude.expand(count).contiguous(),
+            phase_rad=phase.expand(count).contiguous(),
             exponent=float(aspect.exponent),
             coherent_interval_s=float(aspect.coherent_interval),
             aspect_phase_rate_rad_per_s=float(aspect.phase_rate),
         )
         if timed:
-            return policy, TimedAspectResponse(base=response, axis=aspect.axis, count=count, device=radar.device)
-    return policy, response
+            if targets.fluctuation is not None:
+                raise NotImplementedError(
+                    "a Fluctuation on a target whose Aspect axis is a function of time is not composed: the "
+                    "time-resolved aspect response is rebuilt per replay group and the draw is bound per observation"
+                )
+            return policy, TimedAspectResponse(
+                base=response, axis=aspect.axis, count=count, device=radar.device, order=order
+            )
+    return policy, _fluctuated(response, targets.fluctuation)
+
+
+def _fluctuated(response: Any, fluctuation: Fluctuation | None) -> Any:
+    if fluctuation is None:
+        return response
+    return FluctuatingResponse(
+        base=response,
+        degrees=2 if fluctuation.swerling in (1, 2) else 4,
+        per_observation=fluctuation.swerling in (2, 4),
+        coherent_interval_s=float(fluctuation.coherent_interval),
+        seed=fluctuation.seed,
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -335,6 +571,8 @@ class TimedAspectResponse:
     axis: Callable[[float], Any]
     count: int
     device: Any
+    #: The permutation from declaration order to the join's site order, or ``None``.
+    order: torch.Tensor | None = None
 
     @property
     def is_geometry_dependent(self) -> bool:
@@ -345,9 +583,10 @@ class TimedAspectResponse:
     def at(self, times: Sequence[float]) -> AspectScatterResponse:
         """The response at ``times``: ``len(times) * count`` sites, slot major."""
 
-        axes = torch.cat(
-            [_axis_tensor(self.axis(float(time_s)), count=self.count, device=self.device) for time_s in times]
-        )
+        axes = [_axis_tensor(self.axis(float(time_s)), count=self.count, device=self.device) for time_s in times]
+        if self.order is not None:
+            axes = [axis.index_select(0, self.order) for axis in axes]
+        axes = torch.cat(axes)
         slots = len(times)
         return replace(
             self.base,

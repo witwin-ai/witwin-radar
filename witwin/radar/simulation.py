@@ -504,6 +504,25 @@ def _precise(spec: RadarEndpointSpec) -> torch.Tensor:
     return spec.precise_positions_m
 
 
+def _bound(response: ScatterResponse, binding: RadarWorldBinding, time_s: float) -> ScatterResponse:
+    """The response at one observation: bound to its facets and its fluctuation draw, if it has either.
+
+    A response with ``bind_observation`` depends on the observation - a mesh
+    target's facet frame, a Swerling draw - and is bound here; every other
+    response is the session's own. A slot batch binds its first observation,
+    which is exact because only a world whose structures do not move is slot
+    batched and a response that varies per observation is never batched.
+    """
+
+    bind = getattr(response, "bind_observation", None)
+    if bind is None:
+        if binding.facets is not None:
+            raise TypeError("a mesh target's sites need a response that binds to their facets")
+        return response
+    bound: ScatterResponse = bind(binding, time_s)
+    return bound
+
+
 def _powers(spec: RadarEndpointSpec) -> torch.Tensor:
     if spec.powers_w is None:
         raise ValueError("every slot of a source stack carries powers_w")
@@ -749,6 +768,7 @@ class WorldHalf:
                 # so a site with no row is occluded at this instant rather
                 # than undeclared, and contributes zero.
                 leg_site_ids=binding.site_ids,
+                outbound_line_of_sight_only=binding.facets is not None,
             )
             pattern = RoundTripPatternStage.freeze(
                 self.radar,
@@ -863,7 +883,7 @@ class WorldHalf:
             if positions is not None and frame.rediscovered:
                 self._reference = positions[time_s]
             pending = self._pending(time_s, frame)
-            if self.loop.structures_move:
+            if self.loop.structures_move or getattr(self.response, "varies_per_observation", False):
                 self._replay([pending], results)
             else:
                 groups.setdefault(_round_trip(frame.frozen).identity, []).append(pending)
@@ -909,9 +929,10 @@ class WorldHalf:
     def _response_at(self, group: list[_PendingObservation]) -> ScatterResponse:
         """The scatter response for one replay group, one site set per instant when it varies in time."""
 
-        if self.timed_response is None:
-            return self.response
-        return self.timed_response.at([entry.time_s for entry in group])
+        response = (
+            self.response if self.timed_response is None else self.timed_response.at([entry.time_s for entry in group])
+        )
+        return _bound(response, group[0].binding, group[0].time_s)
 
     def _body_frame(
         self, group: list[_PendingObservation], pattern: RoundTripPatternStage, *points: torch.Tensor
@@ -944,7 +965,8 @@ class WorldHalf:
             entry = group[0]
             round_trip = _round_trip(entry.epoch_frame.frozen)
             composer = round_trip.composer
-            paths = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+            response = self._response_at(group)
+            paths = composer.compose(replay.inbound, replay.outbound, response, replay.direct)
             tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
                 group,
                 round_trip.pattern,
@@ -962,6 +984,7 @@ class WorldHalf:
                 None if self._strided(round_trip) else ((composer, round_trip.pattern), (round_trip.identity, 1)),
                 transmitters,
                 receivers,
+                response,
             )
             if band is not None:
                 paths = replace(
@@ -1117,8 +1140,9 @@ class WorldHalf:
         slots = len(group)
         if self._strided(round_trip):
             composer = round_trip.composer
-            rows = composer.compose_slots(replay.inbound, replay.outbound, self.response, slots, replay.direct)
-            band = self._band(round_trip, replay, slots, None, transmitters, receivers)
+            response = self._response_at(group)
+            rows = composer.compose_slots(replay.inbound, replay.outbound, response, slots, replay.direct)
+            band = self._band(round_trip, replay, slots, None, transmitters, receivers, response)
             if round_trip.pattern.plan.is_identity:
                 # The stage's identity: isotropic elements at 0 dBi publish the
                 # weight unchanged and record that the pattern was applied.
@@ -1148,7 +1172,8 @@ class WorldHalf:
             )
             self._slot_tables.put(key, tables)
         composer, pattern = tables
-        batched = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+        response = self._response_at(group)
+        batched = composer.compose(replay.inbound, replay.outbound, response, replay.direct)
         tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
             group,
             pattern,
@@ -1166,7 +1191,9 @@ class WorldHalf:
             slots=slots,
             rows_per_slot=round_trip.composer.path_count,
             weight_includes_antenna_pattern=weighted.weight_includes_antenna_pattern,
-            complex_transfer_band=self._band(round_trip, replay, slots, (tables, key), transmitters, receivers),
+            complex_transfer_band=self._band(
+                round_trip, replay, slots, (tables, key), transmitters, receivers, response
+            ),
             frequency_offsets_hz=self.request.frequency_offsets_hz,
             total_delay_residual_s=weighted.total_delay_residual_s,
         )
@@ -1174,12 +1201,14 @@ class WorldHalf:
     def _strided(self, round_trip: FrozenRoundTrip) -> bool:
         """Whether this group composes by striding single-slot tables.
 
-        The join strides them for any per-site response and the pattern stage
-        for any pattern seen in the world frame; a radar pose turns each slot's
-        pattern frame, which the per-row route carries.
+        The join strides them for every response - a per-site one shared by
+        the slots, a per-row one evaluated by its native family over the same
+        single-slot tables - and the pattern stage for any pattern seen in the
+        world frame; a radar pose turns each slot's pattern frame, which the
+        per-row route carries.
         """
 
-        return not self.response.is_geometry_dependent and (round_trip.pattern.plan.is_identity or self.pose is None)
+        return round_trip.pattern.plan.is_identity or self.pose is None
 
     def _band(
         self,
@@ -1189,6 +1218,7 @@ class WorldHalf:
         tables: tuple[tuple[TwoWayComposer, RoundTripPatternStage], tuple[Hashable, int]] | None,
         transmitters: RadarEndpointSpec,
         receivers: RadarEndpointSpec,
+        response: ScatterResponse,
     ) -> torch.Tensor | None:
         """The wideband columns of a replay, ``[slots * rows, F]``, or ``None`` on a narrowband run.
 
@@ -1216,7 +1246,7 @@ class WorldHalf:
         if tables is None:
             composer = round_trip.composer
             rows = composer.compose_slots(
-                inbound, outbound, self.response, slots * columns, direct, frequency_offsets_hz=offsets
+                inbound, outbound, response, slots * columns, direct, frequency_offsets_hz=offsets
             )
             if not round_trip.pattern.plan.is_identity:
                 tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct, slots=slots * columns)
@@ -1236,7 +1266,7 @@ class WorldHalf:
                 band_tables = (group_composer.for_slots(columns), group_pattern.for_slots(columns))
                 self._slot_tables.put(band_key, band_tables)
             composer, pattern = band_tables
-            composed = composer.compose(inbound, outbound, self.response, direct, frequency_offsets_hz=offsets)
+            composed = composer.compose(inbound, outbound, response, direct, frequency_offsets_hz=offsets)
             tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct)
             weight = pattern.apply(
                 composed,
@@ -1584,6 +1614,12 @@ def open_session(
         and not working.simultaneous
     )
     motion_sampling = _resolve_sampling(motion, sampled=sampled, fmcw=interpolable)
+    if motion_sampling == "adaptive" and getattr(response, "per_observation", False):
+        raise ValueError(
+            "a pulse-to-pulse fluctuation (Swerling II or IV) redraws at every observation, and adaptive "
+            "sampling interpolates between the instants it probes, which would blend independent draws; "
+            "use Motion.adc() or Motion.chirp(), or a scan-to-scan model (Swerling I or III)"
+        )
     if motion_sampling == "adaptive" and not isinstance(working, FmcwSpec):
         raise NotImplementedError("adaptive motion currently requires FMCW")
     if motion_sampling == "adaptive" and isinstance(working, FmcwSpec):
@@ -1658,7 +1694,9 @@ def open_session(
         displacement_m = None
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
-    still_world = not sampled and cadence is None and period_s is None
+    still_world = (
+        not sampled and cadence is None and period_s is None and not getattr(response, "varies_per_observation", False)
+    )
     band_offsets = _subcarrier_offsets(working) if wideband else None
     unfrozen = (frozenset(components) | direct_components) & UNFREEZABLE_COMPONENTS
     if unfrozen:
