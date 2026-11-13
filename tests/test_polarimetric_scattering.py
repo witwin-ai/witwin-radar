@@ -114,3 +114,33 @@ def test_a_channel_without_the_field_response_is_refused_by_name(monkeypatch, na
         ChannelPropagationAdapter(
             object(), reference_frequency_hz=77e9, components=frozenset({"los", "reflection"}), max_depth=1
         )
+
+
+def test_the_element_factor_reads_the_polarization_the_pose_turned():
+    """A 60 degree yaw turns the y-polarized elements to 30 degrees off the line of sight's normal.
+
+    Channel launches the turned polarization, so its fields at the site carry
+    the dipole projection |P_perp(d) p| = cos 60 = 0.5 on each leg; the
+    element factor 1/|P_perp(d) p| of each leg's own launch polarization undoes
+    it, and with an isotropic pattern the echo is the unposed one. A factor
+    read from the authored polarization would leave a quarter of it.
+    """
+
+    import math
+
+    from witwin.radar import PointTargets
+
+    angle = math.radians(60.0)
+    yaw = torch.tensor(
+        [[math.cos(angle), -math.sin(angle), 0.0], [math.sin(angle), math.cos(angle), 0.0], [0.0, 0.0, 1.0]]
+    )
+    radar = sc.radar(polarization=(0.0, 1.0, 0.0))
+    targets = PointTargets(positions=[[RANGE_M, 0.0, 0.0]], rcs=1.0)
+
+    def echo(pose):
+        result = radar.simulate(sc.empty_scene(), targets, times=(0.0,), los=True, reflections=0, pose=pose)
+        return complex(result.cube.reshape(-1)[0].item())
+
+    still = echo(None)
+    turned = echo(lambda time_s: (yaw, torch.zeros(3)))
+    assert abs(abs(turned) / abs(still) - 1.0) < 1e-5
