@@ -231,9 +231,13 @@ result_a, result_b = network.simulate(scene, targets, times=times, poses=(None, 
 A link mixes the transmitter's ramp against the receiver's own dechirp
 reference through the receiver's IF band (`if_bandwidths`, default half the ADC
 rate), so a same-slope interferer offset in time shows up as a ghost target and
-a slope mismatch as a broadband burst. Links are FMCW only; all radars share one
-carrier (express another start frequency as `Fmcw(sequence=(Chirp(start_offset=...),))`)
-and one element pattern pair.
+a slope mismatch as a broadband burst. A pulsed or OFDM receiver samples a pulsed
+or OFDM transmitter on its own grid and LO (`carrier_offsets=` sets their
+oscillator offsets) and matches or demodulates it with its own replica or symbols.
+`Network(..., emitters=(Emitter(position, samples, rate, power),))` adds a
+non-radar transmitter every radar hears. All radars share one carrier (an FMCW
+start offset is `Fmcw(sequence=(Chirp(start_offset=...),))`) and one element
+pattern pair; FMCW and sampled waveforms do not hear each other.
 
 ## 5. FMCW synthesis domains
 

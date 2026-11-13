@@ -14,7 +14,8 @@ the receiver-oriented outbound leg (R-ADR-039), per-radar `pose=` trajectories (
 
 ### 1. API: a `Network` record with the four verbs
 
-`witwin.radar.Network(radars, links=(), clock_offsets=(), if_bandwidths=())` holds the radars. Its verbs mirror the
+`witwin.radar.Network(radars, links=(), clock_offsets=(), if_bandwidths=(), emitters=(), carrier_offsets=())`
+holds the radars and any declared emitters (section 6). Its verbs mirror the
 radar's: `trace(scene, targets, times=, poses=...) -> NetworkPaths`, `echo(paths) -> tuple[Result, ...]`,
 `simulate(...) -> tuple[Result, ...]` and `stream(...) -> Iterator[tuple[Result, ...]]`, one `Result` per radar in
 `radars` order. `poses` is one `pose(t)` (or `None`) per radar, the same contract as `Radar.simulate(pose=)`; the
@@ -25,7 +26,11 @@ because the per-radar results are a tuple a caller indexes like the `radars` it 
 
 `links` lists `(transmitting radar, receiving radar)` pairs. Every radar always hears its own transmitters; a link adds
 another radar's. `clock_offsets[k]` is radar `k`'s frame start relative to `times` (its frame `f` starts at
-`times[f] + clock_offsets[k]`). `if_bandwidths[k]` is radar `k`'s IF band, default half its ADC rate.
+`times[f] + clock_offsets[k]`). `if_bandwidths[k]` is an FMCW radar `k`'s IF band, default half its ADC rate.
+`carrier_offsets[k]` is a pulsed or OFDM radar's oscillator offset from the shared carrier (an FMCW radar declares a
+start offset as a one-profile `Chirp(start_offset=...)` instead, which its own rows carry too; a nonzero network entry
+for it is refused). A carrier offset acts on cross rows only; the radar's own rows keep its nominal carrier, a phase
+error of `offset * tau` per row (1e-3 cycle for 10 kHz at 100 ns).
 
 ### 2. One world half for every radar
 
@@ -72,7 +77,7 @@ to float32 rounding (measured 1e-7 relative): the standalone route turns a direc
 authored frame inside the kernel, the network by the composed frame before it, and the two orders round differently.
 A radar's composed rows carry the network's stable IDs, and `Result.last_propagation` the shared legs.
 
-### 4. Cross-radar rows: the native cross beat family
+### 4. Cross-radar rows: the FMCW cross beat family
 
 A link's rows are the shared join's rows whose transmitter belongs to the transmitting radar and whose receiver to the
 receiving one: site rows (bistatic target returns, transmitter -> site -> receiver through the receiver-oriented
@@ -91,12 +96,12 @@ receiver's ramp, `w` into the transmitter's ramp at the emission instant `t - ta
 start minus the receiver's):
 
 ```
-cycles = phase0 + d_B t - d_A (t - tau) + S_B v^2 / 2 - S_A w^2 / 2,    beat = conj(C) exp(+j 2 pi cycles)
+cycles = phase0 + d_B t - d_A (t - tau) + S_B v^2 / 2 - tx_cycles(w),    beat = conj(C) exp(+j 2 pi cycles)
 phase0 = frac((d_B - d_A) F_B)
 ```
 
 with `S` the slopes [Hz/s], `d` the start offsets from the shared carrier [Hz], `F_B` the receiver's frame start in
-world time. Every radar's oscillator runs at its start frequency from world time zero and each ramp adds its
+world time and `tx_cycles` the transmitter's own modulation phase at the emission instant (`S_A w^2 / 2` for a ramp). Every radar's oscillator runs at its start frequency from world time zero and each ramp adds its
 quadratic over its own ramp time; the Channel weight `conj(C)` carries `+f_c tau`, so the carrier terms cancel
 exactly. On one radar and one slot it is the monostatic beat `d tau + S tau (v - tau/2)`. The phase convention is a
 declared model: a chirp generator whose phase accumulates the ramp's integral from chirp to chirp would add a
@@ -107,7 +112,8 @@ Gates (discrete; the derivative is the almost-everywhere one, as for a pulse gat
 - the emission instant falls on a ramp of the transmitter's same-index frame, `0 <= w < ramp_end` (the transmitter is
   off during idle);
 - that slot is the row's transmitter's TDM slot;
-- the instantaneous beat frequency `d_B - d_A + S_B v - S_A w` lies within the receiver's IF band. This is the
+- the instantaneous beat frequency `d_B - d_A + S_B v - nu_A` lies within the receiver's IF band (`nu_A = S_A w` for a
+  ramp, the table's phase-step frequency for an emitter, section 6). This is the
   anti-alias filter as a gate on the instantaneous frequency (stationary phase of a linear-FM beat); the filter's
   transition ripple is not modelled. Monostatic rows are not gated (unchanged).
 
@@ -129,13 +135,65 @@ straight rows are kept (`ChannelPropagationAdapter.discover(separation=)`): a mo
 elements may join a network with `direct=True`, its own coincident pair evaluates to Channel's finite value and is
 dropped.
 
+### 6. Sampled receivers, OFDM and pulsed transmitters, and emitters
+
+The routing, the three launches and the chain rule of every cross family are one owner, `cuda/cross_routing.cuh`:
+a family supplies only a phase functor that, for one row at one sample, says whether the row is heard and returns its
+unit-weight contribution `u` and `du/dtau`; the cell value is `sum W(C) u` with `W` the conjugate (FMCW beat) or the
+identity (Channel convention, sampled receivers). The receive schedule carries each cell's slot start, first-sample
+offset and the receiver's own LO offset (a stepped-frequency pulse train's `l * step`). The Python bridge is one
+autograd function, `synthesis.assembly.synthesize_cross`, with each family's operators.
+
+A pulsed or OFDM receiver samples what it hears on its own grid (pulses with their range gate, OFDM post-prefix
+samples at `1/(N df)`) and mixes it down with its own LO; its matched filter or OFDM demodulator then works against
+its own replica or symbols downstream, unchanged. For a transmitter of offset `d_A` (pulse `q` at `d_A + q step_A`):
+
+```
+y = C s_A(w) exp(+j 2 pi cycles),    cycles = (d_A + f_q)(F_B + t - tau) - (d_B + lo)(F_B + t) + arg s_A(w)
+```
+
+`s_A` is the transmitter's own baseband on its own clock: `pulsed_cross_*` (in `pulsed_echo.cu`, envelope owner
+`pulse_envelope`, now shared with the echo, which is bit-identical) evaluates a pulse train (rect, LFM, coded, stepped,
+periodic) or an emitter table; `ofdm_cross_*` (in `ofdm_time.cu`, envelope owner `envelope_at`) the transmitter's
+symbol stream from its own symbol table, so a timing offset against the prefix (ISI) and a carrier offset (ICI) follow
+from the samples. With `A = B` both reduce to the echo kernels' `-(carrier + f_l) tau`. A hearing OFDM radar is
+synthesized in the time domain (its declared CFR is then the demodulated estimate). A sampled receiver has no IF
+model, so a transmitter whose band exceeds its complex sample rate, or whose carrier is offset by more than half of
+it, is refused by name, and a hearing sampled radar has one transmitter (its several transmitters' channels are
+modelled as ideally orthogonal, which another radar's signal is not). An FMCW transmitter into a sampled receiver and
+a pulsed or OFDM transmitter into an FMCW receiver are refused by name: either needs the receiver's filter response to
+a foreign sweep.
+
+An `Emitter(position, samples, rate, power, carrier_offset, start, repeat, polarization)` is a non-radar transmitter:
+a declared complex baseband (each sample at most the full amplitude) at a fixed position, its oscillator at the
+carrier plus `carrier_offset` from world time zero, sample 0 leaving at `start`, repeated or sent once. Its table is
+the arbitrary pulse family's chip table with each chip's frequency set to its phase step to the next sample
+(magnitude held, phase linear between samples), so a sampled tone is a tone and the FMCW IF gate has an instantaneous
+frequency to read. Emitters are appended to the shared transmitter list (one endpoint each, isotropic, so a network
+with emitters needs isotropic radars), heard by every radar through sites, the direct line of sight (`direct`) and
+the environment, and add no Channel call: they are rows of the same three legs. An FMCW receiver hears an emitter
+through `fmcw_cross` (link kind 1), a sampled receiver through `pulsed_cross` (a coded pulse of one table length,
+unbounded when it repeats).
+
+Oracles (`tests/oracle/test_cross_waveform_interference.py`, at the Friis level): an OFDM receiver demodulating an
+identical OFDM radar offset 0.1 us inside its prefix gives `C exp(-j 2 pi n df (tau + dT))` on every subcarrier and
+symbol (2e-3 of the amplitude); a 0.2-subcarrier carrier offset gives the signal-to-ICI ratio
+`|I0|^2 / (1 - |I0|^2)` within 0.5 dB and the signal at `sqrt(|I0|^2)` within 2 %; a pulsed receiver samples an offset
+LFM pulse `C s(t - tau - dT)` sample by sample; an FMCW receiver hears a CW emitter as a 10-sample burst exactly where
+`|S v - d_E| <= f_s/2`; a pulsed receiver hears an emitter's sampled tone at `f_0 + d_E` (1e-5). Kernels:
+`tests/test_cross_families.py` (pulsed LFM with stepped carrier and coded chips, OFDM with ISI and a carrier offset,
+an FMCW receiver hearing an emitter table through its IF band) against long-double signal oracles, forward, VJP and
+JVP. Routing: sampled receivers under `adc` and slow-time schedules equal their still-world cube; emitters and links
+add no Channel call; an end-to-end pulsed bistatic VJP/JVP against a central difference.
+
 ## Not done (refused by name)
 
-- OFDM and pulsed receivers or transmitters on a link: their cross responses need their own families (an OFDM
-  receiver demodulating another radar's symbols, a pulsed gate against a foreign pulse). A link requires FMCW.
-- DDM/BPM, multi-profile chirp sequences and ramp phase errors on a link.
-- A non-radar emitter (a declared baseband waveform at a position): not cheap on this route, because the emitter is
-  an endpoint without a radar record (no array, pose or frame) and the cross family reads ramps, not sample tables.
+- An FMCW transmitter heard by a pulsed or OFDM receiver, and a pulsed or OFDM transmitter or another waveform heard
+  by an FMCW receiver (both need the receiver's filter response to a foreign sweep).
+- A sampled receiver hearing a band wider than its sample rate or offset by more than half of it; a hearing sampled
+  radar with several transmitters.
+- DDM/BPM, multi-profile chirp sequences and ramp phase errors on an FMCW link.
+- Emitters with directional radar elements; moving emitters.
 - Adaptive motion and `Motion.rediscover_every_chirps` in a network; `Motion.auto()` resolves to `adc` when anything
   moves.
 - Oscillator phase noise on a receiving radar, wideband OFDM and Core-endpoint `endpoints=` in a network.

@@ -16,12 +16,19 @@
   the ADC rate) gates it. The result passes through the receiving radar's receive chain with its own echoes.
 - Mutual interference: the classic FMCW signatures follow from the same rows: a same-slope interferer offset in time
   is a ghost target at `c (tau + dT) / 2`, a slope mismatch is a broadband burst while the beat crosses the IF band.
-- Native operators `fmcw_cross_forward`, `fmcw_cross_backward`, `fmcw_cross_jvp`: the cross-radar beat, with
-  analytic reverse and forward derivatives; a link is differentiable in `grad="vjp"` and `grad="jvp"`.
+- Pulsed and OFDM radars on links: a pulsed or OFDM receiver samples another pulsed or OFDM radar on its own grid
+  and LO and matches or demodulates it with its own replica or symbols, so timing offsets against the prefix (ISI)
+  and carrier offsets (`Network(carrier_offsets=...)`, ICI) appear in its cube.
+- `witwin.radar.Emitter`: a non-radar transmitter (a declared complex baseband at a position, with its own carrier
+  offset, start time and repetition), heard by every radar of a `Network(emitters=...)` through its receive chain:
+  an FMCW receiver where its ramp crosses the emitter, a pulsed or OFDM receiver as sampled.
+- Native operators `fmcw_cross_*`, `pulsed_cross_*` and `ofdm_cross_*` (forward, backward, jvp) on one shared cross
+  routing: every link is differentiable in `grad="vjp"` and `grad="jvp"`.
 
 ## Changed
 
 - `Motion.auto()` in a network resolves to `Motion.adc()` when anything moves; adaptive motion and
   `Motion(rediscover_every_chirps=...)` are refused for a network. A link requires FMCW radars with a uniform TDM ramp
-  or a one-profile sequence; OFDM, pulsed, DDM/BPM and multi-profile links, a non-radar emitter, oscillator phase
-  noise on a receiving radar and wideband OFDM are refused by name (R-ADR-051).
+  or a one-profile sequence; FMCW into a pulsed or OFDM receiver (and the reverse), a sampled receiver hearing a band
+  wider than its sample rate, DDM/BPM and multi-profile FMCW links, emitters with directional radar elements,
+  oscillator phase noise on a receiving radar and wideband OFDM are refused by name (R-ADR-051).
