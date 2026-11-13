@@ -350,3 +350,24 @@ def test_a_deformed_mesh_moves_its_facets_with_the_snapshot():
     delays = [float(paths.rows(index).total_delay_s.double().mean()) for index in range(2)]
     expected = 2.0 * 50.0 * times[1] / ref.C0_M_PER_S
     assert delays[1] - delays[0] == pytest.approx(expected, rel=1e-3)
+
+
+def test_an_smpl_body_scatters_through_its_own_facets():
+    """SMPL: the body is a mesh target of its own dielectric, with no declared cross section."""
+
+    pytest.importorskip("smplpytorch")
+    from support.smpl_models import smpl_model_root
+    from witwin.core import PhysicalMaterial, Scene
+
+    from witwin.radar.smpl import SMPLBody, SmplPoseDeformation
+
+    model_root = smpl_model_root()
+    if model_root is None:
+        pytest.skip("no SMPL model files available in this checkout")
+    body = SMPLBody(pose=torch.zeros(72), shape=torch.zeros(10), position=(4.0, 0.0, 0.0), model_root=model_root)
+    deformation = SmplPoseDeformation(body, pose_rate=torch.zeros(72))
+    skin = PhysicalMaterial(eps_r=6.4, sigma_e=42.0, thickness_m=0.01, name="skin")
+    scene, targets = deformation.mesh_target(Scene(structures=(), endpoints=[]), structure_id=7, material=skin)
+    rows = sc.radar().trace(scene, targets, times=(0.0,), reflections=0).rows()
+    assert rows.path_count > 0
+    assert float(rows.complex_transfer_ref.abs().sum()) > 0.0

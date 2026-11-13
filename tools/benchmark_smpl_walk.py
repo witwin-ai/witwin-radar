@@ -1,11 +1,14 @@
 """Completed-CUDA SMPL walking benchmark, within 15 m of the radar.
 
 Consumes a Genesis NPZ (smpl_pose, shape, root, fps). The full SMPL mesh is
-posed at every adaptive probe. Fixed area-sampled material points feed the
-public PointTargets route; this is a discrete scalar-RCS body, not a full-wave
-skin solver. No mesh occlusion or room reflections are implied by the LOS case.
-Motion generation, setup, simulation, DSP and diagnostic profiling are timed
-separately. No precomputed vertex animation is substituted for live SMPL.
+posed at every adaptive probe and is a Core structure of the scene, deformed
+per instant; its faces scatter through the public MeshTargets route as
+physical-optics facets of a skin dielectric (R-ADR-042), so the body occludes
+itself and no cross section is declared. ``--sites`` is the site budget
+(``MeshTargets.max_sites``). This is a physical-optics body, not a full-wave
+skin solver. Motion generation, setup, simulation, DSP and diagnostic
+profiling are timed separately. No precomputed vertex animation is substituted
+for live SMPL.
 
 The generated joint motion is looped with a periodic cubic spline and a 0.5 s
 closing bridge. Root heading/translation are authored on a smooth ellipse:
@@ -33,19 +36,25 @@ from unittest.mock import patch
 import numpy as np
 import torch
 import torch.autograd.forward_ad as forward_ad
-import trimesh
 from benchmark_adaptive_frame import MIMO
 from scipy.interpolate import CubicSpline
 from witwin.channel import build_info
-from witwin.core import Scene
+from witwin.core import Mesh, PhysicalMaterial, Scene, Structure
+from witwin.core.dynamics import DeformationState, DynamicScene
 
-from witwin.radar import Motion, Pattern, PointTargets, Radar, simulation
+from witwin.radar import MeshTargets, Motion, Pattern, Radar, simulation
 from witwin.radar import channel as channel_module
 from witwin.radar.smpl import SMPLBody
 
 # The legacy point fixture aliases beyond 10.99 m. Keep its array and schedule,
 # but cover the user's 15 m working volume with a 16.49 m complex range window.
 WALK_RADAR = {**MIMO, "slope": 40.0}
+
+#: Wet skin near 77 GHz, approximately (Gabriel's tissue model): eps' 6.4,
+#: eps'' 9.9, i.e. sigma = eps'' omega eps_0 = 42 S/m. A 1 cm layer of it is
+#: opaque at the carrier, so the stack is effectively a half space.
+SKIN = {"eps_r": 6.4, "sigma_e": 42.0, "thickness_m": 0.01}
+BODY_STRUCTURE_ID = 1
 
 
 def digest(path):
@@ -72,7 +81,7 @@ def summary(values):
 
 
 class WalkingBody:
-    """Authored world-space material points on the complete 6890-vertex body."""
+    """The complete 6890-vertex body as a Core deformation of world-space vertices."""
 
     def __init__(self, motion_path, model_root, count, seed):
         with np.load(motion_path, allow_pickle=False) as data:
@@ -91,13 +100,10 @@ class WalkingBody:
         vertices, faces = self.body.to_mesh()
         self.faces = faces
         self.vertex_count = len(vertices)
-        mesh = trimesh.Trimesh(vertices.cpu().numpy(), faces.cpu().numpy(), process=False)
-        points, face_ids = trimesh.sample.sample_surface(mesh, count=count, seed=seed)
-        barycentric = trimesh.triangles.points_to_barycentric(mesh.triangles[face_ids], points)
-        self.triangles = faces[torch.as_tensor(face_ids, device="cuda")]
-        self.barycentric = torch.as_tensor(barycentric, dtype=torch.float32, device="cuda")
+        self.sites = int(count)
+        self.seed = int(seed)
         self.height = -float(vertices[:, 1].min())
-        self.layout = {"face_indices": face_ids.tolist(), "barycentric": barycentric.tolist()}
+        self.layout = {"max_sites": self.sites, "faces": int(len(faces))}
         # A fixed motion asset owns one reusable inference graph. It still
         # evaluates all 6890 vertices at every requested instant; no vertex
         # animation or sampled-position cache substitutes for the SMPL model.
@@ -151,16 +157,34 @@ class WalkingBody:
             )
             return forward_ad.unpack_dual(vertices).tangent.clone()
 
-    def __call__(self, time_s):
+    def at(self, time_s):
+        """The Core deformation descriptor: absolute world vertices of an identity-posed rest mesh."""
+
         self.calls += 1
-        vertices = self.vertices_at(time_s)
-        return (vertices[self.triangles] * self.barycentric[:, :, None]).sum(dim=1)
+        return DeformationState(vertices=self.vertices_at(float(time_s)))
+
+    def rest_mesh(self):
+        return Mesh(
+            vertices=self.vertices_at(0.0).cpu(),
+            faces=self.faces.cpu().to(torch.int64),
+            recenter=False,
+            fill_mode="surface",
+            topology_diagnostics=False,
+        )
 
 
 def make_session(body, config=WALK_RADAR):
     radar = Radar.from_dict(config, pattern=Pattern.isotropic(), position=(0, 0, 1), look_at=(1, 0, 1))
-    scene = Scene(structures=(), endpoints=[])
-    targets = PointTargets(body(0.0), rcs=1.0 / len(body.triangles), trajectory=body)
+    structure = Structure(
+        geometry=body.rest_mesh(),
+        material=PhysicalMaterial(name="skin", **SKIN),
+        structure_id=BODY_STRUCTURE_ID,
+        material_id=BODY_STRUCTURE_ID,
+        assignment_id=BODY_STRUCTURE_ID,
+        surface_id=BODY_STRUCTURE_ID,
+    )
+    scene = DynamicScene(Scene(structures=(structure,), endpoints=[]), structure_deformations={BODY_STRUCTURE_ID: body})
+    targets = MeshTargets(structure_ids=(BODY_STRUCTURE_ID,), max_sites=body.sites, seed=body.seed)
     return radar, scene, targets
 
 
@@ -190,7 +214,7 @@ def preview(body, output):
     axis.set(xlabel="x (m)", ylabel="y (m)", title="30 s smooth return loop", xlim=(-1, 15), ylim=(-4, 4))
     axis.set_aspect("equal")
     axis.legend()
-    figure.suptitle("Genesis-generated SMPL walk; authored root route; 128 material surface sites")
+    figure.suptitle("Genesis-generated SMPL walk; authored root route; physical-optics skin facets")
     figure.tight_layout()
     figure.savefig(output / "workload.png", dpi=150)
     plt.close(figure)
@@ -284,7 +308,7 @@ def profile_frame(body, radar, scene, targets, output):
 def benchmark(body, frames, fps, runs, output, do_profile):
     radar, scene, targets = make_session(body)
     cold, cold_s = completed(lambda: simulate(radar, scene, targets, 0.0))
-    print(json.dumps({"stage": "first_frame", "sites": len(body.triangles), "seconds": cold_s}), flush=True)
+    print(json.dumps({"stage": "first_frame", "sites": body.sites, "seconds": cold_s}), flush=True)
     shape = list(cold.cube.shape)
     del cold
     sample_times = [0.0, 2.3, 7.5, 15.0, 22.5]
@@ -340,7 +364,7 @@ def benchmark(body, frames, fps, runs, output, do_profile):
             print(
                 json.dumps(
                     {
-                        "sites": len(body.triangles),
+                        "sites": body.sites,
                         "frame": index + 1,
                         "recent_ms": float(np.mean(per_frame[-10:])),
                         "probes": probes[-1],
@@ -375,7 +399,10 @@ def benchmark(body, frames, fps, runs, output, do_profile):
         "peak_increment_mib": (peak - resident) / 1048576,
     }
     geometry = {}
-    for name, call in (("positions", lambda: body(2.3)), ("analytic_vertex_velocity", lambda: body.velocity_at(2.3))):
+    for name, call in (
+        ("vertices", lambda: body.vertices_at(2.3)),
+        ("analytic_vertex_velocity", lambda: body.velocity_at(2.3)),
+    ):
         call()
         geometry[name] = summary([completed(call)[1] * 1000 for _ in range(10)])
     return {
@@ -419,7 +446,7 @@ def main():
         "model_sha256": digest(args.model_root / "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"),
         "script_sha256": digest(__file__),
         "seed": args.seed,
-        "scope": "live full SMPL, fixed surface point RCS, LOS, no self-occlusion or room multipath",
+        "scope": "live full SMPL, physical-optics skin facets within a site budget, LOS with self-occlusion, no room multipath",
         "cases": {},
     }
     (args.output / "environment.json").write_text(json.dumps(record, indent=2) + "\n")

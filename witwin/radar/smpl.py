@@ -424,5 +424,49 @@ class SmplPoseDeformation:
             **mesh_kwargs,
         )
 
+    def mesh_target(
+        self,
+        scene: Any,
+        *,
+        structure_id: int,
+        material: Any,
+        cluster_size_m: float | None = None,
+        max_sites: int | None = None,
+        seed: int = 0,
+        **mesh_kwargs,
+    ) -> tuple[Any, Any]:
+        """The posed body as a scattering mesh: ``(DynamicScene, MeshTargets)``.
+
+        The body joins ``scene`` as one Core ``Structure`` of its rest mesh and
+        ``material``, deformed by this object, and the returned
+        :class:`~witwin.radar.targets.MeshTargets` makes its faces the scatter
+        sites (R-ADR-042): each facet returns what its area, orientation and
+        material give, the body occludes itself through the legs, and no cross
+        section is declared. ``cluster_size_m`` or ``max_sites`` is the site
+        budget for a body of 13 776 faces. ``material`` is required: the
+        dielectric a body is made of at the carrier is a statement about the
+        world, not a default.
+        """
+
+        from witwin.core import Scene, Structure
+        from witwin.core.dynamics import DynamicScene
+
+        from .targets import MeshTargets
+
+        structure = Structure(
+            geometry=self.rest_mesh(**mesh_kwargs),
+            material=material,
+            structure_id=int(structure_id),
+            material_id=int(structure_id),
+            assignment_id=int(structure_id),
+            surface_id=int(structure_id),
+        )
+        world = Scene(structures=(*scene.structures, structure), endpoints=list(scene.endpoints))
+        dynamic = DynamicScene(world, structure_deformations={int(structure_id): self})
+        targets = MeshTargets(
+            structure_ids=(int(structure_id),), cluster_size_m=cluster_size_m, max_sites=max_sites, seed=seed
+        )
+        return dynamic, targets
+
 
 __all__ = ["SMPLBody", "SmplPoseDeformation"]
