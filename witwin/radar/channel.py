@@ -44,22 +44,35 @@ published as a host int, so nothing here calls ``.item()``, ``.cpu()``,
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 from witwin.channel.propagation import consumer
 
 from .propagation import RadarEndpointSpec, RadarLegBatch, require_endpoint_role
 
+#: Components whose path is the straight source-to-sink segment. Free-space
+#: propagation along it is undefined for coincident endpoints, so a leg that
+#: requests one of them runs Channel's endpoint-separation check first.
+STRAIGHT_SEGMENT_COMPONENTS = frozenset({"los", "transmission"})
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class FrozenLegTopology:
-    """A discovered leg topology, partitioned once for repeated reevaluation.
+    """A discovered leg topology, the rows discovery evaluated, and its replay handle.
 
-    The recorded host-observation counters describe the ONE-TIME freeze, not a
-    later :meth:`ChannelPropagationAdapter.reevaluate_slots` call. They are reported
-    separately for exactly that reason: preparing the handle once per frozen
-    topology is the contract, and preparing it per frame gives up the whole
-    point of the capability.
+    ``topology`` is the consumer's discovery topology, stamped with the world
+    provenance it was discovered against; the per-frame rediscovery poll reads
+    it. ``prepared`` - the partition Channel replays - is built from it on
+    first use and cached, so a run that never replays a handle never pays for
+    preparing one. A primal run that rediscovers at every observation reads its
+    rows from ``discovered`` instead and calls Channel once per leg rather than
+    three times (discover, prepare, replay at the same instant).
+
+    The recorded host-observation counters describe the ONE-TIME preparation,
+    not a later :meth:`ChannelPropagationAdapter.reevaluate_slots` call.
+    Preparing the handle once per frozen topology is the contract, and
+    preparing it per frame gives up the whole point of the capability.
 
     ``source_id`` and ``sink_id`` are the frozen rows' stable world IDs. They
     are what a downstream composer joins on. Joining by array position instead
@@ -72,6 +85,18 @@ class FrozenLegTopology:
     two rows of the same leg, and a composer that fell back on row position for
     the tie would reintroduce exactly the positional dependence the identity
     join exists to remove.
+
+    ``complete`` is Channel's own statement that these rows are provably every
+    path the request admits (``PropagationEvaluation.complete``). It is
+    ``False`` when reflection candidates came from ray discovery, which can
+    miss paths; a session ANDs it into ``path_set_complete``.
+    ``transmission_dropped_rows`` is the discovery's count of source-sink pairs
+    left without a transmission path because their straight segment crosses
+    more walls than ``max_depth``.
+
+    ``replayable`` is ``False`` when the request named a component Channel
+    cannot freeze (``transmission``, ``diffraction``). Such a handle answers
+    only through ``discovered``, and preparing it is refused by name.
 
     ``epoch`` names the compiled scene this handle was frozen against. An
     adapter that is rebound to a new compiled scene by
@@ -89,20 +114,74 @@ class FrozenLegTopology:
     the frozen topology alone.
     """
 
-    prepared: object
+    topology: object
     source_id: torch.Tensor
     sink_id: torch.Tensor
     component_id: torch.Tensor
     depth: torch.Tensor
     primitive_sequence: torch.Tensor
     material_sequence: torch.Tensor
-    components: tuple[str, ...]
     row_count: int
-    prepare_d2h_copies: int
-    prepare_d2h_bytes: int
-    prepare_synchronizations: int
+    #: The diffracting edge of each row (``-1`` on a row that diffracts at
+    #: none); part of the identity of a leg that requested ``diffraction``.
+    edge_id: torch.Tensor | None = None
+    complete: bool = True
+    transmission_dropped_rows: int = 0
+    replayable: bool = True
+    requested: frozenset[str] = frozenset()
+    discovered: RadarLegBatch | None = field(default=None, repr=False)
     epoch: int = 0
+    _prepared: list = field(default_factory=list, repr=False)
     slot_topologies: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def prepared(self) -> object:
+        """Channel's replay partition of these rows, prepared on first use.
+
+        ``prepare_fixed_topology`` synchronizes, so it runs at most once per
+        handle. A handle whose request named a component Channel cannot freeze
+        is refused here, before Channel sees it: its rows exist only as the
+        discovery evaluated them.
+        """
+
+        if not self._prepared:
+            if not self.replayable:
+                unfrozen = sorted(self.requested - consumer.capabilities().fixed_topology_components)
+                raise NotImplementedError(
+                    f"this leg was discovered with components {unfrozen}, which Channel cannot freeze for "
+                    "reevaluation; their rows exist only at the discovery instant, so a route that replays "
+                    "them (grad='vjp' or 'jvp', a discovery cadence longer than one observation, a wideband "
+                    "band) is refused. Run grad='none' with discovery at every observation, or drop them"
+                )
+            prepared = consumer.prepare_fixed_topology(self.topology)
+            unsupported = (
+                frozenset(bucket.component for bucket in prepared.buckets)
+                - consumer.capabilities().fixed_topology_components
+            )
+            if unsupported:
+                raise NotImplementedError(
+                    f"the discovered topology carries components {sorted(unsupported)} that cannot be reevaluated"
+                )
+            self._prepared.append(prepared)
+        return self._prepared[0]
+
+    @property
+    def components(self) -> tuple[str, ...]:
+        """The components the discovered rows carry, in Channel's bucket order."""
+
+        return tuple(bucket.component for bucket in self.prepared.buckets)
+
+    @property
+    def prepare_d2h_copies(self) -> int:
+        return int(self.prepared.prepare_d2h_copies)
+
+    @property
+    def prepare_d2h_bytes(self) -> int:
+        return int(self.prepared.prepare_d2h_bytes)
+
+    @property
+    def prepare_synchronizations(self) -> int:
+        return int(self.prepared.prepare_synchronizations)
 
 
 def _endpoint_batch(spec: RadarEndpointSpec, role: str) -> consumer.EndpointBatch:
@@ -190,26 +269,60 @@ class ChannelPropagationAdapter:
     """
 
     def __init__(
-        self, compiled_scene: object, *, reference_frequency_hz: float, components: frozenset[str], max_depth: int
+        self,
+        compiled_scene: object,
+        *,
+        reference_frequency_hz: float,
+        components: frozenset[str],
+        max_depth: int,
+        discovery: str = "auto",
+        max_paths: int | None = None,
+        replay: bool = True,
     ) -> None:
+        """Bind one compiled scene and one propagation request.
+
+        ``discovery`` is Channel's reflection candidate source: ``"auto"`` (the
+        complete image tree, ray discovery past its cost budget), ``"exhaustive"``
+        or ``"rays"``. ``max_paths`` bounds the rows one discovery may publish;
+        Channel raises on overflow and never truncates.
+
+        ``replay=False`` declares that this adapter's handles answer only
+        through their discovered rows, which is what admits the components
+        Channel cannot freeze (``transmission``, ``diffraction``). With the
+        default ``replay=True`` such a component is refused here, before any
+        discovery, because every handle must be replayable.
+        """
+
         capabilities = consumer.capabilities()
         unsupported = frozenset(components) - capabilities.components
         if unsupported:
             raise NotImplementedError(f"the propagation consumer does not support components {sorted(unsupported)}")
         not_freezable = frozenset(components) - capabilities.fixed_topology_components
-        if not_freezable:
+        if not_freezable and replay:
             raise NotImplementedError(
                 f"components {sorted(not_freezable)} cannot be frozen for "
                 f"reevaluation; supported components are "
                 f"{sorted(capabilities.fixed_topology_components)}"
             )
+        if discovery not in capabilities.discovery_modes:
+            raise ValueError(f"discovery must be one of {sorted(capabilities.discovery_modes)}, got {discovery!r}")
+        if max_paths is not None and (type(max_paths) is not int or max_paths < 1):
+            raise ValueError(f"max_paths must be a positive int or None, got {max_paths!r}")
         self._compiled = compiled_scene
         self._reference_frequency_hz = float(reference_frequency_hz)
         self._components = frozenset(components)
         self._max_depth = int(max_depth)
+        self._discovery = str(discovery)
+        self._max_paths = max_paths
         self._capabilities = capabilities
         self._epoch = 0
         self._world_motion = "frozen_world"
+
+    @property
+    def components(self) -> frozenset[str]:
+        """The propagation components every discovery of this adapter requests."""
+
+        return self._components
 
     @property
     def reference_frequency_hz(self) -> float:
@@ -310,50 +423,110 @@ class ChannelPropagationAdapter:
         rediscover actually wants to know.
         """
 
-        return consumer.rediscovery_required(self._compiled, frozen.prepared, revalidate_source=revalidate_source)
+        return consumer.rediscovery_required(self._compiled, frozen.topology, revalidate_source=revalidate_source)
 
     def freeze(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> FrozenLegTopology:
-        """Discover one leg's topology and partition it once.
+        """Discover one leg's topology and partition it for replay, once.
 
-        Call this OUTSIDE the per-frame loop. It runs full discovery and it
-        synchronizes; calling it per frame would reintroduce exactly the host
-        observation the fixed-topology capability exists to avoid.
+        Call this OUTSIDE the per-frame loop. It runs full discovery and
+        prepares the replay partition, and both synchronize; calling it per
+        frame would reintroduce exactly the host observation the fixed-topology
+        capability exists to avoid.
         """
 
+        frozen = self.discover(sources, sinks, rows=False)
+        _ = frozen.prepared
+        return frozen
+
+    def discover(
+        self,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        *,
+        rows: bool = True,
+        components: frozenset[str] | None = None,
+    ) -> FrozenLegTopology:
+        """Discover one leg's topology and, with ``rows``, keep the rows discovery evaluated.
+
+        ``components`` narrows this one leg's request to a subset of the
+        adapter's components (a radar's site-less leg asks for its own set);
+        ``None`` requests them all.
+
+        One Channel ``evaluate``. The replay partition is NOT prepared here: a
+        handle prepares it on first replay, so a primal run that rediscovers at
+        every observation and reads ``discovered`` never prepares at all.
+
+        Discovery evaluates detached endpoints in ``ad_mode="none"``, so
+        ``discovered`` carries no derivative. Its delay, coefficient and
+        geometry are the same native evaluation a replay at the same endpoints
+        returns for ``los`` and ``reflection`` rows; its ``row_valid`` is all
+        true, because a discovered row exists by construction.
+
+        A request with a straight-segment component (``los``, ``transmission``)
+        first runs Channel's endpoint-separation check over every source-sink
+        pair: free-space transport is singular at coincident endpoints, and
+        Channel publishes a finite, unbounded coefficient there rather than
+        refusing. The check is one one-byte device read per discovery, and it
+        refuses by name the first coincident pair.
+        """
+
+        requested = self._components if components is None else frozenset(components)
+        if not requested or not requested <= self._components:
+            raise ValueError(
+                f"a leg may request a non-empty subset of the adapter's components {sorted(self._components)}, "
+                f"got {sorted(requested)}"
+            )
+        detached_sources = _detached(sources)
+        detached_sinks = _detached(sinks)
+        source_batch = _endpoint_batch(detached_sources, "source")
+        sink_batch = _endpoint_batch(detached_sinks, "sink")
+        if requested & STRAIGHT_SEGMENT_COMPONENTS:
+            consumer.check_endpoint_separation(
+                source_batch, sink_batch, reference_frequency_hz=self._reference_frequency_hz
+            )
         evaluation = consumer.evaluate(
             self._compiled,
             consumer.PropagationRequest(
-                sources=_endpoint_batch(_detached(sources), "source"),
-                sinks=_endpoint_batch(_detached(sinks), "sink"),
+                sources=source_batch,
+                sinks=sink_batch,
                 reference_frequency_hz=self._reference_frequency_hz,
-                components=self._components,
+                components=requested,
                 max_depth=self._max_depth,
                 response="scalar_transport",
                 topology_mode="discover",
                 ad_mode="none",
+                max_paths=self._max_paths,
+                discovery=self._discovery,
             ),
         )
-        topology = evaluation.paths.topology
-        prepared = consumer.prepare_fixed_topology(topology)
-        components = tuple(bucket.component for bucket in prepared.buckets)
-        unsupported = frozenset(components) - self._capabilities.fixed_topology_components
-        if unsupported:
-            raise NotImplementedError(
-                f"the discovered topology carries components {sorted(unsupported)} that cannot be reevaluated"
+        paths = evaluation.paths
+        topology = paths.topology
+        diagnostics = evaluation.diagnostics
+        discovered = None
+        if rows:
+            discovered = _leg_batch(
+                paths,
+                detached_sources,
+                detached_sinks,
+                row_valid=torch.ones(paths.path_count, dtype=torch.bool, device=paths.pair_index.device),
+                diagnostics=diagnostics,
+                slot_count=1,
             )
         return FrozenLegTopology(
-            prepared=prepared,
+            topology=topology,
             source_id=topology.source_id,
             sink_id=topology.sink_id,
             component_id=topology.component_id,
             depth=topology.depth,
             primitive_sequence=topology.primitive_sequence,
             material_sequence=topology.material_sequence,
-            components=components,
-            row_count=evaluation.paths.path_count,
-            prepare_d2h_copies=prepared.prepare_d2h_copies,
-            prepare_d2h_bytes=prepared.prepare_d2h_bytes,
-            prepare_synchronizations=prepared.prepare_synchronizations,
+            row_count=paths.path_count,
+            edge_id=topology.edge_id,
+            complete=bool(evaluation.complete),
+            transmission_dropped_rows=int(getattr(diagnostics, "transmission_dropped_rows", 0)),
+            replayable=requested <= self._capabilities.fixed_topology_components,
+            requested=requested,
+            discovered=discovered,
             epoch=self._epoch,
         )
 
@@ -365,6 +538,7 @@ class ChannelPropagationAdapter:
         *,
         slot_count: int,
         ad_mode: str,
+        frequency_offsets_hz: tuple[float, ...] | None = None,
     ) -> RadarLegBatch:
         """Replay a frozen leg over a whole frame, pulse train or symbol block.
 
@@ -387,6 +561,12 @@ class ChannelPropagationAdapter:
 
         ``slot_count=1`` is one instant: exactly one consumer call, no
         discovery, no preparation, no second cardinality observation.
+
+        ``frequency_offsets_hz`` asks Channel for the same rows at
+        ``reference_frequency_hz + offset`` as well, in the same call; the band
+        is published as ``coefficient_band`` ``[rows, F]`` beside the
+        reference ``coefficient``. Geometry and ``row_valid`` stay the
+        reference evaluation's, because they do not depend on frequency.
         """
 
         if ad_mode not in consumer.AD_MODES:
@@ -397,6 +577,9 @@ class ChannelPropagationAdapter:
             raise ValueError(f"slot_count must be a positive int, got {slot_count!r}")
         self._require_current_epoch(frozen)
         topology = self._slot_topology(frozen, sources, sinks, slot_count)
+        request: dict[str, object] = {}
+        if frequency_offsets_hz is not None:
+            request["frequency_offsets_hz"] = tuple(float(value) for value in frequency_offsets_hz)
         result = consumer.reevaluate(
             self._compiled,
             consumer.FixedTopologyRequest(
@@ -408,48 +591,16 @@ class ChannelPropagationAdapter:
                 ad_mode=ad_mode,
                 slot_count=slot_count,
                 world_motion=self._world_motion,
+                **request,
             ),
         )
-        paths = result.paths
-        geometry = paths.geometry
-        source_positions = sources.positions_m.index_select(0, paths.topology.source_index.long())
-        sink_positions = sinks.positions_m.index_select(0, paths.topology.sink_index.long())
-        interactions = geometry.interaction_positions_m
-        if interactions.shape[1]:
-            reflected = (paths.topology.depth > 0)[:, None]
-            first = torch.where(reflected, interactions[:, 0], sink_positions)
-            row = torch.arange(paths.path_count, device=interactions.device)
-            last = interactions[row, (paths.topology.depth.long() - 1).clamp_min(0)]
-            last = torch.where(reflected, last, source_positions)
-        else:
-            first, last = sink_positions, source_positions
-        return RadarLegBatch(
-            leg_count=paths.path_count,
-            pair_count=paths.pair_count,
-            pair_index=paths.pair_index,
-            pair_offsets=paths.pair_offsets,
-            source_index=paths.topology.source_index,
-            sink_index=paths.topology.sink_index,
-            depth=paths.topology.depth,
-            component_id=paths.topology.component_id,
-            source_id=paths.topology.source_id,
-            sink_id=paths.topology.sink_id,
-            primitive_sequence=paths.topology.primitive_sequence,
-            material_sequence=paths.topology.material_sequence,
-            interaction_type=paths.topology.interaction_type,
-            delay_s=geometry.delay_s,
-            coefficient=paths.transport.coefficient,
-            # Aliased, like every other payload member: an aspect-dependent
-            # scatter response reads this straight out of the consumer's
-            # geometry, so copying it would break the zero-copy discipline for
-            # the one consumer that needs a gradient through a direction.
-            field_direction=geometry.field_direction,
+        return _leg_batch(
+            result.paths,
+            sources,
+            sinks,
             row_valid=result.row_valid,
             diagnostics=result.diagnostics,
             slot_count=slot_count,
-            departure_origin_m=source_positions,
-            departure_target_m=first,
-            arrival_origin_m=last,
         )
 
     def _require_current_epoch(self, frozen: FrozenLegTopology) -> None:
@@ -465,7 +616,7 @@ class ChannelPropagationAdapter:
 
         if frozen.epoch == self._epoch:
             return
-        moved = consumer.rediscovery_required(self._compiled, frozen.prepared)
+        moved = consumer.rediscovery_required(self._compiled, frozen.topology)
         cause = f"{moved} changed" if moved is not None else "no world version domain moved, but the scene object did"
         raise ValueError(
             f"this frozen leg topology was frozen at adapter epoch "
@@ -498,6 +649,71 @@ class ChannelPropagationAdapter:
             )
             frozen.slot_topologies[key] = cached
         return cached
+
+
+def _leg_batch(
+    paths: object,
+    sources: RadarEndpointSpec,
+    sinks: RadarEndpointSpec,
+    *,
+    row_valid: torch.Tensor | None,
+    diagnostics: object,
+    slot_count: int,
+) -> RadarLegBatch:
+    """One consumer path batch in Radar vocabulary, discovered or replayed.
+
+    The payload members ALIAS the consumer's tensors. The three segment
+    endpoints are gathered from the endpoint specs and the interaction table:
+    the first segment runs from the source to the first interaction (the sink
+    on a line-of-sight row), the last from the last interaction (the source on
+    a line-of-sight row) to the sink.
+    """
+
+    p: Any = paths
+    geometry = p.geometry
+    transport = p.transport
+    source_positions = sources.positions_m.index_select(0, p.topology.source_index.long())
+    sink_positions = sinks.positions_m.index_select(0, p.topology.sink_index.long())
+    interactions = geometry.interaction_positions_m
+    if interactions.shape[1]:
+        reflected = (p.topology.depth > 0)[:, None]
+        first = torch.where(reflected, interactions[:, 0], sink_positions)
+        row = torch.arange(p.path_count, device=interactions.device)
+        last = interactions[row, (p.topology.depth.long() - 1).clamp_min(0)]
+        last = torch.where(reflected, last, source_positions)
+    else:
+        first, last = sink_positions, source_positions
+    band = getattr(transport, "coefficient_offsets", None)
+    return RadarLegBatch(
+        leg_count=p.path_count,
+        pair_count=p.pair_count,
+        pair_index=p.pair_index,
+        pair_offsets=p.pair_offsets,
+        source_index=p.topology.source_index,
+        sink_index=p.topology.sink_index,
+        depth=p.topology.depth,
+        component_id=p.topology.component_id,
+        source_id=p.topology.source_id,
+        sink_id=p.topology.sink_id,
+        primitive_sequence=p.topology.primitive_sequence,
+        material_sequence=p.topology.material_sequence,
+        interaction_type=p.topology.interaction_type,
+        delay_s=geometry.delay_s,
+        coefficient=transport.coefficient,
+        # Aliased, like every other payload member: an aspect-dependent
+        # scatter response reads this straight out of the consumer's geometry,
+        # so copying it would break the zero-copy discipline for the one
+        # consumer that needs a gradient through a direction.
+        field_direction=geometry.field_direction,
+        row_valid=row_valid,
+        diagnostics=diagnostics,
+        slot_count=slot_count,
+        departure_origin_m=source_positions,
+        departure_target_m=first,
+        arrival_origin_m=last,
+        coefficient_band=band,
+        frequency_offsets_hz=None if band is None else tuple(transport.frequency_offsets_hz),
+    )
 
 
 def _per_slot_count(name: str, stacked: int, slot_count: int) -> int:

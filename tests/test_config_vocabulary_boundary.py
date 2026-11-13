@@ -34,7 +34,20 @@ PROPAGATION_MODULE = REPO_ROOT / "witwin" / "radar" / "propagation.py"
 #: equality: ``reference_frequency_hz`` is the ONE legitimate crossing and
 #: everything else here is geometry, topology, or an AD mode.
 DISCOVERY_KEYWORDS = frozenset(
-    {"sources", "sinks", "reference_frequency_hz", "components", "max_depth", "response", "topology_mode", "ad_mode"}
+    {
+        "sources",
+        "sinks",
+        "reference_frequency_hz",
+        "components",
+        "max_depth",
+        "response",
+        "topology_mode",
+        "ad_mode",
+        # Discovery-only bounds on WHICH rows exist: the reflection candidate
+        # source and the row ceiling. Neither carries waveform vocabulary.
+        "max_paths",
+        "discovery",
+    }
 )
 #: ``slot_count`` is how many stacked time slots the endpoint batches carry. It
 #: is a batch SHAPE, in the same family as the endpoint counts, and it says
@@ -189,6 +202,8 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
 
     class _Evaluation:
         paths = _Paths()
+        complete = True
+        diagnostics = None
 
     class _Result:
         paths = _Paths()
@@ -199,6 +214,7 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
     monkeypatch.setattr(consumer, "FixedTopologyRequest", recorder.fixed_topology_request)
     monkeypatch.setattr(consumer, "EndpointBatch", lambda **kwargs: kwargs)
     monkeypatch.setattr(consumer, "evaluate", lambda scene, request: _Evaluation())
+    monkeypatch.setattr(consumer, "check_endpoint_separation", lambda sources, sinks, **kwargs: None)
     monkeypatch.setattr(consumer, "prepare_fixed_topology", lambda topology: _Prepared())
     monkeypatch.setattr(consumer, "reevaluate", lambda scene, request: _Result())
 
@@ -260,7 +276,19 @@ def test_the_adapter_constructor_accepts_only_the_propagation_block():
     from witwin.radar.channel import ChannelPropagationAdapter
 
     parameters = set(inspect.signature(ChannelPropagationAdapter.__init__).parameters) - {"self"}
-    assert parameters == {"compiled_scene", "reference_frequency_hz", "components", "max_depth"}, sorted(parameters)
+    # ``discovery`` and ``max_paths`` bound which rows discovery publishes;
+    # ``replay`` declares whether handles may be replayed. None is waveform
+    # vocabulary.
+    expected = {
+        "compiled_scene",
+        "reference_frequency_hz",
+        "components",
+        "max_depth",
+        "discovery",
+        "max_paths",
+        "replay",
+    }
+    assert parameters == expected, sorted(parameters)
 
 
 # ---------------------------------------------------------------------------
