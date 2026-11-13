@@ -19,6 +19,14 @@ from .angle import (
     scan_aoa,
     tdm_compensate,
 )
+from .calibration import (
+    ArrayCalibration,
+    RangeCalibration,
+    average_background,
+    estimate_array_calibration,
+    estimate_range_calibration,
+    subtract_background,
+)
 from .detection import (
     CFAR_KINDS,
     POINT_CLOUD_COLUMNS,
@@ -38,6 +46,7 @@ from .detection import (
     point_cloud,
     so_cfar,
 )
+from .imaging import IMAGE_FRAMES, Aperture, SarImage, backproject, element_responses, isar_aperture
 from .range_doppler import (
     CLUTTER_FILTERS,
     MicroDopplerSpectrogram,
@@ -66,6 +75,8 @@ from .tracking import (
 
 __all__ = [
     "AOA_ROUTES",
+    "Aperture",
+    "ArrayCalibration",
     "ArrayGeometry",
     "ArrayLattice",
     "BeamCube",
@@ -73,6 +84,7 @@ __all__ = [
     "CLUTTER_FILTERS",
     "DetectionFrame",
     "Detections",
+    "IMAGE_FRAMES",
     "KalmanTracker",
     "MicroDopplerSpectrogram",
     "POINT_CLOUD_COLUMNS",
@@ -82,12 +94,16 @@ __all__ = [
     "ProcessingAxes",
     "ProcessingCube",
     "RangeAngleMap",
+    "RangeCalibration",
     "RangeDopplerMap",
     "RangeProfile",
+    "SarImage",
     "SlowTimeSignal",
     "TrackHandoff",
     "TrackState",
+    "average_background",
     "azimuth_directions",
+    "backproject",
     "beam_cube",
     "ca_cfar",
     "ca_cfar_1d",
@@ -97,10 +113,14 @@ __all__ = [
     "combine_incoherent",
     "conventional_steering",
     "demultiplex",
+    "element_responses",
+    "estimate_array_calibration",
+    "estimate_range_calibration",
     "fft2_aoa",
     "go_cfar",
     "greedy_assignment",
     "group_peaks",
+    "isar_aperture",
     "lag_axis",
     "matched_filter",
     "microdoppler_spectrogram",
@@ -121,5 +141,6 @@ __all__ = [
     "scan_aoa",
     "so_cfar",
     "stepped_frequency_profile",
+    "subtract_background",
     "tdm_compensate",
 ]

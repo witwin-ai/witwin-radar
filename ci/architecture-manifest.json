@@ -18,7 +18,9 @@
     "witwin.radar.policy",
     "witwin.radar.processing",
     "witwin.radar.processing.angle",
+    "witwin.radar.processing.calibration",
     "witwin.radar.processing.detection",
+    "witwin.radar.processing.imaging",
     "witwin.radar.processing.range_doppler",
     "witwin.radar.processing.signal",
     "witwin.radar.processing.tracking",
@@ -57,6 +59,8 @@
     "witwin.radar.processing.angle",
     "witwin.radar.processing.detection",
     "witwin.radar.processing.tracking",
+    "witwin.radar.processing.imaging",
+    "witwin.radar.processing.calibration",
     "witwin.radar.sensors",
     "witwin.radar.frontend"
   ],
@@ -83,6 +87,8 @@
     "angle_processing": "witwin.radar.processing.angle",
     "detection_processing": "witwin.radar.processing.detection",
     "tracking_processing": "witwin.radar.processing.tracking",
+    "imaging_processing": "witwin.radar.processing.imaging",
+    "calibration_processing": "witwin.radar.processing.calibration",
     "native_runtime": "witwin.radar.cuda.runtime",
     "target_declaration": "witwin.radar.targets",
     "path_events": "witwin.radar.events"

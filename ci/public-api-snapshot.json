@@ -175,6 +175,18 @@
           "target": "<dict> AOA_ROUTES"
         },
         {
+          "name": "Aperture",
+          "kind": "class",
+          "target": "witwin.radar.processing.imaging.Aperture",
+          "signature": "(tx_m: torch.Tensor, rx_m: torch.Tensor, times_s: torch.Tensor, carrier_hz: float, curvature_hz_per_s: float, phasor: str, waveform: str, reference_frequency_hz: float, num_tx: int, num_rx: int, frame: str = 'world') -> None"
+        },
+        {
+          "name": "ArrayCalibration",
+          "kind": "class",
+          "target": "witwin.radar.processing.calibration.ArrayCalibration",
+          "signature": "(gains: torch.Tensor, reference: tuple[int, int]) -> None"
+        },
+        {
           "name": "ArrayGeometry",
           "kind": "class",
           "target": "witwin.radar.processing.angle.ArrayGeometry",
@@ -213,6 +225,11 @@
           "kind": "class",
           "target": "witwin.radar.processing.detection.Detections",
           "signature": "(mask: torch.Tensor, threshold: torch.Tensor) -> None"
+        },
+        {
+          "name": "IMAGE_FRAMES",
+          "kind": "value",
+          "target": "<tuple> IMAGE_FRAMES"
         },
         {
           "name": "KalmanTracker",
@@ -267,6 +284,12 @@
           "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, directions: torch.Tensor, azimuth_rad: torch.Tensor, elevation_rad: float) -> None"
         },
         {
+          "name": "RangeCalibration",
+          "kind": "class",
+          "target": "witwin.radar.processing.calibration.RangeCalibration",
+          "signature": "(delay_s: float) -> None"
+        },
+        {
           "name": "RangeDopplerMap",
           "kind": "class",
           "target": "witwin.radar.processing.range_doppler.RangeDopplerMap",
@@ -277,6 +300,12 @@
           "kind": "class",
           "target": "witwin.radar.processing.range_doppler.RangeProfile",
           "signature": "(data: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, window: str, window_coherent_gain: float) -> None"
+        },
+        {
+          "name": "SarImage",
+          "kind": "class",
+          "target": "witwin.radar.processing.imaging.SarImage",
+          "signature": "(data: torch.Tensor, pixels_m: torch.Tensor, axes: witwin.radar.processing.signal.ProcessingAxes, frame: str) -> None"
         },
         {
           "name": "SlowTimeSignal",
@@ -297,10 +326,22 @@
           "signature": "(ids: 'torch.Tensor', position: 'torch.Tensor', velocity: 'torch.Tensor', covariance: 'torch.Tensor', hits: 'torch.Tensor', misses: 'torch.Tensor') -> None"
         },
         {
+          "name": "average_background",
+          "kind": "function",
+          "target": "witwin.radar.processing.calibration.average_background",
+          "signature": "(references: collections.abc.Sequence)"
+        },
+        {
           "name": "azimuth_directions",
           "kind": "function",
           "target": "witwin.radar.processing.angle.azimuth_directions",
           "signature": "(azimuth_rad: torch.Tensor, elevation_rad: float = 0.0) -> torch.Tensor"
+        },
+        {
+          "name": "backproject",
+          "kind": "function",
+          "target": "witwin.radar.processing.imaging.backproject",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, pixels_m: torch.Tensor) -> witwin.radar.processing.imaging.SarImage"
         },
         {
           "name": "beam_cube",
@@ -357,6 +398,24 @@
           "signature": "(cube: witwin.radar.processing.signal.ProcessingCube) -> witwin.radar.processing.signal.ProcessingCube"
         },
         {
+          "name": "element_responses",
+          "kind": "function",
+          "target": "witwin.radar.processing.imaging.element_responses",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, point_m: torch.Tensor) -> torch.Tensor"
+        },
+        {
+          "name": "estimate_array_calibration",
+          "kind": "function",
+          "target": "witwin.radar.processing.calibration.estimate_array_calibration",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m, *, reference: tuple[int, int] = (0, 0)) -> witwin.radar.processing.calibration.ArrayCalibration"
+        },
+        {
+          "name": "estimate_range_calibration",
+          "kind": "function",
+          "target": "witwin.radar.processing.calibration.estimate_range_calibration",
+          "signature": "(profile: witwin.radar.processing.range_doppler.RangeProfile, aperture: witwin.radar.processing.imaging.Aperture, reflector_m, *, search_m: float) -> witwin.radar.processing.calibration.RangeCalibration"
+        },
+        {
           "name": "fft2_aoa",
           "kind": "function",
           "target": "witwin.radar.processing.angle.fft2_aoa",
@@ -379,6 +438,12 @@
           "kind": "function",
           "target": "witwin.radar.processing.detection.group_peaks",
           "signature": "(detections: witwin.radar.processing.detection.Detections, rd_map: torch.Tensor, *, neighbourhood: tuple[int, int] = (3, 3)) -> witwin.radar.processing.detection.Detections"
+        },
+        {
+          "name": "isar_aperture",
+          "kind": "function",
+          "target": "witwin.radar.processing.imaging.isar_aperture",
+          "signature": "(aperture: witwin.radar.processing.imaging.Aperture, *, center_m, angular_velocity_rad_s=None, rotation=None, reference_time_s: float = 0.0) -> witwin.radar.processing.imaging.Aperture"
         },
         {
           "name": "lag_axis",
@@ -499,6 +564,12 @@
           "kind": "function",
           "target": "witwin.radar.processing.range_doppler.stepped_frequency_profile",
           "signature": "(signal: torch.Tensor, spec) -> tuple[torch.Tensor, torch.Tensor]"
+        },
+        {
+          "name": "subtract_background",
+          "kind": "function",
+          "target": "witwin.radar.processing.calibration.subtract_background",
+          "signature": "(product, background)"
         },
         {
           "name": "tdm_compensate",

@@ -16,6 +16,7 @@
     "witwin/radar/cuda/ofdm_cfr.cu",
     "witwin/radar/cuda/ofdm_time.cu",
     "witwin/radar/cuda/path_events.cu",
+    "witwin/radar/cuda/processing_imaging.cu",
     "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
@@ -63,6 +64,36 @@
     }
   ],
   "operators": [
+    {
+      "symbol": "backprojection_backward",
+      "ad_group": "backprojection",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/processing_imaging.cu",
+      "python_owner": "witwin/radar/processing/imaging.py",
+      "python_callers": [
+        "_Backprojection.backward"
+      ]
+    },
+    {
+      "symbol": "backprojection_forward",
+      "ad_group": "backprojection",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/processing_imaging.cu",
+      "python_owner": "witwin/radar/processing/imaging.py",
+      "python_callers": [
+        "_Backprojection.forward"
+      ]
+    },
+    {
+      "symbol": "backprojection_jvp",
+      "ad_group": "backprojection",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/processing_imaging.cu",
+      "python_owner": "witwin/radar/processing/imaging.py",
+      "python_callers": [
+        "_Backprojection.jvp"
+      ]
+    },
     {
       "symbol": "cfar_order_statistic_forward",
       "ad_group": "cfar_order_statistic",
