@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import math
 
 import numpy as np
 import pytest
@@ -189,7 +190,11 @@ class TestParameterFormulas:
 class TestConfigVariations:
     @pytest.mark.parametrize("adc_samples", [128, 256, 512, 640])
     def test_range_resolution_scales_with_adc(self, adc_samples):
-        cfg = {**STANDARD_CONFIG, "adc_samples": adc_samples}
+        # The ramp is stretched to hold the ADC window: a window that runs
+        # past the chirp period is refused at construction.
+        window_us = STANDARD_CONFIG["adc_start_time"] + adc_samples / STANDARD_CONFIG["sample_rate"] * 1e3
+        ramp_us = max(STANDARD_CONFIG["ramp_end_time"], math.ceil(window_us))
+        cfg = {**STANDARD_CONFIG, "adc_samples": adc_samples, "ramp_end_time": ramp_us}
         mock = RadarFixture(cfg)
         fs = cfg["sample_rate"] * 1e3
         slope_hz = cfg["slope"] * 1e12

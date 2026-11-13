@@ -19,13 +19,15 @@ This module owns the target vocabulary. The scattering COEFFICIENT is owned by
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 
 from .binding import ScatterSitePolicy
+from .policy import require_real
 from .propagation import Kinematics
 from .scattering import (
     AspectScatterResponse,
@@ -59,8 +61,14 @@ class ScatteringMatrix:
     up: tuple[float, float, float] = (0.0, 0.0, 1.0)
 
     def __post_init__(self) -> None:
-        up = tuple(float(value) for value in self.up)
-        if len(up) != 3 or not any(up):
+        for name in ("hh", "hv", "vh", "vv"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, numbers.Complex):
+                raise TypeError(f"ScatteringMatrix.{name} must be a complex number, got {type(value).__name__}")
+            if not (math.isfinite(complex(value).real) and math.isfinite(complex(value).imag)):
+                raise ValueError(f"ScatteringMatrix.{name} must be finite, got {value!r}")
+        up = _vector3("ScatteringMatrix.up", self.up)
+        if not any(up):
             raise ValueError(f"ScatteringMatrix.up must be a non-zero 3-vector, got {self.up!r}")
 
     @classmethod
@@ -109,10 +117,13 @@ class Aspect:
     phase_rate: float = 0.0
 
     def __post_init__(self) -> None:
-        if not float(self.exponent) >= 1.0:
+        if not require_real("Aspect.exponent", self.exponent) >= 1.0:
             raise ValueError("Aspect.exponent must be at least 1")
-        if not float(self.coherent_interval) > 0.0:
+        if not require_real("Aspect.coherent_interval", self.coherent_interval) > 0.0:
             raise ValueError("Aspect.coherent_interval must be positive")
+        require_real("Aspect.phase_rate", self.phase_rate)
+        if not callable(self.axis):
+            _require_axis_rows("Aspect.axis", self.axis, count=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +154,7 @@ class RcsTable:
     def __post_init__(self) -> None:
         import numpy as np
 
+        _require_axis_rows("RcsTable.axis", self.axis, count=None)
         table = np.asarray(self.rcs_m2, dtype=np.float64)
         if table.ndim not in (1, 2) or table.shape[-1] < 2:
             raise ValueError("RcsTable.rcs_m2 must be (A,) or (F, A) with at least two aspect samples")
@@ -203,7 +215,7 @@ class Fluctuation:
     def __post_init__(self) -> None:
         if self.swerling not in (1, 2, 3, 4) or type(self.swerling) is not int:
             raise ValueError(f"Fluctuation.swerling must be 1, 2, 3 or 4, got {self.swerling!r}")
-        if not float(self.coherent_interval) > 0.0:
+        if not require_real("Fluctuation.coherent_interval", self.coherent_interval) > 0.0:
             raise ValueError("Fluctuation.coherent_interval must be positive")
         if type(self.seed) is not int or self.seed < 0:
             raise ValueError("Fluctuation.seed must be a non-negative int")
@@ -224,6 +236,15 @@ class PointTargets:
     supplies them when the session starts; a target set is a statement about
     the world, not about the instrument looking at it.
     """
+
+    #: The fields that may be tensors carrying a derivative, and the AD modes
+    #: each supports. A trajectory's returned tensor keeps its tape too.
+    LEAVES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "positions": ("jvp", "vjp"),
+        "rcs": ("jvp", "vjp"),
+        "amplitude": ("jvp", "vjp"),
+        "phase": ("jvp", "vjp"),
+    }
 
     #: World positions, m, shape ``(S, 3)`` or a sequence of triples.
     positions: Any
@@ -255,6 +276,7 @@ class PointTargets:
     fluctuation: Fluctuation | None = None
 
     def __post_init__(self) -> None:
+        _require_positions("PointTargets.positions", self.positions)
         _require_one_strength("PointTargets", rcs=self.rcs, amplitude=self.amplitude)
         if self.scattering is not None and not isinstance(self.scattering, ScatteringMatrix):
             raise TypeError(f"PointTargets.scattering must be a ScatteringMatrix, got {type(self.scattering).__name__}")
@@ -275,7 +297,13 @@ class PointTargets:
             raise TypeError(f"PointTargets.aspect must be an Aspect, got {type(self.aspect).__name__}")
         for name in ("rcs", "amplitude", "phase"):
             if not isinstance(getattr(self, name), RcsTable):
+                _require_per_target_values(f"PointTargets.{name}", getattr(self, name), non_negative=name == "rcs")
                 _require_per_target_length(f"PointTargets.{name}", getattr(self, name), self.count)
+        _require_ids("PointTargets.ids", self.ids, count=self.count)
+        if isinstance(self.rcs, RcsTable):
+            _require_axis_rows("RcsTable.axis", self.rcs.axis, count=self.count)
+        if self.aspect is not None and not callable(self.aspect.axis):
+            _require_axis_rows("Aspect.axis", self.aspect.axis, count=self.count)
 
     @property
     def count(self) -> int:
@@ -319,9 +347,12 @@ class StructureTargets:
             raise ValueError("an RcsTable needs a per-target axis; use PointTargets for a tabulated cross section")
         if self.fluctuation is not None and not isinstance(self.fluctuation, Fluctuation):
             raise TypeError("StructureTargets.fluctuation must be a Fluctuation")
+        _require_ids("StructureTargets.structure_ids", self.structure_ids, count=None)
         count = None if self.structure_ids is None else len(self.structure_ids)
         for name in ("rcs", "amplitude", "phase"):
+            _require_per_target_values(f"StructureTargets.{name}", getattr(self, name), non_negative=name == "rcs")
             _require_per_target_length(f"StructureTargets.{name}", getattr(self, name), count)
+        _require_ids("StructureTargets.ids", self.ids, count=count)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,9 +389,13 @@ class MeshTargets:
     #: Stable world IDs are allocated per site; a mesh target names none.
 
     def __post_init__(self) -> None:
+        _require_ids("MeshTargets.structure_ids", self.structure_ids, count=None)
         if self.cluster_size_m is not None and self.max_sites is not None:
             raise ValueError("MeshTargets takes cluster_size_m or max_sites, not both")
-        if self.cluster_size_m is not None and not float(self.cluster_size_m) > 0.0:
+        if (
+            self.cluster_size_m is not None
+            and not require_real("MeshTargets.cluster_size_m", self.cluster_size_m) > 0.0
+        ):
             raise ValueError("MeshTargets.cluster_size_m must be positive")
         if self.max_sites is not None and (type(self.max_sites) is not int or self.max_sites < 1):
             raise ValueError("MeshTargets.max_sites must be a positive int")
@@ -377,6 +412,102 @@ def _require_one_strength(owner: str, *, rcs: Any, amplitude: Any) -> None:
             "amplitude = sqrt(4 pi rcs) / wavelength, so giving both leaves it undefined which one the "
             "response is built from, and giving neither says nothing about how strongly the target scatters."
         )
+
+
+def _as_host(value: Any) -> Any:
+    """A NumPy array as nested lists, so host sequences are checked one way; anything else unchanged."""
+
+    if not isinstance(value, torch.Tensor) and hasattr(value, "__array__") and hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def _vector3(name: str, value: Any) -> tuple[float, float, float]:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().reshape(-1).tolist()
+    value = _as_host(value)
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or len(value) != 3:
+        raise ValueError(f"{name} must be a 3-vector, got {value!r}")
+    x, y, z = (require_real(f"{name}[{axis}]", value[axis]) for axis in range(3))
+    return x, y, z
+
+
+def _require_positions(name: str, value: Any) -> None:
+    """``(S, 3)`` world positions, at least one: a floating tensor, or a sequence of finite triples.
+
+    A tensor is checked for its shape and dtype only. Reading its values would
+    be a device synchronization at construction, and a tensor is how a caller
+    hands over a leaf whose values the session reads anyway.
+    """
+
+    value = _as_host(value)
+    if isinstance(value, torch.Tensor):
+        if value.dim() != 2 or int(value.shape[1]) != 3 or int(value.shape[0]) < 1:
+            raise ValueError(f"{name} must have shape (S, 3) with S >= 1, got {tuple(value.shape)}")
+        if not value.is_floating_point():
+            raise TypeError(f"{name} must be a floating tensor, got {value.dtype}")
+        return
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError(
+            f"{name} must be a (S, 3) tensor or a sequence of 3-element positions, got {type(value).__name__}"
+        )
+    if not value:
+        raise ValueError(f"{name} must name at least one position")
+    for index, row in enumerate(value):
+        _vector3(f"{name}[{index}]", row)
+
+
+def _require_axis_rows(name: str, value: Any, *, count: int | None) -> None:
+    """One axis per target, shape ``(S, 3)``; ``count`` is ``S`` when the owner knows it."""
+
+    value = _as_host(value)
+    if isinstance(value, torch.Tensor):
+        shape = tuple(int(size) for size in value.shape)
+    else:
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError(f"{name} must be a (S, 3) tensor or a sequence of 3-vectors, got {type(value).__name__}")
+        for index, row in enumerate(value):
+            _vector3(f"{name}[{index}]", row)
+        shape = (len(value), 3)
+    if len(shape) != 2 or shape[1] != 3 or (count is not None and shape[0] != count):
+        expected = "(S, 3)" if count is None else f"({count}, 3) for {count} targets"
+        raise ValueError(f"{name} must have shape {expected}, got {shape}")
+
+
+def _require_per_target_values(name: str, value: Any, *, non_negative: bool) -> None:
+    """A strength or phase: ``None``, a finite real, a sequence of them, or a 0/1-dim tensor.
+
+    Host values are checked here; a cross section is a power and is also
+    refused below zero. A tensor's values are not read (no device
+    synchronization at construction): the square-root law refuses a negative
+    cross section when the session builds the response.
+    """
+
+    value = _as_host(value)
+    if value is None or isinstance(value, torch.Tensor):
+        return
+    entries = value if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else (value,)
+    for index, entry in enumerate(entries):
+        label = name if entries is not value else f"{name}[{index}]"
+        parsed = require_real(label, entry)
+        if non_negative and parsed < 0.0:
+            raise ValueError(f"{label} is a cross section in square metres and must be non-negative, got {parsed}")
+
+
+def _require_ids(name: str, value: Any, *, count: int | None) -> None:
+    """Distinct non-negative int IDs, ``count`` of them when the owner knows how many it needs."""
+
+    if value is None:
+        return
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError(f"{name} must be a tuple of ints, got {type(value).__name__}")
+    for entry in value:
+        if isinstance(entry, bool) or not isinstance(entry, numbers.Integral) or entry < 0:
+            raise ValueError(f"{name} must hold non-negative ints, got {entry!r}")
+    if len(set(value)) != len(value):
+        raise ValueError(f"{name} must not repeat an ID, got {tuple(value)}")
+    if count is not None and len(value) != count:
+        raise ValueError(f"{name} names {len(value)} IDs but the record declares {count} targets")
 
 
 def _per_target_length(value: Any) -> int | None:

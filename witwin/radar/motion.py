@@ -12,18 +12,28 @@ from dataclasses import dataclass
 
 import torch
 
+from .policy import require_real
+
 MOTION_KINDS = ("auto", "static", "chirp", "adc", "adaptive")
+
+#: What ``Motion.world`` may declare to Channel's replay: ``"frozen_world"``
+#: rediscovers whenever compiled geometry moves; ``"fixed_winner_replay"``
+#: replays the frozen winner set against the moved geometry. It is Channel's
+#: ``capabilities().world_motions``, mirrored here so a record can be refused
+#: at construction without importing Channel; ``tests/test_capabilities.py``
+#: pins the two against each other.
+WORLD_MOTIONS = ("frozen_world", "fixed_winner_replay")
 
 
 def _positive_host_float(value: float, *, name: str) -> float:
-    if isinstance(value, torch.Tensor) or not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be a finite positive host value")
+    if isinstance(value, torch.Tensor) or not math.isfinite(require_real(f"Motion.{name}", value)) or value <= 0:
+        raise ValueError(f"Motion.{name} must be a finite positive host value, got {value!r}")
     return float(value)
 
 
 def _positive_int(value: object, *, name: str) -> int:
     if type(value) is not int or value < 1:
-        raise ValueError(f"{name} must be a positive int, got {value!r}")
+        raise ValueError(f"Motion.{name} must be a positive int, got {value!r}")
     return value
 
 
@@ -122,7 +132,9 @@ class Motion:
         for name in ("max_evaluations", "batch_observations"):
             _positive_int(getattr(self, name), name=name)
         if _positive_int(self.nodes, name="nodes") < 2:
-            raise ValueError("nodes must be at least 2; one node cannot interpolate")
+            raise ValueError("Motion.nodes must be at least 2; one node cannot interpolate")
+        if self.world not in WORLD_MOTIONS:
+            raise ValueError(f"Motion.world must be one of {list(WORLD_MOTIONS)}, got {self.world!r}")
         for name in ("rediscover_every_frames", "rediscover_every_chirps"):
             if getattr(self, name) is not None:
                 _positive_int(getattr(self, name), name=name)
@@ -131,7 +143,7 @@ class Motion:
                 _positive_host_float(getattr(self, name), name=name)
         declared = [name for name in CADENCES if getattr(self, name) is not None]
         if len(declared) > 1:
-            raise ValueError(f"declare at most one discovery cadence, got {declared}")
+            raise ValueError(f"Motion declares at most one discovery cadence, got {declared}")
 
     @property
     def cadence(self) -> str | None:
@@ -281,4 +293,4 @@ CADENCES = (
 )
 
 
-__all__ = ["MOTION_KINDS", "Motion"]
+__all__ = ["MOTION_KINDS", "WORLD_MOTIONS", "Motion"]

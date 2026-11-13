@@ -311,6 +311,14 @@ def test_the_validator_passes_every_non_tensor_through():
     )
 
 
+@pytest.mark.parametrize("value", ["60e12", float("nan"), float("inf"), 1 + 2j])
+def test_the_validator_refuses_a_value_that_is_not_a_finite_real_number(value):
+    """A numeric string, NaN, infinity and a complex value are refused by field name, not coerced."""
+
+    with pytest.raises((TypeError, ValueError), match=r"Probe\.slope must be"):
+        require_host_floats("Probe", "a reason.", slope=value)
+
+
 def test_the_validator_reports_the_first_offender_in_declaration_order():
     """The message names ONE field, and it is the first one declared.
 

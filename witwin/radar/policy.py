@@ -46,6 +46,8 @@ rows.
 from __future__ import annotations
 
 import functools
+import math
+import numbers
 
 import torch
 
@@ -176,15 +178,36 @@ def first_order_only(backward):
     return guarded
 
 
+def require_real(name: str, value: object) -> float:
+    """A finite real host number, or a refusal that names ``name``.
+
+    A string that parses as a number (``"60e12"``), a bool, a complex value and
+    NaN or infinity are refused at construction: each would otherwise be
+    coerced by ``float()`` or carried into a kernel and surface, if at all, as
+    an unrelated error deep inside a run.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(f"{name} must be a real number, got {type(value).__name__} {value!r}")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return parsed
+
+
 def require_host_float(name: str, value: object, *, owner: str, reason: str) -> None:
-    """Refuse a tensor where a host float is the contract.
+    """Refuse a tensor where a host float is the contract, and a value that is not a finite real number.
 
     ``name`` is the field, ``owner`` the class that declares it, and ``reason``
     the modelling statement that says why no derivative flows through it. All
-    three appear in the message.
+    three appear in the message. ``None`` is accepted (it is how an optional
+    field says "not given"), and so is a bool flag.
     """
 
+    if value is None or isinstance(value, bool):
+        return
     if not isinstance(value, torch.Tensor):
+        require_real(f"{owner}.{name}", value)
         return
     carrier = "a requires_grad tensor" if value.requires_grad else f"a {tuple(value.shape)} torch.Tensor"
     raise TypeError(
@@ -214,4 +237,4 @@ def require_host_floats(owner: str, reason: str, **fields: object) -> None:
         require_host_float(name, value, owner=owner, reason=reason)
 
 
-__all__ = ["first_order_only", "refuse_derivative", "require_host_float", "require_host_floats"]
+__all__ = ["first_order_only", "refuse_derivative", "require_host_float", "require_host_floats", "require_real"]
