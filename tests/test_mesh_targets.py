@@ -288,14 +288,11 @@ def test_the_vertex_gradient_matches_finite_differences():
     assert analytic == pytest.approx(central, rel=3e-2, abs=0)
 
 
-def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypatch):
-    """Budget: the facet route against point targets at the same sites.
+def mesh_budget_counts() -> dict[str, dict[str, dict[str, object]]]:
+    """Per frame count: the facet route and point targets at the same sites.
 
-    A still mesh in a still world is placed once: its first frame adds one
-    ``facet_geometry`` launch, one ``facet_response`` launch per composition
-    and the host work that builds the facet tables once (one device-to-host
-    copy, at most four synchronizations); every later frame is the point
-    targets' own, because the session reuses the composed rows.
+    Run in a fresh interpreter by the budget below, because the copy count is
+    read from the profiler and depends on what the process ran before.
     """
 
     from support.session_ledger import SessionLedger, profiled_copies
@@ -319,10 +316,10 @@ def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypa
         for frames in (1, 2):
             run(targets, frames)()
             copies = profiled_copies(run(targets, frames))
-            with monkeypatch.context() as patch:
+            with pytest.MonkeyPatch.context() as patch:
                 ledger = SessionLedger(patch)
                 ledger.run(run(targets, frames))
-            counts[frames] = {
+            counts[str(frames)] = {
                 "native": dict(ledger.native),
                 "syncs": ledger.synchronizations,
                 "d2h": copies["d2h"],
@@ -330,10 +327,25 @@ def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypa
             }
         return counts
 
-    mesh = measure(MeshTargets())
-    point = measure(PointTargets(positions=sites, amplitude=1.0))
+    return {"mesh": measure(MeshTargets()), "point": measure(PointTargets(positions=sites, amplitude=1.0))}
+
+
+def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost():
+    """Budget: the facet route against point targets at the same sites.
+
+    A still mesh in a still world is placed once: its first frame adds one
+    ``facet_geometry`` launch, one ``facet_response`` launch per composition
+    and the host work that builds the facet tables once (one device-to-host
+    copy, at most four synchronizations); every later frame is the point
+    targets' own, because the session reuses the composed rows.
+    """
+
+    from support.session_ledger import measure_isolated
+
+    counts = measure_isolated("test_mesh_targets", "mesh_budget_counts")
+    mesh, point = counts["mesh"], counts["point"]
     report = f"mesh={mesh} point={point}"
-    first_mesh, first_point = mesh[1], point[1]
+    first_mesh, first_point = mesh["1"], point["1"]
     extra = {
         name: count - first_point["native"].get(name, 0)
         for name, count in first_mesh["native"].items()
@@ -346,7 +358,7 @@ def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypa
     assert first_mesh["syncs"] - first_point["syncs"] <= 4, report
     assert 0 <= first_mesh["d2h"] - first_point["d2h"] <= 1, report
     for key in ("syncs", "d2h", "compose"):
-        assert mesh[2][key] - mesh[1][key] == point[2][key] - point[1][key], report
+        assert mesh["2"][key] - mesh["1"][key] == point["2"][key] - point["1"][key], report
 
 
 class _Recede:
