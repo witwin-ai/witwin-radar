@@ -60,11 +60,6 @@ _C12 = (
 )
 _C12_APPLIES = _channel_version() >= (0, 6)
 
-_COINCIDENT = (
-    "M0-6 (no audit finding yet): a site exactly on an array element returns a finite cube without a refusal, "
-    "although the radar equation is singular there (R = 0)"
-)
-
 WAVELENGTH_M = 299_792_458.0 / 77e9
 WAVENUMBER = 2.0 * math.pi / WAVELENGTH_M
 
@@ -114,11 +109,7 @@ CASES = {
     "occluded_mid_sequence": (_check_occluded, (), _MP2),
     "site_on_wall": (_check_on_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
     "site_near_wall": (_check_near_wall, ("wall", "surface", "coincid", "distance"), (_C12, _C12_APPLIES)),
-    "site_at_element": (
-        lambda record: False,
-        ("coincid", "zero distance", "element", "endpoint", "distance"),
-        _COINCIDENT,
-    ),
+    "site_at_element": (lambda record: False, ("coincid", "zero distance", "element", "endpoint", "distance"), None),
     "empty_scene": (
         lambda record: (
             record["checks"]["rows"] == 1 and _relative_power(record, 5.0) == pytest.approx(1.0, rel=1e-3, abs=0.0)

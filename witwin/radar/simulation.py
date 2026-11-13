@@ -25,7 +25,7 @@ import math
 from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import partial, reduce
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
@@ -36,11 +36,21 @@ from .adaptive import AdaptiveTable, echo_adaptive_frame, trace_adaptive_frame
 from .binding import SITE_SOURCE_EXPLICIT, RadarWorldBinding, ScatterSitePolicy, SensorEndpointIds, bind_radar_world
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
-from .propagation import EpochFrame, FrozenEpoch, RadarEndpointSpec, RadarPropagationLegs, SceneEpochLoop
+from .propagation import (
+    DiscoveryReport,
+    EpochFrame,
+    FrozenEpoch,
+    RadarEndpointSpec,
+    RadarLegBatch,
+    RadarPropagationLegs,
+    SceneEpochLoop,
+    band_as_slots,
+    stack_slots,
+)
 from .results import Result, SceneFrame, assemble
 
 if TYPE_CHECKING:
-    from .paths import TwoWayComposer
+    from .paths import ComponentDeclaration, RadarComponentIndex, TwoWayComposer
     from .radar import PropagationConfig, Radar
     from .scattering import ScatterResponse
     from .sensors import Pattern, RoundTripPatternStage, SensorArraySpec
@@ -67,10 +77,11 @@ class FrozenRoundTrip:
     composer: TwoWayComposer
     binding: RadarWorldBinding
     pattern: RoundTripPatternStage
-    #: The two legs' packed row identities. Two epochs with equal identities
-    #: join to the same composed rows, so a rediscovery that found the same
-    #: topology reuses the join and pattern tables instead of rebuilding them.
-    identity: tuple[bytes, bytes]
+    #: The legs' packed row identities (inbound, outbound and, when composed,
+    #: the site-less direct leg). Two epochs with equal identities join to the
+    #: same composed rows, so a rediscovery that found the same topology reuses
+    #: the join and pattern tables instead of rebuilding them.
+    identity: tuple[bytes, ...]
 
 
 def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
@@ -167,6 +178,10 @@ class FrameTrace:
     adaptive: AdaptiveTable | None = None
     stats: dict[str, Any] | None = None
     opened: EpochFrame | None = None
+    #: What Channel said about the discoveries this frame answered from. Read
+    #: only after ``observations`` is drained, because the fused route
+    #: discovers while it is drained.
+    discovery: Callable[[], DiscoveryReport] = DiscoveryReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +264,10 @@ class Session:
     #: tolerances.
     motion: Motion
     times: tuple[float, ...]
+    #: Whether the site-less leg carried the environment's returns and the
+    #: elements' straight-segment coupling.
+    environment: bool = False
+    coupling: bool = False
     #: The last unsampled frame's waveform result, keyed by the rows it was
     #: synthesized from; see :class:`_HeldSynthesis`.
     held: _HeldSynthesis = field(default_factory=lambda: _HeldSynthesis())
@@ -397,10 +416,55 @@ def _constant_legs(legs: RadarPropagationLegs) -> RadarPropagationLegs:
     return legs
 
 
+def _constant_report(report: DiscoveryReport) -> DiscoveryReport:
+    return report
+
+
 def _slot_legs(replay: RadarPropagationLegs, index: int) -> RadarPropagationLegs:
     """One slot of a slot-major replay, narrowed only when a caller reads it."""
 
-    return RadarPropagationLegs(inbound=replay.inbound.slot(index), outbound=replay.outbound.slot(index))
+    return RadarPropagationLegs(
+        inbound=replay.inbound.slot(index),
+        outbound=replay.outbound.slot(index),
+        direct=None if replay.direct is None else replay.direct.slot(index),
+    )
+
+
+def _present_leg(value: RadarLegBatch | None) -> RadarLegBatch:
+    if value is None:
+        raise ValueError("a primal epoch keeps the rows its discoveries evaluated, for every leg")
+    return value
+
+
+def _discovered_legs(epoch: FrozenEpoch) -> RadarPropagationLegs:
+    """The rows one epoch's discoveries evaluated, as the legs of that instant."""
+
+    batches = [_present_leg(getattr(handle, "discovered", None)) for handle in epoch.handles]
+    return RadarPropagationLegs(
+        inbound=batches[0], outbound=batches[1], direct=batches[2] if len(batches) > 2 else None
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class LegRequest:
+    """What a session asks of every leg discovery beyond the component set.
+
+    ``discovery`` and ``max_paths`` are forwarded to Channel.
+    ``max_round_trips`` bounds the composed rows of one sensor pair and is
+    checked on the host before the join. ``direct_components`` is the
+    site-less TX->RX leg's request, empty when the run composes none.
+    ``replays`` is ``False`` when a requested component cannot be frozen, so
+    every handle answers only at its discovery instant.
+    ``frequency_offsets_hz`` is the wideband grid a replay asks for, ``None``
+    for a narrowband run.
+    """
+
+    discovery: str = "auto"
+    max_paths: int | None = None
+    max_round_trips: int | None = None
+    direct_components: frozenset[str] = frozenset()
+    replays: bool = True
+    frequency_offsets_hz: tuple[float, ...] | None = None
 
 
 def _powers(spec: RadarEndpointSpec) -> torch.Tensor:
@@ -435,6 +499,7 @@ class WorldHalf:
         world_motion: str,
         still_world: bool = False,
         batch_observations: int = 1,
+        request: LegRequest | None = None,
     ) -> None:
         from .channel import compile_scene
 
@@ -466,6 +531,14 @@ class WorldHalf:
         #: cotangent before the replay's backward rather than after it.
         self.still_world = still_world
         self.batch_observations = batch_observations
+        self.request = LegRequest() if request is None else request
+        #: A primal run reads each rediscovered instant's rows straight from the
+        #: discovery that found them; Channel's replay at the same instant
+        #: returns the same native evaluation for every replayable row, so the
+        #: replay would be a second call for the same numbers. A differentiable
+        #: run replays, because only the replay carries a derivative.
+        self.discovered_rows = ad_mode == "none" and self.request.frequency_offsets_hz is None
+        self._report = DiscoveryReport()
         self._still: Observation | None = None
         self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
             SLOT_TABLE_CACHE
@@ -494,21 +567,35 @@ class WorldHalf:
         from .sensors import RoundTripPatternStage
 
         binding = self._bind_world(snapshot)
-        adapter = (
+        request = self.request
+        adapter: Any = (
             ChannelPropagationAdapter(
                 compiled,
                 reference_frequency_hz=self.reference_frequency_hz,
-                components=self.propagation.components,
+                components=self.propagation.components | request.direct_components,
                 max_depth=self.propagation.max_depth,
+                discovery=request.discovery,
+                max_paths=request.max_paths,
+                replay=request.replays,
             )
             if previous is None
             else previous.adapter
         )
-        inbound = adapter.freeze(binding.transmitters, binding.site_sinks)
-        outbound = adapter.freeze(binding.site_sources, binding.receivers)
+        rows = self.discovered_rows
+        site_components = self.propagation.components
+        inbound = adapter.discover(binding.transmitters, binding.site_sinks, rows=rows, components=site_components)
+        outbound = adapter.discover(binding.site_sources, binding.receivers, rows=rows, components=site_components)
+        direct = None
+        if request.direct_components:
+            direct = adapter.discover(
+                binding.transmitters, binding.receivers, rows=rows, components=request.direct_components
+            )
+        handles = (inbound, outbound) if direct is None else (inbound, outbound, direct)
+        self._report = self._report.including(handles)
         arriving = read_leg_identity(inbound, "inbound")
         leaving = read_leg_identity(outbound, "outbound")
-        identity = (arriving.packed, leaving.packed)
+        through = None if direct is None else read_leg_identity(direct, "direct")
+        identity = (arriving.packed, leaving.packed) + (() if through is None else (through.packed,))
         retiring = None if previous is None else _round_trip(previous)
         if retiring is not None and retiring.identity == identity and retiring.binding.site_ids == binding.site_ids:
             # The same rows under the same declared IDs: the join and the
@@ -525,6 +612,9 @@ class WorldHalf:
                 reference_frequency_hz=self.reference_frequency_hz,
                 inbound_identity=arriving,
                 outbound_identity=leaving,
+                direct=direct,
+                direct_identity=through,
+                max_round_trips=request.max_round_trips,
             )
             pattern = RoundTripPatternStage.freeze(
                 self.radar,
@@ -535,9 +625,24 @@ class WorldHalf:
             )
         return FrozenEpoch(
             adapter=adapter,
-            handles=(inbound, outbound),
+            handles=handles,
             payload=FrozenRoundTrip(composer=composer, binding=binding, pattern=pattern, identity=identity),
         )
+
+    def begin_report(self) -> None:
+        """Start a frame's discovery report from the epoch it opens on.
+
+        A frame that rediscovers nothing still answers out of the current
+        epoch's handles, so their completeness is part of its report.
+        """
+
+        frozen = self.loop.frozen
+        self._report = DiscoveryReport().including(() if frozen is None else frozen.handles)
+
+    def report(self) -> DiscoveryReport:
+        """What Channel said about every discovery this frame answered from."""
+
+        return self._report
 
     def _complete_los(self) -> bool:
         """Whether the adaptive route may certify this world's family for all time.
@@ -622,41 +727,35 @@ class WorldHalf:
     def _replay(self, group: list[_PendingObservation], results: dict[float, EvaluatedObservation]) -> None:
         """Replay one group of topology-identical instants as one slot batch."""
 
-        first = group[0].epoch_frame.frozen
         bindings = [entry.binding for entry in group]
         transmitters = _stacked([binding.transmitters for binding in bindings])
         receivers = _stacked([binding.receivers for binding in bindings])
-        replay = RadarPropagationLegs(
-            inbound=first.adapter.reevaluate_slots(
-                first.handles[0],
-                transmitters,
-                _stacked([binding.site_sinks for binding in bindings]),
-                slot_count=len(group),
-                ad_mode=self.ad_mode,
-            ),
-            outbound=first.adapter.reevaluate_slots(
-                first.handles[1],
-                _stacked([binding.site_sources for binding in bindings]),
-                receivers,
-                slot_count=len(group),
-                ad_mode=self.ad_mode,
-            ),
-        )
+        replay, discovered = self._group_legs(group, transmitters, receivers)
         if len(group) == 1:
             entry = group[0]
             round_trip = _round_trip(entry.epoch_frame.frozen)
-            paths = round_trip.composer.compose(replay.inbound, replay.outbound, self.response)
+            composer = round_trip.composer
+            paths = composer.compose(replay.inbound, replay.outbound, self.response, replay.direct)
+            tx_targets, rx_targets = composer.segment_targets(replay.inbound, replay.outbound, replay.direct)
             paths = round_trip.pattern.apply(
                 paths,
                 tx_pos=entry.binding.transmitters.positions_m,
                 rx_pos=entry.binding.receivers.positions_m,
-                tx_targets_m=_present(replay.inbound.departure_target_m, "departure_target_m").index_select(
-                    0, paths.topology.inbound_row
-                ),
-                rx_targets_m=_present(replay.outbound.arrival_origin_m, "arrival_origin_m").index_select(
-                    0, paths.topology.outbound_row
-                ),
+                tx_targets_m=tx_targets,
+                rx_targets_m=rx_targets,
             )
+            band = self._band(
+                round_trip,
+                replay,
+                1,
+                None if self._strided(round_trip) else ((composer, round_trip.pattern), (round_trip.identity, 1)),
+                transmitters,
+                receivers,
+            )
+            if band is not None:
+                paths = replace(
+                    paths, complex_transfer_band=band, frequency_offsets_hz=self.request.frequency_offsets_hz
+                )
             identity = entry.identity
             if self.motion_sampling == "adaptive":
                 identity = (identity, _present(paths.row_valid, "row_valid").cpu().numpy().tobytes())
@@ -674,6 +773,8 @@ class WorldHalf:
                         slots=1,
                         rows_per_slot=paths.path_count,
                         weight_includes_antenna_pattern=paths.weight_includes_antenna_pattern,
+                        complex_transfer_band=paths.complex_transfer_band,
+                        frequency_offsets_hz=paths.frequency_offsets_hz,
                     ),
                     offsets=round_trip.composer.pair_offsets_host,
                     slots=1,
@@ -682,6 +783,7 @@ class WorldHalf:
             )
             return
         batched = self._compose_slots(group, replay, transmitters, receivers)
+        slot_legs = partial(_slot_legs, replay) if discovered is None else discovered.__getitem__
         shared = SlotBatch(
             rows=batched, offsets=_round_trip(group[0].epoch_frame.frozen).composer.pair_offsets_host, slots=len(group)
         )
@@ -702,6 +804,10 @@ class WorldHalf:
                 row_valid=batched_valid[selection],
                 topology=composer.topology,
                 weight_includes_antenna_pattern=batched.weight_includes_antenna_pattern,
+                complex_transfer_band=None
+                if batched.complex_transfer_band is None
+                else batched.complex_transfer_band[selection],
+                frequency_offsets_hz=batched.frequency_offsets_hz,
             )
             identity = entry.identity
             if valid_rows is not None:
@@ -713,12 +819,57 @@ class WorldHalf:
             results[entry.time_s] = EvaluatedObservation(
                 time_s=entry.time_s,
                 epoch_frame=entry.epoch_frame,
-                legs=partial(_slot_legs, replay, slot),
+                legs=partial(slot_legs, slot),
                 composed=paths,
                 identity=identity,
                 batch=shared,
                 slot=slot,
             )
+
+    def _group_legs(
+        self, group: list[_PendingObservation], transmitters: RadarEndpointSpec, receivers: RadarEndpointSpec
+    ) -> tuple[RadarPropagationLegs, list[RadarPropagationLegs] | None]:
+        """One group's legs, slot major, and each instant's own legs when it has them.
+
+        A primal group whose every instant rediscovered answers from the rows
+        those discoveries evaluated: no replay call at all, and the slot-major
+        stack is one concatenation per member. Any other group is replayed in
+        one slot-batched Channel call per leg, against the first instant's
+        handles, which every instant of the group shares by identity.
+        """
+
+        if self.discovered_rows and all(entry.epoch_frame.rediscovered for entry in group):
+            own = [_discovered_legs(entry.epoch_frame.frozen) for entry in group]
+            if len(own) == 1:
+                return own[0], None
+            direct = own[0].direct
+            return (
+                RadarPropagationLegs(
+                    inbound=stack_slots([legs.inbound for legs in own]),
+                    outbound=stack_slots([legs.outbound for legs in own]),
+                    direct=None if direct is None else stack_slots([_present_leg(legs.direct) for legs in own]),
+                ),
+                own,
+            )
+        first = group[0].epoch_frame.frozen
+        bindings = [entry.binding for entry in group]
+        slots = len(group)
+        offsets = self.request.frequency_offsets_hz
+
+        def replayed(handle: Any, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> RadarLegBatch:
+            batch: RadarLegBatch = first.adapter.reevaluate_slots(
+                handle, sources, sinks, slot_count=slots, ad_mode=self.ad_mode, frequency_offsets_hz=offsets
+            )
+            return batch
+
+        return (
+            RadarPropagationLegs(
+                inbound=replayed(first.handles[0], transmitters, _stacked([b.site_sinks for b in bindings])),
+                outbound=replayed(first.handles[1], _stacked([b.site_sources for b in bindings]), receivers),
+                direct=None if len(first.handles) < 3 else replayed(first.handles[2], transmitters, receivers),
+            ),
+            None,
+        )
 
     def _compose_slots(
         self,
@@ -738,28 +889,33 @@ class WorldHalf:
 
         round_trip = _round_trip(group[0].epoch_frame.frozen)
         slots = len(group)
-        if not self.response.is_geometry_dependent and round_trip.pattern.plan.is_identity:
-            rows = round_trip.composer.compose_slots(replay.inbound, replay.outbound, self.response, slots)
+        if self._strided(round_trip):
+            rows = round_trip.composer.compose_slots(
+                replay.inbound, replay.outbound, self.response, slots, replay.direct
+            )
             # The stage's identity: isotropic elements at 0 dBi publish the
             # weight unchanged and record that the pattern was applied.
-            return replace(rows, weight_includes_antenna_pattern=True)
+            band = self._band(round_trip, replay, slots, None, transmitters, receivers)
+            return replace(
+                rows,
+                weight_includes_antenna_pattern=True,
+                complex_transfer_band=band,
+                frequency_offsets_hz=None if band is None else self.request.frequency_offsets_hz,
+            )
         key = (round_trip.identity, slots)
         tables = self._slot_tables.get(key)
         if tables is None:
             tables = (round_trip.composer.for_slots(slots), round_trip.pattern.for_slots(slots))
             self._slot_tables.put(key, tables)
         composer, pattern = tables
-        batched = composer.compose(replay.inbound, replay.outbound, self.response)
+        batched = composer.compose(replay.inbound, replay.outbound, self.response, replay.direct)
+        tx_targets, rx_targets = composer.segment_targets(replay.inbound, replay.outbound, replay.direct)
         weighted = pattern.apply(
             batched,
             tx_pos=transmitters.positions_m,
             rx_pos=receivers.positions_m,
-            tx_targets_m=_present(replay.inbound.departure_target_m, "departure_target_m").index_select(
-                0, batched.topology.inbound_row
-            ),
-            rx_targets_m=_present(replay.outbound.arrival_origin_m, "arrival_origin_m").index_select(
-                0, batched.topology.outbound_row
-            ),
+            tx_targets_m=tx_targets,
+            rx_targets_m=rx_targets,
         )
         return SlotRows(
             total_delay_s=weighted.total_delay_s,
@@ -768,7 +924,64 @@ class WorldHalf:
             slots=slots,
             rows_per_slot=round_trip.composer.path_count,
             weight_includes_antenna_pattern=weighted.weight_includes_antenna_pattern,
+            complex_transfer_band=self._band(round_trip, replay, slots, (tables, key), transmitters, receivers),
+            frequency_offsets_hz=self.request.frequency_offsets_hz,
         )
+
+    def _strided(self, round_trip: FrozenRoundTrip) -> bool:
+        """Whether this join composes by striding its single-slot tables (site response, unit-gain pattern)."""
+
+        return not self.response.is_geometry_dependent and round_trip.pattern.plan.is_identity
+
+    def _band(
+        self,
+        round_trip: FrozenRoundTrip,
+        replay: RadarPropagationLegs,
+        slots: int,
+        tables: tuple[tuple[TwoWayComposer, RoundTripPatternStage], tuple[Hashable, int]] | None,
+        transmitters: RadarEndpointSpec,
+        receivers: RadarEndpointSpec,
+    ) -> torch.Tensor | None:
+        """The wideband columns of a replay, ``[slots * rows, F]``, or ``None`` on a narrowband run.
+
+        The frequency columns become outer slots (:func:`band_as_slots`), so the
+        same join and pattern equations compose all of them: a strided join
+        composes ``F * slots`` slots of its single-slot tables in one launch,
+        and a per-row join replicates its group tables once per column count,
+        cached with the slot tables. Antenna patterns are frequency
+        independent, which is why one pattern stage serves every column.
+        ``tables`` is the per-row route's group tables and their cache key,
+        ``None`` on the strided route.
+        """
+
+        offsets = self.request.frequency_offsets_hz
+        if offsets is None:
+            return None
+        columns = len(offsets)
+        inbound, outbound = band_as_slots(replay.inbound), band_as_slots(replay.outbound)
+        direct = None if replay.direct is None else band_as_slots(replay.direct)
+        if tables is None:
+            weight = round_trip.composer.compose_slots(
+                inbound, outbound, self.response, slots * columns, direct
+            ).complex_transfer_ref
+        else:
+            (group_composer, group_pattern), key = tables
+            band_key = (key, columns)
+            band_tables = self._slot_tables.get(band_key)
+            if band_tables is None:
+                band_tables = (group_composer.for_slots(columns), group_pattern.for_slots(columns))
+                self._slot_tables.put(band_key, band_tables)
+            composer, pattern = band_tables
+            composed = composer.compose(inbound, outbound, self.response, direct)
+            tx_targets, rx_targets = composer.segment_targets(inbound, outbound, direct)
+            weight = pattern.apply(
+                composed,
+                tx_pos=transmitters.positions_m.repeat(columns, 1),
+                rx_pos=receivers.positions_m.repeat(columns, 1),
+                tx_targets_m=tx_targets,
+                rx_targets_m=rx_targets,
+            ).complex_transfer_ref
+        return weight.reshape(columns, -1).transpose(0, 1).contiguous()
 
     def observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
         """One frame's evaluated observations, in schedule order.
@@ -786,6 +999,7 @@ class WorldHalf:
         topology.
         """
 
+        self.begin_report()
         if self.still_world:
             yield from self._still_observations(start, offsets)
             return
@@ -900,6 +1114,12 @@ def open_session(
     antenna_pattern: Pattern,
     sensor_endpoints: SensorEndpointIds | None,
     motion: Motion,
+    environment: bool = False,
+    coupling: bool = False,
+    discovery: str = "auto",
+    max_paths: int | None = None,
+    max_round_trips: int | None = None,
+    wideband: bool = False,
 ) -> tuple[Session, Iterator[FrameTrace]]:
     """Open one scene session: the world half, and what the instrument half needs.
 
@@ -937,6 +1157,27 @@ def open_session(
     ``antenna_pattern`` is a :class:`~witwin.radar.sensors.Pattern`. A radar
     always supplies one; the isotropic default is a unit gain, which the stage
     publishes without a launch.
+
+    ``environment`` and ``coupling`` add the third, site-less leg, transmitter
+    straight to receiver: ``environment`` asks it for the session's reflection
+    and diffraction components (the environment's own returns, such as a wall
+    facing the radar), ``coupling`` for the straight segment (line of sight,
+    and transmission when requested). Its rows join each sensor pair's segment
+    with ``site_id == -1``. ``discovery`` and ``max_paths`` are forwarded to
+    every Channel discovery, and ``max_round_trips`` bounds one sensor pair's
+    composed rows, checked before the join.
+
+    ``wideband`` evaluates every OFDM subcarrier's transport rather than
+    shifting the reference coefficient: each replay asks Channel for the same
+    frozen rows at ``f_ref + n * df`` in one call, the columns are composed
+    with the reference column's equations, and the CFR kernel reads one weight
+    per subcarrier. Spreading tilt and the material and layer response across
+    the band are then exact. Only OFDM consumes a column per frequency.
+
+    ``transmission`` and ``diffraction`` in ``components`` cannot be frozen by
+    Channel, so they are admitted only where no row is replayed: ``grad="none"``
+    with a discovery at every evaluated instant, which a primal run answers
+    straight from the discovery's own rows.
     """
 
     from .synthesis.assembly import (
@@ -958,6 +1199,7 @@ def open_session(
             f"sites must be a ScatterSitePolicy, got {type(sites).__name__}; "
             "where the scatter sites come from is a declaration, not a search"
         )
+    direct_components = _direct_components(frozenset(components), environment=environment, coupling=coupling)
     solve_config = radar.system_config.with_propagation(components=components, max_depth=max_depth)
     propagation = solve_config.propagation
     array = solve_config.sensors.array
@@ -1046,6 +1288,24 @@ def open_session(
         cadence = motion.rediscover_every_frames
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
+    still_world = not sampled and cadence is None
+    band_offsets = _subcarrier_offsets(working) if wideband else None
+    unfrozen = (frozenset(components) | direct_components) & UNFREEZABLE_COMPONENTS
+    if unfrozen:
+        if band_offsets is not None:
+            raise NotImplementedError(
+                f"components {sorted(unfrozen)} cannot be frozen, and a wideband band is a replay of frozen "
+                "rows at every subcarrier; drop wideband=True or those components"
+            )
+        _require_discovery_only(sorted(unfrozen), ad_mode=ad_mode, still_world=still_world, cadence=cadence)
+    request = LegRequest(
+        discovery=discovery,
+        max_paths=max_paths,
+        max_round_trips=max_round_trips,
+        direct_components=direct_components,
+        replays=not unfrozen,
+        frequency_offsets_hz=band_offsets,
+    )
 
     world = WorldHalf(
         radar,
@@ -1061,8 +1321,9 @@ def open_session(
         ad_mode=ad_mode,
         cadence=cadence,
         world_motion=motion.world,
-        still_world=not sampled and cadence is None,
+        still_world=still_world,
         batch_observations=int(motion.batch_observations),
+        request=request,
     )
     session = Session(
         radar=radar,
@@ -1083,6 +1344,8 @@ def open_session(
         grad=str(ad_mode),
         motion=motion,
         times=instants,
+        environment=environment,
+        coupling=coupling,
     )
     # Whether a non-adaptive route can have missed a path birth is a property
     # of the declared cadence and world motion, not of any one frame, so it is
@@ -1093,6 +1356,73 @@ def open_session(
     return session, _frame_traces(session, world, path_set_complete=bool(complete))
 
 
+#: Components Channel publishes at discovery and cannot freeze for replay.
+UNFREEZABLE_COMPONENTS = frozenset({"transmission", "diffraction"})
+
+
+def _direct_components(components: frozenset[str], *, environment: bool, coupling: bool) -> frozenset[str]:
+    """The site-less TX->RX leg's components, empty when the run composes none.
+
+    ``environment`` takes the session's interacting components - the paths that
+    leave the transmitter, meet the environment and come back - and
+    ``coupling`` the straight segment between the elements: the line of sight,
+    and transmission through whatever lies on it when transmission is
+    requested. Neither borrows a component the session did not ask for, except
+    that coupling IS the line of sight.
+    """
+
+    for name, value in (("environment", environment), ("coupling", coupling)):
+        if type(value) is not bool:
+            raise TypeError(f"{name} must be a bool, got {type(value).__name__}")
+    direct: set[str] = set()
+    if environment:
+        interacting = components & {"reflection", "diffraction"}
+        if not interacting:
+            raise ValueError(
+                "environment=True asks for the environment's own returns, which are reflections or diffraction; "
+                "set reflections>0 or diffraction=True"
+            )
+        direct |= interacting
+    if coupling:
+        direct |= {"los"} | (components & {"transmission"})
+    return frozenset(direct)
+
+
+def _subcarrier_offsets(spec: object) -> tuple[float, ...]:
+    """The OFDM subcarriers as offsets from the reference frequency, ``n * df``, for the spec synthesis runs."""
+
+    from .synthesis.assembly import OfdmSpec
+
+    if not isinstance(spec, OfdmSpec):
+        raise NotImplementedError(
+            f"wideband=True evaluates one transport column per frequency and only OFDM consumes one (a column "
+            f"per subcarrier); a {type(spec).__name__} run uses the reference-frequency coefficient and the "
+            "exact delay phase, see R-ADR-015"
+        )
+    if spec.time_domain:
+        raise NotImplementedError(
+            "wideband=True needs the OFDM CFR family, which reads one weight per subcarrier; a modulated or "
+            "time-output OFDM stream is synthesized by the time-domain family, one tap per row, see R-ADR-035"
+        )
+    return tuple(float(n) * spec.subcarrier_spacing_hz for n in range(spec.num_subcarriers))
+
+
+def _require_discovery_only(unfrozen: list[str], *, ad_mode: str, still_world: bool, cadence: int | None) -> None:
+    """Refuse a run that would replay rows Channel cannot freeze, by name."""
+
+    if ad_mode != "none":
+        raise NotImplementedError(
+            f"components {unfrozen} exist only at their discovery instant and carry no derivative: Channel cannot "
+            f"freeze them for the replay a grad={ad_mode!r} run differentiates through. Use grad='none'"
+        )
+    if not still_world and cadence != 1:
+        raise NotImplementedError(
+            f"components {unfrozen} cannot be frozen, so every evaluated instant must rediscover; "
+            f"a discovery cadence of {cadence!r} observations replays frozen rows between discoveries. "
+            "Drop Motion.rediscover_every_frames"
+        )
+
+
 def _frame_traces(session: Session, world: WorldHalf, *, path_set_complete: bool) -> Iterator[FrameTrace]:
     for start in session.times:
         yield FrameTrace(
@@ -1101,6 +1431,7 @@ def _frame_traces(session: Session, world: WorldHalf, *, path_set_complete: bool
             observations=world.observations(start, session.offsets),
             path_set_complete=path_set_complete,
             motion_sampling_exhaustive=True,
+            discovery=world.report,
         )
 
 
@@ -1112,7 +1443,9 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
         raise NotImplementedError("adaptive motion currently requires FMCW")
     for start in session.times:
         actual_times = start + session.offsets
+        world.begin_report()
         frame = trace_adaptive_frame(actual_times, world.evaluate, spec, session.motion, session.reference_frequency_hz)
+        report = world.report()
         last = frame.last
         if not isinstance(last, EvaluatedObservation):
             raise TypeError("the adaptive controller returns the session's evaluated observations")
@@ -1128,6 +1461,7 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
             opened=frame.first.epoch_frame,
             path_set_complete=bool(frame.stats["exhaustive"] or frame.stats["topology_proved_complete"]),
             motion_sampling_exhaustive=bool(frame.stats["exhaustive"]),
+            discovery=partial(_constant_report, report),
         )
 
 
@@ -1508,6 +1842,7 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
 
         synthesis = replace(synthesis, cube=multiplex_transmitters(synthesis.cube, working))
     synthesis = replace(synthesis, observation_schedule=observation_schedule(session, trace))
+    discovery = trace.discovery()
     frame_cube, synthesis = _finish_frame(session, synthesis, trace.time_s)
     loop = session.loop
     return SceneFrame(
@@ -1517,8 +1852,9 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         sample_times_s=trace.sample_times_s,
         epoch=int(opened.epoch),
         reason=opened.reason,
-        path_set_complete=trace.path_set_complete,
+        path_set_complete=trace.path_set_complete and discovery.complete,
         motion_sampling_exhaustive=trace.motion_sampling_exhaustive,
+        discovery=discovery,
         compile_count=int(loop.compile_count),
         discovery_count=int(loop.discovery_count),
         epoch_frame=closing.epoch_frame,
@@ -1595,6 +1931,12 @@ class Paths:
     #: statement relative to it, not an absolute one.
     los: bool
     reflections: int
+    transmission: bool
+    diffraction: bool
+    #: Whether site-less TX->RX rows were composed: the environment's own
+    #: returns, and the elements' straight-segment coupling.
+    environment: bool
+    coupling: bool
     #: The differentiation mode the replay ran under.
     grad: str
     #: The sampling record as requested; ``kind`` is what it resolved to.
@@ -1606,6 +1948,10 @@ class Paths:
     path_set_complete: bool
     motion_sampling_exhaustive: bool
     adaptive_diagnostics: tuple[dict[str, Any], ...]
+    #: Channel's completeness and dropped-transmission count; see
+    #: :class:`~witwin.radar.Result`. ``path_set_complete`` is ANDed with it.
+    discovery_complete: bool
+    transmission_dropped_rows: int
     #: The closing observation's typed state, as the result publishes it.
     last_snapshot: object
     last_compiled_scene: object
@@ -1665,6 +2011,8 @@ class Paths:
             path_set_complete=bool(frame_trace.path_set_complete),
             motion_sampling_exhaustive=bool(frame_trace.motion_sampling_exhaustive),
             adaptive_diagnostics=() if frame_trace.stats is None else (frame_trace.stats,),
+            discovery_complete=frame_trace.discovery().complete,
+            transmission_dropped_rows=frame_trace.discovery().transmission_dropped_rows,
             last_snapshot=closing.epoch_frame.snapshot,
             last_compiled_scene=closing.epoch_frame.compiled,
             last_propagation=closing.legs,
@@ -1688,6 +2036,99 @@ class Paths:
             )
         return _retained(frame_trace)[observation].composed
 
+    def component_index(
+        self, frame: int = 0, observation: int = -1, declaration: ComponentDeclaration | None = None
+    ) -> RadarComponentIndex:
+        """Which component class owns each row of one observation's composed batch.
+
+        ``declaration`` defaults to :func:`default_component_declaration` of
+        that observation's epoch: every declared site a target and every
+        interacted material clutter, so a site row bouncing off a wall is
+        environment clutter, a site-less row through a wall is environment
+        clutter and the site-less line of sight is direct leakage.
+        """
+
+        observation_record = _retained(self._frames[frame])[observation]
+        return _component_index(observation_record.epoch_frame.frozen, declaration)
+
+    def select(self, component: str, declaration: ComponentDeclaration | None = None) -> Paths:
+        """These rows with every row outside one component class made inert.
+
+        ``radar.echo(paths.select("environment_clutter"))`` synthesizes the
+        clutter alone, through the same kernels and the same pair partition,
+        and the per-class echoes sum to the full echo because synthesis is
+        linear in the rows. A row outside the class is marked invalid, which
+        every synthesis kernel treats as an exact zero.
+
+        An adaptive frame interpolates its rows from a table, not per batch, so
+        it is refused rather than half-masked.
+        """
+
+        frames = []
+        masked: dict[int, SlotBatch] = {}
+        for frame_trace in self._frames:
+            if frame_trace.adaptive is not None:
+                raise NotImplementedError(
+                    "an adaptive frame interpolates its rows from one table; select a component on a "
+                    "trace that keeps one batch per instant (Motion.adc(), Motion.chirp() or a static scene)"
+                )
+            observations = []
+            for record in _retained(frame_trace):
+                index = _component_index(record.epoch_frame.frozen, declaration)
+                keep = index.mask(component)
+                batch = record.batch
+                if batch is not None and id(batch) not in masked:
+                    rows = batch.rows
+                    slot_keep = keep.repeat(batch.slots)
+                    valid = slot_keep if rows.row_valid is None else rows.row_valid & slot_keep
+                    masked[id(batch)] = replace(batch, rows=replace(rows, row_valid=valid))
+                observations.append(
+                    replace(
+                        record,
+                        composed=_masked(record.composed, keep),
+                        batch=None if batch is None else masked[id(batch)],
+                    )
+                )
+            frames.append(replace(frame_trace, observations=tuple(observations)))
+        closing = _retained(frames[-1])[-1]
+        return replace(self, _frames=tuple(frames), last_radar_paths=closing.composed)
+
+
+def default_component_declaration(epoch: FrozenEpoch) -> ComponentDeclaration:
+    """Every declared site a target, every interacted compiled material clutter.
+
+    Read from the epoch's frozen legs on the host, at most once per epoch and
+    never in a frame loop.
+    """
+
+    from .paths import ComponentDeclaration
+
+    materials: set[int] = set()
+    for handle in epoch.handles:
+        values = handle.material_sequence.reshape(-1).tolist()
+        materials.update(int(value) for value in values if int(value) >= 0)
+    return ComponentDeclaration(
+        target_site_ids=frozenset(_round_trip(epoch).binding.site_ids), clutter_material_slots=frozenset(materials)
+    )
+
+
+def _component_index(epoch: FrozenEpoch, declaration: ComponentDeclaration | None) -> RadarComponentIndex:
+    from .paths import RadarComponentIndex
+
+    handles = epoch.handles
+    return RadarComponentIndex.from_two_way(
+        _round_trip(epoch).composer,
+        handles[0],
+        handles[1],
+        default_component_declaration(epoch) if declaration is None else declaration,
+        direct=handles[2] if len(handles) > 2 else None,
+    )
+
+
+def _masked(paths: RadarPathBatch, keep: torch.Tensor) -> RadarPathBatch:
+    valid = keep if paths.row_valid is None else paths.row_valid & keep
+    return replace(paths, row_valid=valid)
+
 
 def _retained(frame: FrameTrace) -> tuple[Observation, ...]:
     observations = frame.observations
@@ -1710,10 +2151,20 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
     for trace in traces:
         observations = tuple(trace.observations)
         opened = trace.opened if trace.opened is not None else observations[0].epoch_frame
-        frames.append(replace(trace, observations=observations, opened=opened))
+        report = trace.discovery()
+        frames.append(
+            replace(
+                trace,
+                observations=observations,
+                opened=opened,
+                discovery=partial(_constant_report, report),
+                path_set_complete=trace.path_set_complete and report.complete,
+            )
+        )
         epochs.append(int(opened.epoch))
         reasons.append(opened.reason)
     closing = _retained(frames[-1])[-1]
+    discovery = reduce(DiscoveryReport.merged, (frame.discovery() for frame in frames))
     return Paths(
         kind=session.kind,
         carrier=float(session.reference_frequency_hz),
@@ -1722,6 +2173,10 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
         sample_times=tuple(frame.sample_times_s for frame in frames),
         los="los" in session.components,
         reflections=int(session.max_depth) if "reflection" in session.components else 0,
+        transmission="transmission" in session.components,
+        diffraction="diffraction" in session.components,
+        environment=session.environment,
+        coupling=session.coupling,
         grad=session.grad,
         motion=session.motion,
         epochs=tuple(epochs),
@@ -1731,6 +2186,8 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
         path_set_complete=all(frame.path_set_complete for frame in frames),
         motion_sampling_exhaustive=all(frame.motion_sampling_exhaustive for frame in frames),
         adaptive_diagnostics=tuple(frame.stats for frame in frames if frame.stats is not None),
+        discovery_complete=discovery.complete,
+        transmission_dropped_rows=discovery.transmission_dropped_rows,
         last_snapshot=closing.epoch_frame.snapshot,
         last_compiled_scene=closing.epoch_frame.compiled,
         last_propagation=closing.legs,
