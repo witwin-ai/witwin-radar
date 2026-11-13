@@ -166,6 +166,7 @@ def _install_stubs(monkeypatch, recorder, *, rows: int, pairs: int):
         interaction_type = torch.zeros(rows, 1, dtype=torch.int32)
         source_index = torch.zeros(rows, dtype=torch.int32)
         sink_index = torch.zeros(rows, dtype=torch.int32)
+        edge_id = torch.full((rows,), -1, dtype=torch.int32)
 
     class _Bucket:
         component = "los"
