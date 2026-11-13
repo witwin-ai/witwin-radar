@@ -164,12 +164,12 @@ law and take no derivative.
 `tests/oracle/test_rcs_convergence.py` (5 cm PEC shapes at 10 m, 77 GHz; error
 against the analytic RCS):
 
-| Shape | Before (N isotropic sites of sigma/N) | After (`MeshTargets`) |
+| Shape (analytic) | Before: `N` isotropic sites of `sigma / N` | After: `MeshTargets` |
 |---|---|---|
-| plate, 2 / 32 / 512 faces | +24.07 / +30.10 / +36.12 dB (16^2 / 32^2 / 64^2 sites) | -0.01 / -0.01 / -0.01 dB |
-| sphere, 3968 / 16128 / 36480 faces | -11.02 / -5.06 / +0.97 dB (1024 / 4096 / 16384 sites) | -0.05 / +0.27 / -0.13 dB |
-| dihedral, 128 / 512 / 2048 faces, `reflections=1` | not measured | +0.10 / -0.03 / -0.08 dB |
-| trihedral, 48 / 192 / 768 faces, `reflections=2` | +11.72 / +3.91 / +8.21 dB (16 / 32 / 64 per edge) | -8.9 / -8.1 / -8.5 dB (strict xfail, PH-5) |
+| plate (7.14 dBsm) | +24.07 / +30.10 / +36.12 dB at 16^2 / 32^2 / 64^2 sites | -0.00 / -0.01 / -0.01 dB at 2 / 32 / 512 faces |
+| sphere (-21.05 dBsm) | -11.02 / -5.06 / +0.97 dB at 1024 / 4096 / 16384 sites | -0.05 / +0.27 / -0.13 dB at 3968 / 16128 / 36480 faces |
+| dihedral (10.15 dBsm), `reflections=1` | not measured | +0.10 / +0.14 / -0.08 dB at 256 / 1024 / 4096 faces |
+| trihedral (2.37 dBsm), `reflections=2` | +11.72 / +3.91 / +8.21 dB at 16 / 32 / 64 per edge | -8.93 / -8.14 / -8.49 dB at 48 / 192 / 768 faces (strict xfail, PH-5) |
 
 The trihedral's composition is correct and its level is the polarization
 projection of section 3: after two perpendicular reflections the field is the
