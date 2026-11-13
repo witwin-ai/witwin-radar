@@ -17,7 +17,7 @@ Advanced records stay in their owner modules and are imported from there:
 from . import processing
 from .frontend import Adc, Agc, Compression, Iq, Noise
 from .motion import Motion
-from .radar import Fmcw, Leakage, Ofdm, Pulsed, Radar
+from .radar import Chirp, Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .results import Frame, Result
 from .sensors import Coupling, Pattern
 from .simulation import Paths
@@ -27,6 +27,7 @@ __all__ = [
     "Adc",
     "Agc",
     "Aspect",
+    "Chirp",
     "Compression",
     "Coupling",
     "Fmcw",

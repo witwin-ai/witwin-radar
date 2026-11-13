@@ -24,11 +24,13 @@ the spec against it at construction turns six documented hazards into four
 impossible states, which is the difference between a rule and a comment.
 """
 
+import cmath
 import math
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
 
+import numpy as np
 import torch
 
 from ..paths import RadarComponentIndex, RadarPathBatch, RadarPathTopology
@@ -107,6 +109,26 @@ FMCW_OUTPUT_SPECTRUM = "spectrum"
 FMCW_OUTPUT_BEAT = "beat"
 FMCW_OUTPUT_DOMAINS = (FMCW_OUTPUT_SPECTRUM, FMCW_OUTPUT_BEAT)
 
+#: How the transmitters share a frame (R-ADR-048). ``tdm`` fires them one per
+#: chirp slot; ``ddm`` fires all of them every chirp, transmitter ``t`` carrying
+#: the phase ramp ``exp(+j 2 pi t c / ddm_bands)`` across chirps ``c``; ``bpm``
+#: fires all of them every chirp with the Hadamard sign ``H[c mod T, t]``.
+MIMO_TDM = "tdm"
+MIMO_DDM = "ddm"
+MIMO_BPM = "bpm"
+MIMO_SCHEMES = (MIMO_TDM, MIMO_DDM, MIMO_BPM)
+
+
+def hadamard(order: int) -> np.ndarray:
+    """The Sylvester Hadamard matrix of a power-of-two ``order``, as ``int64``."""
+
+    if order < 1 or order & (order - 1):
+        raise ValueError(f"a Sylvester Hadamard order is a power of two, got {order}")
+    matrix = np.ones((1, 1), dtype=np.int64)
+    while matrix.shape[0] < order:
+        matrix = np.block([[matrix, matrix], [matrix, -matrix]])
+    return matrix
+
 
 @dataclass(frozen=True, slots=True)
 class FmcwSpec:
@@ -171,8 +193,31 @@ class FmcwSpec:
     num_tx: int = 1
     num_rx: int = 1
     output_domain: str = FMCW_OUTPUT_SPECTRUM
+    #: Start frequency of the ramp relative to ``reference_frequency_hz``, Hz.
+    #: The weight carries only the reference frequency, so the kernel applies
+    #: the offset to the FULL delay.
+    start_offset_hz: float = 0.0
+    #: A chirp sequence (R-ADR-047): one ``(slope [Hz/s], start offset [Hz],
+    #: idle [s], ADC start [s], ramp end [s])`` profile per slot of a loop,
+    #: repeated cyclically across the frame's slots. Slot ``s`` occupies its
+    #: ramp then its idle, and its ramp starts at the sum of the earlier slots'
+    #: ``idle + ramp_end``. Empty is the uniform ramp the scalar fields describe.
+    sequence: tuple[tuple[float, float, float, float, float], ...] = ()
+    #: The transmitted ramp's phase error ``E(t) = sum_i c_i t^(i + 2)`` in
+    #: CYCLES, ``t`` the time since the ramp start, coefficients in cycles/s^k.
+    phase_error_cycles: tuple[float, ...] = ()
+    #: The receiver digitises only the in-phase channel: the published samples
+    #: are ``Re`` of the complex baseband after the receive chain.
+    real_adc: bool = False
+    mimo: str = MIMO_TDM
+    #: DDM only: how many Doppler sub-bands the phase ramp divides the band
+    #: into, at least ``num_tx``. Zero means ``num_tx``.
+    ddm_bands: int = 0
 
     def __post_init__(self) -> None:
+        require_host_floats(
+            "FmcwSpec", WAVEFORM_SPEC_REASON, start_offset_hz=self.start_offset_hz, ddm_bands=self.ddm_bands
+        )
         require_host_floats(
             "FmcwSpec",
             WAVEFORM_SPEC_REASON,
@@ -209,6 +254,125 @@ class FmcwSpec:
         if self.output_domain not in FMCW_OUTPUT_DOMAINS:
             raise ValueError(f"output_domain must be one of {FMCW_OUTPUT_DOMAINS}, got {self.output_domain!r}")
         require_single_carrier_home(self.carrier_hz, self.carrier_rate_hz)
+        if not math.isfinite(self.start_offset_hz):
+            raise ValueError("start_offset_hz must be finite")
+        for index, profile in enumerate(self.sequence):
+            if len(profile) != 5 or not all(math.isfinite(float(value)) for value in profile):
+                raise ValueError(f"sequence[{index}] must be five finite numbers (slope, offset, idle, adc, ramp end)")
+            _, _, idle, adc_start, ramp_end = (float(value) for value in profile)
+            if idle < 0.0 or ramp_end <= 0.0:
+                raise ValueError(f"sequence[{index}] needs a non-negative idle and a positive ramp end")
+            if adc_start + (self.num_samples - 1) * self.sample_period_s >= idle + ramp_end:
+                raise ValueError(f"sequence[{index}]'s ADC window overruns its slot (idle + ramp end)")
+        if not all(math.isfinite(float(value)) for value in self.phase_error_cycles):
+            raise ValueError("phase_error_cycles must be finite")
+        if self.mimo not in MIMO_SCHEMES:
+            raise ValueError(f"mimo must be one of {MIMO_SCHEMES}, got {self.mimo!r}")
+        if self.mimo == MIMO_BPM:
+            if self.num_tx & (self.num_tx - 1):
+                raise ValueError(f"BPM codes the transmitters with a Hadamard matrix; num_tx={self.num_tx} is not 2^k")
+            if self.num_chirps % self.num_tx:
+                raise ValueError(
+                    f"BPM codes blocks of num_tx={self.num_tx} chirps; num_chirps={self.num_chirps} is not a multiple"
+                )
+        if type(self.ddm_bands) is not int or self.ddm_bands < 0:
+            raise ValueError(f"ddm_bands must be a non-negative int, got {self.ddm_bands!r}")
+        if self.ddm_bands and (self.mimo != MIMO_DDM or self.ddm_bands < self.num_tx):
+            raise ValueError("ddm_bands belongs to DDM and must be at least num_tx")
+
+    # -- the frame's slots ----------------------------------------------------
+
+    @property
+    def simultaneous(self) -> bool:
+        """Every transmitter fires every chirp (DDM, BPM) rather than one per slot."""
+
+        return self.mimo != MIMO_TDM
+
+    @property
+    def transmit_channels(self) -> int:
+        """How many separately recorded transmit channels the published cube has.
+
+        ``num_tx`` under TDM, whose slots record each transmitter apart; one
+        under DDM and BPM, whose receivers hear every transmitter at once until
+        processing demultiplexes them.
+        """
+
+        return 1 if self.simultaneous else self.num_tx
+
+    @property
+    def slot_count(self) -> int:
+        """The frame's chirp slots: ``num_chirps * num_tx`` under TDM, else ``num_chirps``."""
+
+        return self.num_chirps * (1 if self.simultaneous else self.num_tx)
+
+    @property
+    def uniform(self) -> bool:
+        """Whether every slot is the scalar ramp: no sequence and no start offset."""
+
+        return not self.sequence and self.start_offset_hz == 0.0
+
+    @property
+    def admits_direct_spectrum(self) -> bool:
+        """Whether the closed-form Dirichlet range spectrum describes this ramp.
+
+        It needs one slope and one window on every chirp, a linear ramp and a
+        complex receiver. Anything else is synthesized as beat samples and
+        transformed by processing.
+        """
+
+        return not self.sequence and not self.phase_error_cycles and not self.real_adc
+
+    def slot_profiles(self) -> np.ndarray:
+        """``float64[slot_count, 4]``: each slot's ramp start [s], slope, start offset, ADC start.
+
+        Uniform ramps put slot ``s`` at ``s * chirp_period_s``, which is the
+        kernel's own scalar expression. A sequence accumulates its profiles'
+        ``idle + ramp_end`` in float64.
+        """
+
+        count = self.slot_count
+        if not self.sequence:
+            slots = np.arange(count, dtype=np.float64)
+            return np.stack(
+                (
+                    slots * self.chirp_period_s,
+                    np.full(count, self.slope_hz_per_s),
+                    np.full(count, self.start_offset_hz),
+                    np.full(count, self.t_start_s),
+                ),
+                axis=1,
+            )
+        loop = np.asarray(self.sequence, dtype=np.float64)
+        rows = loop[np.arange(count) % len(loop)]
+        periods = rows[:, 2] + rows[:, 4]
+        starts = np.concatenate(([0.0], np.cumsum(periods)[:-1]))
+        return np.stack((starts, rows[:, 0], rows[:, 1], rows[:, 3]), axis=1)
+
+    def slot_spec(self, slot: int) -> "FmcwSpec":
+        """The uniform one-chirp spec of frame slot ``slot``: its slope, offset and ADC start."""
+
+        _, slope, offset, adc_start = self.slot_profiles()[int(slot)]
+        return replace(
+            self, sequence=(), slope_hz_per_s=float(slope), start_offset_hz=float(offset), t_start_s=float(adc_start)
+        )
+
+    def transmit_code(self) -> np.ndarray:
+        """``complex128[num_chirps, num_tx]``: each transmitter's physical phase per chirp.
+
+        DDM: ``exp(+j 2 pi t c / B)``, ``B = ddm_bands or num_tx``. BPM:
+        ``H[c mod num_tx, t]``. TDM: ones (it codes in time, not in phase).
+        Physical means Channel's convention; the beat cube carries its
+        conjugate, because the receiver mixes the echo against an uncoded ramp.
+        """
+
+        chirps = np.arange(self.num_chirps)
+        transmitters = np.arange(self.num_tx)
+        if self.mimo == MIMO_DDM:
+            bands = self.ddm_bands or self.num_tx
+            return np.exp(2j * np.pi * np.outer(chirps, transmitters) / bands)
+        if self.mimo == MIMO_BPM:
+            return hadamard(self.num_tx)[chirps % self.num_tx].astype(np.complex128)
+        return np.ones((self.num_chirps, self.num_tx), dtype=np.complex128)
 
     @property
     def sample_rate_hz(self) -> float:
@@ -231,10 +395,16 @@ class FmcwSpec:
         With ``num_tx`` transmitters sharing the frame in TDM, a given
         transmitter revisits its slot once every ``num_tx`` chirp periods. This
         is the period the Doppler FFT actually samples at, and it is why TDM
-        costs a factor ``num_tx`` of unambiguous velocity.
+        costs a factor ``num_tx`` of unambiguous velocity. DDM and BPM fire
+        every transmitter every chirp, so their physical cube is sampled once a
+        chirp. A sequence publishes its mean: the frame length over the chirps.
         """
 
-        return self.chirp_period_s * self.num_tx
+        if self.sequence:
+            profiles = self.slot_profiles()
+            last = np.asarray(self.sequence, dtype=np.float64)[(self.slot_count - 1) % len(self.sequence)]
+            return float(profiles[-1, 0] + last[2] + last[4]) / self.num_chirps
+        return self.chirp_period_s * (1 if self.simultaneous else self.num_tx)
 
     @property
     def max_unambiguous_speed_mps(self) -> float:
@@ -269,6 +439,19 @@ class FmcwSpec:
 #: half-band phase offset between ``H[0][p][0]`` and ``C_rt`` and force a phase
 #: correction into every cross-waveform amplitude comparison.
 SUBCARRIER_ORIGIN_F_REF_AT_N0 = "f_ref_at_n0"
+
+#: The OFDM output domains: the channel frequency response, or the received
+#: post-prefix time samples of the modulated symbol stream (R-ADR-046).
+OFDM_OUTPUT_CFR = "cfr"
+OFDM_OUTPUT_TIME = "time"
+OFDM_OUTPUT_DOMAINS = (OFDM_OUTPUT_CFR, OFDM_OUTPUT_TIME)
+
+#: Subcarrier modulations and their unit-mean-power constellations. ``ones``
+#: is the unmodulated comb every subcarrier of the ideal CFR assumes.
+OFDM_MODULATIONS = ("ones", "bpsk", "qpsk", "qam16", "qam64")
+_QAM_LEVELS = {"bpsk": (np.array([-1.0, 1.0]), 1.0), "qpsk": (np.array([-1.0, 1.0]), math.sqrt(2.0))}
+_QAM_LEVELS["qam16"] = (np.array([-3.0, -1.0, 1.0, 3.0]), math.sqrt(10.0))
+_QAM_LEVELS["qam64"] = (np.arange(-7.0, 8.0, 2.0), math.sqrt(42.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,8 +539,31 @@ class OfdmSpec:
     carrier_hz: float = 0.0
     carrier_rate_hz: float = 0.0
     subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
+    #: The subcarrier constellation, one of :data:`OFDM_MODULATIONS`. Anything
+    #: but ``ones`` is synthesized in the time domain.
+    modulation: str = "ones"
+    #: Every ``pilot_spacing``-th subcarrier (``n % pilot_spacing == 0``)
+    #: carries the known pilot ``1``. Zero is no pilot comb.
+    pilot_spacing: int = 0
+    #: Seed of the data symbols: the table is a pure function of the seed, the
+    #: modulation and the grid.
+    symbol_seed: int = 0
+    output_domain: str = OFDM_OUTPUT_CFR
+    #: Time domain only: post-prefix samples per output symbol. Zero is the
+    #: whole useful symbol, ``num_subcarriers`` samples.
+    num_samples: int = 0
 
     def __post_init__(self) -> None:
+        if self.modulation not in OFDM_MODULATIONS:
+            raise ValueError(f"modulation must be one of {OFDM_MODULATIONS}, got {self.modulation!r}")
+        if self.output_domain not in OFDM_OUTPUT_DOMAINS:
+            raise ValueError(f"output_domain must be one of {OFDM_OUTPUT_DOMAINS}, got {self.output_domain!r}")
+        for name in ("pilot_spacing", "symbol_seed", "num_samples"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative int, got {value!r}")
+        if self.num_samples > self.num_subcarriers:
+            raise ValueError("num_samples cannot exceed the useful symbol's num_subcarriers samples")
         require_host_floats(
             "OfdmSpec",
             WAVEFORM_SPEC_REASON,
@@ -469,6 +675,51 @@ class OfdmSpec:
 
         return SPEED_OF_LIGHT_M_PER_S / (4.0 * self.reference_frequency_hz * self.symbol_period_s)
 
+    @property
+    def time_domain(self) -> bool:
+        """Whether the frame is synthesized as received time samples.
+
+        A modulated stream or a time output needs the time-domain kernel; the
+        unmodulated comb published as a CFR keeps the closed-form CFR kernel.
+        """
+
+        return self.modulation != "ones" or self.output_domain == OFDM_OUTPUT_TIME
+
+    @property
+    def samples_per_symbol(self) -> int:
+        return self.num_samples or self.num_subcarriers
+
+    def pilot_mask(self) -> np.ndarray:
+        """``bool[num_subcarriers]``: the subcarriers that carry the pilot."""
+
+        mask = np.zeros(self.num_subcarriers, dtype=bool)
+        if self.pilot_spacing:
+            mask[:: self.pilot_spacing] = True
+        return mask
+
+    def symbol_table(self) -> np.ndarray:
+        """``complex128[num_symbols, num_subcarriers]``: the transmitted symbols ``X``.
+
+        Unit mean power for every constellation, so the time envelope has unit
+        mean power and the noise contract holds sample by sample. The data
+        symbols are drawn from a PCG64 generator seeded by ``symbol_seed``;
+        pilots overwrite their subcarriers with ``1``.
+        """
+
+        shape = (self.num_symbols, self.num_subcarriers)
+        if self.modulation == "ones":
+            table = np.ones(shape, dtype=np.complex128)
+        else:
+            levels, scale = _QAM_LEVELS[self.modulation]
+            generator = np.random.Generator(np.random.PCG64(self.symbol_seed))
+            real = levels[generator.integers(0, len(levels), size=shape)]
+            imag = (
+                np.zeros(shape) if self.modulation == "bpsk" else levels[generator.integers(0, len(levels), size=shape)]
+            )
+            table = (real + 1j * imag) / scale
+        table[:, self.pilot_mask()] = 1.0
+        return table
+
     def subcarrier_frequency_hz(self, subcarrier: int) -> float:
         """``f_n = f_ref + n * df`` under the pinned origin."""
 
@@ -490,14 +741,22 @@ class OfdmSpec:
         return float(round_trip_delay_s) / self.waveform_sample_period_s
 
 
-#: The two analytic pulse shapes. Both are closed-form functions of a
-#: CONTINUOUS argument, which is the constraint that matters: the kernel
-#: evaluates ``p(t - tau)`` at the exact fractional delay, so there is no
-#: lookup table, no gather, and no interpolation anywhere in the family. A
-#: sampled or tabulated pulse is a different design and needs its own decision.
+#: The pulse shapes. Every one is a closed-form function of a CONTINUOUS
+#: argument: the kernel evaluates ``s(t - tau)`` at the exact fractional delay
+#: and nothing is snapped to a sample. ``rect`` and ``lfm`` are analytic;
+#: ``coded`` is a piecewise envelope of ``num_chips`` chips of width
+#: ``T_p / num_chips``, chip ``i`` being ``a_i exp(j 2 pi f_i (u - i T_c))``.
+#: That one family covers a binary phase code (PMCW), a frequency-hopped code
+#: (FSK) and a user-sampled complex envelope held for one chip per sample, the
+#: zero-order hold a DAC outputs (R-ADR-046).
 PULSE_KIND_RECT = "rect"
 PULSE_KIND_LFM = "lfm"
-PULSE_KINDS = frozenset({PULSE_KIND_RECT, PULSE_KIND_LFM})
+PULSE_KIND_CODED = "coded"
+PULSE_KINDS = frozenset({PULSE_KIND_RECT, PULSE_KIND_LFM, PULSE_KIND_CODED})
+
+#: How far above one a chip magnitude may round before it is refused. A chip of
+#: magnitude one is the full transmit amplitude ``sqrt(P_t)``.
+_CHIP_MAGNITUDE_SLACK = 1e-9
 
 #: ``|p(t)| = 1`` inside the pulse: the envelope is dimensionless, so a received
 #: sample is ``C_rt`` in sqrt(W) at the receive port and ``|y|^2`` is the power
@@ -588,11 +847,24 @@ class PulsedSpec:
     carrier_hz: float = 0.0
     carrier_rate_hz: float = 0.0
     pulse_normalization: str = PULSE_NORMALIZATION_UNIT_AMPLITUDE
+    #: ``coded`` only: the complex chip amplitudes ``a_i``, each of magnitude at
+    #: most one (one is the full transmit amplitude). Empty for every other kind.
+    chips: tuple[complex, ...] = ()
+    #: ``coded`` only: the frequency ``f_i`` of each chip, Hz. Empty is all zero.
+    chip_frequencies_hz: tuple[float, ...] = ()
+    #: Stepped-frequency carrier offset between consecutive pulses, Hz: pulse
+    #: ``l`` is transmitted at ``f_ref + l * frequency_step_hz``. Zero is a
+    #: fixed carrier.
+    frequency_step_hz: float = 0.0
+    #: The envelope is the periodic extension of one code period: a code that
+    #: is transmitted continuously (PMCW). Requires ``pri_s == pulse_width_s``.
+    periodic: bool = False
 
     def __post_init__(self) -> None:
         require_host_floats(
             "PulsedSpec",
             WAVEFORM_SPEC_REASON,
+            frequency_step_hz=self.frequency_step_hz,
             num_pulses=self.num_pulses,
             num_samples=self.num_samples,
             sample_period_s=self.sample_period_s,
@@ -629,11 +901,36 @@ class PulsedSpec:
             )
         if self.pulse_kind not in PULSE_KINDS:
             raise ValueError(
-                f"pulse_kind must be one of {sorted(PULSE_KINDS)}, got "
-                f"{self.pulse_kind!r}; both supported kinds are ANALYTIC, "
-                "because the kernel evaluates the pulse at a continuous "
-                "fractional delay. A sampled or tabulated pulse is a different "
-                "design and needs its own decision"
+                f"pulse_kind must be one of {sorted(PULSE_KINDS)}, got {self.pulse_kind!r}; a sampled envelope is "
+                "the 'coded' kind, held for one chip per sample"
+            )
+        if self.pulse_kind == PULSE_KIND_CODED:
+            if not self.chips:
+                raise ValueError("a coded pulse needs at least one chip")
+            for chip in self.chips:
+                if not (math.isfinite(complex(chip).real) and math.isfinite(complex(chip).imag)):
+                    raise ValueError("chip amplitudes must be finite")
+                if abs(complex(chip)) > 1.0 + _CHIP_MAGNITUDE_SLACK:
+                    raise ValueError(
+                        f"a chip of magnitude {abs(complex(chip)):.6g} exceeds one, the full transmit amplitude "
+                        "sqrt(P_t); scale the envelope so its peak is at most one"
+                    )
+            if self.chip_frequencies_hz and len(self.chip_frequencies_hz) != len(self.chips):
+                raise ValueError(
+                    f"chip_frequencies_hz holds {len(self.chip_frequencies_hz)} values for {len(self.chips)} chips"
+                )
+            if not all(math.isfinite(float(value)) for value in self.chip_frequencies_hz):
+                raise ValueError("chip frequencies must be finite")
+            if not any(abs(complex(chip)) > 0.0 for chip in self.chips):
+                raise ValueError("a coded pulse whose every chip is zero transmits nothing")
+        elif self.chips or self.chip_frequencies_hz:
+            raise ValueError(f"only a coded pulse carries chips; this pulse is {self.pulse_kind!r}")
+        if not math.isfinite(self.frequency_step_hz):
+            raise ValueError("frequency_step_hz must be finite")
+        if self.periodic and abs(self.pri_s - self.pulse_width_s) > 1e-12 * self.pulse_width_s:
+            raise ValueError(
+                "a periodic code is transmitted continuously, one code period per slow-time sample, so pri_s must "
+                f"equal pulse_width_s; got pri_s={self.pri_s}, pulse_width_s={self.pulse_width_s}"
             )
         if self.pulse_normalization != PULSE_NORMALIZATION_UNIT_AMPLITUDE:
             raise ValueError(
@@ -658,6 +955,42 @@ class PulsedSpec:
         return self.pulse_kind == PULSE_KIND_LFM
 
     @property
+    def is_coded(self) -> bool:
+        return self.pulse_kind == PULSE_KIND_CODED
+
+    @property
+    def chip_width_s(self) -> float:
+        """``T_c = T_p / num_chips``; the whole pulse for an uncoded kind."""
+
+        return self.pulse_width_s / max(len(self.chips), 1)
+
+    def chip_table(self) -> tuple[tuple[float, float, float], ...]:
+        """``(|a_i|, arg(a_i) / 2pi, f_i)`` per chip, the table the kernel reads.
+
+        The phase is stored in CYCLES so the kernel adds it to its double cycle
+        count before the single wrap, like every other phase term.
+        """
+
+        frequencies = self.chip_frequencies_hz or (0.0,) * len(self.chips)
+        return tuple(
+            (abs(complex(chip)), cmath.phase(complex(chip)) / math.tau, float(frequency))
+            for chip, frequency in zip(self.chips, frequencies, strict=True)
+        )
+
+    @property
+    def envelope_energy_s(self) -> float:
+        """``int |s(u)|^2 du`` over one pulse, s (the envelope is dimensionless).
+
+        ``T_p`` for the rectangle and the LFM; ``T_c sum_i |a_i|^2`` for a coded
+        pulse. It is the coherent observation time of one pulse in the noise
+        contract (R-ADR-029), and the matched-filter replica divides by it.
+        """
+
+        if not self.is_coded:
+            return self.pulse_width_s
+        return self.chip_width_s * sum(abs(complex(chip)) ** 2 for chip in self.chips)
+
+    @property
     def pulse_amplitude(self) -> float:
         """``1``, the dimensionless unit-amplitude envelope height.
 
@@ -672,7 +1005,9 @@ class PulsedSpec:
 
     @property
     def replica_amplitude(self) -> float:
-        """``1 / T_p`` [1/s], the matched-filter replica height.
+        """``1 / E_s`` [1/s], the matched-filter replica height (``1 / T_p`` uncoded).
+
+        :attr:`envelope_energy_s` is ``T_p`` for every unit-modulus envelope.
 
         The correlation ``sum_m y[m] conj(r[m]) T_s`` against a replica of this
         height returns ``C_rt * M_p T_s / T_p``, exactly ``C_rt`` when the pulse
@@ -683,7 +1018,7 @@ class PulsedSpec:
         the textbook ``E / N0 = P_r T_p / (k T_sys)``.
         """
 
-        return 1.0 / self.pulse_width_s
+        return 1.0 / self.envelope_energy_s
 
     @property
     def pulse_sample_count(self) -> int:
@@ -728,16 +1063,17 @@ class PulsedSpec:
         """``c0 / (2 B)`` for the LFM, ``c0 T_p / 2`` for the rectangle.
 
         Two expressions rather than one because they are two different physical
-        statements: the LFM's resolution comes from its SWEEP and is independent
-        of its length, while the rectangle's comes from its length alone. The
+        statements: the LFM's (and a code's) resolution comes from its SWEEP
+        or chip rate and is independent of its length, while the rectangle's
+        comes from its length alone. The
         two coincide only at ``B = 1 / T_p``, which is exactly the value this
         spec requires a rectangular pulse to declare, so the branch is a
         readability choice and not a numerical one.
         """
 
-        if self.is_linear_fm:
-            return SPEED_OF_LIGHT_M_PER_S / (2.0 * self.bandwidth_hz)
-        return SPEED_OF_LIGHT_M_PER_S * self.pulse_width_s / 2.0
+        if self.pulse_kind == PULSE_KIND_RECT:
+            return SPEED_OF_LIGHT_M_PER_S * self.pulse_width_s / 2.0
+        return SPEED_OF_LIGHT_M_PER_S / (2.0 * self.bandwidth_hz)
 
     @property
     def max_unambiguous_range_m(self) -> float:
@@ -790,6 +1126,10 @@ class PulsedSpec:
         constant-envelope model would miss.
         """
 
+        if self.is_coded:
+            frequencies = self.chip_frequencies_hz or (0.0,)
+            chip = min(max(int(float(envelope_time_s) // self.chip_width_s), 0), len(frequencies) - 1)
+            return float(frequencies[chip])
         if not self.is_linear_fm:
             return 0.0
         return self.bandwidth_hz * float(envelope_time_s) / self.pulse_width_s
@@ -1059,15 +1399,33 @@ class SynthesisPathBatch:
         )
 
 
+#: What one frame's synthesis actually observed the world at, published on
+#: :attr:`SynthesisResult.observation_schedule` so a consumer never infers it
+#: from the requested ``Motion``:
+#:
+#: * ``frame``: one observation for the whole frame; the kernel extrapolates
+#:   the delay linearly with the row's delay rate.
+#: * ``slow_time``: one observation per slow-time slot (a TDM chirp slot, a
+#:   symbol, a pulse), held across that slot's fast time (stop and hop).
+#: * ``fast_time``: one observation per fast-time sample (an ADC instant), the
+#:   exhaustive reference.
+#: * ``adaptive``: fast-time values interpolated between error-controlled
+#:   probes.
+OBSERVATION_FRAME = "frame"
+OBSERVATION_SLOW_TIME = "slow_time"
+OBSERVATION_FAST_TIME = "fast_time"
+OBSERVATION_ADAPTIVE = "adaptive"
+OBSERVATION_SCHEDULES = (OBSERVATION_FRAME, OBSERVATION_SLOW_TIME, OBSERVATION_FAST_TIME, OBSERVATION_ADAPTIVE)
+
 #: The axis names each waveform's rank-3 product is indexed by.
 FMCW_BEAT_AXES = ("chirp", "sensor_pair", "sample")
 FMCW_SPECTRUM_AXES = ("chirp", "sensor_pair", "range_bin")
 OFDM_AXES = ("symbol", "sensor_pair", "subcarrier")
+OFDM_TIME_AXES = ("symbol", "sensor_pair", "sample")
 PULSED_AXES = ("pulse", "sensor_pair", "sample")
 
 #: The output domains the OFDM and pulsed products are published in. FMCW's
 #: are :data:`FMCW_OUTPUT_DOMAINS`.
-OFDM_OUTPUT_CFR = "cfr"
 PULSED_OUTPUT_TIME = "time"
 
 #: The fast-time axis name each output domain implies, so a result whose axes
@@ -1091,8 +1449,16 @@ class SynthesisResult:
     time_dependence: str
     reference_frequency_hz: float
     output_domain: str
+    #: When the world was observed for this cube; one of
+    #: :data:`OBSERVATION_SCHEDULES`. The factories publish ``frame``, the
+    #: frame's own row synthesis; a session that refreshed its rows restates it.
+    observation_schedule: str = OBSERVATION_FRAME
 
     def __post_init__(self) -> None:
+        if self.observation_schedule not in OBSERVATION_SCHEDULES:
+            raise ValueError(
+                f"observation_schedule must be one of {OBSERVATION_SCHEDULES}, got {self.observation_schedule!r}"
+            )
         if self.cube.dim() != len(self.axes):
             raise ValueError(
                 f"a {self.kind} cube has {len(self.axes)} axes {self.axes}, got shape {tuple(self.cube.shape)}"
@@ -1118,11 +1484,11 @@ class SynthesisResult:
         return cls(
             cube=cube,
             kind="ofdm",
-            axes=OFDM_AXES,
+            axes=OFDM_AXES if spec.output_domain == OFDM_OUTPUT_CFR else OFDM_TIME_AXES,
             phasor=spec.phasor,
             time_dependence=spec.time_dependence,
             reference_frequency_hz=float(spec.reference_frequency_hz),
-            output_domain=OFDM_OUTPUT_CFR,
+            output_domain=spec.output_domain,
         )
 
     @classmethod
@@ -1272,13 +1638,14 @@ def require_ofdm_compatible(batch: SynthesisPathBatch, spec: OfdmSpec) -> None:
        reducing over the device delays.
 
     Both refusals name ``cyclic_prefix_s``. There is no clamp and no
-    reduced-accuracy mode.
+    reduced-accuracy mode. The time-domain route models the inter-symbol term
+    (an echo past the prefix reads the previous symbol), so it is exempt.
     """
 
     if not isinstance(spec, OfdmSpec):
         raise TypeError(f"require_ofdm_compatible needs an OfdmSpec, got {type(spec).__name__}")
     require_compatible(batch, spec)
-    if spec.max_expected_delay_s >= spec.cyclic_prefix_s:
+    if spec.max_expected_delay_s >= spec.cyclic_prefix_s and not spec.time_domain:
         raise ValueError(
             "the configured echo window does not fit inside the cyclic prefix: "
             f"max_expected_delay_s={spec.max_expected_delay_s} is not less than "
@@ -1320,13 +1687,15 @@ def require_pulsed_compatible(batch: SynthesisPathBatch, spec: PulsedSpec) -> No
     if not isinstance(spec, PulsedSpec):
         raise TypeError(f"require_pulsed_compatible needs a PulsedSpec, got {type(spec).__name__}")
     require_compatible(batch, spec)
-    if spec.pulse_width_s >= spec.pri_s:
+    if spec.pulse_width_s >= spec.pri_s and not spec.periodic:
         raise ValueError(
             f"pulse_width_s={spec.pulse_width_s} is not shorter than "
             f"pri_s={spec.pri_s}; a pulse at least as long as the repetition "
             "interval leaves no receive window, so there is no echo to gate"
         )
-    if spec.range_gate_end_s > spec.pri_s:
+    # Relative slack for the rounding of M * T_s: a continuous code's gate is
+    # exactly one period, which floating point may round a hair past pri_s.
+    if spec.range_gate_end_s > spec.pri_s * (1.0 + 1e-12):
         raise ValueError(
             "the range gate overruns the pulse repetition interval: "
             f"range_gate_start_s + num_samples * sample_period_s="
@@ -1441,12 +1810,23 @@ def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
 
     pairs = _require_array(num_tx, num_rx)
     if isinstance(spec, FmcwSpec):
-        count = tdm_slot_count(num_chirps=spec.num_chirps, num_tx=num_tx)
-        times = tuple(slot * spec.chirp_period_s for slot in range(count))
-        index = pair_slot_index(
-            num_chirps=spec.num_chirps, num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device=device
-        )
-        single = replace(spec, num_chirps=1, carrier_rate_hz=0.0)
+        if spec.simultaneous:
+            # Every transmitter fires every chirp: one slot per chirp, heard by
+            # every pair.
+            count = spec.num_chirps
+            index = torch.arange(count, device=device).reshape(-1, 1).expand(-1, pairs)
+        else:
+            count = tdm_slot_count(num_chirps=spec.num_chirps, num_tx=num_tx)
+            index = pair_slot_index(
+                num_chirps=spec.num_chirps, num_tx=num_tx, num_rx=num_rx, sensor_pair_count=pairs, device=device
+            )
+        if spec.sequence:
+            times = tuple(float(value) for value in spec.slot_profiles()[:, 0])
+        else:
+            times = tuple(slot * spec.chirp_period_s for slot in range(count))
+        # The one-chirp spec is uniform: a sequence's slot profile reaches each
+        # observation through its refreshed schedule (or :meth:`FmcwSpec.slot_spec`).
+        single = replace(spec, num_chirps=1, carrier_rate_hz=0.0, sequence=(), mimo=MIMO_TDM, ddm_bands=0)
     else:
         if isinstance(spec, OfdmSpec):
             count, period = spec.num_symbols, spec.symbol_period_s
@@ -1459,6 +1839,95 @@ def waveform_sampling(spec, *, num_tx: int, num_rx: int, device):
         times = tuple(slot * period for slot in range(count))
         index = torch.arange(count, device=device).reshape(-1, 1).expand(-1, pairs)
     return times, index, single
+
+
+def fast_time_grid(spec) -> tuple[float, float, int]:
+    """``(first, period, count)``: a slot's fast-time instants ``first + m period``, s.
+
+    The instants a fast-time refreshed frame observes the world at within one
+    slow-time slot: the ADC window of an FMCW chirp, the range gate of a pulse.
+    Refused for a waveform with no fast-time sampling of its own.
+    """
+
+    if isinstance(spec, FmcwSpec):
+        return float(spec.t_start_s), float(spec.sample_period_s), int(spec.num_samples)
+    if isinstance(spec, PulsedSpec):
+        return float(spec.range_gate_start_s), float(spec.sample_period_s), int(spec.num_samples)
+    if isinstance(spec, OfdmSpec) and spec.time_domain:
+        return float(spec.cyclic_prefix_s), float(spec.waveform_sample_period_s), int(spec.samples_per_symbol)
+    raise NotImplementedError(f"{type(spec).__name__} has no fast-time observation grid")
+
+
+def fast_time_offsets(spec, slot_offsets: np.ndarray) -> np.ndarray:
+    """Every fast-time observation instant of a frame, slot major, s.
+
+    ``slot_offsets`` is each slot's start (:func:`waveform_sampling`). The
+    uniform case is ``slot + first + m * period``, the same additions in the
+    same order for every waveform; a chirp sequence takes each slot's own ADC
+    start.
+    """
+
+    first, period, count = fast_time_grid(spec)
+    if isinstance(spec, FmcwSpec) and spec.sequence:
+        starts = spec.slot_profiles()[:, 3]
+        return (slot_offsets[:, None] + starts[:, None] + np.arange(count) * period).ravel()
+    return (slot_offsets[:, None] + first + np.arange(count) * period).ravel()
+
+
+def fast_count(spec) -> int:
+    """The length of a cube's fast axis under ``spec``: samples, subcarriers or post-prefix samples."""
+
+    if isinstance(spec, OfdmSpec):
+        return spec.samples_per_symbol if spec.output_domain == OFDM_OUTPUT_TIME else spec.num_subcarriers
+    return int(spec.num_samples)
+
+
+def fast_time_single(single):
+    """The one-sample spec each fast-time observation is synthesized with.
+
+    ``single`` is the one-slot spec :func:`waveform_sampling` returns; the
+    sample's own instant arrives per segment through the refreshed schedule
+    (:func:`refreshed_schedule`).
+    """
+
+    if isinstance(single, FmcwSpec):
+        return replace(single, num_samples=1, output_domain=FMCW_OUTPUT_BEAT)
+    return replace(single, num_samples=1)
+
+
+def refreshed_schedule(working, slot: np.ndarray, sample: np.ndarray | None) -> np.ndarray:
+    """The per-segment schedule a refreshed slot batch is synthesized with.
+
+    ``slot`` is each segment's frame slot and ``sample`` its fast-time sample,
+    or ``None`` when one observation covers the whole slot. FMCW returns
+    ``float64[n, 3]``: the ADC window start [s], the slot's slope [Hz/s] and its
+    start offset [Hz]; a pulsed train returns
+    ``float64[n, 2]``: the gate start [s] and the pulse's stepped carrier
+    offset [Hz]. Each entry is formed exactly as a one-instant spec's scalar
+    would be, so a scheduled launch equals per-observation launches bit for bit.
+    """
+
+    if isinstance(working, FmcwSpec):
+        profile = working.slot_profiles()[slot]
+        start = profile[:, 3] if sample is None else profile[:, 3] + sample.astype(np.float64) * working.sample_period_s
+        return np.stack((start, profile[:, 1], profile[:, 2]), axis=1)
+    if isinstance(working, OfdmSpec) and working.time_domain:
+        first = working.cyclic_prefix_s
+        start = (
+            np.full(len(slot), first, dtype=np.float64)
+            if sample is None
+            else first + sample.astype(np.float64) * working.waveform_sample_period_s
+        )
+        return np.stack((start, slot.astype(np.float64)), axis=1)
+    if isinstance(working, PulsedSpec):
+        start = (
+            np.full(len(slot), working.range_gate_start_s, dtype=np.float64)
+            if sample is None
+            else working.range_gate_start_s + sample.astype(np.float64) * working.sample_period_s
+        )
+        offset = slot.astype(np.float64) * working.frequency_step_hz
+        return np.stack((start, offset), axis=1)
+    raise NotImplementedError(f"{type(working).__name__} has no refreshed slot schedule")
 
 
 def pair_slot_index(

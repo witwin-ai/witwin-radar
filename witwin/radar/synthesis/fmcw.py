@@ -23,8 +23,10 @@ Two structural contracts, each with a test:
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from ..cuda import native_ops as _ops
@@ -75,6 +77,37 @@ def channel_phasor_to_beat_weight(coefficient: torch.Tensor) -> torch.Tensor:
     return torch.conj(coefficient).resolve_conj()
 
 
+@functools.lru_cache(maxsize=32)
+def _ramp_tables(spec: FmcwSpec, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """The spec's slot table and phase-error polynomial on ``device``, uploaded once per spec.
+
+    The slot table is empty for the uniform ramp, which the kernel then
+    evaluates from its scalars exactly as before; it is ``float64[slots, 4]``
+    when the spec carries a sequence or a start offset.
+    """
+
+    slots = (
+        torch.empty((0, 4), dtype=torch.float64, device=device)
+        if spec.uniform
+        else torch.from_numpy(spec.slot_profiles()).to(device=device, dtype=torch.float64).contiguous()
+    )
+    poly = torch.tensor(spec.phase_error_cycles, dtype=torch.float64, device=device).reshape(-1)
+    return slots, poly
+
+
+def _beat_tables(spec: FmcwSpec, segment_table: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The beat operators' three tables, in their argument order: slot, segment, polynomial."""
+
+    slots, poly = _ramp_tables(spec, segment_table.device)
+    return slots, segment_table, poly
+
+
+def _kernel_transmitters(spec: FmcwSpec) -> int:
+    """The ``num_tx`` the kernel's slot index uses: one slot per chirp when every transmitter fires."""
+
+    return 1 if spec.simultaneous else spec.num_tx
+
+
 class _FmcwSynthesis(torch.autograd.Function):
     """Autograd bridge for the selected native FMCW output domain."""
 
@@ -95,12 +128,12 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             offsets,
             tx_index,
-            *(() if spectrum else (starts,)),
+            *(() if spectrum else _beat_tables(spec, starts)),
             out_re,
             out_im,
             num_paths,
             num_segments,
-            spec.num_tx,
+            _kernel_transmitters(spec),
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -140,7 +173,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             segment,
             tx_index,
-            *(() if spectrum else (starts,)),
+            *(() if spectrum else _beat_tables(spec, starts)),
             grad_out_re.contiguous(),
             grad_out_im.contiguous(),
             grad_tau_rt,
@@ -149,7 +182,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             grad_weight_im,
             int(tau_rt.shape[0]),
             ctx.num_segments,
-            spec.num_tx,
+            _kernel_transmitters(spec),
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -193,7 +226,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             weight_im,
             offsets,
             tx_index,
-            *(() if spectrum else (starts,)),
+            *(() if spectrum else _beat_tables(spec, starts)),
             tan_tau_rt,
             *(() if spectrum else (tan_tau_rate,)),
             tan_weight_re,
@@ -202,7 +235,7 @@ class _FmcwSynthesis(torch.autograd.Function):
             tan_out_im,
             int(tau_rt.shape[0]),
             ctx.num_segments,
-            spec.num_tx,
+            _kernel_transmitters(spec),
             spec.num_chirps,
             spec.num_samples,
             spec.sample_period_s,
@@ -359,6 +392,7 @@ def synthesize_fmcw_rows(
     *,
     segment_tx_index: torch.Tensor | None = None,
     segment_t_start_s: torch.Tensor | None = None,
+    segment_schedule: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize the configured FMCW output from conjugated Channel weights.
 
@@ -380,7 +414,14 @@ def synthesize_fmcw_rows(
     launch synthesizes segments that are different ADC instants of a refreshed
     frame; each segment's value is the one a launch with that start as
     ``spec.t_start_s`` would produce. Beat domain only, and schedule data: a
-    derivative in it is refused.
+    derivative in it is refused. ``segment_schedule`` is the same statement for
+    a chirp sequence, ``float64[segments, 3]``: each segment's window start [s],
+    slope [Hz/s] and start offset [Hz]
+    (:func:`~witwin.radar.synthesis.assembly.refreshed_schedule`).
+
+    Under DDM and BPM every transmitter fires every chirp, so the slow-time
+    coordinate of every segment is its chirp and ``segment_tx_index`` is not
+    read; :func:`multiplex_transmitters` then sums the pairs each receiver hears.
 
     This is the ROW-LEVEL entry, and what it does NOT check is part of its
     contract. There is no :class:`SynthesisPathBatch` here, so the eight
@@ -396,6 +437,12 @@ def synthesize_fmcw_rows(
     path_count = int(total_delay_s.shape[0])
     if beat_weight.shape != total_delay_s.shape:
         raise ValueError("beat_weight and total_delay_s must have the same shape")
+    if spec.output_domain == FMCW_OUTPUT_SPECTRUM and not (spec.admits_direct_spectrum and spec.uniform):
+        raise ValueError(
+            "the closed-form range spectrum needs one linear ramp on every chirp and a complex receiver; a chirp "
+            'sequence, a start offset, a ramp phase error or a real ADC is synthesized with output_domain="beat" '
+            "and transformed by processing"
+        )
     if delay_rate is None:
         rate = torch.zeros_like(total_delay_s)
     else:
@@ -411,7 +458,9 @@ def synthesize_fmcw_rows(
             raise ValueError("delay_rate and total_delay_s must have the same shape")
         rate = delay_rate
     num_segments = int(pair_offsets.shape[0]) - 1
-    if segment_tx_index is None:
+    if spec.simultaneous:
+        tx_index = torch.zeros(num_segments, dtype=torch.int32, device=total_delay_s.device)
+    elif segment_tx_index is None:
         if spec.num_tx != 1:
             raise ValueError(
                 f"this spec declares num_tx={spec.num_tx}, so every sensor-pair "
@@ -428,21 +477,29 @@ def synthesize_fmcw_rows(
                 f"{tuple(segment_tx_index.shape)}"
             )
         tx_index = segment_tx_index
-    if segment_t_start_s is None:
-        starts = torch.empty(0, dtype=torch.float64, device=total_delay_s.device)
+    if segment_t_start_s is not None and segment_schedule is not None:
+        raise ValueError("segment_t_start_s and segment_schedule are two spellings of one schedule; pass one")
+    if segment_t_start_s is None and segment_schedule is None:
+        starts = torch.empty((0, 3), dtype=torch.float64, device=total_delay_s.device)
     else:
         if spec.output_domain == FMCW_OUTPUT_SPECTRUM:
             raise ValueError(
                 "per-segment ADC window starts belong to the beat domain; the range spectrum's closed form "
                 "assumes one uniform window"
             )
-        refuse_derivative("FMCW segment window starts", "ADC times are fixed metadata", starts=segment_t_start_s)
-        if segment_t_start_s.dtype != torch.float64 or tuple(segment_t_start_s.shape) != (num_segments,):
-            raise ValueError(
-                f"segment_t_start_s must be float64 with shape ({num_segments},), got "
-                f"{segment_t_start_s.dtype} {tuple(segment_t_start_s.shape)}"
+        table = segment_t_start_s if segment_schedule is None else segment_schedule
+        refuse_derivative("FMCW segment window starts", "ADC times are fixed metadata", starts=table)
+        width = (num_segments,) if segment_schedule is None else (num_segments, 3)
+        if table.dtype != torch.float64 or tuple(table.shape) != width:
+            name = "segment_t_start_s" if segment_schedule is None else "segment_schedule"
+            raise ValueError(f"{name} must be float64 with shape {width}, got {table.dtype} {tuple(table.shape)}")
+        if segment_schedule is None:
+            # The uniform ramp's slope and offset beside each start.
+            table = torch.stack(
+                (table, torch.full_like(table, spec.slope_hz_per_s), torch.full_like(table, spec.start_offset_hz)),
+                dim=1,
             )
-        starts = segment_t_start_s.contiguous()
+        starts = table.contiguous()
     segment = segment_of_each_row(pair_offsets, path_count)
     # Torch-owned, autograd-aware accessors: the real pair crosses the
     # boundary, never the complex tensor.
@@ -458,6 +515,24 @@ def synthesize_fmcw_rows(
         spec,
     )
     return torch.complex(out_re, out_im)
+
+
+def multiplex_transmitters(cube: torch.Tensor, spec: FmcwSpec) -> torch.Tensor:
+    """``[chirp, pair, sample]`` -> ``[chirp, rx, sample]``: what each receiver hears under DDM or BPM.
+
+    Every transmitter fires every chirp with its code
+    (:meth:`FmcwSpec.transmit_code`), so a receiver records the coded sum over
+    transmitters. The beat cube carries the CONJUGATE of the physical code,
+    because the receiver mixes the echo against an uncoded ramp. One contraction
+    over the transmitter axis of the sink-major pair rank ``rx * num_tx + tx``.
+    TDM is returned as it is.
+    """
+
+    if not spec.simultaneous:
+        return cube
+    chirps, pairs, samples = (int(value) for value in cube.shape)
+    code = torch.from_numpy(np.conj(spec.transmit_code())).to(device=cube.device, dtype=cube.dtype)
+    return torch.einsum("crts,ct->crs", cube.reshape(chirps, spec.num_rx, spec.num_tx, samples), code)
 
 
 def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
@@ -497,6 +572,7 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
 __all__ = [
     "FmcwSpec",
     "channel_phasor_to_beat_weight",
+    "multiplex_transmitters",
     "synthesize_fmcw_observations",
     "synthesize_fmcw_rows",
     "synthesize_fmcw",

@@ -106,6 +106,12 @@ class Result:
     #: The synthesis result's own output domain.
     output_domain: str
     adaptive_diagnostics: tuple[dict[str, Any], ...]
+    #: When the closing frame's synthesis observed the world: ``frame``,
+    #: ``slow_time``, ``fast_time`` or ``adaptive``, as the synthesis owner
+    #: published it (``SynthesisResult.observation_schedule``). It is what ran,
+    #: which can be coarser than the requested ``Motion``: an OFDM CFR symbol
+    #: has no fast-time grid of its own.
+    observation_schedule: str = "frame"
 
     def __post_init__(self) -> None:
         if self.cube.dim() != len(self.axis_names):
@@ -158,6 +164,7 @@ class Result:
             time_dependence=self.time_dependence,
             reference_frequency_hz=self.reference_frequency_hz,
             output_domain=self.output_domain,
+            observation_schedule=self.observation_schedule,
         )
 
     @classmethod
@@ -220,6 +227,7 @@ class Result:
             motion_sampling=motion_sampling,
             output_domain=synthesis.output_domain,
             adaptive_diagnostics=tuple(adaptive_diagnostics),
+            observation_schedule=synthesis.observation_schedule,
         )
 
 
