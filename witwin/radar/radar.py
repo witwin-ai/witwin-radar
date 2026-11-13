@@ -52,7 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .results import Result
     from .simulation import Paths
     from .synthesis import SynthesisResult
-    from .targets import PointTargets, StructureTargets
+    from .targets import MeshTargets, PointTargets, StructureTargets
 
 WAVEFORM_FMCW = "fmcw"
 WAVEFORM_OFDM = "ofdm"
@@ -1392,7 +1392,7 @@ class Radar:
     def trace(
         self,
         scene,
-        targets: PointTargets | StructureTargets,
+        targets: PointTargets | StructureTargets | MeshTargets,
         *,
         times,
         los: bool = True,
@@ -1468,7 +1468,7 @@ class Radar:
     def simulate(
         self,
         scene,
-        targets: PointTargets | StructureTargets,
+        targets: PointTargets | StructureTargets | MeshTargets,
         *,
         times,
         los: bool = True,
@@ -1554,7 +1554,7 @@ class Radar:
     def stream(
         self,
         scene,
-        targets: PointTargets | StructureTargets,
+        targets: PointTargets | StructureTargets | MeshTargets,
         *,
         times,
         los: bool = True,

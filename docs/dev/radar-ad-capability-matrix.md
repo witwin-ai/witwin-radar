@@ -178,8 +178,25 @@ per-path product downstream of it is still a native kernel.
 | rcs/from_rcs | sigma_m2 to a synthesized FMCW loss | jvp | SUP | torch-orchestration | witwin/radar/scattering.py::ScalarRcsResponse.from_rcs | tests/test_rcs_sigma_ad.py::test_the_forward_tangent_matches_the_reverse_gradient | adjoint |
 | rcs/from_values | amplitude, phase_rad | both | SUP | torch-orchestration | witwin/radar/scattering.py::ScalarRcsResponse.from_values | tests/test_single_site_end_to_end.py::test_reverse_mode_loss_gradients_match_the_oracle, tests/test_single_site_end_to_end.py::test_forward_mode_loss_tangent_matches_the_oracle | fd |
 | rcs/from_rcs | sigma_m2 with requires_grad=True as well | both | REF | torch-orchestration | witwin/radar/scattering.py::ScalarRcsResponse.from_rcs | tests/test_rcs_sigma_ad.py::test_marking_the_derived_amplitude_as_well_is_refused | refusal |
-| rcs/from_rcs | a non-scalar sigma_m2 | both | REF | torch-orchestration | witwin/radar/scattering.py::ScalarRcsResponse.from_rcs | tests/test_rcs_sigma_ad.py::test_a_non_scalar_cross_section_is_refused | refusal |
+| rcs/from_rcs | a rank-2 sigma_m2 | both | REF | torch-orchestration | witwin/radar/scattering.py::ScalarRcsResponse.from_rcs | tests/test_rcs_sigma_ad.py::test_a_matrix_cross_section_is_refused | refusal |
 
+
+### Mesh-target facets and tabulated responses (`witwin/radar/facets.py`, `witwin/radar/scattering.py`)
+
+The facet and table responses are native per-row families whose companions
+are exact forward-mode jets (R-ADR-042, R-ADR-045). Material constants, the
+polarization, the diffuse seed and a response table select the law and are not
+leaves. A forward tangent on the vertices of a mesh that is also in the scene
+stops at Channel's compile, which refuses a forward vertex tangent on the
+compiled scene; the facet families themselves carry it.
+
+| route | leaf-or-output | mode | state | mechanism | owner | test | validation |
+|---|---|---|---|---|---|---|---|
+| scatter/facet_response | leg directions, facet corners, site positions | vjp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | fd |
+| scatter/facet_response | leg directions, facet corners, site positions | jvp | SUP | native-companion | witwin/radar/scattering.py::_FacetResponse | tests/test_facet_scatter_kernel.py::test_both_ad_modes_match_finite_differences_and_each_other | adjoint |
+| facets/facet_geometry | world vertices | both | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_facet_scatter_kernel.py::test_facet_geometry_and_its_two_companions | adjoint |
+| mesh/trace | authored mesh vertices to the composed rows | vjp | SUP | native-companion | witwin/radar/facets.py::_FacetGeometry | tests/test_mesh_targets.py::test_the_vertex_gradient_matches_finite_differences | fd |
+| scatter/table_response | leg directions, table axis | both | SUP | native-companion | witwin/radar/scattering.py::_TableResponse | tests/test_target_fluctuation_and_tables.py::test_the_table_operator_matches_finite_differences_and_its_adjoint | fd |
 ### FMCW beat synthesis (`witwin/radar/synthesis/fmcw.py`)
 
 | route | leaf-or-output | mode | state | mechanism | owner | test | validation |

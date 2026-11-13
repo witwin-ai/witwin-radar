@@ -832,12 +832,12 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Result'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Result'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Iterator[Result]'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Iterator[Result]'"
         },
         {
           "name": "to",
@@ -847,7 +847,7 @@
         {
           "name": "trace",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Paths'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Paths'"
         },
         {
           "name": "transmit_power_watts",
