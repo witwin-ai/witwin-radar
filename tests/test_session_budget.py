@@ -76,19 +76,22 @@ PROFILED_SLACK = 0.03
 
 #: Measured ceilings: ``case -> (first frame, marginal frame)``, each a tuple
 #: in :data:`COUNTERS` order. Profiled columns hold the larger of two
-#: processes' measurements.
+#: processes' measurements. The transport pass (R-ADR-039 to 041) adds about
+#: ten kernels per discovered frame and no host observation: the legs' launch
+#: polarization and float64 site gathers, the join's polarization table and
+#: Channel's complex3 field on the discovery rows.
 BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
     "adaptive_point": (
-        (8, 0, 0, 0, 12, 4, 96, 65, 98, 1272, 1, 4, 4, 1, 1),
-        (8, 0, 0, 0, 16, 4, 60, 54, 62, 1143, 0, 4, 4, 1, 0),
+        (8, 0, 0, 0, 12, 4, 96, 65, 98, 1332, 1, 4, 4, 1, 1),
+        (8, 0, 0, 0, 16, 4, 60, 54, 62, 1203, 0, 4, 4, 1, 0),
     ),
     "adaptive_structure": (
         (8, 0, 0, 0, 12, 7, 168, 93, 175, 1545, 4, 4, 4, 4, 1),
         (8, 0, 0, 0, 16, 7, 159, 93, 166, 1508, 4, 4, 4, 4, 0),
     ),
     "adc_point": (
-        (64, 0, 0, 0, 124, 3, 359, 331, 486, 8160, 1, 32, 32, 1, 1),
-        (64, 0, 0, 0, 128, 3, 321, 320, 448, 8031, 0, 32, 32, 1, 0),
+        (64, 0, 0, 0, 124, 3, 359, 331, 486, 8421, 1, 32, 32, 1, 1),
+        (64, 0, 0, 0, 128, 3, 321, 320, 448, 8286, 0, 32, 32, 1, 0),
     ),
     "adc_point_per_chirp": (
         (8, 2, 2, 2, 68, 3, 122, 63, 131, 1589, 1, 4, 32, 1, 1),
@@ -103,12 +106,12 @@ BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
         (64, 0, 0, 0, 128, 96, 1152, 672, 1279, 12066, 32, 32, 32, 32, 0),
     ),
     "auto_point": (
-        (8, 0, 0, 0, 12, 4, 96, 65, 95, 1267, 1, 4, 4, 1, 1),
-        (8, 0, 0, 0, 16, 4, 60, 54, 62, 1143, 0, 4, 4, 1, 0),
+        (8, 0, 0, 0, 12, 4, 96, 65, 95, 1331, 1, 4, 4, 1, 1),
+        (8, 0, 0, 0, 16, 4, 60, 54, 62, 1203, 0, 4, 4, 1, 0),
     ),
     "chirp_point": (
-        (8, 0, 0, 0, 12, 3, 79, 51, 92, 1212, 1, 4, 4, 1, 1),
-        (8, 0, 0, 0, 16, 3, 41, 40, 57, 1085, 0, 4, 4, 1, 0),
+        (8, 0, 0, 0, 12, 3, 79, 51, 92, 1250, 1, 4, 4, 1, 1),
+        (8, 0, 0, 0, 16, 3, 41, 40, 57, 1122, 0, 4, 4, 1, 0),
     ),
     "chirp_structure": (
         (8, 0, 0, 0, 12, 11, 157, 84, 170, 1544, 4, 4, 4, 4, 1),

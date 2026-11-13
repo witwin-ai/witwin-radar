@@ -558,13 +558,20 @@ def bind_radar_world(
         polarization_vector if rx_polarization is None else _polarization_tensor(rx_polarization, device=device)
     )
     transmit_power_w = float(radar.transmit_power_watts)
+    receivers = _endpoint_spec(receiver_positions, receiver_ids, polarization=receive_vector, power_w=None)
     return RadarWorldBinding(
         transmitters=_endpoint_spec(
             transmitter_positions, transmitter_ids, polarization=polarization_vector, power_w=transmit_power_w
         ),
-        receivers=_endpoint_spec(receiver_positions, receiver_ids, polarization=receive_vector, power_w=None),
-        receiver_sources=_endpoint_spec(
-            receiver_positions, receiver_ids, polarization=receive_vector, power_w=sites.power_w
+        receivers=receivers,
+        # The same receivers as 1 W sources (R-ADR-039): one ID, position and
+        # polarization table shared by both roles, so the second role uploads
+        # nothing.
+        receiver_sources=replace(
+            receivers,
+            powers_w=torch.full(
+                (len(receiver_ids),), float(sites.power_w), dtype=torch.float32, device=receiver_positions.device
+            ),
         ),
         sites=site_spec(site_positions, tuple(site_ids), polarization=polarization_vector),
         transmitter_ids=transmitter_ids,
