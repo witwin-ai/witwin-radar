@@ -601,7 +601,7 @@
           "name": "SynthesisPathBatch",
           "kind": "class",
           "target": "witwin.radar.synthesis.assembly.SynthesisPathBatch",
-          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False, complex_transfer_band: torch.Tensor | None = None, frequency_offsets_hz: tuple[float, ...] | None = None) -> None"
+          "signature": "(sensor_pair_count: int, path_count: int, sensor_pair_index: torch.Tensor, pair_offsets: torch.Tensor, total_delay_s: torch.Tensor, delay_rate: torch.Tensor | None, complex_transfer_ref: torch.Tensor, reference_frequency_hz: float, topology: witwin.radar.paths.RadarPathTopology, row_valid: torch.Tensor | None, weight_includes_reference_phase: bool, weight_includes_spreading: bool, weight_includes_tx_power: bool, slow_time_mode: witwin.radar.synthesis.assembly.SlowTimeMode, weight_includes_antenna_pattern: bool = False, complex_transfer_band: torch.Tensor | None = None, frequency_offsets_hz: tuple[float, ...] | None = None, total_delay_residual_s: torch.Tensor | None = None) -> None"
         },
         {
           "name": "SynthesisResult",
