@@ -578,7 +578,15 @@ class PropagationAdapter(Protocol):
 
     def freeze(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec) -> Any: ...
 
-    def discover(self, sources: RadarEndpointSpec, sinks: RadarEndpointSpec, *, rows: bool = True) -> Any: ...
+    def discover(
+        self,
+        sources: RadarEndpointSpec,
+        sinks: RadarEndpointSpec,
+        *,
+        rows: bool = True,
+        components: frozenset[str] | None = None,
+        element_sinks: bool = False,
+    ) -> Any: ...
 
     def reevaluate_slots(
         self,
@@ -589,6 +597,7 @@ class PropagationAdapter(Protocol):
         slot_count: int,
         ad_mode: str,
         frequency_offsets_hz: tuple[float, ...] | None = None,
+        element_sinks: bool = False,
     ) -> RadarLegBatch: ...
 
     def rediscovery_required(self, frozen: Any, *, revalidate_source: bool = False) -> str | None: ...
