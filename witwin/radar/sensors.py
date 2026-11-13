@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import torch
 
@@ -137,7 +137,7 @@ PATTERN_HEADER_LENGTH = 8
 _NORMALISATION_SLACK = 1e-6
 
 
-def _axis(values) -> tuple[float, ...]:
+def _axis(values: Any) -> tuple[float, ...]:
     if isinstance(values, torch.Tensor):
         refuse_derivative(
             "witwin.radar.Pattern",
@@ -149,7 +149,7 @@ def _axis(values) -> tuple[float, ...]:
     return tuple(float(v) for v in values)
 
 
-def _values(values, *, complex_values: bool, rank: int):
+def _values(values: Any, *, complex_values: bool, rank: int) -> Any:
     """Cut or table values: a tensor stays a tensor (a possible leaf), anything else becomes host tuples."""
 
     if isinstance(values, torch.Tensor):
@@ -167,11 +167,11 @@ def _values(values, *, complex_values: bool, rank: int):
     return tuple(tuple(convert(v) for v in row) for row in values)
 
 
-def _gain(gain):
+def _gain(gain: Any) -> Any:
     return gain if isinstance(gain, torch.Tensor) else float(gain)
 
 
-def _host_values(values, *, name: str, complex_values: bool):
+def _host_values(values: Any, *, name: str, complex_values: bool) -> Any:
     """A host copy for validation only; the field itself is untouched."""
 
     if not isinstance(values, torch.Tensor):
@@ -353,7 +353,8 @@ class Pattern:
             return False
         full = self.x_angles[0] <= -180.0 and self.x_angles[-1] >= 180.0
         full = full and self.y_angles[0] <= -180.0 and self.y_angles[-1] >= 180.0
-        return full and all(value == 1.0 for row in (self.x_gain, self.y_gain) for value in row)
+        rows = cast("tuple[tuple[Any, ...], ...]", (self.x_gain, self.y_gain))
+        return full and all(value == 1.0 for row in rows for value in row)
 
     @classmethod
     def isotropic(cls, *, gain: float = 0.0) -> Pattern:
@@ -390,7 +391,7 @@ class Pattern:
         )
 
     @classmethod
-    def separable(cls, x_angles, x_gain, y_angles, y_gain, *, gain: float = 0.0) -> Pattern:
+    def separable(cls, x_angles: Any, x_gain: Any, y_angles: Any, y_gain: Any, *, gain: float = 0.0) -> Pattern:
         """A power pattern whose two-dimensional gain is the product of two cuts."""
 
         return cls(
@@ -403,7 +404,7 @@ class Pattern:
         )
 
     @classmethod
-    def table(cls, x_angles, y_angles, values, *, gain: float = 0.0) -> Pattern:
+    def table(cls, x_angles: Any, y_angles: Any, values: Any, *, gain: float = 0.0) -> Pattern:
         """A power pattern tabulated on the full ``(y, x)`` grid."""
 
         return cls(
@@ -415,7 +416,7 @@ class Pattern:
         )
 
     @classmethod
-    def field_separable(cls, x_angles, x_field, y_angles, y_field, *, gain: float = 0.0) -> Pattern:
+    def field_separable(cls, x_angles: Any, x_field: Any, y_angles: Any, y_field: Any, *, gain: float = 0.0) -> Pattern:
         """A complex field pattern ``F(x) F(y)``: amplitude and phase per cut."""
 
         return cls(
@@ -429,7 +430,7 @@ class Pattern:
         )
 
     @classmethod
-    def field_table(cls, x_angles, y_angles, field, *, gain: float = 0.0) -> Pattern:
+    def field_table(cls, x_angles: Any, y_angles: Any, field: Any, *, gain: float = 0.0) -> Pattern:
         """A complex field pattern tabulated on the full ``(y, x)`` grid."""
 
         return cls(
@@ -442,7 +443,7 @@ class Pattern:
         )
 
     @classmethod
-    def from_antenna(cls, antenna, *, x_angles=None, y_angles=None) -> Pattern:
+    def from_antenna(cls, antenna: Any, *, x_angles: Any = None, y_angles: Any = None) -> Pattern:
         """Sample a ``witwin.core.AntennaPattern`` onto a field table.
 
         The authoring route for Core's custom patterns, which is what
@@ -519,9 +520,10 @@ class Pattern:
             0.0,
         ]
         if self.kind == PATTERN_KIND_SEPARABLE:
-            values = [complex(v) for v in self.x_gain] + [complex(v) for v in self.y_gain]
+            x_gain, y_gain = cast("tuple[tuple[Any, ...], tuple[Any, ...]]", (self.x_gain, self.y_gain))
+            values = [complex(v) for v in x_gain] + [complex(v) for v in y_gain]
         else:
-            values = [complex(v) for row in self.gain_table for v in row]
+            values = [complex(v) for row in cast("tuple[tuple[Any, ...], ...]", self.gain_table) for v in row]
         if self.kind == PATTERN_KIND_SEPARABLE:
             real = [v.real for v in values]
             imaginary = [v.imag for v in values]
@@ -537,7 +539,7 @@ class Pattern:
         field = self.quantity == PATTERN_QUANTITY_FIELD
         dtype = torch.complex64 if field else torch.float32
 
-        def block(values) -> torch.Tensor:
+        def block(values: Any) -> torch.Tensor:
             if isinstance(values, torch.Tensor):
                 return values.to(device=device, dtype=dtype).reshape(-1)
             flat = [v for row in values for v in row] if self.kind == PATTERN_KIND_MAP else list(values)
@@ -570,7 +572,7 @@ class Pattern:
         return torch.cat((head, peak, tail, real, imaginary)).contiguous()
 
 
-def _complex_matrix(name: str, rows):
+def _complex_matrix(name: str, rows: Any) -> Any:
     """A square, finite coupling matrix: host tuples, or a complex tensor kept as given (a possible leaf)."""
 
     if rows is None:
@@ -664,7 +666,7 @@ _FROZEN_REASON = (
 )
 
 
-def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int, ...]):
+def _require(name: str, tensor: object, *, dtype: torch.dtype, shape: tuple[int, ...]) -> torch.Tensor:
     if not isinstance(tensor, torch.Tensor):
         raise TypeError(f"{name} must be a torch.Tensor, got {type(tensor).__name__}")
     if tensor.dtype != dtype:
@@ -749,7 +751,7 @@ class SensorWeightPlan:
     the table values (the interpolation weights are constants of the
     direction) and in each element's peak amplitude, and the operator carries
     both derivatives natively (R-ADR-052). A host-authored pattern packs to a
-    plain constant buffer, exactly as before.
+    plain constant buffer that carries no derivative.
     """
 
     #: The packed transmit and receive element patterns, in that order.
@@ -836,21 +838,21 @@ class _SensorWeight(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        tx_pos,
-        rx_pos,
-        site_in,
-        site_out,
-        intensity,
-        weight_re,
-        weight_im,
-        pattern_frame,
-        tx_table,
-        rx_table,
-        tx_velocity,
-        rx_velocity,
-        geometry,
-        plan,
-    ):
+        tx_pos: torch.Tensor,
+        rx_pos: torch.Tensor,
+        site_in: torch.Tensor,
+        site_out: torch.Tensor,
+        intensity: torch.Tensor,
+        weight_re: torch.Tensor,
+        weight_im: torch.Tensor,
+        pattern_frame: torch.Tensor,
+        tx_table: torch.Tensor,
+        rx_table: torch.Tensor,
+        tx_velocity: torch.Tensor,
+        rx_velocity: torch.Tensor,
+        geometry: SensorWeightGeometry,
+        plan: SensorWeightPlan,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(site_in.shape[0])
         out_re = site_in.new_empty(rows)
         out_im = site_in.new_empty(rows)
@@ -882,7 +884,7 @@ class _SensorWeight(torch.autograd.Function):
         return out_re, out_im, total_delay_s, delay_rate, pattern_gain
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         (
             tx_pos,
             rx_pos,
@@ -924,7 +926,14 @@ class _SensorWeight(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im, grad_tau_rt, grad_tau_rate, grad_gain):
+    def backward(
+        ctx: Any,
+        grad_out_re: torch.Tensor,
+        grad_out_im: torch.Tensor,
+        grad_tau_rt: torch.Tensor,
+        grad_tau_rate: torch.Tensor,
+        grad_gain: torch.Tensor | None,
+    ) -> tuple[torch.Tensor | None, ...]:
         (
             tx_pos,
             rx_pos,
@@ -1015,22 +1024,22 @@ class _SensorWeight(torch.autograd.Function):
 
     @staticmethod
     def jvp(
-        ctx,
-        tan_tx_pos,
-        tan_rx_pos,
-        tan_site_in,
-        tan_site_out,
-        tan_intensity,
-        tan_weight_re,
-        tan_weight_im,
-        tan_pattern_frame,
-        tan_tx_table,
-        tan_rx_table,
-        tan_tx_velocity,
-        tan_rx_velocity,
-        tan_geometry,
-        tan_plan,
-    ):
+        ctx: Any,
+        tan_tx_pos: torch.Tensor | None,
+        tan_rx_pos: torch.Tensor | None,
+        tan_site_in: torch.Tensor | None,
+        tan_site_out: torch.Tensor | None,
+        tan_intensity: torch.Tensor | None,
+        tan_weight_re: torch.Tensor | None,
+        tan_weight_im: torch.Tensor | None,
+        tan_pattern_frame: torch.Tensor | None,
+        tan_tx_table: torch.Tensor | None,
+        tan_rx_table: torch.Tensor | None,
+        tan_tx_velocity: Any,
+        tan_rx_velocity: Any,
+        tan_geometry: Any,
+        tan_plan: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None]:
         (
             tx_pos,
             rx_pos,
@@ -1227,10 +1236,10 @@ class RoundTripPatternStage:
     @classmethod
     def freeze(
         cls,
-        radar,
-        composer,
+        radar: Any,
+        composer: Any,
         *,
-        site_ids,
+        site_ids: Any,
         pattern: Pattern,
         rx_pattern: Pattern | None = None,
         array_size: tuple[int, int] | None = None,

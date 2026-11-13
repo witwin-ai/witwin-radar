@@ -9,12 +9,17 @@ from __future__ import annotations
 import cmath
 import math
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
 from .cuda import native_ops as _ops
 from .policy import first_order_only, refuse_derivative, require_host_floats
+
+if TYPE_CHECKING:
+    from .paths import RadarPathBatch
 
 #: Boltzmann's constant, exact in SI since 2019.
 BOLTZMANN_J_PER_K = 1.380649e-23
@@ -277,7 +282,8 @@ class Noise:
         if self.phase_density is None:
             return 0.0
         level = 10.0 ** (float(self.phase_density) / 10.0)
-        variance = level * 4.0 * math.pi**2 * float(self.phase_offset) ** 2 / float(self.phase_sample_rate)
+        offset = float(cast(float, self.phase_offset))
+        variance = level * 4.0 * math.pi**2 * offset**2 / float(cast(float, self.phase_sample_rate))
         return math.sqrt(variance)
 
     @property
@@ -287,7 +293,8 @@ class Noise:
         if self.phase_flicker_density is None:
             return 0.0
         level = 10.0 ** (float(self.phase_flicker_density) / 10.0)
-        return math.sqrt(2.0 * math.pi**2 * math.log(2.0) * float(self.phase_flicker_offset) ** 3 * level)
+        offset = float(cast(float, self.phase_flicker_offset))
+        return math.sqrt(2.0 * math.pi**2 * math.log(2.0) * offset**3 * level)
 
     @property
     def phase_floor_sigma_rad(self) -> float:
@@ -295,7 +302,7 @@ class Noise:
 
         if self.phase_floor is None:
             return 0.0
-        return math.sqrt(10.0 ** (float(self.phase_floor) / 10.0) * float(self.phase_sample_rate))
+        return math.sqrt(10.0 ** (float(self.phase_floor) / 10.0) * float(cast(float, self.phase_sample_rate)))
 
     @property
     def has_oscillator_noise(self) -> bool:
@@ -305,14 +312,14 @@ class Noise:
 
     def phase_difference(
         self,
-        times_s,
-        delays_s,
+        times_s: torch.Tensor,
+        delays_s: torch.Tensor,
         *,
         seed_base: int,
         sign: float = 1.0,
         block_size: int = DEFAULT_BLOCK_SIZE,
         invalid: torch.Tensor | None = None,
-    ):
+    ) -> torch.Tensor:
         """Common-oscillator ``phi(t)-phi(t-tau)`` in radians, on actual SI time.
 
         A white-frequency-noise oscillator has diffusion q=4*pi^2*f0^2*L(f0)
@@ -348,7 +355,8 @@ class Noise:
         delays = delays_s.to(torch.float64).contiguous()
         counter = torch.zeros(1, dtype=torch.int32, device=times.device) if invalid is None else invalid
         phase = torch.empty(times.shape, device=times.device, dtype=torch.float32)
-        diffusion = self.phase_innovation_sigma_rad**2 * float(self.phase_sample_rate)
+        sample_rate = float(cast(float, self.phase_sample_rate))
+        diffusion = self.phase_innovation_sigma_rad**2 * sample_rate
         _ops().oscillator_phase_forward(
             times,
             delays,
@@ -357,7 +365,7 @@ class Noise:
             diffusion,
             self.phase_flicker_scale_rad,
             self.phase_floor_sigma_rad,
-            float(self.phase_sample_rate),
+            sample_rate,
             sign,
             seed_base,
             _checked_block_size(block_size),
@@ -689,8 +697,8 @@ class FrontendSpec:
     seed: int = 0
     compression: Compression | None = None
     dc_offset: tuple[complex, ...] | None = None
-    tx_coupling: tuple[tuple[complex, ...], ...] | None = None
-    rx_coupling: tuple[tuple[complex, ...], ...] | None = None
+    tx_coupling: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None
+    rx_coupling: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None
     timeline: tuple[float, float, float] | None = None
     #: The LNA gain's host value, dB, read once at construction.
     lna_host: float | None = field(default=None, init=False, repr=False, compare=False)
@@ -740,7 +748,7 @@ class FrontendSpec:
     def lna_voltage_gain(self) -> float:
         return 1.0 if self.lna_host is None else 10.0 ** (self.lna_host / 20.0)
 
-    def lna_leaf_scale(self, device) -> torch.Tensor | None:
+    def lna_leaf_scale(self, device: torch.device | str) -> torch.Tensor | None:
         """``g / g_host`` as a 0-dim tensor (value exactly one) for a tensor ``lna``, else ``None``."""
 
         if not isinstance(self.lna, torch.Tensor):
@@ -832,7 +840,7 @@ class _CompressionPlan:
     u_sat: float
     block_size: int
 
-    def arguments(self) -> tuple:
+    def arguments(self) -> tuple[float, float, float, float, int]:
         return (self.scale, self.c5, self.k_pm, self.u_sat, self.block_size)
 
 
@@ -840,7 +848,9 @@ class _FrontendNoise(torch.autograd.Function):
     """Phase rotation, thermal addition, and the LNA gain, in one launch pair."""
 
     @staticmethod
-    def forward(x_re, x_im, plan):
+    def forward(
+        x_re: torch.Tensor, x_im: torch.Tensor, plan: _NoisePlan
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
         phase_rad = plan.phase
@@ -861,7 +871,7 @@ class _FrontendNoise(torch.autograd.Function):
         return out_re, out_im, phase_rad
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         _, _, plan = inputs
         ctx.plan = plan
         # The derivative is taken at the phase the primal actually used, never
@@ -873,14 +883,17 @@ class _FrontendNoise(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im, grad_phase):
+    def backward(
+        ctx: Any, grad_out_re: torch.Tensor | None, grad_out_im: torch.Tensor | None, grad_phase: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         (phase_rad,) = ctx.saved_tensors
         plan = ctx.plan
         zeros = None
         if grad_out_re is None or grad_out_im is None:
             zeros = torch.zeros((plan.num_outer, plan.num_phase), dtype=torch.float32, device=phase_rad.device)
-        grad_re = zeros if grad_out_re is None else grad_out_re.contiguous()
-        grad_im = zeros if grad_out_im is None else grad_out_im.contiguous()
+        # ``zeros`` is allocated exactly when one of the two cotangents is absent.
+        grad_re = cast(torch.Tensor, zeros) if grad_out_re is None else grad_out_re.contiguous()
+        grad_im = cast(torch.Tensor, zeros) if grad_out_im is None else grad_out_im.contiguous()
         grad_x_re = torch.empty_like(grad_re)
         grad_x_im = torch.empty_like(grad_im)
         _ops().frontend_noise_backward(
@@ -897,7 +910,9 @@ class _FrontendNoise(torch.autograd.Function):
         return grad_x_re, grad_x_im, None
 
     @staticmethod
-    def jvp(ctx, tan_x_re, tan_x_im, tan_plan):
+    def jvp(
+        ctx: Any, tan_x_re: torch.Tensor | None, tan_x_im: torch.Tensor | None, tan_plan: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         (phase_rad,) = ctx.saved_tensors
         plan = ctx.plan
         shape = (plan.num_outer, plan.num_phase)
@@ -924,14 +939,14 @@ class _FrontendCompress(torch.autograd.Function):
     """Receiver compression, with the analytic 2x2 Jacobian in both modes."""
 
     @staticmethod
-    def forward(x_re, x_im, plan):
+    def forward(x_re: torch.Tensor, x_im: torch.Tensor, plan: _CompressionPlan) -> tuple[torch.Tensor, torch.Tensor]:
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
         _ops().frontend_compress_forward(x_re, x_im, out_re, out_im, *plan.arguments())
         return out_re, out_im
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         x_re, x_im, plan = inputs
         ctx.plan = plan
         ctx.save_for_backward(x_re, x_im)
@@ -939,7 +954,9 @@ class _FrontendCompress(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im):
+    def backward(
+        ctx: Any, grad_out_re: torch.Tensor | None, grad_out_im: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         x_re, x_im = ctx.saved_tensors
         zeros = torch.zeros_like(x_re)
         grad_re = zeros if grad_out_re is None else grad_out_re.contiguous()
@@ -950,7 +967,9 @@ class _FrontendCompress(torch.autograd.Function):
         return grad_x_re, grad_x_im, None
 
     @staticmethod
-    def jvp(ctx, tan_x_re, tan_x_im, tan_plan):
+    def jvp(
+        ctx: Any, tan_x_re: torch.Tensor | None, tan_x_im: torch.Tensor | None, tan_plan: Any
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         x_re, x_im = ctx.saved_tensors
         zeros = torch.zeros_like(x_re)
         tan_re = zeros if tan_x_re is None else tan_x_re.contiguous()
@@ -965,7 +984,9 @@ class _FrontendAgc(torch.autograd.Function):
     """A measured gain and its application, with the gain kept on the device."""
 
     @staticmethod
-    def forward(x_re, x_im, plan):
+    def forward(
+        x_re: torch.Tensor, x_im: torch.Tensor, plan: _AgcPlan
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
         gain = torch.empty(plan.num_groups, dtype=torch.float32, device=x_re.device)
@@ -988,7 +1009,7 @@ class _FrontendAgc(torch.autograd.Function):
         return out_re, out_im, gain, rms
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         x_re, x_im, plan = inputs
         ctx.plan = plan
         ctx.save_for_backward(x_re, x_im, output[2], output[3])
@@ -997,7 +1018,9 @@ class _FrontendAgc(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im, grad_gain, grad_rms):
+    def backward(
+        ctx: Any, grad_out_re: torch.Tensor | None, grad_out_im: torch.Tensor | None, grad_gain: Any, grad_rms: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         x_re, x_im, gain, rms = ctx.saved_tensors
         plan = ctx.plan
         zeros = torch.zeros_like(x_re)
@@ -1027,7 +1050,9 @@ class _FrontendAgc(torch.autograd.Function):
         return grad_x_re, grad_x_im, None
 
     @staticmethod
-    def jvp(ctx, tan_x_re, tan_x_im, tan_plan):
+    def jvp(
+        ctx: Any, tan_x_re: torch.Tensor | None, tan_x_im: torch.Tensor | None, tan_plan: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, None, None]:
         x_re, x_im, gain, rms = ctx.saved_tensors
         plan = ctx.plan
         zeros = torch.zeros_like(x_re)
@@ -1061,11 +1086,13 @@ class _FrontendAgcDynamic(torch.autograd.Function):
     """The per-block AGC loop: gains, RMS and clamp mask stay on the device."""
 
     @staticmethod
-    def _grid(plan) -> tuple:
+    def _grid(plan: _AgcPlan) -> tuple[int, int, int, int]:
         return (plan.dim0, plan.num_groups, plan.num_blocks, plan.dim2)
 
     @staticmethod
-    def forward(x_re, x_im, plan):
+    def forward(
+        x_re: torch.Tensor, x_im: torch.Tensor, plan: _AgcPlan
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         out_re = torch.empty_like(x_re)
         out_im = torch.empty_like(x_im)
         slots = plan.num_groups * plan.num_blocks
@@ -1090,7 +1117,7 @@ class _FrontendAgcDynamic(torch.autograd.Function):
         return out_re, out_im, gain, rms, free
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: tuple[torch.Tensor, ...]) -> None:
         x_re, x_im, plan = inputs
         ctx.plan = plan
         ctx.save_for_backward(x_re, x_im, output[2], output[3], output[4])
@@ -1098,7 +1125,13 @@ class _FrontendAgcDynamic(torch.autograd.Function):
         ctx.mark_non_differentiable(output[2], output[3], output[4])
 
     @staticmethod
-    def _linear(saved, plan, a_re, a_im, operator):
+    def _linear(
+        saved: tuple[torch.Tensor, ...],
+        plan: _AgcPlan,
+        a_re: torch.Tensor | None,
+        a_im: torch.Tensor | None,
+        operator: Callable[..., Any],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         x_re, x_im, gain, rms, free = saved
         zeros = torch.zeros_like(x_re)
         a_re = zeros if a_re is None else a_re.contiguous()
@@ -1125,14 +1158,23 @@ class _FrontendAgcDynamic(torch.autograd.Function):
 
     @staticmethod
     @first_order_only
-    def backward(ctx, grad_out_re, grad_out_im, grad_gain, grad_rms, grad_free):
+    def backward(
+        ctx: Any,
+        grad_out_re: torch.Tensor | None,
+        grad_out_im: torch.Tensor | None,
+        grad_gain: Any,
+        grad_rms: Any,
+        grad_free: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         grad_re, grad_im = _FrontendAgcDynamic._linear(
             ctx.saved_tensors, ctx.plan, grad_out_re, grad_out_im, _ops().frontend_agc_dynamic_backward
         )
         return grad_re, grad_im, None
 
     @staticmethod
-    def jvp(ctx, tan_x_re, tan_x_im, tan_plan):
+    def jvp(
+        ctx: Any, tan_x_re: torch.Tensor | None, tan_x_im: torch.Tensor | None, tan_plan: Any
+    ) -> tuple[torch.Tensor, torch.Tensor, None, None, None]:
         tan_re, tan_im = _FrontendAgcDynamic._linear(
             ctx.saved_tensors, ctx.plan, tan_x_re, tan_x_im, _ops().frontend_agc_dynamic_jvp
         )
@@ -1191,7 +1233,7 @@ class FrontendChain:
         self.block_size = _checked_block_size(block_size)
         # Per-device constant tables (coupling matrices, DC offsets), built at
         # first use and kept, so a frame costs no host-to-device copy.
-        self._resident: dict = {}
+        self._resident: dict[tuple[str, str], torch.Tensor] = {}
         # The oscillator's invalid-query counter for the per-path route. It is
         # accumulated on the device by every per-observation call and decoded
         # once per frame by ``apply``; ``_oscillator_pending`` is a host flag,
@@ -1203,7 +1245,7 @@ class FrontendChain:
     def has_phase_noise(self) -> bool:
         return self.spec.noise is not None and self.spec.noise.has_oscillator_noise
 
-    def apply_path_phase(self, paths, time_s):
+    def apply_path_phase(self, paths: RadarPathBatch, time_s: float) -> RadarPathBatch:
         """Apply the common LO difference before coherent path summation.
 
         Paths use Channel's negative phasor, so the phase rotates negatively;
@@ -1215,7 +1257,7 @@ class FrontendChain:
         weight = self._apply_path_phase_rows(paths.total_delay_s, paths.complex_transfer_ref, times)
         return replace(paths, complex_transfer_ref=weight)
 
-    def _oscillator_counter(self, device) -> torch.Tensor:
+    def _oscillator_counter(self, device: torch.device | str) -> torch.Tensor:
         counter = self._oscillator_invalid
         if counter is None or counter.device != torch.device(device):
             counter = torch.zeros(1, dtype=torch.int32, device=device)
@@ -1223,7 +1265,7 @@ class FrontendChain:
         self._oscillator_pending = True
         return counter
 
-    def _apply_path_phase_rows(self, delays, weight, times):
+    def _apply_path_phase_rows(self, delays: torch.Tensor, weight: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
         """The row form the ADC-refreshed route calls directly.
 
         The guard is repeated here rather than left to the caller because this is
@@ -1234,7 +1276,7 @@ class FrontendChain:
         """
         if not self.has_phase_noise or not len(delays):
             return weight
-        phase = self.spec.noise.phase_difference(
+        phase = cast(Noise, self.spec.noise).phase_difference(
             times,
             delays,
             seed_base=self.spec.seed,
@@ -1246,7 +1288,9 @@ class FrontendChain:
         real, imaginary, _ = _FrontendNoise.apply(weight.real.contiguous(), weight.imag.contiguous(), plan)
         return torch.complex(real, imaginary)
 
-    def _run_times(self, signal: torch.Tensor, num_run: int, *, times_s, frame_time_s: float) -> torch.Tensor:
+    def _run_times(
+        self, signal: torch.Tensor, num_run: int, *, times_s: torch.Tensor | None, frame_time_s: float
+    ) -> torch.Tensor:
         """Absolute receive timestamps of one run, float64 seconds, on the device."""
 
         if times_s is not None:
@@ -1260,7 +1304,7 @@ class FrontendChain:
             samples = int(signal.shape[-1])
             slow = torch.div(index, samples, rounding_mode="floor")
             return frame_time_s + fast_start + slow * slow_period + (index - slow * samples) * fast_period
-        return frame_time_s + index / float(self.spec.noise.phase_sample_rate)
+        return frame_time_s + index / float(cast(float, cast(Noise, self.spec.noise).phase_sample_rate))
 
     def _noise_plan(
         self,
@@ -1268,9 +1312,9 @@ class FrontendChain:
         *,
         thermal_seed: int,
         process_seed: int,
-        times_s=None,
-        phase_in_signal=False,
-        frame_time_s=0.0,
+        times_s: torch.Tensor | None = None,
+        phase_in_signal: bool = False,
+        frame_time_s: float = 0.0,
     ) -> _NoisePlan:
         """The fused stage's plan.
 
@@ -1283,16 +1327,17 @@ class FrontendChain:
         num_phase = _phase_run_length(signal)
         phase = torch.zeros(num_phase, dtype=torch.float32, device=signal.device)
         if self.has_phase_noise and not phase_in_signal:
+            noise = cast(Noise, spec.noise)
             constructed = times_s is None
-            if constructed:
+            if times_s is None:
                 times_s = torch.arange(num_phase, device=signal.device, dtype=torch.float64)
-                times_s = frame_time_s + times_s / spec.noise.phase_sample_rate
+                times_s = frame_time_s + times_s / cast(float, noise.phase_sample_rate)
             if times_s.numel() != num_phase:
                 raise ValueError("phase timestamps must cover the complete receive timeline")
             # A timeline this chain constructed is finite and ordered by
             # construction, so its counter is never read; a caller's is.
             counter = self._discarded_counter(signal.device) if constructed else None
-            phase = spec.noise.phase_difference(
+            phase = noise.phase_difference(
                 times_s, times_s - times_s[0], seed_base=process_seed, block_size=self.block_size, invalid=counter
             )
         return _NoisePlan(
@@ -1305,7 +1350,7 @@ class FrontendChain:
             block_size=self.block_size,
         )
 
-    def _discarded_counter(self, device) -> torch.Tensor:
+    def _discarded_counter(self, device: torch.device | str) -> torch.Tensor:
         key = ("discarded_counter", str(device))
         counter = self._resident.get(key)
         if counter is None:
@@ -1350,7 +1395,7 @@ class FrontendChain:
         dc = self._resident_tensor("dc_offset", self.spec.dc_offset, signal.device)
         return dc.view(1, -1, 1, 1) if signal.ndim == 4 else dc.reshape(())
 
-    def _resident_tensor(self, name: str, values, device) -> torch.Tensor:
+    def _resident_tensor(self, name: str, values: Any, device: torch.device | str) -> torch.Tensor:
         if isinstance(values, torch.Tensor):
             # A tensor table (a coupling leaf) is used as given, so its tape reaches the cube.
             return values.to(device=device, dtype=torch.complex64)
@@ -1391,7 +1436,9 @@ class FrontendChain:
             working = torch.matmul(matrix, working.reshape(num_tx, num_rx, slow * fast)).reshape(signal.shape)
         return working
 
-    def _baseband(self, signal: torch.Tensor, *, seed_base: int, times_s, frame_time_s: float) -> torch.Tensor:
+    def _baseband(
+        self, signal: torch.Tensor, *, seed_base: int, times_s: torch.Tensor | None, frame_time_s: float
+    ) -> torch.Tensor:
         spec = self.spec
         num_run = _phase_run_length(signal)
         num_outer = signal.numel() // num_run
@@ -1407,7 +1454,7 @@ class FrontendChain:
         if level > 0.0:
             times = self._run_times(signal, num_run, times_s=times_s, frame_time_s=frame_time_s)
             # Octaves from 1 s down to the coarsest one not finer than two samples.
-            rate = float(noise.phase_sample_rate)
+            rate = float(cast(float, cast(Noise, noise).phase_sample_rate))
             levels = max(1, int(math.floor(math.log2(rate / 2.0))) + 1)
         else:
             times = times.expand(num_run).contiguous()
@@ -1436,8 +1483,8 @@ class FrontendChain:
         signal: torch.Tensor,
         *,
         seed_base: int | None = None,
-        times_s=None,
-        phase_in_signal=False,
+        times_s: torch.Tensor | None = None,
+        phase_in_signal: bool = False,
         frame_time_s: float = 0.0,
     ) -> FrontendOutput:
         """Run the whole chain, in order, once.
@@ -1457,7 +1504,7 @@ class FrontendChain:
             )
         if self._oscillator_pending:
             self._oscillator_pending = False
-            raise_on_invalid_oscillator_queries(self._oscillator_invalid)
+            raise_on_invalid_oscillator_queries(cast(torch.Tensor, self._oscillator_invalid))
         spec = self.spec
         # The white draws are keyed per frame; the time-keyed processes (the
         # oscillator and the baseband flicker) are one realisation over
@@ -1477,7 +1524,7 @@ class FrontendChain:
             working = self._couple(working)
 
         if spec.applies_noise_stage:
-            plan = self._noise_plan(
+            noise_plan = self._noise_plan(
                 working,
                 thermal_seed=seed,
                 process_seed=process_seed,
@@ -1485,13 +1532,13 @@ class FrontendChain:
                 phase_in_signal=phase_in_signal,
                 frame_time_s=frame_time_s,
             )
-            flat = working.reshape(plan.num_outer, plan.num_phase)
-            out_re, out_im, phase_rad = _FrontendNoise.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
+            flat = working.reshape(noise_plan.num_outer, noise_plan.num_phase)
+            out_re, out_im, phase_rad = _FrontendNoise.apply(flat.real.contiguous(), flat.imag.contiguous(), noise_plan)
             working = torch.complex(out_re, out_im).reshape(shape)
 
         if spec.compression is not None:
             c5, k_pm, u_sat = spec.compression.coefficients
-            plan = _CompressionPlan(
+            compression_plan = _CompressionPlan(
                 scale=spec.compression.input_power_scale(
                     impedance=spec.impedance, lna_voltage_gain=spec.lna_voltage_gain()
                 ),
@@ -1501,7 +1548,7 @@ class FrontendChain:
                 block_size=self.block_size,
             )
             flat = working.reshape(-1)
-            out_re, out_im = _FrontendCompress.apply(flat.real.contiguous(), flat.imag.contiguous(), plan)
+            out_re, out_im = _FrontendCompress.apply(flat.real.contiguous(), flat.imag.contiguous(), compression_plan)
             working = torch.complex(out_re, out_im).reshape(shape)
 
         if spec.iq is not None:
@@ -1527,16 +1574,16 @@ class FrontendChain:
                 working = working + (1.0 - lna_scale) * self._dc_broadcast(working)
 
         if spec.agc is not None:
-            plan = self._agc_plan(working, spec.agc)
-            if plan.num_blocks > 1 or spec.agc.is_dynamic:
-                flat = working.reshape(plan.dim0, plan.num_groups * plan.num_blocks, plan.dim2)
+            agc_plan = self._agc_plan(working, spec.agc)
+            if agc_plan.num_blocks > 1 or spec.agc.is_dynamic:
+                flat = working.reshape(agc_plan.dim0, agc_plan.num_groups * agc_plan.num_blocks, agc_plan.dim2)
                 out_re, out_im, agc_gain, agc_rms, _ = _FrontendAgcDynamic.apply(
-                    flat.real.contiguous(), flat.imag.contiguous(), plan
+                    flat.real.contiguous(), flat.imag.contiguous(), agc_plan
                 )
             else:
-                flat = working.reshape(plan.dim0, plan.num_groups, plan.dim2)
+                flat = working.reshape(agc_plan.dim0, agc_plan.num_groups, agc_plan.dim2)
                 out_re, out_im, agc_gain, agc_rms = _FrontendAgc.apply(
-                    flat.real.contiguous(), flat.imag.contiguous(), plan
+                    flat.real.contiguous(), flat.imag.contiguous(), agc_plan
                 )
             working = torch.complex(out_re, out_im).reshape(shape)
 

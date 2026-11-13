@@ -48,6 +48,8 @@ from __future__ import annotations
 import functools
 import math
 import numbers
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -57,7 +59,7 @@ import torch
 SPEED_OF_LIGHT_M_PER_S = 299792458.0
 
 
-def resolve_device(device: object, *, owner: str) -> torch.device:
+def resolve_device(device: torch.device | str | int, *, owner: str) -> torch.device:
     """The device an owner places itself on, refusing a CUDA default with no CUDA.
 
     ``owner`` is the class that defaults to CUDA and appears in the message. A
@@ -121,7 +123,7 @@ def refuse_derivative(stage: str, reason: str, **tensors: object) -> None:
         )
 
 
-def first_order_only(backward):
+def first_order_only(backward: Callable[..., Any]) -> Callable[..., Any]:
     """The one backward decorator: first-order guard over ``once_differentiable``.
 
     Radar publishes first derivatives only, in both modes, and every
@@ -153,7 +155,7 @@ def first_order_only(backward):
     owner = f"{backward.__module__}.{backward.__qualname__}"
 
     @functools.wraps(backward)
-    def guarded(ctx, *grad_outputs):
+    def guarded(ctx: Any, *grad_outputs: Any) -> Any:
         if torch.is_grad_enabled():
             raise NotImplementedError(
                 f"{owner} is first-order only: Radar does not support "
