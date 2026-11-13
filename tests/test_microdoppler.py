@@ -363,10 +363,11 @@ def test_smpl_limb_microdoppler_matches_an_independent_reference():
 #:
 #: The owner directive of 2026-07-25 made post-processing Torch; R-ADR-027
 #: amended it for selections that are not a few library calls on a CUDA map -
-#: the ordered-statistic CFAR level and DBSCAN - which live in one translation
-#: unit, ``processing_select.cu``, registered in the native manifest with a
-#: ``witwin/radar/processing/`` Python owner. That unit, and its declared
-#: symbols wherever they are registered, are what is exempt. The micro-Doppler
+#: the ordered-statistic CFAR level and DBSCAN, in ``processing_select.cu`` -
+#: and R-ADR-054 for back-projection imaging, in ``processing_imaging.cu``; both
+#: are registered in the native manifest with a ``witwin/radar/processing/``
+#: Python owner. Those units, and their declared symbols wherever they are
+#: registered, are what is exempt. The micro-Doppler
 #: words stay forbidden everywhere, that unit included.
 MICRODOPPLER_VOCABULARY = ("spectrogram", "stft")
 ANALYSIS_VOCABULARY = (
@@ -419,7 +420,7 @@ def test_microdoppler_analysis_is_torch_only():
     declared = [row for row in manifest["operators"] if row["python_owner"].startswith("witwin/radar/processing/")]
     declared_units = {_pathlib.Path(row["native_tu"]).name for row in declared}
     declared_symbols = {row["symbol"] for row in declared}
-    assert declared_units == {"processing_select.cu"}, declared_units
+    assert declared_units == {"processing_imaging.cu", "processing_select.cu"}, declared_units
 
     kernels = root / "witwin" / "radar" / "cuda"
     offenders = []
