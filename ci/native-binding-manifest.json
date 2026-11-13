@@ -247,6 +247,36 @@
       ]
     },
     {
+      "symbol": "fmcw_cross_backward",
+      "ad_group": "fmcw_cross",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "python_callers": [
+        "_FmcwCross.backward"
+      ]
+    },
+    {
+      "symbol": "fmcw_cross_forward",
+      "ad_group": "fmcw_cross",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "python_callers": [
+        "_FmcwCross.forward"
+      ]
+    },
+    {
+      "symbol": "fmcw_cross_jvp",
+      "ad_group": "fmcw_cross",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/fmcw_beat.cu",
+      "python_owner": "witwin/radar/synthesis/fmcw.py",
+      "python_callers": [
+        "_FmcwCross.jvp"
+      ]
+    },
+    {
       "symbol": "fmcw_observation_backward",
       "ad_group": "fmcw_observation",
       "ad_role": "backward",

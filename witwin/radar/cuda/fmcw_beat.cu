@@ -865,6 +865,294 @@ void fmcw_adaptive_run(const torch::stable::Tensor& samples, const torch::stable
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-radar beat (R-ADR-051): rows whose transmitter belongs to another radar
+// than the receiver that hears them. The phase is fmcw_cross_terms; this
+// family adds the gates and the routing.
+//
+// Rows are one replay group's composed rows, slot major (row k is join row
+// k % rows_per_slot); `row_link[k % rows_per_slot]` names the row's link in
+// `link_table` (-1: not heard by this receiver, skipped) and `row_tx` its
+// transmitter's index within its own radar. An output segment is one receive
+// cell (receiver slot, receive element) and reads the half-open row range
+// `segment_rows[s]`; segments may share rows. `segment_schedule[s]` is the
+// slot's ramp start in B's frame and the cell's first ADC instant into the
+// ramp [s]; sample n adds n * sample_period_s.
+//
+// A row contributes at a sample only when (1) its emission instant falls on a
+// ramp of the transmitting radar's frame (slot m in [0, slots), time w into the
+// ramp below its ramp end: the transmitter is off during idle), (2) slot m is
+// the row's transmitter's TDM slot (m mod tx_count == row_tx), and (3) the
+// instantaneous beat frequency lies in the receiver's IF band (|beat| <=
+// if_bandwidth): an ideal anti-alias filter, applied as a gate on the
+// instantaneous frequency (stationary phase of a linear-FM beat; the filter's
+// transition ripple is not modelled). The gates are discrete; the derivative is
+// the almost-everywhere one, exactly as for a pulse gate.
+//
+// link_table row (float64, kCrossLinkWidth): tx slope [Hz/s], tx start offset
+// [Hz], tx ramp end [s], tx chirp period [s], tx slot count, tx transmitter
+// count, tx frame start minus rx frame start [s], rx slope, rx start offset,
+// phase0 [cycles], rx IF bandwidth [Hz]. Constants: no derivative.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kCrossLinkWidth = 11;
+
+struct CrossPhase {
+  float sin_phi;
+  float cos_phi;
+  double d_tau;
+};
+
+__device__ __forceinline__ bool cross_phase(
+    const double* __restrict__ link, const int tx, const double tau, const double t, const double v,
+    CrossPhase& out) {
+  const double period = link[3];
+  const double emitted = t - tau - link[6];
+  const double slot = floor(emitted / period);
+  if (slot < 0.0 || slot >= link[4]) return false;
+  const double w = emitted - slot * period;
+  if (w >= link[2]) return false;
+  if (static_cast<int64_t>(slot) % static_cast<int64_t>(link[5]) != static_cast<int64_t>(tx)) return false;
+  const FmcwCrossTerms terms = fmcw_cross_terms(tau, t, v, w, link[7], link[8], link[0], link[1], link[9]);
+  if (fabs(terms.beat_hz) > link[10]) return false;
+  const double frac = terms.cycles - floor(terms.cycles);
+  sincosf(static_cast<float>(kTwoPiD * frac), &out.sin_phi, &out.cos_phi);
+  out.d_tau = terms.d_tau;
+  return true;
+}
+
+struct CrossRows {
+  const float* transfer;  // [rows, 2] Channel convention C; the beat weight is conj(C)
+  const float* tau_hi;
+  const float* tau_lo;
+  const bool* valid;
+  const int32_t* row_link;
+  const int32_t* row_tx;
+  const double* link_table;
+  int rows;
+  int rows_per_slot;
+};
+
+__device__ __forceinline__ const double* cross_link(const CrossRows& rows, const int64_t k, int& tx) {
+  const int64_t local = k % rows.rows_per_slot;
+  const int link = rows.row_link[local];
+  if (link < 0 || (rows.valid != nullptr && !rows.valid[k])) return nullptr;
+  tx = rows.row_tx[local];
+  return rows.link_table + static_cast<int64_t>(kCrossLinkWidth) * link;
+}
+
+// Forward (tangent == nullptr) and forward-mode tangent of one output cell.
+template <bool Tangent>
+__global__ void fmcw_cross_cell_kernel(
+    const CrossRows rows, const int64_t* __restrict__ segment_rows, const double* __restrict__ segment_schedule,
+    const float* __restrict__ tan_transfer, const float* __restrict__ tan_tau, float* __restrict__ out,
+    const int num_segments, const int num_samples, const double sample_period_s) {
+  const int sample = blockIdx.x * blockDim.x + threadIdx.x;
+  const int segment = blockIdx.y;
+  if (sample >= num_samples || segment >= num_segments) return;
+  int64_t begin = segment_rows[2 * segment];
+  int64_t end = segment_rows[2 * segment + 1];
+  begin = begin < 0 ? 0 : begin;
+  end = end > rows.rows ? rows.rows : end;
+  const double v = segment_schedule[2 * segment + 1] + static_cast<double>(sample) * sample_period_s;
+  const double t = segment_schedule[2 * segment] + v;
+  float acc_re = 0.0f;
+  float acc_im = 0.0f;
+  for (int64_t k = begin; k < end; ++k) {
+    int tx = 0;
+    const double* link = cross_link(rows, k, tx);
+    if (link == nullptr) continue;
+    CrossPhase phase;
+    if (!cross_phase(link, tx, path_delay(rows.tau_hi, rows.tau_lo, k), t, v, phase)) continue;
+    // conj(C) * exp(+j phi).
+    const float c_re = rows.transfer[2 * k];
+    const float c_im = -rows.transfer[2 * k + 1];
+    if (Tangent) {
+      const float re = c_re * phase.cos_phi - c_im * phase.sin_phi;
+      const float im = c_re * phase.sin_phi + c_im * phase.cos_phi;
+      const float t_re = tan_transfer[2 * k];
+      const float t_im = -tan_transfer[2 * k + 1];
+      const float dphi = static_cast<float>(phase.d_tau * static_cast<double>(tan_tau[k]));
+      acc_re += t_re * phase.cos_phi - t_im * phase.sin_phi - dphi * im;
+      acc_im += t_re * phase.sin_phi + t_im * phase.cos_phi + dphi * re;
+    } else {
+      acc_re += c_re * phase.cos_phi - c_im * phase.sin_phi;
+      acc_im += c_re * phase.sin_phi + c_im * phase.cos_phi;
+    }
+  }
+  const int64_t index = 2 * (static_cast<int64_t>(segment) * num_samples + sample);
+  out[index] = acc_re;
+  out[index + 1] = acc_im;
+}
+
+// One thread per row over every (segment, sample) cell that reads it, through
+// the row -> segment CSR: each row owns its gradient slots, so no atomics and a
+// fixed summation order.
+__global__ void fmcw_cross_backward_kernel(
+    const CrossRows rows, const int64_t* __restrict__ row_segment_offsets, const int64_t* __restrict__ row_segments,
+    const double* __restrict__ segment_schedule, const float* __restrict__ grad_out,
+    float* __restrict__ grad_transfer, float* __restrict__ grad_tau, const int num_segments, const int num_samples,
+    const double sample_period_s) {
+  const int k = blockIdx.x * blockDim.x + threadIdx.x;
+  if (k >= rows.rows) return;
+  double d_re = 0.0, d_im = 0.0, d_tau = 0.0;
+  int tx = 0;
+  const double* link = cross_link(rows, k, tx);
+  if (link != nullptr) {
+    const double tau = path_delay(rows.tau_hi, rows.tau_lo, k);
+    const float c_re = rows.transfer[2 * k];
+    const float c_im = -rows.transfer[2 * k + 1];
+    for (int64_t entry = row_segment_offsets[k]; entry < row_segment_offsets[k + 1]; ++entry) {
+      int64_t segment = row_segments[entry];
+      segment = segment < 0 ? 0 : (segment >= num_segments ? num_segments - 1 : segment);
+      const double start = segment_schedule[2 * segment];
+      const double window = segment_schedule[2 * segment + 1];
+      const float* g = grad_out + 2 * segment * static_cast<int64_t>(num_samples);
+      for (int sample = 0; sample < num_samples; ++sample) {
+        const double v = window + static_cast<double>(sample) * sample_period_s;
+        CrossPhase phase;
+        if (!cross_phase(link, tx, tau, start + v, v, phase)) continue;
+        const double g_re = g[2 * sample];
+        const double g_im = g[2 * sample + 1];
+        const double re = c_re * phase.cos_phi - c_im * phase.sin_phi;
+        const double im = c_re * phase.sin_phi + c_im * phase.cos_phi;
+        // out = conj(C) e^{j phi}: d out_re/d C_re = cos, d out_im/d C_re = sin,
+        // d out_re/d C_im = sin, d out_im/d C_im = -cos.
+        d_re += g_re * phase.cos_phi + g_im * phase.sin_phi;
+        d_im += g_re * phase.sin_phi - g_im * phase.cos_phi;
+        d_tau += (-g_re * im + g_im * re) * phase.d_tau;
+      }
+    }
+  }
+  grad_transfer[2 * k] = static_cast<float>(d_re);
+  grad_transfer[2 * k + 1] = static_cast<float>(d_im);
+  grad_tau[k] = static_cast<float>(d_tau);
+}
+
+void check_cross_double(const torch::stable::Tensor& table, int64_t width, const char* name) {
+  STD_TORCH_CHECK(table.is_cuda(), name, " must be a CUDA tensor.");
+  STD_TORCH_CHECK(table.scalar_type() == torch::headeronly::ScalarType::Double, name, " must have dtype torch.float64.");
+  STD_TORCH_CHECK(table.is_contiguous(), name, " must be contiguous.");
+  STD_TORCH_CHECK(table.dim() == 2 && table.size(1) == width, name, " has the wrong row width.");
+}
+
+CrossRows cross_rows(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, int64_t rows_per_slot) {
+  check_cuda_float(transfer, "transfer");
+  check_cuda_float(tau_rt, "tau_rt");
+  const int rows = checked_int(tau_rt.numel(), "rows");
+  STD_TORCH_CHECK(transfer.numel() == 2 * static_cast<int64_t>(rows), "transfer must be (rows, 2).");
+  if (valid.numel() != 0) {
+    STD_TORCH_CHECK(
+        valid.is_cuda() && valid.is_contiguous() && valid.scalar_type() == torch::headeronly::ScalarType::Bool &&
+            valid.numel() == rows,
+        "valid must be empty or one contiguous torch.bool CUDA value per row.");
+  }
+  check_cuda_int(row_link, "row_link");
+  check_cuda_int(row_tx, "row_tx");
+  const int per_slot = checked_int(rows_per_slot, "rows_per_slot");
+  STD_TORCH_CHECK(per_slot > 0 || rows == 0, "rows_per_slot must be positive.");
+  STD_TORCH_CHECK(row_link.numel() == per_slot && row_tx.numel() == per_slot, "row_link and row_tx hold one value per row of a slot.");
+  STD_TORCH_CHECK(per_slot == 0 || rows % per_slot == 0, "rows must be whole slots of rows_per_slot.");
+  check_cross_double(link_table, kCrossLinkWidth, "link_table");
+  return {transfer.const_data_ptr<float>(), tau_rt.const_data_ptr<float>(), delay_residual(tau_lo, tau_rt),
+          valid.numel() == 0 ? nullptr : valid.const_data_ptr<bool>(), row_link.const_data_ptr<int32_t>(),
+          row_tx.const_data_ptr<int32_t>(), link_table.const_data_ptr<double>(), rows, per_slot > 0 ? per_slot : 1};
+}
+
+void check_cross_cells(
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    const torch::stable::Tensor& out, int segments, int samples, const char* name) {
+  check_cuda_long(segment_rows, "segment_rows");
+  STD_TORCH_CHECK(segment_rows.numel() == 2 * static_cast<int64_t>(segments), "segment_rows must be (segments, 2).");
+  check_cross_double(segment_schedule, 2, "segment_schedule");
+  STD_TORCH_CHECK(segment_schedule.size(0) == segments, "segment_schedule must hold one row per segment.");
+  check_cuda_float(out, name);
+  STD_TORCH_CHECK(out.numel() == 2 * static_cast<int64_t>(segments) * samples, name, " must be (segments, samples, 2).");
+}
+
+}  // namespace
+
+void fmcw_cross_forward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& segment_rows,
+    const torch::stable::Tensor& segment_schedule, torch::stable::Tensor& out, int64_t rows_per_slot,
+    int64_t num_samples, double sample_period_s) {
+  const CrossRows rows = cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, rows_per_slot);
+  const int segments = checked_int(segment_schedule.size(0), "segments");
+  const int samples = checked_int(num_samples, "num_samples");
+  check_cross_cells(segment_rows, segment_schedule, out, segments, samples, "out");
+  if (segments == 0 || samples == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(out.get_device_index());
+  fmcw_cross_cell_kernel<false><<<sample_grid(samples, segments, 1, kBlock), dim3(kBlock, 1, 1), 0,
+                                   current_cuda_stream(out)>>>(
+      rows, segment_rows.const_data_ptr<int64_t>(), segment_schedule.const_data_ptr<double>(), nullptr, nullptr,
+      out.mutable_data_ptr<float>(), segments, samples, sample_period_s);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void fmcw_cross_jvp_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& segment_rows,
+    const torch::stable::Tensor& segment_schedule, const torch::stable::Tensor& tan_transfer,
+    const torch::stable::Tensor& tan_tau, torch::stable::Tensor& tan_out, int64_t rows_per_slot, int64_t num_samples,
+    double sample_period_s) {
+  const CrossRows rows = cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, rows_per_slot);
+  const int segments = checked_int(segment_schedule.size(0), "segments");
+  const int samples = checked_int(num_samples, "num_samples");
+  check_cross_cells(segment_rows, segment_schedule, tan_out, segments, samples, "tan_out");
+  check_cuda_float(tan_transfer, "tan_transfer");
+  check_cuda_float(tan_tau, "tan_tau");
+  STD_TORCH_CHECK(
+      tan_transfer.numel() == transfer.numel() && tan_tau.numel() == tau_rt.numel(),
+      "the tangents must match the rows they perturb.");
+  if (segments == 0 || samples == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(tan_out.get_device_index());
+  fmcw_cross_cell_kernel<true><<<sample_grid(samples, segments, 1, kBlock), dim3(kBlock, 1, 1), 0,
+                                  current_cuda_stream(tan_out)>>>(
+      rows, segment_rows.const_data_ptr<int64_t>(), segment_schedule.const_data_ptr<double>(),
+      tan_transfer.const_data_ptr<float>(), tan_tau.const_data_ptr<float>(), tan_out.mutable_data_ptr<float>(),
+      segments, samples, sample_period_s);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void fmcw_cross_backward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& row_segment_offsets,
+    const torch::stable::Tensor& row_segments, const torch::stable::Tensor& segment_schedule,
+    const torch::stable::Tensor& grad_out, torch::stable::Tensor& grad_transfer, torch::stable::Tensor& grad_tau,
+    int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows = cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, rows_per_slot);
+  const int segments = checked_int(segment_schedule.size(0), "segments");
+  const int samples = checked_int(num_samples, "num_samples");
+  check_cross_double(segment_schedule, 2, "segment_schedule");
+  check_cuda_long(row_segment_offsets, "row_segment_offsets");
+  check_cuda_long(row_segments, "row_segments");
+  STD_TORCH_CHECK(row_segment_offsets.numel() == static_cast<int64_t>(rows.rows) + 1, "row_segment_offsets must hold rows + 1 values.");
+  check_cuda_float(grad_out, "grad_out");
+  STD_TORCH_CHECK(grad_out.numel() == 2 * static_cast<int64_t>(segments) * samples, "grad_out must be (segments, samples, 2).");
+  check_cuda_float(grad_transfer, "grad_transfer");
+  check_cuda_float(grad_tau, "grad_tau");
+  STD_TORCH_CHECK(
+      grad_transfer.numel() == transfer.numel() && grad_tau.numel() == tau_rt.numel(),
+      "the gradients must match the rows they belong to.");
+  if (rows.rows == 0) return;
+  const torch::stable::accelerator::DeviceGuard guard(grad_tau.get_device_index());
+  fmcw_cross_backward_kernel<<<linear_grid(rows.rows), dim3(kBlock, 1, 1), 0, current_cuda_stream(grad_tau)>>>(
+      rows, row_segment_offsets.const_data_ptr<int64_t>(), row_segments.const_data_ptr<int64_t>(),
+      segment_schedule.const_data_ptr<double>(), grad_out.const_data_ptr<float>(),
+      grad_transfer.mutable_data_ptr<float>(), grad_tau.mutable_data_ptr<float>(), segments, samples,
+      sample_period_s);
+  STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("fmcw_adaptive_forward", TORCH_BOX(&fmcw_adaptive_run<0>));
   m.impl("fmcw_adaptive_backward", TORCH_BOX(&fmcw_adaptive_run<1>));
@@ -875,4 +1163,7 @@ STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("fmcw_beat_forward", TORCH_BOX(&fmcw_beat_forward_cuda));
   m.impl("fmcw_beat_backward", TORCH_BOX(&fmcw_beat_backward_cuda));
   m.impl("fmcw_beat_jvp", TORCH_BOX(&fmcw_beat_jvp_cuda));
+  m.impl("fmcw_cross_forward", TORCH_BOX(&fmcw_cross_forward_cuda));
+  m.impl("fmcw_cross_backward", TORCH_BOX(&fmcw_cross_backward_cuda));
+  m.impl("fmcw_cross_jvp", TORCH_BOX(&fmcw_cross_jvp_cuda));
 }

@@ -742,6 +742,7 @@ class _StableOpsModule:
 # the JIT route checks, since it has no record.
 _REQUIRED_OPERATORS = (
     "fmcw_beat_forward",
+    "fmcw_cross_forward",
     "fmcw_spectrum_forward",
     "frontend_noise_forward",
     "ofdm_cfr_forward",

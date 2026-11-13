@@ -133,6 +133,24 @@ STABLE_TORCH_LIBRARY(_radar_native, m) {
       "float sample_period_s, float chirp_period_s, float slope_hz_per_s, "
       "float carrier_hz, float carrier_rate_hz, float t_start_s) -> ()");
 
+  // Cross-radar FMCW beat (R-ADR-051): rows heard by a receiver from another
+  // radar's transmitter, each with its link's ramp and clock in `link_table`;
+  // `segment_rows` routes each receive cell to its rows, and the backward reads
+  // the inverse map `row_segment_offsets` / `row_segments`.
+  m.def(
+      "fmcw_cross_forward(Tensor transfer, Tensor tau_rt, Tensor tau_lo, Tensor valid, Tensor row_link, "
+      "Tensor row_tx, Tensor link_table, Tensor segment_rows, Tensor segment_schedule, Tensor(a!) out, "
+      "int rows_per_slot, int num_samples, float sample_period_s) -> ()");
+  m.def(
+      "fmcw_cross_backward(Tensor transfer, Tensor tau_rt, Tensor tau_lo, Tensor valid, Tensor row_link, "
+      "Tensor row_tx, Tensor link_table, Tensor row_segment_offsets, Tensor row_segments, "
+      "Tensor segment_schedule, Tensor grad_out, Tensor(a!) grad_transfer, Tensor(b!) grad_tau, "
+      "int rows_per_slot, int num_samples, float sample_period_s) -> ()");
+  m.def(
+      "fmcw_cross_jvp(Tensor transfer, Tensor tau_rt, Tensor tau_lo, Tensor valid, Tensor row_link, "
+      "Tensor row_tx, Tensor link_table, Tensor segment_rows, Tensor segment_schedule, Tensor tan_transfer, "
+      "Tensor tan_tau, Tensor(a!) tan_out, int rows_per_slot, int num_samples, float sample_period_s) -> ()");
+
   // OFDM channel frequency response over the (symbol, subcarrier)
   // grid. The cube is published in the CHANNEL phasor convention exp(-j k d),
   // NOT conjugated: OFDM demodulation is per-subcarrier equalisation H = Y / X,
