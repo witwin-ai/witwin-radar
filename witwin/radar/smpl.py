@@ -220,7 +220,7 @@ def _refuse_pose_tangent(name: str) -> None:
         f"{name} carries a forward tangent, and SmplPoseDeformation cannot deliver a forward-mode pose "
         "derivative: Channel refuses to compile mesh vertices that carry a dual, and velocity_at opens its own "
         "forward level over the pose. The pose, the shape and the body transform are reverse-mode leaves: mark "
-        "them requires_grad and run the verb with grad='vjp'."
+        "them requires_grad and run the verb with ad_mode='vjp'."
     )
 
 
@@ -422,7 +422,7 @@ class SmplPoseDeformation:
         *,
         structure_id: int,
         material: Any,
-        cluster_size_m: float | None = None,
+        cluster_size: float | None = None,
         max_sites: int | None = None,
         seed: int = 0,
         **mesh_kwargs,
@@ -434,7 +434,7 @@ class SmplPoseDeformation:
         :class:`~witwin.radar.targets.MeshTargets` makes its faces the scatter
         sites (R-ADR-042): each facet returns what its area, orientation and
         material give, the body occludes itself through the legs, and no cross
-        section is declared. ``cluster_size_m`` or ``max_sites`` is the site
+        section is declared. ``cluster_size`` or ``max_sites`` is the site
         budget for a body of 13 776 faces. ``material`` is required: the
         dielectric a body is made of at the carrier is a statement about the
         world, not a default.
@@ -456,7 +456,7 @@ class SmplPoseDeformation:
         world = Scene(structures=(*scene.structures, structure), endpoints=list(scene.endpoints))
         dynamic = DynamicScene(world, structure_deformations={int(structure_id): self})
         targets = MeshTargets(
-            structure_ids=(int(structure_id),), cluster_size_m=cluster_size_m, max_sites=max_sites, seed=seed
+            structure_ids=(int(structure_id),), cluster_size=cluster_size, max_sites=max_sites, seed=seed
         )
         return dynamic, targets
 

@@ -55,7 +55,13 @@ TWO = [(0.0, 0.0, -2.0), (0.0, 1.0, -2.0)]
 
 
 def _radar(**fields):
-    base = {"carrier": 77e9, "waveform": Fmcw(**RAMP), "tx": [(0, 0, 0)], "rx": [(0, 0, 0)], "power": 10.0}
+    base = {
+        "reference_frequency_hz": 77e9,
+        "waveform": Fmcw(**RAMP),
+        "tx": [(0, 0, 0)],
+        "rx": [(0, 0, 0)],
+        "power": 10.0,
+    }
     return Radar(**{**base, "device": "cpu", **fields})
 
 
@@ -107,7 +113,7 @@ CASES = {
     "unknown OFDM output": (lambda: Ofdm(**OFDM, output="x"), "Ofdm.output"),
     "negative pilot spacing": (lambda: Ofdm(**OFDM, pilot_spacing=-1), "Ofdm.pilot_spacing"),
     "chips on a rectangular pulse": (lambda: Pulsed(pulse_kind="rect", chips=(1.0,), **PULSE), "Pulsed: only a coded"),
-    "non-finite IQ gain": (lambda: Iq(gain_db=float("nan")), "Iq.gain_db"),
+    "non-finite IQ gain": (lambda: Iq(gain=float("nan")), "Iq.gain"),
     "unknown world motion": (lambda: Motion(world="moving"), "Motion.world"),
     "waveform of the wrong type": (lambda: _radar(waveform="fmcw"), "Radar.waveform"),
     "BPM on three transmitters": (
@@ -131,9 +137,10 @@ def test_a_radar_off_cuda_is_refused_by_its_device_before_any_work(monkeypatch):
     from witwin.core import Scene
 
     def no_session(*args, **kwargs):
-        raise AssertionError("the targets were split before the device was checked")
+        raise AssertionError("the session was opened before the device was checked")
 
-    monkeypatch.setattr("witwin.radar.targets.as_session_targets", no_session)
+    monkeypatch.setattr("witwin.radar.simulation.simulate_scene", no_session)
+    monkeypatch.setattr("witwin.radar.simulation.trace_scene", no_session)
     radar = _radar()
     for verb in (radar.simulate, radar.trace):
         with pytest.raises(RuntimeError, match="this Radar is on device 'cpu'"):
@@ -151,4 +158,16 @@ def test_the_fmcw_derived_quantities_follow_their_definitions():
     assert ramp.range_resolution == pytest.approx(c / (2.0 * sweep), rel=1e-15)
     assert ramp.max_range == pytest.approx(10e6 * c / (2.0 * 60e12), rel=1e-15)
     wavelength = c / 77e9
-    assert ramp.max_velocity(carrier=77e9, num_tx=2) == pytest.approx(wavelength / (4.0 * 2 * 25e-6), rel=1e-15)
+    assert ramp.max_velocity(reference_frequency_hz=77e9, num_tx=2) == pytest.approx(
+        wavelength / (4.0 * 2 * 25e-6), rel=1e-15
+    )
+
+
+def test_a_network_of_cpu_radars_is_refused_by_device_after_its_own_argument_checks():
+    from witwin.core import Scene
+
+    from witwin.radar import Network
+
+    network = Network((_radar(), _radar(position=(1.0, 0.0, 0.0))))
+    with pytest.raises(RuntimeError, match="this Radar is on device 'cpu'"):
+        network.simulate(Scene(), PointTargets(positions=ONE, rcs=1.0), times=(0.0,))

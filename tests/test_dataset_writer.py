@@ -23,7 +23,7 @@ def _radar():
         ramp_end=10e-6,
     )
     return Radar(
-        carrier=77e9,
+        reference_frequency_hz=77e9,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0),),
         rx=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
@@ -84,7 +84,7 @@ def test_episodes_are_written_frame_by_frame_and_load_back(tmp_path, monkeypatch
             episode.scene, episode.targets, times=episode.times, los=True, reflections=0, motion=Motion.chirp()
         )
         assert torch.equal(result.cube, expected.cube)
-        assert result.times_s == expected.times_s and result.path_set_complete == expected.path_set_complete
+        assert result.times == expected.times and result.path_set_complete == expected.path_set_complete
         truth = ground_truth(run_radar, episode.scene, episode.targets, times=episode.times)
         for name in ("range_m", "radial_velocity_mps", "azimuth_rad", "target_id", "site_id"):
             assert torch.equal(getattr(labels, name), getattr(truth, name)), name
@@ -112,4 +112,4 @@ def test_an_existing_dataset_needs_overwrite_and_a_foreign_directory_is_never_cl
         write_dataset(tmp_path / "other", radar, episodes, overwrite=True)
     assert (tmp_path / "other" / "keep.txt").read_text() == "keep"
     with pytest.raises(ValueError, match="grad must be 'none'"):
-        write_dataset(tmp_path / "graded", radar, episodes, grad="vjp")
+        write_dataset(tmp_path / "graded", radar, episodes, ad_mode="vjp")

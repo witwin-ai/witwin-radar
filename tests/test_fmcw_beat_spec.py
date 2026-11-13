@@ -49,7 +49,7 @@ def test_carrier_placement_defaults_to_the_weight(spec):
     assert spec.carrier_rate_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
 
     radar = _radar()
-    explicit = radar.waveform_spec(offset=radar.carrier)
+    explicit = radar.waveform_spec(offset=radar.reference_frequency_hz)
     assert explicit.carrier_hz == pytest.approx(geo.REFERENCE_FREQUENCY_HZ)
     # The kernel owns the whole carrier here, so the rate term must NOT be
     # applied as well; that would double count it.

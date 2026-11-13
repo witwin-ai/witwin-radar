@@ -138,8 +138,8 @@ def expected_transport(radar: Radar) -> float:
     against itself proves nothing.
     """
 
-    wavelength_m = SPEED_OF_LIGHT_M_PER_S / radar.carrier
-    transmit_power_w = radar.transmit_power_watts
+    wavelength_m = SPEED_OF_LIGHT_M_PER_S / radar.reference_frequency_hz
+    transmit_power_w = radar.power_w
     range_m = math.dist((0.0, 0.0, 0.0), TARGET_POSITION_M)
     spreading = wavelength_m / (4.0 * math.pi * range_m)
     strength = math.sqrt(4.0 * math.pi * TARGET_RCS_M2) / wavelength_m

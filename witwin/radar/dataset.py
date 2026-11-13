@@ -47,7 +47,7 @@ DATASET_FORMAT_VERSION = 1
 DATASET_INDEX = "dataset.json"
 
 #: Per-frame members accumulated across a streamed episode, in the saved result's vocabulary.
-_PER_FRAME = ("times_s", "epochs", "rediscovery_reasons")
+_PER_FRAME = ("times", "epochs", "rediscovery_reasons")
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ def write_dataset(
     ``overwrite`` and it holds a dataset this function wrote.
     """
 
-    if options.get("grad", "none") != "none" or any(e.options.get("grad", "none") != "none" for e in episodes):
+    if options.get("ad_mode", "none") != "none" or any(e.options.get("ad_mode", "none") != "none" for e in episodes):
         raise ValueError("a dataset is written without a derivative; grad must be 'none'")
     names = [episode.name or f"episode_{index:05d}" for index, episode in enumerate(episodes)]
     if len(set(names)) != len(names):
@@ -150,8 +150,8 @@ def _write_episode(
     count = 0
     stream = run_radar.stream(episode.scene, episode.targets, times=episode.times, pose=episode.pose, **arguments)
     for count, frame in enumerate(stream, start=1):
-        extra = {} if labeler is None else {"labels": labeler.at(float(frame.times_s[0])).tensors()}
-        write_frame(directory, count - 1, frame.cube[0], frame.sample_times_s[0], **extra)
+        extra = {} if labeler is None else {"labels": labeler.at(float(frame.times[0])).tensors()}
+        write_frame(directory, count - 1, frame.cube[0], frame.sample_times[0], **extra)
         if first is None:
             first = frame
             write_axes(directory, frame.axes)
@@ -170,7 +170,7 @@ def _write_episode(
         "phasor": last.phasor,
         "time_dependence": last.time_dependence,
         "reference_frequency_hz": float(last.reference_frequency_hz),
-        "times_s": [float(value) for value in per_frame["times_s"]],
+        "times": [float(value) for value in per_frame["times"]],
         "epochs": [int(value) for value in per_frame["epochs"]],
         "rediscovery_reasons": list(per_frame["rediscovery_reasons"]),
         "compile_count": int(last.compile_count),

@@ -94,7 +94,7 @@ def _one_row_stage(radar: Radar) -> tuple[RoundTripPatternStage, RadarPathBatch]
         total_delay_s=torch.zeros(1, dtype=torch.float32, device=device),
         delay_rate=None,
         complex_transfer_ref=torch.ones(1, dtype=torch.complex64, device=device),
-        reference_frequency_hz=float(radar.carrier),
+        reference_frequency_hz=float(radar.reference_frequency_hz),
         row_valid=None,
         topology=RadarPathTopology(
             radar_source_id=zeros,

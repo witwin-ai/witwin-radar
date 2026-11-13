@@ -23,6 +23,7 @@
       "num_tx",
       "polarization",
       "position",
+      "power_w",
       "replace",
       "rx_pattern",
       "rx_polarization",
@@ -33,7 +34,6 @@
       "to_dict",
       "to_json",
       "trace",
-      "transmit_power_watts",
       "up",
       "waveform_spec",
       "wavelength"

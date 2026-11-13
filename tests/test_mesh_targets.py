@@ -136,7 +136,7 @@ def _bistatic_plate_coefficient(material, *, cos_incidence: float, polarization:
 
         world = sc.radar()
         return Radar(
-            carrier=sc.CARRIER_HZ,
+            reference_frequency_hz=sc.CARRIER_HZ,
             waveform=world.waveform,
             tx=(_local(world, tx),),
             rx=(_local(world, rx),),
@@ -161,7 +161,7 @@ def _local(radar, world_point) -> tuple[float, float, float]:
         from witwin.radar import Radar
 
         moved = Radar(
-            carrier=sc.CARRIER_HZ,
+            reference_frequency_hz=sc.CARRIER_HZ,
             waveform=radar.waveform,
             tx=(tuple(float(v) for v in axis),),
             rx=((0.0, 0.0, 0.0),),
@@ -275,7 +275,7 @@ def test_the_vertex_gradient_matches_finite_differences():
             surface_id=1,
         )
         scene = Scene(structures=(structure,), endpoints=[])
-        rows = sc.radar().trace(scene, MeshTargets(), times=(0.0,), reflections=0, grad="vjp").rows()
+        rows = sc.radar().trace(scene, MeshTargets(), times=(0.0,), reflections=0, ad_mode="vjp").rows()
         total = rows.complex_transfer_ref.sum()
         return (total.real**2 + total.imag**2) * 1e12
 

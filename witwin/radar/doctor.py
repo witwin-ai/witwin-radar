@@ -150,7 +150,7 @@ def smoke_test() -> dict[str, Any]:
         from .targets import PointTargets
 
         radar = Radar(
-            carrier=77e9,
+            reference_frequency_hz=77e9,
             waveform=Fmcw(
                 slope=30e12,
                 sample_rate=10e6,

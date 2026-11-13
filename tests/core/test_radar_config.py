@@ -274,7 +274,7 @@ class TestRadarConstruction:
         radar = Radar.from_dict(standard_config)
         assert radar == Radar.from_dict(standard_config)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            radar.carrier = 24e9
+            radar.reference_frequency_hz = 24e9
 
     def test_no_processing_state_hangs_off_the_radar(self, standard_config):
         """A radar carries its configuration and nothing derived from it."""

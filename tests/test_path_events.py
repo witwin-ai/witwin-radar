@@ -97,7 +97,7 @@ def test_occlusion_events_match_the_analytic_shadow_crossings(motion):
     (events,) = result.events
     _assert_brackets(events, [(False, DEATH_S), (True, BIRTH_S)])
     # The occluded stretch contributes exactly zero, the rest does not.
-    times = result.sample_times_s[0].reshape(CHIRPS, -1)[:, 0]
+    times = result.sample_times[0].reshape(CHIRPS, -1)[:, 0]
     power = result.cube[0, 0, 0].abs().pow(2).sum(dim=-1).cpu().numpy()
     hidden = (times >= events.time_s[0]) & (times < events.time_s[1])
     assert (power[hidden] == 0).all() and (power[~hidden] > 0).all()
@@ -123,7 +123,7 @@ def test_a_still_world_and_an_unobstructed_walk_log_nothing():
     radar = _radar()
     still = radar.simulate(_plate(), PointTargets(positions=[[10.0, 3.0, 0.0]], rcs=1.0), times=(0.0, 0.1))
     assert [len(events) for events in still.events] == [0, 0]
-    assert still.birth_lag_bound_s == (0.0, 0.0)
+    assert still.birth_lag_bound == (0.0, 0.0)
     clear = _simulate(Motion.chirp(), scene=sc.empty_scene())
     assert len(clear.events[0]) == 0
 
@@ -170,7 +170,7 @@ def test_a_birth_has_the_range_doppler_signature_of_a_gated_echo():
     (events,) = occluded.events
     assert list(events.birth) == [True]
     assert events.previous_time_s[0] < (0.5 - start) / SPEED <= events.time_s[0]
-    times = occluded.sample_times_s[0]
+    times = occluded.sample_times[0]
     gate = torch.as_tensor(times >= events.time_s[0], dtype=torch.float32, device=clear.cube.device)
     torch.testing.assert_close(occluded.cube[0, 0, 0], clear.cube[0, 0, 0] * gate[:, None], rtol=1e-6, atol=0)
 
@@ -202,7 +202,7 @@ def test_a_birth_has_the_range_doppler_signature_of_a_gated_echo():
 def test_the_birth_lag_bound_follows_the_discovery_cadence():
     every = _simulate(Motion.chirp())
     held = _simulate(Motion.chirp(rediscover_every_frames=1))
-    period = float(np.diff(every.sample_times_s[0])[0])
-    assert every.birth_lag_bound_s[0] == pytest.approx(period, rel=1e-9)
-    span = float(held.sample_times_s[0][-1] - held.sample_times_s[0][0])
-    assert held.birth_lag_bound_s[0] == pytest.approx(span, rel=1e-9)
+    period = float(np.diff(every.sample_times[0])[0])
+    assert every.birth_lag_bound[0] == pytest.approx(period, rel=1e-9)
+    span = float(held.sample_times[0][-1] - held.sample_times[0][0])
+    assert held.birth_lag_bound[0] == pytest.approx(span, rel=1e-9)

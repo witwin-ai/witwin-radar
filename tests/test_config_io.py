@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 
 import pytest
@@ -22,7 +23,7 @@ def _round_trip(radar: Radar) -> Radar:
 
 def _every_field_radar() -> Radar:
     return Radar(
-        carrier=60e9,
+        reference_frequency_hz=60e9,
         waveform=Fmcw(
             slope=30e12,
             sample_rate=10e6,
@@ -45,8 +46,8 @@ def _every_field_radar() -> Radar:
         lna_gain=20.0,
         agc=Agc(target_rms=0.1, mode="global"),
         adc=Adc(bits=12, full_scale=1.0),
-        iq=Iq(gain_db=0.5, phase_deg=2.0),
-        leakage=Leakage(isolation_db=30.0, delay_s=[[1e-10, 2e-10], [3e-10, 4e-10]], phase=0.25),
+        iq=Iq(gain=0.5, phase=math.radians(2.0)),
+        leakage=Leakage(isolation=30.0, delay=[[1e-10, 2e-10], [3e-10, 4e-10]], phase=0.25),
         compression=Compression(iip3=0.0, p1db=-12.0, am_pm=3.0),
         dc_offset=(1e-3 + 2e-3j, -5e-4),
         coupling=Coupling(rx=((1.0, 0.1j), (0.1j, 1.0))),
@@ -102,7 +103,12 @@ class TestRoundTrip:
     )
     def test_every_waveform_kind_round_trips(self, waveform):
         radar = Radar(
-            carrier=77e9, waveform=waveform, tx=[(0, 0, 0), (2, 0, 0)], rx=[(0, 0, 0)], power=10.0, device="cpu"
+            reference_frequency_hz=77e9,
+            waveform=waveform,
+            tx=[(0, 0, 0), (2, 0, 0)],
+            rx=[(0, 0, 0)],
+            power=10.0,
+            device="cpu",
         )
         assert _round_trip(radar) == radar
 
@@ -142,7 +148,7 @@ class TestRefusals:
 
     def test_a_sequence_on_a_non_fmcw_waveform_is_refused(self):
         written = Radar(
-            carrier=77e9,
+            reference_frequency_hz=77e9,
             waveform=Ofdm(
                 subcarrier_spacing=120e3, num_subcarriers=8, cyclic_prefix=1e-6, num_symbols=4, max_expected_delay=0
             ),
@@ -205,7 +211,7 @@ class TestTiProfile:
     def test_a_tdm_profile_maps_slots_to_transmitters_in_slot_order(self):
         config = read_ti_cfg(TI_PROFILE)
         radar = config.to_radar(tx=BOARD_TX, rx=BOARD_RX, device="cpu")
-        assert radar.carrier == 77e9
+        assert radar.reference_frequency_hz == 77e9
         assert radar.tx == (BOARD_TX[0], BOARD_TX[2], BOARD_TX[1])
         assert radar.rx == BOARD_RX
         waveform = radar.waveform

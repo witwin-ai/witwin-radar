@@ -55,7 +55,7 @@ def test_the_transmit_power_is_a_leaf_with_the_amplitude_law(pattern):
 def test_the_transmit_power_reaches_the_leakage_rows():
     """The coupled transmit signal is a transmitted wave too: it carries the same factor."""
 
-    leakage = Leakage(isolation_db=30.0, delay_s=1e-9, phase=0.4)
+    leakage = Leakage(isolation=30.0, delay=1e-9, phase=0.4)
     base = torch.tensor(12.0)
     gradient = _check(lambda power: _radar(power=power, leakage=leakage), base, step=1e-2)
     assert gradient == pytest.approx(float(_verb_loss(_radar(power=base, leakage=leakage))) * PER_DB, rel=2e-3)
@@ -73,7 +73,7 @@ CHAINS = {
     "iq_and_dc": {
         "noise": Noise(figure=6.0),
         "compression": Compression(iip3=-40.0),
-        "iq": Iq(gain_db=0.5, phase_deg=3.0),
+        "iq": Iq(gain=0.5, phase=math.radians(3.0)),
         # Comparable to the echo at the LNA output, so a central difference of
         # the loss is not swamped by the constant DC term.
         "dc_offset": 2e-5 + 1e-5j,

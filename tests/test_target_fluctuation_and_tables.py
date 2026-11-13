@@ -103,7 +103,7 @@ def test_a_tabulated_cross_section_reads_back_at_each_target_aspect():
     axis = np.stack((-np.cos(aspects), np.sin(aspects), np.zeros_like(aspects)), axis=1)
     positions = [[RANGE_M + 2.0 * index, 0.0, 0.0] for index in range(len(aspects))]
     table = RcsTable(
-        axis=axis.tolist(), rcs_m2=np.stack((_table(samples), 3.0 * _table(samples))), frequencies_hz=(76e9, 78e9)
+        axis=axis.tolist(), rcs=np.stack((_table(samples), 3.0 * _table(samples))), frequencies=(76e9, 78e9)
     )
     rows = sc.radar().trace(sc.empty_scene(), PointTargets(positions=positions, rcs=table), times=(0.0,), reflections=0)
     rows = rows.rows()

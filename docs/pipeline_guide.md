@@ -163,7 +163,7 @@ The returned `Result.cube` has axes `[frame, TX, RX, slow, fast]`, and `Result.a
 
 Dynamic FMCW therefore evaluates the world at
 `frame_time + (chirp*num_tx+tx)*chirp_period + adc_start + sample*sample_period`.
-The result records `sample_times_s` and `motion_sampling`; diagnostics describe
+The result records `sample_times` and `motion_sampling`; diagnostics describe
 the last observation. This handles moving reflectors as well as moving sites,
 without subtracting rows from different discovered path sets. It uses the
 quasistatic Channel model at each observation, not relativistic retarded-time
@@ -193,7 +193,7 @@ Channel components and discovery policy, not all conceivable propagation physics
 
 The propagation request is `los=`, `reflections=`, `transmission=` (through walls)
 and `diffraction=` (edges). Transmission and diffraction exist only at discovery,
-so they need `grad="none"` and a discovery at every evaluated instant, which is
+so they need `ad_mode="none"` and a discovery at every evaluated instant, which is
 the default; other routes refuse them by name.
 
 By default only transmitter -> site -> receiver round trips are composed, so a

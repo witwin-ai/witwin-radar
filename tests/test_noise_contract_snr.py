@@ -87,7 +87,7 @@ def _waveforms():
 
 def _radar(waveform, *, noise):
     return Radar(
-        carrier=CARRIER_HZ,
+        reference_frequency_hz=CARRIER_HZ,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0),),
         rx=((0.0, 0.0, 0.0),),

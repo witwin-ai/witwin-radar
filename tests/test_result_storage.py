@@ -29,7 +29,7 @@ def _result(radar: Radar, *, frames: int = 3, seed: int = 0) -> Result:
     cube = torch.randn(shape, generator=generator, dtype=torch.complex64)
     return Result(
         cube=cube,
-        times_s=tuple(0.1 * index for index in range(frames)),
+        times=tuple(0.1 * index for index in range(frames)),
         kind=axes.waveform,
         axis_names=("frame", "tx", "rx", axes.slow_time_name, axes.fast_time_name),
         axes=axes,
@@ -44,7 +44,7 @@ def _result(radar: Radar, *, frames: int = 3, seed: int = 0) -> Result:
         last_compiled_scene=None,
         last_propagation=None,
         last_radar_paths=None,
-        sample_times_s=tuple(np.linspace(index, index + 1e-3, 5) for index in range(frames)),
+        sample_times=tuple(np.linspace(index, index + 1e-3, 5) for index in range(frames)),
         path_set_complete=True,
         motion_sampling_exhaustive=False,
         motion_sampling="chirp",
@@ -66,10 +66,10 @@ def _assert_same(loaded: Result, saved: Result) -> None:
             assert mine == theirs, field.name
     for field in dataclasses.fields(Result):
         name = field.name
-        if name in ("cube", "axes", "sample_times_s", "events") or name.startswith("last_"):
+        if name in ("cube", "axes", "sample_times", "events") or name.startswith("last_"):
             continue
         assert getattr(loaded, name) == getattr(saved, name), name
-    for mine, theirs in zip(loaded.sample_times_s, saved.sample_times_s, strict=True):
+    for mine, theirs in zip(loaded.sample_times, saved.sample_times, strict=True):
         assert np.array_equal(mine, theirs)
     assert loaded.last_radar_paths is None and loaded.events == ()
 
@@ -81,7 +81,7 @@ def _radars() -> dict[str, Radar]:
         tx=((0, 0, 0), (2, 0, 0)), waveform=Fmcw(**{**_fields(beat.waveform), "mimo": "bpm", "chirps_per_frame": 8})
     )
     pulsed = Radar(
-        carrier=10e9,
+        reference_frequency_hz=10e9,
         waveform=Pulsed.pmcw(Pulsed.m_sequence(4), chip_rate=1e7, repetitions=4, sample_rate=2e7),
         tx=[(0, 0, 0)],
         rx=[(0, 0, 0), (1, 0, 0)],
@@ -182,7 +182,7 @@ def test_a_simulated_result_round_trips_through_disk(tmp_path):
     from witwin.radar import Motion, PointTargets
 
     radar = Radar(
-        carrier=77e9,
+        reference_frequency_hz=77e9,
         waveform=Fmcw(
             slope=30e12,
             sample_rate=10e6,

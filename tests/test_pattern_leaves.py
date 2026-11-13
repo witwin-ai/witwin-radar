@@ -259,7 +259,7 @@ def _fmcw():
 
 def _radar(**fields) -> Radar:
     authored = {
-        "carrier": 77e9,
+        "reference_frequency_hz": 77e9,
         "waveform": _fmcw(),
         "tx": ((0.0, 0.0, 0.0), (0.002, 0.0, 0.0)),
         "rx": ((0.0, 0.0, 0.0), (0.0, 0.002, 0.0)),
@@ -270,12 +270,14 @@ def _radar(**fields) -> Radar:
     return Radar(**{**authored, **fields})
 
 
-def _verb_loss(radar: Radar, grad: str = "none") -> torch.Tensor:
+def _verb_loss(radar: Radar, ad_mode: str = "none") -> torch.Tensor:
     pytest.importorskip("witwin.channel")
     from witwin.core import Scene
 
     targets = PointTargets(positions=torch.tensor([[6.0, 0.5, 1.0], [5.0, -0.4, -0.8]], device="cuda"), rcs=1.0)
-    cube = radar.simulate(Scene(structures=(), endpoints=[]), targets, times=(0.0,), los=True, reflections=0, grad=grad)
+    cube = radar.simulate(
+        Scene(structures=(), endpoints=[]), targets, times=(0.0,), los=True, reflections=0, ad_mode=ad_mode
+    )
     weights = torch.randn(cube.cube.shape, generator=torch.Generator().manual_seed(0), dtype=torch.complex64)
     return (cube.cube * weights.to(cube.cube.device).conj()).real.sum() * 1e6
 

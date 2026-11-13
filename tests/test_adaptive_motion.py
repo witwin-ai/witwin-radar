@@ -49,7 +49,7 @@ def test_adaptive_matches_adc_with_tdm_and_correlated_noise(noise, curved):
     assert not adaptive.path_set_complete
     assert adaptive.motion_sampling == "adaptive"
     assert all(
-        np.array_equal(left, right) for left, right in zip(adaptive.sample_times_s, exact.sample_times_s, strict=True)
+        np.array_equal(left, right) for left, right in zip(adaptive.sample_times, exact.sample_times, strict=True)
     )
     assert adaptive.adaptive_diagnostics[0]["max_tested_phase_error_rad"] <= 0.02
     with pytest.raises(RuntimeError, match="budget exhausted"):
@@ -351,7 +351,7 @@ def test_adaptive_recompiles_moving_reflectors_and_preserves_scene_adjoint():
             point_targets(point),
             times=(0.0,),
             motion=motion,
-            grad=mode,
+            ad_mode=mode,
         )
 
     reference = solve(origin, Motion.adc(), "none")
@@ -378,7 +378,7 @@ def test_batched_multi_site_reflections_keep_site_gradients_and_topology_probes(
 
     def solve(point, motion, mode):
         return radar.simulate(
-            scene, point_targets(point, trajectory=lambda t: point + t * 0.7), times=(0.0,), motion=motion, grad=mode
+            scene, point_targets(point, trajectory=lambda t: point + t * 0.7), times=(0.0,), motion=motion, ad_mode=mode
         )
 
     exact = solve(origin, Motion.adc(), "none")

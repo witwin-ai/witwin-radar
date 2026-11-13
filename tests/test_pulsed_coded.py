@@ -36,7 +36,7 @@ F_REF_HZ = 77.0e9
 
 
 def _spec(waveform: Pulsed, **overrides) -> PulsedSpec:
-    spec = waveform.to_spec(carrier=F_REF_HZ)
+    spec = waveform.to_spec(reference_frequency_hz=F_REF_HZ)
     return replace(spec, **overrides) if overrides else spec
 
 

@@ -63,25 +63,25 @@
           "name": "Frame",
           "kind": "class",
           "target": "witwin.radar.results.Frame",
-          "signature": "(cube: 'torch.Tensor', axes: 'ProcessingAxes', time_s: 'float', index: 'int', synthesis: 'SynthesisResult') -> None"
+          "signature": "(cube: 'torch.Tensor', axes: 'ProcessingAxes', time: 'float', index: 'int', synthesis: 'SynthesisResult') -> None"
         },
         {
           "name": "Iq",
           "kind": "class",
           "target": "witwin.radar.frontend.Iq",
-          "signature": "(gain_db: 'float' = 0.0, phase_deg: 'float' = 0.0) -> None"
+          "signature": "(gain: 'float' = 0.0, phase: 'float' = 0.0) -> None"
         },
         {
           "name": "Leakage",
           "kind": "class",
           "target": "witwin.radar.radar.Leakage",
-          "signature": "(isolation_db: 'Any', delay_s: 'Any', phase: 'Any' = 0.0) -> None"
+          "signature": "(isolation: 'Any', delay: 'Any', phase: 'Any' = 0.0) -> None"
         },
         {
           "name": "MeshTargets",
           "kind": "class",
           "target": "witwin.radar.targets.MeshTargets",
-          "signature": "(structure_ids: 'tuple[int, ...] | None' = None, cluster_size_m: 'float | None' = None, max_sites: 'int | None' = None, seed: 'int' = 0) -> None"
+          "signature": "(structure_ids: 'tuple[int, ...] | None' = None, cluster_size: 'float | None' = None, max_sites: 'int | None' = None, seed: 'int' = 0) -> None"
         },
         {
           "name": "Motion",
@@ -111,7 +111,7 @@
           "name": "Paths",
           "kind": "class",
           "target": "witwin.radar.simulation.Paths",
-          "signature": "(kind: 'str', carrier: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', transmission: 'bool', diffraction: 'bool', environment: 'bool', coupling: 'bool', grad: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', discovery_complete: 'bool', transmission_dropped_rows: 'int', events: 'tuple[PathEvents, ...]', last_snapshot: 'SceneSnapshot', last_compiled_scene: 'CompiledWorld', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
+          "signature": "(kind: 'str', reference_frequency_hz: 'float', waveform: 'object', times: 'tuple[float, ...]', sample_times: 'tuple[np.ndarray, ...]', los: 'bool', reflections: 'int', transmission: 'bool', diffraction: 'bool', environment: 'bool', coupling: 'bool', ad_mode: 'str', motion: 'Motion', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', discovery_complete: 'bool', transmission_dropped_rows: 'int', events: 'tuple[PathEvents, ...]', last_snapshot: 'SceneSnapshot', last_compiled_scene: 'CompiledWorld', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', _session: 'Session', _frames: 'tuple[FrameTrace, ...]') -> None"
         },
         {
           "name": "Pattern",
@@ -135,19 +135,19 @@
           "name": "Radar",
           "kind": "class",
           "target": "witwin.radar.radar.Radar",
-          "signature": "(carrier: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', rx_polarization: 'Any' = None, device: 'Any' = 'cuda') -> None"
+          "signature": "(reference_frequency_hz: 'float', waveform: 'Waveform', tx: 'tuple[tuple[float, float, float], ...]', rx: 'tuple[tuple[float, float, float], ...]', power: 'float', antenna_unit: 'str' = 'm', pattern: 'Pattern' = <factory>, rx_pattern: 'Pattern | None' = None, noise: 'Noise | None' = None, lna_gain: 'float | None' = None, agc: 'Agc | None' = None, adc: 'Adc | None' = None, iq: 'Iq | None' = None, leakage: 'Leakage | None' = None, compression: 'Compression | None' = None, dc_offset: 'Any' = None, coupling: 'Coupling | None' = None, impedance: 'float' = 50.0, seed: 'int' = 0, position: 'Any' = (0.0, 0.0, 0.0), look_at: 'Any' = (0.0, 0.0, -1.0), up: 'Any' = (0.0, 1.0, 0.0), polarization: 'Any' = 'up', rx_polarization: 'Any' = None, device: 'Any' = 'cuda') -> None"
         },
         {
           "name": "RcsTable",
           "kind": "class",
           "target": "witwin.radar.targets.RcsTable",
-          "signature": "(axis: 'Any', rcs_m2: 'Any', frequencies_hz: 'Any' = None, phase_rad: 'Any' = 0.0) -> None"
+          "signature": "(axis: 'Any', rcs: 'Any', frequencies: 'Any' = None, phase: 'Any' = 0.0) -> None"
         },
         {
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'SceneSnapshot | None', last_compiled_scene: 'CompiledWorld | None', last_propagation: 'RadarPropagationLegs | None', last_radar_paths: 'RadarPathBatch | None', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
+          "signature": "(cube: 'torch.Tensor', times: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'SceneSnapshot | None', last_compiled_scene: 'CompiledWorld | None', last_propagation: 'RadarPropagationLegs | None', last_radar_paths: 'RadarPathBatch | None', sample_times: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[AdaptiveDiagnostics, ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
         },
         {
           "name": "ScatteringMatrix",
@@ -1002,6 +1002,11 @@
           "kind": "value"
         },
         {
+          "name": "power_w",
+          "kind": "property",
+          "doc_first_line": "``power`` in watts, which is what a source endpoint's field takes."
+        },
+        {
           "name": "replace",
           "kind": "function",
           "signature": "(self, **fields: 'Any') -> 'Radar'"
@@ -1021,12 +1026,12 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Result'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Result'"
         },
         {
           "name": "stream",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Iterator[Result]'"
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Iterator[Result]'"
         },
         {
           "name": "to",
@@ -1046,12 +1051,7 @@
         {
           "name": "trace",
           "kind": "function",
-          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, grad: 'str' = 'none', endpoints=None, pose=None) -> 'Paths'"
-        },
-        {
-          "name": "transmit_power_watts",
-          "kind": "property",
-          "doc_first_line": "``power`` in watts, which is what a source endpoint's field takes."
+          "signature": "(self, scene, targets: 'PointTargets | StructureTargets | MeshTargets', *, times, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, wideband: 'bool' = False, motion: 'Motion | None' = None, ad_mode: 'str' = 'none', endpoints=None, pose=None) -> 'Paths'"
         },
         {
           "name": "up",
@@ -1109,7 +1109,7 @@
         {
           "name": "simulate",
           "kind": "function",
-          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, direct: 'bool' = True, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, motion: 'Motion | None' = None, grad: 'str' = 'none') -> 'tuple[Result, ...]'"
+          "signature": "(self, scene: 'Any', targets: 'Any', *, times: 'Any', poses: 'Any' = None, los: 'bool' = True, reflections: 'int' = 1, transmission: 'bool' = False, diffraction: 'bool' = False, environment: 'bool' = False, coupling: 'bool' = False, direct: 'bool' = True, discovery: 'str' = 'auto', max_paths: 'int | None' = None, max_round_trips: 'int | None' = None, motion: 'Motion | None' = None, ad_mode: 'str' = 'none') -> 'tuple[Result, ...]'"
         },
         {
           "name": "stream",

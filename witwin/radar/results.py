@@ -127,7 +127,7 @@ class Result:
     """
 
     cube: torch.Tensor
-    times_s: tuple[float, ...]
+    times: tuple[float, ...]
     kind: str
     #: The cube's named axes, outermost first. ``axes`` is the metadata record
     #: below, not this.
@@ -155,7 +155,7 @@ class Result:
     #: per frame. An ADC-refreshed frame schedules one per chirp,
     #: transmitter and sample, so this is an array rather than a tuple of
     #: Python floats: materialising those costs more than the frame does.
-    sample_times_s: tuple[np.ndarray, ...]
+    sample_times: tuple[np.ndarray, ...]
     path_set_complete: bool
     motion_sampling_exhaustive: bool
     #: The observation schedule the run used: ``"static"``, ``"chirp"``,
@@ -182,7 +182,7 @@ class Result:
                 f"{self.axis_names}, got shape {tuple(self.cube.shape)}"
             )
         frames = int(self.cube.shape[0])
-        for name in ("times_s", "epochs", "rediscovery_reasons"):
+        for name in ("times", "epochs", "rediscovery_reasons"):
             values = getattr(self, name)
             if len(values) != frames:
                 raise ValueError(
@@ -199,7 +199,7 @@ class Result:
             axis_names=self.axis_names,
             output_domain=self.output_domain,
             motion_sampling=self.motion_sampling,
-            times_s=self.times_s,
+            times=self.times,
             path_set_complete=self.path_set_complete,
             motion_sampling_exhaustive=self.motion_sampling_exhaustive,
         )
@@ -241,7 +241,7 @@ class Result:
         return cls(**load_result_fields(path, device=device))
 
     @property
-    def birth_lag_bound_s(self) -> tuple[float, ...]:
+    def birth_lag_bound(self) -> tuple[float, ...]:
         """Per frame, how late a path birth can have been seen, s.
 
         The largest gap between topology discoveries each frame relied on; see
@@ -261,7 +261,7 @@ class Result:
         return Frame(
             cube=self.cube[index],
             axes=self.axes,
-            time_s=float(self.times_s[index]),
+            time=float(self.times[index]),
             index=int(index),
             synthesis=self.frame_synthesis(index),
         )
@@ -289,7 +289,7 @@ class Result:
         cls,
         cubes: Sequence[torch.Tensor] | torch.Tensor,
         *,
-        times_s: Sequence[float],
+        times: Sequence[float],
         synthesis: SynthesisResult,
         axes: ProcessingAxes,
         epochs: Sequence[int],
@@ -300,7 +300,7 @@ class Result:
         last_compiled_scene: CompiledWorld,
         last_propagation: RadarPropagationLegs,
         last_radar_paths: RadarPathBatch,
-        sample_times_s: Sequence[np.ndarray],
+        sample_times: Sequence[np.ndarray],
         path_set_complete: bool,
         motion_sampling_exhaustive: bool,
         motion_sampling: str,
@@ -325,7 +325,7 @@ class Result:
         stacked = cubes if isinstance(cubes, torch.Tensor) else torch.stack(tuple(cubes), dim=0)
         return cls(
             cube=stacked,
-            times_s=tuple(float(value) for value in times_s),
+            times=tuple(float(value) for value in times),
             kind=synthesis.kind,
             axis_names=(SIMULATION_CUBE_LEADING_AXES + (synthesis.axes[0], synthesis.axes[2])),
             axes=axes,
@@ -340,7 +340,7 @@ class Result:
             last_compiled_scene=last_compiled_scene,
             last_propagation=last_propagation,
             last_radar_paths=last_radar_paths,
-            sample_times_s=tuple(sample_times_s),
+            sample_times=tuple(sample_times),
             path_set_complete=path_set_complete,
             motion_sampling_exhaustive=motion_sampling_exhaustive,
             motion_sampling=motion_sampling,
@@ -368,7 +368,7 @@ class Frame:
     #: The processing metadata, shared with the result this came from.
     axes: ProcessingAxes
     #: This frame's instant, s.
-    time_s: float
+    time: float
     #: Its position in the result.
     index: int
     #: The rank-3 synthesis view, for a stage that wants the waveform's own
@@ -377,7 +377,7 @@ class Frame:
 
     def __repr__(self) -> str:
         return (
-            f"Frame(index={self.index}, time_s={describe_value(self.time_s)}, cube={describe_value(self.cube)}, "
+            f"Frame(index={self.index}, time={describe_value(self.time)}, cube={describe_value(self.cube)}, "
             f"waveform={self.axes.waveform!r}, output_domain={self.axes.output_domain!r})"
         )
 
@@ -416,13 +416,15 @@ class Frame:
         return range_profile(self.processing_cube(), window=window, remove_dc=remove_dc)
 
     def range_doppler(
-        self, *, window: str | None = "hann", range_window: str | None = None, remove_dc: bool = False
+        self, *, window: str | None = None, range_window: str | None = None, remove_dc: bool = False
     ) -> RangeDopplerMap:
-        """Range-Doppler map.
+        """Range-Doppler map: :func:`~witwin.radar.processing.range_doppler_map` of :meth:`range_profile`.
 
-        ``window`` tapers the slow axis, which is never pre-transformed, so
-        Hann is a safe default there. ``range_window`` goes to the range stage
-        and keeps its rectangular default for the reason above.
+        ``window`` tapers the slow axis and ``range_window`` the fast one.
+        Both default to rectangular, as every processing stage does: a facade
+        applies no taper the stage it names would not. Pass ``window="hann"``
+        for Doppler sidelobe control; a fast-axis taper only with
+        ``Fmcw(output="beat")``, for the reason :meth:`range_profile` gives.
         """
 
         from .processing import range_doppler_map
@@ -435,12 +437,13 @@ class Frame:
         return range_doppler_map(range_profile(self.virtual_cube(), window=range_window), window=window)
 
     def range_angle(
-        self, azimuth_rad: torch.Tensor, *, elevation_rad: float = 0.0, window: str | None = "hann"
+        self, azimuth_rad: torch.Tensor, *, elevation_rad: float = 0.0, window: str | None = None
     ) -> RangeAngleMap:
         """Range-angle map over ``azimuth_rad`` by conventional beamforming of the virtual array.
 
         DDM and BPM cubes are demultiplexed first (:meth:`virtual_cube`).
-        ``window`` tapers the slow axis as in :meth:`range_doppler`.
+        ``window`` tapers the slow axis as in :meth:`range_doppler`
+        (rectangular by default).
         """
 
         from .processing import range_angle_map
@@ -459,15 +462,15 @@ class Frame:
 
         from .processing import Aperture
 
-        if float(radar.carrier) != float(self.axes.reference_frequency_hz) or (radar.num_tx, radar.num_rx) != (
-            self.axes.num_tx,
-            self.axes.num_rx,
-        ):
+        if float(radar.reference_frequency_hz) != float(self.axes.reference_frequency_hz) or (
+            radar.num_tx,
+            radar.num_rx,
+        ) != (self.axes.num_tx, self.axes.num_rx):
             raise ValueError(
                 f"this frame was produced at {self.axes.reference_frequency_hz} Hz by a {self.axes.num_tx} x "
-                f"{self.axes.num_rx} array; the radar given is {radar.carrier} Hz, {radar.num_tx} x {radar.num_rx}"
+                f"{self.axes.num_rx} array; the radar given is {radar.reference_frequency_hz} Hz, {radar.num_tx} x {radar.num_rx}"
             )
-        return Aperture.from_radar(radar, time_s=self.time_s, velocity_mps=velocity_mps, pose=pose)
+        return Aperture.from_radar(radar, time_s=self.time, velocity_mps=velocity_mps, pose=pose)
 
     def image(self, aperture: Aperture, pixels_m: torch.Tensor, *, range_bins: int | None = None) -> SarImage:
         """Back-project this frame onto ``pixels_m [*grid, 3]``: :func:`~witwin.radar.processing.backproject`.
@@ -501,6 +504,10 @@ class Frame:
         window: str | None = "hann",
     ) -> PointCloud:
         """Range-Doppler, then CA-CFAR, then a point cloud, in one call.
+
+        The one facade with a taper by default: ``window="hann"`` on the slow
+        axis, because a detector over a rectangular Doppler transform reports
+        the sidelobes of every strong target as targets.
 
         A DDM or BPM cube is demultiplexed first (:meth:`virtual_cube`), so
         the detector and the angle route see one channel per transmitter.
@@ -594,7 +601,7 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
     return Result.from_frames(
         [frame.cube for frame in frames] if stacked is None else stacked,
         axes=ProcessingAxes.from_synthesis(last.synthesis, last.output_spec, last.array),
-        times_s=[frame.time_s for frame in frames],
+        times=[frame.time_s for frame in frames],
         synthesis=last.synthesis,
         epochs=[frame.epoch for frame in frames],
         rediscovery_reasons=[frame.reason for frame in frames],
@@ -604,7 +611,7 @@ def assemble(frames: Sequence[SceneFrame], *, stacked: torch.Tensor | None = Non
         last_compiled_scene=last.epoch_frame.compiled,
         last_propagation=last.legs,
         last_radar_paths=last.composed,
-        sample_times_s=[frame.sample_times_s for frame in frames],
+        sample_times=[frame.sample_times_s for frame in frames],
         path_set_complete=all(frame.path_set_complete for frame in frames),
         motion_sampling_exhaustive=all(frame.motion_sampling_exhaustive for frame in frames),
         motion_sampling=last.motion_sampling,

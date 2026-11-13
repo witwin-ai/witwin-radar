@@ -53,7 +53,7 @@ def radar(waveform=None, *, tx=((0.0, 0.0, 0.0),), rx=((0.0, 0.0, 0.0),), power_
     from witwin.radar import Radar
 
     return Radar(
-        carrier=CARRIER_HZ,
+        reference_frequency_hz=CARRIER_HZ,
         waveform=beat_fmcw() if waveform is None else waveform,
         tx=tx,
         rx=rx,

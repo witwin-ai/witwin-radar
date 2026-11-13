@@ -290,7 +290,7 @@ class Session:
     kind: str
     components: frozenset[str]
     max_depth: int
-    grad: str
+    ad_mode: str
     #: The sampling record as requested; its adaptive fields are the route's
     #: tolerances.
     motion: Motion
@@ -512,7 +512,7 @@ def pose_at(
         raise RuntimeError(
             f"the radar pose trajectory's translation carries {carrier}, which moves every element "
             "position, and the legs carry that derivative only in the matching AD mode: pass "
-            f"grad={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got grad={ad_mode!r})."
+            f"ad_mode={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got ad_mode={ad_mode!r})."
         )
     rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
     translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
@@ -1716,7 +1716,7 @@ def prepare_session(
     the band are then exact. Only OFDM consumes a column per frequency.
 
     ``transmission`` and ``diffraction`` in ``components`` cannot be frozen by
-    Channel, so they are admitted only where no row is replayed: ``grad="none"``
+    Channel, so they are admitted only where no row is replayed: ``ad_mode="none"``
     with a discovery at every evaluated instant, which a primal run answers
     straight from the discovery's own rows.
     """
@@ -1917,7 +1917,7 @@ def prepare_session(
         "kind": kind,
         "components": frozenset(propagation.components),
         "max_depth": int(propagation.max_depth),
-        "grad": str(ad_mode),
+        "ad_mode": str(ad_mode),
         "motion": motion,
         "times": instants,
         "environment": environment,
@@ -1998,7 +1998,7 @@ def _require_discovery_only(unfrozen: list[str], *, ad_mode: str, still_world: b
     if ad_mode != "none":
         raise NotImplementedError(
             f"components {unfrozen} exist only at their discovery instant and carry no derivative: Channel cannot "
-            f"freeze them for the replay a grad={ad_mode!r} run differentiates through. Use grad='none'"
+            f"freeze them for the replay an ad_mode={ad_mode!r} run differentiates through. Use ad_mode='none'"
         )
     if not still_world and cadence != 1:
         raise NotImplementedError(
@@ -2549,7 +2549,7 @@ class Paths:
     #: frame, named by what ran rather than by what was requested.
     kind: str
     #: The reference frequency these rows were composed at, Hz.
-    carrier: float
+    reference_frequency_hz: float
     #: The waveform that scheduled the observations. ``echo`` refuses a radar
     #: whose waveform differs, because the schedule is that waveform's.
     waveform: object
@@ -2569,7 +2569,7 @@ class Paths:
     environment: bool
     coupling: bool
     #: The differentiation mode the replay ran under.
-    grad: str
+    ad_mode: str
     #: The sampling record as requested; ``kind`` is what it resolved to.
     motion: Motion
     epochs: tuple[int, ...]
@@ -2597,7 +2597,7 @@ class Paths:
         return summary_repr(
             "Paths",
             kind=self.kind,
-            carrier=self.carrier,
+            reference_frequency_hz=self.reference_frequency_hz,
             frames=self.frame_count,
             observations=self.observation_count,
             rows=self.row_count,
@@ -2638,7 +2638,7 @@ class Paths:
         return _round_trip(record.epoch_frame.frozen).composer.identity_host
 
     @property
-    def birth_lag_bound_s(self) -> tuple[float, ...]:
+    def birth_lag_bound(self) -> tuple[float, ...]:
         """Per frame, how late a path birth can have been seen, s."""
 
         return tuple(frame.birth_lag_bound_s for frame in self.events)
@@ -2845,7 +2845,7 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
     discovery = reduce(DiscoveryReport.merged, (frame.discovery() for frame in frames))
     return Paths(
         kind=session.kind,
-        carrier=float(session.reference_frequency_hz),
+        reference_frequency_hz=float(session.reference_frequency_hz),
         waveform=session.radar.waveform,
         times=tuple(session.times),
         sample_times=tuple(frame.sample_times_s for frame in frames),
@@ -2855,7 +2855,7 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
         diffraction="diffraction" in session.components,
         environment=session.environment,
         coupling=session.coupling,
-        grad=session.grad,
+        ad_mode=session.ad_mode,
         motion=session.motion,
         epochs=tuple(epochs),
         rediscovery_reasons=tuple(reasons),
@@ -2902,9 +2902,9 @@ def _require_same_instrument(radar: Radar, paths: Paths, session: Session) -> No
 
     from .synthesis.assembly import FmcwSpec
 
-    if float(radar.carrier) != float(paths.carrier):
+    if float(radar.reference_frequency_hz) != float(paths.reference_frequency_hz):
         raise ValueError(
-            f"these paths were composed at {paths.carrier} Hz and this radar is at {radar.carrier} Hz; "
+            f"these paths were composed at {paths.reference_frequency_hz} Hz and this radar is at {radar.reference_frequency_hz} Hz; "
             "the carrier is the reference frequency of the transport, not a synthesis choice"
         )
     array = session.array

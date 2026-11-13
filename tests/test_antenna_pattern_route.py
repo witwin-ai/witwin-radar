@@ -457,7 +457,7 @@ def test_a_reverse_gradient_reaches_the_frame_cube_through_the_pattern():
 
     radar = _radar(DIRECTIONAL_PATTERN)
     targets = fixture_targets(radar, requires_grad=True)
-    result = radar.simulate(static_scene(), targets, times=(0.0,), grad="vjp")
+    result = radar.simulate(static_scene(), targets, times=(0.0,), ad_mode="vjp")
     result.cube.real.square().sum().backward()
 
     grad = targets.positions.grad

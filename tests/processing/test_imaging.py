@@ -616,12 +616,12 @@ def test_the_frame_image_facade_is_backproject_of_its_own_aperture():
     facade = frame.image(frame.aperture(radar, velocity_mps=velocity), pixels, range_bins=bins)
     direct = backproject(
         range_profile(frame.processing_cube(), range_bins=bins),
-        Aperture.from_radar(radar, time_s=frame.time_s, velocity_mps=velocity),
+        Aperture.from_radar(radar, time_s=frame.time, velocity_mps=velocity),
         pixels,
     )
     assert torch.equal(facade.data, direct.data)
     with pytest.raises(ValueError, match="the radar given is"):
-        frame.aperture(radar.replace(carrier=radar.carrier * 1.01))
+        frame.aperture(radar.replace(reference_frequency_hz=radar.reference_frequency_hz * 1.01))
 
 
 @pytest.mark.gpu

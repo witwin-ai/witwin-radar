@@ -110,6 +110,6 @@ def test_fixed_winner_replay_drops_a_curved_reflector_between_discoveries():
     assert (~held_events.birth).sum() >= 1 and held_events.birth.sum() == 0
     assert fresh_events.birth.sum() >= 1
     assert (held_events.depth > 0).all()
-    span = float(held.sample_times_s[0][-1] - held.sample_times_s[0][0])
-    assert held.birth_lag_bound_s[0] == pytest.approx(span, rel=1e-9)
-    assert fresh.birth_lag_bound_s[0] < span / 10
+    span = float(held.sample_times[0][-1] - held.sample_times[0][0])
+    assert held.birth_lag_bound[0] == pytest.approx(span, rel=1e-9)
+    assert fresh.birth_lag_bound[0] < span / 10

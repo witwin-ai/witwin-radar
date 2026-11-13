@@ -68,7 +68,7 @@ def _radar(waveform, *, index=0, **fields):
     from witwin.radar import Radar
 
     values = {
-        "carrier": sc.CARRIER_HZ,
+        "reference_frequency_hz": sc.CARRIER_HZ,
         "waveform": waveform,
         "tx": ((0.01, 0.0, 0.0),),
         "rx": ((-0.01, 0.0, 0.0),),
@@ -136,7 +136,7 @@ def test_radars_of_a_network_share_a_carrier_a_device_and_a_pattern():
 
     first = _radar(_fmcw())
     with pytest.raises(ValueError, match="one carrier"):
-        Network((first, _radar(_fmcw(), index=1, carrier=78e9)))
+        Network((first, _radar(_fmcw(), index=1, reference_frequency_hz=78e9)))
     with pytest.raises(NotImplementedError, match="element pattern"):
         Network((first, _radar(_fmcw(), index=1, pattern=Pattern.dipole())))
     dipoles = (_radar(_fmcw(), pattern=Pattern.dipole()), _radar(_fmcw(), index=1, pattern=Pattern.dipole()))

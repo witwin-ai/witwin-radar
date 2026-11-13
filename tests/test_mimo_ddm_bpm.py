@@ -40,7 +40,7 @@ def _radar(mimo: str, chirps: int):
     from witwin.radar import Radar
 
     return Radar(
-        carrier=sc.CARRIER_HZ,
+        reference_frequency_hz=sc.CARRIER_HZ,
         waveform=waveform,
         tx=((0.0, 0.0, 0.0), (4.0, 0.0, 0.0)),
         rx=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)),

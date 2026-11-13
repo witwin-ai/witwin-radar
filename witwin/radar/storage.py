@@ -70,7 +70,7 @@ _RESULT_SCALARS = (
     "phasor",
     "time_dependence",
     "reference_frequency_hz",
-    "times_s",
+    "times",
     "epochs",
     "rediscovery_reasons",
     "compile_count",
@@ -260,7 +260,7 @@ def save_result(result: Any, path: str | os.PathLike[str], *, overwrite: bool = 
     frames = int(result.cube.shape[0])
     write_axes(directory, result.axes)
     for index in range(frames):
-        write_frame(directory, index, result.cube[index], result.sample_times_s[index])
+        write_frame(directory, index, result.cube[index], result.sample_times[index])
     write_metadata(
         directory, metadata_record(run_record(result), axes=result.axes, cube=result.cube[0], frame_count=frames)
     )
@@ -307,11 +307,11 @@ def load_result_fields(path: str | os.PathLike[str], *, device: torch.device | s
     fields: dict[str, Any] = {name: _tuples(scalars[name]) for name in _RESULT_SCALARS}
     for name in ("reference_frequency_hz",):
         fields[name] = float(fields[name])
-    fields["times_s"] = tuple(float(value) for value in fields["times_s"])
+    fields["times"] = tuple(float(value) for value in fields["times"])
     fields.update(
         cube=torch.stack([frame["cube"] for frame in frames]),
         axes=axes,
-        sample_times_s=tuple(frame["sample_times_s"].cpu().numpy() for frame in frames),
+        sample_times=tuple(frame["sample_times_s"].cpu().numpy() for frame in frames),
         adaptive_diagnostics=tuple(record.get("adaptive_diagnostics", ())),
         last_snapshot=None,
         last_compiled_scene=None,

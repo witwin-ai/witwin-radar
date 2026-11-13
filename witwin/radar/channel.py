@@ -162,8 +162,8 @@ class FrozenLegTopology:
                 raise NotImplementedError(
                     f"this leg was discovered with components {unfrozen}, which Channel cannot freeze for "
                     "reevaluation; their rows exist only at the discovery instant, so a route that replays "
-                    "them (grad='vjp' or 'jvp', a discovery cadence longer than one observation, a wideband "
-                    "band) is refused. Run grad='none' with discovery at every observation, or drop them"
+                    "them (ad_mode='vjp' or 'jvp', a discovery cadence longer than one observation, a wideband "
+                    "band) is refused. Run ad_mode='none' with discovery at every observation, or drop them"
                 )
             prepared = consumer.prepare_fixed_topology(self.topology)
             unsupported = (

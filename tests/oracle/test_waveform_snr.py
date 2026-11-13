@@ -135,7 +135,7 @@ def _waveforms():
             ),
             8 * 2e-6,
         ),
-        "arbitrary": (arbitrary, 4 * arbitrary.to_spec(carrier=sc.CARRIER_HZ).envelope_energy_s),
+        "arbitrary": (arbitrary, 4 * arbitrary.to_spec(reference_frequency_hz=sc.CARRIER_HZ).envelope_energy_s),
     }
 
 

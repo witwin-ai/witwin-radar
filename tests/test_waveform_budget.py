@@ -56,7 +56,7 @@ def _specs():
         output="beat",
         sequence=(Chirp(), Chirp(slope=45e12, start_offset=1e8)),
         phase_error=(0.0, 1e14),
-    ).to_spec(carrier=sc.CARRIER_HZ)
+    ).to_spec(reference_frequency_hz=sc.CARRIER_HZ)
     ofdm = Ofdm(
         subcarrier_spacing=1e6,
         num_subcarriers=32,
@@ -65,9 +65,9 @@ def _specs():
         max_expected_delay=0.25e-6,
         modulation="qam16",
         pilot_spacing=4,
-    ).to_spec(carrier=sc.CARRIER_HZ)
+    ).to_spec(reference_frequency_hz=sc.CARRIER_HZ)
     pmcw = Pulsed.pmcw(Pulsed.m_sequence(5), chip_rate=20e6, repetitions=4, sample_rate=20e6).to_spec(
-        carrier=sc.CARRIER_HZ
+        reference_frequency_hz=sc.CARRIER_HZ
     )
     return fmcw, ofdm, pmcw
 
@@ -118,5 +118,5 @@ def test_a_fast_time_pulsed_frame_is_one_launch_per_replay_group(monkeypatch):
     motion = Motion(kind="adc", batch_observations=64)
     result = radar.simulate(sc.empty_scene(), targets, times=(0.0,), los=True, reflections=0, motion=motion)
     observations = waveform.num_pulses * waveform.num_samples
-    assert len(result.sample_times_s[0]) == observations
+    assert len(result.sample_times[0]) == observations
     assert ledger.launches["pulsed_echo_forward"] == math.ceil(observations / 64), ledger.launches

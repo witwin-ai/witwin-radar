@@ -559,34 +559,34 @@ class Iq:
     classifier whose label IS the sign of the velocity can learn to trust a
     clean mirror axis that no real receiver has.
 
-    ``gain_db`` is ``20 log10(g)`` and ``phase_deg`` is ``phi``. Both zero is
+    ``gain`` is ``20 log10(g)``, dB, and ``phase`` is ``phi``, rad. Both zero is
     a perfect demodulator, which is what ``None`` on the radar already means,
     so a zeroed record is accepted rather than refused: it is the degenerate
     end of a sweep, not a mistake.
     """
 
     #: Branch gain ratio, dB.
-    gain_db: float = 0.0
-    #: Branch phase error, degrees.
-    phase_deg: float = 0.0
+    gain: float = 0.0
+    #: Branch phase error, rad.
+    phase: float = 0.0
 
     def __post_init__(self) -> None:
-        require_host_floats("Iq", _IQ_REASON, gain_db=self.gain_db, phase_deg=self.phase_deg)
+        require_host_floats("Iq", _IQ_REASON, gain=self.gain, phase=self.phase)
 
     @property
     def alpha(self) -> complex:
         """The direct coefficient."""
 
-        ratio = 10.0 ** (float(self.gain_db) / 20.0)
-        phi = math.radians(float(self.phase_deg))
+        ratio = 10.0 ** (float(self.gain) / 20.0)
+        phi = float(self.phase)
         return (1.0 + ratio * cmath.exp(-1j * phi)) / 2.0
 
     @property
     def beta(self) -> complex:
         """The conjugate (image) coefficient."""
 
-        ratio = 10.0 ** (float(self.gain_db) / 20.0)
-        phi = math.radians(float(self.phase_deg))
+        ratio = 10.0 ** (float(self.gain) / 20.0)
+        phi = float(self.phase)
         return (1.0 - ratio * cmath.exp(1j * phi)) / 2.0
 
     @property
