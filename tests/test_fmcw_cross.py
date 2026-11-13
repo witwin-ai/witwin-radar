@@ -48,12 +48,12 @@ def _phase0(link) -> float:
 
 
 def _link_table(device):
-    rows = [(*link[:9], _phase0(link), link[9]) for link in LINKS]
+    rows = [(*link[:9], _phase0(link), link[9], 0.0, 0.0, 0.0) for link in LINKS]
     return torch.tensor(rows, dtype=torch.float64, device=device)
 
 
 def _routing(device):
-    from witwin.radar.synthesis.fmcw import CrossRouting
+    from witwin.radar.synthesis.assembly import CrossRouting
 
     rows = 2 * ROWS_PER_SLOT
     pairs = [(row, cell) for cell, (begin, end, _, _) in enumerate(CELLS) for row in range(begin, end)]
@@ -65,8 +65,9 @@ def _routing(device):
         row_link=torch.tensor(ROW_LINK, dtype=torch.int32, device=device),
         row_tx=torch.tensor(ROW_TX, dtype=torch.int32, device=device),
         link_table=_link_table(device),
+        aux=torch.empty((0, 3), dtype=torch.float64, device=device),
         segment_rows=torch.tensor([cell[:2] for cell in CELLS], dtype=torch.int64, device=device),
-        segment_schedule=torch.tensor([cell[2:] for cell in CELLS], dtype=torch.float64, device=device),
+        segment_schedule=torch.tensor([(*cell[2:], 0.0) for cell in CELLS], dtype=torch.float64, device=device),
         row_segment_offsets=torch.tensor(np.cumsum(offsets), dtype=torch.int64, device=device),
         row_segments=torch.tensor([cell for _, cell in pairs], dtype=torch.int64, device=device),
         rows_per_slot=ROWS_PER_SLOT,

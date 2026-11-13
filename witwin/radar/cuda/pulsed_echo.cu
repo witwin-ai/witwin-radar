@@ -79,6 +79,7 @@
 #include <cuda_runtime.h>
 #include "radar_checks.cuh"
 #include "path_delay.cuh"
+#include "cross_routing.cuh"
 
 #include <cstdint>
 
@@ -134,6 +135,42 @@ __device__ __forceinline__ double segment_frequency(const Schedule& schedule, co
                                            : schedule.segment_table[2 * segment + 1];
 }
 
+// The envelope s(u) at a time u into the pulse: whether u is inside the
+// support, the envelope's own phase [cycles], its instantaneous frequency nu
+// [Hz] and its magnitude relative to the pulse amplitude. The one owner of the
+// three pulse kinds, read by the echo below and by the cross-radar family.
+struct PulseEnvelope {
+  bool live;
+  double cycles;
+  double nu;
+  double magnitude;
+};
+
+__device__ __forceinline__ PulseEnvelope pulse_envelope(double u, const Envelope& envelope) {
+  PulseEnvelope out{false, 0.0, 0.0, 1.0};
+  if (envelope.periodic) {
+    u -= floor(u / envelope.width_s) * envelope.width_s;
+  }
+  if (!(u >= 0.0 && u < envelope.width_s)) {
+    return out;
+  }
+  out.live = true;
+  if (envelope.kind == kPulseLfm) {
+    // pi B u^2 / T_p radians is B u^2 / (2 T_p) cycles.
+    out.cycles = 0.5 * envelope.bandwidth_hz * u * u / envelope.width_s;
+    out.nu = envelope.bandwidth_hz * u / envelope.width_s;
+  } else if (envelope.kind == kPulseCoded) {
+    const double chip_width = envelope.width_s / static_cast<double>(envelope.num_chips);
+    int chip = static_cast<int>(floor(u / chip_width));
+    chip = chip < 0 ? 0 : (chip >= envelope.num_chips ? envelope.num_chips - 1 : chip);
+    const double* entry = envelope.chips + 3 * chip;
+    out.magnitude = entry[0];
+    out.nu = entry[2];
+    out.cycles = entry[1] + out.nu * (u - static_cast<double>(chip) * chip_width);
+  }
+  return out;
+}
+
 // One path's contribution at one (pulse, sample) grid point. Cycle counts are
 // formed and wrapped in double: a kernel-owned carrier is thousands of cycles,
 // and an LFM's own phase reaches B T_p / 2.
@@ -141,38 +178,24 @@ __device__ __forceinline__ PulseTerm pulse_term(
     const double tau,
     const double tau_drift,
     const double t_l,
-    double u,
+    const double u,
     const double f_l,
     const Envelope& envelope,
     const double carrier_hz,
     const double carrier_rate_hz) {
   PulseTerm term{0.0f, 0.0f, 0.0f, 0.0, 0.0};
-  if (envelope.periodic) {
-    u -= floor(u / envelope.width_s) * envelope.width_s;
-  }
-  if (!(u >= 0.0 && u < envelope.width_s)) {
+  const PulseEnvelope shape = pulse_envelope(u, envelope);
+  if (!shape.live) {
     return term;
   }
-
   double cycles = -(carrier_rate_hz * tau_drift + (carrier_hz + f_l) * tau);
-  double nu = 0.0;
-  double magnitude = 1.0;
-  if (envelope.kind == kPulseLfm) {
-    // pi B u^2 / T_p radians is B u^2 / (2 T_p) cycles.
-    cycles += 0.5 * envelope.bandwidth_hz * u * u / envelope.width_s;
-    nu = envelope.bandwidth_hz * u / envelope.width_s;
-  } else if (envelope.kind == kPulseCoded) {
-    const double chip_width = envelope.width_s / static_cast<double>(envelope.num_chips);
-    int chip = static_cast<int>(floor(u / chip_width));
-    chip = chip < 0 ? 0 : (chip >= envelope.num_chips ? envelope.num_chips - 1 : chip);
-    const double* entry = envelope.chips + 3 * chip;
-    magnitude = entry[0];
-    nu = entry[2];
-    cycles += entry[1] + nu * (u - static_cast<double>(chip) * chip_width);
+  if (envelope.kind != kPulseRect) {
+    cycles += shape.cycles;
   }
+  const double nu = shape.nu;
   const double frac = cycles - floor(cycles);
   sincosf(static_cast<float>(kTwoPiD * frac), &term.sin_phi, &term.cos_phi);
-  term.amplitude = static_cast<float>(envelope.amplitude * magnitude);
+  term.amplitude = static_cast<float>(envelope.amplitude * shape.magnitude);
   term.dphi_dtau_rt = -kTwoPiD * (carrier_hz + f_l + nu);
   term.dphi_dtau_rate = -kTwoPiD * t_l * (carrier_hz + carrier_rate_hz + f_l + nu);
   return term;
@@ -634,8 +657,125 @@ void pulsed_echo_backward_cuda(
   STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// ---------------------------------------------------------------------------
+// Cross-radar pulse train (R-ADR-051): what a sampled receiver (a pulsed radar,
+// or a time-domain OFDM one) hears from another radar's pulse train or from a
+// declared emitter, in the Channel convention. Routing and launches are
+// cross_routing.cuh's; the envelope is pulse_envelope above.
+//
+// Every oscillator runs at f_ref + its offset from world time 0. A transmitter
+// of offset delta_A sends pulse q (q = floor(e / PRI_A) of the emission instant
+// e = t - tau - dT in its own frame, 0 <= q < count, count 0 for an unbounded
+// train such as a repeating emitter) at delta_A + q * step_A with envelope
+// s(e - q PRI_A); the receiver mixes down with delta_B + lo, lo the cell's own
+// stepped LO offset. With the Channel weight C = |C| exp(-j 2 pi f_ref tau):
+//
+//   y = C * s(w) * exp(+j 2 pi cycles)
+//   cycles = (delta_A + f_q)(F_B + t - tau) - (delta_B + lo)(F_B + t) + arg_s(w)
+//
+// F_B is the receiver's frame start in world time [s], t the sample's time in
+// that frame. With A = B on one pulse this is the echo's -(carrier + f_l) tau.
+// d(cycles)/d(tau) = -(delta_A + f_q + nu(w)), nu the envelope's instantaneous
+// frequency. No anti-alias filter is modelled: the network refuses a
+// transmitter whose band exceeds the receiver's complex sample rate.
+//
+// link_table row (float64, kPulsedCrossWidth): tx frame start minus rx frame
+// start [s], delta_A [Hz], delta_B [Hz], F_B [s], PRI_A [s], pulse count,
+// pulse kind, pulse width [s], bandwidth [Hz], amplitude, first chip, chip
+// count, periodic (0/1), frequency step [Hz]. Constants: no derivative.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kPulsedCrossWidth = 14;
+
+struct PulsedCrossPhase {
+  const double* chips;
+
+  __device__ __forceinline__ bool operator()(
+      const double* link, const int, const double tau, const CrossSample& when, CrossValue& out) const {
+    const double emitted = when.t - tau - link[0];
+    const double pulse = floor(emitted / link[4]);
+    if (pulse < 0.0 || (link[5] > 0.0 && pulse >= link[5])) return false;
+    const Envelope envelope{
+        static_cast<int>(link[6]),
+        link[7],
+        link[8],
+        link[9],
+        chips == nullptr ? nullptr : chips + 3 * static_cast<int64_t>(link[10]),
+        static_cast<int>(link[11]),
+        link[12] != 0.0};
+    const PulseEnvelope shape = pulse_envelope(emitted - pulse * link[4], envelope);
+    if (!shape.live) return false;
+    const double tx_offset = link[1] + pulse * link[13];
+    const double absolute = link[3] + when.t;
+    const double cycles = tx_offset * (absolute - tau) - (link[2] + when.lo) * absolute + shape.cycles;
+    const double frac = cycles - floor(cycles);
+    float s, c;
+    sincosf(static_cast<float>(kTwoPiD * frac), &s, &c);
+    const float a = static_cast<float>(link[9] * shape.magnitude);
+    out.u_re = a * c;
+    out.u_im = a * s;
+    const float d = static_cast<float>(-kTwoPiD * (tx_offset + shape.nu));
+    out.du_re = -d * out.u_im;
+    out.du_im = d * out.u_re;
+    return true;
+  }
+};
+
+PulsedCrossPhase pulsed_cross_phase(const torch::stable::Tensor& chips) {
+  check_cross_double(chips, 3, "chips");
+  return {chips.numel() == 0 ? nullptr : chips.const_data_ptr<double>()};
+}
+
+}  // namespace
+
+void pulsed_cross_forward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    torch::stable::Tensor& out, int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kPulsedCrossWidth, rows_per_slot);
+  cross_forward<false>(
+      rows, pulsed_cross_phase(chips), segment_rows, segment_schedule, out, num_samples, sample_period_s);
+}
+
+void pulsed_cross_jvp_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& segment_rows, const torch::stable::Tensor& segment_schedule,
+    const torch::stable::Tensor& tan_transfer, const torch::stable::Tensor& tan_tau, torch::stable::Tensor& tan_out,
+    int64_t rows_per_slot, int64_t num_samples, double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kPulsedCrossWidth, rows_per_slot);
+  cross_jvp<false>(
+      rows, pulsed_cross_phase(chips), segment_rows, segment_schedule, tan_transfer, tan_tau, tan_out, num_samples,
+      sample_period_s);
+}
+
+void pulsed_cross_backward_cuda(
+    const torch::stable::Tensor& transfer, const torch::stable::Tensor& tau_rt, const torch::stable::Tensor& tau_lo,
+    const torch::stable::Tensor& valid, const torch::stable::Tensor& row_link, const torch::stable::Tensor& row_tx,
+    const torch::stable::Tensor& link_table, const torch::stable::Tensor& chips,
+    const torch::stable::Tensor& row_segment_offsets, const torch::stable::Tensor& row_segments,
+    const torch::stable::Tensor& segment_schedule, const torch::stable::Tensor& grad_out,
+    torch::stable::Tensor& grad_transfer, torch::stable::Tensor& grad_tau, int64_t rows_per_slot, int64_t num_samples,
+    double sample_period_s) {
+  const CrossRows rows =
+      cross_rows(transfer, tau_rt, tau_lo, valid, row_link, row_tx, link_table, kPulsedCrossWidth, rows_per_slot);
+  cross_backward<false>(
+      rows, pulsed_cross_phase(chips), row_segment_offsets, row_segments, segment_schedule, grad_out, grad_transfer,
+      grad_tau, num_samples, sample_period_s);
+}
+
 STABLE_TORCH_LIBRARY_IMPL(_radar_native, CUDA, m) {
   m.impl("pulsed_echo_forward", TORCH_BOX(&pulsed_echo_forward_cuda));
   m.impl("pulsed_echo_backward", TORCH_BOX(&pulsed_echo_backward_cuda));
   m.impl("pulsed_echo_jvp", TORCH_BOX(&pulsed_echo_jvp_cuda));
+  m.impl("pulsed_cross_forward", TORCH_BOX(&pulsed_cross_forward_cuda));
+  m.impl("pulsed_cross_backward", TORCH_BOX(&pulsed_cross_backward_cuda));
+  m.impl("pulsed_cross_jvp", TORCH_BOX(&pulsed_cross_jvp_cuda));
 }

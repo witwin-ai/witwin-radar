@@ -34,12 +34,14 @@ from ..policy import first_order_only, refuse_derivative
 from .assembly import (
     FMCW_OUTPUT_BEAT,
     FMCW_OUTPUT_SPECTRUM,
+    CrossRouting,
     FmcwSpec,
     SynthesisPathBatch,
     delay_residual,
     pair_tx_index,
     require_compatible,
     segment_of_each_row,
+    synthesize_cross,
 )
 
 
@@ -589,12 +591,12 @@ def synthesize_fmcw(batch: SynthesisPathBatch, spec: FmcwSpec) -> torch.Tensor:
     )
 
 
-#: Columns of one cross-radar link row (R-ADR-051), in the kernel's order.
-CROSS_LINK_COLUMNS = (
+#: Columns of one FMCW cross-radar link row (R-ADR-051), in the kernel's order.
+FMCW_CROSS_COLUMNS = (
     "tx_slope_hz_per_s",
     "tx_start_offset_hz",
     "tx_ramp_end_s",
-    "tx_chirp_period_s",
+    "tx_slot_period_s",
     "tx_slot_count",
     "tx_transmitters",
     "tx_frame_shift_s",
@@ -602,122 +604,10 @@ CROSS_LINK_COLUMNS = (
     "rx_start_offset_hz",
     "phase0_cycles",
     "rx_if_bandwidth_hz",
+    "tx_kind",
+    "tx_first_chip",
+    "tx_chip_count",
 )
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class CrossRouting:
-    """The constant routing of one cross-radar beat launch (R-ADR-051).
-
-    ``row_link`` and ``row_tx`` (``int32[rows_per_slot]``) give each row of one
-    slot its link in ``link_table`` (``float64[links, 11]``, columns
-    :data:`CROSS_LINK_COLUMNS`; ``-1`` is a row this receiver does not hear
-    through this family) and its transmitter's index within its own radar.
-    ``segment_rows`` (``int64[cells, 2]``) is each receive cell's half-open row
-    range and ``segment_schedule`` (``float64[cells, 2]``) its slot's ramp start
-    in the receiver's frame and its first ADC instant into the ramp, s.
-    ``row_segment_offsets`` / ``row_segments`` are the inverse map the backward
-    reads. Every member is schedule data and carries no derivative.
-    """
-
-    row_link: torch.Tensor
-    row_tx: torch.Tensor
-    link_table: torch.Tensor
-    segment_rows: torch.Tensor
-    segment_schedule: torch.Tensor
-    row_segment_offsets: torch.Tensor
-    row_segments: torch.Tensor
-    rows_per_slot: int
-    num_samples: int
-    sample_period_s: float
-
-    @property
-    def cell_count(self) -> int:
-        return int(self.segment_schedule.shape[0])
-
-
-class _FmcwCross(torch.autograd.Function):
-    """Autograd bridge for the native cross-radar beat family."""
-
-    @staticmethod
-    def forward(transfer, tau_rt, tau_lo, valid, routing):
-        out = transfer.new_empty((routing.cell_count, routing.num_samples, 2))
-        _ops().fmcw_cross_forward(
-            transfer,
-            tau_rt,
-            tau_lo,
-            valid,
-            routing.row_link,
-            routing.row_tx,
-            routing.link_table,
-            routing.segment_rows,
-            routing.segment_schedule,
-            out,
-            routing.rows_per_slot,
-            routing.num_samples,
-            routing.sample_period_s,
-        )
-        return out
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
-        transfer, tau_rt, tau_lo, valid, routing = inputs
-        ctx.routing = routing
-        ctx.save_for_backward(transfer, tau_rt, tau_lo, valid)
-        ctx.save_for_forward(transfer, tau_rt, tau_lo, valid)
-
-    @staticmethod
-    @first_order_only
-    def backward(ctx, grad_out):
-        transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
-        routing = ctx.routing
-        grad_transfer = torch.empty_like(transfer)
-        grad_tau = torch.empty_like(tau_rt)
-        _ops().fmcw_cross_backward(
-            transfer,
-            tau_rt,
-            tau_lo,
-            valid,
-            routing.row_link,
-            routing.row_tx,
-            routing.link_table,
-            routing.row_segment_offsets,
-            routing.row_segments,
-            routing.segment_schedule,
-            grad_out.contiguous(),
-            grad_transfer,
-            grad_tau,
-            routing.rows_per_slot,
-            routing.num_samples,
-            routing.sample_period_s,
-        )
-        return grad_transfer, grad_tau, None, None, None
-
-    @staticmethod
-    def jvp(ctx, tan_transfer, tan_tau_rt, tan_tau_lo, tan_valid, tan_routing):
-        transfer, tau_rt, tau_lo, valid = ctx.saved_tensors
-        routing = ctx.routing
-        tan_transfer = torch.zeros_like(transfer) if tan_transfer is None else tan_transfer.contiguous()
-        tan_tau_rt = torch.zeros_like(tau_rt) if tan_tau_rt is None else tan_tau_rt.contiguous()
-        tan_out = transfer.new_empty((routing.cell_count, routing.num_samples, 2))
-        _ops().fmcw_cross_jvp(
-            transfer,
-            tau_rt,
-            tau_lo,
-            valid,
-            routing.row_link,
-            routing.row_tx,
-            routing.link_table,
-            routing.segment_rows,
-            routing.segment_schedule,
-            tan_transfer,
-            tan_tau_rt,
-            tan_out,
-            routing.rows_per_slot,
-            routing.num_samples,
-            routing.sample_period_s,
-        )
-        return tan_out
 
 
 def synthesize_fmcw_cross(
@@ -727,34 +617,19 @@ def synthesize_fmcw_cross(
     valid: torch.Tensor | None,
     routing: CrossRouting,
 ) -> torch.Tensor:
-    """Every receive cell's cross-radar beat, ``complex64[cells, num_samples]`` (R-ADR-051).
+    """An FMCW receiver's cross-radar beat per receive cell, ``complex64[cells, num_samples]`` (R-ADR-051).
 
-    ``transfer`` is the rows' Channel coefficient (``complex64[rows]``, Channel
-    convention; the kernel conjugates it into the beat weight), ``delay`` the
-    float32 round-trip delay and ``residual`` its float64 remainder or
-    ``None``. A row whose ``valid`` entry is false contributes exactly zero and
-    receives no gradient. Differentiable in ``transfer`` and ``delay`` in both
-    modes; the gates are discrete and contribute their almost-everywhere
-    derivative.
+    The beat convention: the kernel conjugates the rows' Channel coefficient
+    into the beat weight. ``routing.link_table`` rows follow
+    :data:`FMCW_CROSS_COLUMNS`; ``routing.aux`` is the emitters' chip table.
+    See :func:`~witwin.radar.synthesis.assembly.synthesize_cross` for the rest.
     """
 
-    if transfer.dtype != torch.complex64 or delay.dtype != torch.float32:
-        raise TypeError("cross-radar rows are a complex64 transfer and a float32 delay")
-    empty = delay.new_empty(0)
-    flags = torch.empty(0, dtype=torch.bool, device=delay.device) if valid is None else valid.contiguous()
-    out = _FmcwCross.apply(
-        torch.view_as_real(transfer.contiguous()),
-        delay.contiguous(),
-        empty if residual is None else residual.contiguous(),
-        flags,
-        routing,
-    )
-    return torch.view_as_complex(out)
+    return synthesize_cross("fmcw", transfer, delay, residual, valid, routing)
 
 
 __all__ = [
-    "CROSS_LINK_COLUMNS",
-    "CrossRouting",
+    "FMCW_CROSS_COLUMNS",
     "FmcwSpec",
     "channel_phasor_to_beat_weight",
     "multiplex_transmitters",
