@@ -135,7 +135,7 @@
           "name": "Result",
           "kind": "class",
           "target": "witwin.radar.results.Result",
-          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs', last_radar_paths: 'RadarPathBatch', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
+          "signature": "(cube: 'torch.Tensor', times_s: 'tuple[float, ...]', kind: 'str', axis_names: 'tuple[str, ...]', axes: 'ProcessingAxes', phasor: 'str', time_dependence: 'str', reference_frequency_hz: 'float', epochs: 'tuple[int, ...]', rediscovery_reasons: 'tuple[str | None, ...]', compile_count: 'int', discovery_count: 'int', last_snapshot: 'object', last_compiled_scene: 'object', last_propagation: 'RadarPropagationLegs | None', last_radar_paths: 'RadarPathBatch | None', sample_times_s: 'tuple[np.ndarray, ...]', path_set_complete: 'bool', motion_sampling_exhaustive: 'bool', motion_sampling: 'str', output_domain: 'str', adaptive_diagnostics: 'tuple[dict[str, Any], ...]', observation_schedule: 'str' = 'frame', discovery_complete: 'bool' = True, transmission_dropped_rows: 'int' = 0, events: 'tuple[PathEvents, ...]' = ()) -> None"
         },
         {
           "name": "ScatteringMatrix",
@@ -168,6 +168,69 @@
       ]
     },
     {
+      "module": "witwin.radar.config",
+      "exports": [
+        {
+          "name": "PRESETS",
+          "kind": "value",
+          "target": "<dict> PRESETS"
+        },
+        {
+          "name": "TiConfig",
+          "kind": "class",
+          "target": "witwin.radar.config.TiConfig",
+          "signature": "(rx_mask: 'int', tx_mask: 'int', profiles: 'tuple[TiProfile, ...]', chirps: 'tuple[TiChirp, ...]', loops: 'int', frame_count: 'int', frame_period: 'float', adc_output_format: 'int' = 1, bpm: 'bool' = False) -> None"
+        },
+        {
+          "name": "config_schema",
+          "kind": "function",
+          "target": "witwin.radar.radar.config_schema",
+          "signature": "() -> 'dict[str, Any]'"
+        },
+        {
+          "name": "preset",
+          "kind": "function",
+          "target": "witwin.radar.config.preset",
+          "signature": "(name: 'str', **overrides: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "read_ti_cfg",
+          "kind": "function",
+          "target": "witwin.radar.config.read_ti_cfg",
+          "signature": "(source: 'str | os.PathLike[str]') -> 'TiConfig'"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.dataset",
+      "exports": [
+        {
+          "name": "Episode",
+          "kind": "class",
+          "target": "witwin.radar.dataset.Episode",
+          "signature": "(scene: 'Any', targets: 'Any', times: 'Sequence[float]', seed: 'int | None' = None, name: 'str | None' = None, pose: 'Callable[[float], Any] | None' = None, options: 'Mapping[str, Any]' = <factory>) -> None"
+        },
+        {
+          "name": "load_episode",
+          "kind": "function",
+          "target": "witwin.radar.dataset.load_episode",
+          "signature": "(path: 'str | os.PathLike[str]', *, device: 'torch.device | str' = 'cpu') -> 'tuple[Any, TargetLabels | None]'"
+        },
+        {
+          "name": "read_dataset",
+          "kind": "function",
+          "target": "witwin.radar.dataset.read_dataset",
+          "signature": "(path: 'str | os.PathLike[str]') -> 'dict[str, Any]'"
+        },
+        {
+          "name": "write_dataset",
+          "kind": "function",
+          "target": "witwin.radar.dataset.write_dataset",
+          "signature": "(path: 'str | os.PathLike[str]', radar: 'Any', episodes: 'Sequence[Episode]', *, overwrite: 'bool' = False, labels: 'bool' = True, velocity_step_s: 'float' = 0.001, **options: 'Any') -> 'Path'"
+        }
+      ]
+    },
+    {
       "module": "witwin.radar.deployment",
       "exports": [
         {
@@ -175,6 +238,12 @@
           "kind": "function",
           "target": "witwin.radar.deployment.build_info",
           "signature": "() -> 'dict[str, Any]'"
+        },
+        {
+          "name": "package_version",
+          "kind": "function",
+          "target": "witwin.radar.deployment.package_version",
+          "signature": "() -> 'str'"
         },
         {
           "name": "require_supported_runtime",
@@ -187,6 +256,82 @@
           "kind": "function",
           "target": "witwin.radar.deployment.runtime_diagnostics",
           "signature": "() -> 'dict[str, Any]'"
+        },
+        {
+          "name": "runtime_failures",
+          "kind": "function",
+          "target": "witwin.radar.deployment.runtime_failures",
+          "signature": "(diagnostics: 'dict[str, Any]') -> 'list[str]'"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.doctor",
+      "exports": [
+        {
+          "name": "channel_diagnostics",
+          "kind": "function",
+          "target": "witwin.radar.doctor.channel_diagnostics",
+          "signature": "(*, run_doctor: 'bool' = True) -> 'dict[str, Any]'"
+        },
+        {
+          "name": "doctor",
+          "kind": "function",
+          "target": "witwin.radar.doctor.doctor",
+          "signature": "(*, smoke: 'bool' = True, channel_doctor: 'bool' = True) -> 'dict[str, Any]'"
+        },
+        {
+          "name": "doctor_report",
+          "kind": "function",
+          "target": "witwin.radar.doctor.doctor_report",
+          "signature": "(record: 'dict[str, Any]') -> 'tuple[str, int]'"
+        },
+        {
+          "name": "main",
+          "kind": "function",
+          "target": "witwin.radar.doctor.main",
+          "signature": "(argv: 'Sequence[str] | None' = None) -> 'int'"
+        },
+        {
+          "name": "smoke_test",
+          "kind": "function",
+          "target": "witwin.radar.doctor.smoke_test",
+          "signature": "() -> 'dict[str, Any]'"
+        }
+      ]
+    },
+    {
+      "module": "witwin.radar.labels",
+      "exports": [
+        {
+          "name": "GroundTruth",
+          "kind": "class",
+          "target": "witwin.radar.labels.GroundTruth",
+          "signature": "(radar: 'Any', scene: 'Any', targets: 'PointTargets | StructureTargets | MeshTargets', *, pose: 'Callable[[float], Any] | None' = None, velocity_step_s: 'float' = 0.001) -> 'None'"
+        },
+        {
+          "name": "PathSummary",
+          "kind": "class",
+          "target": "witwin.radar.labels.PathSummary",
+          "signature": "(time_s: 'float', source_id: 'torch.Tensor', site_id: 'torch.Tensor', sink_id: 'torch.Tensor', sensor_pair: 'torch.Tensor', component: 'torch.Tensor', component_names: 'tuple[str, ...]', leg_component: 'torch.Tensor', depth: 'torch.Tensor', delay_s: 'torch.Tensor', doppler_hz: 'torch.Tensor', amplitude: 'torch.Tensor', phase_rad: 'torch.Tensor', valid: 'torch.Tensor') -> None"
+        },
+        {
+          "name": "TargetLabels",
+          "kind": "class",
+          "target": "witwin.radar.labels.TargetLabels",
+          "signature": "(kind: 'str', time_s: 'torch.Tensor', target_id: 'torch.Tensor', world_position_m: 'torch.Tensor', position_m: 'torch.Tensor', range_m: 'torch.Tensor', radial_velocity_mps: 'torch.Tensor', azimuth_rad: 'torch.Tensor', elevation_rad: 'torch.Tensor', rcs_m2: 'torch.Tensor', site_id: 'torch.Tensor', site_target: 'torch.Tensor', area_m2: 'torch.Tensor | None' = None, range_extent_m: 'torch.Tensor | None' = None) -> None"
+        },
+        {
+          "name": "ground_truth",
+          "kind": "function",
+          "target": "witwin.radar.labels.ground_truth",
+          "signature": "(radar: 'Any', scene: 'Any', targets: 'PointTargets | StructureTargets | MeshTargets', *, times: 'Sequence[float]', pose: 'Callable[[float], Any] | None' = None, velocity_step_s: 'float' = 0.001) -> 'TargetLabels'"
+        },
+        {
+          "name": "path_summary",
+          "kind": "function",
+          "target": "witwin.radar.labels.path_summary",
+          "signature": "(paths: 'Any', frame: 'int' = 0, observation: 'int' = -1) -> 'PathSummary'"
         }
       ]
     },
@@ -604,6 +749,28 @@
       ]
     },
     {
+      "module": "witwin.radar.rawdata",
+      "exports": [
+        {
+          "name": "DCA1000_LAYOUTS",
+          "kind": "value",
+          "target": "<tuple> DCA1000_LAYOUTS"
+        },
+        {
+          "name": "read_dca1000",
+          "kind": "function",
+          "target": "witwin.radar.rawdata.read_dca1000",
+          "signature": "(path: 'str | os.PathLike[str]', *, num_tx: 'int', num_rx: 'int', chirps: 'int', samples: 'int', layout: 'str' = 'xwr16xx', real: 'bool' = False, iq_swap: 'bool' = False, scale: 'float' = 1.0) -> 'torch.Tensor'"
+        },
+        {
+          "name": "write_dca1000",
+          "kind": "function",
+          "target": "witwin.radar.rawdata.write_dca1000",
+          "signature": "(path: 'str | os.PathLike[str]', source: 'Any', *, scale: 'float | None' = None, adc: 'Any' = None, layout: 'str' = 'xwr16xx', real: 'bool | None' = None, iq_swap: 'bool' = False, clip: 'bool' = False) -> 'Path'"
+        }
+      ]
+    },
+    {
       "module": "witwin.radar.scattering",
       "exports": [
         {
@@ -843,6 +1010,16 @@
           "name": "to",
           "kind": "function",
           "signature": "(self, device: 'Any') -> 'Radar'"
+        },
+        {
+          "name": "to_dict",
+          "kind": "function",
+          "signature": "(self) -> 'dict[str, Any]'"
+        },
+        {
+          "name": "to_json",
+          "kind": "function",
+          "signature": "(self, path: 'str | os.PathLike[str]') -> 'None'"
         },
         {
           "name": "trace",

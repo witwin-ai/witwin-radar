@@ -45,6 +45,12 @@ ENTRY_POINTS: dict[str, str] = {
     "witwin.radar.scattering": "public scatter-response owner",
     "witwin.radar.binding": "public scene-binding identity owner",
     "witwin.radar.synthesis": "public waveform synthesis facade",
+    "witwin.radar.config": "public TI-profile, device-preset and configuration-schema facade",
+    "witwin.radar.labels": "public ground-truth label and path-summary owner",
+    "witwin.radar.dataset": "public streaming dataset writer",
+    "witwin.radar.rawdata": "public DCA1000 raw ADC export",
+    "witwin.radar.doctor": "the witwin-radar-doctor console script ([project.scripts])",
+    "witwin.radar.__main__": "`python -m witwin.radar doctor`",
 }
 
 

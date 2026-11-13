@@ -8,7 +8,7 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 
 ## Concept-axis layout
 
-- `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat-configuration loader.
+- `witwin/radar/radar.py` — the flat immutable `Radar` record, the `Fmcw`/`Ofdm`/`Pulsed` waveforms, the pose transforms, and the flat configuration format in both directions (`from_dict`/`to_dict`) with its schema.
 - `witwin/radar/targets.py` — what the radar is looking at: `PointTargets`, `StructureTargets`, `MeshTargets`, `Aspect`, `RcsTable`, `Fluctuation`, and the split of one target record into a site policy and a scatter response. The scattering coefficient stays in `scattering.py`, the site binding in `binding.py` and the facet extraction in `facets.py`; nothing here computes any of them.
 - `witwin/radar/facets.py` — a mesh target's facets: which faces scatter, their materials at the carrier, how facets group into sites, and each frame's facet corners and site positions through the native `facet_geometry` operator (R-ADR-042).
 - `witwin/radar/simulation.py` — scene-session orchestration: the typed `Session` record, the `WorldHalf` that owns the epoch loop and every Channel call, the instrument half (`echo_frame` and the one synthesis dispatch), and the `Paths` the world half retains.
@@ -16,6 +16,13 @@ The breaking concept-axis consolidation is complete. Do not add compatibility mo
 - `witwin/radar/binding.py` — binding one radar to one snapshot: stable IDs, the scatter-site policy, `SensorEndpointIds`, and the endpoint specs the legs consume.
 - `witwin/radar/adaptive.py` — adaptive motion control: the host-side probe refinement and the interpolated echo of its accepted partition.
 - `witwin/radar/results.py` — the `Result` and `Frame` records the instrument half publishes.
+- `witwin/radar/storage.py` — the saved-result directory format behind `Result.save`/`Result.load`: plain tensors plus JSON metadata, versioned, nothing pickled.
+- `witwin/radar/labels.py` — ground truth: per-frame, per-target labels from the simulated geometry, and the composed-path summary of a `Paths`.
+- `witwin/radar/dataset.py` — the streaming dataset writer over episodes (scene, targets, times, seed), in the saved-result format with labels.
+- `witwin/radar/config.py` — configurations from outside: the TI mmWave `.cfg` importer, board presets, and the published configuration schema.
+- `witwin/radar/rawdata.py` — raw ADC export and import in the DCA1000 capture layout.
+- `witwin/radar/doctor.py` and `witwin/radar/__main__.py` — `witwin-radar-doctor` / `python -m witwin.radar doctor`; `deployment.py` stays the identity record it reads.
+- `witwin/radar/display.py` — the compact `repr` of results and processing products (dtype, shape and device, never tensor values).
 - `witwin/radar/channel.py` — the only production importer of `witwin.channel`; compile, propagation, topology, and kinematics adapters.
 - `witwin/radar/propagation.py` — Radar-owned propagation policies and epoch logic.
 - `witwin/radar/paths.py` — two-way round-trip path contracts and composition.
@@ -56,7 +63,7 @@ There are four verbs, and they are two halves and their fusion.
 - All four share one session loop and one synthesis route, so `echo(trace(...))` is bit-identical to `simulate(...)`. `tests/test_trace_echo_split.py` asserts it with `torch.equal` on every motion kind, in both FMCW output domains, with and without a receive chain, and with oscillator phase noise. Do not add a second synthesis route for either half; a cut that moves a number in the last bit is a cut through an equation rather than through a seam.
 - `Radar.echo(...)` is the public entry to synthesis over traced rows, and it is the only one. No synthesis function is exported, dispatch on the stored waveform kind stays a private method of `Radar`, and a caller reaches synthesized samples only through the `Result` a verb returns. What `echo` lets vary is the receive chain, the seed and the FMCW output domain; anything the observation schedule was derived from — the carrier, the sensor-pair partition, the waveform behind a sampled schedule — is refused by name, as is a phase-noise receiver against paths traced without ADC instants.
 - `Paths` retains every evaluated observation's rows and says so in its docstring; the fused verbs retain one replay group - at most `Motion.batch_observations` observations - at a time. That asymmetry is the contract. Making `simulate` or `stream` materialise a whole frame's observations is a retention regression, not a refactor.
-- `Radar` is a flat immutable record. `Radar.from_dict` and `Radar.from_json` load the flat FMCW configuration format, and `Radar.replace(...)` and `Radar.to(device)` return a new radar; nothing edits one in place. A radar holds no run state, so the per-frame typed diagnostics are read from the result that published them.
+- `Radar` is a flat immutable record. `Radar.from_dict`/`Radar.from_json` load the flat configuration format and `Radar.to_dict`/`Radar.to_json` write it (`from_dict(to_dict())` is the same radar), and `Radar.replace(...)` and `Radar.to(device)` return a new radar; nothing edits one in place. A radar holds no run state, so the per-frame typed diagnostics are read from the result that published them.
 - Processing is reached from a result, not assembled by a caller: `Result.axes` is the `ProcessingAxes` the echo builds once from the waveform spec and the array that produced the cube, `Result.axis_names` is the cube's axis-name tuple, and `Result.frame(i)` is the `Frame` that pairs one frame's cube with that metadata. `Frame`'s methods are facades that compute nothing. Public processing functions and typed products are exported from `witwin.radar.processing`.
 - Channel integration is internal; callers do not import internal adapter objects through the Radar facade.
 
@@ -85,7 +92,7 @@ python -m mypy --config-file ci/mypy.ini
 
 `ci/native-binding-manifest.json` is generated: after adding, renaming or removing a native operator, run `python ci/check_native_bindings.py --write`. Only its `no_backward` and `error_owners` sections are written by hand.
 
-`ci/mypy.ini` types the scene-session modules (`simulation`, `motion`, `binding`, `adaptive`, `results`, `paths`, `propagation`) strictly; widen its `files` list as other modules gain annotations.
+`ci/mypy.ini` types the scene-session modules (`simulation`, `motion`, `binding`, `adaptive`, `results`, `paths`, `propagation`) and the I/O tooling (`config`, `dataset`, `display`, `doctor`, `labels`, `rawdata`, `storage`) strictly; widen its `files` list as other modules gain annotations.
 
 Required-Channel workflows install the Channel extra, record `build_info()["build_fingerprint"]`, and allow zero missing-Channel skips. Do not describe a skipped integration suite as passing.
 
