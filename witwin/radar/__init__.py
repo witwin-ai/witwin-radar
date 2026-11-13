@@ -20,7 +20,7 @@ Advanced records stay in their owner modules and are imported from there:
 from . import processing
 from .frontend import Adc, Agc, Compression, Iq, Noise
 from .motion import Motion
-from .network import Network
+from .network import Emitter, Network
 from .radar import Chirp, Fmcw, Leakage, Ofdm, Pulsed, Radar
 from .results import Frame, Result
 from .sensors import Coupling, Pattern
@@ -34,6 +34,7 @@ __all__ = [
     "Chirp",
     "Compression",
     "Coupling",
+    "Emitter",
     "Fluctuation",
     "Fmcw",
     "Frame",

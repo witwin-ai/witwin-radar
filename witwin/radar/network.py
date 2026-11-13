@@ -1,13 +1,13 @@
 """Several radars in one scene and one call (R-ADR-051).
 
-A :class:`Network` is a set of radars that share one world. Its session
-compiles the scene once, binds every radar's elements as ONE endpoint set
-(each element carried by its own radar's pose), discovers each leg family
-once per topology epoch for all of them, replays each family once per
-observation instant, and composes every transmitter-receiver pair in one
-join. The world half is therefore paid once, whatever the radar count: the
-Channel calls per epoch are the single-radar ones, with longer endpoint
-lists.
+A :class:`Network` is a set of radars, and optionally declared emitters, that
+share one world. Its session compiles the scene once, binds every radar's
+elements and every emitter as ONE endpoint set (each radar's elements carried
+by its own pose), discovers each leg family once per topology epoch for all of
+them, replays each family once per observation instant, and composes every
+transmitter-receiver pair in one join. The world half is therefore paid once,
+whatever the radar count: the Channel calls per epoch are the single-radar
+ones, with longer endpoint lists.
 
 What a radar hears is then split per receiving radar:
 
@@ -15,21 +15,24 @@ What a radar hears is then split per receiving radar:
   composed batch a standalone session of that radar would have built, in the
   same order, and run through that radar's own instrument half unchanged;
 * rows from ANOTHER radar's transmitters reach it only for a declared link
-  ``(transmitting radar, receiving radar)``: site rows (bistatic target
-  returns), and site-less rows of the direct leg (the line of sight between
-  the radars with ``direct=True``, the environment's returns with
-  ``environment=True``). They are synthesized by the native cross-radar beat
-  family (:func:`witwin.radar.synthesis.fmcw.synthesize_fmcw_cross`): the
-  receiver mixes its own ramp against the transmitter's, through its own IF
-  band, on its own clock. The result is added to the receiver's beat frame
-  before its receive chain, so its noise, gains and ADC act on the sum.
+  ``(transmitting radar, receiving radar)``, and rows from every emitter reach
+  every radar: site rows (bistatic target returns), and site-less rows of the
+  direct leg (the line of sight with ``direct=True``, the environment's
+  returns with ``environment=True``). They are synthesized by the native
+  cross-radar families, each receiver with its own reference: an FMCW
+  receiver dechirps them against its own ramp through its IF band
+  (:func:`~witwin.radar.synthesis.fmcw.synthesize_fmcw_cross`); a pulsed or
+  OFDM receiver samples them on its own grid and its own LO
+  (:func:`~witwin.radar.synthesis.pulsed.synthesize_pulsed_cross`,
+  :func:`~witwin.radar.synthesis.ofdm.synthesize_ofdm_cross`), and demodulates
+  them downstream against its own replica or symbols. The result is added to
+  the receiver's frame before its receive chain, so its noise, gains and ADC
+  act on the sum.
 
-The phase convention, the gates and what is refused are R-ADR-051's. Only
-FMCW links are synthesized (uniform TDM ramps, or one-profile sequences that
-carry a start-frequency offset); an OFDM or pulsed receiver, DDM/BPM and
-multi-profile sequences are refused by name. Adaptive motion is refused: the
-radars' observation instants are merged into one schedule, which the
-adaptive controller's per-radar probe grid does not share.
+The phase conventions, the gates and what is refused are R-ADR-051's.
+Adaptive motion is refused: the radars' observation instants are merged into
+one schedule, which the adaptive controller's per-radar probe grid does not
+share.
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ from .events import PathEvents
 from .motion import Motion
 from .paths import NO_SITE, RadarPathBatch, RadarPathTopology, SlotRows, TwoWayComposer
 from .propagation import DiscoveryReport, RadarEndpointSpec
-from .radar import Fmcw, Radar
+from .radar import WAVEFORM_FMCW, WAVEFORM_OFDM, WAVEFORM_PULSED, Fmcw, Radar, vec3_tensor
 from .results import Result, SceneFrame, assemble
 from .sensors import RoundTripPatternStage
 from .simulation import (
@@ -93,19 +96,15 @@ def _finite(name: str, value: Any) -> float:
 
 
 def _fmcw_profile(radar: Radar, role: str) -> tuple[float, float, float, float]:
-    """``(slope [Hz/s], start offset [Hz], ramp end [s], chirp period [s])`` of a radar on a link.
+    """``(slope [Hz/s], start offset [Hz], ramp end [s], chirp period [s])`` of an FMCW radar on a link.
 
-    A link is synthesized for one uniform TDM ramp or a one-profile sequence
-    (whose ``Chirp.start_offset`` is a start-frequency offset); anything else
-    is refused by name here, at construction.
+    A link reads one uniform TDM ramp or a one-profile sequence (whose
+    ``Chirp.start_offset`` is a start-frequency offset); anything else is
+    refused by name here, at construction.
     """
 
     waveform = radar.waveform
-    if not isinstance(waveform, Fmcw):
-        raise NotImplementedError(
-            f"a network link's {role} must be an FMCW radar: the cross-radar beat mixes one FMCW ramp against "
-            f"another, and a {type(waveform).__name__} {role} has no cross-radar synthesis (R-ADR-051)"
-        )
+    assert isinstance(waveform, Fmcw)
     if waveform.mimo != "tdm":
         raise NotImplementedError(
             f"a network link's {role} uses mimo={waveform.mimo!r}; the cross-radar beat gates each transmitter on "
@@ -124,6 +123,127 @@ def _fmcw_profile(radar: Radar, role: str) -> tuple[float, float, float, float]:
     return float(waveform.slope), 0.0, float(waveform.ramp_end), waveform.chirp_period
 
 
+@dataclass(frozen=True, slots=True)
+class Emitter:
+    """A non-radar transmitter: a declared complex baseband at a fixed position (R-ADR-051).
+
+    ``samples`` is the baseband, relative to the full transmit amplitude (each
+    magnitude at most one), at ``rate`` samples per second; ``power`` is the
+    full-scale transmit power, dBm. The emitter's oscillator runs at the
+    network's carrier plus ``carrier_offset`` [Hz] from world time zero, and
+    sample 0 leaves at world time ``start`` [s]; with ``repeat`` the table
+    repeats with no gap from then on, else it is sent once. Between samples
+    the magnitude is held and the phase advances linearly to the next sample
+    (a sampled tone stays a tone), which is the arbitrary pulse family's chip
+    table with each chip's frequency set to its phase step. ``position`` is in
+    world metres and ``polarization`` a world vector. The emitter radiates
+    isotropically and is heard by every radar of the network.
+    """
+
+    position: Any
+    samples: Any
+    rate: float
+    power: float
+    carrier_offset: float = 0.0
+    start: float = 0.0
+    repeat: bool = True
+    polarization: Any = (0.0, 1.0, 0.0)
+
+    def __post_init__(self) -> None:
+        set_ = object.__setattr__
+        samples = tuple(complex(value) for value in self.samples)
+        if not samples:
+            raise ValueError("an Emitter needs at least one sample")
+        if any(abs(value) > 1.0 + 1e-9 for value in samples):
+            raise ValueError("Emitter.samples are relative to the full transmit amplitude; each magnitude is at most 1")
+        set_(self, "samples", samples)
+        set_(self, "position", tuple(float(v) for v in vec3_tensor(self.position, name="Emitter.position").tolist()))
+        polarization = tuple(float(v) for v in vec3_tensor(self.polarization, name="Emitter.polarization").tolist())
+        norm = math.sqrt(sum(v * v for v in polarization))
+        if norm <= 1e-12:
+            raise ValueError("Emitter.polarization must be non-zero")
+        set_(self, "polarization", tuple(v / norm for v in polarization))
+        for name in ("rate", "power", "carrier_offset", "start"):
+            set_(self, name, _finite(f"Emitter.{name}", getattr(self, name)))
+        if not self.rate > 0.0:
+            raise ValueError("Emitter.rate must be positive")
+        if type(self.repeat) is not bool:
+            raise TypeError("Emitter.repeat must be a bool")
+
+    @property
+    def duration(self) -> float:
+        """One pass of the table, s."""
+
+        return len(self.samples) / self.rate
+
+    def chip_table(self) -> np.ndarray:
+        """``float64[samples, 3]``: ``|a_i|``, ``arg(a_i) / 2 pi`` and the phase-step frequency ``f_i`` [Hz]."""
+
+        values = np.asarray(self.samples, dtype=np.complex128)
+        following = np.roll(values, -1)
+        if not self.repeat and len(values) > 1:
+            # A single pass holds its last sample's phase rate.
+            following[-1] = values[-1] * (values[-1] / values[-2] if values[-2] != 0 else 1.0)
+        step = np.angle(following * np.conj(values))
+        step[(values == 0) | (following == 0)] = 0.0
+        return np.stack((np.abs(values), np.angle(values) / (2 * math.pi), step / (2 * math.pi) * self.rate), axis=1)
+
+
+def _family(radar: Radar) -> str:
+    return radar.system_config.kind
+
+
+def _occupied_band(radar: Radar) -> float:
+    """A transmitting radar's occupied bandwidth, Hz, for the sampled-receiver anti-alias refusal."""
+
+    spec = radar.waveform_spec()
+    if _family(radar) == WAVEFORM_OFDM:
+        return float(spec.occupied_bandwidth_hz)
+    return float(spec.bandwidth_hz)
+
+
+def _sample_rate(radar: Radar) -> float:
+    spec = radar.waveform_spec()
+    if _family(radar) == WAVEFORM_OFDM:
+        return 1.0 / float(spec.waveform_sample_period_s)
+    return 1.0 / float(spec.sample_period_s)
+
+
+def _require_hearing(
+    network: Network, receiver: int, transmitter_family: str, band_hz: float, offset_hz: float, name: str
+) -> None:
+    """Refuse, by name, a transmitter this receiver's cross families do not synthesize."""
+
+    radar = network.radars[receiver]
+    family = _family(radar)
+    if family == WAVEFORM_FMCW:
+        if transmitter_family not in (WAVEFORM_FMCW, "emitter"):
+            raise NotImplementedError(
+                f"radar {receiver} is FMCW and {name} is {transmitter_family}: an FMCW receiver dechirps its ramp "
+                "against an FMCW ramp or an emitter's table, whose instantaneous frequency its IF band gates; another "
+                "waveform's beat through that band is not modelled (R-ADR-051)"
+            )
+        _fmcw_profile(radar, "receiver")
+        return
+    if transmitter_family == WAVEFORM_FMCW:
+        raise NotImplementedError(
+            f"radar {receiver} samples {family} and {name} is an FMCW ramp: sweeping through a directly sampled "
+            "receiver needs that receiver's anti-alias filter, which is not modelled (R-ADR-051)"
+        )
+    if radar.num_tx != 1:
+        raise NotImplementedError(
+            f"radar {receiver} is a {family} receiver with {radar.num_tx} transmitters, whose channels are modelled "
+            "as ideally orthogonal; another transmitter's signal is not, so a hearing sampled radar has one transmitter"
+        )
+    rate = _sample_rate(radar)
+    if band_hz > rate * (1.0 + 1e-9) or abs(offset_hz) > 0.5 * rate:
+        raise NotImplementedError(
+            f"{name} occupies {band_hz:.6g} Hz at {offset_hz:.6g} Hz from radar {receiver}'s LO, against its complex "
+            f"sample rate {rate:.6g} Hz: a band wider than the sample rate, or offset by more than half of it, needs "
+            "the anti-alias filter, which is not modelled (R-ADR-051)"
+        )
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Network:
     """Several radars in one scene, simulated by one session (R-ADR-051).
@@ -137,36 +257,48 @@ class Network:
     ``i``'s transmissions into radar ``j``'s receiver, through the targets
     (bistatic returns), along the straight segment between them (``direct``
     on the verbs) and off the environment (``environment``). Each link is
-    synthesized with radar ``j``'s own dechirp reference against radar ``i``'s
-    ramp, so a slope mismatch, a start-time offset and a start-frequency
-    offset all appear in the beat. Both radars of a link are FMCW with a
-    uniform TDM ramp or a one-profile sequence.
+    synthesized with radar ``j``'s own reference: an FMCW receiver dechirps
+    radar ``i``'s FMCW ramp (slope mismatch, start-time and start-frequency
+    offsets all appear in the beat); a pulsed or OFDM receiver samples radar
+    ``i``'s pulse train or OFDM stream on its own grid and LO and matches or
+    demodulates it with its own replica or symbols. ``emitters``
+    (:class:`Emitter`) are heard by every radar the same way.
 
     ``clock_offsets`` is each radar's frame start relative to the frame times
     the verbs take, s (default all zero): radar ``k``'s frame ``f`` starts at
     ``times[f] + clock_offsets[k]``, and its own observation instants follow
-    from there. Every radar's oscillator runs at its own ramp start frequency
-    from world time zero, so a start-frequency offset between two radars is
-    also a carrier-frequency offset between their clocks.
+    from there. Every oscillator runs from world time zero.
 
-    ``if_bandwidths`` is each receiving radar's IF (anti-alias) bandwidth, Hz:
-    a cross-radar row reaches the samples only while its instantaneous beat
-    frequency is within it. ``None`` (the default) is half the radar's ADC
-    sample rate, the band a complex sampler represents.
+    ``carrier_offsets`` is each pulsed or OFDM radar's oscillator offset from
+    the shared carrier, Hz (an FMCW radar declares its start frequency as a
+    one-profile ``Chirp(start_offset=...)`` instead, and a nonzero entry for it
+    is refused). It acts on what other radars hear and on what this radar
+    hears from them; the radar's own rows keep its nominal carrier (their
+    phase error is ``offset * tau``).
+
+    ``if_bandwidths`` is each FMCW receiving radar's IF (anti-alias) bandwidth,
+    Hz: a cross-radar row reaches the samples only while its instantaneous
+    beat frequency is within it. ``None`` (the default) is half the radar's
+    ADC sample rate. A pulsed or OFDM receiver has no IF model, so a
+    transmitter whose band exceeds its complex sample rate, or whose carrier
+    is offset by more than half of it, is refused.
 
     Every radar shares one carrier (``Radar.carrier``), the frequency the
     shared world is evaluated at, and one element pattern pair
     (``pattern``/``rx_pattern``), because one join applies one pattern table;
-    a different start frequency is a one-profile
-    :class:`~witwin.radar.Chirp` sequence with a ``start_offset``.
+    with emitters the pattern must be isotropic.
     """
 
     radars: tuple[Radar, ...]
     links: tuple[tuple[int, int], ...] = ()
     clock_offsets: tuple[float, ...] = ()
     if_bandwidths: tuple[float | None, ...] = ()
+    emitters: tuple[Emitter, ...] = ()
+    carrier_offsets: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
+        from .sensors import Pattern
+
         set_ = object.__setattr__
         radars = tuple(self.radars)
         if not radars or not all(isinstance(radar, Radar) for radar in radars):
@@ -178,8 +310,8 @@ class Network:
             if float(radar.carrier) != float(first.carrier):
                 raise ValueError(
                     f"radar {index} is at {radar.carrier} Hz and radar 0 at {first.carrier} Hz; a network evaluates "
-                    "one world at one carrier. Declare a different start frequency as a one-profile chirp sequence, "
-                    "Fmcw(sequence=(Chirp(start_offset=...),))"
+                    "one world at one carrier. Declare a different start frequency as a one-profile chirp sequence "
+                    "(FMCW) or a carrier offset (pulsed, OFDM)"
                 )
             if radar.device != first.device:
                 raise ValueError(
@@ -193,6 +325,40 @@ class Network:
                     f"radar {index} declares a different element pattern from radar 0; a network composes every "
                     "radar's rows in one join, which applies one transmit and one receive pattern table"
                 )
+        emitters = tuple(self.emitters)
+        if not all(isinstance(emitter, Emitter) for emitter in emitters):
+            raise TypeError("Network.emitters holds witwin.radar.Emitter records")
+        set_(self, "emitters", emitters)
+        isotropic = Pattern.isotropic()
+        if emitters and (first.pattern != isotropic or first.system_config.sensors.rx_pattern not in (None, isotropic)):
+            raise NotImplementedError(
+                "a network with emitters applies one transmit pattern table to every transmitter, emitters included, "
+                "and an emitter radiates isotropically; give the radars isotropic elements"
+            )
+        offsets = tuple(self.clock_offsets) or (0.0,) * count
+        if len(offsets) != count:
+            raise ValueError(f"clock_offsets holds {len(offsets)} values for {count} radars")
+        set_(self, "clock_offsets", tuple(_finite("clock_offsets", value) for value in offsets))
+        carriers = tuple(self.carrier_offsets) or (0.0,) * count
+        if len(carriers) != count:
+            raise ValueError(f"carrier_offsets holds {len(carriers)} values for {count} radars")
+        carriers = tuple(_finite("carrier_offsets", value) for value in carriers)
+        for index, value in enumerate(carriers):
+            if value != 0.0 and _family(radars[index]) == WAVEFORM_FMCW:
+                raise ValueError(
+                    f"radar {index} is FMCW; declare its start-frequency offset as Fmcw(sequence=(Chirp("
+                    "start_offset=...),)), which its own rows carry too, not as a network carrier offset"
+                )
+        set_(self, "carrier_offsets", carriers)
+        bandwidths = tuple(self.if_bandwidths) or (None,) * count
+        if len(bandwidths) != count:
+            raise ValueError(f"if_bandwidths holds {len(bandwidths)} values for {count} radars")
+        checked: list[float | None] = []
+        for bandwidth in bandwidths:
+            if bandwidth is not None and not _finite("if_bandwidths", bandwidth) > 0.0:
+                raise ValueError(f"an IF bandwidth must be positive, got {bandwidth!r}")
+            checked.append(None if bandwidth is None else float(bandwidth))
+        set_(self, "if_bandwidths", tuple(checked))
         links: list[tuple[int, int]] = []
         for link in tuple(self.links):
             if (
@@ -210,27 +376,32 @@ class Network:
             links.append(link)
         set_(self, "links", tuple(links))
         for transmitter, receiver in links:
-            _fmcw_profile(radars[transmitter], "transmitter")
-            _fmcw_profile(radars[receiver], "receiver")
+            tx = radars[transmitter]
+            if _family(tx) == WAVEFORM_FMCW:
+                _fmcw_profile(tx, "transmitter")
+                band = 0.0
+            else:
+                band = _occupied_band(tx)
+            offset = carriers[transmitter] - carriers[receiver]
+            _require_hearing(self, receiver, _family(tx), band, offset, f"radar {transmitter}")
+        for index, emitter in enumerate(emitters):
+            for receiver in range(count):
+                offset = emitter.carrier_offset - carriers[receiver]
+                _require_hearing(self, receiver, "emitter", emitter.rate, offset, f"emitter {index}")
+        for receiver in self.hearing():
             frontend = radars[receiver].frontend
             if frontend is not None and frontend.has_phase_noise:
                 raise NotImplementedError(
-                    f"radar {receiver} hears another radar and carries oscillator phase noise; the two radars' "
-                    "oscillators are independent and the cross-radar beat does not model either one's noise"
+                    f"radar {receiver} hears another transmitter and carries oscillator phase noise; the oscillators "
+                    "are independent and the cross-radar families do not model either one's noise"
                 )
-        offsets = tuple(self.clock_offsets) or (0.0,) * count
-        if len(offsets) != count:
-            raise ValueError(f"clock_offsets holds {len(offsets)} values for {count} radars")
-        set_(self, "clock_offsets", tuple(_finite("clock_offsets", value) for value in offsets))
-        bandwidths = tuple(self.if_bandwidths) or (None,) * count
-        if len(bandwidths) != count:
-            raise ValueError(f"if_bandwidths holds {len(bandwidths)} values for {count} radars")
-        checked: list[float | None] = []
-        for value in bandwidths:
-            if value is not None and not _finite("if_bandwidths", value) > 0.0:
-                raise ValueError(f"an IF bandwidth must be positive, got {value!r}")
-            checked.append(None if value is None else float(value))
-        set_(self, "if_bandwidths", tuple(checked))
+
+    def hearing(self) -> tuple[int, ...]:
+        """The radars that hear another transmitter: a link's receiver, or every radar when there are emitters."""
+
+        if self.emitters:
+            return tuple(range(len(self.radars)))
+        return tuple(sorted({receiver for _, receiver in self.links}))
 
     def _same(self, other: Network) -> bool:
         return (
@@ -239,6 +410,8 @@ class Network:
             and self.links == other.links
             and self.clock_offsets == other.clock_offsets
             and self.if_bandwidths == other.if_bandwidths
+            and self.emitters == other.emitters
+            and self.carrier_offsets == other.carrier_offsets
         )
 
     # -- the four verbs ------------------------------------------------------
@@ -423,18 +596,38 @@ class NetworkWorldHalf(WorldHalf):
     """
 
     def __init__(
-        self, members: tuple[_Member, ...], *, straight_pairs: tuple[tuple[int, int], ...], **world: Any
+        self,
+        members: tuple[_Member, ...],
+        *,
+        emitters: tuple[Emitter, ...],
+        straight_groups: tuple[tuple[int, int, int, int], ...],
+        **world: Any,
     ) -> None:
+        from .sensors import watts_from_dbm
+
         super().__init__(**world)
         self.members = members
-        self.straight_pairs = straight_pairs
-        self.num_tx = sum(member.num_tx for member in members)
+        self.emitters = emitters
+        #: ``(first transmitter, count, first receiver, count)`` groups whose
+        #: straight-segment rows are kept, so whose endpoints must be apart.
+        self.straight_groups = straight_groups
+        self.radar_tx = sum(member.num_tx for member in members)
+        self.num_tx = self.radar_tx + len(emitters)
         self.num_rx = sum(member.num_rx for member in members)
         device = members[0].radar.device
         self.transmitter_ids = tuple(range(DEFAULT_TRANSMITTER_ID_BASE, DEFAULT_TRANSMITTER_ID_BASE + self.num_tx))
         self.receiver_ids = tuple(range(DEFAULT_RECEIVER_ID_BASE, DEFAULT_RECEIVER_ID_BASE + self.num_rx))
         self._transmitter_ids = torch.tensor(self.transmitter_ids, dtype=torch.int64, device=device)
         self._receiver_ids = torch.tensor(self.receiver_ids, dtype=torch.int64, device=device)
+        self._emitters: RadarEndpointSpec | None = None
+        if emitters:
+            # Fixed endpoints, uploaded once: an emitter has no pose.
+            self._emitters = RadarEndpointSpec(
+                stable_ids=self._transmitter_ids[self.radar_tx :],
+                positions_m=torch.tensor([e.position for e in emitters], dtype=torch.float32, device=device),
+                polarizations=torch.tensor([e.polarization for e in emitters], dtype=torch.float32, device=device),
+                powers_w=torch.tensor([watts_from_dbm(e.power) for e in emitters], dtype=torch.float32, device=device),
+            )
         self._tx_owner = torch.tensor(
             [k for k, member in enumerate(members) for _ in range(member.num_tx)], dtype=torch.int64, device=device
         )
@@ -489,8 +682,11 @@ class NetworkWorldHalf(WorldHalf):
         sources = torch.cat(
             [part.receiver_sources.powers_w for part in parts if part.receiver_sources.powers_w is not None]
         )
+        transmitters = [part.transmitters for part in parts]
+        if self._emitters is not None:
+            transmitters.append(self._emitters)
         return RadarWorldBinding(
-            transmitters=joined([part.transmitters for part in parts], self._transmitter_ids),
+            transmitters=joined(transmitters, self._transmitter_ids),
             receivers=receivers,
             receiver_sources=replace(receivers, powers_w=sources),
             sites=parts[0].sites,
@@ -511,11 +707,8 @@ class NetworkWorldHalf(WorldHalf):
         """
 
         return [
-            (
-                _rows(binding.transmitters, self.members[a].tx_offset, self.members[a].num_tx),
-                _rows(binding.receivers, self.members[b].rx_offset, self.members[b].num_rx),
-            )
-            for a, b in self.straight_pairs
+            (_rows(binding.transmitters, tx_first, tx_count), _rows(binding.receivers, rx_first, rx_count))
+            for tx_first, tx_count, rx_first, rx_count in self.straight_groups
         ]
 
     def _freeze_pattern(self, composer: TwoWayComposer, binding: RadarWorldBinding) -> RoundTripPatternStage:
@@ -717,6 +910,8 @@ def _open(
         straight_pairs += [(k, k) for k in range(len(radars))]
     if direct:
         straight_pairs += list(network.links)
+    if direct:
+        straight_pairs += [(len(radars) + e, k) for e in range(len(network.emitters)) for k in range(len(radars))]
     if straight_pairs:
         direct_components.add("los")
     if transmission and direct_components:
@@ -725,7 +920,7 @@ def _open(
             "segment has none); transmission rows have depth too, so transmission is not combined with "
             "environment, coupling or direct links in a network"
         )
-    receivers = {receiver for _, receiver in network.links}
+    receivers = set(network.hearing())
     prepared = [
         prepare_session(radar, scene, **{**entry, "motion": requested}, world_moves=sampled, beat=index in receivers)
         for index, (radar, entry) in enumerate(zip(radars, arguments, strict=True))
@@ -766,7 +961,20 @@ def _open(
         members.append(_Member(radar=radar, pose=pose, tx_offset=tx_offset, rx_offset=rx_offset, frame=frame))
         tx_offset += radar.num_tx
         rx_offset += radar.num_rx
-    world = NetworkWorldHalf(tuple(members), straight_pairs=tuple(straight_pairs), **world_arguments)
+    radar_tx = tx_offset
+
+    def transmitters(owner: int) -> tuple[int, int]:
+        if owner < len(members):
+            return members[owner].tx_offset, members[owner].num_tx
+        return radar_tx + owner - len(members), 1
+
+    straight_groups = tuple(
+        (*transmitters(owner), members[receiver].rx_offset, members[receiver].num_rx)
+        for owner, receiver in straight_pairs
+    )
+    world = NetworkWorldHalf(
+        tuple(members), emitters=network.emitters, straight_groups=straight_groups, **world_arguments
+    )
     sessions = tuple(
         Session(loop=world.loop, **{**entry.session, "environment": environment, "coupling": coupling})
         for entry in prepared
@@ -862,8 +1070,58 @@ class _HeardRows:
     row_tx: torch.Tensor
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _Source:
+    """A transmitter owner a receiver hears through a cross family: a radar, or an emitter."""
+
+    owner: int
+    radar: Radar | None = None
+    emitter: Emitter | None = None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Family:
+    """One cross family a receiver runs: its sources (position = link id), its tables and its entry."""
+
+    name: str
+    sources: tuple[_Source, ...]
+    #: Each source's first entry in ``aux`` (chips or OFDM symbols).
+    first: tuple[int, ...]
+    aux: torch.Tensor
+    synthesize: Callable[..., torch.Tensor]
+
+
+def _family_tables(
+    name: str, sources: tuple[_Source, ...], device: torch.device
+) -> tuple[tuple[int, ...], torch.Tensor]:
+    """The transmitters' constant tables, concatenated: chips ``float64[n, 3]`` or OFDM symbols ``float32[n, 2]``."""
+
+    first: list[int] = []
+    pieces: list[np.ndarray] = []
+    entries = 0
+    for source in sources:
+        first.append(entries)
+        if source.emitter is not None:
+            table = source.emitter.chip_table()
+        elif name == WAVEFORM_OFDM:
+            assert source.radar is not None
+            symbols = source.radar.waveform_spec().symbol_table().reshape(-1)
+            table = np.stack((symbols.real, symbols.imag), axis=1)
+        else:
+            assert source.radar is not None
+            spec = source.radar.waveform_spec()
+            table = np.asarray(spec.chip_table() if name == WAVEFORM_PULSED and spec.is_coded else (), dtype=np.float64)
+        table = np.asarray(table, dtype=np.float64).reshape(-1, 2 if name == WAVEFORM_OFDM else 3)
+        pieces.append(table)
+        entries += len(table)
+    width = 2 if name == WAVEFORM_OFDM else 3
+    joined = np.concatenate(pieces) if pieces else np.zeros((0, width))
+    dtype = torch.float32 if name == WAVEFORM_OFDM else torch.float64
+    return tuple(first), torch.from_numpy(np.ascontiguousarray(joined)).to(device=device, dtype=dtype)
+
+
 class _Receiver:
-    """One radar as a receiver: its own rows for its instrument half, and the routing of its links."""
+    """One radar as a receiver: its own rows for its instrument half, and the routing of what else it hears."""
 
     def __init__(
         self,
@@ -876,7 +1134,9 @@ class _Receiver:
         environment: bool,
         direct: bool,
     ) -> None:
-        from .synthesis.assembly import FmcwSpec
+        from .synthesis.fmcw import synthesize_fmcw_cross
+        from .synthesis.ofdm import synthesize_ofdm_cross
+        from .synthesis.pulsed import synthesize_pulsed_cross
 
         self.index = index
         self.network = network
@@ -886,35 +1146,78 @@ class _Receiver:
         self.coupling = coupling
         self.environment = environment
         self.direct = direct
-        #: The transmitting radars this one hears, in link order; position is the link id.
-        self.links = tuple(transmitter for transmitter, receiver in network.links if receiver == index)
-        self.num_tx_total = sum(member.num_tx for member in members)
-        self._tx_radar = np.concatenate([np.full(member.num_tx, k) for k, member in enumerate(members)])
-        self._tx_local = np.concatenate([np.arange(member.num_tx) for member in members])
+        radar_tx = sum(member.num_tx for member in members)
+        self.num_tx_total = radar_tx + len(network.emitters)
+        #: Each shared transmitter's owner (radar index, or radars + emitter
+        #: index) and its index within that owner.
+        self._tx_owner = np.concatenate(
+            [np.full(member.num_tx, k) for k, member in enumerate(members)]
+            + [np.arange(len(members), len(members) + len(network.emitters))]
+        ).astype(np.int64)
+        self._tx_local = np.concatenate(
+            [np.arange(member.num_tx) for member in members] + [np.zeros(len(network.emitters))]
+        ).astype(np.int64)
         self._rx_radar = np.concatenate([np.full(member.num_rx, k) for k, member in enumerate(members)])
         self._own: _Bounded[int, _OwnRows] = _Bounded(ROUTING_CACHE)
-        self._heard: _Bounded[int, _HeardRows] = _Bounded(ROUTING_CACHE)
+        self._heard: _Bounded[tuple[int, str], _HeardRows] = _Bounded(ROUTING_CACHE)
         self._batches: dict[int, tuple[SlotBatch, SlotBatch]] = {}
         self._views: dict[tuple[int, int], tuple[SlotBatch, RadarPathBatch]] = {}
         self._previous_batches: dict[int, tuple[SlotBatch, SlotBatch]] = {}
         self._previous_views: dict[tuple[int, int], tuple[SlotBatch, RadarPathBatch]] = {}
-        if self.links:
-            working = session.specs.working
-            assert isinstance(working, FmcwSpec)
-            self.spec = working
-            self.profiles = working.slot_profiles()
-            slope, offset, _, _ = _fmcw_profile(self.member.radar, "receiver")
-            self.rx_slope, self.rx_offset = slope, offset
+        radar = self.member.radar
+        self.kind = _family(radar)
+        sources = [_Source(owner=a, radar=network.radars[a]) for a, b in network.links if b == index]
+        sources += [_Source(owner=len(members) + e, emitter=emitter) for e, emitter in enumerate(network.emitters)]
+        if self.kind == WAVEFORM_FMCW:
+            grouped = {WAVEFORM_FMCW: sources}
+        else:
+            kinds = [WAVEFORM_PULSED if s.radar is None else _family(s.radar) for s in sources]
+            grouped = {
+                WAVEFORM_PULSED: [s for s, kind in zip(sources, kinds, strict=True) if kind == WAVEFORM_PULSED],
+                WAVEFORM_OFDM: [s for s, kind in zip(sources, kinds, strict=True) if kind == WAVEFORM_OFDM],
+            }
+        entries = {
+            WAVEFORM_FMCW: synthesize_fmcw_cross,
+            WAVEFORM_PULSED: synthesize_pulsed_cross,
+            WAVEFORM_OFDM: synthesize_ofdm_cross,
+        }
+        self.families: list[_Family] = []
+        for name, members_of in grouped.items():
+            if not members_of:
+                continue
+            first, aux = _family_tables(name, tuple(members_of), radar.device)
+            self.families.append(
+                _Family(name=name, sources=tuple(members_of), first=first, aux=aux, synthesize=entries[name])
+            )
+        self.links = bool(self.families)
+        if not self.links:
+            return
+        spec: Any = session.specs.working
+        self.spec = spec
+        # The receive grid: each slot's start in the frame, its first sample's
+        # offset from it and the LO offset of the cell, plus the cube's shape.
+        if self.kind == WAVEFORM_FMCW:
+            profiles = spec.slot_profiles()
+            self.slot_start, self.first_sample = profiles[:, 0], profiles[:, 3]
+            self.lo = np.zeros(len(profiles))
+            self.slow, self.fast, self.period = spec.num_chirps, spec.num_samples, spec.sample_period_s
+            self.rx_slope, self.rx_offset, _, _ = _fmcw_profile(radar, "receiver")
             bandwidth = network.if_bandwidths[index]
-            self.if_bandwidth = 0.5 / working.sample_period_s if bandwidth is None else bandwidth
-            self.tx_rows = []
-            for transmitter in self.links:
-                radar = members[transmitter].radar
-                tx_slope, tx_offset, ramp_end, period = _fmcw_profile(radar, "transmitter")
-                spec = radar.waveform_spec()
-                self.tx_rows.append(
-                    (tx_slope, tx_offset, ramp_end, period, float(spec.slot_count), float(radar.num_tx), transmitter)
-                )
+            self.if_bandwidth = 0.5 / spec.sample_period_s if bandwidth is None else bandwidth
+        elif self.kind == WAVEFORM_PULSED:
+            slots = np.arange(spec.num_pulses, dtype=np.float64)
+            self.slot_start = slots * spec.pri_s
+            self.first_sample = np.full(len(slots), spec.range_gate_start_s)
+            self.lo = slots * spec.frequency_step_hz
+            self.slow, self.fast, self.period = spec.num_pulses, spec.num_samples, spec.sample_period_s
+        else:
+            slots = np.arange(spec.num_symbols, dtype=np.float64)
+            self.slot_start = slots * spec.symbol_period_s
+            self.first_sample = np.full(len(slots), spec.cyclic_prefix_s)
+            self.lo = np.zeros(len(slots))
+            self.slow, self.fast = spec.num_symbols, spec.samples_per_symbol
+            self.period = spec.waveform_sample_period_s
+        self.slot_count = len(self.slot_start)
 
     def end_frame(self) -> None:
         """Keep this frame's gathered batches for the next one, which a still world re-publishes."""
@@ -1056,74 +1359,113 @@ class _Receiver:
 
     # -- heard rows ---------------------------------------------------------------
 
-    def _heard_rows(self, composer: TwoWayComposer) -> _HeardRows:
-        cached = self._heard.get(id(composer))
+    def _heard_rows(self, composer: TwoWayComposer, family: _Family) -> _HeardRows:
+        key = (id(composer), family.name)
+        cached = self._heard.get(key)
         if cached is not None and cached.composer is composer:
             return cached
         identity = composer.identity_host
         tx_rank = identity[:, 0] - DEFAULT_TRANSMITTER_ID_BASE
         rx_rank = identity[:, 2] - DEFAULT_RECEIVER_ID_BASE
-        tx_radar = self._tx_radar[tx_rank]
+        owner = self._tx_owner[tx_rank]
+        mine = self._rx_radar[rx_rank] == self.index
         link = np.full(len(identity), -1, dtype=np.int64)
-        for position, transmitter in enumerate(self.links):
-            link[(tx_radar == transmitter) & (self._rx_radar[rx_rank] == self.index)] = position
+        for position, source in enumerate(family.sources):
+            link[(owner == source.owner) & mine] = position
         heard = np.flatnonzero(link >= 0)
-        kept = self._kept_direct(composer, heard, own=False)
-        dropped = np.setdiff1d(heard, kept)
+        dropped = np.setdiff1d(heard, self._kept_direct(composer, heard, own=False))
         link[dropped] = -1
         device = composer.pair_offsets.device
         uploaded = torch.from_numpy(np.concatenate((link, self._tx_local[tx_rank])).astype(np.int32)).to(device)
         row_link, row_tx = torch.split(uploaded, [len(identity), len(identity)])
         heard_rows = _HeardRows(composer=composer, row_link=row_link, row_tx=row_tx)
-        self._heard.put(id(composer), heard_rows)
+        self._heard.put(key, heard_rows)
         return heard_rows
 
-    def _link_table(self, frame_start_s: float, device: torch.device) -> torch.Tensor:
+    def _link_row(self, family: _Family, position: int, frame_start_s: float) -> tuple[float, ...]:
+        """One link row of ``family``'s table for the frame starting at ``frame_start_s`` (world time, s)."""
+
+        source = family.sources[position]
+        first = float(family.first[position])
         clock = self.network.clock_offsets
-        rows = []
-        for tx_slope, tx_offset, ramp_end, period, slots, transmitters, transmitter in self.tx_rows:
+        carriers = self.network.carrier_offsets
+        emitter = source.emitter
+        # The transmitter's frame start (an emitter's first sample) relative to this receiver's.
+        shift = emitter.start - frame_start_s if emitter is not None else clock[source.owner] - clock[self.index]
+        if family.name == WAVEFORM_FMCW:
+            if emitter is not None:
+                tx_slope, tx_offset, ramp, period = 0.0, emitter.carrier_offset, emitter.duration, emitter.duration
+                slots, count, kind, chips = (1.0 if not emitter.repeat else 2.0**52), 1.0, 1.0, len(emitter.samples)
+            else:
+                assert source.radar is not None
+                tx_slope, tx_offset, ramp, period = _fmcw_profile(source.radar, "transmitter")
+                slots, count = float(source.radar.waveform_spec().slot_count), float(source.radar.num_tx)
+                kind, chips = 0.0, 0
             cycles = (self.rx_offset - tx_offset) * frame_start_s
-            rows.append(
-                (
-                    tx_slope,
-                    tx_offset,
-                    ramp_end,
-                    period,
-                    slots,
-                    transmitters,
-                    clock[transmitter] - clock[self.index],
-                    self.rx_slope,
-                    self.rx_offset,
-                    cycles - math.floor(cycles),
-                    self.if_bandwidth,
-                )
+            return (
+                tx_slope,
+                tx_offset,
+                ramp,
+                period,
+                slots,
+                count,
+                shift,
+                self.rx_slope,
+                self.rx_offset,
+                cycles - math.floor(cycles),
+                self.if_bandwidth,
+                kind,
+                first,
+                float(chips),
             )
+        rx_offset = carriers[self.index]
+        if family.name == WAVEFORM_PULSED:
+            if emitter is not None:
+                width = emitter.duration
+                return (shift, emitter.carrier_offset, rx_offset, frame_start_s, width,
+                        0.0 if emitter.repeat else 1.0, 2.0, width, emitter.rate, 1.0, first,
+                        float(len(emitter.samples)), 0.0, 0.0)  # fmt: skip
+            assert source.radar is not None
+            from .synthesis.pulsed import pulse_kind_code
+
+            spec = source.radar.waveform_spec()
+            chips = len(spec.chip_table()) if spec.is_coded else 0
+            return (shift, carriers[source.owner], rx_offset, frame_start_s, spec.pri_s, float(spec.num_pulses),
+                    float(pulse_kind_code(spec)), spec.pulse_width_s, spec.bandwidth_hz, spec.pulse_amplitude, first,
+                    float(chips), float(spec.periodic), spec.frequency_step_hz)  # fmt: skip
+        assert source.radar is not None
+        spec = source.radar.waveform_spec()
+        return (shift, carriers[source.owner], rx_offset, frame_start_s, spec.symbol_period_s, float(spec.num_symbols),
+                spec.cyclic_prefix_s, spec.subcarrier_spacing_hz, float(spec.num_subcarriers), first,
+                1.0 / math.sqrt(spec.num_subcarriers))  # fmt: skip
+
+    def _link_table(self, family: _Family, frame_start_s: float, device: torch.device) -> torch.Tensor:
+        rows = [self._link_row(family, position, frame_start_s) for position in range(len(family.sources))]
         table = np.asarray(rows, dtype=np.float64)
         return _uploaded(self.session, table.view(np.int64), device).view(torch.float64).reshape(table.shape)
 
     def interference(self, observations: list[Observation], frame_start_s: float) -> torch.Tensor:
-        """What this radar's links put on its receiver over one frame, ``[chirps, pairs, samples]`` beat cube.
+        """What this radar hears from other transmitters over one frame, ``[slow, pairs, fast]`` in its working domain.
 
-        One native launch per replay group of the frame. Each launch reads the
-        group's shared rows in place; every receive cell names its row range
-        (the receive element's whole pair block, all transmitters) and the
-        per-row link table skips the rows this radar does not hear this way.
+        One native launch per cross family per replay group of the frame. Each
+        launch reads the group's shared rows in place; every receive cell names
+        its row range (the receive element's whole pair block, all
+        transmitters) and the per-row link table skips the rows this family
+        does not carry.
         """
 
-        from .synthesis.fmcw import CrossRouting, synthesize_fmcw_cross
+        from .synthesis.assembly import CrossRouting
 
         session = self.session
-        spec = self.spec
         member = self.member
         num_tx, num_rx = member.num_tx, member.num_rx
         pairs = num_tx * num_rx
-        samples = spec.num_samples
-        slots = spec.slot_count
+        samples = self.fast
         width = samples if not session.adc_sampled else 1
         values: list[torch.Tensor] = []
         targets: list[np.ndarray] = []
         device = observations[0].composed.total_delay_s.device
-        links = self._link_table(frame_start_s, device)
+        tables = {family.name: self._link_table(family, frame_start_s, device) for family in self.families}
         position = 0
         while position < len(observations):
             batch = observations[position].batch
@@ -1133,13 +1475,12 @@ class _Receiver:
                 stop += 1
             group = observations[position:stop]
             composer = self._composer(group[0])
-            heard = self._heard_rows(composer)
             # Each observation's receive cells: slot, receive element, first sample.
             numbers = np.arange(position, stop)
             if not session.sampled:
-                slot = np.repeat(np.arange(slots), 1)
-                first = np.zeros(slots, dtype=np.int64)
-                owner = np.zeros(slots, dtype=np.int64)
+                slot = np.arange(self.slot_count)
+                first = np.zeros(self.slot_count, dtype=np.int64)
+                owner = np.zeros(self.slot_count, dtype=np.int64)
             elif session.adc_sampled:
                 slot, first, owner = numbers // samples, numbers % samples, np.arange(len(group))
             else:
@@ -1154,7 +1495,12 @@ class _Receiver:
             base = cell_group_slot * composer.path_count
             segment_rows = np.stack((base + offsets[block], base + offsets[block + self.num_tx_total]), axis=1)
             schedule = np.stack(
-                (self.profiles[cell_slot, 0], self.profiles[cell_slot, 3] + cell_first * spec.sample_period_s), axis=1
+                (
+                    self.slot_start[cell_slot],
+                    self.first_sample[cell_slot] + cell_first * self.period,
+                    self.lo[cell_slot],
+                ),
+                axis=1,
             )
             counts = segment_rows[:, 1] - segment_rows[:, 0]
             cell_of_entry = np.repeat(np.arange(len(counts)), counts)
@@ -1164,42 +1510,47 @@ class _Receiver:
             order = np.argsort(row_of_entry, kind="stable")
             row_count = batch.slots * composer.path_count
             row_offsets = np.concatenate(([0], np.cumsum(np.bincount(row_of_entry, minlength=row_count))))
-            tables = (
+            host = (
                 segment_rows.ravel(),
                 row_offsets,
                 cell_of_entry[order],
                 np.ascontiguousarray(schedule).view(np.int64).ravel(),
             )
-            routing_table = _uploaded(session, np.concatenate(tables), device)
-            parts = torch.split(routing_table, [len(table) for table in tables])
-            routing = CrossRouting(
-                row_link=heard.row_link,
-                row_tx=heard.row_tx,
-                link_table=links,
-                segment_rows=parts[0].reshape(-1, 2),
-                segment_schedule=parts[3].view(torch.float64).reshape(-1, 2),
-                row_segment_offsets=parts[1],
-                row_segments=parts[2],
-                rows_per_slot=composer.path_count,
-                num_samples=width,
-                sample_period_s=spec.sample_period_s,
-            )
+            routing_table = _uploaded(session, np.concatenate(host), device)
+            parts = torch.split(routing_table, [len(table) for table in host])
             rows = batch.rows
-            values.append(
-                synthesize_fmcw_cross(
+            heard: torch.Tensor | None = None
+            for family in self.families:
+                selected = self._heard_rows(composer, family)
+                routing = CrossRouting(
+                    row_link=selected.row_link,
+                    row_tx=selected.row_tx,
+                    link_table=tables[family.name],
+                    aux=family.aux,
+                    segment_rows=parts[0].reshape(-1, 2),
+                    segment_schedule=parts[3].view(torch.float64).reshape(-1, 3),
+                    row_segment_offsets=parts[1],
+                    row_segments=parts[2],
+                    rows_per_slot=composer.path_count,
+                    num_samples=width,
+                    sample_period_s=self.period,
+                )
+                value = family.synthesize(
                     rows.complex_transfer_ref, rows.total_delay_s, rows.total_delay_residual_s, rows.row_valid, routing
                 )
-            )
-            chirp, transmitter = cell_slot // num_tx, cell_slot % num_tx
-            targets.append(((chirp * pairs + receiver * num_tx + transmitter) * samples + cell_first) // width)
+                heard = value if heard is None else heard + value
+            assert heard is not None
+            values.append(heard)
+            slow, transmitter = cell_slot // num_tx, cell_slot % num_tx
+            targets.append(((slow * pairs + receiver * num_tx + transmitter) * samples + cell_first) // width)
             position = stop
         destination = np.concatenate(targets)
         order = np.argsort(destination, kind="stable")
-        cells = spec.num_chirps * pairs * samples // width
+        cells = self.slow * pairs * samples // width
         if not np.array_equal(destination[order], np.arange(cells)):
-            raise ValueError("a receiving radar's observations must cover every chirp, pair and sample exactly once")
+            raise ValueError("a receiving radar's observations must cover every slot, pair and sample exactly once")
         cube = torch.cat(values).index_select(0, _uploaded(session, order, device))
-        return cube.reshape(spec.num_chirps, pairs, samples)
+        return cube.reshape(self.slow, pairs, samples)
 
 
-__all__ = ["Network", "NetworkPaths"]
+__all__ = ["Emitter", "Network", "NetworkPaths"]

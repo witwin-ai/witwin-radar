@@ -42,6 +42,12 @@
           "signature": "(tx: 'tuple[tuple[complex, ...], ...] | None' = None, rx: 'tuple[tuple[complex, ...], ...] | None' = None) -> None"
         },
         {
+          "name": "Emitter",
+          "kind": "class",
+          "target": "witwin.radar.network.Emitter",
+          "signature": "(position: 'Any', samples: 'Any', rate: 'float', power: 'float', carrier_offset: 'float' = 0.0, start: 'float' = 0.0, repeat: 'bool' = True, polarization: 'Any' = (0.0, 1.0, 0.0)) -> None"
+        },
+        {
           "name": "Fluctuation",
           "kind": "class",
           "target": "witwin.radar.targets.Fluctuation",
@@ -87,7 +93,7 @@
           "name": "Network",
           "kind": "class",
           "target": "witwin.radar.network.Network",
-          "signature": "(radars: 'tuple[Radar, ...]', links: 'tuple[tuple[int, int], ...]' = (), clock_offsets: 'tuple[float, ...]' = (), if_bandwidths: 'tuple[float | None, ...]' = ()) -> None"
+          "signature": "(radars: 'tuple[Radar, ...]', links: 'tuple[tuple[int, int], ...]' = (), clock_offsets: 'tuple[float, ...]' = (), if_bandwidths: 'tuple[float | None, ...]' = (), emitters: 'tuple[Emitter, ...]' = (), carrier_offsets: 'tuple[float, ...]' = ()) -> None"
         },
         {
           "name": "Noise",
@@ -880,6 +886,10 @@
       "class": "witwin.radar.Network",
       "members": [
         {
+          "name": "carrier_offsets",
+          "kind": "value"
+        },
+        {
           "name": "clock_offsets",
           "kind": "value"
         },
@@ -887,6 +897,15 @@
           "name": "echo",
           "kind": "function",
           "signature": "(self, paths: 'NetworkPaths') -> 'tuple[Result, ...]'"
+        },
+        {
+          "name": "emitters",
+          "kind": "value"
+        },
+        {
+          "name": "hearing",
+          "kind": "function",
+          "signature": "(self) -> 'tuple[int, ...]'"
         },
         {
           "name": "if_bandwidths",

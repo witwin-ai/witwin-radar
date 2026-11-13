@@ -350,3 +350,144 @@ def test_mesh_targets_in_a_network_extract_their_facets_once_for_every_radar(mon
     assert not torch.equal(results[1].cube, alone[1].cube)
     unlinked = Network(radars).simulate(scene, MeshTargets(), times=(0.0,), reflections=0)
     assert torch.equal(unlinked[1].cube, alone[1].cube)
+
+
+def _sampled_radars(kind):
+    from witwin.radar import Ofdm, Pulsed, Radar
+
+    if kind == "pulsed":
+        waveform = Pulsed(
+            pulse_kind="lfm",
+            pulse_width=1e-6,
+            bandwidth=10e6,
+            pri=8e-6,
+            num_pulses=3,
+            sample_rate=20e6,
+            num_samples=24,
+            range_gate_start=0.0,
+        )
+    else:
+        waveform = Ofdm(
+            subcarrier_spacing=2e6,
+            num_subcarriers=16,
+            cyclic_prefix=0.2e-6,
+            num_symbols=3,
+            max_expected_delay=0.15e-6,
+            modulation="qpsk",
+        )
+    return tuple(
+        Radar(
+            carrier=sc.CARRIER_HZ,
+            waveform=waveform,
+            tx=((0.01, 0.0, 0.0),),
+            rx=((-0.01, 0.0, 0.0), (-0.03, 0.0, 0.0)),
+            power=10.0,
+            position=(0.0, 0.6 * index, 0.0),
+            look_at=(1.0, 0.6 * index, 0.0),
+            up=sc.UP,
+        )
+        for index in range(2)
+    )
+
+
+@pytest.mark.parametrize("motion", ["adc", "pulse"])
+@pytest.mark.parametrize("kind", ["pulsed", "ofdm"])
+def test_a_sampled_receiver_routes_every_cell_like_a_still_one(kind, motion):
+    """Pulsed and OFDM receivers: a pose that never moves gives the still world's cube at every instant."""
+
+    from witwin.radar import Emitter, Motion
+    from witwin.radar.network import Network
+
+    def holding(time_s):
+        return torch.eye(3), torch.zeros(3)
+
+    emitter = Emitter(position=(3.0, 1.0, 0.5), samples=(1.0, 1j, -1.0, -1j), rate=1e6, power=0.0)
+    network = Network(_sampled_radars(kind), links=((0, 1), (1, 0)), clock_offsets=(0.0, 0.1e-6), emitters=(emitter,))
+    still = network.simulate(sc.empty_scene(), _targets(), times=(0.0,))
+    requested = Motion.adc() if motion == "adc" else Motion.chirp()
+    sampled = network.simulate(sc.empty_scene(), _targets(), times=(0.0,), poses=(holding, None), motion=requested)
+    for alone, refreshed in zip(still, sampled, strict=True):
+        scale = float(alone.cube.abs().max())
+        torch.testing.assert_close(refreshed.cube, alone.cube, rtol=0, atol=1e-6 * scale)
+
+
+def test_emitters_and_sampled_links_add_no_channel_call(monkeypatch):
+    from witwin.radar import Emitter
+    from witwin.radar.network import Network
+
+    radars = _sampled_radars("pulsed")
+    emitter = Emitter(position=(3.0, 1.0, 0.5), samples=(1.0,), rate=1e6, power=0.0)
+    counts = []
+    for network in (
+        Network(radars, links=((0, 1),)),
+        Network(radars, links=((0, 1), (1, 0)), emitters=(emitter, emitter)),
+    ):
+        with monkeypatch.context() as patch:
+            ledger = _count(patch, lambda network=network: network.simulate(sc.empty_scene(), _targets(), times=(0.0,)))
+        counts.append((ledger.channel["evaluate"], ledger.native["pulsed_cross_forward"]))
+    # Three legs discovered once; one pulsed-family launch per hearing receiver.
+    assert counts == [(3, 1), (3, 2)]
+
+
+def test_cross_family_refusals_name_what_is_unsupported():
+    from witwin.radar import Emitter, Pattern
+    from witwin.radar.network import Network
+
+    pulsed = _sampled_radars("pulsed")
+    fmcw = _radars()
+    with pytest.raises(NotImplementedError, match="FMCW ramp"):
+        Network((fmcw[0], pulsed[1]), links=((0, 1),))
+    with pytest.raises(NotImplementedError, match="an FMCW receiver dechirps"):
+        Network((pulsed[0], fmcw[1]), links=((0, 1),))
+    # fmcw radar 0 has two transmitters: as a sampled receiver it would be refused, as FMCW it is fine.
+    two = pulsed[1].replace(tx=((0.01, 0.0, 0.0), (0.03, 0.0, 0.0)))
+    with pytest.raises(NotImplementedError, match="one transmitter"):
+        Network((pulsed[0], two), links=((0, 1),))
+    with pytest.raises(ValueError, match="Chirp"):
+        Network(fmcw, carrier_offsets=(1e3, 0.0))
+    with pytest.raises(NotImplementedError, match="anti-alias"):
+        Network(pulsed, emitters=(Emitter(position=(1, 1, 1), samples=(1.0,), rate=100e6, power=0.0),))
+    dipole = tuple(radar.replace(pattern=Pattern.dipole()) for radar in fmcw)
+    with pytest.raises(NotImplementedError, match="isotropic"):
+        Network(dipole, emitters=(Emitter(position=(1, 1, 1), samples=(1.0,), rate=1e6, power=0.0),))
+
+
+def _pulsed_bistatic_loss(position, grad, weights=None):
+    from witwin.radar import PointTargets
+    from witwin.radar.network import Network
+
+    radars = tuple(
+        radar.replace(rx=((0.0, 0.0, 0.0),), position=(0.0, 0.0, z), look_at=(1.0, 0.0, z))
+        for radar, z in zip(_sampled_radars("pulsed"), (0.0, 1.0), strict=True)
+    )
+    network = Network(radars, links=((0, 1),))
+    targets = PointTargets(positions=position.reshape(1, 3), rcs=1.0)
+    cube = network.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0, direct=False, grad=grad)[1]
+    if weights is None:
+        return cube.cube
+    return (cube.cube * weights).real.sum()
+
+
+def test_a_pulsed_bistatic_link_is_differentiable_in_both_modes():
+    from torch.autograd import forward_ad
+
+    start = torch.tensor([3.0, 0.2, 0.4], device="cuda")
+    generator = torch.Generator(device="cuda").manual_seed(9)
+    shape = _pulsed_bistatic_loss(start, "none").shape
+    weights = torch.complex(
+        torch.randn(shape, generator=generator, device="cuda"), torch.randn(shape, generator=generator, device="cuda")
+    )
+    direction = torch.tensor([0.6, 0.0, 0.8], device="cuda")
+    step = 2.0**-16
+    difference = (
+        float(_pulsed_bistatic_loss(start + step * direction, "none", weights))
+        - float(_pulsed_bistatic_loss(start - step * direction, "none", weights))
+    ) / (2 * step)
+    leaf = start.clone().requires_grad_(True)
+    (gradient,) = torch.autograd.grad(_pulsed_bistatic_loss(leaf, "vjp", weights), (leaf,))
+    reverse = float((gradient * direction).sum())
+    assert reverse == pytest.approx(difference, rel=2e-2)
+    with forward_ad.dual_level():
+        dual = forward_ad.make_dual(start.clone(), direction)
+        forward = float(forward_ad.unpack_dual(_pulsed_bistatic_loss(dual, "jvp", weights)).tangent)
+    assert forward == pytest.approx(reverse, rel=1e-3)

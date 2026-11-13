@@ -36,8 +36,11 @@
       "wavelength"
     ],
     "witwin.radar.Network": [
+      "carrier_offsets",
       "clock_offsets",
       "echo",
+      "emitters",
+      "hearing",
       "if_bandwidths",
       "links",
       "radars",
@@ -54,6 +57,7 @@
       "Chirp": "witwin.radar.radar.Chirp",
       "Compression": "witwin.radar.frontend.Compression",
       "Coupling": "witwin.radar.sensors.Coupling",
+      "Emitter": "witwin.radar.network.Emitter",
       "Fluctuation": "witwin.radar.targets.Fluctuation",
       "Fmcw": "witwin.radar.radar.Fmcw",
       "Frame": "witwin.radar.results.Frame",

@@ -1626,8 +1626,9 @@ def prepare_session(
     ``world_moves`` declares that something outside this radar's own view of
     the world moves within a frame (another radar of a network), so the
     session observes the world as a moving one; ``beat`` makes an FMCW session
-    synthesize ADC-time beat samples whatever its output domain, for a frame
-    that other rows are added to before the receive chain.
+    synthesize ADC-time beat samples, and an OFDM one received time samples,
+    whatever its output domain, for a frame that other rows are added to
+    before the receive chain.
 
     The single owner of the session; every argument arrives resolved by
     :meth:`~witwin.radar.Radar._session`. Returns the session record and a
@@ -1730,6 +1731,8 @@ def prepare_session(
     working = _working_spec(radar, declared)
     if beat and isinstance(working, FmcwSpec):
         working = replace(working, output_domain="beat")
+    if beat and isinstance(working, OfdmSpec):
+        working = replace(working, output_domain="time")
     # Adaptive interpolation covers one uniform TDM ramp, so only that is
     # what ``auto`` may hand it.
     interpolable = (
