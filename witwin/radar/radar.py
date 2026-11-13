@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import torch
 
 from .frontend import Adc, Agc, Compression, FrontendChain, FrontendSpec, Iq, Noise
-from .policy import SPEED_OF_LIGHT_M_PER_S, refuse_derivative, resolve_device
+from .policy import SPEED_OF_LIGHT_M_PER_S, _carries_derivative, refuse_derivative, resolve_device
 from .sensors import Coupling, Pattern, SensorArraySpec, watts_from_dbm
 from .synthesis.assembly import (
     PULSE_NORMALIZATION_UNIT_AMPLITUDE,
@@ -724,6 +724,24 @@ class RadarSystemConfig:
 # ---------------------------------------------------------------------------
 
 
+def _scalar_leaf(name: str, value: Any) -> Any:
+    """A leaf-capable scalar field: a host number, or a 0-dim floating tensor (read once, for validation)."""
+
+    if isinstance(value, torch.Tensor):
+        if value.dim() != 0 or not value.is_floating_point():
+            raise ValueError(f"a tensor {name} must be a 0-dim floating tensor, got shape {tuple(value.shape)}")
+        return float(value.detach())
+    return value
+
+
+def _host_scalar(value: Any) -> float:
+    return float(value.detach()) if isinstance(value, torch.Tensor) else float(value)
+
+
+def _host_or_leaf(value: Any) -> Any:
+    return value if isinstance(value, torch.Tensor) else float(value)
+
+
 def _finite(name: str, value: Any) -> float:
     try:
         parsed = float(value)
@@ -757,21 +775,13 @@ def _positive_int(name: str, value: Any) -> int:
 def vec3_tensor(value, *, name: str) -> torch.Tensor:
     """Coerce a pose vector to a CPU float32 tensor of shape (3,).
 
-    A tensor carrying a gradient or a forward tangent is REFUSED rather than
-    detached: every element position is derived from the pose, so a detach
-    here would sever the tape and leave a caller who marked ``position``
-    reading ``grad is None`` with nothing having said why.
+    A tensor keeps its tape: the radar's pose is a leaf (R-ADR-052), and every
+    element position, the pattern frame and the point cloud's world mapping
+    are differentiable expressions of it. Nothing here detaches.
     """
 
-    refuse_derivative(
-        "witwin.radar.radar.vec3_tensor",
-        "the pose is a host declaration and every element position is derived from "
-        "it, so a derivative here would be severed rather than carried; "
-        "differentiate Core phase centres through sensor endpoints instead",
-        **{name: value},
-    )
     if isinstance(value, torch.Tensor):
-        tensor = value.detach().to(device="cpu", dtype=torch.float32).reshape(-1)
+        tensor = value.to(device="cpu", dtype=torch.float32).reshape(-1)
     else:
         tensor = torch.tensor(tuple(float(component) for component in value), dtype=torch.float32)
     if tensor.shape != (3,):
@@ -884,7 +894,7 @@ class Leakage:
 
         if not isinstance(self.isolation_db, float):
             raise ValueError("a per-pair isolation has one amplitude per pair; use pair_rows")
-        return math.sqrt(watts_from_dbm(power_dbm)) * 10.0 ** (-float(self.isolation_db) / 20.0)
+        return math.sqrt(watts_from_dbm(_host_scalar(power_dbm))) * 10.0 ** (-float(self.isolation_db) / 20.0)
 
     def pair_rows(self, *, num_tx: int, num_rx: int, power_dbm: float) -> tuple[list[float], list[complex]]:
         """Delay and complex coupling coefficient per sensor pair, in pair-rank order.
@@ -903,7 +913,7 @@ class Leakage:
                 )
             return value[tx][rx]
 
-        root_power = math.sqrt(watts_from_dbm(power_dbm))
+        root_power = math.sqrt(watts_from_dbm(_host_scalar(power_dbm)))
         delays: list[float] = []
         weights: list[complex] = []
         for rx in range(num_rx):
@@ -922,12 +932,13 @@ class Radar:
     one, so a radar captured in a closure or held by a result cannot change
     underneath it.
 
-    The pose is a HOST declaration. A tensor carrying a gradient or a forward
-    tangent is refused rather than detached, because every element position is
-    derived from it and a severed tape would publish ``grad is None`` with
-    nothing raised. The differentiable route to moving element positions is
-    ``endpoints=SensorEndpointIds(...)`` against Core phase centres that carry
-    their own tape, which is the one the capability matrix lists.
+    The physically meaningful scalars and vectors are leaves (R-ADR-052): a
+    tensor ``position``, ``look_at`` or ``up`` carries its derivative through
+    every element position and the pattern frame (with a world-vector
+    polarization; an ``"up"``/``"right"`` one turns with the pose and is
+    refused for a pose leaf), a tensor ``power`` through every transmitted
+    amplitude, a tensor ``lna_gain`` through the receive chain, and a
+    ``Pattern`` built from tensors through its table values and its gain.
 
     Four verbs use it, and they are two halves and their fusion.
     :meth:`trace` runs the world half and keeps the composed round trips;
@@ -947,7 +958,7 @@ class Radar:
     tx: tuple[tuple[float, float, float], ...]
     #: Receive element positions, in ``antenna_unit``.
     rx: tuple[tuple[float, float, float], ...]
-    #: Transmit power, dBm.
+    #: Transmit power, dBm. A 0-dim tensor is a leaf (:meth:`_transmit_amplitude_scale`).
     power: float
     antenna_unit: str = "m"
     #: The element pattern, with its absolute peak gain (``Pattern.gain``,
@@ -959,7 +970,8 @@ class Radar:
     rx_pattern: Pattern | None = None
     #: Thermal and oscillator noise. ``None`` is an ideal receiver.
     noise: Noise | None = None
-    #: Low-noise amplifier voltage gain, dB. ``None`` is no LNA stage.
+    #: Low-noise amplifier voltage gain, dB. ``None`` is no LNA stage. A 0-dim
+    #: tensor is a leaf of the receive chain.
     lna_gain: float | None = None
     agc: Agc | None = None
     #: ``None`` is no quantisation.
@@ -980,8 +992,7 @@ class Radar:
     impedance: float = 50.0
     #: The Philox base seed every receiver stage derives its own stream from.
     seed: int = 0
-    #: Radar origin in world coordinates, m. A host declaration: a tensor
-    #: carrying a derivative is refused, not detached.
+    #: Radar origin in world coordinates, m. A tensor is a leaf.
     position: Any = (0.0, 0.0, 0.0)
     #: The point the boresight looks at, world coordinates, m.
     look_at: Any = (0.0, 0.0, -1.0)
@@ -1015,7 +1026,9 @@ class Radar:
     def __post_init__(self) -> None:
         set_ = object.__setattr__
         _positive("Radar.carrier", self.carrier)
-        _finite("Radar.power", self.power)
+        _finite("Radar.power", _scalar_leaf("Radar.power", self.power))
+        if self.lna_gain is not None:
+            _finite("Radar.lna_gain", _scalar_leaf("Radar.lna_gain", self.lna_gain))
         _positive("Radar.impedance", self.impedance)
         if self.antenna_unit not in ANTENNA_UNITS:
             raise ValueError(f"Radar.antenna_unit must be one of {list(ANTENNA_UNITS)}, got {self.antenna_unit!r}")
@@ -1110,7 +1123,7 @@ class Radar:
             )
         return FrontendSpec(
             noise=noise,
-            lna=None if self.lna_gain is None else float(self.lna_gain),
+            lna=None if self.lna_gain is None else _host_or_leaf(self.lna_gain),
             iq=self.iq,
             agc=None if self.agc is None else self.agc.resolved(block_period=timeline[0]),
             adc=self.adc,
@@ -1173,6 +1186,7 @@ class Radar:
         position = vec3_tensor(self.position, name="Radar.position")
         look_at = vec3_tensor(self.look_at, name="Radar.look_at")
         up = vec3_tensor(self.up, name="Radar.up")
+        self._require_pose_leaf_polarization()
         forward = look_at - position
         if torch.linalg.norm(forward) <= 1e-12:
             raise ValueError("Radar.look_at must differ from Radar.position.")
@@ -1192,12 +1206,13 @@ class Radar:
             elif isinstance(value, str):
                 raise ValueError(f"{name} must be one of {list(POLARIZATION_ALIASES)} or a world vector, got {value!r}")
             else:
+                refuse_derivative("witwin.radar.Radar", _POLARIZATION_REASON, **{name: value})
                 vector = vec3_tensor(value, name=name)
                 norm = torch.linalg.norm(vector)
                 if norm <= 1e-12:
                     raise ValueError(f"{name} must be non-zero.")
                 vector = vector / norm
-                if float(torch.linalg.norm(torch.cross(vector, forward, dim=0))) <= 1e-6:
+                if float(torch.linalg.norm(torch.cross(vector, forward.detach(), dim=0))) <= 1e-6:
                     raise ValueError(
                         f"{name} is parallel to the boresight, so the field radiates nothing and every "
                         "transport would come back exactly zero. Use 'up' or 'right' for a vector that is "
@@ -1220,6 +1235,79 @@ class Radar:
         origin = position.to(device=self.device)
         set_(self, "tx_pos", (tx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
         set_(self, "rx_pos", (rx_local @ world_from_local.transpose(0, 1) + origin).contiguous())
+
+    def _require_pose_leaf_polarization(self) -> None:
+        """Refuse a pose leaf whose polarization the pose would turn.
+
+        An ``"up"`` or ``"right"`` polarization is derived from the pose, so
+        a derivative of the position, ``look_at`` or ``up`` would also move
+        the polarization every leg is launched with. Channel's fixed-topology
+        replay takes endpoint polarizations as primal-only constants and
+        publishes no derivative for them, so that part of the derivative
+        cannot be delivered; carrying the rest would be a silently partial
+        gradient. A world-vector polarization does not turn with the pose and
+        the derivative through the element positions and the pattern frame is
+        then complete.
+        """
+
+        marked = [f"Radar.{name}" for name in ("position", "look_at", "up") if _carries_derivative(getattr(self, name))]
+        if not marked:
+            return
+        aliased = [
+            f"Radar.{name}={value!r}"
+            for name, value in (("polarization", self.polarization), ("rx_polarization", self.rx_polarization))
+            if isinstance(value, str)
+        ]
+        if aliased:
+            raise RuntimeError(
+                f"{', '.join(marked)} carries a derivative, but {', '.join(aliased)} is derived from the pose, so "
+                "the polarization every leg is launched with would turn with it. Channel's replay treats an "
+                "endpoint polarization as a constant and publishes no derivative for it, so that part of the "
+                "pose derivative cannot be delivered and the rest would be silently partial. Declare the "
+                "polarization as a world vector (for example polarization=(0.0, 1.0, 0.0)), which does not "
+                "turn with the pose, or keep the pose a host declaration."
+            )
+
+    def _require_pose_ad_mode(self, grad: str) -> None:
+        """A pose leaf moves every element, so Channel's replay must carry its mode.
+
+        The element positions reach both legs through Channel's fixed-topology
+        replay, which publishes the position derivative only in the AD mode
+        the verb asks for: ``grad="vjp"`` for a gradient and ``grad="jvp"`` for
+        a forward tangent. Any other pairing would leave the legs' part out
+        and publish the pattern stage's and the join's part alone, a silently
+        partial derivative, so it is refused before any work.
+        """
+
+        for name in ("position", "look_at", "up"):
+            carrier = _carries_derivative(getattr(self, name))
+            if carrier is None:
+                continue
+            wanted = "vjp" if carrier == "a gradient" else "jvp"
+            if grad != wanted:
+                raise RuntimeError(
+                    f"Radar.{name} carries {carrier}, which moves every element position, and the legs carry "
+                    f"that derivative only when the verb asks Channel for it: pass grad={wanted!r} (got "
+                    f"grad={grad!r})."
+                )
+
+    def _transmit_amplitude_scale(self, *, device) -> torch.Tensor | None:
+        """``sqrt(P / P_host)`` as a 0-dim tensor when ``power`` is a leaf, else ``None``.
+
+        Channel launches the transmit leg with the HOST power (endpoint powers
+        are primal-only there), so the field it returns is exactly the field at
+        the authored power. The leaf enters as this factor, whose value is
+        exactly one - ``10^((p - p) / 20)`` - and whose derivative is
+        ``ln(10) / 20`` per dB: the amplitude of every transmitted wave is
+        ``sqrt(P)``. The sensor stage folds it into the transmit element's
+        peak and the leakage rows take it too, so every row the transmitter
+        launches carries it exactly once.
+        """
+
+        if not isinstance(self.power, torch.Tensor):
+            return None
+        power = self.power.to(device=device, dtype=torch.float32)
+        return torch.pow(10.0, (power - power.detach()) / 20.0)
 
     # -- derived reads -----------------------------------------------------
 
@@ -1245,7 +1333,7 @@ class Radar:
     def transmit_power_watts(self) -> float:
         """``power`` in watts, which is what a source endpoint's field takes."""
 
-        return watts_from_dbm(self.power)
+        return watts_from_dbm(_host_scalar(self.power))
 
     def waveform_spec(self, *, offset: float = 0.0):
         """The SI synthesis spec this radar's waveform and array describe."""
@@ -1362,6 +1450,10 @@ class Radar:
             raise ValueError(f"leakage describes {len(delays)} sensor pairs but this cube has {rows}")
         delay = torch.tensor(delays, dtype=torch.float32, device=device)
         weight = torch.tensor(weights, dtype=torch.complex64, device=device)
+        scale = self._transmit_amplitude_scale(device=device)
+        if scale is not None:
+            # The coupled wave is a transmitted wave: its amplitude is sqrt(P) too.
+            weight = weight * scale
         offsets = torch.arange(rows + 1, dtype=torch.int64, device=device)
         kind = self.system_config.kind
         if kind == WAVEFORM_FMCW:
@@ -1630,6 +1722,7 @@ class Radar:
         from .motion import Motion
         from .targets import as_session_targets
 
+        self._require_pose_ad_mode(grad)
         if not isinstance(reflections, int) or isinstance(reflections, bool) or reflections < 0:
             raise ValueError(f"reflections must be a non-negative int, got {reflections!r}")
         for name, value in (("transmission", transmission), ("diffraction", diffraction)):
@@ -1683,6 +1776,11 @@ class Radar:
 # ---------------------------------------------------------------------------
 
 _LEAKAGE_REASON = "antenna coupling is a measured board property, not a quantity a scene differentiates through"
+
+_POLARIZATION_REASON = (
+    "a radar polarization is launched by Channel's replay as a primal-only endpoint constant, which publishes no "
+    "derivative for it, so a polarization leaf could not be carried."
+)
 
 _BASEBAND_REASON = "a DC offset is a measured property of the receiver, not a quantity a scene differentiates through"
 

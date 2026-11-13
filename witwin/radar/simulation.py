@@ -44,6 +44,8 @@ from .binding import (
 from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
+from .policy import _carries_derivative as _carries_value_derivative
+from .policy import refuse_derivative
 from .propagation import (
     DiscoveryReport,
     EpochFrame,
@@ -650,6 +652,20 @@ class WorldHalf:
 
         assert self.pose is not None
         rotation, translation = self.pose(float(time_s))
+        refuse_derivative(
+            "the radar pose trajectory",
+            "the rotation turns the polarization every leg is launched with, and Channel's replay takes an "
+            "endpoint polarization as a primal-only constant, so the rotation's derivative cannot be "
+            "delivered whole. The translation is a leaf; keep the rotation a host value.",
+            rotation=rotation,
+        )
+        carrier = _carries_value_derivative(translation)
+        if carrier is not None and self.ad_mode != ("vjp" if carrier == "a gradient" else "jvp"):
+            raise RuntimeError(
+                f"the radar pose trajectory's translation carries {carrier}, which moves every element "
+                "position, and the legs carry that derivative only in the matching AD mode: pass "
+                f"grad={'vjp' if carrier == 'a gradient' else 'jvp'!r} (got grad={self.ad_mode!r})."
+            )
         rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
         translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
         if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):

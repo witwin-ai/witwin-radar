@@ -564,25 +564,23 @@ class Pattern:
         return torch.cat((head, peak, tail, real, imaginary)).contiguous()
 
 
-def _complex_matrix(name: str, rows) -> tuple[tuple[complex, ...], ...] | None:
+def _complex_matrix(name: str, rows):
+    """A square, finite coupling matrix: host tuples, or a complex tensor kept as given (a possible leaf)."""
+
     if rows is None:
         return None
-    if isinstance(rows, torch.Tensor):
-        refuse_derivative("witwin.radar.Coupling", _COUPLING_REASON, **{name: rows})
-        rows = rows.detach().cpu().tolist()
-    matrix = tuple(tuple(complex(value) for value in row) for row in rows)
+    host = rows.detach().cpu().tolist() if isinstance(rows, torch.Tensor) else rows
+    matrix = tuple(tuple(complex(value) for value in row) for row in host)
     size = len(matrix)
     if size < 1 or any(len(row) != size for row in matrix):
         raise ValueError(f"Coupling.{name} must be a square matrix, one row and one column per element")
     if not all(math.isfinite(value.real) and math.isfinite(value.imag) for row in matrix for value in row):
         raise ValueError(f"Coupling.{name} must be finite")
+    if isinstance(rows, torch.Tensor):
+        if not rows.is_complex():
+            raise TypeError(f"a tensor Coupling.{name} must be complex, got {rows.dtype}")
+        return rows
     return matrix
-
-
-_COUPLING_REASON = (
-    "a coupling matrix is a measured property of the array, not a quantity a scene differentiates through; "
-    "the coupled signal stays differentiable"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,10 +594,14 @@ class Coupling:
     receive chain applies ``Y = C_tx^T H C_rx^T`` over the cube's (TX, RX) axes
     ahead of every active stage, so coupling mixes the echoes before thermal
     noise enters (R-ADR-031). Either side may be ``None``.
+
+    A complex tensor matrix is a leaf (R-ADR-052): the coupling is two cuBLAS
+    products whose derivative in both modes is the transposed products, so the
+    chain carries it with no slot of its own.
     """
 
-    tx: tuple[tuple[complex, ...], ...] | None = None
-    rx: tuple[tuple[complex, ...], ...] | None = None
+    tx: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None
+    rx: tuple[tuple[complex, ...], ...] | torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tx", _complex_matrix("tx", self.tx))
@@ -1270,7 +1272,9 @@ class RoundTripPatternStage:
             pattern_frame=radar._world_from_local_matrix(device=device, dtype=torch.float32)[1]
             .transpose(0, 1)
             .contiguous(),
-            plan=_pattern_plan(pattern, rx_pattern, device=device, transmit_scale=None),
+            plan=_pattern_plan(
+                pattern, rx_pattern, device=device, transmit_scale=radar._transmit_amplitude_scale(device=device)
+            ),
         )
 
     def _geometry(self, slots: int = 1) -> SensorWeightGeometry:

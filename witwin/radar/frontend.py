@@ -9,7 +9,7 @@ from __future__ import annotations
 import cmath
 import math
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import torch
 
@@ -65,12 +65,6 @@ _NOISE_REASON = (
 #: smooth multiplicative factor and a leaf would be perfectly well defined. It
 #: would need a new tangent and gradient slot in the native frontend operator,
 #: and no consumer asks for one.
-_LNA_REASON = (
-    "gain_db is device configuration rather than scene state. The native "
-    "frontend operator carries no tangent or gradient slot for it and no "
-    "consumer asks for one; the deferral is recorded in "
-    "docs/dev/radar-ad-capability-matrix.md."
-)
 
 #: Why the AGC setpoint has no derivative. It is a control target, and the
 #: stage is already non-linear in the signal because its gain depends on the
@@ -667,9 +661,15 @@ class FrontendSpec:
     stage 0: a synthesis cube is in sqrt(W) at the receive antenna port and
     everything downstream of the LNA is in volts, so ``v = sqrt(W) sqrt(R)``.
 
-    ``lna`` is a voltage gain in dB. It is the one frontend scalar whose
-    derivative would be perfectly well defined, and it is refused anyway,
-    because the native operator has no slot for it.
+    ``lna`` is a voltage gain in dB: a host float, or a 0-dim floating tensor
+    that is a LEAF. Every stage between the LNA and the AGC is homogeneous of
+    degree one in the gain - the thermal noise is input-referred, compression
+    is input-referred, the quadrature split is linear and the flicker level
+    scales with it - so the chain's output there is
+    ``(g / g_host) (y(g_host) - dc) + dc`` exactly, with the DC offset the one
+    term the gain does not scale. The chain runs at the host value and applies
+    that unit factor (value exactly one) once; the AGC and the converter then
+    see a differentiable signal like any other (R-ADR-052).
 
     ``tx_coupling`` and ``rx_coupling`` are the array's port coupling matrices
     (``C[i][j]``: element ``i``'s port response to a unit excitation of
@@ -692,13 +692,23 @@ class FrontendSpec:
     tx_coupling: tuple[tuple[complex, ...], ...] | None = None
     rx_coupling: tuple[tuple[complex, ...], ...] | None = None
     timeline: tuple[float, float, float] | None = None
+    #: The LNA gain's host value, dB, read once at construction.
+    lna_host: float | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         require_host_floats("FrontendSpec", _PORT_REASON, impedance=self.impedance)
         if not self.impedance > 0.0:
             raise ValueError("impedance must be positive")
         if self.lna is not None:
-            require_host_floats("FrontendSpec", _LNA_REASON, lna=self.lna)
+            if isinstance(self.lna, torch.Tensor):
+                if self.lna.dim() != 0 or not self.lna.is_floating_point():
+                    raise ValueError("a tensor lna must be a 0-dim floating tensor, dB")
+                host = float(self.lna.detach())
+            else:
+                host = float(self.lna)
+            if not math.isfinite(host):
+                raise ValueError("lna must be finite, dB")
+            object.__setattr__(self, "lna_host", host)
         if not isinstance(self.seed, int) or isinstance(self.seed, bool):
             raise TypeError("seed must be an int")
         if self.seed < 0:
@@ -728,7 +738,15 @@ class FrontendSpec:
         return self.noise.thermal_sigma_volts(self.impedance)
 
     def lna_voltage_gain(self) -> float:
-        return 1.0 if self.lna is None else 10.0 ** (float(self.lna) / 20.0)
+        return 1.0 if self.lna_host is None else 10.0 ** (self.lna_host / 20.0)
+
+    def lna_leaf_scale(self, device) -> torch.Tensor | None:
+        """``g / g_host`` as a 0-dim tensor (value exactly one) for a tensor ``lna``, else ``None``."""
+
+        if not isinstance(self.lna, torch.Tensor):
+            return None
+        gain = self.lna.to(device=device, dtype=torch.float32)
+        return torch.pow(10.0, (gain - gain.detach()) / 20.0)
 
 
 def _checked_block_size(block_size: int) -> int:
@@ -1326,7 +1344,16 @@ class FrontendChain:
             beta=beta,
         )
 
+    def _dc_broadcast(self, signal: torch.Tensor) -> torch.Tensor:
+        """The per-receiver DC offset shaped to broadcast over ``signal`` (receivers on axis 1 of a rank-4 cube)."""
+
+        dc = self._resident_tensor("dc_offset", self.spec.dc_offset, signal.device)
+        return dc.view(1, -1, 1, 1) if signal.ndim == 4 else dc.reshape(())
+
     def _resident_tensor(self, name: str, values, device) -> torch.Tensor:
+        if isinstance(values, torch.Tensor):
+            # A tensor table (a coupling leaf) is used as given, so its tape reaches the cube.
+            return values.to(device=device, dtype=torch.complex64)
         key = (name, str(device))
         tensor = self._resident.get(key)
         if tensor is None:
@@ -1488,6 +1515,16 @@ class FrontendChain:
 
         if spec.applies_baseband_stage:
             working = self._baseband(working, seed_base=process_seed, times_s=times_s, frame_time_s=frame_time_s)
+
+        lna_scale = spec.lna_leaf_scale(working.device)
+        if lna_scale is not None:
+            # The LNA leaf: the chain up to here ran at the host gain and is
+            # homogeneous of degree one in it except for the DC offset, so
+            # s (y - dc) + dc is the output at the leaf's value (s is exactly
+            # one) with the exact derivative. Two library calls over the cube.
+            working = working * lna_scale
+            if spec.dc_offset is not None:
+                working = working + (1.0 - lna_scale) * self._dc_broadcast(working)
 
         if spec.agc is not None:
             plan = self._agc_plan(working, spec.agc)
