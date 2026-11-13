@@ -44,7 +44,11 @@ Scene-driven FMCW phase noise uses one continuous-time Wiener oscillator shared 
 - The linear-delay native model includes ADC start time and fast-time motion, with matching analytic VJP/JVP.
 - `FmcwSpec.output_domain="spectrum"` is the default; `output_domain="beat"` explicitly selects synthesized time-domain beat samples.
 - The FMCW spectrum and beat paths each expose native forward, analytical backward, and JVP operators through the one Radar native runtime.
-- TDM slot timing is derived from the transmitter index of each sensor-pair segment.
+- TDM slot timing is derived from the transmitter index of each sensor-pair segment. `Fmcw(mimo="ddm")` (a per-transmitter phase ramp across chirps) and `Fmcw(mimo="bpm")` (Hadamard signs) fire every transmitter every chirp, publish the physical one-transmit-channel cube, and `processing.demultiplex` returns the virtual array (R-ADR-048).
+- FMCW chirp sequences (`Fmcw(sequence=(Chirp(...), ...))`, TI-style profiles with their own slope, start offset, idle and ADC start), a polynomial ramp phase error (`Fmcw.phase_error`) and an in-phase-only ADC (`Fmcw(sampling="real")`) are native and differentiable in the beat kernel (R-ADR-047).
+- Pulsed trains cover rectangular, LFM and coded pulses: PMCW (`Pulsed.pmcw`, a continuous phase code with a cyclic matched filter, m-sequences from `Pulsed.m_sequence`), FSK (`Pulsed.fsk`, Costas orders from `Pulsed.costas`), a user-sampled envelope (`Pulsed.arbitrary`) and stepped frequency (`Pulsed.stepped_frequency`, compressed by `processing.stepped_frequency_profile`). Under `Motion.adc()` a pulsed train is observed at every gate sample, so intra-pulse Doppler and LFM range-Doppler coupling are present (R-ADR-046).
+- OFDM is the closed-form CFR by default; `Ofdm(modulation=..., pilot_spacing=..., symbol_seed=...)` synthesizes the received time samples of a seeded QAM stream with a cyclic prefix and a pilot comb, so intra-symbol motion produces inter-carrier interference and a long echo inter-symbol interference; `output="cfr"` publishes the demodulated estimate and `output="time"` the samples (R-ADR-046).
+- `Result.observation_schedule` states when the frame's synthesis observed the world: `frame`, `slow_time`, `fast_time` or `adaptive`.
 - Synthesis validates weight provenance before launch so carrier phase, spreading, transmit power, and slow-time refresh are not silently counted twice.
 - Output-domain metadata is preserved in `SynthesisResult`, preventing downstream processing from guessing whether a range FFT is required.
 
@@ -80,7 +84,7 @@ The processing layer consumes named-axis metadata. For FMCW spectrum input, rang
 ## Public API and architecture governance
 
 - Public exports are declared in `ci/public-api-manifest.json` and signature-pinned by `ci/public-api-snapshot.json`.
-- The package root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Compression`, `Coupling`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules and are not re-exported here.
+- The package root exports the whole happy path: `Adc`, `Agc`, `Aspect`, `Chirp`, `Compression`, `Coupling`, `Fmcw`, `Frame`, `Iq`, `Leakage`, `Motion`, `Noise`, `Ofdm`, `Paths`, `Pattern`, `PointTargets`, `Pulsed`, `Radar`, `Result`, `StructureTargets` and `processing`. Advanced records stay importable from their owner modules and are not re-exported here.
 - Concept owners and permitted module topology are declared in `ci/architecture-manifest.json`.
 - There is no maximum-file-line policy. Consolidation favors fewer files and a shallow layout when one concept remains cohesive.
 - Compatibility aliases, fallback imports, deprecation shims, and legacy package mirrors are forbidden by static gates.

@@ -47,11 +47,14 @@ every pair and there is no per-segment time offset to carry.
 
 from __future__ import annotations
 
+import functools
+
 import torch
 
 from ..cuda import native_ops as _ops
-from ..policy import first_order_only
+from ..policy import first_order_only, refuse_derivative
 from .assembly import (
+    PULSE_KIND_CODED,
     PULSE_KIND_LFM,
     PULSE_KIND_RECT,
     PulsedSpec,
@@ -63,7 +66,24 @@ from .assembly import (
 #: The kernel's pulse-kind selector, mirroring the constants on the spec. An
 #: integer crosses the ABI because a string would need an allocation and a
 #: comparison per launch to say something the spec already validated once.
-_PULSE_KIND_CODE = {PULSE_KIND_RECT: 0, PULSE_KIND_LFM: 1}
+_PULSE_KIND_CODE = {PULSE_KIND_RECT: 0, PULSE_KIND_LFM: 1, PULSE_KIND_CODED: 2}
+
+
+@functools.lru_cache(maxsize=32)
+def _chip_table(spec: PulsedSpec, device: torch.device) -> torch.Tensor:
+    """The spec's chip table on ``device``, uploaded once per distinct spec.
+
+    ``float64[num_chips, 3]`` for a coded pulse and an empty table otherwise. A
+    spec is frozen and hashable, so a frame loop that synthesizes the same
+    waveform every frame crosses to the device once rather than once a launch.
+    """
+
+    rows = spec.chip_table() if spec.is_coded else ()
+    return torch.tensor(rows, dtype=torch.float64, device=device).reshape(len(rows), 3).contiguous()
+
+
+def _empty_table(device: torch.device) -> torch.Tensor:
+    return torch.empty((0, 2), dtype=torch.float64, device=device)
 
 
 def _kernel_arguments(spec: PulsedSpec) -> tuple:
@@ -86,6 +106,8 @@ def _kernel_arguments(spec: PulsedSpec) -> tuple:
         spec.pulse_amplitude,
         spec.carrier_hz,
         spec.carrier_rate_hz,
+        spec.frequency_step_hz,
+        int(spec.periodic),
     )
 
 
@@ -93,7 +115,7 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
     """Autograd bridge for the three native pulsed operators."""
 
     @staticmethod
-    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec):
+    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec):
         num_paths = int(tau_rt.shape[0])
         num_segments = int(offsets.shape[0]) - 1
         out_re = torch.empty(
@@ -106,6 +128,8 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             offsets,
+            _chip_table(spec, tau_rt.device),
+            schedule,
             out_re,
             out_im,
             num_paths,
@@ -116,16 +140,16 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, spec) = inputs
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, schedule, spec) = inputs
         ctx.spec = spec
         ctx.num_segments = int(offsets.shape[0]) - 1
-        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment)
-        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets)
+        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, schedule)
+        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, schedule)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_out_re, grad_out_im):
-        tau_rt, tau_rate, weight_re, weight_im, segment = ctx.saved_tensors
+        tau_rt, tau_rate, weight_re, weight_im, segment, schedule = ctx.saved_tensors
         spec = ctx.spec
         grad_tau_rt = torch.empty_like(tau_rt)
         grad_tau_rate = torch.empty_like(tau_rate)
@@ -137,6 +161,8 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             segment,
+            _chip_table(spec, tau_rt.device),
+            schedule,
             grad_out_re.contiguous(),
             grad_out_im.contiguous(),
             grad_tau_rt,
@@ -147,11 +173,13 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             ctx.num_segments,
             *_kernel_arguments(spec),
         )
-        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None)
+        return (grad_tau_rt, grad_tau_rate, grad_weight_re, grad_weight_im, None, None, None, None)
 
     @staticmethod
-    def jvp(ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_spec):
-        tau_rt, tau_rate, weight_re, weight_im, offsets = ctx.saved_tensors
+    def jvp(
+        ctx, tan_tau_rt, tan_tau_rate, tan_weight_re, tan_weight_im, tan_offsets, tan_segment, tan_schedule, tan_spec
+    ):
+        tau_rt, tau_rate, weight_re, weight_im, offsets, schedule = ctx.saved_tensors
         spec = ctx.spec
         zero = torch.zeros_like(tau_rt)
         tan_tau_rt = zero if tan_tau_rt is None else tan_tau_rt.contiguous()
@@ -168,6 +196,8 @@ class _PulsedEchoSynthesis(torch.autograd.Function):
             weight_re,
             weight_im,
             offsets,
+            _chip_table(spec, tau_rt.device),
+            schedule,
             tan_tau_rt,
             tan_tau_rate,
             tan_weight_re,
@@ -187,8 +217,18 @@ def synthesize_echo_rows(
     transfer_ref: torch.Tensor,
     pair_offsets: torch.Tensor,
     spec: PulsedSpec,
+    *,
+    segment_schedule: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Synthesize a pulse train from Channel-convention transfer coefficients.
+
+    ``segment_schedule`` is ``float64[segments, 2]``: each segment's own
+    fast-time gate start [s] and carrier offset [Hz], in place of
+    ``spec.range_gate_start_s`` and ``l * spec.frequency_step_hz``. It is how one
+    launch synthesizes segments that are different fast-time instants of a
+    refreshed frame (each segment's value is the one a launch with that gate
+    start and offset would produce). Schedule data: a derivative in it is
+    refused.
 
     ``transfer_ref`` is the coefficient AS CHANNEL PUBLISHES IT - the entry
     performs no conjugation, because the pulsed product stays in that
@@ -217,6 +257,17 @@ def synthesize_echo_rows(
         if delay_rate.shape != total_delay_s.shape:
             raise ValueError("delay_rate and total_delay_s must have the same shape")
         rate = delay_rate
+    num_segments = int(pair_offsets.shape[0]) - 1
+    if segment_schedule is None:
+        schedule = _empty_table(total_delay_s.device)
+    else:
+        refuse_derivative("pulsed segment schedule", "gate instants are fixed metadata", schedule=segment_schedule)
+        if segment_schedule.dtype != torch.float64 or tuple(segment_schedule.shape) != (num_segments, 2):
+            raise ValueError(
+                f"segment_schedule must be float64 with shape ({num_segments}, 2), got "
+                f"{segment_schedule.dtype} {tuple(segment_schedule.shape)}"
+            )
+        schedule = segment_schedule.contiguous()
     segment = segment_of_each_row(pair_offsets, path_count)
     # Torch-owned, autograd-aware accessors: the real pair crosses the
     # boundary, never the complex tensor.
@@ -227,6 +278,7 @@ def synthesize_echo_rows(
         transfer_ref.imag.contiguous(),
         pair_offsets.contiguous(),
         segment,
+        schedule,
         spec,
     )
     return torch.complex(out_re, out_im)

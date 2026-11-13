@@ -14,6 +14,7 @@
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/ofdm_time.cu",
     "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
@@ -368,6 +369,36 @@
       "python_owner": "witwin/radar/synthesis/ofdm.py",
       "python_callers": [
         "_OfdmCfrSynthesis.jvp"
+      ]
+    },
+    {
+      "symbol": "ofdm_time_backward",
+      "ad_group": "ofdm_time",
+      "ad_role": "backward",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/ofdm.py",
+      "python_callers": [
+        "_OfdmTimeSynthesis.backward"
+      ]
+    },
+    {
+      "symbol": "ofdm_time_forward",
+      "ad_group": "ofdm_time",
+      "ad_role": "primal",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/ofdm.py",
+      "python_callers": [
+        "_OfdmTimeSynthesis.forward"
+      ]
+    },
+    {
+      "symbol": "ofdm_time_jvp",
+      "ad_group": "ofdm_time",
+      "ad_role": "jvp",
+      "native_tu": "witwin/radar/cuda/ofdm_time.cu",
+      "python_owner": "witwin/radar/synthesis/ofdm.py",
+      "python_callers": [
+        "_OfdmTimeSynthesis.jvp"
       ]
     },
     {

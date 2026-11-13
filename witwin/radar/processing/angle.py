@@ -61,13 +61,13 @@ peak pick in it to guard.
 """
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import torch
 
 from ..policy import refuse_derivative
 from .range_doppler import RangeDopplerMap, RangeProfile
-from .signal import ProcessingAxes, _require_complex, real_dtype_of
+from .signal import ProcessingAxes, ProcessingCube, _require_complex, real_dtype_of
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -515,6 +515,9 @@ def tdm_compensate(
 
     array = _require_array(array)
     _require_virtual(aoa_input, array)
+    if getattr(axes, "mimo", "tdm") != "tdm":
+        # DDM and BPM fire every transmitter every chirp: there is no slot phase.
+        return aoa_input
     if not isinstance(velocities, torch.Tensor):
         raise TypeError(f"velocities must be a torch.Tensor, got {type(velocities).__name__}")
     if velocities.dim() != 1 or int(velocities.shape[0]) != int(aoa_input.shape[1]):
@@ -535,6 +538,67 @@ def tdm_compensate(
     )
     compensation = torch.exp(1j * phase)
     return (aoa_input * compensation).to(aoa_input.dtype)
+
+
+def demultiplex(cube: ProcessingCube) -> ProcessingCube:
+    """Separate a DDM or BPM cube into its ``[TX, RX, slow, fast]`` virtual array (R-ADR-048).
+
+    ``cube`` is ``[1, RX, C, S]`` as received: each receiver holds every
+    transmitter, transmitter ``t`` carrying ``code[c, t]`` (the axes record's
+    ``transmit_code``, in the cube's phasor convention). Both schemes decimate
+    slow time by the code period ``P`` (``axes.code_period``), so the virtual
+    cube has ``K = C / P`` slow-time samples at ``P`` chirp periods and the
+    unambiguous velocity is ``1 / P`` of the physical cube's:
+
+    * DDM. Multiplying by ``conj(code[:, t])`` moves transmitter ``t`` to zero
+      Doppler and every other transmitter ``(t' - t) / P`` of the band away; the
+      ``K`` slow-time bins around zero, transformed back (one forward and one
+      ``K``-point inverse transform, scaled by ``K / C`` so a tone keeps its
+      amplitude), are transmitter ``t`` alone. A target faster than the
+      sub-band edge folds into a neighbour's band: that is DDM's ambiguity.
+    * BPM. Block ``b`` of ``P`` chirps is inverted by the code: ``z_t[b] = (1/P)
+      sum_i conj(code[bP + i, t]) y[bP + i]``, exact while the scene holds
+      still across a block; a moving target leaves a residual between the
+      transmitters that grows with its Doppler phase over the block.
+
+    A TDM cube is already separated and is returned as it is.
+    """
+
+    if not isinstance(cube, ProcessingCube):
+        raise TypeError(f"demultiplex takes a ProcessingCube, got {type(cube).__name__}")
+    axes = cube.axes
+    if axes.mimo == "tdm" or axes.demultiplexed:
+        return cube
+    if axes.transmit_code is None:
+        raise ValueError(f"a {axes.mimo} axes record must carry its transmit code")
+    data = cube.data[0]
+    receivers, chirps, samples = (int(value) for value in data.shape)
+    period = int(axes.code_period)
+    if chirps % period:
+        raise ValueError(f"{chirps} chirps do not split into code periods of {period}")
+    blocks = chirps // period
+    code = axes.transmit_code.to(device=data.device, dtype=data.dtype)
+    if axes.mimo == "ddm":
+        # [T, R, C, S]: each transmitter at baseband, then its own sub-band.
+        baseband = data.unsqueeze(0) * code.conj().transpose(0, 1).reshape(-1, 1, chirps, 1)
+        spectrum = torch.fft.fft(baseband, dim=2)
+        half = blocks // 2
+        band = torch.cat((spectrum[:, :, : blocks - half], spectrum[:, :, chirps - half :]), dim=2)
+        virtual = torch.fft.ifft(band, dim=2) * (blocks / chirps)
+    elif axes.mimo == "bpm":
+        blocked = data.reshape(receivers, blocks, period, samples)
+        weights = code.conj().reshape(blocks, period, -1)
+        virtual = torch.einsum("rbps,bpt->trbs", blocked, weights) / period
+    else:
+        raise ValueError(f"no demultiplexer for mimo={axes.mimo!r}")
+    period_s = axes.slow_time_period_s * period
+    record = replace(
+        axes,
+        slow_time_period_s=period_s,
+        max_unambiguous_speed_mps=axes.wavelength_m / (4.0 * period_s),
+        demultiplexed=True,
+    ).with_bin_counts(doppler_bins=blocks)
+    return ProcessingCube(data=virtual.contiguous(), axes=record)
 
 
 def _finish_direction_cosines(x_vector: torch.Tensor, z_vector: torch.Tensor) -> torch.Tensor:

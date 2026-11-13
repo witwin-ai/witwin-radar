@@ -35,10 +35,13 @@ every pair and there is no per-segment time offset to carry.
 
 from __future__ import annotations
 
+import functools
+
+import numpy as np
 import torch
 
 from ..cuda import native_ops as _ops
-from ..policy import first_order_only
+from ..policy import first_order_only, refuse_derivative
 from .assembly import OfdmSpec, SynthesisPathBatch, require_ofdm_compatible, segment_of_each_row
 
 
@@ -243,6 +246,179 @@ def synthesize_cfr_rows(
     return torch.complex(out_re, out_im)
 
 
+@functools.lru_cache(maxsize=32)
+def symbol_tensor(spec: OfdmSpec, device: torch.device) -> torch.Tensor:
+    """The spec's symbol table as the kernel reads it, ``float32[L, N, 2]``, uploaded once per spec."""
+
+    table = spec.symbol_table()
+    return torch.from_numpy(np.stack((table.real, table.imag), axis=-1)).to(device=device, dtype=torch.float32)
+
+
+class _OfdmTimeSynthesis(torch.autograd.Function):
+    """Autograd bridge for the three native time-domain OFDM operators."""
+
+    @staticmethod
+    def forward(tau_rt, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec):
+        out_re = torch.empty(
+            (spec.num_symbols, int(offsets.shape[0]) - 1, spec.samples_per_symbol),
+            dtype=torch.float32,
+            device=tau_rt.device,
+        )
+        out_im = torch.empty_like(out_re)
+        _ops().ofdm_time_forward(
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            offsets,
+            symbols,
+            schedule,
+            out_re,
+            out_im,
+            int(tau_rt.shape[0]),
+            int(offsets.shape[0]) - 1,
+            *_time_arguments(spec),
+        )
+        return out_re, out_im
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (tau_rt, tau_rate, weight_re, weight_im, offsets, segment, symbols, schedule, spec) = inputs
+        ctx.spec = spec
+        ctx.num_segments = int(offsets.shape[0]) - 1
+        ctx.save_for_backward(tau_rt, tau_rate, weight_re, weight_im, segment, symbols, schedule)
+        ctx.save_for_forward(tau_rt, tau_rate, weight_re, weight_im, offsets, symbols, schedule)
+
+    @staticmethod
+    @first_order_only
+    def backward(ctx, grad_re, grad_im):
+        tau_rt, tau_rate, weight_re, weight_im, segment, symbols, schedule = ctx.saved_tensors
+        spec = ctx.spec
+        paths = int(tau_rt.shape[0])
+        partial = torch.zeros((paths, spec.num_symbols, 4), dtype=torch.float64, device=tau_rt.device)
+        _ops().ofdm_time_backward(
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            segment,
+            symbols,
+            schedule,
+            grad_re.contiguous(),
+            grad_im.contiguous(),
+            partial,
+            paths,
+            ctx.num_segments,
+            *_time_arguments(spec),
+        )
+        # One reduction over the symbol axis of the kernel's per-(path, symbol)
+        # partial sums, in a fixed order.
+        total = partial.sum(dim=1).to(torch.float32)
+        return (total[:, 0], total[:, 1], total[:, 2], total[:, 3], None, None, None, None, None)
+
+    @staticmethod
+    def jvp(ctx, t_tau, t_rate, t_re, t_im, t_offsets, t_segment, t_symbols, t_schedule, t_spec):
+        tau_rt, tau_rate, weight_re, weight_im, offsets, symbols, schedule = ctx.saved_tensors
+        spec = ctx.spec
+        zero = torch.zeros_like(tau_rt)
+        out_re = torch.empty(
+            (spec.num_symbols, ctx.num_segments, spec.samples_per_symbol), dtype=torch.float32, device=tau_rt.device
+        )
+        out_im = torch.empty_like(out_re)
+        _ops().ofdm_time_jvp(
+            tau_rt,
+            tau_rate,
+            weight_re,
+            weight_im,
+            offsets,
+            symbols,
+            schedule,
+            zero if t_tau is None else t_tau.contiguous(),
+            zero if t_rate is None else t_rate.contiguous(),
+            zero if t_re is None else t_re.contiguous(),
+            zero if t_im is None else t_im.contiguous(),
+            out_re,
+            out_im,
+            int(tau_rt.shape[0]),
+            ctx.num_segments,
+            *_time_arguments(spec),
+        )
+        return out_re, out_im
+
+
+def _time_arguments(spec: OfdmSpec) -> tuple:
+    return (
+        spec.num_symbols,
+        spec.num_subcarriers,
+        spec.samples_per_symbol,
+        spec.subcarrier_spacing_hz,
+        spec.cyclic_prefix_s,
+        spec.carrier_hz,
+        spec.carrier_rate_hz,
+    )
+
+
+def synthesize_ofdm_time_rows(
+    total_delay_s: torch.Tensor,
+    delay_rate: torch.Tensor | None,
+    transfer_ref: torch.Tensor,
+    pair_offsets: torch.Tensor,
+    spec: OfdmSpec,
+    *,
+    symbols: torch.Tensor | None = None,
+    segment_schedule: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """The received post-prefix time samples of a modulated OFDM stream.
+
+    Returns ``complex64[num_symbols, segments, samples_per_symbol]`` in the
+    CHANNEL convention; ``ofdm_time.cu`` states the closed form. The delay walks
+    inside each symbol with the row's delay rate, so motion produces
+    inter-carrier interference, and an echo longer than the prefix reads the
+    previous symbol.
+
+    ``symbols`` is the frame's symbol table ``float32[L, N, 2]`` (default: this
+    spec's own, :func:`symbol_tensor`); a refreshed slot batch passes the
+    frame's table with a one-symbol spec. ``segment_schedule`` is
+    ``float64[segments, 2]``: each segment's window start within its symbol [s]
+    and its symbol index. Both are waveform and schedule data; a derivative in
+    either is refused. Narrowband weights only. Row-level entry: the
+    provenance rules of :func:`synthesize_ofdm` do not run here.
+    """
+
+    if transfer_ref.shape != total_delay_s.shape:
+        raise ValueError("the time-domain route takes a narrowband [paths] transfer_ref")
+    rate = torch.zeros_like(total_delay_s) if delay_rate is None else delay_rate
+    if rate.shape != total_delay_s.shape:
+        raise ValueError("delay_rate and total_delay_s must have the same shape")
+    device = total_delay_s.device
+    table = symbol_tensor(spec, device) if symbols is None else symbols
+    refuse_derivative("OFDM symbol table", "the transmitted symbols are waveform data", symbols=table)
+    num_segments = int(pair_offsets.shape[0]) - 1
+    if segment_schedule is None:
+        schedule = torch.empty((0, 2), dtype=torch.float64, device=device)
+    else:
+        refuse_derivative("OFDM segment schedule", "sample instants are fixed metadata", schedule=segment_schedule)
+        if segment_schedule.dtype != torch.float64 or tuple(segment_schedule.shape) != (num_segments, 2):
+            raise ValueError(
+                f"segment_schedule must be float64 with shape ({num_segments}, 2), got "
+                f"{segment_schedule.dtype} {tuple(segment_schedule.shape)}"
+            )
+        schedule = segment_schedule.contiguous()
+    segment = segment_of_each_row(pair_offsets, int(total_delay_s.shape[0]))
+    out_re, out_im = _OfdmTimeSynthesis.apply(
+        total_delay_s.contiguous(),
+        rate.contiguous(),
+        transfer_ref.real.contiguous(),
+        transfer_ref.imag.contiguous(),
+        pair_offsets.contiguous(),
+        segment,
+        table.contiguous(),
+        schedule,
+        spec,
+    )
+    return torch.complex(out_re, out_im)
+
+
 def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     """Synthesize one OFDM frame's channel frequency response cube.
 
@@ -250,6 +426,10 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     the CHANNEL phasor convention (``spec.phasor``).
     ``assembly.assemble_frame_cube`` turns it into the rank-4
     ``(TX, RX, symbol, subcarrier)`` layout an array processor indexes.
+
+    A modulated stream or a time output (``spec.time_domain``) is synthesized
+    by :func:`synthesize_ofdm_time_rows`; the unmodulated comb as a CFR keeps
+    the closed-form CFR kernel.
 
     :func:`~witwin.radar.synthesis.assembly.require_ofdm_compatible` runs
     FIRST, so a weight and a spec that would count the carrier, the spreading,
@@ -267,7 +447,9 @@ def synthesize_ofdm(batch: SynthesisPathBatch, spec: OfdmSpec) -> torch.Tensor:
     transfer = batch.complex_transfer_ref
     if batch.row_valid is not None:
         transfer = torch.where(batch.row_valid, transfer, torch.zeros_like(transfer))
+    if spec.time_domain:
+        return synthesize_ofdm_time_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
     return synthesize_cfr_rows(batch.total_delay_s, batch.delay_rate, transfer, batch.pair_offsets, spec)
 
 
-__all__ = ["OfdmSpec", "synthesize_cfr_rows", "synthesize_ofdm"]
+__all__ = ["OfdmSpec", "symbol_tensor", "synthesize_cfr_rows", "synthesize_ofdm", "synthesize_ofdm_time_rows"]

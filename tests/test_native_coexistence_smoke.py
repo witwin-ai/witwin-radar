@@ -122,3 +122,16 @@ class TestTheGeneratedScenarioScripts:
         source = smoke._preamble(tmp_path) + bodies[name]()
         ast.parse(source, filename=f"scenario_{name}.py")
         source.encode("ascii")
+
+
+def test_the_audited_source_members_are_the_translation_units_the_runtime_compiles():
+    """The coexistence audit must reproduce the native build fingerprint, so it names every translation unit."""
+
+    spec = importlib.util.spec_from_file_location(
+        "coexistence_runtime_sources", REPOSITORY_ROOT / "witwin" / "radar" / "cuda" / "runtime.py"
+    )
+    assert spec is not None and spec.loader is not None
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    expected = tuple(f"witwin/radar/cuda/{path.name}" for path in runtime.extension_sources())
+    assert smoke._RADAR_SOURCE_MEMBERS == expected

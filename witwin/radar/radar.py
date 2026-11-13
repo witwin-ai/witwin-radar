@@ -78,6 +78,35 @@ POLARIZATION_ALIASES = ("up", "right")
 
 
 @dataclass(frozen=True, slots=True)
+class Chirp:
+    """One chirp profile of an FMCW sequence, in SI units (R-ADR-047).
+
+    A field left at ``None`` is the :class:`Fmcw` ramp's own value. The
+    sequence is a TI-style chirp configuration: one profile per slot of a loop,
+    repeated across the frame, so several profiles share a frame. Every profile
+    keeps the waveform's sample rate and sample count, because the frame is one
+    cube.
+    """
+
+    #: Ramp slope, Hz/s.
+    slope: float | None = None
+    #: Start frequency relative to ``Radar.carrier``, Hz.
+    start_offset: float = 0.0
+    #: Idle time after the ramp, s.
+    idle: float | None = None
+    #: Delay from the ramp start to the first ADC sample, s.
+    adc_start: float | None = None
+    #: Ramp end time, s.
+    ramp_end: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("slope", "idle", "adc_start", "ramp_end"):
+            if getattr(self, name) is not None:
+                _finite(f"Chirp.{name}", getattr(self, name))
+        _finite("Chirp.start_offset", self.start_offset)
+
+
+@dataclass(frozen=True, slots=True)
 class Fmcw:
     """One FMCW ramp and its ADC window, in SI units.
 
@@ -107,8 +136,32 @@ class Fmcw:
     #: synthesized time-domain beat samples. Spectrum is the default and the
     #: beat route is an opt-in output domain, never a fallback.
     output: str = "spectrum"
+    #: A chirp sequence: one :class:`Chirp` profile per slot of a loop, repeated
+    #: across the frame's slots. Empty is the one ramp the fields above describe.
+    sequence: tuple[Chirp, ...] = ()
+    #: The transmitted ramp's phase error, rad: coefficients ``c_2, c_3, ...``
+    #: of ``phi(t) = sum_k c_k t^k`` over the time since the ramp start
+    #: (rad/s^k). A quadratic frequency error is a cubic phase.
+    phase_error: tuple[float, ...] = ()
+    #: ``"complex"`` for an IQ receiver, ``"real"`` for one that digitises the
+    #: in-phase channel only (R-ADR-047).
+    sampling: str = "complex"
+    #: ``"tdm"``, ``"ddm"`` or ``"bpm"``: how the transmitters share the frame
+    #: (R-ADR-048). DDM and BPM fire every transmitter every chirp and publish
+    #: one transmit channel; :func:`witwin.radar.processing.demultiplex`
+    #: separates them.
+    mimo: str = "tdm"
+    #: DDM only: the number of Doppler sub-bands, at least the transmitter
+    #: count. Zero is the transmitter count.
+    ddm_bands: int = 0
 
     def __post_init__(self) -> None:
+        if self.sampling not in ("complex", "real"):
+            raise ValueError(f"Fmcw.sampling must be 'complex' or 'real', got {self.sampling!r}")
+        if not all(isinstance(chirp, Chirp) for chirp in self.sequence):
+            raise TypeError("Fmcw.sequence holds Chirp records")
+        object.__setattr__(self, "sequence", tuple(self.sequence))
+        object.__setattr__(self, "phase_error", tuple(_finite("Fmcw.phase_error", value) for value in self.phase_error))
         _positive("Fmcw.sample_rate", self.sample_rate)
         _positive("Fmcw.ramp_end", self.ramp_end)
         _positive_int("Fmcw.samples_per_chirp", self.samples_per_chirp)
@@ -173,6 +226,25 @@ class Fmcw:
             num_tx=int(num_tx),
             num_rx=int(num_rx),
             output_domain=self.output,
+            sequence=tuple(self._profile(chirp) for chirp in self.sequence),
+            phase_error_cycles=tuple(value / math.tau for value in self.phase_error),
+            real_adc=self.sampling == "real",
+            mimo=str(self.mimo),
+            ddm_bands=int(self.ddm_bands),
+        )
+
+    def _profile(self, chirp: Chirp) -> tuple[float, float, float, float, float]:
+        """``(slope, start offset, idle, ADC start, ramp end)`` with this ramp's values filling the gaps."""
+
+        def pick(value, default):
+            return float(default if value is None else value)
+
+        return (
+            pick(chirp.slope, self.slope),
+            float(chirp.start_offset),
+            pick(chirp.idle, self.idle),
+            pick(chirp.adc_start, self.adc_start),
+            pick(chirp.ramp_end, self.ramp_end),
         )
 
 
@@ -191,6 +263,18 @@ class Ofdm:
     #: The longest round-trip delay the cyclic prefix must cover, s.
     max_expected_delay: float
     subcarrier_origin: str = SUBCARRIER_ORIGIN_F_REF_AT_N0
+    #: The subcarrier constellation: ``"ones"`` (the unmodulated comb the ideal
+    #: CFR assumes), ``"bpsk"``, ``"qpsk"``, ``"qam16"`` or ``"qam64"``. A
+    #: modulated stream is synthesized as received time samples, so intra-symbol
+    #: motion produces inter-carrier interference (R-ADR-046).
+    modulation: str = "ones"
+    #: Every ``pilot_spacing``-th subcarrier carries the known pilot ``1``.
+    pilot_spacing: int = 0
+    #: Seed of the data symbols.
+    symbol_seed: int = 0
+    #: ``"cfr"`` publishes the per-subcarrier estimate ``Y / X``; ``"time"``
+    #: publishes the received post-prefix samples.
+    output: str = "cfr"
 
     def __post_init__(self) -> None:
         _positive("Ofdm.subcarrier_spacing", self.subcarrier_spacing)
@@ -232,20 +316,33 @@ class Ofdm:
             # Dropping it understates Doppler by the whole carrier term.
             carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
             subcarrier_origin=self.subcarrier_origin,
+            modulation=str(self.modulation),
+            pilot_spacing=int(self.pilot_spacing),
+            symbol_seed=int(self.symbol_seed),
+            output_domain=str(self.output),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class Pulsed:
-    """One pulse train and its range gate, in SI units."""
+    """One pulse train and its range gate, in SI units.
+
+    The directly sampled family: the receiver mixes the echo down with a fixed
+    local oscillator and samples it, and a matched filter compresses it. Four
+    constructors spell the coded and stepped members (R-ADR-046):
+    :meth:`pmcw` (a binary or polyphase code transmitted continuously),
+    :meth:`fsk` (a frequency-hopped pulse), :meth:`stepped_frequency` (a carrier
+    that steps from pulse to pulse) and :meth:`arbitrary` (a user-sampled
+    complex envelope, held for one chip per sample like a DAC holds it).
+    """
 
     kind: ClassVar[str] = WAVEFORM_PULSED
 
-    #: ``"rect"`` or ``"lfm"``.
+    #: ``"rect"``, ``"lfm"`` or ``"coded"``.
     pulse_kind: str
-    #: Pulse width, s.
+    #: Pulse width, s. For a coded pulse, ``num_chips`` chip widths.
     pulse_width: float
-    #: Chirp bandwidth of an LFM pulse, Hz.
+    #: Chirp bandwidth of an LFM pulse, or the chip rate of a coded one, Hz.
     bandwidth: float
     #: Pulse repetition interval, s.
     pri: float
@@ -259,6 +356,15 @@ class Pulsed:
     #: dimensionless.
     max_expected_delay_rate: float = 0.0
     pulse_normalization: str = PULSE_NORMALIZATION_UNIT_AMPLITUDE
+    #: ``"coded"`` only: complex chip amplitudes, each of magnitude at most one
+    #: (one is the full transmit amplitude).
+    chips: tuple[complex, ...] = ()
+    #: ``"coded"`` only: each chip's frequency, Hz. Empty is all zero.
+    chip_frequencies: tuple[float, ...] = ()
+    #: Carrier step between consecutive pulses, Hz. Zero is a fixed carrier.
+    frequency_step: float = 0.0
+    #: The code repeats with no gap, one period per slow-time sample.
+    periodic: bool = False
 
     def __post_init__(self) -> None:
         _positive("Pulsed.pulse_width", self.pulse_width)
@@ -269,6 +375,9 @@ class Pulsed:
         _positive_int("Pulsed.num_samples", self.num_samples)
         _non_negative("Pulsed.range_gate_start", self.range_gate_start)
         _non_negative("Pulsed.max_expected_delay_rate", self.max_expected_delay_rate)
+        _finite("Pulsed.frequency_step", self.frequency_step)
+        object.__setattr__(self, "chips", tuple(complex(chip) for chip in self.chips))
+        object.__setattr__(self, "chip_frequencies", tuple(float(value) for value in self.chip_frequencies))
 
     def to_spec(self, *, carrier: float, offset: float = 0.0) -> PulsedSpec:
         carrier_hz = float(offset)
@@ -286,7 +395,216 @@ class Pulsed:
             carrier_hz=carrier_hz,
             carrier_rate_hz=0.0 if carrier_hz != 0.0 else float(carrier),
             pulse_normalization=self.pulse_normalization,
+            chips=self.chips,
+            chip_frequencies_hz=self.chip_frequencies,
+            frequency_step_hz=float(self.frequency_step),
+            periodic=bool(self.periodic),
         )
+
+    # -- the coded and stepped members --------------------------------------
+
+    @classmethod
+    def pmcw(
+        cls, code, *, chip_rate: float, repetitions: int, sample_rate: float, max_expected_delay_rate: float = 0.0
+    ) -> Pulsed:
+        """A phase code transmitted continuously, one code period per slow-time sample.
+
+        ``code`` is the chip sequence: ``+1``/``-1`` for a binary code such as
+        :meth:`m_sequence`, or unit complex values for a polyphase one. The
+        range gate is one code period, ``len(code) * sample_rate / chip_rate``
+        samples, which must be a whole number; the matched filter is the
+        cyclic correlation over it.
+        """
+
+        chips = tuple(complex(value) for value in code)
+        period = len(chips) / float(chip_rate)
+        samples = round(period * float(sample_rate))
+        if samples < 1 or abs(samples / float(sample_rate) - period) > 1e-9 * period:
+            raise ValueError(
+                f"one code period ({len(chips)} chips at {chip_rate} Hz) is not a whole number of samples at "
+                f"{sample_rate} Hz; the cyclic matched filter needs the gate to hold exactly one period"
+            )
+        return cls(
+            pulse_kind="coded",
+            pulse_width=period,
+            bandwidth=float(chip_rate),
+            pri=period,
+            num_pulses=int(repetitions),
+            sample_rate=float(sample_rate),
+            num_samples=int(samples),
+            range_gate_start=0.0,
+            max_expected_delay_rate=max_expected_delay_rate,
+            chips=chips,
+            periodic=True,
+        )
+
+    @classmethod
+    def fsk(
+        cls,
+        frequencies,
+        *,
+        chip_width: float,
+        pri: float,
+        num_pulses: int,
+        sample_rate: float,
+        num_samples: int,
+        range_gate_start: float = 0.0,
+        max_expected_delay_rate: float = 0.0,
+    ) -> Pulsed:
+        """A frequency-hopped pulse: chip ``i`` is a tone at ``frequencies[i]`` Hz.
+
+        Each chip starts at zero phase. The declared bandwidth is the hop span
+        plus one chip's own ``1 / chip_width``.
+        """
+
+        tones = tuple(float(value) for value in frequencies)
+        if not tones:
+            raise ValueError("an FSK pulse needs at least one frequency")
+        return cls(
+            pulse_kind="coded",
+            pulse_width=len(tones) * float(chip_width),
+            bandwidth=max(tones) - min(tones) + 1.0 / float(chip_width),
+            pri=float(pri),
+            num_pulses=int(num_pulses),
+            sample_rate=float(sample_rate),
+            num_samples=int(num_samples),
+            range_gate_start=float(range_gate_start),
+            max_expected_delay_rate=max_expected_delay_rate,
+            chips=(1.0 + 0.0j,) * len(tones),
+            chip_frequencies=tones,
+        )
+
+    @classmethod
+    def stepped_frequency(
+        cls,
+        *,
+        step: float,
+        num_steps: int,
+        pulse_width: float,
+        pri: float,
+        sample_rate: float,
+        num_samples: int,
+        range_gate_start: float = 0.0,
+        max_expected_delay_rate: float = 0.0,
+    ) -> Pulsed:
+        """Rectangular pulses whose carrier steps by ``step`` Hz from pulse to pulse.
+
+        The synthetic range profile is the inverse transform across the
+        ``num_steps`` pulses
+        (:func:`~witwin.radar.processing.stepped_frequency_profile`): its
+        resolution is ``c / (2 num_steps step)`` and its unambiguous range
+        ``c / (2 step)``.
+        """
+
+        return cls(
+            pulse_kind="rect",
+            pulse_width=float(pulse_width),
+            bandwidth=1.0 / float(pulse_width),
+            pri=float(pri),
+            num_pulses=int(num_steps),
+            sample_rate=float(sample_rate),
+            num_samples=int(num_samples),
+            range_gate_start=float(range_gate_start),
+            max_expected_delay_rate=max_expected_delay_rate,
+            frequency_step=float(step),
+        )
+
+    @classmethod
+    def arbitrary(
+        cls,
+        samples,
+        *,
+        rate: float,
+        pri: float,
+        num_pulses: int,
+        sample_rate: float,
+        num_samples: int,
+        bandwidth: float | None = None,
+        range_gate_start: float = 0.0,
+        max_expected_delay_rate: float = 0.0,
+    ) -> Pulsed:
+        """A user-sampled complex envelope, each sample held for ``1 / rate`` s.
+
+        ``samples`` are relative to the full transmit amplitude, so their
+        magnitudes may not exceed one. ``bandwidth`` defaults to ``rate``.
+        """
+
+        chips = tuple(complex(value) for value in samples)
+        if not chips:
+            raise ValueError("an arbitrary envelope needs at least one sample")
+        return cls(
+            pulse_kind="coded",
+            pulse_width=len(chips) / float(rate),
+            bandwidth=float(rate) if bandwidth is None else float(bandwidth),
+            pri=float(pri),
+            num_pulses=int(num_pulses),
+            sample_rate=float(sample_rate),
+            num_samples=int(num_samples),
+            range_gate_start=float(range_gate_start),
+            max_expected_delay_rate=max_expected_delay_rate,
+            chips=chips,
+        )
+
+    @staticmethod
+    def m_sequence(order: int) -> tuple[int, ...]:
+        """The maximal-length binary sequence of length ``2**order - 1``, as ``+1``/``-1``.
+
+        Generated by a Fibonacci shift register on a primitive trinomial or
+        pentanomial (orders 2-16). Its periodic autocorrelation is ``N`` at lag
+        zero and ``-1`` at every other lag.
+        """
+
+        taps = _M_SEQUENCE_TAPS.get(int(order))
+        if taps is None:
+            raise ValueError(f"m-sequence order must be one of {sorted(_M_SEQUENCE_TAPS)}, got {order!r}")
+        length = (1 << order) - 1
+        state = [1] * order
+        out = []
+        for _ in range(length):
+            out.append(state[-1])
+            feedback = 0
+            for tap in taps:
+                feedback ^= state[tap - 1]
+            state = [feedback, *state[:-1]]
+        return tuple(1 - 2 * bit for bit in out)
+
+    @staticmethod
+    def costas(prime: int) -> tuple[int, ...]:
+        """A Welch-Costas frequency order of length ``prime - 1``: ``g**i mod prime``.
+
+        ``g`` is the smallest primitive root. Multiply by a tone spacing of
+        ``1 / chip_width`` for :meth:`fsk`; the result has a thumbtack
+        ambiguity function.
+        """
+
+        p = int(prime)
+        if p < 3 or any(p % d == 0 for d in range(2, int(math.isqrt(p)) + 1)):
+            raise ValueError(f"costas needs an odd prime, got {prime!r}")
+        for g in range(2, p):
+            if len({pow(g, i, p) for i in range(1, p)}) == p - 1:
+                return tuple(pow(g, i, p) for i in range(1, p))
+        raise AssertionError("every prime has a primitive root")
+
+
+#: Feedback taps of a primitive polynomial per register length, counted from
+#: one: ``x^n + x^k + 1`` and the pentanomials where no trinomial is primitive.
+_M_SEQUENCE_TAPS = {
+    2: (2, 1),
+    3: (3, 2),
+    4: (4, 3),
+    5: (5, 3),
+    6: (6, 5),
+    7: (7, 6),
+    8: (8, 6, 5, 4),
+    9: (9, 5),
+    10: (10, 7),
+    11: (11, 9),
+    12: (12, 6, 4, 1),
+    13: (13, 4, 3, 1),
+    14: (14, 5, 3, 1),
+    15: (15, 14),
+    16: (16, 15, 13, 4),
+}
 
 
 Waveform = Fmcw | Ofdm | Pulsed
@@ -810,7 +1128,8 @@ class Radar:
 
         waveform = self.waveform
         if waveform.kind == WAVEFORM_FMCW:
-            return (waveform.chirp_period * len(self.tx), float(waveform.adc_start), 1.0 / float(waveform.sample_rate))
+            spec = waveform.to_spec(carrier=float(self.carrier), num_tx=len(self.tx), num_rx=len(self.rx))
+            return (spec.slot_period_s, float(waveform.adc_start), 1.0 / float(waveform.sample_rate))
         if waveform.kind == WAVEFORM_OFDM:
             symbol = 1.0 / float(waveform.subcarrier_spacing) + float(waveform.cyclic_prefix)
             return (symbol, 0.0, 1.0 / float(waveform.sample_rate))
@@ -1046,8 +1365,10 @@ class Radar:
                 ),
             )
         if kind == WAVEFORM_OFDM:
-            from .synthesis.ofdm import synthesize_cfr_rows
+            from .synthesis.ofdm import synthesize_cfr_rows, synthesize_ofdm_time_rows
 
+            if spec.time_domain:
+                return synthesize_ofdm_time_rows(delay, None, weight, offsets, spec)
             return synthesize_cfr_rows(delay, None, weight, offsets, spec)
         from .synthesis.pulsed import synthesize_echo_rows
 
@@ -1288,4 +1609,4 @@ def _pattern_from_mapping(config: Mapping[str, Any]) -> Pattern:
     raise ValueError(f"antenna_pattern kind must be 'separable' or 'map', got {kind!r}")
 
 
-__all__ = ["Fmcw", "Ofdm", "Pulsed", "Radar"]
+__all__ = ["Chirp", "Fmcw", "Ofdm", "Pulsed", "Radar"]

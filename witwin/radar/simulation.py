@@ -269,19 +269,17 @@ class Session:
         re-scheduled.
         """
 
-        from .synthesis.assembly import FmcwSpec, waveform_sampling
+        from .synthesis.assembly import fast_time_single, waveform_sampling
 
         declared = radar.system_config.waveform_spec()
-        working = declared
-        if isinstance(declared, FmcwSpec) and radar.frontend is not None:
-            working = replace(declared, output_domain="beat")
+        working = _working_spec(radar, declared)
         if not self.sampled:
             return InstrumentSpecs(declared=declared, working=working, single=None)
         _, _, single = waveform_sampling(
             working, num_tx=self.array.num_tx, num_rx=self.array.num_rx, device=radar.device
         )
         if self.adc_sampled:
-            single = replace(single, num_samples=1, output_domain="beat")
+            single = fast_time_single(single)
         return InstrumentSpecs(declared=declared, working=working, single=single)
 
     def echoing(self, radar: Radar) -> Session:
@@ -847,6 +845,28 @@ class WorldHalf:
 # ---------------------------------------------------------------------------
 
 
+def _working_spec(radar: Radar, declared: WaveformSpec) -> WaveformSpec:
+    """The spec synthesis runs: the beat domain whenever the frame needs ADC-time samples.
+
+    Receiver stages and oscillator noise act on ADC-time samples, and so do a
+    chirp sequence, a ramp phase error and a real ADC (the closed-form spectrum
+    describes none of them). The direct-spectrum fast path is kept only for an
+    ideal receiver on a uniform linear ramp.
+    """
+
+    from .synthesis.assembly import FmcwSpec, OfdmSpec
+
+    if isinstance(declared, FmcwSpec) and (
+        radar.frontend is not None or not (declared.admits_direct_spectrum and declared.uniform)
+    ):
+        return replace(declared, output_domain="beat")
+    if isinstance(declared, OfdmSpec) and declared.time_domain:
+        # A modulated stream is received as time samples; its CFR is the
+        # demodulated estimate, formed after the receive chain.
+        return replace(declared, output_domain="time")
+    return declared
+
+
 def _resolve_sampling(requested: Motion, *, sampled: bool) -> str:
     """The route a request runs, once it is known whether anything moves.
 
@@ -919,7 +939,16 @@ def open_session(
     publishes without a launch.
     """
 
-    from .synthesis.assembly import FmcwSpec, SlowTimeMode, waveform_sampling
+    from .synthesis.assembly import (
+        FmcwSpec,
+        OfdmSpec,
+        PulsedSpec,
+        SlowTimeMode,
+        fast_time_grid,
+        fast_time_offsets,
+        fast_time_single,
+        waveform_sampling,
+    )
 
     if not isinstance(motion, Motion):
         raise TypeError(f"motion must be a Motion, got {type(motion).__name__}")
@@ -955,17 +984,32 @@ def open_session(
         sampled = True
     motion_sampling = _resolve_sampling(motion, sampled=sampled)
 
-    # Receiver nonlinearity and oscillator noise act on ADC-time samples.
-    # Preserve the direct-spectrum fast path only for an ideal receiver.
-    working = declared
-    if isinstance(declared, FmcwSpec) and radar.frontend is not None:
-        working = replace(declared, output_domain="beat")
+    working = _working_spec(radar, declared)
     if motion_sampling == "adaptive" and not isinstance(working, FmcwSpec):
         raise NotImplementedError("adaptive motion currently requires FMCW")
+    if motion_sampling == "adaptive" and isinstance(working, FmcwSpec):
+        if not working.uniform or working.phase_error_cycles or working.simultaneous:
+            raise NotImplementedError(
+                "adaptive motion interpolates one uniform TDM ramp; a chirp sequence, a start offset, a ramp phase "
+                "error, DDM and BPM run with Motion.adc() or Motion.chirp()"
+            )
+    if isinstance(working, FmcwSpec) and working.simultaneous and radar.coupling is not None:
+        raise NotImplementedError(
+            "array mutual coupling acts on separately recorded transmit channels, and DDM and BPM record every "
+            "transmitter on one; run TDM to model coupling"
+        )
     if motion_sampling == "adaptive" and motion.rediscover_every_frames is not None:
         raise ValueError("adaptive motion owns its topology discovery cadence")
-    adc_sampled = sampled and motion_sampling in ("adc", "adaptive") and isinstance(working, FmcwSpec)
-    samples_per_slot = working.num_samples if adc_sampled and isinstance(working, FmcwSpec) else 1
+    # FMCW and pulsed trains have a fast-time grid of their own, so an ADC
+    # request observes the world at every sample of it.
+    fast_grid = isinstance(working, (FmcwSpec, PulsedSpec)) or (isinstance(working, OfdmSpec) and working.time_domain)
+    adc_sampled = sampled and motion_sampling in ("adc", "adaptive") and fast_grid
+    if sampled and fast_grid and not isinstance(working, FmcwSpec) and radar.leakage is not None:
+        raise NotImplementedError(
+            "a refreshed pulsed or time-domain OFDM frame is synthesized one slot batch at a time, and a declared "
+            "leakage keeps one launch per observation; the two are not combined"
+        )
+    samples_per_slot = fast_time_grid(working)[2] if adc_sampled else 1
 
     mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     cadence: int | None
@@ -976,17 +1020,23 @@ def open_session(
             working, num_tx=array.num_tx, num_rx=array.num_rx, device=radar.device
         )
         offsets = np.asarray(slot_offsets, dtype=np.float64)
-        if adc_sampled and isinstance(working, FmcwSpec):
-            if working.t_start_s + (working.num_samples - 1) * working.sample_period_s >= working.chirp_period_s:
-                raise ValueError("ADC observations must fit inside each chirp period")
-            # An ADC frame has chirps * transmitters * samples observations, so
-            # the schedule is an array rather than Python floats: the same
-            # additions in the same order, paid once by numpy instead of once
-            # per observation by the interpreter.
-            offsets = (
-                offsets[:, None] + working.t_start_s + np.arange(working.num_samples) * working.sample_period_s
-            ).ravel()
-            single = replace(single, num_samples=1, output_domain="beat")
+        if adc_sampled:
+            first, period, count = fast_time_grid(working)
+            if isinstance(working, FmcwSpec):
+                slot_period = working.chirp_period_s
+            elif isinstance(working, PulsedSpec):
+                slot_period = working.pri_s
+            else:
+                slot_period = working.symbol_period_s
+            # A chirp sequence validates each profile's own window instead.
+            uniform = not isinstance(working, FmcwSpec) or not working.sequence
+            if uniform and first + (count - 1) * period >= slot_period:
+                raise ValueError("ADC observations must fit inside each slow-time slot")
+            # An ADC frame has slots * samples observations, so the schedule is
+            # an array rather than Python floats: the same additions in the
+            # same order, paid once by numpy instead of once per observation.
+            offsets = fast_time_offsets(working, offsets)
+            single = fast_time_single(single)
         mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         # A version poll cannot detect endpoint-induced path births. Complete
         # dynamic sampling therefore rediscovers at each observed instant.
@@ -1101,48 +1151,54 @@ def _uploaded(session: Session, table: np.ndarray, device: torch.device) -> torc
 def _batches_slots(session: Session) -> bool:
     """Whether a sampled frame is synthesized one slot batch at a time.
 
-    Every refreshed FMCW frame is, unless something acts on the rows between
-    replay and synthesis (oscillator phase noise) or adds rows of its own (a
-    declared coupling); those keep one launch per observation.
+    Every refreshed FMCW or pulsed frame is, unless something acts on the rows
+    between replay and synthesis (oscillator phase noise) or adds rows of its
+    own (a declared coupling); those keep one launch per observation.
     """
 
-    from .synthesis.assembly import FmcwSpec
+    from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec
 
     radar = session.radar
-    return (
-        session.sampled
-        and isinstance(session.specs.working, FmcwSpec)
-        and not session.path_phase_noise
-        and radar.leakage is None
-    )
+    working = session.specs.working
+    gridded = isinstance(working, (FmcwSpec, PulsedSpec)) or (isinstance(working, OfdmSpec) and working.time_domain)
+    return session.sampled and gridded and not session.path_phase_noise and radar.leakage is None
 
 
 def _echo_slot_batches(
-    session: Session, working: FmcwSpec, observations: Iterator[Observation] | tuple[Observation, ...]
+    session: Session, working: WaveformSpec, observations: Iterator[Observation] | tuple[Observation, ...]
 ) -> tuple[torch.Tensor, EpochFrame, Observation]:
-    """Synthesize a sampled FMCW frame from its slot batches, active pairs only.
+    """Synthesize a sampled frame from its slot batches, active pairs only.
 
-    An observation sits in one TDM slot and is heard by one transmitter's
-    ``num_rx`` pairs; the frame cube reads nothing else from it. Each slot
-    batch is therefore synthesized as ONE launch over just those pair
-    segments, each carrying its own ADC window start on the ADC route, and the
-    frame cube gathers the results.
-    Every segment sums the same rows in the same order as a per-observation
-    launch would, so the cube is the same to the bit. Returns the
-    ``[chirp, pair, sample]`` cube, the opening epoch frame and the closing
-    observation.
+    An FMCW observation sits in one TDM slot and is heard by one transmitter's
+    ``num_rx`` pairs; a pulsed observation is heard by every pair. The frame
+    cube reads nothing else from it. Each slot batch is therefore synthesized
+    as ONE launch over just those pair segments, each carrying its own
+    schedule entry (the synthesis owner's :func:`refreshed_schedule`), and the
+    frame cube gathers the results. Every segment sums the same rows in the
+    same order as a per-observation launch would, so the cube is the same to
+    the bit. Returns the ``[slow, pair, fast]`` cube, the opening epoch frame and
+    the closing observation.
     """
 
     from .synthesis import SynthesisPathBatch
-    from .synthesis.assembly import FmcwSpec, require_compatible
+    from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec, fast_count, refreshed_schedule, require_compatible
     from .synthesis.fmcw import channel_phasor_to_beat_weight, synthesize_fmcw_rows
+    from .synthesis.ofdm import symbol_tensor, synthesize_ofdm_time_rows
+    from .synthesis.pulsed import synthesize_echo_rows
 
     single = session.specs.single
-    assert isinstance(single, FmcwSpec)
+    assert single is not None
+    fmcw = isinstance(working, FmcwSpec)
     array = session.array
     num_tx, num_rx = array.num_tx, array.num_rx
     pairs = num_tx * num_rx
+    # Under TDM a slot fires one transmitter, heard on its num_rx pairs; a
+    # pulsed train, DDM and BPM illuminate every pair at once.
+    tdm = isinstance(working, FmcwSpec) and not working.simultaneous
+    heard = num_rx if tdm else pairs
+    slots_per_slow = num_tx if tdm else 1
     samples = session.samples_per_slot
+    width = fast_count(single)
     values: list[torch.Tensor] = []
     targets: list[np.ndarray] = []
     opened: EpochFrame | None = None
@@ -1164,41 +1220,66 @@ def _echo_slot_batches(
         slot_in_batch = np.asarray([entry[1].slot for entry in pending], dtype=np.int64)
         sample = index % samples
         frame_slot = index // samples
-        # Sink-major ranks: the slot's transmitter ``t`` is heard on pairs
-        # ``t + num_tx * r``, one per receiver ``r``.
-        pair = ((frame_slot % num_tx)[:, None] + num_tx * np.arange(num_rx)).ravel()
-        owner = np.repeat(slot_in_batch, num_rx)
+        if tdm:
+            # Sink-major ranks: the slot's transmitter ``t`` is heard on pairs
+            # ``t + num_tx * r``, one per receiver ``r``.
+            pair = ((frame_slot % num_tx)[:, None] + num_tx * np.arange(num_rx)).ravel()
+        else:
+            pair = np.tile(np.arange(pairs), len(index))
+        owner = np.repeat(slot_in_batch, heard)
         begin = owner * rows_per_slot + batch.offsets[pair]
         counts = batch.offsets[pair + 1] - batch.offsets[pair]
         prefix = np.cumsum(counts) - counts
         rows = np.repeat(begin - prefix, counts) + np.arange(int(counts.sum()))
         segment_offsets = np.concatenate(([0], np.cumsum(counts)))
         tables = [rows, segment_offsets, pair % num_tx]
-        if session.adc_sampled:
-            # Each segment's own ADC window start, formed exactly as a
-            # one-instant spec's ``t_start_s`` would be, and carried bit for
-            # bit through the int64 upload.
-            starts = working.t_start_s + np.repeat(sample, num_rx).astype(np.float64) * working.sample_period_s
-            tables.append(starts.view(np.int64))
+        schedule = refreshed_schedule(
+            working, np.repeat(frame_slot, heard), np.repeat(sample, heard) if session.adc_sampled else None
+        )
+        scheduled = session.adc_sampled or not isinstance(working, FmcwSpec) or not working.uniform
+        if scheduled:
+            # Carried bit for bit through the int64 upload.
+            tables.append(np.ascontiguousarray(schedule).view(np.int64).ravel())
         routing = _uploaded(session, np.concatenate(tables), composed.total_delay_s.device)
         parts = torch.split(routing, [len(table) for table in tables])
         row_index, offsets, transmitter = parts[0], parts[1], parts[2]
-        transfer = channel_phasor_to_beat_weight(composed.complex_transfer_ref.index_select(0, row_index))
+        transfer = composed.complex_transfer_ref.index_select(0, row_index)
+        if fmcw:
+            transfer = channel_phasor_to_beat_weight(transfer)
         if composed.row_valid is not None:
             valid = composed.row_valid.index_select(0, row_index)
             transfer = torch.where(valid, transfer, torch.zeros_like(transfer))
-        out = synthesize_fmcw_rows(
-            composed.total_delay_s.index_select(0, row_index),
-            None,
-            transfer,
-            offsets,
-            single,
-            segment_tx_index=transmitter.to(torch.int32),
-            segment_t_start_s=parts[3].view(torch.float64) if session.adc_sampled else None,
-        )
-        values.append(out.reshape(len(pair), single.num_samples))
-        chirp = np.repeat(frame_slot // num_tx, num_rx)
-        targets.append(((chirp * pairs + pair) * samples + np.repeat(sample, num_rx)) * single.num_samples)
+        delay = composed.total_delay_s.index_select(0, row_index)
+        if fmcw:
+            assert isinstance(single, FmcwSpec)
+            out = synthesize_fmcw_rows(
+                delay,
+                None,
+                transfer,
+                offsets,
+                single,
+                segment_tx_index=transmitter.to(torch.int32),
+                segment_schedule=parts[3].view(torch.float64).reshape(-1, 3) if scheduled else None,
+            )
+        elif isinstance(working, OfdmSpec):
+            assert isinstance(single, OfdmSpec)
+            out = synthesize_ofdm_time_rows(
+                delay,
+                None,
+                transfer,
+                offsets,
+                single,
+                symbols=symbol_tensor(working, composed.total_delay_s.device),
+                segment_schedule=parts[3].view(torch.float64).reshape(-1, 2),
+            )
+        else:
+            assert isinstance(single, PulsedSpec)
+            out = synthesize_echo_rows(
+                delay, None, transfer, offsets, single, segment_schedule=parts[3].view(torch.float64).reshape(-1, 2)
+            )
+        values.append(out.reshape(len(pair), width))
+        slow = np.repeat(frame_slot // slots_per_slow, heard)
+        targets.append(((slow * pairs + pair) * samples + np.repeat(sample, heard)) * width)
         pending.clear()
 
     for position, observation in enumerate(observations):
@@ -1213,11 +1294,17 @@ def _echo_slot_batches(
     flush()
     destination = np.concatenate(targets)
     order = np.argsort(destination, kind="stable")
-    if not np.array_equal(destination[order], np.arange(len(destination)) * single.num_samples):
-        raise ValueError("a sampled frame's observations must cover every chirp, pair and sample exactly once")
+    if not np.array_equal(destination[order], np.arange(len(destination)) * width):
+        raise ValueError("a sampled frame's observations must cover every slot, pair and sample exactly once")
     gather = _uploaded(session, order, values[0].device)
     cube = torch.cat(values).index_select(0, gather)
-    return cube.reshape(working.num_chirps, pairs, working.num_samples), opened, closing
+    if isinstance(working, FmcwSpec):
+        slow_count = working.num_chirps
+    elif isinstance(working, OfdmSpec):
+        slow_count = working.num_symbols
+    else:
+        slow_count = working.num_pulses
+    return cube.reshape(slow_count, pairs, -1), opened, closing
 
 
 def _finish_frame(
@@ -1229,24 +1316,69 @@ def _finish_frame(
     never share one.
     """
 
-    from .synthesis.assembly import FmcwSpec, SynthesisResult, assemble_frame_cube
+    from .synthesis.assembly import FmcwSpec, OfdmSpec, SynthesisResult, assemble_frame_cube
 
     radar = session.radar
-    frame_cube = assemble_frame_cube(synthesis.cube, num_tx=session.array.num_tx, num_rx=session.array.num_rx)
+    declared, working = session.specs.declared, session.specs.working
+    # DDM and BPM record every transmitter on each receiver: one transmit channel.
+    channels = working.transmit_channels if isinstance(working, FmcwSpec) else session.array.num_tx
+    frame_cube = assemble_frame_cube(synthesis.cube, num_tx=channels, num_rx=session.array.num_rx)
     if radar.frontend is not None:
         frame_cube = radar.frontend.apply(
             frame_cube, phase_in_signal=session.path_phase_noise, frame_time_s=frame_time_s
         ).signal
-    declared, working = session.specs.declared, session.specs.working
+    if isinstance(working, FmcwSpec) and working.real_adc:
+        # An in-phase-only receiver digitises Re of the complex baseband, after
+        # every receive stage; its noise per real sample is half the complex
+        # sample's, which is the same k T_sys f_s / 2 a real ADC at f_s sees.
+        frame_cube = torch.complex(frame_cube.real, torch.zeros_like(frame_cube.real))
+    if isinstance(declared, OfdmSpec) and declared.output_domain != synthesis.output_domain:
+        from .processing.range_doppler import ofdm_cfr_estimate
+        from .synthesis.ofdm import symbol_tensor
+
+        assert isinstance(working, OfdmSpec)
+        table = symbol_tensor(working, frame_cube.device)
+        frame_cube = ofdm_cfr_estimate(frame_cube, torch.complex(table[..., 0], table[..., 1]))
+        synthesis = replace(
+            SynthesisResult.from_ofdm(
+                frame_cube.permute(2, 1, 0, 3).reshape(working.num_symbols, -1, working.num_subcarriers), declared
+            ),
+            observation_schedule=synthesis.observation_schedule,
+        )
     if isinstance(declared, FmcwSpec) and declared.output_domain != synthesis.output_domain:
         from .processing.range_doppler import fmcw_range_fft
 
         assert isinstance(working, FmcwSpec)
         frame_cube = fmcw_range_fft(frame_cube)
-        synthesis = SynthesisResult.from_fmcw(
-            frame_cube.permute(2, 1, 0, 3).reshape(working.num_chirps, -1, working.num_samples), declared
+        synthesis = replace(
+            SynthesisResult.from_fmcw(
+                frame_cube.permute(2, 1, 0, 3).reshape(working.num_chirps, -1, working.num_samples), declared
+            ),
+            observation_schedule=synthesis.observation_schedule,
         )
     return frame_cube, synthesis
+
+
+def observation_schedule(session: Session, trace: FrameTrace) -> str:
+    """When this frame's synthesis observed the world, as the synthesis owner names it.
+
+    One of :data:`~witwin.radar.synthesis.assembly.OBSERVATION_SCHEDULES`. It
+    is what ran, not what was requested: an OFDM symbol has no fast-time grid,
+    so an ADC request on one observes it once per symbol.
+    """
+
+    from .synthesis.assembly import (
+        OBSERVATION_ADAPTIVE,
+        OBSERVATION_FAST_TIME,
+        OBSERVATION_FRAME,
+        OBSERVATION_SLOW_TIME,
+    )
+
+    if trace.adaptive is not None:
+        return OBSERVATION_ADAPTIVE
+    if not session.sampled:
+        return OBSERVATION_FRAME
+    return OBSERVATION_FAST_TIME if session.adc_sampled else OBSERVATION_SLOW_TIME
 
 
 def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
@@ -1261,7 +1393,7 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
     ``trace.observations`` is drained exactly once, in order.
     """
 
-    from .synthesis.assembly import FmcwSpec, SynthesisResult
+    from .synthesis.assembly import FmcwSpec, OfdmSpec, PulsedSpec, SynthesisResult
 
     radar = session.radar
     working = session.specs.working
@@ -1288,10 +1420,13 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         trace.stats["synthesis_batches"] = batches
         synthesis = SynthesisResult.from_fmcw(cube, replace(working, output_domain="beat"))
     elif _batches_slots(session):
-        assert isinstance(working, FmcwSpec)
         cube, opened, closing = _echo_slot_batches(session, working, trace.observations)
         published = closing.composed
-        if session.adc_sampled:
+        if isinstance(working, OfdmSpec):
+            synthesis = SynthesisResult.from_ofdm(cube, working)
+        elif not isinstance(working, FmcwSpec):
+            synthesis = SynthesisResult.from_pulsed(cube, working)
+        elif session.adc_sampled:
             if working.output_domain == "spectrum":
                 from .processing.range_doppler import fmcw_range_fft
 
@@ -1316,13 +1451,33 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
             if session.sampled:
                 assert single is not None
                 observation_spec = single
-                if session.adc_sampled:
-                    assert isinstance(working, FmcwSpec) and isinstance(single, FmcwSpec)
+                if isinstance(working, PulsedSpec) and working.frequency_step_hz != 0.0:
+                    raise NotImplementedError(
+                        "a stepped-frequency train on a moving scene is synthesized one slot batch at a time, and a "
+                        "declared leakage keeps one launch per observation; the two are not combined"
+                    )
+                if isinstance(working, FmcwSpec) and not working.uniform:
+                    # A sequence's slot carries its own slope, offset and window.
+                    profile = working.slot_spec(len(slot_cubes) // session.samples_per_slot)
+                    assert isinstance(single, FmcwSpec)
                     observation_spec = replace(
                         single,
-                        t_start_s=working.t_start_s
-                        + (len(slot_cubes) % session.samples_per_slot) * working.sample_period_s,
+                        slope_hz_per_s=profile.slope_hz_per_s,
+                        start_offset_hz=profile.start_offset_hz,
+                        t_start_s=profile.t_start_s,
                     )
+                if session.adc_sampled:
+                    sample = len(slot_cubes) % session.samples_per_slot
+                    if isinstance(working, FmcwSpec):
+                        assert isinstance(observation_spec, FmcwSpec)
+                        observation_spec = replace(
+                            observation_spec, t_start_s=observation_spec.t_start_s + sample * working.sample_period_s
+                        )
+                    else:
+                        assert isinstance(working, PulsedSpec) and isinstance(single, PulsedSpec)
+                        observation_spec = replace(
+                            single, range_gate_start_s=working.range_gate_start_s + sample * working.sample_period_s
+                        )
             if session.sampled:
                 synthesis = radar._synthesize(composed, slow_time_mode=session.mode, spec=observation_spec)
             else:
@@ -1333,18 +1488,26 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
             stacked = torch.cat(slot_cubes, dim=0)
             pairs = torch.arange(session.array.num_tx * session.array.num_rx, device=stacked.device)
             if session.adc_sampled:
-                assert isinstance(working, FmcwSpec)
                 stacked = stacked.reshape(-1, session.samples_per_slot, len(pairs)).transpose(1, 2)
                 cube = stacked[session.pair_samples, pairs]
-                if working.output_domain == "spectrum":
-                    from .processing.range_doppler import fmcw_range_fft
+                if isinstance(working, FmcwSpec):
+                    if working.output_domain == "spectrum":
+                        from .processing.range_doppler import fmcw_range_fft
 
-                    cube = fmcw_range_fft(cube)
-                synthesis = SynthesisResult.from_fmcw(cube, working)
+                        cube = fmcw_range_fft(cube)
+                    synthesis = SynthesisResult.from_fmcw(cube, working)
+                else:
+                    assert isinstance(working, PulsedSpec)
+                    synthesis = SynthesisResult.from_pulsed(cube, working)
             else:
                 synthesis = replace(synthesis, cube=stacked[session.pair_samples, pairs])
     if opened is None or closing is None or published is None or synthesis is None:
         raise ValueError("a frame trace must carry at least one observation")
+    if isinstance(working, FmcwSpec) and working.simultaneous:
+        from .synthesis.fmcw import multiplex_transmitters
+
+        synthesis = replace(synthesis, cube=multiplex_transmitters(synthesis.cube, working))
+    synthesis = replace(synthesis, observation_schedule=observation_schedule(session, trace))
     frame_cube, synthesis = _finish_frame(session, synthesis, trace.time_s)
     loop = session.loop
     return SceneFrame(

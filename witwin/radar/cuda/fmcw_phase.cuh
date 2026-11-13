@@ -17,3 +17,42 @@ __device__ __forceinline__ FmcwPhaseTerms fmcw_phase_terms(
   return {carrier*tau + carrier_rate*drift + slope*tau*(u-0.5*tau),
           two_pi*derivative, two_pi*time*(derivative+carrier_rate)};
 }
+
+// The two per-chirp extensions of the same phase (R-ADR-047), added to it rather
+// than folded in so the uniform ramp keeps its exact arithmetic:
+//
+//   start offset f0 [Hz]: a chirp whose ramp starts at f_ref + f0. The weight
+//     carries only f_ref, so f0 multiplies the FULL delay: + f0 * tau.
+//   transmit phase error E(t) [cycles], t = time since the ramp start [s]:
+//     E(t) = sum_i poly[i] * t^(i + 2). The beat is tx(u) * conj(tx(u - tau)),
+//     so the error enters as E(u) - E(u - tau). Orders 0 and 1 are a constant
+//     phase and a frequency offset, not a nonlinearity, and are not in poly.
+//
+// Derivatives with respect to tau, at fixed slot and ADC time: f0 + E'(u - tau),
+// and the delay moves with tau0 by 1 and with the rate by (slot + u).
+__device__ __forceinline__ FmcwPhaseTerms fmcw_profile_terms(
+    double tau0, double rate, double slot, double u, double slope,
+    double carrier, double carrier_rate, double offset, const double* poly, int poly_len) {
+  constexpr double two_pi = 6.283185307179586476925286766559;
+  FmcwPhaseTerms terms = fmcw_phase_terms(tau0, rate, slot, u, slope, carrier, carrier_rate);
+  if (offset == 0.0 && poly_len == 0) {
+    return terms;
+  }
+  const double time = slot + u;
+  const double tau = tau0 + rate * time;
+  const double lagged = u - tau;
+  double error_now = 0.0, error_lagged = 0.0, slope_lagged = 0.0;
+  for (int i = poly_len - 1; i >= 0; --i) {
+    error_now = (error_now + poly[i]) * u;
+    error_lagged = (error_lagged + poly[i]) * lagged;
+    slope_lagged = slope_lagged * lagged + (i + 2) * poly[i];
+  }
+  error_now *= u;
+  error_lagged *= lagged;
+  slope_lagged *= lagged;
+  const double derivative = offset + slope_lagged;
+  terms.cycles += offset * tau + error_now - error_lagged;
+  terms.d_tau += two_pi * derivative;
+  terms.d_rate += two_pi * time * derivative;
+  return terms;
+}

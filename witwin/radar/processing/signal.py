@@ -132,7 +132,8 @@ def pulse_samples(spec: PulsedSpec, device: torch.device | str = "cpu") -> torch
     """The transmitted replica on the ADC grid, as ``complex128[M_p]``.
 
     ``M_p = round(T_p / T_s)`` samples at ``u = m T_s``, with the amplitude
-    ``spec.replica_amplitude = 1 / T_p`` and the analytic phase: the function
+    ``spec.replica_amplitude = 1 / E_s`` (``1 / T_p`` for every unit-modulus
+    envelope) and the envelope's own phase and chip magnitude: the function
     the pulsed synthesis kernel evaluates at a continuous fractional delay,
     scaled so that the correlation is a unit-gain filter. In
     float64 because it is a per-frame constant of a few hundred elements whose
@@ -163,16 +164,37 @@ def pulse_samples(spec: PulsedSpec, device: torch.device | str = "cpu") -> torch
     envelope = torch.full((count,), float(spec.replica_amplitude), dtype=torch.float64, device=target)
     if spec.is_linear_fm:
         cycles = 0.5 * float(spec.bandwidth_hz) * u * u / float(spec.pulse_width_s)
-        phase = math.tau * (cycles - torch.floor(cycles))
+    elif spec.is_coded:
+        # The chip a replica sample falls in, and that chip's phase and
+        # frequency: the same piecewise envelope the kernel holds per chip.
+        table = torch.tensor(spec.chip_table(), dtype=torch.float64, device=target)
+        width = float(spec.chip_width_s)
+        chip = torch.clamp(torch.floor(u / width).to(torch.int64), 0, int(table.shape[0]) - 1)
+        entry = table.index_select(0, chip)
+        envelope = envelope * entry[:, 0]
+        cycles = entry[:, 1] + entry[:, 2] * (u - chip.to(torch.float64) * width)
     else:
-        phase = torch.zeros_like(u)
+        cycles = torch.zeros_like(u)
+    phase = math.tau * (cycles - torch.floor(cycles))
     return torch.complex(envelope * torch.cos(phase), envelope * torch.sin(phase))
 
 
 def correlate(
-    signal: torch.Tensor, replica: torch.Tensor, *, sample_period_s: float, oversample: int, window: str
+    signal: torch.Tensor,
+    replica: torch.Tensor,
+    *,
+    sample_period_s: float,
+    oversample: int,
+    window: str,
+    periodic: bool = False,
 ) -> torch.Tensor:
     """Correlate the trailing axis against ``conj(replica)``.
+
+    ``periodic`` is the CYCLIC correlation of a continuously transmitted code
+    (PMCW): the gate holds exactly one code period, so the echo is a cyclic
+    shift of the replica and the transform length is the gate's own ``M`` -
+    zero padding would cut the shifted code in two. The replica must then be
+    exactly ``M`` samples long.
 
     ``signal`` is ``[..., M]``; the result is ``[..., M * oversample]``, indexed
     by lag from the range-gate start. Three conventions, all of which change the
@@ -198,7 +220,12 @@ def correlate(
     if oversample < 1:
         raise ValueError(f"oversample must be at least 1, got {oversample}")
     samples = int(signal.shape[-1])
-    length = samples + int(replica.shape[0])
+    if periodic and int(replica.shape[0]) != samples:
+        raise ValueError(
+            f"a cyclic correlation needs the gate to hold exactly one code period: the gate has {samples} samples "
+            f"and the code period {int(replica.shape[0])}"
+        )
+    length = samples if periodic else samples + int(replica.shape[0])
     spectrum = torch.fft.fft(signal, n=length, dim=-1) * torch.conj(torch.fft.fft(replica.to(signal.dtype), n=length))
     if window != DEFAULT_WINDOW:
         values = window_values(window, length, dtype=real_dtype_of(signal), device=signal.device)
@@ -349,6 +376,24 @@ class ProcessingAxes:
     range_oversample: int = 1
     matched_filter_replica: torch.Tensor | None = None
     matched_filter_sample_period_s: float = 0.0
+    #: Pulsed only: the code is transmitted continuously, so the matched filter
+    #: is the cyclic correlation over one code period.
+    matched_filter_periodic: bool = False
+    #: How the transmitters shared the frame: ``tdm``, ``ddm`` or ``bpm``
+    #: (R-ADR-048). A DDM or BPM cube records every transmitter on each receiver
+    #: until :func:`~witwin.radar.processing.demultiplex` separates them.
+    mimo: str = "tdm"
+    #: DDM and BPM: each transmitter's code per slow-time sample, ``[slow,
+    #: num_tx]`` complex128, in the CUBE's phasor convention.
+    transmit_code: torch.Tensor | None = None
+    #: The code period in chirps a demultiplexer decimates by (DDM sub-bands,
+    #: BPM block length). One for TDM.
+    code_period: int = 1
+    #: Whether this record describes a demultiplexed virtual-array cube.
+    demultiplexed: bool = False
+    #: Time-domain OFDM: the transmitted symbols ``X[symbol, subcarrier]``,
+    #: complex128, which demodulation divides by and ISAC processing reads.
+    ofdm_symbols: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.waveform not in WAVEFORMS:
@@ -392,6 +437,16 @@ class ProcessingAxes:
     @property
     def sensor_pair_count(self) -> int:
         return self.num_tx * self.num_rx
+
+    @property
+    def transmit_channels(self) -> int:
+        """How many transmit channels the described cube records separately.
+
+        ``num_tx`` for TDM and for a demultiplexed cube; one for a DDM or BPM
+        cube as received, which holds every transmitter on each receiver.
+        """
+
+        return self.num_tx if (self.mimo == "tdm" or self.demultiplexed) else 1
 
     @property
     def device(self) -> torch.device:
@@ -488,11 +543,14 @@ class ProcessingAxes:
                 f"{float(array.reference_frequency_hz)} Hz; the two are the "
                 "same physical quantity"
             )
-        if int(cube.shape[1]) != array.sensor_pair_count:
+        simultaneous = kind == "fmcw" and bool(spec.simultaneous)
+        recorded = array.num_rx if simultaneous else array.sensor_pair_count
+        if int(cube.shape[1]) != recorded:
             raise ValueError(
                 f"the cube spans {int(cube.shape[1])} sensor pairs but the array "
                 f"is {array.num_tx} x {array.num_rx} = "
                 f"{array.sensor_pair_count} pairs"
+                + (f", recorded on {array.num_rx} receivers under {spec.mimo}" if simultaneous else "")
             )
         if type(range_oversample) is not int or range_oversample < 1:
             raise ValueError(f"range_oversample must be a positive int, got {range_oversample!r}")
@@ -503,7 +561,17 @@ class ProcessingAxes:
 
         replica = None
         replica_period = 0.0
+        periodic = False
+        mimo, code, code_period = "tdm", None, 1
+        symbols = None
         if kind == "fmcw":
+            if simultaneous:
+                mimo = str(spec.mimo)
+                physical = spec.transmit_code()
+                # The beat cube carries the conjugate of the physical code.
+                in_cube = physical.conj() if str(result.phasor) == BEAT_PHASOR else physical
+                code = torch.from_numpy(in_cube).to(device=device, dtype=torch.complex128)
+                code_period = int(spec.ddm_bands or spec.num_tx) if spec.mimo == "ddm" else int(spec.num_tx)
             slow_period = float(spec.slot_period_s)
             max_speed = float(spec.max_unambiguous_speed_mps)
             range_count = fast_count
@@ -515,6 +583,8 @@ class ProcessingAxes:
             range_origin = 0.0
             max_range = range_bin * range_count
         elif kind == "ofdm":
+            if spec.time_domain:
+                symbols = torch.from_numpy(spec.symbol_table()).to(device=device, dtype=torch.complex128)
             slow_period = float(spec.symbol_period_s)
             max_speed = float(spec.max_unambiguous_speed_mps)
             range_count = fast_count
@@ -530,6 +600,7 @@ class ProcessingAxes:
             max_range = float(spec.max_unambiguous_range_m)
             replica_period = float(spec.sample_period_s)
             replica = pulse_samples(spec, device=device)
+            periodic = bool(spec.periodic)
 
         return cls(
             waveform=kind,
@@ -558,6 +629,11 @@ class ProcessingAxes:
             range_oversample=range_oversample,
             matched_filter_replica=replica,
             matched_filter_sample_period_s=replica_period,
+            matched_filter_periodic=periodic,
+            mimo=mimo,
+            transmit_code=code,
+            code_period=code_period,
+            ofdm_symbols=symbols,
         )
 
     def with_bin_counts(self, *, range_bins: int | None = None, doppler_bins: int | None = None) -> "ProcessingAxes":
@@ -628,9 +704,11 @@ def _shape_only_result(spec, pairs: int) -> SynthesisResult:
     """
 
     if isinstance(spec, FmcwSpec):
-        shape, build = (spec.num_chirps, pairs, spec.num_samples), SynthesisResult.from_fmcw
+        recorded = spec.num_rx if spec.simultaneous else pairs
+        shape, build = (spec.num_chirps, recorded, spec.num_samples), SynthesisResult.from_fmcw
     elif isinstance(spec, OfdmSpec):
-        shape, build = (spec.num_symbols, pairs, spec.num_subcarriers), SynthesisResult.from_ofdm
+        fast = spec.samples_per_symbol if spec.output_domain == "time" else spec.num_subcarriers
+        shape, build = (spec.num_symbols, pairs, fast), SynthesisResult.from_ofdm
     elif isinstance(spec, PulsedSpec):
         shape, build = (spec.num_pulses, pairs, spec.num_samples), SynthesisResult.from_pulsed
     else:
@@ -664,7 +742,7 @@ class ProcessingCube:
             )
         if self.data.dim() != 4:
             raise ValueError(f"a processing cube is [tx, rx, slow_time, fast_time]; got shape {tuple(self.data.shape)}")
-        expected = (self.axes.num_tx, self.axes.num_rx)
+        expected = (self.axes.transmit_channels, self.axes.num_rx)
         if tuple(self.data.shape[:2]) != expected:
             raise ValueError(
                 f"the cube's array axes are {tuple(self.data.shape[:2])} but the axes record declares {expected}"
@@ -709,7 +787,7 @@ class ProcessingCube:
                 "sign is derived from that string and would be reconciled "
                 "backwards"
             )
-        return cls(data=assemble_frame_cube(result.cube, num_tx=axes.num_tx, num_rx=axes.num_rx), axes=axes)
+        return cls(data=assemble_frame_cube(result.cube, num_tx=axes.transmit_channels, num_rx=axes.num_rx), axes=axes)
 
     @classmethod
     def from_tensor(cls, cube: torch.Tensor, radar, *, range_oversample: int = 1) -> "ProcessingCube":
@@ -736,17 +814,18 @@ class ProcessingCube:
         axes = ProcessingAxes.from_radar(radar, range_oversample=range_oversample, device=cube.device)
         fast = axes.range_bin_count // axes.range_oversample
         slow = axes.doppler_bin_count
+        channels = axes.transmit_channels
         if cube.dim() == 3:
-            expected = (slow, axes.sensor_pair_count, fast)
+            expected = (slow, channels * axes.num_rx, fast)
             if tuple(cube.shape) != expected:
                 raise ValueError(
                     f"a [slow, pair, fast] cube for this radar is {expected}, got {tuple(cube.shape)}; the pair axis "
                     "is sink major, pair = rx * num_tx + tx"
                 )
             _require_complex("cube", cube)
-            return cls(data=assemble_frame_cube(cube, num_tx=axes.num_tx, num_rx=axes.num_rx), axes=axes)
+            return cls(data=assemble_frame_cube(cube, num_tx=channels, num_rx=axes.num_rx), axes=axes)
         if cube.dim() == 4:
-            expected = (axes.num_tx, axes.num_rx, slow, fast)
+            expected = (channels, axes.num_rx, slow, fast)
             if tuple(cube.shape) != expected:
                 raise ValueError(f"a [tx, rx, slow, fast] cube for this radar is {expected}, got {tuple(cube.shape)}")
             return cls(data=cube, axes=axes)

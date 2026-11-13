@@ -116,7 +116,7 @@ _SCRUBBED_ENV_PREFIXES = ("WITWIN_RADAR_", "WITWIN_CHANNEL_", "RAYD_", "OPTIX_")
 _RADAR_NATIVE_MEMBER = "witwin/radar/cuda/prebuilt/_radar_native.pyd"
 _RADAR_NATIVE_MEMBERS = (_RADAR_NATIVE_MEMBER, "witwin/radar/cuda/prebuilt/_radar_native.so")
 
-#: The nine translation units the Radar library is built from, as wheel members.
+#: The translation units the Radar library is built from, as wheel members.
 #: ``source_fingerprint`` hashes each file's NAME and content in this order.
 _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/extension.cpp",
@@ -124,6 +124,8 @@ _RADAR_SOURCE_MEMBERS = (
     "witwin/radar/cuda/fmcw_spectrum.cu",
     "witwin/radar/cuda/frontend.cu",
     "witwin/radar/cuda/ofdm_cfr.cu",
+    "witwin/radar/cuda/ofdm_time.cu",
+    "witwin/radar/cuda/processing_select.cu",
     "witwin/radar/cuda/pulsed_echo.cu",
     "witwin/radar/cuda/scatter_response.cu",
     "witwin/radar/cuda/sensor_weight.cu",
