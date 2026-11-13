@@ -35,7 +35,7 @@ the release contains as a whole, what evidence stands behind it, and what it doe
 
 The version is set once, in `pyproject.toml`; `witwin.radar.__version__` reads it from the package metadata (or a
 source tree's `pyproject.toml`). There is no per-milestone changelog section and no compatibility shim between
-milestones. The changelog fragments each work item wrote (`docs/dev/changelog-0.5.0/`) were assembled into
+milestones. The changelog fragments each work item wrote (one file per item in a docs/dev/changelog-0.5.0 directory) were assembled into
 `CHANGELOG.md` in the post-rename names and removed.
 
 ## Evidence
