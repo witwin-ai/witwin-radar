@@ -110,7 +110,15 @@ A radar is never edited in place. `Radar.replace(position=..., look_at=...)` ret
 Two defaults are physical choices rather than conveniences:
 
 - The element pattern is `Pattern.isotropic()`. The previous default was an unchosen half-wave dipole cut, which attenuated every off-boresight return by a number the caller never asked for. `Pattern.dipole()` restores it, and `Pattern.separable(...)` and `Pattern.table(...)` take a measured cut or map.
-- `Radar.polarization` is `"up"`: the pose's own up axis, and therefore transverse to the boresight whichever way the radar points. Channel projects the transmitted field onto a world vector, and a vector parallel to the boresight radiates nothing; the previous fixed default was parallel to the default boresight, so every transport came back exactly zero with nothing raised. A world vector is still accepted, and one parallel to the boresight is now refused at construction instead of publishing a cube of zeros. `"right"` is the other derived alias.
+- `Radar.polarization` is `"up"`: the pose's own up axis, and therefore transverse to the boresight whichever way the radar points. A world vector is still accepted, and one parallel to the boresight is refused at construction instead of publishing a cube of zeros. `"right"` is the other derived alias. `Radar.rx_polarization` (default: the same) sets the receive elements' polarization, so a cross-polar channel is one radar.
+
+### What "isotropic" means
+
+Radar, not Channel, owns the element pattern and the polarization (R-ADR-041). Channel launches each leg from a short dipole along the element's polarization `p` and returns the unprojected field vector at the site (`complex3_transport`); the join divides the dipole magnitude `|P_perp(d) p|` out again, so what reaches the pattern stage is a unit co-polar field times the free-space transport.
+
+- An **isotropic element** (`Pattern.isotropic()`) radiates the same power in every direction, polarized along `p` projected transverse to the direction and normalised. The off-plane radar equation holds at every angle (`tests/oracle/test_radar_equation.py`). On the element's own polarization axis the polarization is undefined (no tangent field can be non-zero everywhere on a sphere); the echo there is zero.
+- `Pattern.dipole()` applies the dipole's `sin` pattern exactly once. Before 0.5.0 Channel's unnormalised projection applied it at both ends of each leg, so even an isotropic element lost `sin^4` in amplitude off the polarization plane (-5.0 dB at 30 degrees) and `Pattern.dipole()` counted the E-plane cut twice.
+- An **isotropic scatterer** (the default `PointTargets` response) is a polarization-preserving point: it re-radiates `s` times the incident field, `s = sqrt(4 pi rcs) / wavelength`, and the receiver reads the component it is polarized along. Co-polar echoes follow the radar equation in every direction and the cross-polar echo is zero. `PointTargets(scattering=ScatteringMatrix(...))` gives a target a 2x2 matrix (HH, HV, VH, VV; receive first) in its local backscatter-aligned basis `h = up x k / |up x k|`, `v = h x k`; `ScatteringMatrix.sphere()` reproduces the isotropic scatterer on a monostatic geometry and `ScatteringMatrix.dihedral()` returns HH and VV 180 degrees apart.
 
 The FMCW output domain is `Fmcw.output` on the typed record and `output_domain` in the flat mapping:
 
@@ -125,7 +133,7 @@ Pass a `witwin.core.Scene` or `DynamicScene` to `Radar.simulate(...)`. World geo
 
 Where the scatterers are and how strongly they scatter are one statement, so they are one record, passed as the required positional `targets` argument:
 
-- `PointTargets(positions=..., rcs=...)` names world positions outright. `trajectory` moves the same ordered material points, `ids` fixes stable world identity, and `aspect=Aspect(...)` makes the strength depend on the geometry of each round trip instead of being isotropic.
+- `PointTargets(positions=..., rcs=...)` names world positions outright. `trajectory` moves the same ordered material points, `ids` fixes stable world identity, `aspect=Aspect(...)` makes the strength depend on the geometry of each round trip instead of being isotropic, and `scattering=ScatteringMatrix(...)` makes it polarimetric. Positions and trajectories may be float64: Channel receives them rounded to float32, and the round-trip path length - hence the carrier phase - is recomputed from the float64 positions (R-ADR-040), so sub-micrometre motion survives at any range.
 - `StructureTargets(rcs=..., structure_ids=...)` puts one scatterer at each world anchor Core publishes for a moving structure.
 
 A target declares its strength as `rcs` in m², or as the dimensionless `amplitude` for a caller who holds the strength itself — exactly one of the two, because they are the same quantity on either side of `amplitude = sqrt(4 pi rcs) / wavelength` and accepting both would leave which one wins undefined. Neither is defaulted: target reflectivity is a physical choice. The device and the carrier are not fields of a target record; the radar supplies them when the session starts.
