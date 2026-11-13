@@ -23,15 +23,17 @@ Status: Accepted
 
 ### The published schedule (D-6)
 
-`motion_sampling` names the schedule that ran, not the request: `"static"`,
-`"chirp"`, `"adc"`, `"adaptive"`, and, for a moving OFDM or pulsed session
-whatever was requested, `"symbol"` or `"pulse"`. `motion_sampling_exhaustive`
-is true exactly when the world was evaluated at every instant the waveform
-puts a sample at: an ADC-refreshed FMCW frame or a still world. Stop-and-hop
-(`"chirp"`), `"symbol"` and `"pulse"` hold the world over a chirp, symbol or
-pulse and are not exhaustive; an adaptive frame is decided by its controller.
-If pulsed fast-time refresh lands (plan M2-9), the rule is unchanged: a pulsed
-schedule that evaluates every fast-time sample publishes `exhaustive=True`.
+`motion_sampling` and `motion_sampling_exhaustive` are derived from the
+observation schedule the synthesis owner publishes (`observation_schedule`,
+R-ADR-046), so the two cannot disagree: `frame` is `"static"`, `adaptive` is
+`"adaptive"`, `fast_time` is `"adc"`, and `slow_time` is named by what it
+holds the world over: `"chirp"` (FMCW), `"symbol"` (OFDM) or `"pulse"`
+(pulsed). Exhaustive means the world was evaluated at every instant the
+waveform puts a sample at, which is exactly the `frame` and `fast_time`
+schedules; an adaptive frame is decided by its controller. A moving
+frequency-domain OFDM run therefore publishes `"symbol"` whatever was
+requested, a pulsed train under `Motion.adc()` (fast-time refresh) publishes
+`"adc"` and exhaustive, and under `Motion.chirp()` `"pulse"` and not.
 
 ### The default (P-1, owner decision 4)
 

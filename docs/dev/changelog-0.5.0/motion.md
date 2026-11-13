@@ -1,8 +1,8 @@
 ## Breaking changes
 
 - `Motion.auto()` (the default) resolves to `Motion.adaptive()` for a moving FMCW scene instead of evaluating the world at every ADC instant. A moving OFDM or pulsed scene, or one that declares a discovery cadence, still gets the exhaustive schedule. Migration: pass `motion=Motion.adc()` where the exhaustive reference is wanted.
-- `Result.motion_sampling` / `Paths.kind` name the schedule that ran: a moving OFDM run publishes `"symbol"` and a moving pulsed run `"pulse"` (previously `"adc"`).
-- `motion_sampling_exhaustive` is true only when the world was evaluated at every waveform sample instant (an ADC-refreshed FMCW frame or a still world). Moving OFDM and pulsed runs and FMCW `Motion.chirp()` now report `False`.
+- `Result.motion_sampling` / `Paths.kind` are derived from `observation_schedule`: a slow-time schedule is named `"chirp"`, `"symbol"` (frequency-domain OFDM, whatever was requested) or `"pulse"` (pulsed under `Motion.chirp()`), a fast-time one `"adc"` (previously a moving OFDM run published `"adc"`).
+- `motion_sampling_exhaustive` is true only for the `frame` and `fast_time` schedules. Slow-time runs (FMCW `Motion.chirp()`, frequency-domain OFDM, pulsed under `Motion.chirp()`) now report `False`.
 - `Motion.adaptive()` no longer takes `rediscover_every_frames`; adaptive sampling owns its discovery cadence (it was already refused when the session opened).
 
 ## Added
