@@ -203,7 +203,7 @@ class TestPointCloudOutputFormat:
         from witwin.radar.binding import ScatterSitePolicy
 
         radar = scene_radar(VALIDATION_FAST_CONFIG)
-        with pytest.raises(ValueError, match="site_count must be a positive int"):
+        with pytest.raises(ValueError, match="must have shape \\(S, 3\\) with at least one target"):
             simulate_point_targets(radar, [])
 
         # And the POLICY itself accepts the empty declaration: where the sites

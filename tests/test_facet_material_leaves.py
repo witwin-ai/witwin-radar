@@ -75,25 +75,33 @@ def test_the_material_tables_match_central_differences_in_both_modes(stack, rms)
         assert forward == pytest.approx(central, rel=2e-2)
 
 
-def test_the_material_reverse_pass_runs_only_when_asked():
-    """A geometry-only backward launches no material sweep and no material reduction."""
+def material_backward_kernels(material: bool) -> list[str]:
+    """The facet kernels one backward launches, with or without a material leaf."""
 
     from torch.profiler import ProfilerActivity, profile
 
     fixture = _fixture("one_layer", 0.003)
     params, layers = fixture.material_tables()
+    inputs = [value.requires_grad_(True) for value in fixture.inputs()]
+    tables = (params.clone().requires_grad_(material), layers.clone().requires_grad_(material))
+    matrix, _ = fixture.evaluate(*inputs, materials=tables)
+    with profile(activities=[ProfilerActivity.CUDA]) as trace:
+        matrix.sum().backward()
+        torch.cuda.synchronize()
+    return [event.name for event in trace.events() if "facet" in event.name and event.device_type.name == "CUDA"]
 
-    def kernels(*, material: bool) -> list[str]:
-        inputs = [value.requires_grad_(True) for value in fixture.inputs()]
-        tables = (params.clone().requires_grad_(material), layers.clone().requires_grad_(material))
-        matrix, _ = fixture.evaluate(*inputs, materials=tables)
-        with profile(activities=[ProfilerActivity.CUDA]) as trace:
-            matrix.sum().backward()
-            torch.cuda.synchronize()
-        return [event.name for event in trace.events() if "facet" in event.name and event.device_type.name == "CUDA"]
 
-    without = kernels(material=False)
-    with_material = kernels(material=True)
+def test_the_material_reverse_pass_runs_only_when_asked():
+    """A geometry-only backward launches no material sweep and no material reduction.
+
+    Measured in a fresh interpreter: inside a long suite the profiler can lose a
+    pass's records, which reads as zero launches rather than as an error.
+    """
+
+    from support.session_ledger import measure_isolated
+
+    without = measure_isolated("test_facet_material_leaves", "material_backward_kernels", False)
+    with_material = measure_isolated("test_facet_material_leaves", "material_backward_kernels", True)
     assert sum("facet_material_reduce" in name for name in without) == 0, without
     assert sum("facet_material_reduce" in name for name in with_material) == 1, with_material
     assert sum("facet_response_backward" in name for name in with_material) == 1, with_material

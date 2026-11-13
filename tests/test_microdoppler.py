@@ -406,7 +406,7 @@ def test_microdoppler_analysis_is_torch_only():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
-    assert imported == {"dataclasses", "math", "signal", "torch"}, sorted(imported)
+    assert imported == {"dataclasses", "display", "math", "signal", "torch"}, sorted(imported)
 
     # And no analysis vocabulary leaked into the native side. COMMENTS are
     # stripped first, deliberately: ``pulsed_echo.cu`` names
