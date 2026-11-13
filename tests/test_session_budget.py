@@ -107,6 +107,35 @@ BUDGETS: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {
         (6, 0, 0, 0, 8, 5, 129, 70, 134, 1172, 3, 3, 3, 3, 1),
         (6, 0, 0, 0, 12, 5, 120, 70, 125, 1135, 3, 3, 3, 3, 0),
     ),
+    "adc_point": (
+        (64, 64, 2, 2, 124, 3, 620, 589, 498, 8835, 1, 32, 32, 1, 1),
+        (64, 64, 2, 2, 128, 3, 581, 578, 459, 8662, 0, 32, 32, 1, 0),
+    ),
+    "adc_point_per_chirp": (
+        (8, 8, 2, 2, 68, 3, 144, 85, 131, 1606, 1, 4, 32, 1, 1),
+        (8, 8, 2, 2, 72, 3, 105, 74, 100, 1445, 0, 4, 32, 1, 0),
+    ),
+    "adc_point_per_frame": (
+        (2, 2, 2, 2, 62, 3, 93, 31, 92, 832, 1, 1, 32, 1, 1),
+        (2, 2, 2, 2, 66, 3, 54, 20, 56, 664, 0, 1, 32, 1, 0),
+    ),
+    "adc_structure": (
+        (64, 64, 64, 0, 124, 95, 1595, 992, 1659, 21194, 32, 32, 32, 32, 1),
+        (64, 64, 64, 0, 128, 96, 1568, 992, 1632, 21158, 32, 32, 32, 32, 0),
+    ),
+    "auto_point": (
+        (8, 8, 2, 2, 12, 4, 133, 98, 104, 1648, 1, 4, 4, 1, 1),
+        (8, 8, 2, 2, 16, 4, 96, 88, 72, 1494, 0, 4, 4, 1, 0),
+    ),
+    "chirp_point": (
+        (8, 8, 2, 2, 12, 3, 116, 84, 101, 1590, 1, 4, 4, 1, 1),
+        (8, 8, 2, 2, 16, 3, 77, 74, 67, 1436, 0, 4, 4, 1, 0),
+    ),
+    "chirp_structure": (
+        (8, 8, 8, 0, 12, 11, 209, 123, 212, 2664, 4, 4, 4, 4, 1),
+        (8, 8, 8, 0, 16, 12, 196, 125, 209, 2668, 4, 4, 4, 4, 0),
+    ),
+    "static": ((2, 2, 2, 0, 0, 2, 58, 29, 53, 673, 1, 1, 1, 1, 1), (0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)),
 }
 
 
@@ -169,6 +198,8 @@ def _motion(kind: str):
         "adc": Motion.adc(),
         "adaptive": Motion.adaptive(max_interval=2e-4),
         "adc_per_frame": Motion.adc(rediscover_every_frames=1),
+        "adc_per_chirp": Motion.adc(rediscover_every_chirps=1),
+        "auto": Motion.auto(),
     }[kind]
 
 
@@ -185,6 +216,10 @@ CASES = {
     # Static geometry and a declared once-a-frame discovery: the case where
     # the observation count should cost nothing at the Channel boundary.
     "adc_point_per_frame": ("adc_per_frame", "mover", False),
+    # The default for a moving FMCW scene resolves to adaptive sampling.
+    "auto_point": ("auto", "mover", False),
+    # Discover once per chirp, replay at every ADC instant of it.
+    "adc_point_per_chirp": ("adc_per_chirp", "mover", False),
 }
 
 

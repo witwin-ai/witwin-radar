@@ -883,6 +883,24 @@ class TwoWayComposer:
     #: its upload. A slot-major replica keeps the single-slot table, which is
     #: what an instrument half selecting pair segments slot by slot reads.
     pair_offsets_host: np.ndarray
+    #: Each composed row's identity on the host, ``int64[rows, 7]``: radar
+    #: source, site and radar sink IDs, then the inbound and outbound component
+    #: IDs and the inbound and outbound depths. Kept from the freeze so that a
+    #: consumer naming a row (the path event log) never reads the device.
+    identity_host: np.ndarray
+    #: The two legs' interaction sequences per composed row, primitive then
+    #: material: ``int64[rows, 2 * width_in]`` and ``int64[rows, 2 * width_out]``.
+    #: With :attr:`identity_host` they are the row's whole key, which is what
+    #: matches a row of this join to a row of the next epoch's.
+    inbound_sequence_host: np.ndarray
+    outbound_sequence_host: np.ndarray
+    #: The diffracting edge of each composed row's inbound and outbound leg,
+    #: ``int64[rows, 2]``, ``-1`` where a leg recorded none. Part of the key: a
+    #: diffracted row's primitive sequence does not tell two edges apart.
+    edge_host: np.ndarray
+    #: ``inbound_row`` and ``outbound_row`` on the host, as built.
+    inbound_row_host: np.ndarray
+    outbound_row_host: np.ndarray
     #: How many rows of the third, site-less leg this join composes, ``0``
     #: when it composes none.
     direct_row_count: int = 0
@@ -1091,6 +1109,55 @@ class TwoWayComposer:
         validate_pair_ordering(pair, num_tx=len(sources), num_rx=len(sinks), sensor_pair_count=pair_count)
         offsets = pair_offsets(pair, pair_count)
 
+        # Each composed row's identity on the host, in composed order. A
+        # site-less row carries its own leg in the inbound columns and nothing
+        # (``-1``, depth 0) in the outbound ones.
+        in_width = max(arriving.primitive.shape[1], 0 if through is None else through.primitive.shape[1])
+        out_width = leaving.primitive.shape[1]
+
+        def sequences(leg: LegIdentity, rows: np.ndarray, width: int) -> np.ndarray:
+            pad = np.full((len(rows), width - leg.primitive.shape[1]), -1, dtype=np.int64)
+            return np.column_stack((leg.primitive[rows], pad, leg.material[rows], pad)).astype(np.int64)
+
+        identity_host = np.column_stack(
+            (
+                source,
+                arriving.sink[joined_in],
+                sink,
+                arriving.component[joined_in],
+                leaving.component[joined_out],
+                arriving.depth[joined_in],
+                leaving.depth[joined_out],
+            )
+        ).astype(np.int64)
+        inbound_sequence_host = sequences(arriving, joined_in, in_width)
+        outbound_sequence_host = sequences(leaving, joined_out, out_width)
+
+        def edges(leg: LegIdentity, rows: np.ndarray) -> np.ndarray:
+            return np.full(len(rows), -1, dtype=np.int64) if leg.edge is None else leg.edge[rows].astype(np.int64)
+
+        edge_host = np.column_stack((edges(arriving, joined_in), edges(leaving, joined_out)))
+        if through is not None and merge is not None:
+            every = np.arange(through.row_count)
+            direct_identity_host = np.column_stack(
+                (
+                    through.source,
+                    np.full(through.row_count, NO_SITE),
+                    through.sink,
+                    through.component,
+                    np.full(through.row_count, -1),
+                    through.depth,
+                    np.zeros(through.row_count),
+                )
+            ).astype(np.int64)
+            identity_host = np.concatenate((identity_host, direct_identity_host))[merge]
+            inbound_sequence_host = np.concatenate((inbound_sequence_host, sequences(through, every, in_width)))[merge]
+            outbound_sequence_host = np.concatenate(
+                (outbound_sequence_host, np.full((through.row_count, 2 * out_width), -1, dtype=np.int64))
+            )[merge]
+            direct_edges = np.column_stack((edges(through, every), np.full(through.row_count, -1, dtype=np.int64)))
+            edge_host = np.concatenate((edge_host, direct_edges))[merge]
+
         # Every integer table of the join crosses to the device in ONE copy and
         # is published as views of that buffer.
         tables: tuple[np.ndarray, ...] = (
@@ -1163,6 +1230,12 @@ class TwoWayComposer:
             pair_offsets_host=offsets,
             direct_row_count=direct_count,
             merge=merge_table,
+            identity_host=identity_host,
+            inbound_sequence_host=inbound_sequence_host,
+            outbound_sequence_host=outbound_sequence_host,
+            edge_host=edge_host,
+            inbound_row_host=np.asarray(composed_in, dtype=np.int64),
+            outbound_row_host=np.asarray(composed_out, dtype=np.int64),
         )
 
     @property
@@ -1384,12 +1457,16 @@ class TwoWayComposer:
             ).index_select(0, self.merge),
         )
 
-    def for_slots(self, count: int) -> TwoWayComposer:
+    def for_slots(self, count: int, *, per_slot_response: bool = False) -> TwoWayComposer:
         """Block-diagonal join tables for a fixed topology's slot-major replay.
 
-        Sites remain shared across slots, including their gradient owners.
-        Only integer routing tables are replicated; the composition equation
-        and its AD remain owned by the ordinary native join.
+        Sites remain shared across slots, including their gradient owners,
+        unless ``per_slot_response``: then slot ``g``'s site ``s`` is response
+        site ``g * site_count + s``, so a response evaluated once per instant
+        (a time-varying aspect) gives every slot its own value and its own
+        gradient owner. Only integer routing tables are replicated; the
+        composition equation and its AD remain owned by the ordinary native
+        join.
         """
         device = self.inbound_row.device
         slot = torch.arange(count, device=device, dtype=torch.int64)[:, None]
@@ -1409,7 +1486,14 @@ class TwoWayComposer:
 
         inbound = shifted(self.inbound_row, self.inbound_row_count)
         outbound = shifted(self.outbound_row, self.outbound_row_count)
-        responses = self.response_slot.repeat(count)
+        if per_slot_response:
+            responses = shifted(self.response_slot, self.site_count)
+            response_offsets = slot_csr(self.by_response_offsets)
+            response_rows = shifted(self.by_response_rows, rows)
+        else:
+            responses = self.response_slot.repeat(count)
+            response_offsets = self.by_response_offsets * count
+            response_rows = torch.argsort(responses, stable=True)
         topology_in, topology_out, direct_row = inbound, outbound, None
         merge = None
         if self.merge is not None and self.topology.direct_row is not None:
@@ -1450,8 +1534,9 @@ class TwoWayComposer:
             by_inbound_rows=shifted(self.by_inbound_rows, rows),
             by_outbound_offsets=slot_csr(self.by_outbound_offsets),
             by_outbound_rows=shifted(self.by_outbound_rows, rows),
-            by_response_offsets=self.by_response_offsets * count,
-            by_response_rows=torch.argsort(responses, stable=True),
+            by_response_offsets=response_offsets,
+            by_response_rows=response_rows,
+            site_count=self.site_count * count if per_slot_response else self.site_count,
             row_slot=torch.arange(count * rows, device=device, dtype=torch.int64),
             by_row_offsets=torch.arange(count * rows + 1, device=device, dtype=torch.int64),
             by_row_rows=torch.arange(count * rows, device=device, dtype=torch.int64),
@@ -1575,6 +1660,11 @@ class TwoWayComposer:
     def _row_validity(
         self, inbound: RadarLegBatch, outbound: RadarLegBatch, rows: int, device: torch.device
     ) -> torch.Tensor | None:
+        if rows == 0:
+            # A join with no row (every declared site occluded) still publishes
+            # a validity column, so a consumer of replayed rows reads one
+            # contract whatever the topology; an empty leg may carry none.
+            return torch.zeros(0, dtype=torch.bool, device=device)
         if inbound.row_valid is None and outbound.row_valid is None:
             return None
         ones = torch.ones(rows, dtype=torch.bool, device=device)

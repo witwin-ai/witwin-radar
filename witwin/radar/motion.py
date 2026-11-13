@@ -90,9 +90,27 @@ class Motion:
     #: session replays, composes and synthesizes together, and therefore the
     #: most rows the fused route holds at once.
     batch_observations: int = 256
-    #: Topology rediscovery cadence in frames. ``None`` rediscovers at every
-    #: observation, which is the only cadence that cannot miss a path birth.
+    #: Topology rediscovery cadence in frames. ``None`` (with every other
+    #: cadence ``None``) rediscovers at every observation, which is the only
+    #: cadence that cannot miss a path birth.
     rediscover_every_frames: int | None = None
+    #: Rediscover once per this many chirps (TDM slots) and replay the frozen
+    #: topology at every ADC instant between them.
+    rediscover_every_chirps: int | None = None
+    #: Rediscover once this many seconds of world time have passed since the
+    #: last discovery.
+    rediscover_every_seconds: float | None = None
+    #: Rediscover once any scatter site or sensor endpoint has moved this far,
+    #: m, since the last discovery. Costs one host read of the positions per
+    #: replay group.
+    rediscover_on_displacement: float | None = None
+    #: Adaptive: a declared bound on the motion's bandwidth, Hz. The probe
+    #: grid is refined until it samples that bandwidth at four points a period.
+    motion_bandwidth: float | None = None
+    #: Adaptive: a declared bound on any site's or endpoint's acceleration,
+    #: m/s^2. It caps the probe spacing at the interval over which a linear
+    #: delay interpolant stays inside ``phase_error``.
+    max_acceleration: float | None = None
     #: Channel's replay vocabulary for compiled geometry.
     world: str = "frozen_world"
 
@@ -105,18 +123,53 @@ class Motion:
             _positive_int(getattr(self, name), name=name)
         if _positive_int(self.nodes, name="nodes") < 2:
             raise ValueError("nodes must be at least 2; one node cannot interpolate")
+        for name in ("rediscover_every_frames", "rediscover_every_chirps"):
+            if getattr(self, name) is not None:
+                _positive_int(getattr(self, name), name=name)
+        for name in ("rediscover_every_seconds", "rediscover_on_displacement", "motion_bandwidth", "max_acceleration"):
+            if getattr(self, name) is not None:
+                _positive_host_float(getattr(self, name), name=name)
+        declared = [name for name in CADENCES if getattr(self, name) is not None]
+        if len(declared) > 1:
+            raise ValueError(f"declare at most one discovery cadence, got {declared}")
+
+    @property
+    def cadence(self) -> str | None:
+        """The declared discovery cadence's field name, or ``None`` for every observation."""
+
+        return next((name for name in CADENCES if getattr(self, name) is not None), None)
 
     @classmethod
-    def auto(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Resample at every ADC instant when anything moves, else once a frame.
+    def auto(
+        cls,
+        *,
+        rediscover_every_frames: int | None = None,
+        rediscover_every_chirps: int | None = None,
+        rediscover_every_seconds: float | None = None,
+        rediscover_on_displacement: float | None = None,
+        world: str = "frozen_world",
+    ) -> Motion:
+        """Adaptive sampling when anything moves under FMCW, else the schedule that fits.
 
         "Anything moves" is a property of the session, not of this record:
         structure trajectories or deformations, endpoint trajectories, a target
         trajectory, or a receiver with oscillator phase noise, which needs
-        ADC-time observations to place its delayed phase difference.
+        ADC-time observations to place its delayed phase difference. A moving
+        FMCW session resolves to :meth:`adaptive` with its default tolerances;
+        an OFDM or pulsed one, or one that declares a discovery cadence,
+        resolves to the exhaustive :meth:`adc` schedule; a still world is
+        evaluated once a frame. :meth:`adc` stays the named exhaustive
+        reference.
         """
 
-        return cls(kind="auto", rediscover_every_frames=rediscover_every_frames, world=world)
+        return cls(
+            kind="auto",
+            rediscover_every_frames=rediscover_every_frames,
+            rediscover_every_chirps=rediscover_every_chirps,
+            rediscover_every_seconds=rediscover_every_seconds,
+            rediscover_on_displacement=rediscover_on_displacement,
+            world=world,
+        )
 
     @classmethod
     def static(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
@@ -125,16 +178,59 @@ class Motion:
         return cls(kind="static", rediscover_every_frames=rediscover_every_frames, world=world)
 
     @classmethod
-    def chirp(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Stop and hop: geometry frozen within each chirp, symbol or pulse."""
+    def chirp(
+        cls,
+        *,
+        rediscover_every_frames: int | None = None,
+        rediscover_every_chirps: int | None = None,
+        rediscover_every_seconds: float | None = None,
+        rediscover_on_displacement: float | None = None,
+        world: str = "frozen_world",
+    ) -> Motion:
+        """Stop and hop: geometry frozen within each chirp, symbol or pulse.
 
-        return cls(kind="chirp", rediscover_every_frames=rediscover_every_frames, world=world)
+        The discovery cadences are the same as :meth:`adc`'s.
+        """
+
+        return cls(
+            kind="chirp",
+            rediscover_every_frames=rediscover_every_frames,
+            rediscover_every_chirps=rediscover_every_chirps,
+            rediscover_every_seconds=rediscover_every_seconds,
+            rediscover_on_displacement=rediscover_on_displacement,
+            world=world,
+        )
 
     @classmethod
-    def adc(cls, *, rediscover_every_frames: int | None = None, world: str = "frozen_world") -> Motion:
-        """Resample at every ADC instant. The exhaustive reference."""
+    def adc(
+        cls,
+        *,
+        rediscover_every_frames: int | None = None,
+        rediscover_every_chirps: int | None = None,
+        rediscover_every_seconds: float | None = None,
+        rediscover_on_displacement: float | None = None,
+        world: str = "frozen_world",
+    ) -> Motion:
+        """Resample at every ADC instant. The exhaustive reference.
 
-        return cls(kind="adc", rediscover_every_frames=rediscover_every_frames, world=world)
+        Without a cadence the topology is rediscovered at every instant too.
+        At most one cadence may be declared: ``rediscover_every_chirps=1``
+        discovers once per chirp and replays at every ADC instant of it;
+        ``rediscover_every_seconds`` and ``rediscover_on_displacement`` trigger
+        on world time and on motion; ``rediscover_every_frames`` once per
+        frame or less often. Each trades completeness for discoveries, so the
+        run reports ``path_set_complete=False`` and publishes the birth lag it
+        actually incurred in ``Result.birth_lag_bound_s``.
+        """
+
+        return cls(
+            kind="adc",
+            rediscover_every_frames=rediscover_every_frames,
+            rediscover_every_chirps=rediscover_every_chirps,
+            rediscover_every_seconds=rediscover_every_seconds,
+            rediscover_on_displacement=rediscover_on_displacement,
+            world=world,
+        )
 
     @classmethod
     def adaptive(
@@ -146,15 +242,20 @@ class Motion:
         nodes: int = 2,
         max_evaluations: int = 8192,
         batch_observations: int = 256,
-        rediscover_every_frames: int | None = None,
+        motion_bandwidth: float | None = None,
+        max_acceleration: float | None = None,
         world: str = "frozen_world",
     ) -> Motion:
         """Interpolate between error-controlled probes. FMCW only.
 
         It certifies nothing between its probes: an arbitrarily brief path
-        birth or oscillation is invisible to a sampled test. The run publishes
-        ``path_set_complete`` and ``motion_sampling_exhaustive`` separately so
-        that limit is readable rather than implied.
+        birth or oscillation is invisible to a sampled test. Every accepted
+        interval is also checked at one jittered instant off the nested probe
+        grid, which catches motion periodic at the grid's own step; a declared
+        ``motion_bandwidth`` or ``max_acceleration`` additionally caps the
+        probe spacing. The run publishes ``path_set_complete`` and
+        ``motion_sampling_exhaustive`` separately so that limit is readable
+        rather than implied. Adaptive sampling owns its discovery cadence.
         """
 
         return cls(
@@ -165,9 +266,19 @@ class Motion:
             nodes=nodes,
             max_evaluations=max_evaluations,
             batch_observations=batch_observations,
-            rediscover_every_frames=rediscover_every_frames,
+            motion_bandwidth=motion_bandwidth,
+            max_acceleration=max_acceleration,
             world=world,
         )
+
+
+#: The discovery cadence fields, at most one of which a record declares.
+CADENCES = (
+    "rediscover_every_frames",
+    "rediscover_every_chirps",
+    "rediscover_every_seconds",
+    "rediscover_on_displacement",
+)
 
 
 __all__ = ["MOTION_KINDS", "Motion"]

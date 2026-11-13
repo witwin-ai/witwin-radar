@@ -102,6 +102,9 @@ class AdaptiveFrame:
     stats: dict[str, Any]
     first: ProbeRecord
     last: ProbeRecord
+    #: Every evaluated probe, by its index in the frame's schedule. Its rows
+    #: start at ``table.starts[index]`` of the table.
+    probes: dict[int, ProbeRecord]
 
 
 def lagrange_weights(query_s: np.ndarray, node_s: np.ndarray) -> np.ndarray:
@@ -144,6 +147,189 @@ def _validity(paths: RadarPathBatch) -> torch.Tensor:
 #: nodes)``, the interval's ends, the instant tested and its node instants.
 _Query = tuple[int, int, int, tuple[int, ...]]
 
+#: The golden ratio's fractional part. Successive multiples of an irrational
+#: never land on a dyadic grid, which is what makes the verification instant
+#: incommensurate with every level of the nested probe grid.
+_GOLDEN = (math.sqrt(5.0) - 1.0) / 2.0
+
+#: Speed of light, m/s, for the acceleration bound on the probe spacing.
+_C = 299_792_458.0
+
+
+def probe_spacing_cap(motion: Motion, carrier_hz: float) -> float:
+    """The largest accepted interval the declared motion bounds allow, s.
+
+    ``max_interval`` always applies. A declared ``motion_bandwidth`` ``B``
+    caps the grid step at ``1 / (4 B)``, four probes per period of the fastest
+    declared component, which with ``2 (nodes - 1)`` steps per interval is
+    ``(nodes - 1) / (2 B)``. A declared ``max_acceleration`` ``a`` bounds the
+    round-trip delay's curvature by ``2 a / c``; the linear interpolant's
+    error over an interval ``h`` is then at most ``a h^2 / (4 c)`` seconds of
+    delay, ``pi f_c a h^2 / (2 c)`` radians of carrier phase, and the cap is
+    the ``h`` that makes that ``phase_error``. The linear bound is used at
+    every order because it is the conservative one.
+    """
+
+    cap = float(motion.max_interval)
+    if motion.motion_bandwidth is not None:
+        cap = min(cap, (int(motion.nodes) - 1) / (2.0 * float(motion.motion_bandwidth)))
+    if motion.max_acceleration is not None:
+        cap = min(
+            cap,
+            math.sqrt(2.0 * _C * float(motion.phase_error) / (math.pi * carrier_hz * float(motion.max_acceleration))),
+        )
+    return cap
+
+
+#: Channel's ``InteractionType.REFLECTION`` flag in a row's ``interaction_type``.
+REFLECTION_INTERACTION = 1
+
+#: Two face planes are one plane group when their unit normals agree to this
+#: (component-wise, dimensionless) and their offsets to ``OFFSET_TOLERANCE``
+#: of the larger offset plus ``OFFSET_FLOOR_M``. A float32 interaction point
+#: carries about ``1e-7`` relative error, so these are three decades above the
+#: noise and far below any two distinct walls of one scene.
+NORMAL_TOLERANCE = 1e-4
+OFFSET_TOLERANCE = 1e-5
+OFFSET_FLOOR_M = 1e-6
+
+
+class PlaneGroups:
+    """Which compiled faces lie in one plane, learned from discoveries.
+
+    The adaptive route compares topologies across probes, and a frozen row
+    names the TRIANGLE its specular point lies on. A point that slides across
+    the shared edge of two coplanar triangles is one continuous reflection,
+    but it changes that name, and a subdivided wall then forces refinement at
+    every edge. This registry maps a reflecting face to its plane group, so the
+    adaptive identity names the plane instead.
+
+    A face's plane is read from the discovery that first reflects off it: the
+    interaction normal and point Channel's evaluation returns per row. The
+    map is valid only while the compiled geometry does not move, which is why
+    the session builds one only for a world without structure motion; a moving
+    or deforming structure keeps the triangle names. Non-reflection slots
+    (diffraction edges) keep their raw IDs in a separate label space.
+    """
+
+    def __init__(self) -> None:
+        self._face_group: dict[int, int] = {}
+        self._planes = np.zeros((0, 4))
+
+    @property
+    def group_count(self) -> int:
+        return int(self._planes.shape[0])
+
+    def _group_of(self, plane: np.ndarray) -> int:
+        planes = self._planes
+        if len(planes):
+            normal = np.abs(planes[:, :3] - plane[:3]).max(axis=1) <= NORMAL_TOLERANCE
+            offset = np.abs(planes[:, 3] - plane[3]) <= OFFSET_TOLERANCE * max(1.0, abs(plane[3])) + OFFSET_FLOOR_M
+            match = np.flatnonzero(normal & offset)
+            if len(match):
+                return int(match[0])
+        self._planes = np.concatenate((planes, plane[None]))
+        return len(self._planes) - 1
+
+    def leg_labels(self, leg: Any, primitive: np.ndarray, depth: np.ndarray) -> np.ndarray:
+        """``int64[rows, width]``: a leg's primitive sequence with reflecting faces named by plane group.
+
+        A reflecting face becomes ``-2 - group``; any other slot keeps its
+        primitive ID (``>= 0``) or the no-interaction ``-1``. One device copy
+        reads the leg's interaction types, normals and points.
+        """
+
+        labels = np.asarray(primitive, dtype=np.int64).copy()
+        types, normals, points = leg.interaction_type, leg.interaction_normals, leg.interaction_positions_m
+        rows, width = labels.shape
+        if rows == 0 or width == 0 or types is None or normals is None or points is None:
+            return labels
+        reach = int(normals.shape[1])
+        packed = (
+            torch.cat((types.to(torch.float32).reshape(-1), normals.reshape(-1), points.reshape(-1)))
+            .cpu()
+            .double()
+            .numpy()
+        )
+        kind = packed[: rows * width].reshape(rows, width).astype(np.int64)
+        normal = packed[rows * width : rows * width + rows * reach * 3].reshape(rows, reach, 3)
+        point = packed[rows * width + rows * reach * 3 :].reshape(rows, reach, 3)
+        slots = min(width, reach)
+        reflecting = np.zeros_like(labels, dtype=bool)
+        reflecting[:, :slots] = (
+            ((kind[:, :slots] & REFLECTION_INTERACTION) != 0)
+            & (labels[:, :slots] >= 0)
+            & (np.arange(slots)[None, :] < depth[:, None])
+        )
+        row, slot = np.nonzero(reflecting)
+        faces, first, inverse = np.unique(labels[row, slot], return_index=True, return_inverse=True)
+        # One lookup per distinct face, not per row: a face's plane is read
+        # from its first reflecting row and never again.
+        groups = np.empty(len(faces), dtype=np.int64)
+        for index, face in enumerate(faces.tolist()):
+            group = self._face_group.get(face)
+            if group is None:
+                n = normal[row[first[index]], slot[first[index]]]
+                n = n / max(float(np.linalg.norm(n)), 1e-30)
+                # One orientation per plane: the first clearly non-zero
+                # component is positive, whichever side the ray came from.
+                lead = np.flatnonzero(np.abs(n) > 1e-6)
+                if len(lead) and n[lead[0]] < 0:
+                    n = -n
+                group = self._group_of(np.concatenate((n, [float(n @ point[row[first[index]], slot[first[index]]])])))
+                self._face_group[face] = group
+            groups[index] = group
+        labels[row, slot] = -2 - groups[inverse.reshape(-1)]
+        return labels
+
+
+def composed_plane_identity(composer: Any, inbound_labels: np.ndarray, outbound_labels: np.ndarray) -> bytes:
+    """A join's rows, in composed order, keyed by plane group instead of triangle.
+
+    Equal bytes mean the same rows in the same order with the same planes, so
+    row ``r`` of one probe is row ``r`` of the other and interpolating between
+    them is interpolating one path.
+    """
+
+    def labelled(labels: np.ndarray, rows: np.ndarray, sequences: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # A row with no entry in this leg (``-1``: a site-less row's outbound
+        # side, or its inbound side, which is its own leg) keeps the raw
+        # primitive IDs the join recorded for it.
+        width = sequences.shape[1] // 2
+        primitive = sequences[:, :width].copy()
+        live = rows >= 0
+        gathered = labels[rows[live]]
+        primitive[live, : gathered.shape[1]] = gathered
+        return primitive, sequences[:, width:]
+
+    in_primitive, in_material = labelled(inbound_labels, composer.inbound_row_host, composer.inbound_sequence_host)
+    out_primitive, out_material = labelled(outbound_labels, composer.outbound_row_host, composer.outbound_sequence_host)
+    key = np.column_stack(
+        (composer.identity_host, in_primitive, in_material, out_primitive, out_material, composer.edge_host)
+    ).astype(np.int64)
+    return np.asarray(key.shape, dtype=np.int64).tobytes() + key.tobytes()
+
+
+def verification_instant(left: int, right: int, grid: Sequence[int]) -> int:
+    """One schedule index strictly inside ``(left, right)`` and off ``grid``.
+
+    The position is the golden-ratio jitter of the interval's own ends, so it
+    is deterministic for a given partition, differs between intervals, and is
+    never a point of the nested dyadic probe grid at any level. The caller
+    guarantees ``right - left >= len(grid)``, which leaves an interior index
+    that is not a grid point.
+    """
+
+    taken = set(grid)
+    span = right - left - 1
+    fraction = (left * _GOLDEN + right * _GOLDEN * _GOLDEN) % 1.0
+    start = left + 1 + min(span - 1, int(fraction * span))
+    for step in range(span):
+        for candidate in (start + step, start - step):
+            if left < candidate < right and candidate not in taken:
+                return candidate
+    raise ValueError(f"interval [{left}, {right}] has no interior instant off its probe grid")
+
 
 class _Controller:
     """The refinement state of one adaptive frame.
@@ -161,13 +347,15 @@ class _Controller:
         self.carrier_hz = carrier_hz
         self.phase_tolerance = float(motion.phase_error)
         self.amplitude_tolerance = float(motion.relative_amplitude_error)
-        self.max_interval_s = float(motion.max_interval)
+        self.max_interval_s = probe_spacing_cap(motion, carrier_hz)
         self.max_evaluations = int(motion.max_evaluations)
         self.batch_observations = int(motion.batch_observations)
         self.node_count = int(motion.nodes)
         self.cache: dict[int, ProbeRecord] = {}
         self.pair_tables: dict[int, list[int]] = {}
         self.partitions: list[tuple[int, int, list[int]]] = []
+        #: The verification instant of each candidate interval, off its grid.
+        self.verify: dict[tuple[int, int], int] = {}
         self.stats: dict[str, Any] = {
             "evaluations": 0,
             "topology_refinements": 0,
@@ -175,6 +363,8 @@ class _Controller:
             "max_tested_phase_error_rad": 0.0,
             "max_tested_relative_amplitude_error": 0.0,
             "max_interval_s": self.max_interval_s,
+            "verification_probes": 0,
+            "verification_refinements": 0,
             "exhaustive": False,
             "topology_proved_complete": False,
         }
@@ -238,16 +428,28 @@ class _Controller:
                     # observation needs no interpolation at all.
                     enumerated.append((left, right))
                 else:
-                    probes[left, right] = [
-                        left + round((right - left) * step / (grid_width - 1)) for step in range(grid_width)
-                    ]
+                    grid = [left + round((right - left) * step / (grid_width - 1)) for step in range(grid_width)]
+                    probes[left, right] = grid
+                    # A sampled test only sees the instants it samples, and the
+                    # grid's instants are commensurate at every level: motion
+                    # periodic at the grid's step is zero at all of them. One
+                    # jittered instant off the grid, interpolated from the
+                    # same nodes, is what catches it.
+                    self.verify[left, right] = verification_instant(left, right, grid)
             self.ensure(
                 [index for group in probes.values() for index in group]
+                + [self.verify[key] for key in probes]
                 + [index for left, right in enumerated for index in range(left, right + 1)]
             )
+            self.stats["verification_probes"] += len(probes)
             self.stats["accepted_intervals"] += len(enumerated)
             observations = self._observe(probes)
             pending = self._decide(probes, observations)
+
+    def _tested(self, left: int, right: int, indices: list[int]) -> list[int]:
+        """The instants an interval's error is measured at: the grid's odd points and the jittered one."""
+
+        return [*indices[1::2], self.verify[left, right]]
 
     def _same_topology(self, indices: list[int], reference: int) -> bool:
         identity = self.cache[reference].identity
@@ -267,12 +469,13 @@ class _Controller:
         tested = {
             (left, right): indices
             for (left, right), indices in probes.items()
-            if self.within_interval_bound(left, right) and self._same_topology(indices, left)
+            if self.within_interval_bound(left, right)
+            and self._same_topology([*indices, self.verify[left, right]], left)
         }
         queries: list[_Query] = [
             (left, right, index, tuple(indices[::2]))
             for (left, right), indices in tested.items()
-            for index in indices[1::2]
+            for index in self._tested(left, right, indices)
         ]
         observations: dict[_Query, np.ndarray] = {}
         if not queries:
@@ -318,13 +521,13 @@ class _Controller:
         return observations
 
     def _interval_errors(
-        self, left: int, right: int, indices: list[int], observations: dict[_Query, np.ndarray]
+        self, left: int, right: int, indices: list[int], observations: dict[_Query, np.ndarray], tested: list[int]
     ) -> tuple[float, float]:
-        """The largest tested phase and relative amplitude errors of one interval."""
+        """The largest phase and relative amplitude errors at ``tested`` instants of one interval."""
 
         spec, carrier_hz = self.spec, self.carrier_hz
         phase_error = amplitude_error = 0.0
-        for index in indices[1::2]:
+        for index in tested:
             predicted_delay, observed_delay, pr, pi, ar, ai, flags = observations[
                 left, right, index, tuple(indices[::2])
             ]
@@ -374,12 +577,17 @@ class _Controller:
         stats = self.stats
         next_pending: list[tuple[int, int]] = []
         for (left, right), indices in probes.items():
-            topology_ok = self._same_topology(indices, indices[0])
+            verify = self.verify[left, right]
+            topology_ok = self._same_topology([*indices, verify], indices[0])
             phase_error = amplitude_error = 0.0
             accepted = False
             if topology_ok and self.within_interval_bound(left, right):
-                phase_error, amplitude_error = self._interval_errors(left, right, indices, observations)
+                phase_error, amplitude_error = self._interval_errors(left, right, indices, observations, indices[1::2])
+                grid_ok = phase_error <= self.phase_tolerance and amplitude_error <= self.amplitude_tolerance
+                verify_phase, verify_amplitude = self._interval_errors(left, right, indices, observations, [verify])
+                phase_error, amplitude_error = max(phase_error, verify_phase), max(amplitude_error, verify_amplitude)
                 accepted = phase_error <= self.phase_tolerance and amplitude_error <= self.amplitude_tolerance
+                stats["verification_refinements"] += int(grid_ok and not accepted)
             if accepted:
                 stats["accepted_intervals"] += 1
                 stats["max_tested_phase_error_rad"] = max(stats["max_tested_phase_error_rad"], phase_error)
@@ -495,7 +703,11 @@ def trace_adaptive_frame(
     table = controller.table()
     controller.close()
     return AdaptiveFrame(
-        table=table, stats=controller.stats, first=controller.cache[0], last=controller.cache[len(times) - 1]
+        table=table,
+        stats=controller.stats,
+        first=controller.cache[0],
+        last=controller.cache[len(times) - 1],
+        probes=dict(controller.cache),
     )
 
 

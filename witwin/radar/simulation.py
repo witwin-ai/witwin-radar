@@ -32,8 +32,9 @@ import numpy as np
 import torch
 from witwin.core.dynamics import DynamicScene
 
-from .adaptive import AdaptiveTable, echo_adaptive_frame, trace_adaptive_frame
+from .adaptive import AdaptiveTable, PlaneGroups, composed_plane_identity, echo_adaptive_frame, trace_adaptive_frame
 from .binding import SITE_SOURCE_EXPLICIT, RadarWorldBinding, ScatterSitePolicy, SensorEndpointIds, bind_radar_world
+from .events import EventRecorder, Observed, PathEvents, Pool, batch_pool
 from .motion import Motion
 from .paths import RadarPathBatch, SlotRows
 from .propagation import (
@@ -82,6 +83,10 @@ class FrozenRoundTrip:
     #: same composed rows, so a rediscovery that found the same topology reuses
     #: the join and pattern tables instead of rebuilding them.
     identity: tuple[bytes, ...]
+    #: What the adaptive controller compares across probes: the composed rows
+    #: keyed by plane group rather than triangle where the world's faces do
+    #: not move, else :attr:`identity` itself.
+    adaptive_identity: Hashable = None
 
 
 def _round_trip(epoch: FrozenEpoch) -> FrozenRoundTrip:
@@ -135,6 +140,9 @@ class _PendingObservation:
     epoch_frame: EpochFrame
     binding: RadarWorldBinding
     identity: Hashable
+    #: The radar's body rotation at this instant, ``float32[3, 3]``
+    #: local-to-world, or ``None`` when the radar does not follow a pose.
+    rotation: torch.Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -175,6 +183,9 @@ class FrameTrace:
     observations: Iterator[Observation] | tuple[Observation, ...]
     path_set_complete: bool
     motion_sampling_exhaustive: bool
+    #: The frame's path births and deaths. Filled as ``observations`` drains,
+    #: so it is complete once the frame has been traced or echoed.
+    events: PathEvents = field(default_factory=PathEvents)
     adaptive: AdaptiveTable | None = None
     stats: dict[str, Any] | None = None
     opened: EpochFrame | None = None
@@ -412,6 +423,16 @@ def _present(value: torch.Tensor | None, name: str) -> torch.Tensor:
     return value
 
 
+def _batch_pool(paths: object) -> Pool:
+    assert not isinstance(paths, AdaptiveTable)
+    return batch_pool(paths)
+
+
+def _table_pool(table: object) -> Pool:
+    assert isinstance(table, AdaptiveTable)
+    return table.validity, torch.view_as_real(table.transfers.detach())
+
+
 def _constant_legs(legs: RadarPropagationLegs) -> RadarPropagationLegs:
     return legs
 
@@ -497,6 +518,9 @@ class WorldHalf:
         ad_mode: str,
         cadence: int | None,
         world_motion: str,
+        period_s: float | None = None,
+        displacement_m: float | None = None,
+        pose: Callable[[float], Any] | None = None,
         still_world: bool = False,
         batch_observations: int = 1,
         request: LegRequest | None = None,
@@ -521,8 +545,26 @@ class WorldHalf:
             bind=self.bind,
             compile_scene=compile_scene,
             motion_event_period_frames=cadence,
+            motion_event_period_s=period_s,
             world_motion=world_motion,
         )
+        #: A displacement cadence: rediscover once any site or endpoint has
+        #: moved this far, m, since the last discovery. ``_reference`` is the
+        #: host copy of the positions at that discovery.
+        self.displacement_m = displacement_m
+        self._reference: np.ndarray | None = None
+        #: The radar's ego-motion, ``pose(t) -> (rotation, translation)``, and
+        #: the instant the loop is advancing to, which a discovery binds at.
+        self.pose = pose
+        self._clock = 0.0
+        from .targets import TimedAspectResponse
+
+        #: A response evaluated per instant (a rotating aspect lobe), resolved
+        #: once per replay group; ``None`` for a time-invariant response.
+        self.timed_response = response if isinstance(response, TimedAspectResponse) else None
+        #: Coplanar face groups for the adaptive identity, in a world whose
+        #: compiled faces never move; ``None`` elsewhere.
+        self.planes = PlaneGroups() if motion_sampling == "adaptive" and not self.loop.structures_move else None
         #: A world that nothing moves and nothing rediscovers replays the same
         #: endpoints against the same frozen topology every frame, and Channel's
         #: replay is deterministic, so its rows are evaluated once and every
@@ -539,19 +581,78 @@ class WorldHalf:
         #: run replays, because only the replay carries a derivative.
         self.discovered_rows = ad_mode == "none" and self.request.frequency_offsets_hz is None
         self._report = DiscoveryReport()
+        #: Path birth and death detection, for a world in which a path can be
+        #: born; a still world publishes an empty log.
+        self.recorder = None if still_world else EventRecorder()
         self._still: Observation | None = None
         self._slot_tables: _Bounded[tuple[Hashable, int], tuple[TwoWayComposer, RoundTripPatternStage]] = _Bounded(
             SLOT_TABLE_CACHE
         )
 
-    def _bind_world(self, snapshot: object) -> RadarWorldBinding:
-        return bind_radar_world(
+    def _bind_world(self, snapshot: object, time_s: float | None = None) -> RadarWorldBinding:
+        """Bind the radar to ``snapshot``; ``time_s`` is the instant a pose is read at.
+
+        ``None`` is the instant the loop is advancing to, which is what a
+        discovery inside :meth:`SceneEpochLoop.frame` binds at.
+        """
+
+        binding = bind_radar_world(
             self.radar,
             snapshot,
             sites=self.sites,
             polarization=self.polarization,
             sensor_endpoints=self.sensor_endpoints,
         )
+        if self.pose is None:
+            return binding
+        return self._posed(binding, self._clock if time_s is None else time_s)[0]
+
+    def _rotation_at(self, time_s: float, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """The pose at ``time_s``: a ``float32[3, 3]`` rotation and ``float32[3]`` translation."""
+
+        assert self.pose is not None
+        rotation, translation = self.pose(float(time_s))
+        rotation = torch.as_tensor(rotation, dtype=torch.float32, device=device)
+        translation = torch.as_tensor(translation, dtype=torch.float32, device=device)
+        if tuple(rotation.shape) != (3, 3) or tuple(translation.shape) != (3,):
+            raise ValueError(
+                "pose(t) must return a (3, 3) local-to-world rotation and a (3,) world translation, got "
+                f"{tuple(rotation.shape)} and {tuple(translation.shape)}"
+            )
+        return rotation, translation
+
+    def _posed(self, binding: RadarWorldBinding, time_s: float) -> tuple[RadarWorldBinding, torch.Tensor]:
+        """The binding with the radar's elements carried by its pose at ``time_s``.
+
+        The rotation turns the array about the radar's authored position and
+        the translation then moves it: ``p(t) = c + T(t) + R(t) (p - c)``. The
+        declared polarization turns with it on every endpoint. Returns the rotation too, which
+        the pattern stage reads to see each direction in the body frame.
+        """
+
+        device = binding.device
+        rotation, translation = self._rotation_at(time_s, device)
+        centre = torch.as_tensor(self.radar.position, dtype=torch.float32, device=device)
+
+        def turned(spec: RadarEndpointSpec) -> torch.Tensor:
+            # Row vectors: ``v @ R^T`` is ``R v``.
+            return (spec.polarizations @ rotation.T).contiguous()
+
+        def carried(spec: RadarEndpointSpec) -> RadarEndpointSpec:
+            moved = ((spec.positions_m - centre) @ rotation.T + centre + translation).contiguous()
+            return replace(spec, positions_m=moved, polarizations=turned(spec))
+
+        # Every endpoint of a binding carries the radar's declared polarization
+        # (the sites re-radiate co-polarized), so all four turn with the pose;
+        # only the radar's own elements move.
+        posed = replace(
+            binding,
+            transmitters=carried(binding.transmitters),
+            receivers=carried(binding.receivers),
+            site_sources=replace(binding.site_sources, polarizations=turned(binding.site_sources)),
+            site_sinks=replace(binding.site_sinks, polarizations=turned(binding.site_sinks)),
+        )
+        return posed, rotation
 
     def bind(self, compiled: object, snapshot: object, previous: FrozenEpoch | None) -> FrozenEpoch:
         """Freeze one topology epoch: both legs, the join and the pattern tables.
@@ -627,10 +728,23 @@ class WorldHalf:
                 pattern=self.antenna_pattern,
                 rx_pattern=self.radar.system_config.sensors.rx_pattern,
             )
+        adaptive_identity: Hashable = identity
+        if self.planes is not None:
+            adaptive_identity = composed_plane_identity(
+                composer,
+                self.planes.leg_labels(inbound, arriving.primitive, arriving.depth),
+                self.planes.leg_labels(outbound, leaving.primitive, leaving.depth),
+            )
         return FrozenEpoch(
             adapter=adapter,
             handles=handles,
-            payload=FrozenRoundTrip(composer=composer, binding=binding, pattern=pattern, identity=identity),
+            payload=FrozenRoundTrip(
+                composer=composer,
+                binding=binding,
+                pattern=pattern,
+                identity=identity,
+                adaptive_identity=adaptive_identity,
+            ),
         )
 
     def begin_report(self) -> None:
@@ -683,7 +797,7 @@ class WorldHalf:
         template = _round_trip(frame.frozen).binding
         if frame.rediscovered:
             return template
-        if self.sites.source == SITE_SOURCE_EXPLICIT and self.sensor_endpoints is None:
+        if self.sites.source == SITE_SOURCE_EXPLICIT and self.sensor_endpoints is None and self.pose is None:
             positions = self.sites.resolve(frame.snapshot, device=template.device)
             if positions.shape != template.site_positions_m.shape:
                 raise ValueError("a site trajectory must preserve the declared site count")
@@ -692,7 +806,7 @@ class WorldHalf:
                 site_sources=replace(template.site_sources, positions_m=positions),
                 site_sinks=replace(template.site_sinks, positions_m=positions),
             )
-        return self._bind_world(frame.snapshot)
+        return self._bind_world(frame.snapshot, frame.time_s)
 
     def _identity(self, frame: EpochFrame) -> Hashable:
         """The leg identity the adaptive controller groups and compares by.
@@ -703,7 +817,7 @@ class WorldHalf:
 
         if self.motion_sampling != "adaptive":
             return ()
-        return _round_trip(frame.frozen).identity
+        return _round_trip(frame.frozen).adaptive_identity
 
     def evaluate(self, query_times: Sequence[float]) -> list[EvaluatedObservation]:
         """Advance the world to each instant, then batch-replay identical handles.
@@ -715,11 +829,15 @@ class WorldHalf:
 
         results: dict[float, EvaluatedObservation] = {}
         groups: dict[Hashable, list[_PendingObservation]] = {}
+        positions = self._positions(query_times)
         for time_s in query_times:
-            frame = self.loop.frame(time_s, topology_complete=self._complete_los())
-            pending = _PendingObservation(
-                time_s=time_s, epoch_frame=frame, binding=self._binding_for(frame), identity=self._identity(frame)
+            self._clock = time_s
+            frame = self.loop.frame(
+                time_s, topology_complete=self._complete_los(), displaced=self._moved(positions, time_s)
             )
+            if positions is not None and frame.rediscovered:
+                self._reference = positions[time_s]
+            pending = self._pending(time_s, frame)
             if self.loop.structures_move:
                 self._replay([pending], results)
             else:
@@ -727,6 +845,68 @@ class WorldHalf:
         for group in groups.values():
             self._replay(group, results)
         return [results[time_s] for time_s in query_times]
+
+    def _positions(self, query_times: Sequence[float]) -> dict[float, np.ndarray] | None:
+        """Every site and endpoint position at every instant, for a displacement cadence.
+
+        The group is bound up front and read to the host in ONE copy. Without
+        a displacement cadence this is ``None`` and costs nothing.
+        """
+
+        if self.displacement_m is None:
+            return None
+        bindings = [self._bind_world(self.dynamic.at(time_s), time_s) for time_s in query_times]
+        stacked = torch.stack(
+            [
+                torch.cat(
+                    (binding.transmitters.positions_m, binding.receivers.positions_m, binding.site_positions_m)
+                ).detach()
+                for binding in bindings
+            ]
+        )
+        return dict(zip(query_times, stacked.double().cpu().numpy(), strict=True))
+
+    def _moved(self, positions: dict[float, np.ndarray] | None, time_s: float) -> bool:
+        """Whether anything moved ``displacement_m`` since the last discovery."""
+
+        if positions is None or self._reference is None:
+            return False
+        assert self.displacement_m is not None
+        return float(np.linalg.norm(positions[time_s] - self._reference, axis=1).max()) >= self.displacement_m
+
+    def _pending(self, time_s: float, frame: EpochFrame) -> _PendingObservation:
+        binding = self._binding_for(frame)
+        rotation = None if self.pose is None else self._rotation_at(time_s, binding.device)[0]
+        return _PendingObservation(
+            time_s=time_s, epoch_frame=frame, binding=binding, identity=self._identity(frame), rotation=rotation
+        )
+
+    def _response_at(self, group: list[_PendingObservation]) -> ScatterResponse:
+        """The scatter response for one replay group, one site set per instant when it varies in time."""
+
+        if self.timed_response is None:
+            return self.response
+        return self.timed_response.at([entry.time_s for entry in group])
+
+    def _body_frame(
+        self, group: list[_PendingObservation], pattern: RoundTripPatternStage, *points: torch.Tensor
+    ) -> tuple[torch.Tensor, ...]:
+        """World points seen in each instant's radar body frame, for the pattern stage.
+
+        The stage reads only DIRECTIONS (differences of these points) and maps
+        them through the authored pattern frame. Turning every point of slot
+        ``g`` by ``R_g^T`` turns each of those directions into the body frame,
+        so the authored frame then gives the pattern orientation the pose
+        carried. One batched matrix product per point set; nothing per row.
+        """
+
+        if self.pose is None or pattern.plan.is_identity:
+            return points
+        rotations = torch.stack([entry.rotation for entry in group if entry.rotation is not None])
+        slots = len(group)
+        return tuple(
+            torch.matmul(value.reshape(slots, -1, 3), rotations).reshape(-1, 3).contiguous() for value in points
+        )
 
     def _replay(self, group: list[_PendingObservation], results: dict[float, EvaluatedObservation]) -> None:
         """Replay one group of topology-identical instants as one slot batch."""
@@ -739,14 +919,16 @@ class WorldHalf:
             entry = group[0]
             round_trip = _round_trip(entry.epoch_frame.frozen)
             composer = round_trip.composer
-            paths = composer.compose(replay.inbound, replay.outbound, self.response, replay.direct)
-            tx_targets, rx_targets = composer.segment_targets(replay.inbound, replay.outbound, replay.direct)
+            paths = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+            tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
+                group,
+                round_trip.pattern,
+                entry.binding.transmitters.positions_m,
+                entry.binding.receivers.positions_m,
+                *composer.segment_targets(replay.inbound, replay.outbound, replay.direct),
+            )
             paths = round_trip.pattern.apply(
-                paths,
-                tx_pos=entry.binding.transmitters.positions_m,
-                rx_pos=entry.binding.receivers.positions_m,
-                tx_targets_m=tx_targets,
-                rx_targets_m=rx_targets,
+                paths, tx_pos=tx_pos, rx_pos=rx_pos, tx_targets_m=tx_targets, rx_targets_m=rx_targets
             )
             band = self._band(
                 round_trip,
@@ -909,17 +1091,22 @@ class WorldHalf:
         key = (round_trip.identity, slots)
         tables = self._slot_tables.get(key)
         if tables is None:
-            tables = (round_trip.composer.for_slots(slots), round_trip.pattern.for_slots(slots))
+            tables = (
+                round_trip.composer.for_slots(slots, per_slot_response=self.timed_response is not None),
+                round_trip.pattern.for_slots(slots),
+            )
             self._slot_tables.put(key, tables)
         composer, pattern = tables
-        batched = composer.compose(replay.inbound, replay.outbound, self.response, replay.direct)
-        tx_targets, rx_targets = composer.segment_targets(replay.inbound, replay.outbound, replay.direct)
+        batched = composer.compose(replay.inbound, replay.outbound, self._response_at(group), replay.direct)
+        tx_pos, rx_pos, tx_targets, rx_targets = self._body_frame(
+            group,
+            pattern,
+            transmitters.positions_m,
+            receivers.positions_m,
+            *composer.segment_targets(replay.inbound, replay.outbound, replay.direct),
+        )
         weighted = pattern.apply(
-            batched,
-            tx_pos=transmitters.positions_m,
-            rx_pos=receivers.positions_m,
-            tx_targets_m=tx_targets,
-            rx_targets_m=rx_targets,
+            batched, tx_pos=tx_pos, rx_pos=rx_pos, tx_targets_m=tx_targets, rx_targets_m=rx_targets
         )
         return SlotRows(
             total_delay_s=weighted.total_delay_s,
@@ -961,6 +1148,11 @@ class WorldHalf:
         offsets = self.request.frequency_offsets_hz
         if offsets is None:
             return None
+        if self.timed_response is not None or self.pose is not None:
+            raise NotImplementedError(
+                "wideband=True replicates one response and one pattern orientation across the frequency columns; "
+                "a time-varying Aspect.axis or a radar pose is evaluated per instant and is not combined with it"
+            )
         columns = len(offsets)
         inbound, outbound = band_as_slots(replay.inbound), band_as_slots(replay.outbound)
         direct = None if replay.direct is None else band_as_slots(replay.direct)
@@ -987,7 +1179,7 @@ class WorldHalf:
             ).complex_transfer_ref
         return weight.reshape(columns, -1).transpose(0, 1).contiguous()
 
-    def observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
+    def observations(self, start: float, offsets: np.ndarray, events: PathEvents) -> Iterator[Observation]:
         """One frame's evaluated observations, in schedule order.
 
         A generator rather than a list: the fused route drops each replay group
@@ -1013,7 +1205,24 @@ class WorldHalf:
         # route holds at once.
         for begin in range(0, len(offsets), self.batch_observations):
             times = [float(start + offset) for offset in offsets[begin : begin + self.batch_observations]]
-            for record in self.evaluate(times):
+            records = self.evaluate(times)
+            if self.recorder is not None:
+                self.recorder.record(
+                    events,
+                    [
+                        Observed(
+                            time_s=record.time_s,
+                            observation=begin + position,
+                            pool=record.batch.rows,
+                            offset=record.slot * _round_trip(record.epoch_frame.frozen).composer.path_count,
+                            composer=_round_trip(record.epoch_frame.frozen).composer,
+                            discovered=record.epoch_frame.rediscovered or record.epoch_frame.topology_complete,
+                        )
+                        for position, record in enumerate(records)
+                    ],
+                    _batch_pool,
+                )
+            for record in records:
                 yield Observation(
                     time_s=record.time_s,
                     epoch_frame=record.epoch_frame,
@@ -1022,12 +1231,15 @@ class WorldHalf:
                     batch=record.batch,
                     slot=record.slot,
                 )
+        if self.recorder is not None:
+            self.recorder.close_frame(events)
 
     def _still_observations(self, start: float, offsets: np.ndarray) -> Iterator[Observation]:
         for offset in offsets:
             time_s = float(start + offset)
             held = self._still
             if held is not None:
+                self._clock = time_s
                 frame = self.loop.frame(time_s)
                 if not frame.rediscovered and frame.frozen is held.epoch_frame.frozen:
                     yield replace(held, time_s=time_s, epoch_frame=frame)
@@ -1051,10 +1263,7 @@ class WorldHalf:
         """Replay one instant whose world the loop has already advanced."""
 
         results: dict[float, EvaluatedObservation] = {}
-        pending = _PendingObservation(
-            time_s=time_s, epoch_frame=frame, binding=self._binding_for(frame), identity=self._identity(frame)
-        )
-        self._replay([pending], results)
+        self._replay([self._pending(time_s, frame)], results)
         return results[time_s]
 
 
@@ -1085,8 +1294,15 @@ def _working_spec(radar: Radar, declared: WaveformSpec) -> WaveformSpec:
     return declared
 
 
-def _resolve_sampling(requested: Motion, *, sampled: bool) -> str:
+def _resolve_sampling(requested: Motion, *, sampled: bool, fmcw: bool) -> str:
     """The route a request runs, once it is known whether anything moves.
+
+    ``auto`` resolves to the adaptive route for a world that moves under an
+    FMCW waveform, because the exhaustive ADC route rediscovers at every ADC
+    instant and is the reference, not the default. Adaptive interpolation is
+    FMCW only and owns its own discovery cadence, so a non-FMCW waveform or a
+    declared discovery cadence resolves ``auto`` to the exhaustive
+    route instead.
 
     ``static`` is refused rather than silently upgraded: it asks for one
     observation a frame, and a world that moves inside a frame would publish
@@ -1094,7 +1310,10 @@ def _resolve_sampling(requested: Motion, *, sampled: bool) -> str:
     per frame whatever the kind, which the rest of the session spells ``adc``.
     """
 
-    motion_sampling = ("adc" if sampled else "static") if requested.kind == "auto" else requested.kind
+    motion_sampling = requested.kind
+    if requested.kind == "auto":
+        adaptive = sampled and fmcw and requested.cadence is None
+        motion_sampling = "adaptive" if adaptive else ("adc" if sampled else "static")
     if motion_sampling == "static" and sampled:
         raise ValueError(
             "Motion.static() asks for one observation per frame, but this session moves within a frame; "
@@ -1175,6 +1394,7 @@ def open_session(
     max_paths: int | None = None,
     max_round_trips: int | None = None,
     wideband: bool = False,
+    pose: Callable[[float], Any] | None = None,
 ) -> tuple[Session, Iterator[FrameTrace]]:
     """Open one scene session: the world half, and what the instrument half needs.
 
@@ -1263,11 +1483,17 @@ def open_session(
     dynamic = _dynamic_scene(scene)
     if dynamic.endpoint_trajectories and sensor_endpoints is None:
         raise ValueError("moving Core endpoints require explicit sensor_endpoints in array order")
+    from .targets import TimedAspectResponse
+
+    if pose is not None and not callable(pose):
+        raise TypeError("pose must be callable as pose(t) -> (rotation (3, 3), translation (3,))")
     sampled = bool(
         dynamic.structure_trajectories
         or dynamic.structure_deformations
         or dynamic.endpoint_trajectories
         or sites.trajectory is not None
+        or pose is not None
+        or isinstance(response, TimedAspectResponse)
     )
     declared = solve_config.waveform_spec()
     path_phase_noise = radar.frontend is not None and radar.frontend.has_phase_noise
@@ -1279,9 +1505,16 @@ def open_session(
         if motion.kind not in ("auto", "adc", "adaptive"):
             raise ValueError("common-oscillator phase noise requires ADC-time observations")
         sampled = True
-    motion_sampling = _resolve_sampling(motion, sampled=sampled)
-
     working = _working_spec(radar, declared)
+    # Adaptive interpolation covers one uniform TDM ramp, so only that is
+    # what ``auto`` may hand it.
+    interpolable = (
+        isinstance(working, FmcwSpec)
+        and working.uniform
+        and not working.phase_error_cycles
+        and not working.simultaneous
+    )
+    motion_sampling = _resolve_sampling(motion, sampled=sampled, fmcw=interpolable)
     if motion_sampling == "adaptive" and not isinstance(working, FmcwSpec):
         raise NotImplementedError("adaptive motion currently requires FMCW")
     if motion_sampling == "adaptive" and isinstance(working, FmcwSpec):
@@ -1295,7 +1528,7 @@ def open_session(
             "array mutual coupling acts on separately recorded transmit channels, and DDM and BPM record every "
             "transmitter on one; run TDM to model coupling"
         )
-    if motion_sampling == "adaptive" and motion.rediscover_every_frames is not None:
+    if motion_sampling == "adaptive" and motion.cadence is not None:
         raise ValueError("adaptive motion owns its topology discovery cadence")
     # FMCW and pulsed trains have a fast-time grid of their own, so an ADC
     # request observes the world at every sample of it.
@@ -1310,6 +1543,8 @@ def open_session(
 
     mode = SlowTimeMode.FROZEN_WEIGHT_WITH_CARRIER_RATE
     cadence: int | None
+    period_s = motion.rediscover_every_seconds
+    displacement_m = motion.rediscover_on_displacement
     pair_samples: torch.Tensor | None = None
     single: WaveformSpec | None = None
     if sampled:
@@ -1336,14 +1571,25 @@ def open_session(
             single = fast_time_single(single)
         mode = SlowTimeMode.REFRESHED_WEIGHT_NO_RATE
         # A version poll cannot detect endpoint-induced path births. Complete
-        # dynamic sampling therefore rediscovers at each observed instant.
-        cadence = 1 if motion.rediscover_every_frames is None else motion.rediscover_every_frames * len(offsets)
+        # dynamic sampling therefore rediscovers at each observed instant;
+        # a declared cadence converts to observations here, a time or
+        # displacement cadence is decided per observation by the world half.
+        cadence = 1 if motion.cadence is None else None
+        if motion.rediscover_every_frames is not None:
+            cadence = motion.rediscover_every_frames * len(offsets)
+        elif motion.rediscover_every_chirps is not None:
+            cadence = motion.rediscover_every_chirps * samples_per_slot
     else:
         offsets = np.zeros(1)
+        # One observation a frame: a chirp cadence is a frame cadence, and
+        # nothing in a still world can move by a displacement.
         cadence = motion.rediscover_every_frames
+        if motion.rediscover_every_chirps is not None:
+            cadence = 1
+        displacement_m = None
     if sampled and any(b <= a + offsets[-1] for a, b in zip(instants, instants[1:], strict=False)):
         raise ValueError("dynamic frames must not overlap in observation time")
-    still_world = not sampled and cadence is None
+    still_world = not sampled and cadence is None and period_s is None
     band_offsets = _subcarrier_offsets(working) if wideband else None
     unfrozen = (frozenset(components) | direct_components) & UNFREEZABLE_COMPONENTS
     if unfrozen:
@@ -1378,7 +1624,10 @@ def open_session(
         motion_sampling=motion_sampling,
         ad_mode=ad_mode,
         cadence=cadence,
+        period_s=period_s,
+        displacement_m=displacement_m,
         world_motion=motion.world,
+        pose=pose,
         still_world=still_world,
         batch_observations=int(motion.batch_observations),
         request=request,
@@ -1408,7 +1657,11 @@ def open_session(
     # Whether a non-adaptive route can have missed a path birth is a property
     # of the declared cadence and world motion, not of any one frame, so it is
     # decided once here and repeated on every frame the run publishes.
-    complete = not sampled or cadence == 1 or (motion.world == "frozen_world" and world.loop.structures_move)
+    complete = (
+        not sampled
+        or (cadence == 1 and period_s is None and displacement_m is None)
+        or (motion.world == "frozen_world" and world.loop.structures_move)
+    )
     if sampled and motion_sampling == "adaptive":
         return session, _adaptive_traces(session, world)
     return session, _frame_traces(session, world, path_set_complete=bool(complete), exhaustive=exhaustive)
@@ -1485,13 +1738,15 @@ def _frame_traces(
     session: Session, world: WorldHalf, *, path_set_complete: bool, exhaustive: bool
 ) -> Iterator[FrameTrace]:
     for start in session.times:
+        events = PathEvents()
         yield FrameTrace(
             time_s=float(start),
             sample_times_s=start + session.offsets,
-            observations=world.observations(start, session.offsets),
+            observations=world.observations(start, session.offsets, events),
             path_set_complete=path_set_complete,
             motion_sampling_exhaustive=exhaustive,
             discovery=world.report,
+            events=events,
         )
 
 
@@ -1506,6 +1761,25 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
         world.begin_report()
         frame = trace_adaptive_frame(actual_times, world.evaluate, spec, session.motion, session.reference_frequency_hz)
         report = world.report()
+        events = PathEvents()
+        if world.recorder is not None:
+            probes = [(index, frame.probes[index]) for index in sorted(frame.probes)]
+            world.recorder.record(
+                events,
+                [
+                    Observed(
+                        time_s=float(actual_times[index]),
+                        observation=index,
+                        pool=frame.table,
+                        offset=int(frame.table.starts[index]),
+                        composer=_round_trip(record.epoch_frame.frozen).composer,
+                        discovered=record.epoch_frame.rediscovered or record.epoch_frame.topology_complete,
+                    )
+                    for index, record in probes
+                ],
+                _table_pool,
+            )
+            world.recorder.close_frame(events)
         last = frame.last
         if not isinstance(last, EvaluatedObservation):
             raise TypeError("the adaptive controller returns the session's evaluated observations")
@@ -1522,6 +1796,7 @@ def _adaptive_traces(session: Session, world: WorldHalf) -> Iterator[FrameTrace]
             path_set_complete=bool(frame.stats["exhaustive"] or frame.stats["topology_proved_complete"]),
             motion_sampling_exhaustive=bool(frame.stats["exhaustive"]),
             discovery=partial(_constant_report, report),
+            events=events,
         )
 
 
@@ -1805,7 +2080,12 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         # been echoed does not claim a synthesis count it could not have.
         assert trace.stats is not None
         trace.stats["synthesis_batches"] = batches
-        synthesis = SynthesisResult.from_fmcw(cube, replace(working, output_domain="beat"))
+        beat = replace(working, output_domain="beat")
+        # The declared coupling is a static row per sensor pair, so it is the
+        # same full-frame beat cube whatever the world's sampling; the other
+        # sampled routes add it per observation through ``Radar._synthesize``.
+        cube = cube + radar._leakage_cube(beat, session.array.num_tx * session.array.num_rx, cube)
+        synthesis = SynthesisResult.from_fmcw(cube, beat)
     elif _batches_slots(session):
         cube, opened, closing = _echo_slot_batches(session, working, trace.observations)
         published = closing.composed
@@ -1917,6 +2197,7 @@ def echo_frame(session: Session, trace: FrameTrace) -> SceneFrame:
         motion_sampling=session.kind,
         output_spec=session.specs.declared,
         array=session.array,
+        events=trace.events,
     )
 
 
@@ -2006,6 +2287,8 @@ class Paths:
     #: :class:`~witwin.radar.Result`. ``path_set_complete`` is ANDed with it.
     discovery_complete: bool
     transmission_dropped_rows: int
+    #: Each frame's path births and deaths (:class:`~witwin.radar.events.PathEvents`).
+    events: tuple[PathEvents, ...]
     #: The closing observation's typed state, as the result publishes it.
     last_snapshot: object
     last_compiled_scene: object
@@ -2019,6 +2302,12 @@ class Paths:
         """Frames these rows cover."""
 
         return len(self._frames)
+
+    @property
+    def birth_lag_bound_s(self) -> tuple[float, ...]:
+        """Per frame, how late a path birth can have been seen, s."""
+
+        return tuple(frame.birth_lag_bound_s for frame in self.events)
 
     @property
     def observation_count(self) -> int:
@@ -2067,6 +2356,7 @@ class Paths:
             adaptive_diagnostics=() if frame_trace.stats is None else (frame_trace.stats,),
             discovery_complete=frame_trace.discovery().complete,
             transmission_dropped_rows=frame_trace.discovery().transmission_dropped_rows,
+            events=(frame_trace.events,),
             last_snapshot=closing.epoch_frame.snapshot,
             last_compiled_scene=closing.epoch_frame.compiled,
             last_propagation=closing.legs,
@@ -2242,6 +2532,7 @@ def trace_scene(radar: Radar, scene: object, **arguments: Any) -> Paths:
         adaptive_diagnostics=tuple(frame.stats for frame in frames if frame.stats is not None),
         discovery_complete=discovery.complete,
         transmission_dropped_rows=discovery.transmission_dropped_rows,
+        events=tuple(frame.events for frame in frames),
         last_snapshot=closing.epoch_frame.snapshot,
         last_compiled_scene=closing.epoch_frame.compiled,
         last_propagation=closing.legs,

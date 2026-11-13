@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from support import oracle_scenes as sc
@@ -140,3 +141,126 @@ def test_moving_pulsed_carries_the_geometric_slow_time_phase():
     measured = torch.angle(echo[1:, sample] * echo[:-1, sample].conj())
     expected = torch.angle(torch.exp(-2j * math.pi * sc.CARRIER_HZ * (tau[1:] - tau[:-1])))
     torch.testing.assert_close(measured, expected, atol=5e-3, rtol=0)
+
+
+# --------------------------------------------------------------------------
+# M2-11: the default for a moving FMCW scene
+# --------------------------------------------------------------------------
+
+
+def _fmcw_mover(*, samples=8, chirps=4, **fields):
+    radar = sc.radar(sc.beat_fmcw(samples=samples, chirps=chirps), **fields)
+    return radar, _mover(radar.device)
+
+
+def test_auto_resolves_to_adaptive_for_a_moving_fmcw_scene():
+    radar, targets = _fmcw_mover()
+    default = radar.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0)
+    exact = radar.simulate(sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.adc())
+    assert default.motion_sampling == "adaptive" and default.motion_sampling_exhaustive is False
+    assert exact.motion_sampling == "adc" and exact.motion_sampling_exhaustive is True
+    error = float((default.cube - exact.cube).abs().norm() / exact.cube.abs().norm())
+    assert error < 0.012, error
+    # A declared cadence is the exhaustive schedule's knob, so it keeps that schedule.
+    held = radar.simulate(
+        sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.auto(rediscover_every_chirps=1)
+    )
+    assert held.motion_sampling == "adc"
+
+
+def test_the_adaptive_route_carries_a_declared_leakage():
+    """The adaptive echo adds the board coupling the exhaustive route adds per observation."""
+
+    from witwin.radar import Leakage
+
+    radar, targets = _fmcw_mover(leakage=Leakage(isolation_db=30.0, delay_s=1e-10))
+    kwargs = {"times": (0.0,), "reflections": 0}
+    adaptive = radar.simulate(sc.empty_scene(), targets, motion=Motion.adaptive(), **kwargs)
+    exact = radar.simulate(sc.empty_scene(), targets, motion=Motion.adc(), **kwargs)
+    bare = radar.replace(leakage=None).simulate(sc.empty_scene(), targets, motion=Motion.adc(), **kwargs)
+    coupling = float((exact.cube - bare.cube).abs().norm())
+    assert coupling > 10 * float(bare.cube.abs().norm())
+    assert float((adaptive.cube - exact.cube).abs().norm()) < 1e-3 * coupling
+
+
+# --------------------------------------------------------------------------
+# M2-5: discovery cadences between every observation and every N frames
+# --------------------------------------------------------------------------
+
+
+def test_a_per_chirp_cadence_discovers_once_per_chirp_and_replays_every_sample():
+    radar, targets = _fmcw_mover(samples=8, chirps=4)
+    kwargs = {"times": (0.0,), "reflections": 0}
+    every = radar.simulate(sc.empty_scene(), targets, motion=Motion.adc(), **kwargs)
+    per_chirp = radar.simulate(sc.empty_scene(), targets, motion=Motion.adc(rediscover_every_chirps=1), **kwargs)
+    assert every.discovery_count == 4 * 8
+    assert per_chirp.discovery_count == every.discovery_count // 8
+    assert every.path_set_complete and not per_chirp.path_set_complete
+    torch.testing.assert_close(per_chirp.cube, every.cube, rtol=1e-5, atol=0)
+    # The lag bound is the discovery spacing actually incurred: one chirp.
+    starts = every.sample_times_s[0].reshape(4, 8)[:, 0]
+    assert per_chirp.birth_lag_bound_s[0] == pytest.approx(float(np.diff(starts).max()), rel=1e-9)
+    assert every.birth_lag_bound_s[0] == pytest.approx(float(np.diff(every.sample_times_s[0]).max()), rel=1e-9)
+
+
+def _expected_discoveries(times: np.ndarray, due) -> list[int]:
+    """The observation indices a cadence rediscovers at, walked in time order."""
+
+    found, last = [0], 0
+    for index in range(1, len(times)):
+        if due(last, index):
+            found.append(index)
+            last = index
+    return found
+
+
+def test_a_time_cadence_discovers_on_world_time():
+    radar, targets = _fmcw_mover(samples=8, chirps=4)
+    period = 2.5 * radar.waveform_spec().chirp_period_s
+    result = radar.simulate(
+        sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.adc(rediscover_every_seconds=period)
+    )
+    times = result.sample_times_s[0]
+    found = _expected_discoveries(times, lambda last, index: times[index] - times[last] >= period * (1 - 1e-9))
+    assert result.discovery_count == len(found)
+    gaps = np.diff(times[found]).tolist() + [times[-1] - times[found[-1]]]
+    assert result.birth_lag_bound_s[0] == pytest.approx(max(gaps), rel=1e-9)
+    assert not result.path_set_complete
+
+
+def test_a_displacement_cadence_discovers_on_motion():
+    radar, targets = _fmcw_mover(samples=8, chirps=4)
+    step = SPEED * radar.waveform_spec().chirp_period_s * 1.5
+    result = radar.simulate(
+        sc.empty_scene(), targets, times=(0.0,), reflections=0, motion=Motion.adc(rediscover_on_displacement=step)
+    )
+    times = result.sample_times_s[0]
+    position = START + SPEED * times
+    found = _expected_discoveries(times, lambda last, index: abs(position[index] - position[last]) >= step)
+    assert 1 < result.discovery_count == len(found) < len(times)
+    assert not result.path_set_complete
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: Motion.adc(rediscover_every_frames=1, rediscover_every_chirps=1),
+        lambda: Motion.adc(rediscover_every_seconds=0.0),
+        lambda: Motion.chirp(rediscover_on_displacement=-1.0),
+    ],
+)
+def test_cadences_refuse_invalid_declarations(build):
+    with pytest.raises(ValueError):
+        build()
+
+
+def test_adaptive_refuses_a_declared_cadence():
+    radar, targets = _fmcw_mover()
+    with pytest.raises(ValueError, match="owns its topology discovery cadence"):
+        radar.simulate(
+            sc.empty_scene(),
+            targets,
+            times=(0.0,),
+            reflections=0,
+            motion=Motion(kind="adaptive", rediscover_every_chirps=1),
+        )

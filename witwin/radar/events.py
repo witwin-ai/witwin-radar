@@ -36,7 +36,7 @@ import torch
 from .cuda import native_ops as _ops
 
 if TYPE_CHECKING:
-    from .paths import RadarPathBatch, TwoWayComposer
+    from .paths import TwoWayComposer
 
 #: Records one frame can hold. A frame that detects more reports how many it
 #: dropped in :attr:`PathEvents.dropped` rather than losing them silently.
@@ -51,12 +51,18 @@ _SOURCE, _SITE, _SINK, _IN_COMPONENT, _OUT_COMPONENT, _IN_DEPTH, _OUT_DEPTH = ra
 
 
 def _padded(values: np.ndarray, width: int) -> np.ndarray:
-    """``values`` widened to ``width`` columns with the no-interaction label ``-1``."""
+    """A ``[primitive | material]`` sequence block widened to ``2 * width`` columns.
 
-    if values.shape[1] == width:
+    Each half is padded on its own with the no-interaction label ``-1``, so
+    slot ``k`` of a row means the same interaction whatever width the join
+    that recorded it was frozen with.
+    """
+
+    half = values.shape[1] // 2
+    if half == width:
         return values
-    pad = np.full((values.shape[0], width - values.shape[1]), -1, dtype=np.int64)
-    return np.concatenate((values, pad), axis=1)
+    pad = np.full((values.shape[0], width - half), -1, dtype=np.int64)
+    return np.concatenate((values[:, :half], pad, values[:, half:], pad), axis=1)
 
 
 def _row_keys(composer: TwoWayComposer, in_width: int, out_width: int) -> np.ndarray:
@@ -65,6 +71,7 @@ def _row_keys(composer: TwoWayComposer, in_width: int, out_width: int) -> np.nda
             composer.identity_host,
             _padded(composer.inbound_sequence_host, in_width),
             _padded(composer.outbound_sequence_host, out_width),
+            composer.edge_host,
         ),
         axis=1,
     )
@@ -96,8 +103,8 @@ class Transition:
         if earlier is later:
             rows = np.arange(later.path_count, dtype=np.int64)
             return cls(before=rows, after=rows, identity=later.identity_host)
-        in_width = max(earlier.inbound_sequence_host.shape[1], later.inbound_sequence_host.shape[1])
-        out_width = max(earlier.outbound_sequence_host.shape[1], later.outbound_sequence_host.shape[1])
+        in_width = max(earlier.inbound_sequence_host.shape[1], later.inbound_sequence_host.shape[1]) // 2
+        out_width = max(earlier.outbound_sequence_host.shape[1], later.outbound_sequence_host.shape[1]) // 2
         keys_a = _row_keys(earlier, in_width, out_width)
         keys_b = _row_keys(later, in_width, out_width)
         count_a, count_b = len(keys_a), len(keys_b)
@@ -373,12 +380,18 @@ class PathEvents:
 Pool = tuple[torch.Tensor, torch.Tensor]
 
 
-def batch_pool(paths: RadarPathBatch) -> Pool:
-    """The detached pool of a composed batch. Views only; nothing is copied."""
+def batch_pool(paths: Any) -> Pool:
+    """The detached pool of composed rows (a batch or a slot block). Views only.
 
-    if paths.row_valid is None:
-        raise ValueError("an observed batch always carries row_valid; a replayed one always publishes it")
-    return paths.row_valid, torch.view_as_real(paths.complex_transfer_ref.detach())
+    Rows read straight from a discovery may publish no validity column; every
+    such row exists, and the pool then carries an all-true column.
+    """
+
+    transfer = torch.view_as_real(paths.complex_transfer_ref.detach())
+    valid = paths.row_valid
+    if valid is None:
+        valid = torch.ones(transfer.shape[0], dtype=torch.bool, device=transfer.device)
+    return valid, transfer
 
 
 @dataclass(frozen=True, slots=True, eq=False)

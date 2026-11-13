@@ -20,8 +20,8 @@ This module owns the target vocabulary. The scattering COEFFICIENT is owned by
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
@@ -43,9 +43,17 @@ class Aspect:
     sharply the return falls away from it. Attaching one of these to
     :class:`PointTargets` makes the strength depend on the geometry of each
     round trip; without it the cross section is isotropic.
+
+    ``axis`` may be a function of time, ``axis(t) -> (S, 3)``: a rotating
+    lobe or a blade flash. It is then evaluated at every observation instant
+    the session samples, the session counts as moving even if no point does,
+    and the lobe the kernel sees at an instant is the axis at that instant.
+    The function must return unit vectors; a tensor it returns keeps its
+    tape, so a gradient reaches whatever parameterises the rotation.
     """
 
-    #: One unit axis per target, world frame, shape ``(S, 3)``.
+    #: One unit axis per target, world frame, shape ``(S, 3)``; or a function
+    #: of time returning one.
     axis: Any
     #: Lobe sharpness ``n``, dimensionless, at least 1. Larger is narrower.
     exponent: float
@@ -237,15 +245,56 @@ def as_session_targets(targets: PointTargets | StructureTargets, *, radar) -> tu
             amplitude = torch.full((count,), float(amplitude), dtype=torch.float32, device=radar.device)
         elif amplitude.dim() == 0:
             amplitude = amplitude.expand(count)
+        timed = callable(aspect.axis)
         response = AspectScatterResponse(
-            axis=_axis_tensor(aspect.axis, count=count, device=radar.device),
+            axis=_axis_tensor(aspect.axis(0.0) if timed else aspect.axis, count=count, device=radar.device),
             amplitude=amplitude.to(device=radar.device),
             phase_rad=torch.full((count,), float(targets.phase), dtype=torch.float32, device=radar.device),
             exponent=float(aspect.exponent),
             coherent_interval_s=float(aspect.coherent_interval),
             aspect_phase_rate_rad_per_s=float(aspect.phase_rate),
         )
+        if timed:
+            return policy, TimedAspectResponse(base=response, axis=aspect.axis, count=count, device=radar.device)
     return policy, response
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TimedAspectResponse:
+    """An aspect response whose axis is a function of time.
+
+    Not a scatter response itself: the session resolves it at the instants of
+    each replay group with :meth:`at`, which returns an ordinary
+    :class:`~witwin.radar.scattering.AspectScatterResponse` with one site per
+    (instant, target), slot major. The slot-batched join indexes those sites
+    per slot, so every row's lobe is the axis at that row's own instant and
+    the native aspect kernel does every per-row evaluation.
+    """
+
+    base: AspectScatterResponse
+    axis: Callable[[float], Any]
+    count: int
+    device: Any
+
+    @property
+    def is_geometry_dependent(self) -> bool:
+        """Always: the lobe it resolves to is evaluated per composed row."""
+
+        return True
+
+    def at(self, times: Sequence[float]) -> AspectScatterResponse:
+        """The response at ``times``: ``len(times) * count`` sites, slot major."""
+
+        axes = torch.cat(
+            [_axis_tensor(self.axis(float(time_s)), count=self.count, device=self.device) for time_s in times]
+        )
+        slots = len(times)
+        return replace(
+            self.base,
+            axis=axes.contiguous(),
+            amplitude=self.base.amplitude.repeat(slots),
+            phase_rad=self.base.phase_rad.repeat(slots),
+        )
 
 
 def _axis_tensor(axis: Any, *, count: int, device) -> torch.Tensor:
