@@ -167,3 +167,38 @@ def test_one_micrometre_of_motion_is_visible_at_30_m():
     assert abs(abs(moved) - expected) < 0.01 * expected, (moved, expected)
     quantized = math.remainder(_carrier_phase(far, torch.float32) - _carrier_phase(near, torch.float32), 2 * math.pi)
     assert abs(abs(quantized) - expected) > 0.3 * expected, (quantized, expected)
+
+
+def test_every_wideband_column_carries_the_float64_phase_at_its_own_frequency():
+    """Column n of a band is ``exp(-j 2 pi (f_ref + n df) tau64)`` relative to column 0.
+
+    The join removes Channel's float32 phase per column with that column's own
+    float32 wave number (Channel launches column n at float32(f_ref + n df)) and
+    applies the float64 one. A 10 MHz spacing is not a multiple of the float32
+    ulp of 77 GHz (8192 Hz), so a replica of the wrong column frequency would
+    leave up to k32 ulp x L = 1e-2 rad here; the float32 field leaves 1e-6.
+    """
+
+    from witwin.radar import Ofdm, PointTargets
+
+    spacing, subcarriers, range_m = 10.0e6, 64, 37.000000123
+    radar = sc.radar(
+        Ofdm(
+            subcarrier_spacing=spacing,
+            num_subcarriers=subcarriers,
+            cyclic_prefix=3e-7,
+            num_symbols=1,
+            max_expected_delay=2.6e-7,
+        )
+    )
+    targets = PointTargets(
+        positions=torch.tensor([[range_m, 0.0, 0.0]], dtype=torch.float64, device=radar.device), rcs=1.0
+    )
+    rows = radar.trace(sc.empty_scene(), targets, times=(0.0,), los=True, reflections=0, wideband=True).rows()
+    band = rows.complex_transfer_band
+    assert band is not None and tuple(band.shape) == (1, subcarriers)
+    tau = 2.0 * range_m / SPEED_OF_LIGHT_M_PER_S
+    produced = torch.angle(band[0] * band[0, :1].conj()).double().cpu().numpy()
+    expected = -2.0 * math.pi * spacing * np.arange(subcarriers) * tau
+    error = np.angle(np.exp(1j * (produced - expected)))
+    assert float(np.abs(error).max()) < 1e-5, float(np.abs(error).max())

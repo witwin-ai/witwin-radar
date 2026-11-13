@@ -689,16 +689,22 @@ def _wave_table(device: torch.device, frequency_hz: float, offsets_hz: tuple[flo
     """``float64[columns, 2]``: ``(k64, k32)`` per frequency column, on ``device``.
 
     Column ``j`` is ``frequency_hz + offsets_hz[j]`` (one column without
-    offsets). ``k32`` replicates Channel's float32 evaluation at its float32
-    launch frequency (``resolution_hz = ulp_float32(reference)``). Cached per
-    grid: a frame does not re-upload it.
+    offsets). ``k64`` is that frequency's float64 wave number; ``k32``
+    replicates Channel's float32 evaluation at the column's float32 launch
+    frequency, ``float32(frequency_hz + offset)`` with the sum in float64
+    (Channel's ``launch_grid=float32``), which
+    ``test_every_wideband_column_carries_the_float64_phase_at_its_own_frequency``
+    pins: a sum rounded in float32 instead misses some columns by a k32 ulp.
+    Cached per grid: a frame does not re-upload it.
     """
 
     columns = (0.0,) if offsets_hz is None else offsets_hz
     rows = []
     for offset in columns:
-        frequency = float(np.float32(np.float32(frequency_hz) + np.float32(offset))) if offset else frequency_hz
-        rows.append((2.0 * math.pi * (frequency_hz + offset) / SPEED_OF_LIGHT_M_PER_S, channel_wave_number(frequency)))
+        frequency = frequency_hz + offset
+        rows.append(
+            (2.0 * math.pi * frequency / SPEED_OF_LIGHT_M_PER_S, channel_wave_number(float(np.float32(frequency))))
+        )
     return torch.tensor(rows, dtype=torch.float64, device=device)
 
 
