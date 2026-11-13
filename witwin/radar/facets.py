@@ -109,18 +109,27 @@ class _FacetGeometry(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        ctx.model = inputs[1]
+        model = inputs[1]
+        ctx.model = model
+        # The operator is linear, so its tape is the topology: the vertex
+        # incidence CSR the reverse pass reduces over, the face table the
+        # forward-mode pass gathers through.
+        tables = (model.vertex_offsets, model.vertex_entries, model.facet_site, model.site_offsets)
+        ctx.save_for_backward(*tables)
+        ctx.save_for_forward(model.faces, model.site_offsets, model.site_facets)
 
     @staticmethod
     @first_order_only
     def backward(ctx, grad_corners, grad_sites):
-        model = ctx.model
-        grad_vertices = torch.empty((model.vertex_count, 3), dtype=torch.float32, device=grad_corners.device)
+        vertex_offsets, vertex_entries, facet_site, site_offsets = ctx.saved_tensors
+        grad_vertices = torch.empty(
+            (int(vertex_offsets.shape[0]) - 1, 3), dtype=torch.float32, device=grad_corners.device
+        )
         _ops().facet_geometry_backward(
-            model.vertex_offsets,
-            model.vertex_entries,
-            model.facet_site,
-            model.site_offsets,
+            vertex_offsets,
+            vertex_entries,
+            facet_site,
+            site_offsets,
             grad_corners.contiguous(),
             grad_sites.contiguous(),
             grad_vertices,
@@ -129,12 +138,10 @@ class _FacetGeometry(torch.autograd.Function):
 
     @staticmethod
     def jvp(ctx, tan_vertices, tan_model):
-        model = ctx.model
-        corners = torch.empty((model.facet_count, 9), dtype=torch.float32, device=tan_vertices.device)
-        sites = torch.empty((model.site_count, 3), dtype=torch.float32, device=tan_vertices.device)
-        _ops().facet_geometry_jvp(
-            tan_vertices.contiguous(), model.faces, model.site_offsets, model.site_facets, corners, sites
-        )
+        faces, site_offsets, site_facets = ctx.saved_tensors
+        corners = torch.empty((int(faces.shape[0]), 9), dtype=torch.float32, device=tan_vertices.device)
+        sites = torch.empty((int(site_offsets.shape[0]) - 1, 3), dtype=torch.float32, device=tan_vertices.device)
+        _ops().facet_geometry_jvp(tan_vertices.contiguous(), faces, site_offsets, site_facets, corners, sites)
         return corners, sites
 
 
@@ -241,22 +248,31 @@ class FacetSites:
         layer_offsets = np.concatenate(([0], np.cumsum(layer_counts)))
         layers = np.asarray(layer_rows if layer_rows else [[0.0, 1.0, 0.0, 1.0]], dtype=np.float32).reshape(-1, 4)
 
-        def upload(values, dtype):
-            return torch.as_tensor(np.ascontiguousarray(values), dtype=dtype).to(device)
-
+        # Every table crosses to the device in two copies, one per dtype, and
+        # is published as views of those buffers.
+        integer_tables = (faces, site_offsets, site_facets, site_of, vertex_offsets, vertex_entries)
+        integer_tables += (np.concatenate(facet_material), layer_offsets)
+        integers = torch.from_numpy(
+            np.concatenate([np.asarray(table, dtype=np.int64).reshape(-1) for table in integer_tables])
+        ).to(device)
+        views = torch.split(integers, [int(np.asarray(table).size) for table in integer_tables])
+        floats = torch.from_numpy(np.concatenate((params.reshape(-1), layers.reshape(-1))).astype(np.float32)).to(
+            device
+        )
+        material_params, layer_values = torch.split(floats, [params.size, layers.size])
         return FacetModel(
             structure_ids=tuple(int(state.structure_id) for state in states),
             vertex_counts=tuple(int(value.shape[0]) for value in host_vertices),
-            faces=upload(faces, torch.int64),
-            site_offsets=upload(site_offsets, torch.int64),
-            site_facets=upload(site_facets, torch.int64),
-            facet_site=upload(site_of, torch.int64),
-            vertex_offsets=upload(vertex_offsets, torch.int64),
-            vertex_entries=upload(vertex_entries, torch.int64),
-            facet_material=upload(np.concatenate(facet_material), torch.int64),
-            material_params=upload(params, torch.float32),
-            layer_offsets=upload(layer_offsets, torch.int64),
-            layers=upload(layers, torch.float32),
+            faces=views[0].view(-1, 3),
+            site_offsets=views[1],
+            site_facets=views[2],
+            facet_site=views[3],
+            vertex_offsets=views[4],
+            vertex_entries=views[5],
+            facet_material=views[6],
+            material_params=material_params,
+            layer_offsets=views[7],
+            layers=layer_values,
             key=key,
         )
 

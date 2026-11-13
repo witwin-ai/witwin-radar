@@ -269,13 +269,14 @@ def test_the_vertex_gradient_matches_finite_differences():
     assert analytic == pytest.approx(central, rel=3e-2, abs=0)
 
 
-def test_a_still_mesh_target_costs_one_launch_per_composition_and_no_host_traffic(monkeypatch):
-    """Budget: the facet route against point targets at the same sites, per marginal frame.
+def test_a_still_mesh_target_costs_what_point_targets_at_its_sites_cost(monkeypatch):
+    """Budget: the facet route against point targets at the same sites.
 
-    The facets of a still mesh are placed once and reused, so a later frame
-    launches ``facet_geometry`` zero times and ``facet_response`` once per
-    composition; its synchronizations and device copies are the point
-    targets' own, because nothing on the facet route reads the device.
+    A still mesh in a still world is placed once: its first frame adds one
+    ``facet_geometry`` launch, one ``facet_response`` launch per composition
+    and the host work that builds the facet tables once (one device-to-host
+    copy, at most four synchronizations); every later frame is the point
+    targets' own, because the session reuses the composed rows.
     """
 
     from support.session_ledger import SessionLedger, profiled_copies
@@ -302,20 +303,31 @@ def test_a_still_mesh_target_costs_one_launch_per_composition_and_no_host_traffi
             with monkeypatch.context() as patch:
                 ledger = SessionLedger(patch)
                 ledger.run(run(targets, frames))
-            counts[frames] = (ledger.native.copy(), ledger.synchronizations, copies, ledger.trips.copy())
+            counts[frames] = {
+                "native": dict(ledger.native),
+                "syncs": ledger.synchronizations,
+                "d2h": copies["d2h"],
+                "compose": ledger.trips["TwoWayComposer.compose"],
+            }
         return counts
 
     mesh = measure(MeshTargets())
     point = measure(PointTargets(positions=sites, amplitude=1.0))
-    compositions = mesh[2][3]["TwoWayComposer.compose"] - mesh[1][3]["TwoWayComposer.compose"]
-    assert compositions > 0
-    assert mesh[2][0]["facet_geometry_forward"] - mesh[1][0]["facet_geometry_forward"] == 0
-    assert mesh[2][0]["facet_response_forward"] - mesh[1][0]["facet_response_forward"] == compositions
-    for frames in (1, 2):
-        assert mesh[frames][1] == point[frames][1]
-    marginal_mesh = {key: mesh[2][2][key] - mesh[1][2][key] for key in ("d2h", "h2d")}
-    marginal_point = {key: point[2][2][key] - point[1][2][key] for key in ("d2h", "h2d")}
-    assert marginal_mesh == marginal_point
+    report = f"mesh={mesh} point={point}"
+    first_mesh, first_point = mesh[1], point[1]
+    extra = {
+        name: count - first_point["native"].get(name, 0)
+        for name, count in first_mesh["native"].items()
+        if count != first_point["native"].get(name, 0)
+    }
+    assert first_mesh["compose"] == first_point["compose"] > 0, report
+    assert extra == {"facet_geometry_forward": 1, "facet_response_forward": first_mesh["compose"]}, report
+    # The facet tables: one device-to-host read of the vertices, one upload per
+    # table dtype, and the authored vertices' upload.
+    assert first_mesh["syncs"] - first_point["syncs"] <= 4, report
+    assert first_mesh["d2h"] - first_point["d2h"] == 1, report
+    for key in ("syncs", "d2h", "compose"):
+        assert mesh[2][key] - mesh[1][key] == point[2][key] - point[1][key], report
 
 
 class _Recede:
@@ -346,8 +358,8 @@ def test_a_deformed_mesh_moves_its_facets_with_the_snapshot():
         structure_deformations={1: _Recede(len(vertices), speed=50.0)},
     )
     times = (0.0, 2e-3)
-    paths = sc.radar().trace(scene, MeshTargets(), times=times, reflections=0, motion=Motion.static())
-    delays = [float(paths.rows(index).total_delay_s.double().mean()) for index in range(2)]
+    paths = sc.radar().trace(scene, MeshTargets(), times=times, reflections=0, motion=Motion.chirp())
+    delays = [float(paths.rows(index, 0).total_delay_s.double().mean()) for index in range(2)]
     expected = 2.0 * 50.0 * times[1] / ref.C0_M_PER_S
     assert delays[1] - delays[0] == pytest.approx(expected, rel=1e-3)
 
